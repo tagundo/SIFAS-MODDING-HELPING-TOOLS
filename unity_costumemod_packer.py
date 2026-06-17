@@ -1,7 +1,8 @@
 # unity_costumemod_packer.py (modified)
+# Adds a "modded -> suit" library workflow (Termux text menu) on top of the
+# original GUI packer, and makes the script importable/runnable where tkinter
+# isn't installed (e.g. Termux).
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 import os
 import zipfile
 import io
@@ -11,6 +12,119 @@ import subprocess
 import sys
 import struct
 import lzma
+import argparse
+import base64
+import tempfile
+import platform as _platform
+
+# NOTE: on Termux the native texture decoders (astc-encoder-py / texture2ddecoder
+# / etcpak) are unreliable - depending on the device/build they raise, fail to
+# load libfmod, or hard-crash the whole process with SIGILL ("Illegal
+# instruction") the moment a texture is decoded (the crash is at DECODE time, not
+# at `import UnityPy` - the native libs are imported lazily on the first decode).
+#
+# To still get REAL thumbnails there without risking the run, texture decoding on
+# Termux is now done in a throwaway CHILD PROCESS (see _decode_mode /
+# _decode_texture_via_subprocess): if the native decoder crashes, only the child
+# dies and we fall back to a name thumbnail instead of taking the packer down with
+# it. So decoding is attempted by default everywhere; set PACKER_DECODE_THUMBNAILS=0
+# to skip it (fast, name-only thumbnails). If the child keeps crashing on your
+# device, rebuilding the decoders from source usually fixes it (prebuilt wheels can
+# be glibc/CPU-incompatible with Termux):
+#     pip install --force-reinstall --no-binary :all: astc-encoder-py texture2ddecoder etcpak
+
+# UnityPy's export package eagerly imports AudioClipConverter, which runs
+# `import fmod_toolkit` at module load. fmod_toolkit then tries to dlopen a
+# native libfmod.so that isn't bundled for Termux/arm64, so even *texture*
+# decoding fails with "libfmod.so not found". This packer never touches audio,
+# so we stub fmod_toolkit with a harmless dummy that satisfies the import
+# without loading any native library.
+if "fmod_toolkit" not in sys.modules:
+    import types as _types
+    _fmod_stub = _types.ModuleType("fmod_toolkit")
+
+    def _fmod_unavailable(*args, **kwargs):
+        raise RuntimeError("fmod_toolkit is stubbed (audio export is not supported here)")
+
+    _fmod_stub.raw_to_wav = _fmod_unavailable
+    sys.modules["fmod_toolkit"] = _fmod_stub
+
+# Absolute path to this script, captured at import time so the decode-worker
+# subprocess can re-launch it even if the cwd changes later.
+try:
+    _THIS_FILE = os.path.abspath(__file__)
+except NameError:
+    _THIS_FILE = os.path.abspath(sys.argv[0])
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except Exception:
+    tk = None
+    filedialog = messagebox = ttk = None
+
+
+def is_termux():
+    if "com.termux" in (os.environ.get("PREFIX", "") + os.environ.get("HOME", "")):
+        return True
+    return os.path.isdir("/data/data/com.termux")
+
+
+def _env_flag(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _decode_mode():
+    """How thumbnail texture decoding should run in THIS process.
+
+    Returns one of:
+      'off'         - never decode; use name-only thumbnails (fast, can't crash).
+      'inprocess'   - decode directly (reliable on desktop).
+      'subprocess'  - decode in a throwaway child so a native-decoder SIGILL only
+                      kills the child, not the packer (the default on Termux).
+
+    Overrides:
+      PACKER_DECODE_THUMBNAILS=0  -> 'off'
+      PACKER_DECODE_INPROCESS=1   -> force 'inprocess' even on Termux (debug)
+      PACKER_DECODE_ISOLATE=1     -> force 'subprocess' even on desktop
+    """
+    if os.environ.get("PACKER_DECODE_THUMBNAILS", "").strip().lower() in ("0", "false", "no", "off"):
+        return "off"
+    if _env_flag("PACKER_DECODE_INPROCESS"):
+        return "inprocess"
+    if _env_flag("PACKER_DECODE_ISOLATE") or is_termux():
+        return "subprocess"
+    return "inprocess"
+
+
+def _patch_platform_for_decode():
+    """archspec (pulled in lazily by astc-encoder-py on the first decode) doesn't
+    recognise Termux's platform.system() == "Android" and raises. Present as
+    "Linux" so the decoder can initialise. Detection uses $PREFIX, so this does
+    not affect is_termux(). Safe to call repeatedly; a no-op off Android."""
+    if _platform.system() == "Android":
+        _platform.system = lambda: "Linux"
+
+
+def gui_available():
+    if tk is None:
+        return False
+    if is_termux():
+        return False
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return False
+    return True
+
+
+def default_sukusta_dir(name):
+    """sukusta/<name> path. The SUKUSTA_DIR env var overrides the base.
+    Termux uses shared Downloads; otherwise ~/sukusta."""
+    base = os.environ.get("SUKUSTA_DIR")
+    if base:
+        return os.path.join(os.path.expanduser(base), name)
+    if is_termux():
+        return os.path.expanduser(f"~/storage/downloads/sukusta/{name}")
+    return os.path.expanduser(f"~/sukusta/{name}")
 
 # ============================================================
 # Unity 에셋번들 플랫폼 감지 (Android / iOS)
@@ -266,52 +380,290 @@ def build_pack_jobs(masked_files, platforms, combine_pairs):
 
 
 # -------- Dependency helpers --------
+def _run_cmd(cmd):
+    try:
+        subprocess.check_call(cmd)
+        return True
+    except Exception:
+        return False
+
+
+def _termux_install_pillow():
+    """Install Termux's prebuilt Pillow (pip can't compile it there: no libjpeg)."""
+    print("[setup] Installing image library (Pillow) via Termux packages - "
+          "one-time, no action needed...")
+    if (_run_cmd(["pkg", "install", "-y", "python-pillow"])
+            or _run_cmd(["apt", "install", "-y", "python-pillow"])):
+        return
+    _run_cmd(["apt", "update", "-y"])
+    (_run_cmd(["pkg", "install", "-y", "python-pillow"])
+     or _run_cmd(["apt", "install", "-y", "python-pillow"]))
+
+
 def ensure_module(mod_name: str, pip_name: str):
     try:
         return __import__(mod_name)
     except ImportError:
+        pass
+    # On Termux, Pillow can't be pip-compiled (missing libjpeg); install the
+    # prebuilt system package instead so it 'just works' with no manual steps.
+    if pip_name.lower() == "pillow" and is_termux():
+        _termux_install_pillow()
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
             return __import__(mod_name)
-        except Exception:
-            return None
+        except ImportError:
+            pass
+    try:
+        print(f"[setup] Installing {pip_name} (first run only, can take a minute)...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+        return __import__(mod_name)
+    except Exception:
+        return None
 
-def ensure_unitypy():
-    return ensure_module("UnityPy", "UnityPy")
 
 def ensure_pillow():
     return ensure_module("PIL", "Pillow")
+
+
+def ensure_unitypy():
+    # UnityPy imports Pillow at import time, so make sure Pillow is present first.
+    ensure_pillow()
+    return ensure_module("UnityPy", "UnityPy")
+
 
 PIL = ensure_pillow()
 UnityPy = ensure_unitypy()
 
 # -------- Texture extraction (body only, safe) --------
-def extract_body_texture_with_unitypy(bundle_path: str):
+def extract_body_texture_with_unitypy(bundle_path: str, log=None):
+    """Find a body Texture2D and return (name, png_bytes), else (name_or_None, None).
+
+    Dispatches according to _decode_mode():
+      - 'off'        : read only the texture *name* (for the character ID) and
+                       leave the caller to build a name thumbnail.
+      - 'subprocess' : decode in a throwaway child (Termux default) so a native
+                       decoder SIGILL can't take the whole packer down.
+      - 'inprocess'  : decode directly (desktop default)."""
+    mode = _decode_mode()
+    if mode == "subprocess":
+        return _decode_texture_via_subprocess(bundle_path, log)
+    return _extract_body_texture_core(bundle_path, log=log, allow_decode=(mode != "off"))
+
+
+def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True):
+    """Find a body Texture2D and (when allow_decode) return (name, png_bytes).
+
+    Tries hard so a real preview is produced when any texture exists:
+      1) exact 'chXXXX_coXXXX_body' texture,
+      2) any texture whose name contains 'body',
+      3) the largest decodable texture.
+    Crunched/compressed formats are decoded (not skipped). A `log` callback, when
+    given, explains exactly why a placeholder ends up being used.
+
+    WARNING: when allow_decode is True this touches the native texture decoders,
+    which can hard-crash (SIGILL) on some Termux builds - run it in a child
+    process there (see _decode_texture_via_subprocess)."""
+    def _log(msg):
+        if log:
+            log(msg)
+
     if UnityPy is None:
-        return None, None
+        _log("  ⚠️ thumbnail: UnityPy not available"); return None, None
     try:
         env = UnityPy.load(bundle_path)
-        body_pat = re.compile(r"^ch\d{4}_co\d{4}_body$")
-        def is_crunched(fmt):
-            return "Crunched" in str(fmt)
-        for obj in env.objects:
-            if getattr(obj.type, "name", "") != "Texture2D":
-                continue
+    except Exception as e:
+        _log(f"  ⚠️ thumbnail: could not open bundle ({e})"); return None, None
+
+    body_pat = re.compile(r"ch\d{4}_co\d{4}_body", re.IGNORECASE)
+    # The base color/diffuse body texture is named '...body'. The same bundle also
+    # ships auxiliary maps that share the 'body' name (rim light, normal, mask,
+    # emission, ...) - those must NOT win the preview. Match them so we can skip.
+    aux_pat = re.compile(
+        r"(rim|nrm|normal|mask|msk|emi|emiss|metal|mtl|smooth|gloss|spec|_ao\b|occl|"
+        r"sss|thick|alpha|_uv|toon|ramp|shadow|highlight|\bhi_|_hi\b)", re.IGNORECASE)
+    exact_body_pat = re.compile(r"ch\d{4}_co\d{4}_body$", re.IGNORECASE)
+    textures = []
+    for obj in env.objects:
+        if getattr(obj.type, "name", "") != "Texture2D":
+            continue
+        try:
             data = obj.read()
-            name = getattr(data, "name", getattr(data, "m_Name", ""))
-            if not body_pat.match(name):
-                continue
-            fmt = getattr(data, "m_TextureFormat", None)
-            if is_crunched(fmt):
-                continue
+        except Exception:
+            continue
+        name = getattr(data, "m_Name", None) or getattr(data, "name", "") or ""
+        textures.append((name, data))
+
+    if not textures:
+        _log("  ⚠️ thumbnail: no Texture2D in this bundle (the texture is probably "
+             "in a separate bundle) - using a placeholder")
+        return None, None
+
+    # Decoding disabled (PACKER_DECODE_THUMBNAILS=0): don't touch the image data,
+    # just hand back a texture name for the character ID and let the caller use a
+    # name thumbnail.
+    if not allow_decode:
+        name_for_id = next((n for (n, _) in textures if re.search(r"ch\d{4}", n or "")), None)
+        _log("  ℹ️ thumbnail: texture decode disabled (PACKER_DECODE_THUMBNAILS=0) "
+             "- using a name thumbnail.")
+        return name_for_id, None
+
+    # astc-encoder-py imports archspec on the first decode; make it tolerate
+    # Termux's platform.system() == "Android" before we touch any image data.
+    _patch_platform_for_decode()
+
+    def decode(name, data):
+        try:
             img = getattr(data, "image", None)
-            if img:
-                bio = io.BytesIO()
-                img.save(bio, format="PNG")
-                return name, bio.getvalue()
+        except Exception as e:
+            _log(f"  ⚠️ thumbnail: texture '{name}' failed to decode ({e})")
+            return None
+        if not img:
+            return None
+        try:
+            bio = io.BytesIO(); img.save(bio, format="PNG"); return bio.getvalue()
+        except Exception as e:
+            _log(f"  ⚠️ thumbnail: texture '{name}' could not be saved ({e})")
+            return None
+
+    def area(data):
+        try:
+            return int(getattr(data, "m_Width", 0) or 0) * int(getattr(data, "m_Height", 0) or 0)
+        except Exception:
+            return 0
+
+    def is_aux(n):
+        return bool(aux_pat.search(n or ""))
+
+    # Prefer the plain body base color, biggest first, and only fall back to
+    # auxiliary maps (rim/normal/...) as a last resort:
+    #   1) exact 'chXXXX_coXXXX_body' (no rim/aux suffix)
+    #   2) any 'chXXXX_coXXXX_body...' that isn't an auxiliary map
+    #   3) any texture whose name contains 'body' and isn't auxiliary
+    #   4) largest non-auxiliary texture
+    #   5) largest texture (last resort - may be a rim/mask map)
+    by_area = sorted(textures, key=lambda t: area(t[1]), reverse=True)
+    tiers = [
+        ([t for t in by_area if exact_body_pat.search(t[0] or "") and not is_aux(t[0])], "body texture"),
+        ([t for t in by_area if body_pat.search(t[0] or "") and not is_aux(t[0])], "body texture"),
+        ([t for t in by_area if "body" in (t[0] or "").lower() and not is_aux(t[0])], "name contains 'body'"),
+        ([t for t in by_area if not is_aux(t[0])], "largest non-rim texture"),
+        (by_area, "largest texture (no plain body texture found)"),
+    ]
+    tried = set()
+    for tier, note in tiers:
+        for n, d in tier:
+            if id(d) in tried:
+                continue
+            tried.add(id(d))
+            png = decode(n, d)
+            if png:
+                _log(f"  ℹ️ thumbnail: used {note} '{n}'")
+                return n, png
+
+    _log("  ⚠️ thumbnail: textures present but none could be decoded "
+         "(unsupported compression) - using a placeholder")
+    # Even if the image can't be decoded, hand back a texture name so the
+    # character ID can still be read from it (e.g. 'ch0004_co0033_body' -> 4).
+    name_for_id = next((n for (n, _) in textures if re.search(r"ch\d{4}", n or "")), None)
+    return name_for_id, None
+
+
+# A unique marker so the parent can pick the result line out of the child's
+# stdout even if UnityPy/Pillow print their own noise around it.
+_DECODE_RESULT_MARKER = b"__PACKER_DECODE_RESULT__"
+
+
+def _decode_worker_main(bundle_path, out_png):
+    """Child-process entry: decode the body texture and report back.
+
+    Writes the PNG to out_png (if any) and prints one marker line carrying the
+    base64 texture name and a 0/1 'png written' flag. Kept tiny so that if a
+    native decoder hard-crashes (SIGILL) only this process dies."""
+    name = png = None
+    try:
+        name, png = _extract_body_texture_core(bundle_path, log=None, allow_decode=True)
     except Exception:
-        pass
-    return None, None
+        name, png = None, None
+    wrote = False
+    if png:
+        try:
+            with open(out_png, "wb") as f:
+                f.write(png)
+            wrote = True
+        except Exception:
+            wrote = False
+    b64 = base64.b64encode((name or "").encode("utf-8"))
+    sys.stdout.buffer.write(_DECODE_RESULT_MARKER + b"\t" + b64 + b"\t" + (b"1" if wrote else b"0") + b"\n")
+    sys.stdout.buffer.flush()
+    return 0
+
+
+def _decode_texture_via_subprocess(bundle_path, log=None):
+    """Decode the body texture in a throwaway child process.
+
+    A native-decoder SIGILL ("Illegal instruction") then only kills the child;
+    we read the texture name (for the character ID) from its stdout and fall back
+    to a name thumbnail. Returns (name_or_None, png_bytes_or_None)."""
+    def _log(msg):
+        if log:
+            log(msg)
+
+    if UnityPy is None:
+        _log("  ⚠️ thumbnail: UnityPy not available"); return None, None
+
+    fd, out_png = tempfile.mkstemp(prefix="packer_thumb_", suffix=".png")
+    os.close(fd)
+    try:
+        cmd = [sys.executable, _THIS_FILE, "--decode-worker", bundle_path, out_png]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        except subprocess.TimeoutExpired:
+            _log("  ⚠️ thumbnail: texture decode timed out - using a name thumbnail.")
+            return None, None
+        except Exception as e:
+            _log(f"  ⚠️ thumbnail: could not start decode worker ({e}) - using a name thumbnail.")
+            return None, None
+
+        name, png_flag = None, False
+        for line in proc.stdout.splitlines():
+            if line.startswith(_DECODE_RESULT_MARKER):
+                parts = line.split(b"\t")
+                if len(parts) >= 3:
+                    try:
+                        name = base64.b64decode(parts[1]).decode("utf-8", "replace") or None
+                    except Exception:
+                        name = None
+                    png_flag = parts[2].strip() == b"1"
+
+        if proc.returncode != 0 and not png_flag:
+            if proc.returncode < 0:
+                # negative == killed by a signal (e.g. -4 SIGILL, -11 SIGSEGV)
+                _log(f"  ⚠️ thumbnail: the native texture decoder crashed (signal "
+                     f"{-proc.returncode}) on this device - using a name thumbnail. "
+                     f"Try rebuilding it from source:  pip install --force-reinstall "
+                     f"--no-binary :all: astc-encoder-py texture2ddecoder etcpak")
+            else:
+                tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                extra = f" ({tail[-1]})" if tail else ""
+                _log(f"  ⚠️ thumbnail: decode worker failed{extra} - using a name thumbnail.")
+            return name, None
+
+        png = None
+        if png_flag:
+            try:
+                with open(out_png, "rb") as f:
+                    png = f.read() or None
+            except Exception:
+                png = None
+        if not png:
+            _log("  ℹ️ thumbnail: no decodable body texture in this bundle - using a name thumbnail.")
+        return name, png
+    finally:
+        try:
+            os.remove(out_png)
+        except OSError:
+            pass
+
 
 def extract_chara_id_from_texture_name(tex_name: str):
     if not tex_name:
@@ -322,12 +674,17 @@ def extract_chara_id_from_texture_name(tex_name: str):
     return None
 
 def extract_chara_id_from_filename(filename: str):
-    m = re.match(r"^(\d+)", filename)
+    if not filename:
+        return None
+    m = re.match(r"^(\d+)", filename)          # leading id, e.g. "209rina...", "204suit"
     if m:
         try:
             return int(m.group(1))
-        except:
+        except Exception:
             pass
+    m = re.search(r"ch(\d{4})", filename.lower())   # SIFAS style "ch0001_body...", "ch0209..."
+    if m:
+        return int(m.group(1))
     return None
 
 # -------- Image helpers --------
@@ -344,6 +701,100 @@ def make_placeholder_thumbnail_png(text="No Preview", size=256):
     out = io.BytesIO()
     img.save(out, format="PNG", optimize=True, compress_level=6)
     return out.getvalue()
+
+
+def _clean_costume_name(name):
+    s = str(name or "").replace("_", " ").replace("[", " ").replace("]", " ")
+    return " ".join(s.split()) or "Costume"
+
+
+def make_name_thumbnail_png(name, size: int = 256, chara_id=None):
+    """Generate a thumbnail that simply shows the costume name (used when the
+    body texture can't be decoded, e.g. on Termux). PIL text rendering works
+    fine on Termux - only the native texture *decoders* are the problem."""
+    if PIL is None:
+        return None
+    from PIL import Image, ImageDraw, ImageFont
+
+    text = _clean_costume_name(name)
+    img = Image.new("RGB", (size, size), (60, 63, 75))
+    draw = ImageDraw.Draw(img)
+
+    def get_font(px):
+        px = max(10, int(px))
+        try:
+            return ImageFont.load_default(size=px)   # Pillow >= 10.1: scalable
+        except TypeError:
+            return ImageFont.load_default()          # older Pillow: tiny bitmap
+
+    def text_w(s, font):
+        try:
+            return draw.textlength(s, font=font)
+        except Exception:
+            try:
+                return font.getlength(s)
+            except Exception:
+                return len(s) * 6
+
+    def line_h(font, px):
+        try:
+            asc, desc = font.getmetrics()
+            return asc + desc + 2
+        except Exception:
+            return px + 4
+
+    def wrap(words, font, maxw):
+        lines, cur = [], ""
+        for w in words:
+            trial = (cur + " " + w).strip()
+            if not cur or text_w(trial, font) <= maxw:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
+    margin = max(8, size // 12)
+    maxw = size - 2 * margin
+    words = text.split()
+
+    chosen = None
+    for px in (size // 7, size // 8, size // 10, size // 12, size // 14, size // 16, 10):
+        font = get_font(px)
+        lines = wrap(words, font, maxw)
+        lh = line_h(font, px)
+        if lh * len(lines) <= size - 2 * margin and all(text_w(ln, font) <= maxw for ln in lines):
+            chosen = (font, lines, lh)
+            break
+    if chosen is None:
+        font = get_font(10)
+        chosen = (font, wrap(words, font, maxw), line_h(font, 10))
+    font, lines, lh = chosen
+
+    y = (size - lh * len(lines)) // 2
+    for ln in lines:
+        x = (size - text_w(ln, font)) // 2
+        try:
+            draw.text((x + 1, y + 1), ln, fill=(0, 0, 0), font=font)   # shadow
+        except Exception:
+            pass
+        draw.text((x, y), ln, fill=(245, 245, 245), font=font)
+        y += lh
+
+    if chara_id:
+        bf = get_font(max(10, size // 16))
+        try:
+            draw.text((margin, size - margin - line_h(bf, size // 16)),
+                      f"ID {chara_id}", fill=(230, 230, 230), font=bf)
+        except Exception:
+            pass
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True, compress_level=6)
+    return out.getvalue()
+
 
 def make_thumbnail_png(image_bytes: bytes, target_size: int = 256):
     if PIL is None:
@@ -365,6 +816,29 @@ def make_thumbnail_png(image_bytes: bytes, target_size: int = 256):
         return None
 
 # -------- Packaging helpers --------
+def pack_safe_stem(stem):
+    """Lowercase, ASCII-alphanumeric-only stem.
+
+    costume_addon_installer renames each packed file to '<crc32hex><stem>' and
+    rejects it unless that whole string is .isalnum() and .islower(). The crc32
+    prefix is already lowercase hex, so the stem must be lowercase a-z / 0-9 with
+    NO underscores, spaces, hyphens or capitals. Leading digits (the character-id
+    prefix like '305') are preserved."""
+    s = "".join(c for c in str(stem).lower() if ("a" <= c <= "z") or ("0" <= c <= "9"))
+    return s or "costume"
+
+
+def safe_arc_name(original_filename):
+    """Zip arcname / costume_file value with a sanitized stem. The extension is
+    stripped by the installer (only the stem becomes the asset-bundle name), so we
+    just keep a harmless, non-numeric '.unity' extension."""
+    base = os.path.basename(str(original_filename))
+    stem, ext = os.path.splitext(base)
+    if not ext or ext[1:].isdigit():   # never leave a numeric ext (installer reads it as chara_id)
+        ext = ".unity"
+    return pack_safe_stem(stem) + ext
+
+
 def generate_modinstall_txt(display_name: str, costume_file_name_with_ext: str, thumbnail_name: str, chara_id: int, unmask_filename: str = None,
                             ios_costume_filename: str = None, ios_unmask_filename: str = None):
     """modinstall.txt 내용을 생성한다.
@@ -407,20 +881,669 @@ def generate_modinstall_txt(display_name: str, costume_file_name_with_ext: str, 
 
     return "\n".join(lines)
 
-def create_zip_package(output_zip_path: str, masked_bundle_path: str, thumbnail_bytes: bytes, thumbnail_name: str, modinstall_txt: str, unmasked_bundle_path: str = None):
+def create_zip_package(output_zip_path: str, masked_bundle_path: str, thumbnail_bytes: bytes, thumbnail_name: str, modinstall_txt: str, unmasked_bundle_path: str = None,
+                       masked_arcname: str = None, unmasked_arcname: str = None):
     os.makedirs(os.path.dirname(output_zip_path), exist_ok=True)
     with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        # masked (main) file
-        zf.write(masked_bundle_path, os.path.basename(masked_bundle_path))
-        
+        # masked (main) file - stored under an installer-safe name
+        zf.write(masked_bundle_path, masked_arcname or os.path.basename(masked_bundle_path))
+
         # unmasked (paired) file if it exists
         if unmasked_bundle_path and os.path.isfile(unmasked_bundle_path):
-            zf.write(unmasked_bundle_path, os.path.basename(unmasked_bundle_path))
-            
+            zf.write(unmasked_bundle_path, unmasked_arcname or os.path.basename(unmasked_bundle_path))
+
         # thumbnail and modinstall
         zf.writestr(thumbnail_name, thumbnail_bytes)
         zf.writestr("modinstall.txt", modinstall_txt.encode("utf-8"))
     return True
+
+
+# ============================================================
+# Headless packaging (used by the Termux text menu). These mirror the GUI's
+# process_single_file / process_pair / process_files, but take plain params and
+# a `log` callback instead of touching Tk widgets.
+# ============================================================
+def normalize_rina_key(filename: str):
+    """'209rinamasked...' / '209rinaunmasked...' -> 'rina...' for pairing."""
+    s = re.sub(r"^\d+", "", filename, count=1).lower()
+    if s.startswith("rinamasked"):
+        return s.replace("rinamasked", "rina", 1)
+    if s.startswith("rinaunmasked"):
+        return s.replace("rinaunmasked", "rina", 1)
+    return s
+
+
+def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara_id=0,
+                       thumbnail_size=256, append_suffix=True, rina_unmasked_map=None,
+                       platform=None, ask_chara_id=None, log=print):
+    """Package one bundle into a zip in out_dir. Returns the zip path or None."""
+    rina_unmasked_map = rina_unmasked_map or {}
+    bn_with_ext = os.path.basename(bundle_path)
+    bn_no_ext = os.path.splitext(bn_with_ext)[0]
+
+    if platform is None:
+        platform = detect_bundle_platform(bundle_path)
+    if platform is None and append_suffix:
+        log(f"  ❓ Platform unknown for '{bn_with_ext}' - zip name will have no platform suffix")
+
+    tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path, log=log)
+
+    if auto_chara_id:
+        cid = (extract_chara_id_from_texture_name(tex_name)
+               or extract_chara_id_from_filename(bn_no_ext))
+        if cid is None:
+            # Don't silently fall back to 209 (that triggers the installer's Rina
+            # path and crashes without an unmasked model). Ask, or use the manual id.
+            cid = ask_chara_id(bn_with_ext) if ask_chara_id else manual_chara_id
+    else:
+        cid = manual_chara_id
+    if bn_no_ext.lower().startswith("209rinamasked") and cid != 209:
+        log(f"  ⚠️ Overriding chara_id to 209 for Rina file '{bn_with_ext}'")
+        cid = 209
+    log(f"  🎯 Chara ID: {cid}")
+
+    thumb_bytes = (make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes
+                   else make_name_thumbnail_png(bn_no_ext, thumbnail_size, cid))
+    if not thumb_bytes:
+        log("  ❌ Thumbnail creation failed."); return None
+    thumb_name = "im" + pack_safe_stem(bn_no_ext) + ".png"
+
+    unmasked_bundle_path = unmasked_filename = None
+    if cid == 209 and bn_no_ext.lower().startswith("209rinamasked"):
+        key = normalize_rina_key(bn_no_ext.lower())
+        if key in rina_unmasked_map:
+            unmasked_bundle_path = rina_unmasked_map[key]
+            unmasked_filename = os.path.basename(unmasked_bundle_path)
+            log(f"  🎭 Paired with '{unmasked_filename}'")
+
+    if cid == 209 and not unmasked_bundle_path:
+        log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model "
+            "('209rinaunmasked...') - none was found.")
+        log("     Add the unmasked file next to this one, or set the correct "
+            "character ID. Skipping (the installer would crash otherwise).")
+        return None
+
+    safe_costume = safe_arc_name(bn_with_ext)
+    safe_unmask = safe_arc_name(unmasked_filename) if unmasked_filename else None
+    modinstall = generate_modinstall_txt(bn_no_ext, safe_costume, thumb_name, cid, safe_unmask)
+    zip_base = compute_zip_basename(bn_no_ext, platform, append_suffix)
+    out_zip = os.path.join(out_dir, f"{zip_base}.zip")
+    if create_zip_package(out_zip, bundle_path, thumb_bytes, thumb_name, modinstall,
+                          unmasked_bundle_path, masked_arcname=safe_costume,
+                          unmasked_arcname=safe_unmask):
+        log(f"  💾 Created: {os.path.basename(out_zip)}")
+        return out_zip
+    return None
+
+
+def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_id=True,
+                      manual_chara_id=0, thumbnail_size=256, rina_unmasked_map=None,
+                      ask_chara_id=None, log=print):
+    """Package an Android+iOS pair into one combined zip. Returns True/False."""
+    rina_unmasked_map = rina_unmasked_map or {}
+    and_name = os.path.basename(android_path)
+    ios_name = os.path.basename(ios_path)
+    and_no_ext = os.path.splitext(and_name)[0]
+
+    tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path, log=log)
+    if not tex_png_bytes:
+        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path, log=log)
+
+    if auto_chara_id:
+        cid = (extract_chara_id_from_texture_name(tex_name)
+               or extract_chara_id_from_filename(and_no_ext)
+               or extract_chara_id_from_filename(os.path.splitext(ios_name)[0]))
+        if cid is None:
+            cid = ask_chara_id(and_name) if ask_chara_id else manual_chara_id
+    else:
+        cid = manual_chara_id
+    if (and_no_ext.lower().startswith("209rinamasked")
+            or os.path.splitext(ios_name)[0].lower().startswith("209rinamasked")) and cid != 209:
+        cid = 209
+    log(f"  🎯 Chara ID: {cid}")
+
+    thumb_bytes = (make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes
+                   else make_name_thumbnail_png(pair_key, thumbnail_size, cid))
+    if not thumb_bytes:
+        log("  ❌ Thumbnail creation failed."); return False
+    thumb_name = "im" + pack_safe_stem(pair_key) + ".png"
+
+    unmask_and_path = unmask_and_name = None
+    unmask_ios_path = unmask_ios_name = None
+    if cid == 209:
+        key_and = normalize_rina_key(and_no_ext.lower())
+        key_ios = normalize_rina_key(os.path.splitext(ios_name)[0].lower())
+        if key_and in rina_unmasked_map:
+            unmask_and_path = rina_unmasked_map[key_and]; unmask_and_name = os.path.basename(unmask_and_path)
+            log(f"  🎭 Paired android with '{unmask_and_name}'")
+        if key_ios in rina_unmasked_map:
+            unmask_ios_path = rina_unmasked_map[key_ios]; unmask_ios_name = os.path.basename(unmask_ios_path)
+            log(f"  🎭 Paired ios with '{unmask_ios_name}'")
+
+    if cid == 209 and not unmask_and_path:
+        log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model "
+            "('209rinaunmasked...') - none was found.")
+        log("     Add the unmasked file, or set the correct character ID. "
+            "Skipping (the installer would crash otherwise).")
+        return False
+
+    safe_and = safe_arc_name(and_name)
+    safe_ios = safe_arc_name(ios_name)
+    safe_unmask_and = safe_arc_name(unmask_and_name) if unmask_and_name else None
+    safe_unmask_ios = safe_arc_name(unmask_ios_name) if unmask_ios_name else None
+    modinstall = generate_modinstall_txt(pair_key, safe_and, thumb_name, cid, safe_unmask_and,
+                                         ios_costume_filename=safe_ios, ios_unmask_filename=safe_unmask_ios)
+    combined = os.path.join(out_dir, f"{pair_key}_apk_ios.zip")
+    os.makedirs(os.path.dirname(combined), exist_ok=True)
+    with zipfile.ZipFile(combined, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.write(android_path, safe_and)
+        zf.write(ios_path, safe_ios)
+        if unmask_and_path and os.path.isfile(unmask_and_path):
+            zf.write(unmask_and_path, safe_unmask_and)
+        if unmask_ios_path and os.path.isfile(unmask_ios_path):
+            zf.write(unmask_ios_path, safe_unmask_ios)
+        zf.writestr(thumb_name, thumb_bytes)
+        zf.writestr("modinstall.txt", modinstall.encode("utf-8"))
+    log(f"  💾 Created combined: {os.path.basename(combined)} (android={and_name}, ios={ios_name})")
+    return True
+
+
+def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
+                  thumbnail_size=256, append_suffix=True, combine_pairs=True,
+                  ask_chara_id=None, log=print):
+    """Pre-scan Rina unmasked helpers, detect platforms, build jobs (pairing
+    android+ios), and package each into out_dir. Returns (success, fail)."""
+    out_dir = os.path.expanduser(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    rina_map = {}
+    masked = []
+    for p in files:
+        bn = os.path.splitext(os.path.basename(p))[0].lower()
+        if bn.startswith("209rinaunmasked"):
+            rina_map[normalize_rina_key(bn)] = p
+        else:
+            masked.append(p)
+    if rina_map:
+        log(f"✅ Found {len(rina_map)} '209rinaunmasked' helper file(s).")
+
+    log("🔎 Detecting bundle platforms (Android / iOS)...")
+    platforms = {}
+    for p in masked:
+        plat = detect_bundle_platform(p)
+        platforms[p] = plat
+        icon = {'android': '🤖', 'ios': '🍎'}.get(plat, '❓')
+        log(f"  {icon} {os.path.basename(p)}: {plat or 'unknown'}")
+
+    jobs = build_pack_jobs(masked, platforms, combine_pairs)
+    pair_count = sum(1 for j in jobs if j[0] == 'pair')
+    if combine_pairs:
+        if pair_count:
+            log(f"🔗 Matched {pair_count} Android+iOS pair(s) -> combined zip(s)")
+        else:
+            log("🟡 No Android+iOS pairs matched (files packed individually).")
+
+    success = fail = 0
+    total = len(jobs)
+    for i, job in enumerate(jobs, 1):
+        try:
+            if job[0] == 'pair':
+                _, key, ap, ip = job
+                log(f"\n📦 [{i}/{total}] pair: {os.path.basename(ap)} + {os.path.basename(ip)}")
+                ok = pack_pair_bundles(key, ap, ip, out_dir, auto_chara_id=auto_chara_id,
+                                       manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
+                                       rina_unmasked_map=rina_map, ask_chara_id=ask_chara_id, log=log)
+            else:
+                bp = job[1]
+                log(f"\n📦 [{i}/{total}] {os.path.basename(bp)}")
+                ok = bool(pack_single_bundle(bp, out_dir, auto_chara_id=auto_chara_id,
+                                             manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
+                                             append_suffix=append_suffix, rina_unmasked_map=rina_map,
+                                             ask_chara_id=ask_chara_id,
+                                             platform=platforms.get(bp), log=log))
+            if ok:
+                success += 1
+            else:
+                fail += 1
+        except Exception as e:
+            fail += 1
+            log(f"  ❌ ERROR: {e}")
+    log(f"\n🎉 Done. ✅ Successful: {success}  ❌ Failed: {fail}   (output: {out_dir})")
+    return success, fail
+
+
+# -------- Library scan helpers (modded source) --------
+def is_unity_bundle(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(7) == b"UnityFS"
+    except Exception:
+        return False
+
+
+def find_asset_bundles(root):
+    """Recursively list UnityFS asset bundles under root (sorted)."""
+    root = os.path.expanduser(str(root))
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for dp, _, files in os.walk(root):
+        for fn in files:
+            p = os.path.join(dp, fn)
+            if is_unity_bundle(p):
+                out.append(p)
+    return sorted(out)
+
+
+def build_thumbnail_for_bundle(bundle_path, size=256, log=None):
+    """Return (png_bytes, label) for a preview thumbnail of one bundle.
+
+    Decodes the body base-color texture (crash-safe via extract_body_texture_with_unitypy)
+    and falls back to a name thumbnail when nothing decodes. Shared by the web GUI,
+    the desktop GUI preview, and any caller that just wants a picture for a bundle."""
+    bn_no_ext = os.path.splitext(os.path.basename(bundle_path))[0]
+    tex_name, tex_png = extract_body_texture_with_unitypy(bundle_path, log=log)
+    cid = (extract_chara_id_from_texture_name(tex_name)
+           or extract_chara_id_from_filename(bn_no_ext))
+    if tex_png:
+        png = make_thumbnail_png(tex_png, size)
+        if png:
+            return png, (tex_name or bn_no_ext)
+    return make_name_thumbnail_png(bn_no_ext, size, cid), (tex_name or bn_no_ext)
+
+
+# -------- Text menu (Termux / headless): modded -> suit --------
+def _ask(prompt, default=""):
+    s = input(f"{prompt} [{default}]: ").strip() if default != "" else input(f"{prompt}: ").strip()
+    return s if s else default
+
+
+def _ask_yesno(prompt, default=True):
+    d = "Y/n" if default else "y/N"
+    s = input(f"{prompt} [{d}]: ").strip().lower()
+    if s == "":
+        return default
+    return s in ("y", "yes")
+
+
+def _ask_int(prompt):
+    """Prompt until the user enters a non-negative integer (no risky default)."""
+    while True:
+        s = input(f"{prompt}: ").strip()
+        if s.isdigit():
+            return int(s)
+        print("   Please enter a number (digits only).")
+
+
+def _parse_multi_select(s, n):
+    """'3' / '1,4-8' / 'all' -> sorted 0-based indices in 1..n."""
+    s = (s or "").strip().lower()
+    if s in ("all", "*"):
+        return list(range(n))
+    out = set()
+    for part in s.replace(" ", "").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            try:
+                a, b = int(a), int(b)
+            except ValueError:
+                continue
+            for k in range(min(a, b), max(a, b) + 1):
+                if 1 <= k <= n:
+                    out.add(k - 1)
+        else:
+            try:
+                k = int(part)
+            except ValueError:
+                continue
+            if 1 <= k <= n:
+                out.add(k - 1)
+    return sorted(out)
+
+
+def run_menu():
+    """Termux/headless: pick bundles from sukusta/modded, pack -> sukusta/suit."""
+    try:
+        import readline  # noqa: F401  (arrow-key editing / history)
+    except Exception:
+        pass
+
+    if UnityPy is None or PIL is None:
+        print("⚠️  UnityPy/Pillow are required for packaging.")
+        print(f"   UnityPy: {'OK' if UnityPy else 'MISSING'}   Pillow: {'OK' if PIL else 'MISSING'}")
+        print("   Install with:  pip install UnityPy Pillow")
+        return
+
+    modded = default_sukusta_dir("modded")
+    suit = default_sukusta_dir("suit")
+    print()
+    print("==========================================")
+    print("     Unity Costume Mod Packer")
+    print("     (modded -> suit, text mode)")
+    print("==========================================")
+    print(f"  source (modded): {modded}")
+    print(f"  output (suit)  : {suit}")
+
+    if _ask_yesno("\nOpen the graphical Web GUI in a browser instead? "
+                  "(pick bundles visually, with thumbnails)", default=False):
+        return run_web()
+
+    print(f"\nScanning {modded} ...")
+    bundles = find_asset_bundles(modded)
+    if not bundles:
+        print("No unity asset bundles (UnityFS files) found in modded.")
+        print("Put your modded .unity bundles there first, or set SUKUSTA_DIR.")
+        return
+    for i, b in enumerate(bundles, 1):
+        try:
+            rel = os.path.relpath(b, modded)
+        except Exception:
+            rel = os.path.basename(b)
+        print(f"  {i:3d}) {rel}")
+    chosen = _parse_multi_select(_ask("Select bundle(s)  (e.g. 3, 1,4-8, all)", "all"), len(bundles))
+    if not chosen:
+        print("Nothing selected."); return
+    files = [bundles[i] for i in chosen]
+
+    combine_pairs = _ask_yesno("Combine detected Android+iOS pairs into one zip?", default=True)
+    append_suffix = _ask_yesno("Append platform suffix (_apk / _ios) to zip names?", default=True)
+    auto_cid = _ask_yesno("Auto-detect character ID from each file?", default=True)
+    manual_cid = 0
+    if not auto_cid:
+        manual_cid = _ask_int("Character ID to use for ALL selected files (e.g. 1, 105, 209)")
+
+    def _ask_cid_for(fname):
+        print(f"\n⚠️  Could not auto-detect the character ID for: {fname}")
+        return _ask_int("   Enter character ID "
+                        "(1-9 = mu's, 101-109 = Aqours, 201-212 = Nijigasaki; 209 = Rina)")
+
+    print(f"\nPackaging {len(files)} bundle(s) -> {suit}\n")
+    run_pack_jobs(files, suit, auto_chara_id=auto_cid, manual_chara_id=manual_cid,
+                  thumbnail_size=256, append_suffix=append_suffix, combine_pairs=combine_pairs,
+                  ask_chara_id=(_ask_cid_for if auto_cid else None), log=print)
+
+
+# ============================================================
+# Web GUI (Termux-friendly): a tiny stdlib-only HTTP server you open in a phone
+# browser. tkinter isn't available on Termux, so this is the graphical option
+# there. It reuses the same packing functions as the text menu / desktop GUI.
+# ============================================================
+_WEB_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unity Costume Mod Packer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:#1e1f26; color:#e7e7ea; }
+  header { padding:12px 16px; background:#2a2c37; position:sticky; top:0; z-index:5;
+           box-shadow:0 2px 6px rgba(0,0,0,.4); }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .paths { font-size:11px; color:#9aa; word-break:break-all; }
+  main { padding:12px 16px 96px; max-width:760px; margin:0 auto; }
+  .opts { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center;
+          background:#262833; padding:12px; border-radius:10px; margin-bottom:12px; }
+  .opts label { font-size:13px; display:flex; gap:6px; align-items:center; }
+  .opts input[type=number] { width:72px; background:#1b1c22; color:#e7e7ea;
+          border:1px solid #444; border-radius:6px; padding:3px 6px; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  button { background:#4a6cf7; color:#fff; border:0; border-radius:8px;
+           padding:9px 14px; font-size:14px; cursor:pointer; }
+  button.sec { background:#3a3d4a; }
+  button:disabled { opacity:.5; cursor:default; }
+  ul.bundles { list-style:none; padding:0; margin:0; display:grid;
+           grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  li.card { background:#262833; border-radius:10px; padding:8px; position:relative;
+           border:2px solid transparent; }
+  li.card.sel { border-color:#4a6cf7; }
+  li.card img { width:100%; aspect-ratio:1/1; object-fit:contain; background:#15161b;
+           border-radius:6px; display:block; }
+  .name { font-size:11px; margin-top:6px; word-break:break-all; line-height:1.3; }
+  .badge { position:absolute; top:10px; right:10px; font-size:11px; background:#000a;
+           padding:1px 6px; border-radius:8px; }
+  .row-cb { position:absolute; top:10px; left:10px; transform:scale(1.3); }
+  #log { white-space:pre-wrap; font-family:ui-monospace,monospace; font-size:12px;
+         background:#15161b; border-radius:8px; padding:10px; margin-top:12px;
+         max-height:40vh; overflow:auto; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:#2a2c37; padding:10px 16px;
+         display:flex; gap:10px; align-items:center; box-shadow:0 -2px 6px rgba(0,0,0,.4); }
+  .bar .grow { flex:1; font-size:13px; color:#9aa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎽 Unity Costume Mod Packer</h1>
+  <div class="paths" id="paths">loading…</div>
+</header>
+<main>
+  <div class="opts">
+    <label><input type="checkbox" id="combine" checked> Combine APK+iOS pairs</label>
+    <label><input type="checkbox" id="suffix" checked> Append _apk/_ios suffix</label>
+    <label><input type="checkbox" id="auto" checked> Auto chara ID</label>
+    <label>Manual ID <input type="number" id="cid" value="0" min="0" max="999"></label>
+    <label>Thumb px <input type="number" id="size" value="256" min="64" max="512" step="16"></label>
+  </div>
+  <div class="toolbar">
+    <button class="sec" onclick="loadBundles()">🔄 Refresh</button>
+    <button class="sec" onclick="selectAll(true)">Select all</button>
+    <button class="sec" onclick="selectAll(false)">Clear</button>
+  </div>
+  <ul class="bundles" id="list"></ul>
+  <div id="log" hidden></div>
+</main>
+<div class="bar">
+  <span class="grow" id="count">0 selected</span>
+  <button id="packbtn" onclick="pack()">🚀 Pack selected</button>
+</div>
+<script>
+let BUNDLES = [];
+const sel = new Set();
+const $ = id => document.getElementById(id);
+
+async function loadConfig(){
+  const c = await (await fetch('api/config')).json();
+  $('paths').textContent = 'modded: ' + c.modded + '   →   suit: ' + c.suit;
+}
+async function loadBundles(){
+  $('list').innerHTML = '<li>scanning…</li>';
+  const data = await (await fetch('api/bundles')).json();
+  BUNDLES = data.bundles; sel.clear();
+  render(); updateCount();
+}
+function render(){
+  const ul = $('list'); ul.innerHTML = '';
+  if(!BUNDLES.length){ ul.innerHTML = '<li>No bundles in the modded folder.</li>'; return; }
+  BUNDLES.forEach((b,i) => {
+    const li = document.createElement('li'); li.className = 'card' + (sel.has(b.path)?' sel':'');
+    const icon = b.platform==='android'?'🤖':b.platform==='ios'?'🍎':'❓';
+    li.innerHTML =
+      '<input class="row-cb" type="checkbox" '+(sel.has(b.path)?'checked':'')+'>' +
+      '<span class="badge">'+icon+'</span>' +
+      '<img loading="lazy" src="api/thumb?size='+($("size").value||256)+'&path='+encodeURIComponent(b.path)+'">' +
+      '<div class="name">'+b.rel+'</div>';
+    const toggle = () => { if(sel.has(b.path)) sel.delete(b.path); else sel.add(b.path);
+                           li.classList.toggle('sel'); li.querySelector('.row-cb').checked=sel.has(b.path); updateCount(); };
+    li.querySelector('img').onclick = toggle;
+    li.querySelector('.name').onclick = toggle;
+    li.querySelector('.row-cb').onchange = toggle;
+    ul.appendChild(li);
+  });
+}
+function selectAll(on){ sel.clear(); if(on) BUNDLES.forEach(b=>sel.add(b.path)); render(); updateCount(); }
+function updateCount(){ $('count').textContent = sel.size + ' selected'; }
+async function pack(){
+  if(!sel.size){ alert('Select at least one bundle.'); return; }
+  const btn = $('packbtn'); btn.disabled = true; btn.textContent = '⏳ Packing…';
+  const log = $('log'); log.hidden = false; log.textContent = 'Packing '+sel.size+' bundle(s)…\n';
+  try {
+    const res = await fetch('api/pack', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        files:[...sel], combine_pairs:$('combine').checked, append_suffix:$('suffix').checked,
+        auto_chara_id:$('auto').checked, manual_chara_id:parseInt($('cid').value||'0'),
+        thumbnail_size:parseInt($('size').value||'256') }) });
+    const data = await res.json();
+    log.textContent = (data.log||[]).join('\n') +
+      '\n\n🎉 Done. ✅ '+data.success+'  ❌ '+data.fail;
+    log.scrollTop = log.scrollHeight;
+  } catch(e){ log.textContent += '\n❌ Error: '+e; }
+  btn.disabled = false; btn.textContent = '🚀 Pack selected';
+}
+loadConfig(); loadBundles();
+</script>
+</body>
+</html>
+"""
+
+
+def _path_within(root, p):
+    """True if p resolves to a location inside root (blocks path-traversal)."""
+    try:
+        rr = os.path.realpath(os.path.expanduser(root))
+        rp = os.path.realpath(p)
+        return rp == rr or os.path.commonpath([rp, rr]) == rr
+    except Exception:
+        return False
+
+
+def run_web(host="127.0.0.1", port=8000, open_browser=False):
+    """Serve the browser GUI (stdlib only). modded -> suit, same as the text menu."""
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import urlparse, parse_qs
+
+    if UnityPy is None or PIL is None:
+        print("⚠️  UnityPy/Pillow are required for the web GUI.")
+        print(f"   UnityPy: {'OK' if UnityPy else 'MISSING'}   Pillow: {'OK' if PIL else 'MISSING'}")
+        return
+
+    modded = default_sukusta_dir("modded")
+    suit = default_sukusta_dir("suit")
+    os.makedirs(modded, exist_ok=True)
+    thumb_cache = {}
+    pack_lock = threading.Lock()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass  # quiet
+
+        def _send(self, code, body, ctype="application/json; charset=utf-8"):
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
+
+        def _json(self, code, obj):
+            self._send(code, json.dumps(obj), "application/json; charset=utf-8")
+
+        def do_GET(self):
+            u = urlparse(self.path)
+            if u.path in ("/", "/index.html"):
+                return self._send(200, _WEB_HTML, "text/html; charset=utf-8")
+            if u.path == "/api/config":
+                return self._json(200, {"modded": modded, "suit": suit})
+            if u.path == "/api/bundles":
+                bundles = []
+                for p in find_asset_bundles(modded):
+                    try:
+                        rel = os.path.relpath(p, modded)
+                    except Exception:
+                        rel = os.path.basename(p)
+                    bundles.append({"path": p, "rel": rel, "name": os.path.basename(p),
+                                    "platform": detect_bundle_platform(p)})
+                return self._json(200, {"modded": modded, "suit": suit, "bundles": bundles})
+            if u.path == "/api/thumb":
+                q = parse_qs(u.query)
+                path = (q.get("path") or [""])[0]
+                try:
+                    size = max(64, min(512, int((q.get("size") or ["256"])[0])))
+                except ValueError:
+                    size = 256
+                if not path or not _path_within(modded, path) or not os.path.isfile(path):
+                    return self._send(404, b"not found", "text/plain")
+                try:
+                    key = (os.path.realpath(path), int(os.path.getmtime(path)), size)
+                except OSError:
+                    key = (path, 0, size)
+                png = thumb_cache.get(key)
+                if png is None:
+                    png, _ = build_thumbnail_for_bundle(path, size=size, log=None)
+                    png = png or b""
+                    thumb_cache[key] = png
+                if not png:
+                    return self._send(404, b"no thumb", "text/plain")
+                return self._send(200, png, "image/png")
+            return self._send(404, b"not found", "text/plain")
+
+        def do_POST(self):
+            u = urlparse(self.path)
+            if u.path != "/api/pack":
+                return self._send(404, b"not found", "text/plain")
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                req = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except Exception as e:
+                return self._json(400, {"error": f"bad request: {e}"})
+
+            files = [p for p in (req.get("files") or [])
+                     if _path_within(modded, p) and os.path.isfile(p)]
+            if not files:
+                return self._json(400, {"error": "no valid files selected"})
+
+            logs = []
+            if not pack_lock.acquire(blocking=False):
+                return self._json(409, {"error": "a packing job is already running"})
+            try:
+                os.makedirs(suit, exist_ok=True)
+                success, fail = run_pack_jobs(
+                    files, suit,
+                    auto_chara_id=bool(req.get("auto_chara_id", True)),
+                    manual_chara_id=int(req.get("manual_chara_id") or 0),
+                    thumbnail_size=int(req.get("thumbnail_size") or 256),
+                    append_suffix=bool(req.get("append_suffix", True)),
+                    combine_pairs=bool(req.get("combine_pairs", True)),
+                    ask_chara_id=None, log=logs.append)
+            except Exception as e:
+                logs.append(f"❌ ERROR: {e}")
+                success, fail = 0, len(files)
+            finally:
+                pack_lock.release()
+            return self._json(200, {"success": success, "fail": fail, "log": logs, "out": suit})
+
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    actual_port = httpd.server_address[1]
+    url = f"http://{host}:{actual_port}/"
+    print("\n==========================================")
+    print("     Unity Costume Mod Packer - Web GUI")
+    print("==========================================")
+    print(f"  source (modded): {modded}")
+    print(f"  output (suit)  : {suit}")
+    print(f"\n  ✅ Open this in your browser:\n     {url}")
+    if host not in ("127.0.0.1", "localhost"):
+        print("  ⚠️ Bound to a non-local address - anyone on your network can reach it.")
+    print("\n  (Press Ctrl+C to stop the server.)\n")
+    if open_browser:
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping web GUI.")
+    finally:
+        httpd.server_close()
+
 
 # -------- GUI App --------
 class UnityAssetBundleModPackerAutoCharaID:
@@ -448,7 +1571,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.root.resizable(True, True)
         
         self.bundle_files = []
-        self.output_dir = tk.StringVar(value=os.getcwd())
+        self.output_dir = tk.StringVar(value=default_sukusta_dir("suit"))
         self.thumbnail_size = tk.IntVar(value=256)
         self.chara_id = tk.IntVar(value=209) # Default for Rina
         self.auto_chara_id = tk.BooleanVar(value=True)
@@ -544,12 +1667,27 @@ class UnityAssetBundleModPackerAutoCharaID:
         bbtn = ttk.Frame(self.batch_frame); bbtn.grid(row=0, column=0, columnspan=4, sticky="ew", pady=5)
         ttk.Button(bbtn, text="📁 Add Files", command=self.add_batch_files).grid(row=0, column=0, padx=5)
         ttk.Button(bbtn, text="📂 Add Folder", command=self.add_batch_folder).grid(row=0, column=1, padx=5)
-        ttk.Button(bbtn, text="🗑️ Clear All", command=self.clear_batch_files).grid(row=0, column=2, padx=5)
+        ttk.Button(bbtn, text="📥 Scan 'modded'", command=self.scan_modded_folder).grid(row=0, column=2, padx=5)
+        ttk.Button(bbtn, text="🗑️ Clear All", command=self.clear_batch_files).grid(row=0, column=3, padx=5)
         lst = ttk.Frame(self.batch_frame); lst.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.file_listbox = tk.Listbox(lst, height=8, selectmode=tk.EXTENDED)
         ysb = ttk.Scrollbar(lst, orient="vertical", command=self.file_listbox.yview)
         self.file_listbox.configure(yscrollcommand=ysb.set)
         self.file_listbox.grid(row=0, column=0, sticky="nsew"); ysb.grid(row=0, column=1, sticky="ns")
+        # Thumbnail preview of the currently highlighted file (body texture).
+        self._preview_size = 160
+        self._preview_imgref = None
+        self._preview_token = 0
+        prev = ttk.Frame(lst); prev.grid(row=0, column=2, padx=(10, 0), sticky="n")
+        ttk.Label(prev, text="Preview").grid(row=0, column=0)
+        # Fixed-size box so the layout doesn't jump as thumbnails load. width/height
+        # on a tk.Label are pixels only while an image is shown, so we wrap a sized,
+        # non-propagating frame around the label instead.
+        prevbox = tk.Frame(prev, width=self._preview_size, height=self._preview_size, bg="#15161b")
+        prevbox.grid(row=1, column=0); prevbox.grid_propagate(False)
+        self.preview_label = tk.Label(prevbox, bg="#15161b", text="select a file", fg="#888")
+        self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
         lst.columnconfigure(0, weight=1); lst.rowconfigure(0, weight=1)
         ttk.Button(self.batch_frame, text="Remove Selected", command=self.remove_selected_files).grid(row=2, column=0, pady=5, sticky="w")
         
@@ -642,11 +1780,15 @@ class UnityAssetBundleModPackerAutoCharaID:
             child.configure(state=state)
 
     def browse_single_bundle(self):
-        fn = filedialog.askopenfilename(title="Select Asset Bundle File", filetypes=[("All files", "*.*")])
+        fn = filedialog.askopenfilename(title="Select Asset Bundle File",
+                                        initialdir=default_sukusta_dir("modded"),
+                                        filetypes=[("All files", "*.*")])
         if fn: self.bundle_path.set(fn); self.log(f"Selected: {os.path.basename(fn)}")
 
     def add_batch_files(self):
-        fns = filedialog.askopenfilenames(title="Select Asset Bundle Files", filetypes=[("All files", "*.*")])
+        fns = filedialog.askopenfilenames(title="Select Asset Bundle Files",
+                                          initialdir=default_sukusta_dir("modded"),
+                                          filetypes=[("All files", "*.*")])
         count = 0
         for fn in fns:
             if fn not in self.bundle_files:
@@ -654,7 +1796,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.log(f"Added {count} files. Total: {len(self.bundle_files)}")
 
     def add_batch_folder(self):
-        folder = filedialog.askdirectory(title="Select Folder")
+        folder = filedialog.askdirectory(title="Select Folder", initialdir=default_sukusta_dir("modded"))
         if not folder: return
         added = 0
         for root, _, files in os.walk(folder):
@@ -665,8 +1807,25 @@ class UnityAssetBundleModPackerAutoCharaID:
                     self.file_listbox.insert(tk.END, os.path.relpath(p, folder)); added += 1
         self.log(f"Added {added} files from folder. Total: {len(self.bundle_files)}")
 
+    def scan_modded_folder(self):
+        """Quick-add every UnityFS bundle from the default sukusta/modded folder."""
+        modded = default_sukusta_dir("modded")
+        bundles = find_asset_bundles(modded)
+        if not bundles:
+            messagebox.showinfo("Scan 'modded'",
+                                f"No Unity asset bundles found in:\n{modded}")
+            return
+        added = 0
+        for p in bundles:
+            if p not in self.bundle_files:
+                self.bundle_files.append(p)
+                self.file_listbox.insert(tk.END, os.path.relpath(p, modded))
+                added += 1
+        self.log(f"📥 Scanned 'modded': added {added} bundle(s). Total: {len(self.bundle_files)}")
+
     def clear_batch_files(self):
         self.bundle_files.clear(); self.file_listbox.delete(0, tk.END); self.log("Cleared batch list.")
+        self._clear_preview("select a file")
 
     def remove_selected_files(self):
         sel = self.file_listbox.curselection()
@@ -674,9 +1833,55 @@ class UnityAssetBundleModPackerAutoCharaID:
         for i in reversed(sel):
             del self.bundle_files[i]; self.file_listbox.delete(i)
         self.log(f"Removed {len(sel)} files.")
+        self._clear_preview("select a file")
+
+    def _clear_preview(self, text="select a file"):
+        self._preview_imgref = None
+        try:
+            self.preview_label.configure(image="", text=text)
+        except Exception:
+            pass
+
+    def _on_file_select(self, _event=None):
+        """Show a thumbnail of the highlighted bundle (decoded in a worker thread
+        so the UI never blocks; Termux uses a crash-safe child process)."""
+        sel = self.file_listbox.curselection()
+        if not sel or not (PIL and UnityPy):
+            return
+        idx = sel[0]
+        if idx >= len(self.bundle_files):
+            return
+        path = self.bundle_files[idx]
+        self._preview_token += 1
+        token = self._preview_token
+        self._clear_preview("loading…")
+
+        def work():
+            try:
+                png, _label = build_thumbnail_for_bundle(path, size=self._preview_size, log=None)
+            except Exception:
+                png = None
+            self.root.after(0, lambda: self._show_preview(token, png))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_preview(self, token, png):
+        if token != self._preview_token:
+            return  # a newer selection superseded this one
+        if not png:
+            self._clear_preview("no preview")
+            return
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(io.BytesIO(png))
+            self._preview_imgref = ImageTk.PhotoImage(img)
+            self.preview_label.configure(image=self._preview_imgref, text="")
+        except Exception:
+            self._clear_preview("no preview")
         
     def browse_output(self):
-        d = filedialog.askdirectory(title="Select Output Directory")
+        d = filedialog.askdirectory(title="Select Output Directory",
+                                    initialdir=default_sukusta_dir("suit"))
         if d: self.output_dir.set(d); self.log(f"Output directory set to: {d}")
 
     def log(self, msg):
@@ -816,7 +2021,7 @@ class UnityAssetBundleModPackerAutoCharaID:
             self.log(f"❓ Platform unknown for '{bn_with_ext}' - zip name will have no platform suffix")
 
         self.update_current_progress(20); self.update_current_status("Extracting texture...")
-        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path)
+        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path, log=self.log)
 
         self.update_current_progress(40); self.update_current_status("Detecting chara ID...")
         cid = 0
@@ -837,9 +2042,9 @@ class UnityAssetBundleModPackerAutoCharaID:
                 cid = 209
 
         self.update_current_progress(60); self.update_current_status("Creating thumbnail...")
-        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_placeholder_thumbnail_png("No Body Texture", self.thumbnail_size.get())
+        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_name_thumbnail_png(bn_no_ext, self.thumbnail_size.get(), cid)
         if not thumb_bytes: self.log("❌ Thumbnail creation failed."); return None
-        thumb_name = f"im{bn_no_ext}.png"
+        thumb_name = "im" + pack_safe_stem(bn_no_ext) + ".png"
         
         unmasked_bundle_path = None
         unmasked_filename = None
@@ -857,9 +2062,17 @@ class UnityAssetBundleModPackerAutoCharaID:
                              f"- the unmasked model will not load on {platform}")
             else:
                 self.log(f"⚠️ Could not find a matching 'unmasked' file for key: '{key}'")
-        
+
+        if cid == 209 and not unmasked_bundle_path:
+            self.log("❌ chara_id is 209 (Rina), which needs an unmasked model "
+                     "('209rinaunmasked...') - none was found. Skipping this file "
+                     "(the installer would crash). Add the unmasked file or set the correct chara ID.")
+            return None
+
         self.update_current_progress(80); self.update_current_status("Creating modinstall.txt...")
-        modinstall = generate_modinstall_txt(bn_no_ext, bn_with_ext, thumb_name, cid, unmasked_filename)
+        safe_costume = safe_arc_name(bn_with_ext)
+        safe_unmask = safe_arc_name(unmasked_filename) if unmasked_filename else None
+        modinstall = generate_modinstall_txt(bn_no_ext, safe_costume, thumb_name, cid, safe_unmask)
         
         if out_dir_override:
             out_dir = out_dir_override
@@ -873,7 +2086,9 @@ class UnityAssetBundleModPackerAutoCharaID:
         out_zip = os.path.join(out_dir, f"{zip_base}.zip")
         
         self.update_current_status("Creating ZIP package...")
-        ok = create_zip_package(out_zip, bundle_path, thumb_bytes, thumb_name, modinstall, unmasked_bundle_path)
+        ok = create_zip_package(out_zip, bundle_path, thumb_bytes, thumb_name, modinstall,
+                                unmasked_bundle_path, masked_arcname=safe_costume,
+                                unmasked_arcname=safe_unmask)
         
         if ok:
             self.update_current_progress(100)
@@ -896,9 +2111,9 @@ class UnityAssetBundleModPackerAutoCharaID:
 
         # ---- 썸네일/캐릭터 ID: 안드로이드 번들 우선, 실패 시 iOS ----
         self.update_current_progress(20); self.update_current_status("Extracting texture...")
-        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path)
+        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path, log=self.log)
         if not tex_png_bytes:
-            tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path)
+            tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path, log=self.log)
 
         self.update_current_progress(40); self.update_current_status("Detecting chara ID...")
         if self.auto_chara_id.get():
@@ -918,11 +2133,11 @@ class UnityAssetBundleModPackerAutoCharaID:
                 cid = 209
 
         self.update_current_progress(60); self.update_current_status("Creating thumbnail...")
-        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_placeholder_thumbnail_png("No Body Texture", self.thumbnail_size.get())
+        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_name_thumbnail_png(pair_key, self.thumbnail_size.get(), cid)
         if not thumb_bytes:
             self.log("❌ Thumbnail creation failed.")
             return False
-        thumb_name = f"im{pair_key}.png"
+        thumb_name = "im" + pack_safe_stem(pair_key) + ".png"
 
         # ---- 리나(209) 가면 해제 페어: 플랫폼별로 각각 매칭 ----
         unmask_and_path = unmask_and_name = None
@@ -943,11 +2158,21 @@ class UnityAssetBundleModPackerAutoCharaID:
             else:
                 self.log(f"⚠️ No ios 'unmasked' match for key: '{key_ios}'")
 
+        if cid == 209 and not unmask_and_path:
+            self.log("❌ chara_id is 209 (Rina), which needs an unmasked model "
+                     "('209rinaunmasked...') - none was found. Skipping this pair "
+                     "(the installer would crash). Add the unmasked file or set the correct chara ID.")
+            return False
+
         self.update_current_progress(80); self.update_current_status("Creating modinstall.txt...")
-        modinstall = generate_modinstall_txt(pair_key, and_name, thumb_name, cid,
-                                             unmask_and_name,
-                                             ios_costume_filename=ios_name,
-                                             ios_unmask_filename=unmask_ios_name)
+        safe_and = safe_arc_name(and_name)
+        safe_ios = safe_arc_name(ios_name)
+        safe_unmask_and = safe_arc_name(unmask_and_name) if unmask_and_name else None
+        safe_unmask_ios = safe_arc_name(unmask_ios_name) if unmask_ios_name else None
+        modinstall = generate_modinstall_txt(pair_key, safe_and, thumb_name, cid,
+                                             safe_unmask_and,
+                                             ios_costume_filename=safe_ios,
+                                             ios_unmask_filename=safe_unmask_ios)
 
         if self.output_to_bundle_location.get():
             out_dir = os.path.dirname(os.path.abspath(android_path))
@@ -958,12 +2183,12 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.update_current_status("Creating combined ZIP package...")
         os.makedirs(os.path.dirname(combined), exist_ok=True)
         with zipfile.ZipFile(combined, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            zf.write(android_path, and_name)
-            zf.write(ios_path, ios_name)
+            zf.write(android_path, safe_and)
+            zf.write(ios_path, safe_ios)
             if unmask_and_path and os.path.isfile(unmask_and_path):
-                zf.write(unmask_and_path, unmask_and_name)
+                zf.write(unmask_and_path, safe_unmask_and)
             if unmask_ios_path and os.path.isfile(unmask_ios_path):
-                zf.write(unmask_ios_path, unmask_ios_name)
+                zf.write(unmask_ios_path, safe_unmask_ios)
             zf.writestr(thumb_name, thumb_bytes)
             zf.writestr("modinstall.txt", modinstall.encode("utf-8"))
 
@@ -990,10 +2215,44 @@ class UnityAssetBundleModPackerAutoCharaID:
                 else: subprocess.Popen(["xdg-open", folder])
             except Exception: pass
 
-def main():
+def run_gui():
+    if tk is None:
+        print("tkinter is not available here; falling back to the text menu.")
+        return run_menu()
     root = tk.Tk()
     app = UnityAssetBundleModPackerAutoCharaID(root)
     root.mainloop()
+
+
+def build_parser():
+    p = argparse.ArgumentParser(description="Unity costume mod packer (modded -> suit).")
+    p.add_argument("--gui", action="store_true", help="force the desktop (tkinter) GUI")
+    p.add_argument("--web", action="store_true",
+                   help="launch the browser GUI (works on Termux; open it on your phone)")
+    p.add_argument("--host", default="127.0.0.1", help="web GUI bind host (default 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="web GUI port (default 8000)")
+    p.add_argument("--menu", "--cli", dest="menu", action="store_true",
+                   help="force the Termux/headless text menu (modded -> suit)")
+    return p
+
+
+def main():
+    # Hidden subcommand: decode one bundle's body texture in this (child) process.
+    # Used by _decode_texture_via_subprocess so a native-decoder crash is isolated.
+    if len(sys.argv) >= 4 and sys.argv[1] == "--decode-worker":
+        return _decode_worker_main(sys.argv[2], sys.argv[3])
+
+    args = build_parser().parse_args()
+    if args.web:
+        return run_web(host=args.host, port=args.port)
+    if args.menu:
+        return run_menu()
+    if args.gui:
+        return run_gui()
+    if gui_available():
+        return run_gui()
+    return run_menu()
+
 
 if __name__ == "__main__":
     main()
