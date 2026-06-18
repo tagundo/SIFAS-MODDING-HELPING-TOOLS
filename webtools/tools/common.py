@@ -57,3 +57,27 @@ def batch_out_path(in_dir, src_file, out_dir, prefix, suffix):
 def single_out_path(out_dir, src_file, prefix, suffix):
     src = Path(src_file)
     return Path(out_dir) / f"{prefix}{src.stem}{suffix}{src.suffix}"
+
+
+def run_batch(job, in_dir, out_dir, prefix, suffix, per_file):
+    """Apply per_file(src_path, out_path)->status_str over every bundle under
+    in_dir, mirroring sub-paths and emitting log/progress/cancel events."""
+    from webtools.core.sukusta import find_bundles
+    bundles = find_bundles(in_dir)
+    total = len(bundles)
+    ok = fail = 0
+    for i, src in enumerate(bundles, 1):
+        if job.should_stop():
+            job.log("[stopped]")
+            break
+        out_path = batch_out_path(in_dir, src, out_dir, prefix, suffix)
+        try:
+            status = per_file(src, out_path)
+            ok += 1
+            job.log(f"OK   {src.name} -> {out_path.name}" + (f" ({status})" if status else ""))
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            job.log(f"FAIL {src.name}: {exc}")
+        job.progress(i, total)
+    job.log(f"Done. total={total}  ok={ok}  fail={fail}")
+    return f"batch done: total={total} ok={ok} fail={fail}"

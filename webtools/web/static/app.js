@@ -172,10 +172,13 @@ async function runTool() {
   const params = collectParams();
   const tool = state.currentTool;
 
-  // light client-side guard for required inputs
-  if (state.currentMode === "single" && !params.in_path) return alert("Pick an input bundle.");
-  if (state.currentMode === "batch" && !params.in_dir) return alert("Pick an input folder.");
-  if (!params.out_dir) return alert("Pick an output folder.");
+  // generic required-field validation (respects the current single/batch mode)
+  const missing = [];
+  for (const f of tool.fields) {
+    if (f.mode && f.mode !== state.currentMode) continue;
+    if (f.required && !String(params[f.name] ?? "").trim()) missing.push(f.label);
+  }
+  if (missing.length) return alert("Please fill in: " + missing.join(", "));
 
   openConsole(tool.label);
   let resp;

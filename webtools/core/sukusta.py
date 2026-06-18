@@ -33,3 +33,12 @@ def is_unity_bundle(path) -> bool:
             return f.read(7) == b"UnityFS"
     except Exception:
         return False
+
+
+def find_bundles(root):
+    """Recursively list UnityFS asset bundles under root (sorted Paths)."""
+    from pathlib import Path
+    root = Path(os.path.expanduser(str(root)))
+    if not root.exists():
+        return []
+    return [p for p in sorted(root.rglob("*")) if p.is_file() and is_unity_bundle(p)]
