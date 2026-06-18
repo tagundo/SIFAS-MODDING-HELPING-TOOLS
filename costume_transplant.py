@@ -142,6 +142,254 @@ def ensure_module(import_name, pip_name=None):
 if is_termux():
     ensure_module("PIL", "Pillow")
 UnityPy = ensure_module("UnityPy")
+np = ensure_module("numpy")
+
+
+# --------------------------------------------------------------------------
+# world-space normalization (so SwingBone physics — ribbon/skirt — renders
+# correctly; a costume mesh left in the donor's local space makes the *swinging*
+# verts shift by the mesh-root offset at runtime). Same baking as
+# fix_sifas_bundle_export.py, run on the written output (re-read avoids the
+# save_typetree staleness from the graft).
+# --------------------------------------------------------------------------
+_FMT_BYTES = {0: 4, 1: 2, 2: 1, 3: 1, 4: 2, 5: 2, 6: 1, 7: 1, 8: 2, 9: 2, 10: 4, 11: 4}
+
+
+def _stream_layout(tree):
+    vd = tree["m_VertexData"]; vc = vd["m_VertexCount"]; chans = vd["m_Channels"]
+    by = {}
+    for ch in chans:
+        if ch.get("dimension", 0):
+            by.setdefault(ch["stream"], []).append(ch)
+    stride, start, cur = {}, {}, 0
+    for s in sorted(by):
+        stride[s] = max(c["offset"] + c["dimension"] * _FMT_BYTES[c["format"]] for c in by[s])
+    for s in sorted(by):
+        start[s] = cur
+        cur = (cur + vc * stride[s] + 15) & ~15
+    return vc, chans, stride, start
+
+
+def _read_f(u8, chans, attr, stride, start, vc):
+    ch = chans[attr]
+    if ch.get("dimension", 0) == 0 or ch["format"] != 0:
+        return None
+    s, off, dim = ch["stream"], ch["offset"], ch["dimension"]
+    blk = u8[start[s]:start[s] + vc * stride[s]].reshape(vc, stride[s])
+    return blk[:, off:off + dim * 4].copy().view("<f4").reshape(vc, dim).astype(np.float64)
+
+
+def _write_f(u8, arr, chans, attr, stride, start, vc):
+    ch = chans[attr]; s, off, dim = ch["stream"], ch["offset"], ch["dimension"]
+    blk = u8[start[s]:start[s] + vc * stride[s]].reshape(vc, stride[s])
+    blk[:, off:off + dim * 4] = np.ascontiguousarray(arr[:, :dim], "<f4").view(np.uint8).reshape(vc, dim * 4)
+
+
+def _qmat(q):
+    x, y, z, w = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y), 0],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x), 0],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y), 0],
+                     [0, 0, 0, 1]], float)
+
+
+def _trsmat(t, q, s):
+    M = _qmat(q); M[:3, 0] *= s[0]; M[:3, 1] *= s[1]; M[:3, 2] *= s[2]
+    M[0, 3], M[1, 3], M[2, 3] = t
+    return M
+
+
+def _bp_mat(b):
+    return np.array([[b['e00'], b['e01'], b['e02'], b['e03']], [b['e10'], b['e11'], b['e12'], b['e13']],
+                     [b['e20'], b['e21'], b['e22'], b['e23']], [b['e30'], b['e31'], b['e32'], b['e33']]], float)
+
+
+def _mat_bp(M, dst):
+    for r in range(4):
+        for c in range(4):
+            dst["e%d%d" % (r, c)] = float(M[r, c])
+
+
+def worldspace_normalize(path, verbose=True):
+    """Bake each skinned mesh's mesh-root transform into its vertices and fold the
+    inverse into the bind poses, so meshRoot == I (world space). In-game render is
+    unchanged, but SwingBone-driven pieces (ribbon/skirt) no longer shift."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    env = UnityPy.load(path)
+    uid = {o.path_id: o for o in env.objects}
+    tf = {}
+    for o in env.objects:
+        if o.type.name == "Transform":
+            t = o.read_typetree(); g = uid.get(t.get("m_GameObject", {}).get("m_PathID"))
+            n = g.read().m_Name if g else None
+            lp, lr, ls = t["m_LocalPosition"], t["m_LocalRotation"], t["m_LocalScale"]
+            tf[o.path_id] = (n, ([lp['x'], lp['y'], lp['z']], [lr['x'], lr['y'], lr['z'], lr['w']],
+                                 [ls['x'], ls['y'], ls['z']]), t.get('m_Father', {}).get('m_PathID'),
+                            [c['m_PathID'] for c in t.get('m_Children', [])])
+    world = {}
+
+    def cw(pid, P):
+        n, (lp, lr, ls), fa, ch = tf[pid]; M = P @ _trsmat(lp, lr, ls); world[n] = M
+        for c in ch:
+            if c in tf:
+                cw(c, M)
+    for pid, (n, _, fa, ch) in tf.items():
+        if fa not in tf:
+            cw(pid, np.eye(4))
+
+    n_fixed = 0
+    for o in env.objects:
+        if o.type.name != "SkinnedMeshRenderer":
+            continue
+        smr = o.read_typetree()
+        if not smr.get("m_Bones"):
+            continue
+        mobj = uid.get(smr["m_Mesh"]["m_PathID"])
+        if not mobj:
+            continue
+        tree = mobj.read_typetree()
+
+        def bname(pid):
+            x = uid.get(pid)
+            if not x:
+                return None
+            g = uid.get(x.read_typetree().get("m_GameObject", {}).get("m_PathID"))
+            return g.read().m_Name if g else None
+        bnames = [bname(b["m_PathID"]) for b in smr["m_Bones"]]
+        BP = tree.get("m_BindPose")
+        if not BP or len(BP) != len(bnames):
+            continue
+        cand = [world[bnames[i]] @ _bp_mat(BP[i]) for i in range(len(bnames))
+                if bnames[i] in world][:4]
+        if not cand:
+            continue
+        mr = cand[0]
+        if max(np.abs(c - mr).max() for c in cand) > 1e-3 or np.abs(mr - np.eye(4)).max() < 1e-5:
+            continue
+        R, inv = mr[:3, :3], np.linalg.inv(mr)
+        vc, chans, stride, start = _stream_layout(tree)
+        buf = bytearray(tree["m_VertexData"]["m_DataSize"]); u8 = np.frombuffer(buf, np.uint8)
+        pos = _read_f(u8, chans, 0, stride, start, vc)
+        if pos is None:
+            continue
+        _write_f(u8, (np.c_[pos, np.ones(len(pos))] @ mr.T)[:, :3], chans, 0, stride, start, vc)
+        if np.abs(R - np.eye(3)).max() > 1e-6:
+            for attr in (1, 2):
+                a = _read_f(u8, chans, attr, stride, start, vc)
+                if a is not None:
+                    a2 = a.copy(); a2[:, :3] = a[:, :3] @ R.T
+                    _write_f(u8, a2, chans, attr, stride, start, vc)
+        tree["m_VertexData"]["m_DataSize"] = bytes(buf)
+        for i in range(len(BP)):
+            _mat_bp(_bp_mat(BP[i]) @ inv, BP[i])
+        ab = tree.get("m_LocalAABB")
+        if ab:
+            c = ab["m_Center"]; nc = (mr @ np.array([c['x'], c['y'], c['z'], 1.0]))[:3]
+            c['x'], c['y'], c['z'] = float(nc[0]), float(nc[1]), float(nc[2])
+        mobj.save_typetree(tree)
+        n_fixed += 1
+        log(f"[ok] world-spaced mesh {tree.get('m_Name')!r} (mesh root {np.round(mr[:3,3],3)})")
+    if n_fixed:
+        bf = list(env.files.values())[0]; bf.mark_changed()
+        with open(path, "wb") as f:
+            f.write(bf.save(packer="original"))
+
+
+
+
+# --------------------------------------------------------------------------
+# LiveCoreMemberNodeScaling consistency
+# --------------------------------------------------------------------------
+# `LiveCoreMemberNodeScaling` (LLAS.Scene.Live.Components) overrides selected
+# bones' local position / scale with a per-character body-shape `scaledValue`
+# when the member spawns in a live, and stores `originValue` = the bone's
+# *shipped* (unscaled) local value. The healthy invariant is therefore
+#
+#       bone.localPosition == positionValue.originValue
+#       bone.localScale    == scaleValue.originValue
+#
+# Realigning the shared body bones to the donor's rest pose (apply_bone_edits)
+# moves some of those bones, which breaks the invariant: at runtime the
+# component then forces `scaledValue` and *teleports* the bone — e.g. it drags
+# `Breast_Offset` (parent of the ribbon bones) down to the chest.
+#
+# We must NOT just zero the override — that throws away the character's body
+# shaping. Instead we *re-anchor* it: keep the correction the entry encoded
+# (the position delta `scaled - origin`, or the scale ratio `scaled / origin`)
+# and rebuild it around the bone's new local value, so the same body-shape
+# adjustment is reapplied on top of the costume's rest pose.
+# --------------------------------------------------------------------------
+def _is_node_scaling(mb):
+    return "targetName" in mb and "scaleValues" in mb and "positionValues" in mb
+
+
+def rebase_node_scaling(path, eps=1e-4, verbose=True):
+    """Re-anchor every NodeScaling entry whose originValue drifted from its bone
+    after a realign, preserving the body-shape correction. Runs on the written
+    output (re-read avoids save_typetree staleness)."""
+    def log(*a):
+        if verbose:
+            print(*a)
+
+    env = UnityPy.load(path)
+    objs = list(env.objects)
+    uid = {o.path_id: o for o in objs}
+    go = {o.path_id: o.read_typetree().get("m_Name") for o in objs if o.type.name == "GameObject"}
+
+    def bone(pid):
+        o = uid.get(pid)
+        if not o or o.type.name != "Transform":
+            return None, None
+        t = o.read_typetree()
+        return t, go.get(t.get("m_GameObject", {}).get("m_PathID"))
+
+    total = 0
+    for o in objs:
+        if o.type.name != "MonoBehaviour":
+            continue
+        mb = o.read_typetree()
+        if not _is_node_scaling(mb):
+            continue
+        changed = 0
+        for pv in mb.get("positionValues", []):
+            t, bn = bone(pv["target"]["m_PathID"])
+            if t is None:
+                continue
+            lp = t["m_LocalPosition"]; ov = pv["originValue"]; sv = pv["scaledValue"]
+            d = max(abs(lp[k] - ov[k]) for k in "xyz")
+            if d > eps:
+                # additive body-shape offset, re-anchored to the new rest pose
+                delta = {k: sv[k] - ov[k] for k in "xyz"}
+                pv["originValue"] = {k: lp[k] for k in "xyz"}
+                pv["scaledValue"] = {k: lp[k] + delta[k] for k in "xyz"}
+                changed += 1
+                log(f"   [rebase] POS  {bn}: origin -> {tuple(round(lp[k],4) for k in 'xyz')} "
+                    f"(kept offset {tuple(round(delta[k],4) for k in 'xyz')})")
+        for sv in mb.get("scaleValues", []):
+            t, bn = bone(sv["target"]["m_PathID"])
+            if t is None:
+                continue
+            ls = t["m_LocalScale"]; ov = sv["originValue"]; sd = sv["scaledValue"]
+            d = max(abs(ls[k] - ov[k]) for k in "xyz")
+            if d > eps:
+                # multiplicative body-shape ratio, re-anchored to the new scale
+                ratio = {k: (sd[k] / ov[k] if abs(ov[k]) > 1e-9 else 1.0) for k in "xyz"}
+                sv["originValue"] = {k: ls[k] for k in "xyz"}
+                sv["scaledValue"] = {k: ls[k] * ratio[k] for k in "xyz"}
+                changed += 1
+                log(f"   [rebase] SCALE {bn}: origin -> {tuple(round(ls[k],4) for k in 'xyz')} "
+                    f"(kept ratio {tuple(round(ratio[k],3) for k in 'xyz')})")
+        if changed:
+            o.save_typetree(mb)
+            total += changed
+    if total:
+        bf = list(env.files.values())[0]; bf.mark_changed()
+        with open(path, "wb") as f:
+            f.write(bf.save(packer="original"))
+        log(f"[ok] re-anchored {total} NodeScaling entr{'y' if total == 1 else 'ies'} to the costume rest pose")
+    return total
 
 
 # --------------------------------------------------------------------------
@@ -693,7 +941,8 @@ def sync_body_material(donor, target, d_mat_pid, t_mat_pid, log=lambda *a: None)
 # core
 # --------------------------------------------------------------------------
 def transplant(donor_path, target_path, out_path, verbose=True,
-               preserve_physics=False, realign=True, restore_collision=True):
+               preserve_physics=False, realign=True, restore_collision=True,
+               worldspace=True, fix_nodescaling=True):
     def log(*a):
         if verbose:
             print(*a)
@@ -806,6 +1055,19 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     bf.mark_changed()
     with open(out_path, "wb") as f:
         f.write(bf.save(packer="original"))
+
+    # ---- 6) bake the grafted body mesh into world space (re-read the file so it
+    #         reflects the graft; needed so swinging pieces like the ribbon render
+    #         in the right place in-game) ----
+    if worldspace:
+        worldspace_normalize(out_path, verbose=verbose)
+
+    # ---- 7) keep LiveCoreMemberNodeScaling consistent with the realigned bones
+    #         so the runtime body-shape pass doesn't teleport ribbon/skirt pieces
+    #         (the correction is preserved, only re-anchored to the new rest) ----
+    if fix_nodescaling and realign:
+        rebase_node_scaling(out_path, verbose=verbose)
+
     log(f"[done] wrote {out_path}")
     return out_path
 
@@ -882,6 +1144,13 @@ def build_parser():
                    help="do NOT snap the wearer's body bones to the costume's rest pose "
                         "(keeps the wearer's exact body proportions, but costume pieces "
                         "such as the chest ribbon may sit offset)")
+    p.add_argument("--no-worldspace", action="store_true",
+                   help="do NOT bake the body mesh into world space (leave it in the "
+                        "donor's local space; swinging pieces like the ribbon may shift)")
+    p.add_argument("--no-nodescaling-fix", action="store_true",
+                   help="do NOT re-anchor LiveCoreMemberNodeScaling to the realigned bones "
+                        "(the runtime body-shape pass may then teleport ribbon/skirt pieces "
+                        "to the chest). The character's body shaping is preserved either way)")
     p.add_argument("--gui", action="store_true", help="force the graphical interface")
     p.add_argument("-q", "--quiet", action="store_true", help="less logging")
     return p
@@ -893,7 +1162,9 @@ def run_cli(args):
                              "(or run with no arguments for the GUI)")
     transplant(args.donor, args.target, args.out,
                verbose=not args.quiet, preserve_physics=args.physics,
-               realign=not args.no_realign, restore_collision=not args.no_collision)
+               realign=not args.no_realign, restore_collision=not args.no_collision,
+               worldspace=not args.no_worldspace,
+               fix_nodescaling=not args.no_nodescaling_fix)
     ok = validate(args.out, verbose=not args.quiet)
     if not ok:
         print("[error] output has dangling references; aborting", file=sys.stderr)
@@ -933,14 +1204,18 @@ def run_gui():
     physics_v = tk.BooleanVar(value=True)
     collision_v = tk.BooleanVar(value=True)
     realign_v = tk.BooleanVar(value=True)
+    _auto = {"val": ""}   # last auto-suggested output; lets us tell auto from manual
 
     def suggest_out(*_):
-        if out_v.get():
-            return
-        t = target_v.get()
-        if t:
-            base, ext = os.path.splitext(t)
-            out_v.set(base + "_modded" + (ext or ".unity"))
+        # keep the output name following the target until the user edits it by hand
+        cur = out_v.get()
+        if target_v.get() and (cur == "" or cur == _auto["val"]):
+            base, ext = os.path.splitext(target_v.get())
+            nv = base + "_modded" + (ext or ".unity")
+            _auto["val"] = nv
+            out_v.set(nv)
+
+    target_v.trace_add("write", suggest_out)
 
     def pick(var, save=False):
         if save:
@@ -953,10 +1228,10 @@ def run_gui():
                 filetypes=[("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")])
         if path:
             var.set(path)
-            suggest_out()
 
     frm = ttk.Frame(root, padding=10)
     frm.pack(fill="x")
+    frm.columnconfigure(1, weight=1)
     rows = [
         ("Donor  (costume source)", donor_v, False),
         ("Target (wearer / identity)", target_v, False),
@@ -964,7 +1239,14 @@ def run_gui():
     ]
     for i, (label, var, save) in enumerate(rows):
         ttk.Label(frm, text=label, width=24).grid(row=i, column=0, sticky="w", pady=3)
-        ttk.Entry(frm, textvariable=var, width=62).grid(row=i, column=1, padx=4)
+        ent = ttk.Entry(frm, textvariable=var, width=62)
+        ent.grid(row=i, column=1, padx=4, sticky="we")
+
+        # show the END of the path (the filename) when it's longer than the box
+        def _show_end(*_, e=ent):
+            e.after_idle(lambda: e.xview_moveto(1.0))
+        var.trace_add("write", _show_end)
+
         ttk.Button(frm, text="Browse…",
                    command=lambda v=var, s=save: pick(v, s)).grid(row=i, column=2)
 
@@ -979,6 +1261,15 @@ def run_gui():
     ttk.Checkbutton(opts, variable=realign_v,
                     text="Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)"
                     ).grid(row=2, column=0, sticky="w", columnspan=2)
+    worldspace_v = tk.BooleanVar(value=True)
+    ttk.Checkbutton(opts, variable=worldspace_v,
+                    text="World-space the body mesh (so swinging ribbon/skirt render correctly)"
+                    ).grid(row=3, column=0, sticky="w", columnspan=2)
+    nodescale_v = tk.BooleanVar(value=True)
+    ttk.Checkbutton(opts, variable=nodescale_v,
+                    text="Re-anchor NodeScaling to realigned bones (keeps body shaping; "
+                         "stops the in-game ribbon dropping to the chest)"
+                    ).grid(row=4, column=0, sticky="w", columnspan=2)
 
     def sync_collision_state(*_):
         cb_col.configure(state=("normal" if physics_v.get() else "disabled"))
@@ -1010,12 +1301,13 @@ def run_gui():
 
     run_btn = ttk.Button(frm, text="Transplant")
 
-    def worker(d, t, o, phys, col, realign):
+    def worker(d, t, o, phys, col, realign, wspace, nscale):
         old = sys.stdout
         sys.stdout = _QWriter()
         try:
             transplant(d, t, o, verbose=True, preserve_physics=phys,
-                       realign=realign, restore_collision=col)
+                       realign=realign, restore_collision=col, worldspace=wspace,
+                       fix_nodescaling=nscale)
             ok = validate(o, verbose=True)
             print("\n[success] done — verified ✓\n" if ok
                   else "\n[error] output has dangling references!\n")
@@ -1035,7 +1327,8 @@ def run_gui():
         run_btn.configure(state="disabled")
         threading.Thread(target=worker, daemon=True,
                          args=(d, t, o, physics_v.get(), collision_v.get(),
-                               realign_v.get())).start()
+                               realign_v.get(), worldspace_v.get(),
+                               nodescale_v.get())).start()
 
     run_btn.configure(command=go)
     run_btn.grid(row=len(rows), column=1, sticky="e", pady=8)
