@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>SIFAS Modding Tools</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+  <header>
+    <h1>SIFAS Modding Tools</h1>
+    <nav class="tabs">
+      <button class="tab active" data-tab="tools">Tools</button>
+      <button class="tab" data-tab="gallery">Gallery</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- TOOLS TAB -->
+    <section id="tab-tools" class="tab-panel active">
+      <aside id="tool-list" class="tool-list"></aside>
+      <div id="tool-panel" class="tool-panel">
+        <p class="hint">Pick a tool on the left to begin.</p>
+      </div>
+    </section>
+
+    <!-- GALLERY TAB -->
+    <section id="tab-gallery" class="tab-panel">
+      <div class="gallery-bar">
+        <input id="gallery-path" type="text" placeholder="folder of bundles..." readonly/>
+        <button id="gallery-browse">Browse</button>
+        <button id="gallery-load">Load</button>
+      </div>
+      <div id="gallery-grid" class="gallery-grid"></div>
+    </section>
+  </main>
+
+  <!-- run console (shared) -->
+  <div id="console" class="console hidden">
+    <div class="console-head">
+      <span id="console-title">Running…</span>
+      <progress id="progress" max="1" value="0"></progress>
+      <span id="progress-text"></span>
+      <button id="cancel-btn">Cancel</button>
+      <button id="console-close" class="ghost">✕</button>
+    </div>
+    <pre id="log"></pre>
+  </div>
+
+  <!-- file picker modal -->
+  <div id="picker" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <strong id="picker-title">Choose</strong>
+        <button id="picker-cancel" class="ghost">✕</button>
+      </div>
+      <div class="roots" id="picker-roots"></div>
+      <div class="crumb" id="picker-crumb"></div>
+      <ul class="entries" id="picker-entries"></ul>
+      <div class="modal-foot">
+        <button id="picker-use-folder">Use this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
