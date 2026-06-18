@@ -55,6 +55,20 @@ Limitations
     * Verified on Unity 2018.4 uncompressed SIFAS model bundles. Compressed meshes
       are not handled.
 
+Masked / board-face models (e.g. Tennoji Rina's "Rina-chan board", ch9999_co0035)
+---------------------------------------------------------------------------------
+A few members do not use the standard "Body + Hair + Face" 3-renderer layout: the
+face is a screen made of dozens of *static* MeshRenderer parts (eye_*/mouth_*/Mask/
+HeadSet_*) hung off an accessory head hierarchy (Head -> Head_All -> Head_Face) and
+driven by MemberFace / BodyPartManager. The whole mask is parented under the body
+`Head` bone, and the body-shape bones ship already at their LiveCoreMemberNodeScaling
+`scaledValue` (Head localScale ~1.077). Realigning `Head` to the donor and re-anchoring
+node-scaling against the usual `bone == originValue` invariant would warp the mask and
+double-apply the body shape, which makes the model fail to load in-game. When such a
+target is detected (or `--mask-handling on`), the head accessory-anchor bone is left
+out of the realign and its node-scaling is kept intact. Use `--mask-handling off` to
+force the plain behaviour.
+
 Usage
 -----
     # graphical interface (run with no arguments, or --gui):
@@ -346,6 +360,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
         return t, go.get(t.get("m_GameObject", {}).get("m_PathID"))
 
     total = 0
+    skipped_total = 0
     for o in objs:
         if o.type.name != "MonoBehaviour":
             continue
@@ -358,29 +373,42 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
             if t is None:
                 continue
             lp = t["m_LocalPosition"]; ov = pv["originValue"]; sv = pv["scaledValue"]
-            d = max(abs(lp[k] - ov[k]) for k in "xyz")
-            if d > eps:
-                # additive body-shape offset, re-anchored to the new rest pose
-                delta = {k: sv[k] - ov[k] for k in "xyz"}
-                pv["originValue"] = {k: lp[k] for k in "xyz"}
-                pv["scaledValue"] = {k: lp[k] + delta[k] for k in "xyz"}
-                changed += 1
-                log(f"   [rebase] POS  {bn}: origin -> {tuple(round(lp[k],4) for k in 'xyz')} "
-                    f"(kept offset {tuple(round(delta[k],4) for k in 'xyz')})")
+            d_origin = max(abs(lp[k] - ov[k]) for k in "xyz")
+            if d_origin <= eps:
+                continue                       # healthy: bone already at originValue
+            if max(abs(lp[k] - sv[k]) for k in "xyz") <= eps:
+                # bone already AT scaledValue: this model SHIPS with the body shape
+                # baked into the rest pose (e.g. the Rina-chan board), so the entry is
+                # already consistent. Re-anchoring here would double-apply the offset.
+                skipped_total += 1
+                continue
+            # additive body-shape offset, re-anchored to the new rest pose
+            delta = {k: sv[k] - ov[k] for k in "xyz"}
+            pv["originValue"] = {k: lp[k] for k in "xyz"}
+            pv["scaledValue"] = {k: lp[k] + delta[k] for k in "xyz"}
+            changed += 1
+            log(f"   [rebase] POS  {bn}: origin -> {tuple(round(lp[k],4) for k in 'xyz')} "
+                f"(kept offset {tuple(round(delta[k],4) for k in 'xyz')})")
         for sv in mb.get("scaleValues", []):
             t, bn = bone(sv["target"]["m_PathID"])
             if t is None:
                 continue
             ls = t["m_LocalScale"]; ov = sv["originValue"]; sd = sv["scaledValue"]
-            d = max(abs(ls[k] - ov[k]) for k in "xyz")
-            if d > eps:
-                # multiplicative body-shape ratio, re-anchored to the new scale
-                ratio = {k: (sd[k] / ov[k] if abs(ov[k]) > 1e-9 else 1.0) for k in "xyz"}
-                sv["originValue"] = {k: ls[k] for k in "xyz"}
-                sv["scaledValue"] = {k: ls[k] * ratio[k] for k in "xyz"}
-                changed += 1
-                log(f"   [rebase] SCALE {bn}: origin -> {tuple(round(ls[k],4) for k in 'xyz')} "
-                    f"(kept ratio {tuple(round(ratio[k],3) for k in 'xyz')})")
+            d_origin = max(abs(ls[k] - ov[k]) for k in "xyz")
+            if d_origin <= eps:
+                continue                       # healthy: bone already at originValue
+            if max(abs(ls[k] - sd[k]) for k in "xyz") <= eps:
+                # bone already AT scaledValue (model ships body-shape-applied): the
+                # entry is already consistent, so re-anchoring would double the scale.
+                skipped_total += 1
+                continue
+            # multiplicative body-shape ratio, re-anchored to the new scale
+            ratio = {k: (sd[k] / ov[k] if abs(ov[k]) > 1e-9 else 1.0) for k in "xyz"}
+            sv["originValue"] = {k: ls[k] for k in "xyz"}
+            sv["scaledValue"] = {k: ls[k] * ratio[k] for k in "xyz"}
+            changed += 1
+            log(f"   [rebase] SCALE {bn}: origin -> {tuple(round(ls[k],4) for k in 'xyz')} "
+                f"(kept ratio {tuple(round(ratio[k],3) for k in 'xyz')})")
         if changed:
             o.save_typetree(mb)
             total += changed
@@ -389,6 +417,9 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
         with open(path, "wb") as f:
             f.write(bf.save(packer="original"))
         log(f"[ok] re-anchored {total} NodeScaling entr{'y' if total == 1 else 'ies'} to the costume rest pose")
+    if skipped_total:
+        log(f"[mask] kept {skipped_total} NodeScaling entr{'y' if skipped_total == 1 else 'ies'} "
+            f"intact (bone already at scaledValue — model ships body-shape-applied)")
     return total
 
 
@@ -558,6 +589,110 @@ def _chara_costume_id(env):
             if m:
                 return m.group(1), m.group(2)
     return None, None
+
+
+# --------------------------------------------------------------------------
+# special-case detection: masked / "board-face" models (e.g. Rina-chan board)
+# --------------------------------------------------------------------------
+# A few SIFAS members are not the standard "Body + Hair + Face" 3-renderer model.
+# Tennoji Rina's "Rina-chan board" (ch9999_co0035) renders her face as a screen:
+# dozens of *static* MeshRenderer parts (eye_*/mouth_*/Mask/HeadSet_*) hang off an
+# accessory head hierarchy (Head -> Head_All -> Head_Face) driven by MemberFace /
+# BodyPartManager and a second Animator. Two things about such a model break the
+# realign / node-scaling passes:
+#   1. the whole mask is parented under a *body-skeleton* bone (Head), so realigning
+#      that bone to the donor's rest pose drags/rescales the entire mask, and
+#   2. the body-shape bones ship already at their LiveCoreMemberNodeScaling
+#      `scaledValue` (Head localScale ~1.077, Move 0.927, ...), the opposite of the
+#      `bone.local == originValue` invariant rebase_node_scaling expects, so the
+#      re-anchor pass would double-apply the body shape.
+# detect_board_face_model() spots these so transplant() can take the exceptional path.
+def detect_board_face_model(objs, id2):
+    """Return None for a standard model, else a dict describing the masked/board model:
+
+        {"kind": "board-face",
+         "face_parts": int,          # static face/mask MeshRenderers
+         "anchor_bones": set[str],   # body bones carrying the mask subtree (e.g. {"Head"})
+         "markers": list[str]}       # which signatures matched
+    """
+    body = _body_smr(objs)
+    if body is None:
+        return None
+
+    # skeleton bone names = union of every skinned renderer's bone list, plus the
+    # body renderer's bones on their own (so we can tell a real bone child from an
+    # accessory child).
+    skeleton, body_bones = set(), set()
+    for o in objs:
+        if o.type.name == "SkinnedMeshRenderer":
+            for b in o.read_typetree().get("m_Bones", []):
+                n = _transform_goname(id2, b["m_PathID"])
+                if n:
+                    skeleton.add(n)
+    for b in body.read_typetree().get("m_Bones", []):
+        n = _transform_goname(id2, b["m_PathID"])
+        if n:
+            body_bones.add(n)
+
+    # which GameObjects own a MeshRenderer, and the transform graph
+    go_with_mr = {o.read_typetree().get("m_GameObject", {}).get("m_PathID")
+                  for o in objs if o.type.name == "MeshRenderer"}
+    tf_children, tf_goname, tf_gopid, name2tfpid = {}, {}, {}, {}
+    for o in objs:
+        if o.type.name == "Transform":
+            t = o.read_typetree()
+            gp = t.get("m_GameObject", {}).get("m_PathID")
+            tf_gopid[o.path_id] = gp
+            nm = _go_name(id2, gp)
+            tf_goname[o.path_id] = nm
+            tf_children[o.path_id] = [c["m_PathID"] for c in t.get("m_Children", [])]
+            if nm and nm not in name2tfpid:
+                name2tfpid[nm] = o.path_id
+
+    def subtree_has_mr(tpid):
+        stack, seen = [tpid], set()
+        while stack:
+            p = stack.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            if tf_gopid.get(p) in go_with_mr:
+                return True
+            stack.extend(tf_children.get(p, []))
+        return False
+
+    # a body bone is an accessory anchor if it has a NON-skeletal child whose subtree
+    # contains static mesh parts (the mask / face board)
+    anchor_bones = set()
+    for bn in body_bones:
+        tpid = name2tfpid.get(bn)
+        if tpid is None:
+            continue
+        for cpid in tf_children.get(tpid, []):
+            if tf_goname.get(cpid) in skeleton:
+                continue
+            if subtree_has_mr(cpid):
+                anchor_bones.add(bn)
+                break
+
+    have = set(_scriptname_map(objs).values())
+    face_parts = sum(1 for gp in go_with_mr
+                     if not (_go_name(id2, gp) or "").startswith("Shadow"))
+
+    # a board-face model has a body bone carrying mesh accessories AND either the
+    # dedicated face component or a meaningful number of static face parts.
+    if not anchor_bones or not ("MemberFace" in have or face_parts >= 4):
+        return None
+    markers = [m for m in ("MemberFace", "BodyPartManager") if m in have]
+    markers.append("anchor:" + ",".join(sorted(anchor_bones)))
+    return {"kind": "board-face", "face_parts": face_parts,
+            "anchor_bones": anchor_bones, "markers": markers}
+
+
+def detect_board_face_model_path(path):
+    """Convenience wrapper: load a bundle and run detect_board_face_model on it."""
+    objs, id2 = _index(UnityPy.load(path))
+    return detect_board_face_model(objs, id2)
 
 
 # --------------------------------------------------------------------------
@@ -942,7 +1077,7 @@ def sync_body_material(donor, target, d_mat_pid, t_mat_pid, log=lambda *a: None)
 # --------------------------------------------------------------------------
 def transplant(donor_path, target_path, out_path, verbose=True,
                preserve_physics=False, realign=True, restore_collision=True,
-               worldspace=True, fix_nodescaling=True):
+               worldspace=True, fix_nodescaling=True, mask_handling="auto"):
     def log(*a):
         if verbose:
             print(*a)
@@ -956,6 +1091,20 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     tch, tco = _chara_costume_id(target)
     log(f"[info] donor (costume) : {dch}_{dco}")
     log(f"[info] target (wearer) : {tch}_{tco}")
+
+    # ---- special-case masked / board-face targets (e.g. Rina-chan board) ----
+    # mask_handling: "auto" detect, "on" force, "off" disable. When active, the head
+    # accessory-anchor bone is kept out of the realign so the mask is not warped; its
+    # node-scaling is preserved by rebase_node_scaling's scaledValue guard.
+    board = detect_board_face_model(to, tid) if mask_handling != "off" else None
+    if mask_handling == "on" and board is None:
+        board = {"kind": "board-face(forced)", "face_parts": 0,
+                 "anchor_bones": {"Head"}, "markers": ["forced"]}
+    if board:
+        log(f"[mask] masked / board-face target detected: {board['face_parts']} face "
+            f"part(s); markers: {', '.join(board['markers'])}. Exceptional handling ON — "
+            f"keeping accessory-anchor bone(s) {sorted(board['anchor_bones'])} out of the "
+            f"realign and preserving their node-scaling.")
 
     # ---- donor body renderer / mesh ----
     d_smr = _body_smr(do)
@@ -1047,6 +1196,13 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     #         any injected appendage roots into their parent (one save per bone) ----
     align_names = ([n for n in dict.fromkeys(d_bone_names) if n in native_target_bones]
                    if realign else [])
+    if board and align_names:
+        # never snap an accessory-anchor bone (e.g. Head, which carries the whole
+        # mask) to the donor's rest pose — that would drag/rescale the mask.
+        protected = [n for n in align_names if n in board["anchor_bones"]]
+        align_names = [n for n in align_names if n not in board["anchor_bones"]]
+        if protected:
+            log(f"[mask] excluded {protected} from realign (mask anchor)")
     if align_names or child_adds:
         apply_bone_edits(did, tid, align_names, child_adds, log)
 
@@ -1151,6 +1307,11 @@ def build_parser():
                    help="do NOT re-anchor LiveCoreMemberNodeScaling to the realigned bones "
                         "(the runtime body-shape pass may then teleport ribbon/skirt pieces "
                         "to the chest). The character's body shaping is preserved either way)")
+    p.add_argument("--mask-handling", choices=["auto", "on", "off"], default="auto",
+                   help="special handling for masked / board-face targets (e.g. Tennoji "
+                        "Rina's Rina-chan board): keep the head accessory-anchor bone out of "
+                        "the realign and never double-apply node-scaling. 'auto' (default) "
+                        "detects the model, 'on' forces it, 'off' uses the plain behaviour.")
     p.add_argument("--gui", action="store_true", help="force the graphical interface")
     p.add_argument("-q", "--quiet", action="store_true", help="less logging")
     return p
@@ -1164,7 +1325,8 @@ def run_cli(args):
                verbose=not args.quiet, preserve_physics=args.physics,
                realign=not args.no_realign, restore_collision=not args.no_collision,
                worldspace=not args.no_worldspace,
-               fix_nodescaling=not args.no_nodescaling_fix)
+               fix_nodescaling=not args.no_nodescaling_fix,
+               mask_handling=args.mask_handling)
     ok = validate(args.out, verbose=not args.quiet)
     if not ok:
         print("[error] output has dangling references; aborting", file=sys.stderr)
@@ -1270,6 +1432,13 @@ def run_gui():
                     text="Re-anchor NodeScaling to realigned bones (keeps body shaping; "
                          "stops the in-game ribbon dropping to the chest)"
                     ).grid(row=4, column=0, sticky="w", columnspan=2)
+    mask_v = tk.BooleanVar(value=True)
+    ttk.Checkbutton(opts, variable=mask_v,
+                    text="Special handling for masked / board-face models (Rina-chan board): "
+                         "auto-detect, protect head + body-shape scaling"
+                    ).grid(row=5, column=0, sticky="w", columnspan=2)
+    mask_status = ttk.Label(opts, text="", foreground="#207a3c")
+    mask_status.grid(row=6, column=0, sticky="w", columnspan=2, padx=(22, 0))
 
     def sync_collision_state(*_):
         cb_col.configure(state=("normal" if physics_v.get() else "disabled"))
@@ -1285,12 +1454,37 @@ def run_gui():
     def drain():
         try:
             while True:
-                line = msgq.get_nowait()
-                log_box.insert("end", line)
-                log_box.see("end")
+                item = msgq.get_nowait()
+                if isinstance(item, tuple) and item and item[0] == "__mask_status__":
+                    mask_status.configure(text=item[1])
+                else:
+                    log_box.insert("end", item)
+                    log_box.see("end")
         except queue.Empty:
             pass
         root.after(80, drain)
+
+    # auto-detect a masked / board-face target and report it in the status label
+    def detect_target_model(*_):
+        path = target_v.get().strip()
+        if not path or not os.path.isfile(path):
+            msgq.put(("__mask_status__", ""))
+            return
+
+        def _probe():
+            try:
+                info = detect_board_face_model_path(path)
+            except Exception:
+                info = None
+            if info:
+                msgq.put(("__mask_status__",
+                          f"detected masked / board-face model "
+                          f"({info['face_parts']} face parts, anchor "
+                          f"{sorted(info['anchor_bones'])}) — special handling applies when checked"))
+            else:
+                msgq.put(("__mask_status__", "standard model — no special handling needed"))
+        threading.Thread(target=_probe, daemon=True).start()
+    target_v.trace_add("write", detect_target_model)
 
     class _QWriter:
         def write(self, s):
@@ -1301,13 +1495,13 @@ def run_gui():
 
     run_btn = ttk.Button(frm, text="Transplant")
 
-    def worker(d, t, o, phys, col, realign, wspace, nscale):
+    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh):
         old = sys.stdout
         sys.stdout = _QWriter()
         try:
             transplant(d, t, o, verbose=True, preserve_physics=phys,
                        realign=realign, restore_collision=col, worldspace=wspace,
-                       fix_nodescaling=nscale)
+                       fix_nodescaling=nscale, mask_handling=maskh)
             ok = validate(o, verbose=True)
             print("\n[success] done — verified ✓\n" if ok
                   else "\n[error] output has dangling references!\n")
@@ -1328,7 +1522,8 @@ def run_gui():
         threading.Thread(target=worker, daemon=True,
                          args=(d, t, o, physics_v.get(), collision_v.get(),
                                realign_v.get(), worldspace_v.get(),
-                               nodescale_v.get())).start()
+                               nodescale_v.get(),
+                               "auto" if mask_v.get() else "off")).start()
 
     run_btn.configure(command=go)
     run_btn.grid(row=len(rows), column=1, sticky="e", pady=8)
