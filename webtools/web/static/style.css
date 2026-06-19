@@ -1,0 +1,123 @@
+:root {
+  --bg: #14161b;
+  --panel: #1d212a;
+  --panel2: #252b36;
+  --line: #333a47;
+  --text: #e6e9ef;
+  --muted: #98a0ad;
+  --accent: #6ea8fe;
+  --accent2: #4b7bd6;
+  --ok: #5cd17a;
+  --err: #ff6b6b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-text-size-adjust: 100%;
+}
+header {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 14px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+}
+header h1 { font-size: 18px; margin: 0; }
+.tabs { display: flex; gap: 6px; margin-left: auto; }
+.tab {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px;
+}
+.tab.active { background: var(--accent2); border-color: var(--accent); }
+
+main { padding: 14px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+#tab-tools.active { display: grid; grid-template-columns: 230px 1fr; gap: 14px; }
+
+.tool-list { display: flex; flex-direction: column; gap: 8px; }
+.tool-list button {
+  text-align: left; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  cursor: pointer; font-size: 14px;
+}
+.tool-list button.active { border-color: var(--accent); background: var(--panel2); }
+.tool-list button small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
+
+.tool-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.tool-panel h2 { margin: 0 0 4px; font-size: 18px; }
+.tool-panel .desc { color: var(--muted); margin: 0 0 14px; }
+.hint { color: var(--muted); }
+
+.mode-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
+.mode-toggle button { background: var(--panel2); color: var(--text); border: 0; padding: 7px 16px; cursor: pointer; }
+.mode-toggle button.active { background: var(--accent2); }
+
+.field { margin-bottom: 12px; }
+.field > label { display: block; font-size: 13px; margin-bottom: 4px; color: var(--text); }
+.field .help { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.field input[type=text], .field input[type=number], .field select {
+  width: 100%; padding: 9px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--text); font-size: 15px;
+}
+.path-row { display: flex; gap: 8px; }
+.path-row input { flex: 1; }
+.path-row button, .gallery-bar button, .modal-foot button {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 12px; cursor: pointer; font-size: 14px; white-space: nowrap;
+}
+.field.checkbox label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.field.checkbox input { width: 18px; height: 18px; }
+
+.run-btn {
+  margin-top: 8px; background: var(--accent2); color: #fff; border: 0;
+  border-radius: 10px; padding: 12px 20px; font-size: 16px; cursor: pointer; width: 100%;
+}
+.run-btn:active { background: var(--accent); }
+
+/* console */
+.console {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: var(--panel); border-top: 1px solid var(--line);
+  max-height: 55vh; display: flex; flex-direction: column;
+}
+.console.hidden, .modal.hidden, .hidden { display: none; }
+.console-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.console-head progress { flex: 1; min-width: 120px; height: 14px; }
+#progress-text { color: var(--muted); font-size: 13px; min-width: 60px; }
+.console-head button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.console-head .ghost, .modal .ghost { background: transparent; border: 0; color: var(--muted); font-size: 16px; }
+#log { margin: 0; padding: 10px 12px; overflow: auto; font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+
+/* modal */
+.modal { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 14px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: min(640px, 100%); max-height: 85vh; display: flex; flex-direction: column; }
+.modal-head, .modal-foot { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.modal-foot { border-top: 1px solid var(--line); border-bottom: 0; }
+.roots { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 14px; }
+.roots button { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.crumb { padding: 6px 14px; color: var(--muted); font-size: 12px; word-break: break-all; }
+.entries { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+.entries li { padding: 10px 14px; border-top: 1px solid var(--line); cursor: pointer; display: flex; align-items: center; gap: 10px; }
+.entries li:hover { background: var(--panel2); }
+.entries li .ic { width: 18px; text-align: center; }
+.entries li.bundle { color: var(--accent); }
+.entries li .sz { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+/* gallery */
+.gallery-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.gallery-bar input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.gcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.gcard img, .gcard .noimg { width: 100%; aspect-ratio: 1; object-fit: contain; background: #0e1014; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+.gcard .cap { padding: 6px 8px; font-size: 12px; word-break: break-all; }
+
+@media (max-width: 720px) {
+  #tab-tools.active { grid-template-columns: 1fr; }
+  .tool-list { flex-direction: row; overflow-x: auto; }
+  .tool-list button { min-width: 150px; }
+}
