@@ -1073,11 +1073,95 @@ def sync_body_material(donor, target, d_mat_pid, t_mat_pid, log=lambda *a: None)
 
 
 # --------------------------------------------------------------------------
+# costume swing-physics ownership (skirt / shared ribbon)
+# --------------------------------------------------------------------------
+# The skirt — and sometimes a ribbon — is part of the DONOR's costume, but its
+# bones share names with the wearer's own skirt (the base skirt rig is identical
+# across characters). The bone resolver therefore reuses the wearer's existing
+# skirt bones, which still carry the *wearer's old-costume* SwingBone tuning and
+# body colliders. realign already snaps those bones to the donor's rest pose (so
+# the skirt LENGTH/shape becomes the donor's), but the sway feel + collision stay
+# the wearer's, so a long donor skirt may swing like the wearer's short one or
+# clip. Since "the outfit is the donor's", the donor should win the physics too.
+#
+# We do NOT re-create the bones (the chain is identical); we overwrite only the
+# SwingBone *tuning* fields + colliders on the shared bone with the donor's, and
+# keep the wearer's structural pointers (child/sibling/chain indices) which
+# already address the correct shared bones. Body-identity dynamics (the bust) are
+# excluded — the wearer keeps its own shape/jiggle.
+def _is_body_identity_bone(name):
+    """Dynamic bones that belong to the wearer's BODY, not the costume."""
+    return name is not None and "Breast" in name
+
+
+def sync_costume_swing_physics(donor, target, costume_bone_names,
+                               restore_collision=True, log=lambda *a: None):
+    """Overwrite the wearer's SwingBone tuning + body-collision with the donor's on
+    every costume dynamic bone the wearer also has (same name; typically the skirt).
+    Structural pointers stay the wearer's. Returns the number of SwingBones updated."""
+    do, did = _index(donor)
+    to, tid = _index(target)
+    d_scripts = _scriptname_map(do)
+    t_scripts = _scriptname_map(to)
+
+    def swing_by_name(objs, id2, scripts):
+        out = {}
+        for o in objs:
+            if o.type.name == "MonoBehaviour" and \
+                    scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) == "SwingBone":
+                t = o.read_typetree()
+                nm = _go_name(id2, t.get("m_GameObject", {}).get("m_PathID"))
+                if nm:
+                    out[nm] = (o, t)
+        return out
+    d_swing = swing_by_name(do, did, d_scripts)
+    t_swing = swing_by_name(to, tid, t_scripts)
+
+    # collider remap (donor collider pid -> bone; target bone -> pid / 1-based idx)
+    d_colpid_to_bone = {pid: bone for pid, bone in _manager_colliders(do, did, d_scripts)}
+    t_cols = _manager_colliders(to, tid, t_scripts)
+    t_bone_to_colpid = {bone: pid for pid, bone in t_cols if bone}
+    t_bone_to_colidx = {bone: i for i, (pid, bone) in enumerate(t_cols) if bone}
+
+    # keep the wearer's identity + structure; copy only the donor's physics tuning
+    _KEEP_TARGET = {"m_GameObject", "m_Script", "m_Name", "m_Enabled",
+                    "child", "sibling", "parentIndex", "childIndex", "siblingIndex",
+                    "colliders", "colliderIds"}
+    n = 0
+    for name in dict.fromkeys(costume_bone_names):
+        if name not in d_swing or name not in t_swing:
+            continue
+        donor_sb = d_swing[name][1]
+        t_obj, t_sb = t_swing[name]
+        for k in list(t_sb.keys()):
+            if k in donor_sb and k not in _KEEP_TARGET:
+                t_sb[k] = copy.deepcopy(donor_sb[k])
+        if restore_collision:
+            new_cols, new_ids = [], []
+            for c in donor_sb.get("colliders", []):
+                bone = d_colpid_to_bone.get(c.get("m_PathID"))
+                if bone in t_bone_to_colpid:
+                    new_cols.append({"m_FileID": 0, "m_PathID": t_bone_to_colpid[bone]})
+                    new_ids.append(t_bone_to_colidx[bone] + 1)
+            if "colliders" in t_sb:
+                t_sb["colliders"] = new_cols
+            if "colliderIds" in t_sb:
+                t_sb["colliderIds"] = new_ids
+        t_obj.save_typetree(t_sb)
+        n += 1
+    if n:
+        log(f"[costume] applied donor swing physics to {n} shared costume bone(s) "
+            f"(skirt/ribbon); body (bust) kept the wearer's")
+    return n
+
+
+# --------------------------------------------------------------------------
 # core
 # --------------------------------------------------------------------------
 def transplant(donor_path, target_path, out_path, verbose=True,
                preserve_physics=False, realign=True, restore_collision=True,
-               worldspace=True, fix_nodescaling=True, mask_handling="auto"):
+               worldspace=True, fix_nodescaling=True, mask_handling="auto",
+               costume_physics="donor"):
     def log(*a):
         if verbose:
             print(*a)
@@ -1206,6 +1290,15 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     if align_names or child_adds:
         apply_bone_edits(did, tid, align_names, child_adds, log)
 
+    # ---- 4b) costume dynamic bones the wearer also has (skirt / shared ribbon):
+    #          take the donor's swing physics + collision so the donor outfit sways
+    #          as designed. Body-identity dynamics (the bust) stay the wearer's. ----
+    if costume_physics == "donor":
+        costume_dyn = [n for n in dict.fromkeys(d_bone_names)
+                       if n is not None and not _is_body_identity_bone(n)]
+        sync_costume_swing_physics(donor, target, costume_dyn,
+                                   restore_collision=restore_collision, log=log)
+
     # ---- write ----
     bf, _ = _serialized_file(target)
     bf.mark_changed()
@@ -1312,6 +1405,12 @@ def build_parser():
                         "Rina's Rina-chan board): keep the head accessory-anchor bone out of "
                         "the realign and never double-apply node-scaling. 'auto' (default) "
                         "detects the model, 'on' forces it, 'off' uses the plain behaviour.")
+    p.add_argument("--costume-physics", choices=["donor", "target"], default="donor",
+                   help="for costume dynamic bones the wearer also has (the skirt, a shared "
+                        "ribbon): whose SwingBone tuning + body collision to use. 'donor' "
+                        "(default) makes the donor outfit sway/collide as designed; 'target' "
+                        "keeps the wearer's old-costume physics. Body bones (the bust) always "
+                        "stay the wearer's either way.")
     p.add_argument("--gui", action="store_true", help="force the graphical interface")
     p.add_argument("-q", "--quiet", action="store_true", help="less logging")
     return p
@@ -1326,7 +1425,8 @@ def run_cli(args):
                realign=not args.no_realign, restore_collision=not args.no_collision,
                worldspace=not args.no_worldspace,
                fix_nodescaling=not args.no_nodescaling_fix,
-               mask_handling=args.mask_handling)
+               mask_handling=args.mask_handling,
+               costume_physics=args.costume_physics)
     ok = validate(args.out, verbose=not args.quiet)
     if not ok:
         print("[error] output has dangling references; aborting", file=sys.stderr)
@@ -1432,13 +1532,18 @@ def run_gui():
                     text="Re-anchor NodeScaling to realigned bones (keeps body shaping; "
                          "stops the in-game ribbon dropping to the chest)"
                     ).grid(row=4, column=0, sticky="w", columnspan=2)
+    costume_phys_v = tk.BooleanVar(value=True)
+    ttk.Checkbutton(opts, variable=costume_phys_v,
+                    text="Use the donor's swing physics for shared costume parts (skirt / "
+                         "ribbon) — the bust always stays the wearer's"
+                    ).grid(row=5, column=0, sticky="w", columnspan=2)
     mask_v = tk.BooleanVar(value=True)
     ttk.Checkbutton(opts, variable=mask_v,
                     text="Special handling for masked / board-face models (Rina-chan board): "
                          "auto-detect, protect head + body-shape scaling"
-                    ).grid(row=5, column=0, sticky="w", columnspan=2)
+                    ).grid(row=6, column=0, sticky="w", columnspan=2)
     mask_status = ttk.Label(opts, text="", foreground="#207a3c")
-    mask_status.grid(row=6, column=0, sticky="w", columnspan=2, padx=(22, 0))
+    mask_status.grid(row=7, column=0, sticky="w", columnspan=2, padx=(22, 0))
 
     def sync_collision_state(*_):
         cb_col.configure(state=("normal" if physics_v.get() else "disabled"))
@@ -1495,13 +1600,14 @@ def run_gui():
 
     run_btn = ttk.Button(frm, text="Transplant")
 
-    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh):
+    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys):
         old = sys.stdout
         sys.stdout = _QWriter()
         try:
             transplant(d, t, o, verbose=True, preserve_physics=phys,
                        realign=realign, restore_collision=col, worldspace=wspace,
-                       fix_nodescaling=nscale, mask_handling=maskh)
+                       fix_nodescaling=nscale, mask_handling=maskh,
+                       costume_physics=cphys)
             ok = validate(o, verbose=True)
             print("\n[success] done — verified ✓\n" if ok
                   else "\n[error] output has dangling references!\n")
@@ -1523,7 +1629,8 @@ def run_gui():
                          args=(d, t, o, physics_v.get(), collision_v.get(),
                                realign_v.get(), worldspace_v.get(),
                                nodescale_v.get(),
-                               "auto" if mask_v.get() else "off")).start()
+                               "auto" if mask_v.get() else "off",
+                               "donor" if costume_phys_v.get() else "target")).start()
 
     run_btn.configure(command=go)
     run_btn.grid(row=len(rows), column=1, sticky="e", pady=8)
