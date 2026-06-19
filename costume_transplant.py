@@ -224,15 +224,32 @@ def _mat_bp(M, dst):
             dst["e%d%d" % (r, c)] = float(M[r, c])
 
 
-def worldspace_normalize(path, verbose=True):
+def worldspace_normalize(path, verbose=True, body_only=False):
     """Bake each skinned mesh's mesh-root transform into its vertices and fold the
     inverse into the bind poses, so meshRoot == I (world space). In-game render is
-    unchanged, but SwingBone-driven pieces (ribbon/skirt) no longer shift."""
+    unchanged, but SwingBone-driven pieces (ribbon/skirt) no longer shift.
+
+    body_only restricts the bake to the body (costume) renderer and leaves the
+    identity head meshes (Face/Hair/EyeBrow) exactly as shipped. A standard model's
+    head meshes have an identity mesh root (or no bones) so they are skipped anyway,
+    but a masked / board-face model's Face/EyeBrow/Hair sit under a large head-
+    accessory offset, so they WOULD be baked — which rewrites the very meshes the
+    Rina-chan board face system loads, breaking it in-game. For those targets we
+    bake only the body."""
     def log(*a):
         if verbose:
             print(*a)
     env = UnityPy.load(path)
     uid = {o.path_id: o for o in env.objects}
+    # body renderer (most bones) — the only mesh we touch when body_only is set
+    body_pid = None
+    if body_only:
+        best = -1
+        for o in env.objects:
+            if o.type.name == "SkinnedMeshRenderer":
+                nb = len(o.read_typetree().get("m_Bones", []))
+                if nb > best:
+                    best, body_pid = nb, o.path_id
     tf = {}
     for o in env.objects:
         if o.type.name == "Transform":
@@ -256,6 +273,8 @@ def worldspace_normalize(path, verbose=True):
     n_fixed = 0
     for o in env.objects:
         if o.type.name != "SkinnedMeshRenderer":
+            continue
+        if body_only and o.path_id != body_pid:
             continue
         smr = o.read_typetree()
         if not smr.get("m_Bones"):
@@ -1307,9 +1326,15 @@ def transplant(donor_path, target_path, out_path, verbose=True,
 
     # ---- 6) bake the grafted body mesh into world space (re-read the file so it
     #         reflects the graft; needed so swinging pieces like the ribbon render
-    #         in the right place in-game) ----
+    #         in the right place in-game). For a board-face target, bake ONLY the body
+    #         so the Rina-chan board's Face/EyeBrow/Hair meshes are left untouched
+    #         (world-spacing them rewrites what the board face system loads -> the
+    #         model fails to load in-game). ----
     if worldspace:
-        worldspace_normalize(out_path, verbose=verbose)
+        if board:
+            log("[mask] world-spacing the body mesh only (leaving the board's "
+                "Face/Hair/EyeBrow identity meshes untouched)")
+        worldspace_normalize(out_path, verbose=verbose, body_only=bool(board))
 
     # ---- 7) keep LiveCoreMemberNodeScaling consistent with the realigned bones
     #         so the runtime body-shape pass doesn't teleport ribbon/skirt pieces
