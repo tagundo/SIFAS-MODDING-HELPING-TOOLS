@@ -99,6 +99,18 @@ def parse_scd(path: Path, char=None, offset=0.0):
     return entries, char, charcount
 
 
+def format_lip_timeline(entries, head=None):
+    """입 클립 목록을 사람이 읽기 좋은 여러 줄 문자열로(번호·시작→끝·길이·입모양·원본 코드)."""
+    shown = entries[:head] if head else entries
+    cap = f" (앞 {head}개만)" if head and len(entries) > head else ""
+    lines = [f"[timeline] {len(entries)} mouth clips{cap}:"]
+    for i, (s, d, shp, ph) in enumerate(shown, 1):
+        lines.append(f"   #{i:3}  t={s:8.3f}→{s + d:8.3f}  ({d:5.2f}s)  {shp:5} from '{ph}'")
+    if head and len(entries) > head:
+        lines.append(f"   … +{len(entries) - head} more")
+    return "\n".join(lines)
+
+
 def inject_lip(bundle_in: Path, entries, bundle_out: Path, weight=None,
                track_name=None, dry_run=False, verbose=True):
     import UnityPy
@@ -531,9 +543,8 @@ def run_gui():
                 entries, ch, _ = parse_scd(Path(scd), char=char)
                 print(f"[scd] char={ch} clips={len(entries)} "
                       f"shapes={dict(Counter(e[2] for e in entries))}")
+                print(format_lip_timeline(entries))      # 전체 타임라인(잘림 없음)
                 if an or not b:
-                    for s, d, shp, ph in entries[:12]:
-                        print(f"   t={s:7.3f}s {shp} (from '{ph}')")
                     return
                 inject_lip(Path(b), entries, Path(o), weight=w)
             self._go(task, "립싱크")
@@ -684,6 +695,7 @@ def main(argv=None):
     pl.add_argument("--weight", type=float, default=None)
     pl.add_argument("--offset", type=float, default=0.0)
     pl.add_argument("--track", default=None)
+    pl.add_argument("--head", type=int, default=None, help="타임라인 출력 줄 수 제한(기본=전체)")
     pl.add_argument("--analyze-only", action="store_true")
     pl.add_argument("--dry-run", action="store_true")
 
@@ -713,9 +725,8 @@ def main(argv=None):
         entries, char, cc = parse_scd(Path(args.scd), char=args.char, offset=args.offset)
         print(f"[scd] {Path(args.scd).name}  chars={dict(cc)}  char={char}  "
               f"clips={len(entries)}  shapes={dict(Counter(e[2] for e in entries))}")
+        print(format_lip_timeline(entries, head=args.head))
         if args.analyze_only or not args.bundle:
-            for s, d, shp, ph in entries[:12]:
-                print(f"   t={s:7.3f}s {shp} (from '{ph}')")
             return
         out = args.out or (str(Path(args.bundle).with_suffix("")) + ".lip.unity")
         inject_lip(Path(args.bundle), entries, Path(out),
@@ -735,7 +746,7 @@ def main(argv=None):
             pf.error("nothing to do: --script and/or --auto-blink")
         print(f"[face] {len(ents)} entries by track={dict(Counter(e.track for e in ents))}")
         if not args.bundle:
-            for e in ents[:12]:
+            for e in ents:
                 print(f"   {e.track:5} t={e.start:7.3f} dur={e.dur:.3f} {e.name} w={e.weight}")
             return
         out = args.out or (str(Path(args.bundle).with_suffix("")) + ".face.unity")
