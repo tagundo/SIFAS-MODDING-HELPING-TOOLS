@@ -290,8 +290,8 @@ def inject_face(bundle_in: Path, entries, bundle_out: Path, dry_run=False, verbo
 # SIFAS 카메라 = AnimationTrack "Camera1" 의 AnimationClip. 7커브 바인딩:
 #   Transform.position(attr1) + Transform.euler(attr4) + LiveCoreCameraWork.FOV.
 # 기존 카메라 클립 하나를 DenseClip 으로 덮어써 전곡을 커버, 나머지 컷은 길이 0.
-# 회전: 쿼터니언 → Unity 오일러(ZXY). 이 코드는 sifac_camera_inject.py 와 동일(통합).
-# JSON 입력은 noesis 불필요(자기완결). .bscam → JSON 추출만 noesis sifac_camera.py 사용.
+# 회전: 쿼터니언 → Unity 오일러(ZXY). JSON 입력은 noesis 불필요(자기완결).
+# .bscam → JSON 추출만 noesis sifac_camera.py 사용.
 
 def quat_to_unity_euler(q):
     x, y, z, w = q
@@ -438,7 +438,7 @@ def _find_noesis_tools():
              here.parent / "noesis-llsifac" / "tools",
              Path.home() / "noesis-llsifac" / "tools"]
     for c in cands:
-        if (c / "sifac_camera_inject.py").is_file():
+        if (c / "sifac_camera.py").is_file():   # .bscam → JSON 추출용(노에시스)
             return str(c)
     return None
 
