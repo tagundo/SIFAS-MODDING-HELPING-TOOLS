@@ -129,16 +129,17 @@ The interfaces run in **English by default** and can switch to **한국어** or
   dropdown in the window. The choice is remembered for next time and shared with
   the other tools.
 - **Every tool at once / scripting**: set the `SIFAS_LANG` environment variable
-  to `en`, `ko` or `ja` (e.g. `SIFAS_LANG=ko python sifas_breast_tuner.py`). If
-  unset, the operating-system language is used, falling back to English.
+  to `en`, `ko` or `ja` (e.g. `SIFAS_LANG=ko python sifas_breast_tuner.py`). When
+  unset, the last language you picked is used, falling back to English.
 
 Translations are keyed by the English source text, so any string without a
-translation simply shows in English. The standalone tool windows **embed their
-own translations**, so each `.py` keeps working as a single self-contained file
-(English / 한국어 / 日本語) even if copied out on its own; the WebUI shares one
-table in [`sifas_i18n.py`](sifas_i18n.py). Some tool windows currently translate
-their main interface; the remaining, less-common labels fall back to English and
-are being filled in over time.
+translation simply shows in English. Each tool window **embeds its own
+translations**, so a single `.py` keeps working (English / 한국어 / 日本語) even
+if copied out on its own; the chosen language is remembered (and shared between
+tools) in a small `~/.config/sifas_modding_tools/config.json`. The WebUI keeps
+its own translation table in [`webtools/i18n.py`](webtools/i18n.py). Some tool
+windows currently translate their main interface; the remaining, less-common
+labels fall back to English and are being filled in over time.
 
 ---
 

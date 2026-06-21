@@ -20,13 +20,47 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
-try:
-    # Share the language choice with the other SIFAS modding tools (persisted to
-    # a small config file + honouring the SIFAS_LANG env var). Optional: the tool
-    # still runs standalone, defaulting to English, if the module is missing.
-    import sifas_i18n as _shared_i18n
-except Exception:  # noqa: BLE001
-    _shared_i18n = None
+# Language choice is shared & persisted via a small JSON config (no extra
+# module), so a single copied file still works and remembers the choice across
+# all the SIFAS tools.
+import os as _os
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if _os.name == "nt":
+            base = _os.environ.get("APPDATA") or _os.path.join(_os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = _os.environ.get("XDG_CONFIG_HOME") or _os.path.join(_os.path.expanduser("~"), ".config")
+        return _os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            _os.makedirs(_os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
 
 
 def _ensure_deps():

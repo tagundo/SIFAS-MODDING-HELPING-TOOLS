@@ -31,13 +31,47 @@ import fnmatch
 from pathlib import Path
 from collections import Counter
 
-try:
-    # Optional: only used to SHARE / PERSIST the language choice with the other
-    # SIFAS tools. The translations themselves are embedded below, so this file
-    # works fully (English / 한국어 / 日本語) even when copied out on its own.
-    import sifas_i18n as _shared_i18n
-except Exception:  # noqa: BLE001
-    _shared_i18n = None
+# Language choice is shared & persisted via a small JSON config (no extra
+# module), so a single copied file still works and remembers the choice across
+# all the SIFAS tools.
+import os as _os
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if _os.name == "nt":
+            base = _os.environ.get("APPDATA") or _os.path.join(_os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = _os.environ.get("XDG_CONFIG_HOME") or _os.path.join(_os.path.expanduser("~"), ".config")
+        return _os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            _os.makedirs(_os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
 
 # --- self-contained translations (English source = key; English fallback) -----
 _LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
@@ -1868,7 +1902,6 @@ def run_gui():
             self.q = queue.Queue()
             self.worker = None
 
-            root.title(_tr("SIFAS Breast Tuner - Physics / Size / Both"))
             root.geometry("860x720")
             root.minsize(680, 480)
 
@@ -1880,8 +1913,34 @@ def run_gui():
             except Exception:
                 pass
 
+            self.outer = None
+            self._build_ui()
+
+        def _tkvar_snapshot(self):
+            """Capture every tk variable on self so values survive a rebuild."""
+            snap = {}
+            for k, v in list(self.__dict__.items()):
+                if isinstance(v, (tk.StringVar, tk.BooleanVar, tk.IntVar, tk.DoubleVar)):
+                    try:
+                        snap[k] = v.get()
+                    except Exception:
+                        pass
+            return snap
+
+        def _build_ui(self):
+            # Rebuilds the whole UI; called once at start and again on a language
+            # change so switching is instant (no restart). Entered values are
+            # snapshotted and restored across the rebuild.
+            snap = self._tkvar_snapshot() if getattr(self, "outer", None) else {}
+            if getattr(self, "outer", None) is not None:
+                self.outer.destroy()
+
+            root = self.root
+            root.title(_tr("SIFAS Breast Tuner - Physics / Size / Both"))
+
             outer = ttk.Frame(root, padding=(10, 10, 10, 8))
             outer.pack(fill="both", expand=True)
+            self.outer = outer
 
             # ---- language picker (top) ----
             langbar = ttk.Frame(outer)
@@ -1947,20 +2006,23 @@ def run_gui():
             self.status = ttk.Label(btnbar, text=_tr("Idle"))
             self.status.pack(side="right")
 
+            # restore any values the user had typed before the rebuild
+            for k, val in snap.items():
+                var = getattr(self, k, None)
+                if isinstance(var, (tk.StringVar, tk.BooleanVar, tk.IntVar, tk.DoubleVar)):
+                    try:
+                        var.set(val)
+                    except Exception:
+                        pass
+
         # ---------- language ----------
         def _on_language(self):
-            """Persist the chosen language (shared with the other tools).
-
-            The window is already built, so the change is applied on the next
-            launch; tell the user so the static labels don't look stuck.
-            """
+            """Switch the UI language immediately (no restart) and persist it."""
             code = self._lang_code_by_name.get(self._lang_display.get())
             if not code:
                 return
             _set_lang(code)
-            messagebox.showinfo(
-                _tr("Language"),
-                _tr("Language changed. Restart the tool to apply it."))
+            self._build_ui()
 
         # ---------- widget builders ----------
         def _file_row(self, parent, r, label, var, save=False, is_dir=False):
