@@ -32,24 +32,127 @@ import sys
 from pathlib import Path
 
 try:
-    # Shared multi-language support (English default; Korean/Japanese optional).
-    # The tool still works standalone in English if the module is unavailable.
-    from sifas_i18n import (
-        tr as _tr, set_language as _set_lang, get_language as _get_lang,
-        language_options as _lang_opts,
-    )
+    # Optional: only used to SHARE / PERSIST the language choice with the other
+    # SIFAS tools. The translations themselves are embedded below, so this file
+    # works fully (English / 한국어 / 日本語) even when copied out on its own.
+    import sifas_i18n as _shared_i18n
 except Exception:  # noqa: BLE001
-    def _tr(s, **kw):
-        return s.format(**kw) if kw else s
+    _shared_i18n = None
 
-    def _set_lang(code, **kw):
-        return code
+# --- self-contained translations (English source = key; English fallback) -----
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_SKIRT_NOTE = ("Skirt length/volume usually scales uniformly, so x, y, z move "
+               "together. Use the factor above; the per-axis fields are for fine cases.")
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "Skirt Length Changer": "치마 길이 변경기",
+        "Single file": "단일 파일",
+        "Batch (folder)": "일괄 (폴더)",
+        "Input bundle": "입력 번들",
+        "Output path": "출력 경로",
+        "Input folder": "입력 폴더",
+        "Output folder": "출력 폴더",
+        "prefix": "접두사",
+        "suffix": "접미사",
+        "Browse": "찾아보기",
+        "Run (single)": "실행 (단일)",
+        "Run (batch)": "실행 (일괄)",
+        "Append skirt length to filenames (e.g. _skirt085)": "파일명에 치마 길이 추가 (예: _skirt085)",
+        "Skirt scale options": "치마 스케일 옵션",
+        "Skirt GO name patterns (comma/space, contains match)": "치마 GameObject 이름 패턴 (쉼표/공백, 부분 일치)",
+        "Uniform scale  (x = y = z - the usual skirt change)": "균일 스케일 (x = y = z - 일반적인 치마 변경)",
+        "factor:": "배율:",
+        "Apply": "적용",
+        "Shorter 0.85": "짧게 0.85",
+        "Longer 1.15": "길게 1.15",
+        "Reset 1.0": "초기화 1.0",
+        "Advanced - per-axis set (x, y, z)  -  blank = leave that axis": "고급 - 축별 설정 (x, y, z) - 비우면 해당 축 유지",
+        "Advanced - add delta (dx, dy, dz)  -  added to current value": "고급 - 델타 추가 (dx, dy, dz) - 현재 값에 더함",
+        _SKIRT_NOTE: "치마 길이/볼륨은 보통 균일하게 스케일되어 x, y, z가 함께 움직입니다. 위의 배율을 사용하세요. 축별 필드는 세밀한 조정용입니다.",
+        "Result": "결과",
+        "Error": "오류",
+        "Select input bundle": "입력 번들 선택",
+        "Save output bundle": "출력 번들 저장",
+        "Select folder": "폴더 선택",
+        "Please set input and output paths.": "입력 및 출력 경로를 설정하세요.",
+        "Please set input and output folders.": "입력 및 출력 폴더를 설정하세요.",
+    },
+    "ja": {
+        "Language": "言語",
+        "Skirt Length Changer": "スカート丈チェンジャー",
+        "Single file": "単一ファイル",
+        "Batch (folder)": "一括（フォルダ）",
+        "Input bundle": "入力バンドル",
+        "Output path": "出力パス",
+        "Input folder": "入力フォルダ",
+        "Output folder": "出力フォルダ",
+        "prefix": "接頭辞",
+        "suffix": "接尾辞",
+        "Browse": "参照",
+        "Run (single)": "実行（単一）",
+        "Run (batch)": "実行（一括）",
+        "Append skirt length to filenames (e.g. _skirt085)": "ファイル名にスカート丈を付加（例: _skirt085）",
+        "Skirt scale options": "スカートスケールオプション",
+        "Skirt GO name patterns (comma/space, contains match)": "スカートGameObject名パターン（カンマ/空白、部分一致）",
+        "Uniform scale  (x = y = z - the usual skirt change)": "均一スケール（x = y = z - 通常のスカート変更）",
+        "factor:": "倍率:",
+        "Apply": "適用",
+        "Shorter 0.85": "短く 0.85",
+        "Longer 1.15": "長く 1.15",
+        "Reset 1.0": "リセット 1.0",
+        "Advanced - per-axis set (x, y, z)  -  blank = leave that axis": "詳細 - 軸ごとに設定 (x, y, z) - 空欄ならその軸は維持",
+        "Advanced - add delta (dx, dy, dz)  -  added to current value": "詳細 - デルタ加算 (dx, dy, dz) - 現在値に加算",
+        _SKIRT_NOTE: "スカートの丈/ボリュームは通常均一にスケールし、x, y, z は一緒に動きます。上の倍率を使ってください。軸ごとのフィールドは細かい調整用です。",
+        "Result": "結果",
+        "Error": "エラー",
+        "Select input bundle": "入力バンドルを選択",
+        "Save output bundle": "出力バンドルを保存",
+        "Select folder": "フォルダを選択",
+        "Please set input and output paths.": "入力と出力のパスを設定してください。",
+        "Please set input and output folders.": "入力と出力のフォルダを設定してください。",
+    },
+}
 
-    def _get_lang():
-        return "en"
 
-    def _lang_opts():
-        return [("en", "English")]
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+# initial language: shared/persisted choice if available, else SIFAS_LANG, else English
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
 
 # UnityPy is imported lazily so this file runs even before it's installed
 # (and so headless/Termux startup doesn't require tkinter either).

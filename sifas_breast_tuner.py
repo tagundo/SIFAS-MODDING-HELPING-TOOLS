@@ -32,25 +32,137 @@ from pathlib import Path
 from collections import Counter
 
 try:
-    # Shared multi-language support (English default; Korean/Japanese optional).
-    # The chosen language is persisted and shared with the other SIFAS tools.
-    # The tool still works standalone in English if the module is unavailable.
-    from sifas_i18n import (
-        tr as _tr, set_language as _set_lang, get_language as _get_lang,
-        language_options as _lang_opts,
-    )
+    # Optional: only used to SHARE / PERSIST the language choice with the other
+    # SIFAS tools. The translations themselves are embedded below, so this file
+    # works fully (English / 한국어 / 日本語) even when copied out on its own.
+    import sifas_i18n as _shared_i18n
 except Exception:  # noqa: BLE001
-    def _tr(s, **kw):
-        return s.format(**kw) if kw else s
+    _shared_i18n = None
 
-    def _set_lang(code, **kw):
-        return code
+# --- self-contained translations (English source = key; English fallback) -----
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "SIFAS Breast Tuner - Physics / Size / Both": "SIFAS 가슴 튜너 - 물리 / 크기 / 둘 다",
+        "Physics (Dyna)": "물리 (Dyna)",
+        "Size": "크기",
+        "Both": "둘 다",
+        "Library": "라이브러리",
+        "Progress / Log": "진행 / 로그",
+        "Clear log": "로그 지우기",
+        "Save log": "로그 저장",
+        "Idle": "대기 중",
+        "Single file": "단일 파일",
+        "Batch (folder)": "일괄 (폴더)",
+        "Run (single)": "실행 (단일)",
+        "Run (batch)": "실행 (일괄)",
+        "Physics parameters": "물리 매개변수",
+        "Scale parameters": "스케일 매개변수",
+        "Body & physics": "바디 & 물리",
+        "1. Source — pick a bundle": "1. 소스 — 번들 선택",
+        "2. Mod to apply": "2. 적용할 모드",
+        "3. Output → modded": "3. 출력 → modded",
+        "Mod selected → modded": "선택 항목 모드 적용 → modded",
+        "Input bundle": "입력 번들",
+        "Output path": "출력 경로",
+        "Input folder": "입력 폴더",
+        "Output folder": "출력 폴더",
+        "Browse": "찾아보기",
+        "Error": "오류",
+        "Y must be a number.": "Y는 숫자여야 합니다.",
+        "Saved": "저장됨",
+        "Log saved:\n{p}": "로그가 저장되었습니다:\n{p}",
+        "Busy": "사용 중",
+        "A job is already running.": "이미 작업이 실행 중입니다.",
+        "Please set input/output paths.": "입력/출력 경로를 설정하세요.",
+        "Please set input/output folders.": "입력/출력 폴더를 설정하세요.",
+        "Scan a source folder and pick a bundle first.": "먼저 소스 폴더를 스캔하고 번들을 선택하세요.",
+        "Pick a bundle.": "번들을 선택하세요.",
+        "Set the modded output folder.": "modded 출력 폴더를 설정하세요.",
+        "Language changed. Restart the tool to apply it.": "언어가 변경되었습니다. 적용하려면 도구를 다시 시작하세요.",
+    },
+    "ja": {
+        "Language": "言語",
+        "SIFAS Breast Tuner - Physics / Size / Both": "SIFAS バストチューナー - 物理 / サイズ / 両方",
+        "Physics (Dyna)": "物理 (Dyna)",
+        "Size": "サイズ",
+        "Both": "両方",
+        "Library": "ライブラリ",
+        "Progress / Log": "進捗 / ログ",
+        "Clear log": "ログをクリア",
+        "Save log": "ログを保存",
+        "Idle": "待機中",
+        "Single file": "単一ファイル",
+        "Batch (folder)": "一括（フォルダ）",
+        "Run (single)": "実行（単一）",
+        "Run (batch)": "実行（一括）",
+        "Physics parameters": "物理パラメータ",
+        "Scale parameters": "スケールパラメータ",
+        "Body & physics": "ボディ & 物理",
+        "1. Source — pick a bundle": "1. ソース — バンドルを選択",
+        "2. Mod to apply": "2. 適用するMOD",
+        "3. Output → modded": "3. 出力 → modded",
+        "Mod selected → modded": "選択をMOD適用 → modded",
+        "Input bundle": "入力バンドル",
+        "Output path": "出力パス",
+        "Input folder": "入力フォルダ",
+        "Output folder": "出力フォルダ",
+        "Browse": "参照",
+        "Error": "エラー",
+        "Y must be a number.": "Y は数値である必要があります。",
+        "Saved": "保存しました",
+        "Log saved:\n{p}": "ログを保存しました:\n{p}",
+        "Busy": "実行中",
+        "A job is already running.": "すでにジョブが実行中です。",
+        "Please set input/output paths.": "入力/出力パスを設定してください。",
+        "Please set input/output folders.": "入力/出力フォルダを設定してください。",
+        "Scan a source folder and pick a bundle first.": "先にソースフォルダをスキャンしてバンドルを選択してください。",
+        "Pick a bundle.": "バンドルを選択してください。",
+        "Set the modded output folder.": "modded 出力フォルダを設定してください。",
+        "Language changed. Restart the tool to apply it.": "言語を変更しました。適用するにはツールを再起動してください。",
+    },
+}
 
-    def _get_lang():
-        return "en"
 
-    def _lang_opts():
-        return [("en", "English")]
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+# initial language: shared/persisted choice if available, else SIFAS_LANG, else English
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
 
 # UnityPy is loaded/installed lazily (only when actually needed) so that a
 # plain `import` of this module never triggers pip and stays test-friendly.

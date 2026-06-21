@@ -6,24 +6,117 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 try:
-    # Shared multi-language support (English default; Korean/Japanese optional).
-    # The tool still works standalone in English if the module is unavailable.
-    from sifas_i18n import (
-        tr as _tr, set_language as _set_lang, get_language as _get_lang,
-        language_options as _lang_opts,
-    )
+    # Optional: only used to SHARE / PERSIST the language choice with the other
+    # SIFAS tools. The translations themselves are embedded below, so this file
+    # works fully (English / 한국어 / 日本語) even when copied out on its own.
+    import sifas_i18n as _shared_i18n
 except Exception:  # noqa: BLE001
-    def _tr(s, **kw):
-        return s.format(**kw) if kw else s
+    _shared_i18n = None
 
-    def _set_lang(code, **kw):
-        return code
+import os as _os
 
-    def _get_lang():
-        return "en"
+# --- self-contained translations (English source = key; English fallback) -----
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "LiveCoreMemberNodeScaling scaler (HipsSize)": "LiveCoreMemberNodeScaling 스케일러 (HipsSize)",
+        "Single": "단일",
+        "Batch": "일괄",
+        "Options": "옵션",
+        "Input bundle": "입력 번들",
+        "Output path": "출력 경로",
+        "Input dir": "입력 폴더",
+        "Output dir": "출력 폴더",
+        "Prefix": "접두사",
+        "Suffix": "접미사",
+        "Browse": "찾아보기",
+        "Run (Single)": "실행 (단일)",
+        "Run (Batch)": "실행 (일괄)",
+        "Target GameObject name": "대상 GameObject 이름",
+        "Set scaledValue (x,y,z)": "scaledValue 설정 (x,y,z)",
+        "Add Δ (dx,dy,dz)": "Δ 추가 (dx,dy,dz)",
+        "Result": "결과",
+        "Error": "오류",
+        "Select input bundle": "입력 번들 선택",
+        "Save output bundle": "출력 번들 저장",
+        "Select input folder": "입력 폴더 선택",
+        "Select output folder": "출력 폴더 선택",
+        "Please select input bundle": "입력 번들을 선택하세요",
+        "Please specify output path": "출력 경로를 지정하세요",
+        "Please select input folder": "입력 폴더를 선택하세요",
+        "Please specify output folder": "출력 폴더를 지정하세요",
+    },
+    "ja": {
+        "Language": "言語",
+        "LiveCoreMemberNodeScaling scaler (HipsSize)": "LiveCoreMemberNodeScaling スケーラー (HipsSize)",
+        "Single": "単一",
+        "Batch": "一括",
+        "Options": "オプション",
+        "Input bundle": "入力バンドル",
+        "Output path": "出力パス",
+        "Input dir": "入力フォルダ",
+        "Output dir": "出力フォルダ",
+        "Prefix": "接頭辞",
+        "Suffix": "接尾辞",
+        "Browse": "参照",
+        "Run (Single)": "実行（単一）",
+        "Run (Batch)": "実行（一括）",
+        "Target GameObject name": "対象GameObject名",
+        "Set scaledValue (x,y,z)": "scaledValue設定 (x,y,z)",
+        "Add Δ (dx,dy,dz)": "Δ加算 (dx,dy,dz)",
+        "Result": "結果",
+        "Error": "エラー",
+        "Select input bundle": "入力バンドルを選択",
+        "Save output bundle": "出力バンドルを保存",
+        "Select input folder": "入力フォルダを選択",
+        "Select output folder": "出力フォルダを選択",
+        "Please select input bundle": "入力バンドルを選択してください",
+        "Please specify output path": "出力パスを指定してください",
+        "Please select input folder": "入力フォルダを選択してください",
+        "Please specify output folder": "出力フォルダを指定してください",
+    },
+}
 
-    def _lang_opts():
-        return [("en", "English")]
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+# initial language: shared/persisted choice if available, else SIFAS_LANG, else English
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or _os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
 try:
     import UnityPy
     from UnityPy.enums import TextureFormat
