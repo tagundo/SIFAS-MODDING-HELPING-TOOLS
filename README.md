@@ -6,6 +6,13 @@ and package mods.
 
 **Jump to:** [English](#english) · [한국어](#한국어)
 
+> **Language / 언어 / 言語** — the tools run in **English by default** and offer
+> **한국어** and **日本語**. Pick a language from the selector in the WebUI header,
+> the dropdown in a tool window, or set it once for every tool with the
+> `SIFAS_LANG` environment variable (`en` / `ko` / `ja`). The choice is remembered
+> between runs. Untranslated text falls back to English. See
+> [Multi-language support](#multi-language-support).
+
 ---
 
 ## English
@@ -109,6 +116,27 @@ Open the printed address (default `http://127.0.0.1:8770/`). See
 Verified on Unity 2018.4 uncompressed SIFAS model bundles.
 
 These are unofficial, fan-made tools. You use them at your own responsibility.
+
+### Multi-language support
+
+The interfaces run in **English by default** and can switch to **한국어** or
+**日本語**.
+
+- **WebUI** (`python -m webtools`): use the language selector in the page header.
+  The choice is saved in your browser.
+- **Tool windows** (`sifas_breast_tuner.py`, `skirt_length_changer.py`,
+  `hips_size_changer.py`, `texture_importer.py`, …): pick the language from the
+  dropdown in the window. The choice is remembered for next time and shared with
+  the other tools.
+- **Every tool at once / scripting**: set the `SIFAS_LANG` environment variable
+  to `en`, `ko` or `ja` (e.g. `SIFAS_LANG=ko python sifas_breast_tuner.py`). If
+  unset, the operating-system language is used, falling back to English.
+
+Translations live in one place, [`sifas_i18n.py`](sifas_i18n.py), keyed by the
+English source text, so any string without a translation simply shows in
+English. Adding a language or a missing phrase is a matter of editing that file.
+Some tool windows currently translate their main interface; the remaining,
+less-common labels fall back to English and are being filled in over time.
 
 ---
 

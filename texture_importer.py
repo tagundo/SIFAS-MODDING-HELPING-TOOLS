@@ -20,6 +20,14 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
+try:
+    # Share the language choice with the other SIFAS modding tools (persisted to
+    # a small config file + honouring the SIFAS_LANG env var). Optional: the tool
+    # still runs standalone, defaulting to English, if the module is missing.
+    import sifas_i18n as _shared_i18n
+except Exception:  # noqa: BLE001
+    _shared_i18n = None
+
 
 def _ensure_deps():
     """Make sure UnityPy and Pillow are importable; install if missing.
@@ -243,6 +251,92 @@ STRINGS = {
         "added_folder": "폴더에서 번들 {n}개 추가됨. 총 {total}개",
         "cleared": "번들 목록을 비웠습니다.",
     },
+    "ja": {
+        "title": "UnityPy テクスチャインポーター",
+        "language_label": "言語:",
+        "format_label": "テクスチャ形式:",
+        "tab_single": "単一バンドル",
+        "tab_batch": "一括処理",
+
+        "bundle_file": "バンドルファイル:",
+        "browse": "参照",
+        "load_textures": "テクスチャを読み込み / プレビュー",
+
+        "image_source": "画像ソース",
+        "src_folder": "画像フォルダ（テクスチャ名で照合）",
+        "src_single": "単一画像ファイル（選択中のテクスチャを置換）",
+        "image_folder": "画像フォルダ:",
+        "single_image_file": "画像ファイル:",
+
+        "output": "出力",
+        "out_same": "入力バンドルと同じ場所に保存（接尾辞付き）",
+        "out_custom": "出力パスを指定",
+        "suffix_label": "接尾辞:",
+        "output_bundle": "出力バンドル:",
+
+        "textures": "バンドル内のテクスチャ",
+        "current_texture": "現在のテクスチャ（バンドル内）",
+        "replacement_image": "置換する画像",
+        "no_image": "画像なし",
+        "no_match": "一致する画像が見つかりません",
+        "decode_failed": "デコードに失敗しました:\n{err}",
+        "import_single": "インポート",
+
+        "bundle_selection": "バンドル選択",
+        "add_files": "バンドルファイルを追加",
+        "add_folder": "フォルダを追加",
+        "clear_all": "すべてクリア",
+        "recursive": "サブフォルダも検索",
+        "image_root": "画像ルート:",
+        "output_folder": "出力フォルダ:",
+        "out_same_each": "各入力バンドルと同じ場所に保存（接尾辞付き）",
+        "out_to_folder": "1つの出力フォルダに保存",
+        "preserve_tree": "入力フォルダ構造を維持",
+        "import_batch": "インポート（一括）",
+
+        "log": "ログ",
+        "clear_log": "ログをクリア",
+        "status_ready": "準備完了",
+        "status_error": "エラー - 詳細はログを確認してください",
+
+        "err_title": "エラー",
+        "warn_title": "警告",
+        "done_title": "完了",
+        "done_with_errors_title": "完了（エラーあり）",
+
+        "err_select_bundle": "有効なバンドルファイルを選択してください。",
+        "err_select_image_folder": "有効な画像フォルダを選択してください。",
+        "err_select_image_file": "有効な画像ファイルを選択してください。",
+        "err_select_output": "出力バンドルのパスを指定してください。",
+        "err_no_texture_selected": "先にリストからテクスチャを選択してください（読み込んでから項目をクリック）。",
+        "err_overwrite_input": "出力パスが入力バンドルと同じです。\n原本を上書きしないよう、接尾辞か出力パスを変更してください。",
+        "err_no_bundles": "バンドルファイルが選択されていません。「バンドルファイルを追加」か「フォルダを追加」を使ってください。",
+        "err_select_image_root": "有効な画像ルートフォルダを選択してください。",
+        "err_select_output_folder": "出力フォルダを選択してください。",
+        "err_empty_suffix": "接尾辞が空のため、原本を上書きしないよう既定値 '{suffix}' を使用します。",
+
+        "importing_single": "インポート中...",
+        "importing_batch": "一括インポート中...",
+        "found_textures": "テクスチャを {count} 個見つけました。クリックでプレビューします。",
+        "no_textures_found": "このバンドルにTexture2Dオブジェクトが見つかりません。",
+        "preview_failed": "バンドルの読み込みに失敗しました:\n{err}",
+
+        "done_single": "{imported} 個のテクスチャをインポート、{skipped} 個をスキップ。\n\n保存先:\n{path}",
+        "done_single_errors": "{imported} 個インポート、{skipped} 個スキップ、エラー {errors} 件。\n\n保存先:\n{path}\n\n主なエラー:",
+        "done_single_status": "完了。{n} 個のテクスチャをインポートしました。",
+        "done_batch": "処理したバンドル: {processed} 個（失敗 {failed} 個）。\nインポートしたテクスチャ: {imported} 個、スキップ: {skipped} 個。",
+        "done_batch_errors": "処理したバンドル: {processed} 個（失敗 {failed} 個）。\nインポートしたテクスチャ: {imported} 個、スキップ: {skipped} 個。\nエラー: {errors} 件\n\n主なエラー:",
+        "done_batch_status": "一括完了。{processed} 個のバンドルで {imported} 個のテクスチャ。",
+        "batch_progress": "[{i}/{total}] 保存しました {path}（インポート {n}）",
+        "batch_failed_item": "失敗: {path} - ログを確認",
+        "see_log": "詳細やトレースバックはログパネルを確認してください。",
+        "more_errors": "\n... 他 {n} 件。",
+        "fatal_error": "致命的なエラーが発生しました:\n{err}\n\n完全なトレースバックはログパネルを確認してください。",
+
+        "added_files": "{n} 個のファイルを追加。合計: {total} 個",
+        "added_folder": "フォルダからバンドルを {n} 個追加。合計: {total} 個",
+        "cleared": "バンドルリストをクリアしました。",
+    },
 }
 
 
@@ -360,7 +454,13 @@ def process_bundle(bundle_path, out_path, resolver, fmt_name, log):
 class App:
     def __init__(self, root):
         self.root = root
-        self.lang = tk.StringVar(value="en")
+        # Default to the shared/persisted language when available (English otherwise).
+        default_lang = "en"
+        if _shared_i18n is not None:
+            cand = _shared_i18n.get_language()
+            if cand in STRINGS:
+                default_lang = cand
+        self.lang = tk.StringVar(value=default_lang)
         self._retranslate = []   # list of zero-arg callables that re-apply text
 
         # ---- shared state ----
@@ -415,6 +515,12 @@ class App:
 
     def _change_language(self, code):
         self.lang.set(code)
+        # Remember the choice for the other tools too (best-effort).
+        if _shared_i18n is not None:
+            try:
+                _shared_i18n.set_language(code)
+            except Exception:  # noqa: BLE001
+                pass
         self._retranslate_all()
 
     # ---- translatable widget factories ----
@@ -462,8 +568,9 @@ class App:
         top.pack(fill="x", padx=10, pady=(10, 0))
 
         self._mk_label(top, "language_label").pack(side="left")
-        self._lang_display = tk.StringVar(value="English")
-        self._lang_map = {"English": "en", "한국어": "ko"}
+        self._lang_map = {"English": "en", "한국어": "ko", "日本語": "ja"}
+        _code_to_name = {v: k for k, v in self._lang_map.items()}
+        self._lang_display = tk.StringVar(value=_code_to_name.get(self.lang.get(), "English"))
         lang_cb = ttk.Combobox(top, textvariable=self._lang_display,
                                values=list(self._lang_map.keys()),
                                state="readonly", width=10)

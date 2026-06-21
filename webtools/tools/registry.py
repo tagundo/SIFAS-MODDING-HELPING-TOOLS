@@ -20,6 +20,8 @@ from webtools.tools.costume import (
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
 
+from webtools import i18n
+
 
 # ---- reusable field fragments ------------------------------------------------
 def _in_single():
@@ -288,9 +290,34 @@ def get_tool(tool_id):
     return _BY_ID.get(tool_id)
 
 
-def public_tools():
-    """The registry without the (non-serialisable) run callables."""
+def public_tools(lang=None):
+    """The registry without the (non-serialisable) run callables.
+
+    Display text (tool ``label``/``description`` and each field's
+    ``label``/``help``) is translated into *lang*; English is the fallback.
+    Field ``options`` are left untranslated because their values double as the
+    identifiers the server dispatches on.
+    """
     out = []
     for t in TOOLS:
-        out.append({k: v for k, v in t.items() if k != "run"})
+        tool = {}
+        for k, v in t.items():
+            if k == "run":
+                continue
+            if k in ("label", "description"):
+                tool[k] = i18n.tr(v, lang=lang)
+            elif k == "fields":
+                tool[k] = [_translate_field(f, lang) for f in v]
+            else:
+                tool[k] = v
+        out.append(tool)
     return out
+
+
+def _translate_field(field, lang):
+    f = dict(field)
+    if "label" in f:
+        f["label"] = i18n.tr(f["label"], lang=lang)
+    if "help" in f:
+        f["help"] = i18n.tr(f["help"], lang=lang)
+    return f

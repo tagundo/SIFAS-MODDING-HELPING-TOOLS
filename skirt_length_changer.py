@@ -31,6 +31,26 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    # Shared multi-language support (English default; Korean/Japanese optional).
+    # The tool still works standalone in English if the module is unavailable.
+    from sifas_i18n import (
+        tr as _tr, set_language as _set_lang, get_language as _get_lang,
+        language_options as _lang_opts,
+    )
+except Exception:  # noqa: BLE001
+    def _tr(s, **kw):
+        return s.format(**kw) if kw else s
+
+    def _set_lang(code, **kw):
+        return code
+
+    def _get_lang():
+        return "en"
+
+    def _lang_opts():
+        return [("en", "English")]
+
 # UnityPy is imported lazily so this file runs even before it's installed
 # (and so headless/Termux startup doesn't require tkinter either).
 UnityPy = None
@@ -902,8 +922,8 @@ def run_gui():
             return
         set_quick(v, v, v)
 
-    def show_log(lines, title="Result"):
-        win = tk.Toplevel(root); win.title(title); win.geometry("1000x640")
+    def show_log(lines, title=None):
+        win = tk.Toplevel(root); win.title(title or _tr("Result")); win.geometry("1000x640")
         frm = ttk.Frame(win); frm.pack(fill="both", expand=True, padx=8, pady=8)
         txt = tk.Text(frm, wrap="none")
         xsb = ttk.Scrollbar(frm, orient="horizontal", command=txt.xview)
@@ -914,71 +934,36 @@ def run_gui():
         txt.insert("end", "\n".join(lines)); txt.configure(state="disabled")
 
     def pick_file(var):
-        p = filedialog.askopenfilename(title="Select input bundle",
+        p = filedialog.askopenfilename(title=_tr("Select input bundle"),
                                        initialdir=default_sukusta_dir("extracted"))
         if p:
             var.set(p)
 
     def pick_save(var):
-        p = filedialog.asksaveasfilename(title="Save output bundle", defaultextension=".unity",
+        p = filedialog.asksaveasfilename(title=_tr("Save output bundle"), defaultextension=".unity",
                                          initialdir=default_sukusta_dir("modded"))
         if p:
             var.set(p)
 
     def pick_dir(var, initial=None):
-        p = filedialog.askdirectory(title="Select folder", initialdir=initial or os.path.expanduser("~"))
+        p = filedialog.askdirectory(title=_tr("Select folder"), initialdir=initial or os.path.expanduser("~"))
         if p:
             var.set(p)
 
-    frm = ttk.Frame(root, padding=10)
-    frm.pack(fill="both", expand=True)
-    frm.columnconfigure(0, weight=1)
-
-    # ---------- Single ----------
-    s = ttk.LabelFrame(frm, text="Single file", padding=8)
-    s.pack(fill="x")
-    s.columnconfigure(1, weight=1)
-    ttk.Label(s, text="Input bundle").grid(row=0, column=0, sticky="w", **PAD)
-    ttk.Entry(s, textvariable=in_file).grid(row=0, column=1, sticky="ew", **PAD)
-    ttk.Button(s, text="Browse", command=lambda: pick_file(in_file)).grid(row=0, column=2, **PAD)
-    ttk.Label(s, text="Output path").grid(row=1, column=0, sticky="w", **PAD)
-    ttk.Entry(s, textvariable=out_file).grid(row=1, column=1, sticky="ew", **PAD)
-    ttk.Button(s, text="Browse", command=lambda: pick_save(out_file)).grid(row=1, column=2, **PAD)
-
     def run_single():
         if not in_file.get() or not out_file.get():
-            messagebox.showerror("Error", "Please set input and output paths."); return
+            messagebox.showerror(_tr("Error"), _tr("Please set input and output paths.")); return
         setv, addv, pats = parse_set(), parse_add(), parse_patterns()
         try:
             scanned, changed, logs = modify_skirt_scaling(
                 Path(in_file.get()), Path(out_file.get()), pats, setv, addv)
             show_log([f"[SINGLE] scanned={scanned} changed={changed}", *logs])
         except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    ttk.Button(s, text="Run (single)", style="Run.TButton",
-               command=run_single).grid(row=2, column=0, columnspan=3, pady=6)
-
-    # ---------- Batch ----------
-    b = ttk.LabelFrame(frm, text="Batch (folder)", padding=8)
-    b.pack(fill="x", pady=(8, 0))
-    b.columnconfigure(1, weight=1)
-    ttk.Label(b, text="Input folder").grid(row=0, column=0, sticky="w", **PAD)
-    ttk.Entry(b, textvariable=in_dir).grid(row=0, column=1, sticky="ew", **PAD)
-    ttk.Button(b, text="Browse", command=lambda: pick_dir(in_dir, default_sukusta_dir("extracted"))).grid(row=0, column=2, **PAD)
-    ttk.Label(b, text="Output folder").grid(row=1, column=0, sticky="w", **PAD)
-    ttk.Entry(b, textvariable=out_dir).grid(row=1, column=1, sticky="ew", **PAD)
-    ttk.Button(b, text="Browse", command=lambda: pick_dir(out_dir, default_sukusta_dir("modded"))).grid(row=1, column=2, **PAD)
-    ttk.Label(b, text="prefix").grid(row=2, column=0, sticky="w", **PAD)
-    ttk.Entry(b, textvariable=out_prefix, width=18).grid(row=2, column=1, sticky="w", **PAD)
-    ttk.Label(b, text="suffix").grid(row=3, column=0, sticky="w", **PAD)
-    ttk.Entry(b, textvariable=out_suffix, width=18).grid(row=3, column=1, sticky="w", **PAD)
-    ttk.Checkbutton(b, text="Append skirt length to filenames (e.g. _skirt085)",
-                    variable=append_len).grid(row=4, column=0, columnspan=3, sticky="w", **PAD)
+            messagebox.showerror(_tr("Error"), str(e))
 
     def run_batch():
         if not in_dir.get() or not out_dir.get():
-            messagebox.showerror("Error", "Please set input and output folders."); return
+            messagebox.showerror(_tr("Error"), _tr("Please set input and output folders.")); return
         setv, addv, pats = parse_set(), parse_add(), parse_patterns()
         eff_suffix = out_suffix.get() + (_skirt_suffix(setv, addv) if append_len.get() else "")
         files = [p for p in Path(in_dir.get()).rglob("*") if p.is_file()]
@@ -993,46 +978,107 @@ def run_gui():
                 fail += 1
         show_log([f"[BATCH] files={len(files)} ok={ok} fail={fail} changed={tot_changed}"])
 
-    ttk.Button(b, text="Run (batch)", style="Run.TButton",
-               command=run_batch).grid(row=5, column=0, columnspan=3, pady=6)
+    # The window is rebuilt on a language change. The tk variables above live in
+    # the outer scope, so anything the user already typed survives the rebuild.
+    container = ttk.Frame(root)
+    container.pack(fill="both", expand=True)
 
-    # ---------- Scale options ----------
-    o = ttk.LabelFrame(frm, text="Skirt scale options", padding=8)
-    o.pack(fill="x", pady=(8, 0))
-    o.columnconfigure(1, weight=1)
-    ttk.Label(o, text="Skirt GO name patterns (comma/space, contains match)")\
-        .grid(row=0, column=0, columnspan=2, sticky="w", **PAD)
-    ttk.Entry(o, textvariable=target_patterns).grid(row=1, column=0, columnspan=2, sticky="ew", **PAD)
+    def on_language(code):
+        _set_lang(code)
+        build()
 
-    ttk.Label(o, text="Uniform scale  (x = y = z - the usual skirt change)",
-              font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, columnspan=2, sticky="w", **PAD)
-    urow = ttk.Frame(o); urow.grid(row=3, column=0, columnspan=2, sticky="w", **PAD)
-    ttk.Label(urow, text="factor:").pack(side="left")
-    ttk.Entry(urow, textvariable=uniform, width=8).pack(side="left", padx=4)
-    ttk.Button(urow, text="Apply", command=apply_uniform).pack(side="left", padx=(0, 10))
-    ttk.Button(urow, text="Shorter 0.85", command=lambda: set_uniform(0.85)).pack(side="left", padx=2)
-    ttk.Button(urow, text="Longer 1.15", command=lambda: set_uniform(1.15)).pack(side="left", padx=2)
-    ttk.Button(urow, text="Reset 1.0", command=lambda: set_uniform(1.0)).pack(side="left", padx=2)
+    def build():
+        for w in container.winfo_children():
+            w.destroy()
+        root.title(_tr("Skirt Length Changer"))
 
-    ttk.Label(o, text="Advanced - per-axis set (x, y, z)  -  blank = leave that axis")\
-        .grid(row=4, column=0, columnspan=2, sticky="w", **PAD)
-    srow = ttk.Frame(o); srow.grid(row=5, column=0, columnspan=2, sticky="w", **PAD)
-    ttk.Entry(srow, textvariable=set_x, width=10).pack(side="left", padx=2)
-    ttk.Entry(srow, textvariable=set_y, width=10).pack(side="left", padx=2)
-    ttk.Entry(srow, textvariable=set_z, width=10).pack(side="left", padx=2)
+        frm = ttk.Frame(container, padding=10)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
 
-    ttk.Label(o, text="Advanced - add delta (dx, dy, dz)  -  added to current value")\
-        .grid(row=6, column=0, columnspan=2, sticky="w", **PAD)
-    arow = ttk.Frame(o); arow.grid(row=7, column=0, columnspan=2, sticky="w", **PAD)
-    ttk.Entry(arow, textvariable=add_dx, width=10).pack(side="left", padx=2)
-    ttk.Entry(arow, textvariable=add_dy, width=10).pack(side="left", padx=2)
-    ttk.Entry(arow, textvariable=add_dz, width=10).pack(side="left", padx=2)
+        # ---------- language picker ----------
+        lang_bar = ttk.Frame(frm); lang_bar.pack(fill="x")
+        ttk.Label(lang_bar, text=_tr("Language")).pack(side="left")
+        names = [name for _code, name in _lang_opts()]
+        code_by_name = {name: code for code, name in _lang_opts()}
+        name_by_code = {code: name for code, name in _lang_opts()}
+        lang_display = tk.StringVar(value=name_by_code.get(_get_lang(), names[0]))
+        cb = ttk.Combobox(lang_bar, textvariable=lang_display, values=names,
+                          state="readonly", width=10)
+        cb.pack(side="left", padx=(6, 0))
+        cb.bind("<<ComboboxSelected>>",
+                lambda e: on_language(code_by_name[lang_display.get()]))
 
-    ttk.Label(o, text="Skirt length/volume usually scales uniformly, so x, y, z move "
-                      "together. Use the factor above; the per-axis fields are for fine cases.",
-              font=("TkDefaultFont", 8), foreground="#777", wraplength=560, justify="left")\
-        .grid(row=8, column=0, columnspan=2, sticky="w", **PAD)
+        # ---------- Single ----------
+        s = ttk.LabelFrame(frm, text=_tr("Single file"), padding=8)
+        s.pack(fill="x", pady=(8, 0))
+        s.columnconfigure(1, weight=1)
+        ttk.Label(s, text=_tr("Input bundle")).grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Entry(s, textvariable=in_file).grid(row=0, column=1, sticky="ew", **PAD)
+        ttk.Button(s, text=_tr("Browse"), command=lambda: pick_file(in_file)).grid(row=0, column=2, **PAD)
+        ttk.Label(s, text=_tr("Output path")).grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(s, textvariable=out_file).grid(row=1, column=1, sticky="ew", **PAD)
+        ttk.Button(s, text=_tr("Browse"), command=lambda: pick_save(out_file)).grid(row=1, column=2, **PAD)
+        ttk.Button(s, text=_tr("Run (single)"), style="Run.TButton",
+                   command=run_single).grid(row=2, column=0, columnspan=3, pady=6)
 
+        # ---------- Batch ----------
+        b = ttk.LabelFrame(frm, text=_tr("Batch (folder)"), padding=8)
+        b.pack(fill="x", pady=(8, 0))
+        b.columnconfigure(1, weight=1)
+        ttk.Label(b, text=_tr("Input folder")).grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Entry(b, textvariable=in_dir).grid(row=0, column=1, sticky="ew", **PAD)
+        ttk.Button(b, text=_tr("Browse"), command=lambda: pick_dir(in_dir, default_sukusta_dir("extracted"))).grid(row=0, column=2, **PAD)
+        ttk.Label(b, text=_tr("Output folder")).grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(b, textvariable=out_dir).grid(row=1, column=1, sticky="ew", **PAD)
+        ttk.Button(b, text=_tr("Browse"), command=lambda: pick_dir(out_dir, default_sukusta_dir("modded"))).grid(row=1, column=2, **PAD)
+        ttk.Label(b, text=_tr("prefix")).grid(row=2, column=0, sticky="w", **PAD)
+        ttk.Entry(b, textvariable=out_prefix, width=18).grid(row=2, column=1, sticky="w", **PAD)
+        ttk.Label(b, text=_tr("suffix")).grid(row=3, column=0, sticky="w", **PAD)
+        ttk.Entry(b, textvariable=out_suffix, width=18).grid(row=3, column=1, sticky="w", **PAD)
+        ttk.Checkbutton(b, text=_tr("Append skirt length to filenames (e.g. _skirt085)"),
+                        variable=append_len).grid(row=4, column=0, columnspan=3, sticky="w", **PAD)
+        ttk.Button(b, text=_tr("Run (batch)"), style="Run.TButton",
+                   command=run_batch).grid(row=5, column=0, columnspan=3, pady=6)
+
+        # ---------- Scale options ----------
+        o = ttk.LabelFrame(frm, text=_tr("Skirt scale options"), padding=8)
+        o.pack(fill="x", pady=(8, 0))
+        o.columnconfigure(1, weight=1)
+        ttk.Label(o, text=_tr("Skirt GO name patterns (comma/space, contains match)"))\
+            .grid(row=0, column=0, columnspan=2, sticky="w", **PAD)
+        ttk.Entry(o, textvariable=target_patterns).grid(row=1, column=0, columnspan=2, sticky="ew", **PAD)
+
+        ttk.Label(o, text=_tr("Uniform scale  (x = y = z - the usual skirt change)"),
+                  font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, columnspan=2, sticky="w", **PAD)
+        urow = ttk.Frame(o); urow.grid(row=3, column=0, columnspan=2, sticky="w", **PAD)
+        ttk.Label(urow, text=_tr("factor:")).pack(side="left")
+        ttk.Entry(urow, textvariable=uniform, width=8).pack(side="left", padx=4)
+        ttk.Button(urow, text=_tr("Apply"), command=apply_uniform).pack(side="left", padx=(0, 10))
+        ttk.Button(urow, text=_tr("Shorter 0.85"), command=lambda: set_uniform(0.85)).pack(side="left", padx=2)
+        ttk.Button(urow, text=_tr("Longer 1.15"), command=lambda: set_uniform(1.15)).pack(side="left", padx=2)
+        ttk.Button(urow, text=_tr("Reset 1.0"), command=lambda: set_uniform(1.0)).pack(side="left", padx=2)
+
+        ttk.Label(o, text=_tr("Advanced - per-axis set (x, y, z)  -  blank = leave that axis"))\
+            .grid(row=4, column=0, columnspan=2, sticky="w", **PAD)
+        srow = ttk.Frame(o); srow.grid(row=5, column=0, columnspan=2, sticky="w", **PAD)
+        ttk.Entry(srow, textvariable=set_x, width=10).pack(side="left", padx=2)
+        ttk.Entry(srow, textvariable=set_y, width=10).pack(side="left", padx=2)
+        ttk.Entry(srow, textvariable=set_z, width=10).pack(side="left", padx=2)
+
+        ttk.Label(o, text=_tr("Advanced - add delta (dx, dy, dz)  -  added to current value"))\
+            .grid(row=6, column=0, columnspan=2, sticky="w", **PAD)
+        arow = ttk.Frame(o); arow.grid(row=7, column=0, columnspan=2, sticky="w", **PAD)
+        ttk.Entry(arow, textvariable=add_dx, width=10).pack(side="left", padx=2)
+        ttk.Entry(arow, textvariable=add_dy, width=10).pack(side="left", padx=2)
+        ttk.Entry(arow, textvariable=add_dz, width=10).pack(side="left", padx=2)
+
+        ttk.Label(o, text=_tr("Skirt length/volume usually scales uniformly, so x, y, z move "
+                              "together. Use the factor above; the per-axis fields are for fine cases."),
+                  font=("TkDefaultFont", 8), foreground="#777", wraplength=560, justify="left")\
+            .grid(row=8, column=0, columnspan=2, sticky="w", **PAD)
+
+    build()
     root.mainloop()
 # ==========================================================================
 # Entry point

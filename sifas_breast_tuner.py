@@ -31,6 +31,27 @@ import fnmatch
 from pathlib import Path
 from collections import Counter
 
+try:
+    # Shared multi-language support (English default; Korean/Japanese optional).
+    # The chosen language is persisted and shared with the other SIFAS tools.
+    # The tool still works standalone in English if the module is unavailable.
+    from sifas_i18n import (
+        tr as _tr, set_language as _set_lang, get_language as _get_lang,
+        language_options as _lang_opts,
+    )
+except Exception:  # noqa: BLE001
+    def _tr(s, **kw):
+        return s.format(**kw) if kw else s
+
+    def _set_lang(code, **kw):
+        return code
+
+    def _get_lang():
+        return "en"
+
+    def _lang_opts():
+        return [("en", "English")]
+
 # UnityPy is loaded/installed lazily (only when actually needed) so that a
 # plain `import` of this module never triggers pip and stays test-friendly.
 UnityPy = None
@@ -1735,7 +1756,7 @@ def run_gui():
             self.q = queue.Queue()
             self.worker = None
 
-            root.title("SIFAS Breast Tuner - Physics / Size / Both")
+            root.title(_tr("SIFAS Breast Tuner - Physics / Size / Both"))
             root.geometry("860x720")
             root.minsize(680, 480)
 
@@ -1750,6 +1771,20 @@ def run_gui():
             outer = ttk.Frame(root, padding=(10, 10, 10, 8))
             outer.pack(fill="both", expand=True)
 
+            # ---- language picker (top) ----
+            langbar = ttk.Frame(outer)
+            langbar.pack(fill="x", pady=(0, 6))
+            ttk.Label(langbar, text=_tr("Language")).pack(side="left")
+            self._lang_names = [name for _c, name in _lang_opts()]
+            self._lang_code_by_name = {name: code for code, name in _lang_opts()}
+            name_by_code = {code: name for code, name in _lang_opts()}
+            self._lang_display = tk.StringVar(
+                value=name_by_code.get(_get_lang(), self._lang_names[0]))
+            lang_cb = ttk.Combobox(langbar, textvariable=self._lang_display,
+                                   values=self._lang_names, state="readonly", width=10)
+            lang_cb.pack(side="left", padx=(6, 0))
+            lang_cb.bind("<<ComboboxSelected>>", lambda e: self._on_language())
+
             # Notebook expands to fill available space; each tab scrolls so a
             # tall tab can never push the log panel off the bottom of the window.
             nb = ttk.Notebook(outer)
@@ -1759,10 +1794,10 @@ def run_gui():
             size_scroll = ScrollableFrame(nb)
             both_scroll = ScrollableFrame(nb)
             lib_scroll = ScrollableFrame(nb)
-            nb.add(phys_scroll, text="  Physics (Dyna)  ")
-            nb.add(size_scroll, text="  Size  ")
-            nb.add(both_scroll, text="  Both  ")
-            nb.add(lib_scroll, text="  Library  ")
+            nb.add(phys_scroll, text="  " + _tr("Physics (Dyna)") + "  ")
+            nb.add(size_scroll, text="  " + _tr("Size") + "  ")
+            nb.add(both_scroll, text="  " + _tr("Both") + "  ")
+            nb.add(lib_scroll, text="  " + _tr("Library") + "  ")
 
             self._build_physics(phys_scroll.body)
             self._build_size(size_scroll.body)
@@ -1774,7 +1809,7 @@ def run_gui():
             lib_scroll.bind_wheel()
 
             # ---- shared bottom: progress + log (pinned, fixed height) ----
-            bottom = ttk.LabelFrame(outer, text="Progress / Log", padding=8)
+            bottom = ttk.LabelFrame(outer, text=_tr("Progress / Log"), padding=8)
             bottom.pack(fill="x", pady=(10, 0))   # fixed height, always visible
 
             self.progress = ttk.Progressbar(bottom, mode="determinate")
@@ -1795,14 +1830,29 @@ def run_gui():
 
             btnbar = ttk.Frame(bottom)
             btnbar.pack(fill="x", pady=(6, 0))
-            ttk.Button(btnbar, text="Clear log", command=self._clear_log).pack(side="left")
-            ttk.Button(btnbar, text="Save log", command=self._save_log).pack(side="left", padx=6)
-            self.status = ttk.Label(btnbar, text="Idle")
+            ttk.Button(btnbar, text=_tr("Clear log"), command=self._clear_log).pack(side="left")
+            ttk.Button(btnbar, text=_tr("Save log"), command=self._save_log).pack(side="left", padx=6)
+            self.status = ttk.Label(btnbar, text=_tr("Idle"))
             self.status.pack(side="right")
+
+        # ---------- language ----------
+        def _on_language(self):
+            """Persist the chosen language (shared with the other tools).
+
+            The window is already built, so the change is applied on the next
+            launch; tell the user so the static labels don't look stuck.
+            """
+            code = self._lang_code_by_name.get(self._lang_display.get())
+            if not code:
+                return
+            _set_lang(code)
+            messagebox.showinfo(
+                _tr("Language"),
+                _tr("Language changed. Restart the tool to apply it."))
 
         # ---------- widget builders ----------
         def _file_row(self, parent, r, label, var, save=False, is_dir=False):
-            ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", **PAD)
+            ttk.Label(parent, text=_tr(label)).grid(row=r, column=0, sticky="w", **PAD)
             ttk.Entry(parent, textvariable=var).grid(row=r, column=1, sticky="ew", **PAD)
             if is_dir:
                 cmd = lambda: self._pick_dir(var)
@@ -1810,7 +1860,7 @@ def run_gui():
                 cmd = lambda: self._pick_save(var)
             else:
                 cmd = lambda: self._pick_open(var)
-            ttk.Button(parent, text="Browse", command=cmd).grid(row=r, column=2, **PAD)
+            ttk.Button(parent, text=_tr("Browse"), command=cmd).grid(row=r, column=2, **PAD)
             parent.columnconfigure(1, weight=1)
 
         def _build_physics(self, tab):
@@ -1831,15 +1881,15 @@ def run_gui():
             self.p_auto = tk.BooleanVar(value=False)
 
             # single
-            sf = ttk.LabelFrame(tab, text="Single file", padding=8)
+            sf = ttk.LabelFrame(tab, text=_tr("Single file"), padding=8)
             sf.pack(fill="x")
             self._file_row(sf, 0, "Input bundle", self.p_in_file)
             self._file_row(sf, 1, "Output path", self.p_out_file, save=True)
-            ttk.Button(sf, text="Run (single)", style="Run.TButton",
+            ttk.Button(sf, text=_tr("Run (single)"), style="Run.TButton",
                        command=self._run_physics_single).grid(row=2, column=0, columnspan=3, pady=6)
 
             # batch
-            bf = ttk.LabelFrame(tab, text="Batch (folder)", padding=8)
+            bf = ttk.LabelFrame(tab, text=_tr("Batch (folder)"), padding=8)
             bf.pack(fill="x", pady=(8, 0))
             self._file_row(bf, 0, "Input folder", self.p_in_dir, is_dir=True)
             self._file_row(bf, 1, "Output folder", self.p_out_dir, is_dir=True)
@@ -1847,11 +1897,11 @@ def run_gui():
             ttk.Entry(bf, textvariable=self.p_prefix, width=18).grid(row=2, column=1, sticky="w", **PAD)
             ttk.Label(bf, text="suffix").grid(row=3, column=0, sticky="w", **PAD)
             ttk.Entry(bf, textvariable=self.p_suffix, width=18).grid(row=3, column=1, sticky="w", **PAD)
-            ttk.Button(bf, text="Run (batch)", style="Run.TButton",
+            ttk.Button(bf, text=_tr("Run (batch)"), style="Run.TButton",
                        command=self._run_physics_batch).grid(row=4, column=0, columnspan=3, pady=6)
 
             # parameters
-            pf = ttk.LabelFrame(tab, text="Physics parameters", padding=8)
+            pf = ttk.LabelFrame(tab, text=_tr("Physics parameters"), padding=8)
             pf.pack(fill="x", pady=(8, 0))
             ttk.Label(pf, text="Target GO patterns (comma)").grid(row=0, column=0, sticky="w", **PAD)
             ttk.Entry(pf, textvariable=self.p_patterns).grid(row=0, column=1, columnspan=3, sticky="ew", **PAD)
@@ -1905,14 +1955,14 @@ def run_gui():
             self.s_adz = tk.StringVar(value="0")
             self.s_customy = tk.StringVar(value="0.05")
 
-            sf = ttk.LabelFrame(tab, text="Single file", padding=8)
+            sf = ttk.LabelFrame(tab, text=_tr("Single file"), padding=8)
             sf.pack(fill="x")
             self._file_row(sf, 0, "Input bundle", self.s_in_file)
             self._file_row(sf, 1, "Output path", self.s_out_file, save=True)
-            ttk.Button(sf, text="Run (single)", style="Run.TButton",
+            ttk.Button(sf, text=_tr("Run (single)"), style="Run.TButton",
                        command=self._run_size_single).grid(row=2, column=0, columnspan=3, pady=6)
 
-            bf = ttk.LabelFrame(tab, text="Batch (folder)", padding=8)
+            bf = ttk.LabelFrame(tab, text=_tr("Batch (folder)"), padding=8)
             bf.pack(fill="x", pady=(8, 0))
             self._file_row(bf, 0, "Input folder", self.s_in_dir, is_dir=True)
             self._file_row(bf, 1, "Output folder", self.s_out_dir, is_dir=True)
@@ -1920,10 +1970,10 @@ def run_gui():
             ttk.Entry(bf, textvariable=self.s_prefix, width=18).grid(row=2, column=1, sticky="w", **PAD)
             ttk.Label(bf, text="suffix").grid(row=3, column=0, sticky="w", **PAD)
             ttk.Entry(bf, textvariable=self.s_suffix, width=18).grid(row=3, column=1, sticky="w", **PAD)
-            ttk.Button(bf, text="Run (batch)", style="Run.TButton",
+            ttk.Button(bf, text=_tr("Run (batch)"), style="Run.TButton",
                        command=self._run_size_batch).grid(row=4, column=0, columnspan=3, pady=6)
 
-            of = ttk.LabelFrame(tab, text="Scale parameters", padding=8)
+            of = ttk.LabelFrame(tab, text=_tr("Scale parameters"), padding=8)
             of.pack(fill="x", pady=(8, 0))
             of.columnconfigure(1, weight=1)
 
@@ -1988,14 +2038,14 @@ def run_gui():
             self.c_jiggle_fn = tk.BooleanVar(value=True)
             self.c_presets = list(BREAST_PRESETS_ALL)   # (label, (x,y,z), n) sorted
 
-            sf = ttk.LabelFrame(tab, text="Single file", padding=8)
+            sf = ttk.LabelFrame(tab, text=_tr("Single file"), padding=8)
             sf.pack(fill="x")
             self._file_row(sf, 0, "Input bundle", self.c_in_file)
             self._file_row(sf, 1, "Output path", self.c_out_file, save=True)
-            ttk.Button(sf, text="Run (single)", style="Run.TButton",
+            ttk.Button(sf, text=_tr("Run (single)"), style="Run.TButton",
                        command=self._run_both_single).grid(row=2, column=0, columnspan=3, pady=6)
 
-            bf = ttk.LabelFrame(tab, text="Batch (folder)", padding=8)
+            bf = ttk.LabelFrame(tab, text=_tr("Batch (folder)"), padding=8)
             bf.pack(fill="x", pady=(8, 0))
             self._file_row(bf, 0, "Input folder", self.c_in_dir, is_dir=True)
             self._file_row(bf, 1, "Output folder", self.c_out_dir, is_dir=True)
@@ -2005,10 +2055,10 @@ def run_gui():
             ttk.Entry(bf, textvariable=self.c_suffix, width=18).grid(row=3, column=1, sticky="w", **PAD)
             ttk.Checkbutton(bf, text="Append jiggleN to filename",
                             variable=self.c_jiggle_fn).grid(row=4, column=0, columnspan=2, sticky="w", **PAD)
-            ttk.Button(bf, text="Run (batch)", style="Run.TButton",
+            ttk.Button(bf, text=_tr("Run (batch)"), style="Run.TButton",
                        command=self._run_both_batch).grid(row=5, column=0, columnspan=3, pady=6)
 
-            of = ttk.LabelFrame(tab, text="Body & physics", padding=8)
+            of = ttk.LabelFrame(tab, text=_tr("Body & physics"), padding=8)
             of.pack(fill="x", pady=(8, 0))
             of.columnconfigure(1, weight=1)
 
@@ -2080,7 +2130,7 @@ def run_gui():
             self.lib_bundles = []
 
             # --- source / pick a bundle ---
-            sf = ttk.LabelFrame(tab, text="1. Source — pick a bundle", padding=8)
+            sf = ttk.LabelFrame(tab, text=_tr("1. Source — pick a bundle"), padding=8)
             sf.pack(fill="x")
             sf.columnconfigure(1, weight=1)
             ttk.Label(sf, text="Folder").grid(row=0, column=0, sticky="w", **PAD)
@@ -2099,7 +2149,7 @@ def run_gui():
             self.lib_count.grid(row=3, column=1, sticky="w", **PAD)
 
             # --- what to apply ---
-            mf = ttk.LabelFrame(tab, text="2. Mod to apply", padding=8)
+            mf = ttk.LabelFrame(tab, text=_tr("2. Mod to apply"), padding=8)
             mf.pack(fill="x", pady=(8, 0))
             mf.columnconfigure(1, weight=1)
             ttk.Label(mf, text="Mod type").grid(row=0, column=0, sticky="w", **PAD)
@@ -2150,7 +2200,7 @@ def run_gui():
             ttk.Entry(adv, textvariable=self.lib_name, width=20).grid(row=1, column=1, sticky="w", **PAD)
 
             # --- output ---
-            of = ttk.LabelFrame(tab, text="3. Output → modded", padding=8)
+            of = ttk.LabelFrame(tab, text=_tr("3. Output → modded"), padding=8)
             of.pack(fill="x", pady=(8, 0))
             of.columnconfigure(1, weight=1)
             ttk.Label(of, text="Modded folder").grid(row=0, column=0, sticky="w", **PAD)
@@ -2158,7 +2208,7 @@ def run_gui():
             ttk.Button(of, text="Browse", command=lambda: self._pick_dir(self.lib_out)).grid(row=0, column=2, **PAD)
             ttk.Checkbutton(of, text="Append jiggleN to filename (Both)",
                             variable=self.lib_jiggle_fn).grid(row=1, column=1, sticky="w", **PAD)
-            ttk.Button(of, text="Mod selected → modded", style="Run.TButton",
+            ttk.Button(of, text=_tr("Mod selected → modded"), style="Run.TButton",
                        command=self._run_library).grid(row=2, column=0, columnspan=3, pady=6)
             ttk.Label(of, text="Output mirrors the source sub-path (e.g. 3d_model/…). "
                               "The original is never modified.",
@@ -2194,7 +2244,7 @@ def run_gui():
             try:
                 Y = float(self.s_customy.get())
             except ValueError:
-                messagebox.showerror("Error", "Y must be a number."); return
+                messagebox.showerror(_tr("Error"), _tr("Y must be a number.")); return
             self._apply_set(*breast_enlarge_xyz(Y))
 
         def _toggle_auto(self):
@@ -2221,9 +2271,9 @@ def run_gui():
                 return
             try:
                 Path(p).write_text(self.log.get("1.0", "end"), encoding="utf-8")
-                messagebox.showinfo("Saved", f"Log saved:\n{p}")
+                messagebox.showinfo(_tr("Saved"), _tr("Log saved:\n{p}", p=p))
             except Exception as e:
-                messagebox.showerror("Error", str(e))
+                messagebox.showerror(_tr("Error"), str(e))
 
         # ---------- param parsing ----------
         def _parse_float(self, s, default=None):
@@ -2269,7 +2319,7 @@ def run_gui():
 
         def _start(self, target):
             if self._busy():
-                messagebox.showwarning("Busy", "A job is already running.")
+                messagebox.showwarning(_tr("Busy"), _tr("A job is already running."))
                 return
             self.progress.configure(value=0, maximum=100)
             self.status.configure(text="Working...")
@@ -2310,7 +2360,7 @@ def run_gui():
         def _run_physics_single(self):
             inf, outf = self.p_in_file.get(), self.p_out_file.get()
             if not inf or not outf:
-                messagebox.showerror("Error", "Please set input/output paths."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output paths.")); return
             patterns, stiff, drag, ldy, ldz, hdy, hdz, auto = self._physics_params()
 
             def job():
@@ -2327,7 +2377,7 @@ def run_gui():
         def _run_physics_batch(self):
             ind, outd = self.p_in_dir.get(), self.p_out_dir.get()
             if not ind or not outd:
-                messagebox.showerror("Error", "Please set input/output folders."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output folders.")); return
             patterns, stiff, drag, ldy, ldz, hdy, hdz, auto = self._physics_params()
             prefix, suffix = self.p_prefix.get(), self.p_suffix.get()
 
@@ -2340,7 +2390,7 @@ def run_gui():
         def _run_size_single(self):
             inf, outf = self.s_in_file.get(), self.s_out_file.get()
             if not inf or not outf:
-                messagebox.showerror("Error", "Please set input/output paths."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output paths.")); return
             name, setv, addv = self._size_params()
 
             def job():
@@ -2355,7 +2405,7 @@ def run_gui():
         def _run_size_batch(self):
             ind, outd = self.s_in_dir.get(), self.s_out_dir.get()
             if not ind or not outd:
-                messagebox.showerror("Error", "Please set input/output folders."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output folders.")); return
             name, setv, addv = self._size_params()
             prefix, suffix = self.s_prefix.get(), self.s_suffix.get()
 
@@ -2414,7 +2464,7 @@ def run_gui():
         def _run_both_single(self):
             inf, outf = self.c_in_file.get(), self.c_out_file.get()
             if not inf or not outf:
-                messagebox.showerror("Error", "Please set input/output paths."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output paths.")); return
             name, xyz, tn, source_n, stiff, drag, patterns, label, jiggle_mode = self._both_params()
 
             def job():
@@ -2432,7 +2482,7 @@ def run_gui():
         def _run_both_batch(self):
             ind, outd = self.c_in_dir.get(), self.c_out_dir.get()
             if not ind or not outd:
-                messagebox.showerror("Error", "Please set input/output folders."); return
+                messagebox.showerror(_tr("Error"), _tr("Please set input/output folders.")); return
             name, xyz, tn, source_n, stiff, drag, patterns, label, jiggle_mode = self._both_params()
             prefix, suffix = self.c_prefix.get(), self.c_suffix.get()
             append = self.c_jiggle_fn.get()
@@ -2469,15 +2519,15 @@ def run_gui():
 
         def _run_library(self):
             if not self.lib_bundles:
-                messagebox.showerror("Error", "Scan a source folder and pick a bundle first."); return
+                messagebox.showerror(_tr("Error"), _tr("Scan a source folder and pick a bundle first.")); return
             idx = self.lib_combo.current()
             if idx is None or idx < 0:
-                messagebox.showerror("Error", "Pick a bundle."); return
+                messagebox.showerror(_tr("Error"), _tr("Pick a bundle.")); return
             in_path = self.lib_bundles[idx]
             src_root = self.lib_src.get().strip()
             modded = self.lib_out.get().strip()
             if not modded:
-                messagebox.showerror("Error", "Set the modded output folder."); return
+                messagebox.showerror(_tr("Error"), _tr("Set the modded output folder.")); return
 
             mt = self.lib_modtype.current()    # 0 both, 1 size, 2 physics
             params = _default_library_params()

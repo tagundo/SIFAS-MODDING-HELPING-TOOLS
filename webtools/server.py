@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from webtools import filebrowser
+from webtools import i18n
 from webtools.core import decode
 from webtools.jobs import MANAGER
 from webtools.tools import registry
@@ -48,6 +49,11 @@ class Handler(BaseHTTPRequestHandler):
     def _query(self):
         return parse_qs(urlsplit(self.path).query)
 
+    def _lang(self):
+        """Requested UI language (``?lang=``), normalised; falls back to English."""
+        raw = (self._query().get("lang") or [""])[0]
+        return i18n.normalize(raw) or i18n.DEFAULT_LANGUAGE
+
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -67,8 +73,13 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/static/"):
                 return self._serve_static(path[len("/static/"):])
             if path == "/api/tools":
-                return self._send_json({"tools": registry.public_tools(),
+                return self._send_json({"tools": registry.public_tools(self._lang()),
                                         "roots": filebrowser.allowed_roots()})
+            if path == "/api/i18n":
+                lang = self._lang()
+                return self._send_json({"lang": lang,
+                                        "languages": i18n.language_options(),
+                                        "strings": i18n.all_strings(lang)})
             if path == "/api/fs/roots":
                 return self._send_json(filebrowser.roots_listing())
             if path == "/api/fs/list":

@@ -7,9 +7,88 @@ const state = {
   currentMode: "single",
   es: null,
   picker: null, // { type: 'path'|'dir', onPick: fn, cwd: str }
+  lang: "en",
+  strings: {},       // { "English source": "translation" } for the active language
+  languages: [],     // [["en","English"], ...] from the server
 };
 
 const $ = (sel) => document.querySelector(sel);
+
+// ------------------------------------------------------------------ i18n
+const SUPPORTED_LANGS = ["en", "ko", "ja"];
+
+function detectLang() {
+  const saved = localStorage.getItem("sifas_lang");
+  if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
+  const nav = (navigator.language || "en").slice(0, 2).toLowerCase();
+  return SUPPORTED_LANGS.includes(nav) ? nav : "en";
+}
+
+// translate an English source string for the active language (English fallback)
+function T(s) {
+  return (state.strings && state.strings[s]) || s;
+}
+
+async function loadI18n() {
+  try {
+    const data = await (await fetch("/api/i18n?lang=" + encodeURIComponent(state.lang))).json();
+    state.strings = data.strings || {};
+    state.languages = data.languages || [];
+    state.lang = data.lang || state.lang;
+  } catch (e) {
+    state.strings = {};
+  }
+}
+
+// re-translate the static markup (anything tagged with data-i18n / data-i18n-ph)
+function applyStaticI18n() {
+  document.documentElement.lang = state.lang;
+  document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = T(n.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-ph]").forEach((n) => { n.placeholder = T(n.dataset.i18nPh); });
+}
+
+function buildLangSelect() {
+  const sel = $("#lang-select");
+  if (!sel) return;
+  sel.innerHTML = "";
+  const langs = state.languages.length ? state.languages : SUPPORTED_LANGS.map((c) => [c, c]);
+  for (const [code, name] of langs) {
+    const o = el("option", { value: code, text: name });
+    if (code === state.lang) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => changeLang(sel.value);
+}
+
+async function changeLang(code) {
+  state.lang = code;
+  localStorage.setItem("sifas_lang", code);
+  await reloadForLang();
+}
+
+// reload everything that carries server-translated text and re-render the UI
+async function reloadForLang() {
+  await loadI18n();
+  applyStaticI18n();
+  buildLangSelect();
+  await loadTools();
+  if (state.currentTool) {
+    const keep = state.currentTool.id;
+    const again = state.tools.find((t) => t.id === keep);
+    if (again) { state.currentTool = again; renderForm(); }
+  }
+}
+
+async function loadTools() {
+  try {
+    const data = await (await fetch("/api/tools?lang=" + encodeURIComponent(state.lang))).json();
+    state.tools = data.tools || [];
+    state.roots = data.roots || {};
+    renderToolList();
+  } catch (e) {
+    $("#tool-panel").innerHTML = "<p class='hint'>" + T("Failed to load tools: ") + e + "</p>";
+  }
+}
 const el = (tag, attrs = {}, children = []) => {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -36,14 +115,11 @@ async function init() {
     openPicker("dir", (p) => { $("#gallery-path").value = p; }, "modded"));
   $("#gallery-load").addEventListener("click", loadGallery);
 
-  try {
-    const data = await (await fetch("/api/tools")).json();
-    state.tools = data.tools || [];
-    state.roots = data.roots || {};
-    renderToolList();
-  } catch (e) {
-    $("#tool-panel").innerHTML = "<p class='hint'>Failed to load tools: " + e + "</p>";
-  }
+  state.lang = detectLang();
+  await loadI18n();
+  applyStaticI18n();
+  buildLangSelect();
+  await loadTools();
 }
 
 function switchTab(name) {
@@ -84,7 +160,7 @@ function renderForm() {
     const toggle = el("div", { class: "mode-toggle" });
     for (const m of modes) {
       const mb = el("button", {
-        text: m === "single" ? "Single file" : "Batch folder",
+        text: m === "single" ? T("Single file") : T("Batch folder"),
         onclick: () => { state.currentMode = m; renderForm(); },
       });
       if (m === state.currentMode) mb.classList.add("active");
@@ -98,7 +174,7 @@ function renderForm() {
     if (field.mode && field.mode !== state.currentMode) continue;
     form.appendChild(renderField(field));
   }
-  form.appendChild(el("button", { class: "run-btn", type: "submit", text: "Run" }));
+  form.appendChild(el("button", { class: "run-btn", type: "submit", text: T("Run") }));
   panel.appendChild(form);
 }
 
@@ -133,7 +209,7 @@ function renderField(field) {
     input.dataset.name = field.name;
     input.dataset.ftype = field.type;
     const browse = el("button", {
-      type: "button", text: "Browse",
+      type: "button", text: T("Browse"),
       onclick: () => openPicker(field.type, (p) => { input.value = p; }, field.root, input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
@@ -178,7 +254,7 @@ async function runTool() {
     if (f.mode && f.mode !== state.currentMode) continue;
     if (f.required && !String(params[f.name] ?? "").trim()) missing.push(f.label);
   }
-  if (missing.length) return alert("Please fill in: " + missing.join(", "));
+  if (missing.length) return alert(T("Please fill in: ") + missing.join(", "));
 
   openConsole(tool.label);
   let resp;
@@ -215,20 +291,20 @@ function streamJob(jobId) {
 
 async function cancelRun() {
   if (!state.jobId) return;
-  appendLog("[cancelling…]");
+  appendLog(T("[cancelling…]"));
   try { await fetch("/api/jobs/" + state.jobId + "/cancel", { method: "POST" }); } catch {}
 }
 
 function openConsole(title) {
   $("#console").classList.remove("hidden");
-  $("#console-title").textContent = title + " — running…";
+  $("#console-title").textContent = title + " — " + T("running…");
   $("#log").textContent = "";
   $("#cancel-btn").disabled = false;
   setProgress(0, 1);
 }
 function finishConsole(status) {
-  const label = status === "done" ? "done ✓" : status === "cancelled" ? "cancelled" : "error ✗";
-  $("#console-title").textContent = (state.currentTool ? state.currentTool.label : "Job") + " — " + label;
+  const label = status === "done" ? T("done ✓") : status === "cancelled" ? T("cancelled") : T("error ✗");
+  $("#console-title").textContent = (state.currentTool ? state.currentTool.label : T("Job")) + " — " + label;
   $("#cancel-btn").disabled = true;
 }
 function appendLog(line) {
@@ -245,7 +321,7 @@ function setProgress(done, total) {
 // ------------------------------------------------------------- file picker
 function openPicker(type, onPick, rootName, startPath) {
   state.picker = { type, onPick, cwd: "" };
-  $("#picker-title").textContent = type === "dir" ? "Choose a folder" : "Choose a bundle file";
+  $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : T("Choose a bundle file");
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";
   $("#picker").classList.remove("hidden");
   renderRoots();
@@ -266,7 +342,7 @@ async function navigate(path) {
   let data;
   try {
     data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path || ""))).json();
-  } catch (e) { alert("Cannot open: " + e); return; }
+  } catch (e) { alert(T("Cannot open: ") + e); return; }
   if (data.error) { alert(data.error); return; }
   state.picker.cwd = data.path;
   $("#picker-crumb").textContent = data.path;
@@ -301,19 +377,19 @@ function fmtSize(n) {
 async function loadGallery() {
   const path = $("#gallery-path").value;
   const grid = $("#gallery-grid");
-  grid.innerHTML = "<p class='hint'>Loading…</p>";
-  if (!path) { grid.innerHTML = "<p class='hint'>Pick a folder first.</p>"; return; }
+  grid.innerHTML = "<p class='hint'>" + T("Loading…") + "</p>";
+  if (!path) { grid.innerHTML = "<p class='hint'>" + T("Pick a folder first.") + "</p>"; return; }
   let data;
   try { data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path))).json(); }
-  catch (e) { grid.innerHTML = "<p class='hint'>Error: " + e + "</p>"; return; }
+  catch (e) { grid.innerHTML = "<p class='hint'>" + T("Error") + ": " + e + "</p>"; return; }
   if (data.error) { grid.innerHTML = "<p class='hint'>" + data.error + "</p>"; return; }
   const bundles = data.entries.filter((e) => !e.is_dir && e.is_bundle);
   grid.innerHTML = "";
-  if (!bundles.length) { grid.innerHTML = "<p class='hint'>No bundles here.</p>"; return; }
+  if (!bundles.length) { grid.innerHTML = "<p class='hint'>" + T("No bundles here.") + "</p>"; return; }
   for (const b of bundles) {
     const img = el("img", { src: "/api/thumb?path=" + encodeURIComponent(b.path), alt: b.name, loading: "lazy" });
     img.addEventListener("error", () => {
-      const ph = el("div", { class: "noimg", text: "no preview" });
+      const ph = el("div", { class: "noimg", text: T("no preview") });
       img.replaceWith(ph);
     });
     grid.appendChild(el("div", { class: "gcard" }, [img, el("div", { class: "cap", text: b.name })]));

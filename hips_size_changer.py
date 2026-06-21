@@ -4,6 +4,26 @@ from pathlib import Path
 from collections import Counter
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+try:
+    # Shared multi-language support (English default; Korean/Japanese optional).
+    # The tool still works standalone in English if the module is unavailable.
+    from sifas_i18n import (
+        tr as _tr, set_language as _set_lang, get_language as _get_lang,
+        language_options as _lang_opts,
+    )
+except Exception:  # noqa: BLE001
+    def _tr(s, **kw):
+        return s.format(**kw) if kw else s
+
+    def _set_lang(code, **kw):
+        return code
+
+    def _get_lang():
+        return "en"
+
+    def _lang_opts():
+        return [("en", "English")]
 try:
     import UnityPy
     from UnityPy.enums import TextureFormat
@@ -304,7 +324,6 @@ def name_transform_for_output(src_file: Path, out_root: Path, src_root: Path, pr
 
 def run_gui():
     root = tk.Tk()
-    root.title("LiveCoreMemberNodeScaling scaler (HipsSize)")
     root.geometry("860x620")
 
     mode = tk.StringVar(value="single")
@@ -346,8 +365,8 @@ def run_gui():
         p = filedialog.askdirectory(title=title)
         if p: var.set(p)
 
-    def show_log(lines, title="Result"):
-        win = tk.Toplevel(root); win.title(title); win.geometry("1100x700")
+    def show_log(lines, title=None):
+        win = tk.Toplevel(root); win.title(title or _tr("Result")); win.geometry("1100x700")
         frm = ttk.Frame(win); frm.pack(fill="both", expand=True, padx=8, pady=8)
         txt = tk.Text(frm, wrap="none")
         xsb = ttk.Scrollbar(frm, orient="horizontal", command=txt.xview)
@@ -359,9 +378,9 @@ def run_gui():
 
     def run_single():
         if not in_file.get():
-            messagebox.showerror("Error","Please select input bundle"); return
+            messagebox.showerror(_tr("Error"), _tr("Please select input bundle")); return
         if not out_file.get():
-            messagebox.showerror("Error","Please specify output path"); return
+            messagebox.showerror(_tr("Error"), _tr("Please specify output path")); return
         setv = parse_set(); addv = parse_add()
         scanned, changed, logs = modify_livecore_scaling(
             Path(in_file.get()), Path(out_file.get()),
@@ -371,9 +390,9 @@ def run_gui():
 
     def run_batch():
         if not in_dir.get():
-            messagebox.showerror("Error","Please select input folder"); return
+            messagebox.showerror(_tr("Error"), _tr("Please select input folder")); return
         if not out_dir.get():
-            messagebox.showerror("Error","Please specify output folder"); return
+            messagebox.showerror(_tr("Error"), _tr("Please specify output folder")); return
         setv = parse_set(); addv = parse_add()
         files = 0; total_scanned = 0; total_changed = 0; failed = 0
         for p in Path(in_dir.get()).rglob("*"):
@@ -387,53 +406,80 @@ def run_gui():
                 failed += 1
         show_log([f"[BATCH] files={files} scanned={total_scanned} changed={total_changed} failed={failed}"])
 
-    frm = ttk.Frame(root); frm.pack(fill="both", expand=True, padx=12, pady=12)
+    # The whole window is rebuilt when the language changes; the tk variables
+    # above live in this outer scope, so any text the user already typed is kept.
+    container = ttk.Frame(root); container.pack(fill="both", expand=True)
 
-    # Single
-    s = ttk.LabelFrame(frm, text="Single")
-    s.grid(row=0, column=0, columnspan=3, sticky="ew", pady=6)
-    ttk.Label(s, text="Input bundle").grid(row=0, column=0, sticky="w")
-    ttk.Entry(s, textvariable=in_file, width=60).grid(row=0, column=1, padx=6)
-    ttk.Button(s, text="Browse", command=lambda: pick_file(in_file,"Select input bundle")).grid(row=0, column=2)
-    ttk.Label(s, text="Output path").grid(row=1, column=0, sticky="w")
-    ttk.Entry(s, textvariable=out_file, width=60).grid(row=1, column=1, padx=6)
-    ttk.Button(s, text="Browse", command=lambda: pick_save_file(out_file,"Save output bundle")).grid(row=1, column=2)
-    ttk.Button(s, text="Run (Single)", command=run_single).grid(row=2, column=0, columnspan=3, pady=6)
+    def on_language(code):
+        _set_lang(code)
+        build()
 
-    # Batch
-    b = ttk.LabelFrame(frm, text="Batch")
-    b.grid(row=1, column=0, columnspan=3, sticky="ew", pady=6)
-    ttk.Label(b, text="Input dir").grid(row=0, column=0, sticky="w")
-    ttk.Entry(b, textvariable=in_dir, width=60).grid(row=0, column=1, padx=6)
-    ttk.Button(b, text="Browse", command=lambda: pick_dir(in_dir,"Select input folder")).grid(row=0, column=2)
-    ttk.Label(b, text="Output dir").grid(row=1, column=0, sticky="w")
-    ttk.Entry(b, textvariable=out_dir, width=60).grid(row=1, column=1, padx=6)
-    ttk.Button(b, text="Browse", command=lambda: pick_dir(out_dir,"Select output folder")).grid(row=1, column=2)
-    ttk.Label(b, text="Prefix").grid(row=2, column=0, sticky="w")
-    ttk.Entry(b, textvariable=out_prefix, width=18).grid(row=2, column=1, sticky="w")
-    ttk.Label(b, text="Suffix").grid(row=2, column=1, sticky="e")
-    ttk.Entry(b, textvariable=out_suffix, width=18).grid(row=2, column=2, sticky="w")
-    ttk.Button(b, text="Run (Batch)", command=run_batch).grid(row=3, column=0, columnspan=3, pady=6)
+    def build():
+        for w in container.winfo_children():
+            w.destroy()
+        root.title(_tr("LiveCoreMemberNodeScaling scaler (HipsSize)"))
 
-    # Options
-    o = ttk.LabelFrame(frm, text="Options")
-    o.grid(row=2, column=0, columnspan=3, sticky="ew", pady=6)
-    ttk.Label(o, text="Target GameObject name").grid(row=0, column=0, sticky="w")
-    ttk.Entry(o, textvariable=target_name, width=24).grid(row=0, column=1, sticky="w")
+        # language picker
+        bar = ttk.Frame(container); bar.pack(fill="x", padx=12, pady=(10, 0))
+        ttk.Label(bar, text=_tr("Language")).pack(side="left")
+        names = [name for _code, name in _lang_opts()]
+        code_by_name = {name: code for code, name in _lang_opts()}
+        name_by_code = {code: name for code, name in _lang_opts()}
+        lang_display = tk.StringVar(value=name_by_code.get(_get_lang(), names[0]))
+        cb = ttk.Combobox(bar, textvariable=lang_display, values=names,
+                          state="readonly", width=10)
+        cb.pack(side="left", padx=(6, 0))
+        cb.bind("<<ComboboxSelected>>",
+                lambda e: on_language(code_by_name[lang_display.get()]))
 
-    ttk.Label(o, text="Set scaledValue (x,y,z)").grid(row=1, column=0, sticky="w")
-    ttk.Entry(o, textvariable=set_x, width=10).grid(row=1, column=1, sticky="w")
-    ttk.Entry(o, textvariable=set_y, width=10).grid(row=1, column=1, sticky="w", padx=(80,0))
-    ttk.Entry(o, textvariable=set_z, width=10).grid(row=1, column=1, sticky="w", padx=(160,0))
-    ttk.Label(o, text="Add Δ (dx,dy,dz)").grid(row=2, column=0, sticky="w")
-    ttk.Entry(o, textvariable=add_dx, width=10).grid(row=2, column=1, sticky="w")
-    ttk.Entry(o, textvariable=add_dy, width=10).grid(row=2, column=1, sticky="w", padx=(80,0))
-    ttk.Entry(o, textvariable=add_dz, width=10).grid(row=2, column=1, sticky="w", padx=(160,0))
+        frm = ttk.Frame(container); frm.pack(fill="both", expand=True, padx=12, pady=12)
 
-    for r in range(3):
-        frm.rowconfigure(r, weight=0)
-    frm.columnconfigure(1, weight=1)
+        # Single
+        s = ttk.LabelFrame(frm, text=_tr("Single"))
+        s.grid(row=0, column=0, columnspan=3, sticky="ew", pady=6)
+        ttk.Label(s, text=_tr("Input bundle")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(s, textvariable=in_file, width=60).grid(row=0, column=1, padx=6)
+        ttk.Button(s, text=_tr("Browse"), command=lambda: pick_file(in_file, _tr("Select input bundle"))).grid(row=0, column=2)
+        ttk.Label(s, text=_tr("Output path")).grid(row=1, column=0, sticky="w")
+        ttk.Entry(s, textvariable=out_file, width=60).grid(row=1, column=1, padx=6)
+        ttk.Button(s, text=_tr("Browse"), command=lambda: pick_save_file(out_file, _tr("Save output bundle"))).grid(row=1, column=2)
+        ttk.Button(s, text=_tr("Run (Single)"), command=run_single).grid(row=2, column=0, columnspan=3, pady=6)
 
+        # Batch
+        b = ttk.LabelFrame(frm, text=_tr("Batch"))
+        b.grid(row=1, column=0, columnspan=3, sticky="ew", pady=6)
+        ttk.Label(b, text=_tr("Input dir")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(b, textvariable=in_dir, width=60).grid(row=0, column=1, padx=6)
+        ttk.Button(b, text=_tr("Browse"), command=lambda: pick_dir(in_dir, _tr("Select input folder"))).grid(row=0, column=2)
+        ttk.Label(b, text=_tr("Output dir")).grid(row=1, column=0, sticky="w")
+        ttk.Entry(b, textvariable=out_dir, width=60).grid(row=1, column=1, padx=6)
+        ttk.Button(b, text=_tr("Browse"), command=lambda: pick_dir(out_dir, _tr("Select output folder"))).grid(row=1, column=2)
+        ttk.Label(b, text=_tr("Prefix")).grid(row=2, column=0, sticky="w")
+        ttk.Entry(b, textvariable=out_prefix, width=18).grid(row=2, column=1, sticky="w")
+        ttk.Label(b, text=_tr("Suffix")).grid(row=2, column=1, sticky="e")
+        ttk.Entry(b, textvariable=out_suffix, width=18).grid(row=2, column=2, sticky="w")
+        ttk.Button(b, text=_tr("Run (Batch)"), command=run_batch).grid(row=3, column=0, columnspan=3, pady=6)
+
+        # Options
+        o = ttk.LabelFrame(frm, text=_tr("Options"))
+        o.grid(row=2, column=0, columnspan=3, sticky="ew", pady=6)
+        ttk.Label(o, text=_tr("Target GameObject name")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(o, textvariable=target_name, width=24).grid(row=0, column=1, sticky="w")
+
+        ttk.Label(o, text=_tr("Set scaledValue (x,y,z)")).grid(row=1, column=0, sticky="w")
+        ttk.Entry(o, textvariable=set_x, width=10).grid(row=1, column=1, sticky="w")
+        ttk.Entry(o, textvariable=set_y, width=10).grid(row=1, column=1, sticky="w", padx=(80,0))
+        ttk.Entry(o, textvariable=set_z, width=10).grid(row=1, column=1, sticky="w", padx=(160,0))
+        ttk.Label(o, text=_tr("Add Δ (dx,dy,dz)")).grid(row=2, column=0, sticky="w")
+        ttk.Entry(o, textvariable=add_dx, width=10).grid(row=2, column=1, sticky="w")
+        ttk.Entry(o, textvariable=add_dy, width=10).grid(row=2, column=1, sticky="w", padx=(80,0))
+        ttk.Entry(o, textvariable=add_dz, width=10).grid(row=2, column=1, sticky="w", padx=(160,0))
+
+        for r in range(3):
+            frm.rowconfigure(r, weight=0)
+        frm.columnconfigure(1, weight=1)
+
+    build()
     root.mainloop()
 
 if __name__ == "__main__":

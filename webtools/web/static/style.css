@@ -27,6 +27,11 @@ header {
 }
 header h1 { font-size: 18px; margin: 0; }
 .tabs { display: flex; gap: 6px; margin-left: auto; }
+.lang-pick { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted, #999); }
+.lang-pick select {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  padding: 5px 8px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
 .tab {
   background: var(--panel2); color: var(--text); border: 1px solid var(--line);
   padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px;
