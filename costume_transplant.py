@@ -92,6 +92,145 @@ import argparse
 import importlib
 import subprocess
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own; the chosen
+# language is remembered/shared via ~/.config/sifas_modding_tools/config.json.
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "SIFAS Costume Transplant": "SIFAS 코스튬 이식",
+        "Donor  (costume source)": "공여 (코스튬 원본)",
+        "Target (wearer / identity)": "대상 (착용자 / 정체성)",
+        "Output bundle": "출력 번들",
+        "Browse…": "찾아보기…",
+        "Options": "옵션",
+        "Preserve appendage jiggle physics (collar / tie / wings)": "부속물 흔들림 물리 유지 (옷깃 / 넥타이 / 날개)",
+        "Restore body collision for those bones": "해당 본의 바디 콜리전 복원",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "바디 본을 코스튬의 기본 포즈에 재정렬 (어긋난 리본/치마 보정)",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "바디 메시를 월드 공간으로 (흔들리는 리본/치마가 올바르게 렌더링되도록)",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "재정렬된 본에 NodeScaling 재고정 (체형 유지; 게임 내 리본이 가슴으로 처지는 현상 방지)",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "공유 코스튬 부위(치마 / 리본)에 공여의 스윙 물리 사용 — 가슴은 항상 착용자 것 유지",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "마스크 / 보드 얼굴 모델(리나쨩 보드) 특수 처리: 자동 감지, 머리 + 체형 스케일링 보호",
+        "Transplant": "이식",
+        "Save output bundle": "출력 번들 저장",
+        "Select bundle": "번들 선택",
+        "[error] choose donor, target and output first.\n": "[오류] 먼저 공여·대상·출력을 선택하세요.\n",
+        "\n[success] done — verified ✓\n": "\n[성공] 완료 — 검증됨 ✓\n",
+        "\n[error] output has dangling references!\n": "\n[오류] 출력에 끊긴 참조가 있습니다!\n",
+        "standard model — no special handling needed": "표준 모델 — 특수 처리 불필요",
+    },
+    "ja": {
+        "Language": "言語",
+        "SIFAS Costume Transplant": "SIFAS 衣装移植",
+        "Donor  (costume source)": "提供元（衣装ソース）",
+        "Target (wearer / identity)": "対象（着用者 / アイデンティティ）",
+        "Output bundle": "出力バンドル",
+        "Browse…": "参照…",
+        "Options": "オプション",
+        "Preserve appendage jiggle physics (collar / tie / wings)": "付属物のジグル物理を保持（襟 / タイ / 翼）",
+        "Restore body collision for those bones": "該当ボーンのボディコリジョンを復元",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "ボディボーンを衣装の基本ポーズに再整列（ずれたリボン/スカートを補正）",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "ボディメッシュをワールド空間に（揺れるリボン/スカートが正しく描画されるよう）",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "再整列したボーンにNodeScalingを再アンカー（体型を維持; ゲーム内でリボンが胸に落ちるのを防止）",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "共有衣装パーツ（スカート / リボン）に提供元のスイング物理を使用 — バストは常に着用者のもの",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "マスク / ボードフェイスモデル（りなちゃんボード）の特別処理: 自動検出、頭部 + 体型スケーリングを保護",
+        "Transplant": "移植",
+        "Save output bundle": "出力バンドルを保存",
+        "Select bundle": "バンドルを選択",
+        "[error] choose donor, target and output first.\n": "[エラー] 先に提供元・対象・出力を選択してください。\n",
+        "\n[success] done — verified ✓\n": "\n[成功] 完了 — 検証済み ✓\n",
+        "\n[error] output has dangling references!\n": "\n[エラー] 出力に未解決の参照があります！\n",
+        "standard model — no special handling needed": "標準モデル — 特別な処理は不要",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
 
 # --------------------------------------------------------------------------
 # dependency bootstrap (mirrors sifas_mesh_baker.py so Termux works too)
@@ -1482,8 +1621,34 @@ def run_gui():
     from tkinter import ttk, filedialog, scrolledtext
 
     root = tk.Tk()
-    root.title("SIFAS Costume Transplant")
     root.geometry("760x560")
+
+    # live language switching (re-apply registered widget texts; no rebuild)
+    _i18n_widgets = []
+
+    def _reg(widget, key, kind="text"):
+        _i18n_widgets.append((widget, key, kind))
+        return widget
+
+    def _apply_i18n():
+        root.title(_tr("SIFAS Costume Transplant"))
+        for w, key, kind in _i18n_widgets:
+            try:
+                w.configure(**{kind: _tr(key)})
+            except Exception:
+                pass
+
+    topbar = ttk.Frame(root)
+    topbar.pack(fill="x", padx=10, pady=(8, 0))
+    _names = [n for _c, n in _lang_opts()]
+    _code_by_name = {n: c for c, n in _lang_opts()}
+    _name_by_code = {c: n for c, n in _lang_opts()}
+    _lang_var = tk.StringVar(value=_name_by_code.get(_get_lang(), _names[0]))
+    _reg(ttk.Label(topbar, text=_tr("Language")), "Language").pack(side="left")
+    _lang_cb = ttk.Combobox(topbar, textvariable=_lang_var, values=_names, state="readonly", width=10)
+    _lang_cb.pack(side="left", padx=(6, 0))
+    _lang_cb.bind("<<ComboboxSelected>>",
+                  lambda e: (_set_lang(_code_by_name[_lang_var.get()]), _apply_i18n()))
 
     donor_v = tk.StringVar()
     target_v = tk.StringVar()
@@ -1507,11 +1672,11 @@ def run_gui():
     def pick(var, save=False):
         if save:
             path = filedialog.asksaveasfilename(
-                title="Save output bundle", defaultextension=".unity",
+                title=_tr("Save output bundle"), defaultextension=".unity",
                 filetypes=[("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")])
         else:
             path = filedialog.askopenfilename(
-                title="Select bundle",
+                title=_tr("Select bundle"),
                 filetypes=[("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")])
         if path:
             var.set(path)
@@ -1525,7 +1690,7 @@ def run_gui():
         ("Output bundle", out_v, True),
     ]
     for i, (label, var, save) in enumerate(rows):
-        ttk.Label(frm, text=label, width=24).grid(row=i, column=0, sticky="w", pady=3)
+        _reg(ttk.Label(frm, text=_tr(label), width=24), label).grid(row=i, column=0, sticky="w", pady=3)
         ent = ttk.Entry(frm, textvariable=var, width=62)
         ent.grid(row=i, column=1, padx=4, sticky="we")
 
@@ -1534,39 +1699,39 @@ def run_gui():
             e.after_idle(lambda: e.xview_moveto(1.0))
         var.trace_add("write", _show_end)
 
-        ttk.Button(frm, text="Browse…",
-                   command=lambda v=var, s=save: pick(v, s)).grid(row=i, column=2)
+        _reg(ttk.Button(frm, text=_tr("Browse…"),
+                        command=lambda v=var, s=save: pick(v, s)), "Browse…").grid(row=i, column=2)
 
-    opts = ttk.LabelFrame(root, text="Options", padding=10)
+    opts = _reg(ttk.LabelFrame(root, text=_tr("Options"), padding=10), "Options")
     opts.pack(fill="x", padx=10, pady=(4, 0))
-    cb_phys = ttk.Checkbutton(opts, variable=physics_v,
-                              text="Preserve appendage jiggle physics (collar / tie / wings)")
+    _CB_PHYS = "Preserve appendage jiggle physics (collar / tie / wings)"
+    _CB_COL = "Restore body collision for those bones"
+    _CB_REALIGN = "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)"
+    _CB_WORLD = "World-space the body mesh (so swinging ribbon/skirt render correctly)"
+    _CB_NODE = ("Re-anchor NodeScaling to realigned bones (keeps body shaping; "
+                "stops the in-game ribbon dropping to the chest)")
+    _CB_CPHYS = ("Use the donor's swing physics for shared costume parts (skirt / "
+                 "ribbon) — the bust always stays the wearer's")
+    _CB_MASK = ("Special handling for masked / board-face models (Rina-chan board): "
+                "auto-detect, protect head + body-shape scaling")
+    cb_phys = _reg(ttk.Checkbutton(opts, variable=physics_v, text=_tr(_CB_PHYS)), _CB_PHYS)
     cb_phys.grid(row=0, column=0, sticky="w", columnspan=2)
-    cb_col = ttk.Checkbutton(opts, variable=collision_v,
-                             text="Restore body collision for those bones")
+    cb_col = _reg(ttk.Checkbutton(opts, variable=collision_v, text=_tr(_CB_COL)), _CB_COL)
     cb_col.grid(row=1, column=0, sticky="w", padx=(22, 0))
-    ttk.Checkbutton(opts, variable=realign_v,
-                    text="Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)"
-                    ).grid(row=2, column=0, sticky="w", columnspan=2)
+    _reg(ttk.Checkbutton(opts, variable=realign_v, text=_tr(_CB_REALIGN)), _CB_REALIGN
+         ).grid(row=2, column=0, sticky="w", columnspan=2)
     worldspace_v = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opts, variable=worldspace_v,
-                    text="World-space the body mesh (so swinging ribbon/skirt render correctly)"
-                    ).grid(row=3, column=0, sticky="w", columnspan=2)
+    _reg(ttk.Checkbutton(opts, variable=worldspace_v, text=_tr(_CB_WORLD)), _CB_WORLD
+         ).grid(row=3, column=0, sticky="w", columnspan=2)
     nodescale_v = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opts, variable=nodescale_v,
-                    text="Re-anchor NodeScaling to realigned bones (keeps body shaping; "
-                         "stops the in-game ribbon dropping to the chest)"
-                    ).grid(row=4, column=0, sticky="w", columnspan=2)
+    _reg(ttk.Checkbutton(opts, variable=nodescale_v, text=_tr(_CB_NODE)), _CB_NODE
+         ).grid(row=4, column=0, sticky="w", columnspan=2)
     costume_phys_v = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opts, variable=costume_phys_v,
-                    text="Use the donor's swing physics for shared costume parts (skirt / "
-                         "ribbon) — the bust always stays the wearer's"
-                    ).grid(row=5, column=0, sticky="w", columnspan=2)
+    _reg(ttk.Checkbutton(opts, variable=costume_phys_v, text=_tr(_CB_CPHYS)), _CB_CPHYS
+         ).grid(row=5, column=0, sticky="w", columnspan=2)
     mask_v = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opts, variable=mask_v,
-                    text="Special handling for masked / board-face models (Rina-chan board): "
-                         "auto-detect, protect head + body-shape scaling"
-                    ).grid(row=6, column=0, sticky="w", columnspan=2)
+    _reg(ttk.Checkbutton(opts, variable=mask_v, text=_tr(_CB_MASK)), _CB_MASK
+         ).grid(row=6, column=0, sticky="w", columnspan=2)
     mask_status = ttk.Label(opts, text="", foreground="#207a3c")
     mask_status.grid(row=7, column=0, sticky="w", columnspan=2, padx=(22, 0))
 
@@ -1612,7 +1777,7 @@ def run_gui():
                           f"({info['face_parts']} face parts, anchor "
                           f"{sorted(info['anchor_bones'])}) — special handling applies when checked"))
             else:
-                msgq.put(("__mask_status__", "standard model — no special handling needed"))
+                msgq.put(("__mask_status__", _tr("standard model — no special handling needed")))
         threading.Thread(target=_probe, daemon=True).start()
     target_v.trace_add("write", detect_target_model)
 
@@ -1623,7 +1788,7 @@ def run_gui():
         def flush(self):
             pass
 
-    run_btn = ttk.Button(frm, text="Transplant")
+    run_btn = _reg(ttk.Button(frm, text=_tr("Transplant")), "Transplant")
 
     def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys):
         old = sys.stdout
@@ -1634,8 +1799,8 @@ def run_gui():
                        fix_nodescaling=nscale, mask_handling=maskh,
                        costume_physics=cphys)
             ok = validate(o, verbose=True)
-            print("\n[success] done — verified ✓\n" if ok
-                  else "\n[error] output has dangling references!\n")
+            print(_tr("\n[success] done — verified ✓\n") if ok
+                  else _tr("\n[error] output has dangling references!\n"))
         except Exception as ex:
             import traceback
             print("\n[error] " + "".join(traceback.format_exception(ex)))
@@ -1646,7 +1811,7 @@ def run_gui():
     def go():
         d, t, o = donor_v.get().strip(), target_v.get().strip(), out_v.get().strip()
         if not (d and t and o):
-            msgq.put("[error] choose donor, target and output first.\n")
+            msgq.put(_tr("[error] choose donor, target and output first.\n"))
             return
         log_box.delete("1.0", "end")
         run_btn.configure(state="disabled")
