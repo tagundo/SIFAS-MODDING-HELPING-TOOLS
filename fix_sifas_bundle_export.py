@@ -37,6 +37,146 @@ import argparse
 import importlib
 import subprocess
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own. The chosen
+# language is remembered (and shared with the other SIFAS tools) via a small
+# JSON config — no extra module required.
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "SIFAS Bundle Mesh Normalizer": "SIFAS 번들 메시 노멀라이저",
+        "Single": "단일",
+        "Batch": "일괄",
+        "Input .unity bundle": "입력 .unity 번들",
+        "Output (fixed) bundle": "출력(수정된) 번들",
+        "Browse…": "찾아보기…",
+        "Normalize": "노멀라이즈",
+        "Bundles (Add files… or Add folder…):": "번들 (파일 추가… 또는 폴더 추가…):",
+        "Add files…": "파일 추가…",
+        "Add folder…": "폴더 추가…",
+        "Remove selected": "선택 항목 제거",
+        "Clear": "비우기",
+        "Output folder:": "출력 폴더:",
+        "Normalize all": "전체 노멀라이즈",
+        "Bakes body meshes into world space so AssetStudio/Blender export correctly. In-game rendering is unchanged.":
+            "바디 메시를 월드 공간으로 베이크해 AssetStudio/Blender에서 올바르게 익스포트되게 합니다. 게임 내 렌더링은 변하지 않습니다.",
+        "Save fixed bundle": "수정된 번들 저장",
+        "Select bundle": "번들 선택",
+        "Select bundles": "번들 선택",
+        "Select a folder of bundles": "번들 폴더 선택",
+        "Output folder": "출력 폴더",
+        "[error] choose an input bundle and an output path.\n": "[오류] 입력 번들과 출력 경로를 선택하세요.\n",
+        "[error] add at least one bundle and choose an output folder.\n": "[오류] 번들을 하나 이상 추가하고 출력 폴더를 선택하세요.\n",
+        "\n[success] normalized — in-game render unchanged ✓\n": "\n[성공] 노멀라이즈 완료 — 게임 내 렌더링 변화 없음 ✓\n",
+        "\n[warn] validation reported drift — inspect before use\n": "\n[경고] 검증에서 drift 감지 — 사용 전 확인하세요\n",
+    },
+    "ja": {
+        "Language": "言語",
+        "SIFAS Bundle Mesh Normalizer": "SIFAS バンドルメッシュ正規化ツール",
+        "Single": "単一",
+        "Batch": "一括",
+        "Input .unity bundle": "入力 .unity バンドル",
+        "Output (fixed) bundle": "出力（修正済み）バンドル",
+        "Browse…": "参照…",
+        "Normalize": "正規化",
+        "Bundles (Add files… or Add folder…):": "バンドル（ファイル追加… またはフォルダ追加…）:",
+        "Add files…": "ファイル追加…",
+        "Add folder…": "フォルダ追加…",
+        "Remove selected": "選択を削除",
+        "Clear": "クリア",
+        "Output folder:": "出力フォルダ:",
+        "Normalize all": "すべて正規化",
+        "Bakes body meshes into world space so AssetStudio/Blender export correctly. In-game rendering is unchanged.":
+            "ボディメッシュをワールド空間にベイクし、AssetStudio/Blender で正しくエクスポートできるようにします。ゲーム内の描画は変わりません。",
+        "Save fixed bundle": "修正済みバンドルを保存",
+        "Select bundle": "バンドルを選択",
+        "Select bundles": "バンドルを選択",
+        "Select a folder of bundles": "バンドルのフォルダを選択",
+        "Output folder": "出力フォルダ",
+        "[error] choose an input bundle and an output path.\n": "[エラー] 入力バンドルと出力パスを選択してください。\n",
+        "[error] add at least one bundle and choose an output folder.\n": "[エラー] バンドルを1つ以上追加し、出力フォルダを選択してください。\n",
+        "\n[success] normalized — in-game render unchanged ✓\n": "\n[成功] 正規化完了 — ゲーム内描画は不変 ✓\n",
+        "\n[warn] validation reported drift — inspect before use\n": "\n[警告] 検証で drift を検出 — 使用前に確認してください\n",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
 
 def _pip(p):
     for extra in (["--break-system-packages", "-q"], ["-q"]):
@@ -378,8 +518,41 @@ def run_gui():
     from tkinter import ttk, filedialog, scrolledtext
 
     root = tk.Tk()
-    root.title("SIFAS Bundle Mesh Normalizer")
     root.geometry("760x600")
+
+    # live language switching (no rebuild; just re-apply registered widget texts)
+    _i18n_widgets = []   # (widget, key, kind)
+    _tab_setters = []    # callables that re-set notebook tab labels
+
+    def _reg(widget, key, kind="text"):
+        _i18n_widgets.append((widget, key, kind))
+        return widget
+
+    def _apply_i18n():
+        root.title(_tr("SIFAS Bundle Mesh Normalizer"))
+        for w, key, kind in _i18n_widgets:
+            try:
+                w.configure(**{kind: _tr(key)})
+            except Exception:
+                pass
+        for s in _tab_setters:
+            try:
+                s()
+            except Exception:
+                pass
+
+    # language picker (top-right)
+    topbar = ttk.Frame(root)
+    topbar.pack(fill="x", padx=10, pady=(8, 0))
+    _names = [n for _c, n in _lang_opts()]
+    _code_by_name = {n: c for c, n in _lang_opts()}
+    _name_by_code = {c: n for c, n in _lang_opts()}
+    _lang_var = tk.StringVar(value=_name_by_code.get(_get_lang(), _names[0]))
+    _reg(ttk.Label(topbar, text=_tr("Language")), "Language").pack(side="left")
+    _lang_cb = ttk.Combobox(topbar, textvariable=_lang_var, values=_names, state="readonly", width=10)
+    _lang_cb.pack(side="left", padx=(6, 0))
+    _lang_cb.bind("<<ComboboxSelected>>",
+                  lambda e: (_set_lang(_code_by_name[_lang_var.get()]), _apply_i18n()))
 
     msgq = queue.Queue()
     busy = {"n": 0}
@@ -417,7 +590,8 @@ def run_gui():
     nb.pack(fill="x", padx=10, pady=(10, 4))
 
     # ---------------- Single tab ----------------
-    single = ttk.Frame(nb, padding=8); nb.add(single, text="Single")
+    single = ttk.Frame(nb, padding=8); nb.add(single, text=_tr("Single"))
+    _tab_setters.append(lambda: nb.tab(single, text=_tr("Single")))
     in_v, out_v = tk.StringVar(), tk.StringVar()
 
     def suggest_out(*_):
@@ -427,39 +601,40 @@ def run_gui():
 
     def pick(var, save=False):
         ft = [("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")]
-        path = (filedialog.asksaveasfilename(title="Save fixed bundle",
+        path = (filedialog.asksaveasfilename(title=_tr("Save fixed bundle"),
                                              defaultextension=".unity", filetypes=ft) if save
-                else filedialog.askopenfilename(title="Select bundle", filetypes=ft))
+                else filedialog.askopenfilename(title=_tr("Select bundle"), filetypes=ft))
         if path:
             var.set(path); suggest_out()
 
     for i, (label, var, save) in enumerate(
             [("Input .unity bundle", in_v, False), ("Output (fixed) bundle", out_v, True)]):
-        ttk.Label(single, text=label, width=20).grid(row=i, column=0, sticky="w", pady=3)
+        _reg(ttk.Label(single, text=_tr(label), width=20), label).grid(row=i, column=0, sticky="w", pady=3)
         ttk.Entry(single, textvariable=var, width=58).grid(row=i, column=1, padx=4)
-        ttk.Button(single, text="Browse…",
-                   command=lambda v=var, s=save: pick(v, s)).grid(row=i, column=2)
+        _reg(ttk.Button(single, text=_tr("Browse…"),
+                        command=lambda v=var, s=save: pick(v, s)), "Browse…").grid(row=i, column=2)
 
     def single_go():
         s, o = in_v.get().strip(), out_v.get().strip()
         if not (s and o):
-            msgq.put("[error] choose an input bundle and an output path.\n"); return
+            msgq.put(_tr("[error] choose an input bundle and an output path.\n")); return
         log_box.delete("1.0", "end")
 
         def job():
             normalize(s, o, verbose=True)
             ok = validate(s, o, verbose=True)
-            print("\n[success] normalized — in-game render unchanged ✓\n" if ok
-                  else "\n[warn] validation reported drift — inspect before use\n")
+            print(_tr("\n[success] normalized — in-game render unchanged ✓\n") if ok
+                  else _tr("\n[warn] validation reported drift — inspect before use\n"))
         run_thread(job)
 
-    single_btn = ttk.Button(single, text="Normalize", command=single_go)
+    single_btn = _reg(ttk.Button(single, text=_tr("Normalize"), command=single_go), "Normalize")
     single_btn.grid(row=2, column=1, sticky="e", pady=6)
 
     # ---------------- Batch tab ----------------
-    batch = ttk.Frame(nb, padding=8); nb.add(batch, text="Batch")
-    ttk.Label(batch, text="Bundles (Add files… or Add folder…):").grid(
-        row=0, column=0, columnspan=4, sticky="w")
+    batch = ttk.Frame(nb, padding=8); nb.add(batch, text=_tr("Batch"))
+    _tab_setters.append(lambda: nb.tab(batch, text=_tr("Batch")))
+    _reg(ttk.Label(batch, text=_tr("Bundles (Add files… or Add folder…):")),
+         "Bundles (Add files… or Add folder…):").grid(row=0, column=0, columnspan=4, sticky="w")
     lb = tk.Listbox(batch, height=8, width=74, selectmode="extended")
     lb.grid(row=1, column=0, columnspan=4, sticky="we", pady=3)
 
@@ -476,42 +651,43 @@ def run_gui():
 
     def add_files():
         add_paths(filedialog.askopenfilenames(
-            title="Select bundles",
+            title=_tr("Select bundles"),
             filetypes=[("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")]))
 
     def add_folder():
-        d = filedialog.askdirectory(title="Select a folder of bundles")
+        d = filedialog.askdirectory(title=_tr("Select a folder of bundles"))
         if d:
             add_paths([d])
 
-    ttk.Button(batch, text="Add files…", command=add_files).grid(row=2, column=0, sticky="w")
-    ttk.Button(batch, text="Add folder…", command=add_folder).grid(row=2, column=1, sticky="w")
-    ttk.Button(batch, text="Remove selected",
-               command=lambda: [lb.delete(i) for i in reversed(lb.curselection())]).grid(row=2, column=2, sticky="w")
-    ttk.Button(batch, text="Clear", command=lambda: lb.delete(0, "end")).grid(row=2, column=3, sticky="w")
+    _reg(ttk.Button(batch, text=_tr("Add files…"), command=add_files), "Add files…").grid(row=2, column=0, sticky="w")
+    _reg(ttk.Button(batch, text=_tr("Add folder…"), command=add_folder), "Add folder…").grid(row=2, column=1, sticky="w")
+    _reg(ttk.Button(batch, text=_tr("Remove selected"),
+                    command=lambda: [lb.delete(i) for i in reversed(lb.curselection())]), "Remove selected").grid(row=2, column=2, sticky="w")
+    _reg(ttk.Button(batch, text=_tr("Clear"), command=lambda: lb.delete(0, "end")), "Clear").grid(row=2, column=3, sticky="w")
 
     bout_v = tk.StringVar()
-    ttk.Label(batch, text="Output folder:", width=20).grid(row=3, column=0, sticky="w", pady=(8, 3))
+    _reg(ttk.Label(batch, text=_tr("Output folder:"), width=20), "Output folder:").grid(row=3, column=0, sticky="w", pady=(8, 3))
     ttk.Entry(batch, textvariable=bout_v, width=58).grid(row=3, column=1, columnspan=2, padx=4, sticky="we")
-    ttk.Button(batch, text="Browse…",
-               command=lambda: bout_v.set(filedialog.askdirectory(title="Output folder") or bout_v.get())
-               ).grid(row=3, column=3)
+    _reg(ttk.Button(batch, text=_tr("Browse…"),
+                    command=lambda: bout_v.set(filedialog.askdirectory(title=_tr("Output folder")) or bout_v.get())
+                    ), "Browse…").grid(row=3, column=3)
 
     def batch_go():
         files = list(lb.get(0, "end"))
         outdir = bout_v.get().strip()
         if not files or not outdir:
-            msgq.put("[error] add at least one bundle and choose an output folder.\n"); return
+            msgq.put(_tr("[error] add at least one bundle and choose an output folder.\n")); return
         log_box.delete("1.0", "end")
         run_thread(lambda: normalize_batch(files, outdir, verbose=True))
 
-    batch_btn = ttk.Button(batch, text="Normalize all", command=batch_go)
+    batch_btn = _reg(ttk.Button(batch, text=_tr("Normalize all"), command=batch_go), "Normalize all")
     batch_btn.grid(row=4, column=1, sticky="e", pady=6)
 
     # ---------------- shared log ----------------
-    ttk.Label(root, padding=(10, 0), foreground="#555",
-              text="Bakes body meshes into world space so AssetStudio/Blender export "
-                   "correctly. In-game rendering is unchanged.").pack(anchor="w")
+    _reg(ttk.Label(root, padding=(10, 0), foreground="#555",
+                   text=_tr("Bakes body meshes into world space so AssetStudio/Blender export "
+                            "correctly. In-game rendering is unchanged.")),
+         "Bakes body meshes into world space so AssetStudio/Blender export correctly. In-game rendering is unchanged.").pack(anchor="w")
     log_box = scrolledtext.ScrolledText(root, height=16, wrap="word", font=("TkFixedFont", 9))
     log_box.pack(fill="both", expand=True, padx=10, pady=8)
 
