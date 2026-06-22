@@ -17,6 +17,207 @@ import base64
 import tempfile
 import platform as _platform
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own; the chosen
+# language is remembered/shared via ~/.config/sifas_modding_tools/config.json.
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_PK_PLATFORM_NOTE = ("Platform is read from each bundle's Unity header. Pairs are matched by "
+                     "filename ignoring apk/android/ios tokens.")
+_PK_DONE_MSG = "Processing completed:\n✅ Successful: {succ}\n❌ Failed: {fail}\n\n{loc}\n\nOpen output folder?"
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "Unity Asset Bundle Mod Packer": "Unity 에셋 번들 모드 패커",
+        "Unity Asset Bundle Mod Packer (Rina Auto-Pair)": "Unity 에셋 번들 모드 패커 (리나 자동 페어링)",
+        " [UnityPy installation required]": " [UnityPy 설치 필요]",
+        "Install required modules": "필수 모듈 설치",
+        "Processing Mode": "처리 모드",
+        "Single File Mode": "단일 파일 모드",
+        "Batch Mode (Multiple Files)": "일괄 모드 (여러 파일)",
+        "File Selection": "파일 선택",
+        "Asset Bundle File:": "에셋 번들 파일:",
+        "Browse": "찾아보기",
+        "📁 Add Files": "📁 파일 추가",
+        "📂 Add Folder": "📂 폴더 추가",
+        "📥 Scan 'modded'": "📥 'modded' 스캔",
+        "🗑️ Clear All": "🗑️ 전체 비우기",
+        "Preview": "미리보기",
+        "select a file": "파일을 선택하세요",
+        "Remove Selected": "선택 항목 제거",
+        "Output Settings": "출력 설정",
+        "Output to location where target Bundle exists": "대상 번들이 있는 위치에 출력",
+        "Output Directory:": "출력 디렉터리:",
+        "Settings": "설정",
+        "Thumbnail Size:": "썸네일 크기:",
+        "px": "px",
+        "Auto-detect Character ID (texture/filename)": "캐릭터 ID 자동 감지 (텍스처/파일명)",
+        "Manual Character ID:": "수동 캐릭터 ID:",
+        "Platform (Android / iOS)": "플랫폼 (Android / iOS)",
+        "Append platform suffix to zip name (_apk / _ios)": "zip 이름에 플랫폼 접미사 추가 (_apk / _ios)",
+        "Combine detected Android+iOS pairs into one zip (name_apk_ios.zip)":
+            "감지된 Android+iOS 쌍을 하나의 zip으로 결합 (name_apk_ios.zip)",
+        _PK_PLATFORM_NOTE: "플랫폼은 각 번들의 Unity 헤더에서 읽습니다. 쌍은 apk/android/ios 토큰을 무시한 파일명으로 매칭됩니다.",
+        "🚀 Create Mod Package(s)": "🚀 모드 패키지 생성",
+        "🚀 Create Mod Package(s) (UnityPy/Pillow required)": "🚀 모드 패키지 생성 (UnityPy/Pillow 필요)",
+        "🚀 Create Mod Package": "🚀 모드 패키지 생성",
+        "🚀 Create Mod Packages": "🚀 모드 패키지 생성",
+        "🔄 Processing...": "🔄 처리 중...",
+        "Progress": "진행 상황",
+        "Overall Progress:": "전체 진행:",
+        "0 / 0 files": "0 / 0 파일",
+        "Current File:": "현재 파일:",
+        "Ready": "준비됨",
+        "Processing Log": "처리 로그",
+        "Select Asset Bundle File": "에셋 번들 파일 선택",
+        "Select Asset Bundle Files": "에셋 번들 파일 선택",
+        "Select Folder": "폴더 선택",
+        "Select Output Directory": "출력 디렉터리 선택",
+        "Scan 'modded'": "'modded' 스캔",
+        "No Unity asset bundles found in:\n{modded}": "다음 위치에서 Unity 에셋 번들을 찾을 수 없습니다:\n{modded}",
+        "Error": "오류",
+        "Please add files.": "파일을 추가하세요.",
+        "Please select valid files.": "올바른 파일을 선택하세요.",
+        "Processing Complete": "처리 완료",
+        "Saved to each Bundle file location.": "각 번들 파일 위치에 저장했습니다.",
+        "Output location: {folder}": "출력 위치: {folder}",
+        _PK_DONE_MSG: "처리 완료:\n✅ 성공: {succ}\n❌ 실패: {fail}\n\n{loc}\n\n출력 폴더를 여시겠습니까?",
+    },
+    "ja": {
+        "Language": "言語",
+        "Unity Asset Bundle Mod Packer": "Unity アセットバンドル MOD パッカー",
+        "Unity Asset Bundle Mod Packer (Rina Auto-Pair)": "Unity アセットバンドル MOD パッカー（りな自動ペア）",
+        " [UnityPy installation required]": " [UnityPy のインストールが必要]",
+        "Install required modules": "必要なモジュールをインストール",
+        "Processing Mode": "処理モード",
+        "Single File Mode": "単一ファイルモード",
+        "Batch Mode (Multiple Files)": "一括モード（複数ファイル）",
+        "File Selection": "ファイル選択",
+        "Asset Bundle File:": "アセットバンドルファイル:",
+        "Browse": "参照",
+        "📁 Add Files": "📁 ファイルを追加",
+        "📂 Add Folder": "📂 フォルダを追加",
+        "📥 Scan 'modded'": "📥 'modded' をスキャン",
+        "🗑️ Clear All": "🗑️ すべてクリア",
+        "Preview": "プレビュー",
+        "select a file": "ファイルを選択",
+        "Remove Selected": "選択を削除",
+        "Output Settings": "出力設定",
+        "Output to location where target Bundle exists": "対象バンドルがある場所に出力",
+        "Output Directory:": "出力ディレクトリ:",
+        "Settings": "設定",
+        "Thumbnail Size:": "サムネイルサイズ:",
+        "px": "px",
+        "Auto-detect Character ID (texture/filename)": "キャラID自動検出（テクスチャ/ファイル名）",
+        "Manual Character ID:": "手動キャラID:",
+        "Platform (Android / iOS)": "プラットフォーム（Android / iOS）",
+        "Append platform suffix to zip name (_apk / _ios)": "zip 名にプラットフォーム接尾辞を付加 (_apk / _ios)",
+        "Combine detected Android+iOS pairs into one zip (name_apk_ios.zip)":
+            "検出した Android+iOS ペアを1つの zip に結合 (name_apk_ios.zip)",
+        _PK_PLATFORM_NOTE: "プラットフォームは各バンドルの Unity ヘッダーから読み取ります。ペアは apk/android/ios トークンを無視したファイル名で照合します。",
+        "🚀 Create Mod Package(s)": "🚀 MOD パッケージを作成",
+        "🚀 Create Mod Package(s) (UnityPy/Pillow required)": "🚀 MOD パッケージを作成（UnityPy/Pillow が必要）",
+        "🚀 Create Mod Package": "🚀 MOD パッケージを作成",
+        "🚀 Create Mod Packages": "🚀 MOD パッケージを作成",
+        "🔄 Processing...": "🔄 処理中...",
+        "Progress": "進捗",
+        "Overall Progress:": "全体の進捗:",
+        "0 / 0 files": "0 / 0 ファイル",
+        "Current File:": "現在のファイル:",
+        "Ready": "準備完了",
+        "Processing Log": "処理ログ",
+        "Select Asset Bundle File": "アセットバンドルファイルを選択",
+        "Select Asset Bundle Files": "アセットバンドルファイルを選択",
+        "Select Folder": "フォルダを選択",
+        "Select Output Directory": "出力ディレクトリを選択",
+        "Scan 'modded'": "'modded' をスキャン",
+        "No Unity asset bundles found in:\n{modded}": "次の場所に Unity アセットバンドルが見つかりません:\n{modded}",
+        "Error": "エラー",
+        "Please add files.": "ファイルを追加してください。",
+        "Please select valid files.": "有効なファイルを選択してください。",
+        "Processing Complete": "処理完了",
+        "Saved to each Bundle file location.": "各バンドルファイルの場所に保存しました。",
+        "Output location: {folder}": "出力場所: {folder}",
+        _PK_DONE_MSG: "処理が完了しました:\n✅ 成功: {succ}\n❌ 失敗: {fail}\n\n{loc}\n\n出力フォルダを開きますか？",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
+
 # NOTE: on Termux the native texture decoders (astc-encoder-py / texture2ddecoder
 # / etcpak) are unreliable - depending on the device/build they raise, fail to
 # load libfmod, or hard-crash the whole process with SIGILL ("Illegal
@@ -1586,7 +1787,20 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.rina_unmasked_map = {}
         self.bundle_platforms = {}
         
+        self._i18n = []
         self.setup_ui()
+
+    def _reg(self, widget, key, kind="text"):
+        self._i18n.append((widget, key, kind)); return widget
+
+    def _apply_i18n(self):
+        self.root.title(_tr("Unity Asset Bundle Mod Packer"))
+        for w, key, kind in self._i18n:
+            try: w.configure(**{kind: _tr(key)})
+            except Exception: pass
+
+    def _change_language(self, code):
+        _set_lang(code); self._apply_i18n()
 
     def setup_ui(self):
         # 창이 작아도 모든 위젯에 접근할 수 있도록 전체 폼을 스크롤 캔버스에 담는다.
@@ -1639,36 +1853,46 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.canvas.bind("<Enter>", _bind_wheel)
         self.canvas.bind("<Leave>", _unbind_wheel)
 
-        title = "Unity Asset Bundle Mod Packer (Rina Auto-Pair)"
+        title = _tr("Unity Asset Bundle Mod Packer (Rina Auto-Pair)")
         if UnityPy is None:
-            title += " [UnityPy installation required]"
-        ttk.Label(main, text=title, font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=4, pady=(0, 20))
+            title += _tr(" [UnityPy installation required]")
+        self._reg(ttk.Label(main, text=title, font=("Arial", 16, "bold")), "Unity Asset Bundle Mod Packer (Rina Auto-Pair)").grid(row=0, column=0, columnspan=4, pady=(0, 20))
         
         st = ttk.Frame(main); st.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
         ttk.Label(st, text=f"UnityPy: {'OK' if UnityPy else 'Missing'}", foreground="green" if UnityPy else "red").grid(row=0, column=0, sticky="w", padx=(0,10))
         ttk.Label(st, text=f"Pillow: {'OK' if PIL else 'Missing'}", foreground="green" if PIL else "red").grid(row=0, column=1, sticky="w", padx=(0,10))
         if (UnityPy is None) or (PIL is None):
-            ttk.Button(st, text="Install required modules", command=self.install_requirements).grid(row=0, column=2, padx=10)
+            self._reg(ttk.Button(st, text=_tr("Install required modules"), command=self.install_requirements), "Install required modules").grid(row=0, column=2, padx=10)
 
-        mode = ttk.LabelFrame(main, text="Processing Mode", padding=10)
+        # language picker (status row, right side)
+        self._reg(ttk.Label(st, text=_tr("Language")), "Language").grid(row=0, column=3, sticky="e", padx=(20, 4))
+        _names = [n for _c, n in _lang_opts()]
+        _code_by_name = {n: c for c, n in _lang_opts()}
+        _name_by_code = {c: n for c, n in _lang_opts()}
+        self._lang_var = tk.StringVar(value=_name_by_code.get(_get_lang(), _names[0]))
+        _lang_cb = ttk.Combobox(st, textvariable=self._lang_var, values=_names, state="readonly", width=10)
+        _lang_cb.grid(row=0, column=4, sticky="e")
+        _lang_cb.bind("<<ComboboxSelected>>", lambda e: self._change_language(_code_by_name[self._lang_var.get()]))
+
+        mode = self._reg(ttk.LabelFrame(main, text=_tr("Processing Mode"), padding=10), "Processing Mode")
         mode.grid(row=2, column=0, columnspan=4, sticky="ew", pady=5)
-        ttk.Radiobutton(mode, text="Single File Mode", variable=self.batch_mode, value=False, command=self.toggle_mode).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(mode, text="Batch Mode (Multiple Files)", variable=self.batch_mode, value=True, command=self.toggle_mode).grid(row=0, column=1, sticky="w")
+        self._reg(ttk.Radiobutton(mode, text=_tr("Single File Mode"), variable=self.batch_mode, value=False, command=self.toggle_mode), "Single File Mode").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Radiobutton(mode, text=_tr("Batch Mode (Multiple Files)"), variable=self.batch_mode, value=True, command=self.toggle_mode), "Batch Mode (Multiple Files)").grid(row=0, column=1, sticky="w")
         
-        self.file_frame = ttk.LabelFrame(main, text="File Selection", padding=10)
+        self.file_frame = self._reg(ttk.LabelFrame(main, text=_tr("File Selection"), padding=10), "File Selection")
         self.file_frame.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10)
         self.single_frame = ttk.Frame(self.file_frame)
         self.single_frame.grid(row=0, column=0, columnspan=4, sticky="ew")
         self.bundle_path = tk.StringVar()
-        ttk.Label(self.single_frame, text="Asset Bundle File:").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(self.single_frame, text=_tr("Asset Bundle File:")), "Asset Bundle File:").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.single_frame, textvariable=self.bundle_path, width=60).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(self.single_frame, text="Browse", command=self.browse_single_bundle).grid(row=0, column=2, padx=5)
+        self._reg(ttk.Button(self.single_frame, text=_tr("Browse"), command=self.browse_single_bundle), "Browse").grid(row=0, column=2, padx=5)
         self.batch_frame = ttk.Frame(self.file_frame)
         bbtn = ttk.Frame(self.batch_frame); bbtn.grid(row=0, column=0, columnspan=4, sticky="ew", pady=5)
-        ttk.Button(bbtn, text="📁 Add Files", command=self.add_batch_files).grid(row=0, column=0, padx=5)
-        ttk.Button(bbtn, text="📂 Add Folder", command=self.add_batch_folder).grid(row=0, column=1, padx=5)
-        ttk.Button(bbtn, text="📥 Scan 'modded'", command=self.scan_modded_folder).grid(row=0, column=2, padx=5)
-        ttk.Button(bbtn, text="🗑️ Clear All", command=self.clear_batch_files).grid(row=0, column=3, padx=5)
+        self._reg(ttk.Button(bbtn, text=_tr("📁 Add Files"), command=self.add_batch_files), "📁 Add Files").grid(row=0, column=0, padx=5)
+        self._reg(ttk.Button(bbtn, text=_tr("📂 Add Folder"), command=self.add_batch_folder), "📂 Add Folder").grid(row=0, column=1, padx=5)
+        self._reg(ttk.Button(bbtn, text=_tr("📥 Scan 'modded'"), command=self.scan_modded_folder), "📥 Scan 'modded'").grid(row=0, column=2, padx=5)
+        self._reg(ttk.Button(bbtn, text=_tr("🗑️ Clear All"), command=self.clear_batch_files), "🗑️ Clear All").grid(row=0, column=3, padx=5)
         lst = ttk.Frame(self.batch_frame); lst.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.file_listbox = tk.Listbox(lst, height=8, selectmode=tk.EXTENDED)
         ysb = ttk.Scrollbar(lst, orient="vertical", command=self.file_listbox.yview)
@@ -1679,59 +1903,58 @@ class UnityAssetBundleModPackerAutoCharaID:
         self._preview_imgref = None
         self._preview_token = 0
         prev = ttk.Frame(lst); prev.grid(row=0, column=2, padx=(10, 0), sticky="n")
-        ttk.Label(prev, text="Preview").grid(row=0, column=0)
+        self._reg(ttk.Label(prev, text=_tr("Preview")), "Preview").grid(row=0, column=0)
         # Fixed-size box so the layout doesn't jump as thumbnails load. width/height
         # on a tk.Label are pixels only while an image is shown, so we wrap a sized,
         # non-propagating frame around the label instead.
         prevbox = tk.Frame(prev, width=self._preview_size, height=self._preview_size, bg="#15161b")
         prevbox.grid(row=1, column=0); prevbox.grid_propagate(False)
-        self.preview_label = tk.Label(prevbox, bg="#15161b", text="select a file", fg="#888")
+        self.preview_label = self._reg(tk.Label(prevbox, bg="#15161b", text=_tr("select a file"), fg="#888"), "select a file")
         self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
         lst.columnconfigure(0, weight=1); lst.rowconfigure(0, weight=1)
-        ttk.Button(self.batch_frame, text="Remove Selected", command=self.remove_selected_files).grid(row=2, column=0, pady=5, sticky="w")
+        self._reg(ttk.Button(self.batch_frame, text=_tr("Remove Selected"), command=self.remove_selected_files), "Remove Selected").grid(row=2, column=0, pady=5, sticky="w")
         
-        out = ttk.LabelFrame(main, text="Output Settings", padding=10)
+        out = self._reg(ttk.LabelFrame(main, text=_tr("Output Settings"), padding=10), "Output Settings")
         out.grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
-        ttk.Checkbutton(out, text="Output to location where target Bundle exists", variable=self.output_to_bundle_location, command=self.toggle_output_location_mode).grid(row=0, column=0, columnspan=3, sticky="w", pady=5)
+        self._reg(ttk.Checkbutton(out, text=_tr("Output to location where target Bundle exists"), variable=self.output_to_bundle_location, command=self.toggle_output_location_mode), "Output to location where target Bundle exists").grid(row=0, column=0, columnspan=3, sticky="w", pady=5)
         self.manual_output_frame = ttk.Frame(out); self.manual_output_frame.grid(row=1, column=0, columnspan=4, sticky="ew")
-        ttk.Label(self.manual_output_frame, text="Output Directory:").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(self.manual_output_frame, text=_tr("Output Directory:")), "Output Directory:").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.manual_output_frame, textvariable=self.output_dir, width=60).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(self.manual_output_frame, text="Browse", command=self.browse_output).grid(row=0, column=2, padx=5)
+        self._reg(ttk.Button(self.manual_output_frame, text=_tr("Browse"), command=self.browse_output), "Browse").grid(row=0, column=2, padx=5)
         
-        settings = ttk.LabelFrame(main, text="Settings", padding=10)
+        settings = self._reg(ttk.LabelFrame(main, text=_tr("Settings"), padding=10), "Settings")
         settings.grid(row=5, column=0, columnspan=4, sticky="ew", pady=10)
-        ttk.Label(settings, text="Thumbnail Size:").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(settings, text=_tr("Thumbnail Size:")), "Thumbnail Size:").grid(row=0, column=0, sticky="w")
         ttk.Spinbox(settings, from_=64, to=512, textvariable=self.thumbnail_size, width=10).grid(row=0, column=1, sticky="w", padx=5)
-        ttk.Label(settings, text="px").grid(row=0, column=2, sticky="w")
+        self._reg(ttk.Label(settings, text=_tr("px")), "px").grid(row=0, column=2, sticky="w")
         cidf = ttk.Frame(settings); cidf.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
-        ttk.Checkbutton(cidf, text="Auto-detect Character ID (texture/filename)", variable=self.auto_chara_id, command=self.toggle_chara_id_mode).grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Checkbutton(cidf, text=_tr("Auto-detect Character ID (texture/filename)"), variable=self.auto_chara_id, command=self.toggle_chara_id_mode), "Auto-detect Character ID (texture/filename)").grid(row=0, column=0, sticky="w")
         self.manual_chara_frame = ttk.Frame(cidf); self.manual_chara_frame.grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Label(self.manual_chara_frame, text="Manual Character ID:").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(self.manual_chara_frame, text=_tr("Manual Character ID:")), "Manual Character ID:").grid(row=0, column=0, sticky="w")
         ttk.Spinbox(self.manual_chara_frame, from_=1, to=999, textvariable=self.chara_id, width=10).grid(row=0, column=1, sticky="w", padx=5)
         
-        platf = ttk.LabelFrame(main, text="Platform (Android / iOS)", padding=10)
+        platf = self._reg(ttk.LabelFrame(main, text=_tr("Platform (Android / iOS)"), padding=10), "Platform (Android / iOS)")
         platf.grid(row=6, column=0, columnspan=4, sticky="ew", pady=5)
-        ttk.Checkbutton(platf, text="Append platform suffix to zip name (_apk / _ios)",
-                        variable=self.append_platform_suffix).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(platf, text="Combine detected Android+iOS pairs into one zip (name_apk_ios.zip)",
-                        variable=self.combine_pairs).grid(row=1, column=0, sticky="w")
-        ttk.Label(platf, text="Platform is read from each bundle's Unity header. Pairs are matched by filename ignoring apk/android/ios tokens.",
-                  foreground="gray").grid(row=2, column=0, sticky="w", pady=(3, 0))
+        self._reg(ttk.Checkbutton(platf, text=_tr("Append platform suffix to zip name (_apk / _ios)"),
+                        variable=self.append_platform_suffix), "Append platform suffix to zip name (_apk / _ios)").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Checkbutton(platf, text=_tr("Combine detected Android+iOS pairs into one zip (name_apk_ios.zip)"),
+                        variable=self.combine_pairs), "Combine detected Android+iOS pairs into one zip (name_apk_ios.zip)").grid(row=1, column=0, sticky="w")
+        self._reg(ttk.Label(platf, text=_tr(_PK_PLATFORM_NOTE), foreground="gray"), _PK_PLATFORM_NOTE).grid(row=2, column=0, sticky="w", pady=(3, 0))
 
         ptxt = "🚀 Create Mod Package(s)" if UnityPy and PIL else "🚀 Create Mod Package(s) (UnityPy/Pillow required)"
-        self.process_btn = ttk.Button(main, text=ptxt, command=self.start_processing, state=("normal" if (UnityPy and PIL) else "disabled"))
+        self.process_btn = self._reg(ttk.Button(main, text=_tr(ptxt), command=self.start_processing, state=("normal" if (UnityPy and PIL) else "disabled")), ptxt)
         self.process_btn.grid(row=7, column=0, columnspan=4, pady=20)
 
-        prog = ttk.LabelFrame(main, text="Progress", padding=10); prog.grid(row=8, column=0, columnspan=4, sticky="ew", pady=5)
-        ttk.Label(prog, text="Overall Progress:").grid(row=0, column=0, sticky="w")
+        prog = self._reg(ttk.LabelFrame(main, text=_tr("Progress"), padding=10), "Progress"); prog.grid(row=8, column=0, columnspan=4, sticky="ew", pady=5)
+        self._reg(ttk.Label(prog, text=_tr("Overall Progress:")), "Overall Progress:").grid(row=0, column=0, sticky="w")
         self.overall_progress = ttk.Progressbar(prog, mode="determinate"); self.overall_progress.grid(row=0, column=1, sticky="ew", padx=5)
-        self.overall_label = ttk.Label(prog, text="0 / 0 files"); self.overall_label.grid(row=0, column=2, sticky="w", padx=5)
-        ttk.Label(prog, text="Current File:").grid(row=1, column=0, sticky="w", pady=(5,0))
+        self.overall_label = self._reg(ttk.Label(prog, text=_tr("0 / 0 files")), "0 / 0 files"); self.overall_label.grid(row=0, column=2, sticky="w", padx=5)
+        self._reg(ttk.Label(prog, text=_tr("Current File:")), "Current File:").grid(row=1, column=0, sticky="w", pady=(5,0))
         self.current_progress = ttk.Progressbar(prog, mode="determinate"); self.current_progress.grid(row=1, column=1, sticky="ew", padx=5, pady=(5,0))
-        self.current_label = ttk.Label(prog, text="Ready"); self.current_label.grid(row=1, column=2, sticky="w", padx=5, pady=(5,0))
+        self.current_label = self._reg(ttk.Label(prog, text=_tr("Ready")), "Ready"); self.current_label.grid(row=1, column=2, sticky="w", padx=5, pady=(5,0))
 
-        logf = ttk.LabelFrame(main, text="Processing Log", padding=5); logf.grid(row=9, column=0, columnspan=4, sticky="nsew", pady=10)
+        logf = self._reg(ttk.LabelFrame(main, text=_tr("Processing Log"), padding=5), "Processing Log"); logf.grid(row=9, column=0, columnspan=4, sticky="nsew", pady=10)
         tf = ttk.Frame(logf); tf.grid(row=0, column=0, sticky="nsew")
         self.log_text = tk.Text(tf, height=10, width=90, wrap="word")
         ysb2 = ttk.Scrollbar(tf, orient="vertical", command=self.log_text.yview)
@@ -1749,6 +1972,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.toggle_mode()
         self.toggle_chara_id_mode()
         self.toggle_output_location_mode()
+        self._apply_i18n()
 
     def install_requirements(self):
         self.log("🔄 Installing UnityPy/Pillow...")
@@ -1757,7 +1981,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         if PIL is None: PIL = ensure_pillow()
         if UnityPy and PIL:
             self.log("✅ Installation complete! Enabling buttons")
-            self.process_btn.configure(state="normal", text="🚀 Create Mod Package(s)")
+            self.process_btn.configure(state="normal", text=_tr("🚀 Create Mod Package(s)"))
         else:
             self.log("❌ Installation failed or some modules missing")
 
@@ -1772,7 +1996,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.single_frame.grid_remove() if is_batch else self.single_frame.grid()
         self.batch_frame.grid() if is_batch else self.batch_frame.grid_remove()
         self.file_frame.config(text="Batch File Selection" if is_batch else "Single File Selection")
-        self.process_btn.config(text=f"🚀 Create Mod Package{'s' if is_batch else ''}")
+        self.process_btn.config(text=(_tr("🚀 Create Mod Packages") if is_batch else _tr("🚀 Create Mod Package")))
 
     def toggle_chara_id_mode(self):
         state = "disabled" if self.auto_chara_id.get() else "normal"
@@ -1780,13 +2004,13 @@ class UnityAssetBundleModPackerAutoCharaID:
             child.configure(state=state)
 
     def browse_single_bundle(self):
-        fn = filedialog.askopenfilename(title="Select Asset Bundle File",
+        fn = filedialog.askopenfilename(title=_tr("Select Asset Bundle File"),
                                         initialdir=default_sukusta_dir("modded"),
                                         filetypes=[("All files", "*.*")])
         if fn: self.bundle_path.set(fn); self.log(f"Selected: {os.path.basename(fn)}")
 
     def add_batch_files(self):
-        fns = filedialog.askopenfilenames(title="Select Asset Bundle Files",
+        fns = filedialog.askopenfilenames(title=_tr("Select Asset Bundle Files"),
                                           initialdir=default_sukusta_dir("modded"),
                                           filetypes=[("All files", "*.*")])
         count = 0
@@ -1796,7 +2020,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.log(f"Added {count} files. Total: {len(self.bundle_files)}")
 
     def add_batch_folder(self):
-        folder = filedialog.askdirectory(title="Select Folder", initialdir=default_sukusta_dir("modded"))
+        folder = filedialog.askdirectory(title=_tr("Select Folder"), initialdir=default_sukusta_dir("modded"))
         if not folder: return
         added = 0
         for root, _, files in os.walk(folder):
@@ -1812,8 +2036,8 @@ class UnityAssetBundleModPackerAutoCharaID:
         modded = default_sukusta_dir("modded")
         bundles = find_asset_bundles(modded)
         if not bundles:
-            messagebox.showinfo("Scan 'modded'",
-                                f"No Unity asset bundles found in:\n{modded}")
+            messagebox.showinfo(_tr("Scan 'modded'"),
+                                _tr("No Unity asset bundles found in:\n{modded}", modded=modded))
             return
         added = 0
         for p in bundles:
@@ -1880,7 +2104,7 @@ class UnityAssetBundleModPackerAutoCharaID:
             self._clear_preview("no preview")
         
     def browse_output(self):
-        d = filedialog.askdirectory(title="Select Output Directory",
+        d = filedialog.askdirectory(title=_tr("Select Output Directory"),
                                     initialdir=default_sukusta_dir("suit"))
         if d: self.output_dir.set(d); self.log(f"Output directory set to: {d}")
 
@@ -1902,15 +2126,15 @@ class UnityAssetBundleModPackerAutoCharaID:
     def start_processing(self):
         if self.is_processing: return
         if self.batch_mode.get():
-            if not self.bundle_files: messagebox.showerror("Error", "Please add files."); return
+            if not self.bundle_files: messagebox.showerror(_tr("Error"), _tr("Please add files.")); return
             files = list(self.bundle_files)
         else:
             if not self.bundle_path.get() or not os.path.exists(self.bundle_path.get()):
-                messagebox.showerror("Error", "Please select valid files."); return
+                messagebox.showerror(_tr("Error"), _tr("Please select valid files.")); return
             files = [self.bundle_path.get()]
 
         self.is_processing = True
-        self.process_btn.config(state="disabled", text="🔄 Processing...")
+        self.process_btn.config(state="disabled", text=_tr("🔄 Processing..."))
         threading.Thread(target=self.process_files, args=(files,), daemon=True).start()
 
     def process_files(self, files):
@@ -2000,7 +2224,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         
         self.root.after(0, lambda: self.show_completion_dialog(success, fail))
         self.is_processing = False
-        self.root.after(0, lambda: self.process_btn.config(state="normal", text="🚀 Create Mod Package(s)"))
+        self.root.after(0, lambda: self.process_btn.config(state="normal", text=_tr("🚀 Create Mod Package(s)")))
 
     def process_single_file(self, bundle_path: str, platform=None, out_dir_override=None, force_suffix=False):
         """번들 하나를 zip으로 패키징한다.
@@ -2200,15 +2424,15 @@ class UnityAssetBundleModPackerAutoCharaID:
     def show_completion_dialog(self, succ, fail):
         if self.output_to_bundle_location.get():
             folder = os.path.dirname(os.path.abspath(self.bundle_files[0])) if self.bundle_files else os.getcwd()
-            loc_txt = f"Saved to each Bundle file location."
+            loc_txt = _tr("Saved to each Bundle file location.")
         else:
             folder = self.output_dir.get()
-            loc_txt = f"Output location: {folder}"
+            loc_txt = _tr("Output location: {folder}", folder=folder)
         
-        msg = f"Processing completed:\n✅ Successful: {succ}\n❌ Failed: {fail}\n\n{loc_txt}\n\nOpen output folder?"
+        msg = _tr(_PK_DONE_MSG, succ=succ, fail=fail, loc=loc_txt)
         icon = "info" if fail == 0 else "warning"
         
-        if messagebox.askyesno("Processing Complete", msg, icon=icon):
+        if messagebox.askyesno(_tr("Processing Complete"), msg, icon=icon):
             try:
                 if os.name == 'nt': os.startfile(folder)
                 elif sys.platform == "darwin": subprocess.Popen(["open", folder])
