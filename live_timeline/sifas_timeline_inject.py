@@ -10,7 +10,7 @@ SIFAC 라이브 데이터를 SIFAS 라이브 번들의 멤버 타임라인에 Un
 서브커맨드:
     lip   SCD 가사 → MemberLipSyncTrack("Mouth")
     face  표정 스크립트 / 자동 눈깜빡임 → MemberEye/Gaze/CheekTrack
-    gui   세 탭(입·표정·카메라) GUI 실행  (카메라 탭은 noesis-llsifac/tools 호출)
+    gui   네 탭(입·표정·카메라·따라가기) GUI 실행  (카메라/모션은 noesis 호출)
 
   # 입: SIFAC 음소 코드 [들어오는모음][자음][목표모음] → 마지막 모음이 입모양
   #     (oto→O, usu→U, ete→E). 화이트리스트 없이 미지 코드 0%.
@@ -23,8 +23,14 @@ SIFAC 라이브 데이터를 SIFAS 라이브 번들의 멤버 타임라인에 Un
 
 예:
     python3 sifas_timeline_inject.py lip  --scd lyrics.scd --bundle live.unity --out o.unity --weight 1.0
+    # 곡 길이 맞춤(자르기): 앞 8초 자르기 / 앞뒤 자르기(곡 길이 106초)
+    python3 sifas_timeline_inject.py lip  --scd lyrics.scd --analyze-only --trim-start 8
+    python3 sifas_timeline_inject.py lip  --scd lyrics.scd --bundle live.unity --trim-start 8 --length 106
     python3 sifas_timeline_inject.py face --script faces.txt --auto-blink --bundle live.unity --out o.unity
     python3 sifas_timeline_inject.py face --list-names
+    # 따라가기 카메라(front/rear): 동작 모션 → 위치(noesis sifac_motion_path.py) → 첫 카메라
+    python3 sifas_timeline_inject.py cam-follow --positions path.json --bundle live.unity \
+            --view front --front-dist 4 --threshold 1.0 --front-yaw 0
     python3 sifas_timeline_inject.py gui        # (인자 없이 실행해도 GUI)
 
 UnityPy 필요(pip install UnityPy). tkinter 는 GUI 실행 시에만 필요(표준 라이브러리).
@@ -97,6 +103,38 @@ def parse_scd(path: Path, char=None, offset=0.0):
         entries.append((start / 1000.0 + offset, max(dur / 1000.0, 0.04), shape, phon))
     entries.sort(key=lambda e: e[0])
     return entries, char, charcount
+
+
+def trim_entries(entries, start=0.0, end=None, rebase=True, min_dur=0.04):
+    """곡 길이에 맞춰 입 타임라인을 자른다.
+
+    SIFAC 립싱크 길이가 SIFAS 곡 길이와 다를 때(앞 인트로가 길거나 뒤가 남을 때) 사용.
+    `start`/`end` 는 (offset 적용 후) 표시되는 원본 시간(초). 유지 구간 [start, end] 밖의
+    클립은 버리고, 경계에 걸친 클립은 잘라낸다.
+
+      * 앞 자르기      : start>0            (그 지점 이전을 버림)
+      * 뒤 자르기      : end 지정           (그 지점 이후를 버림)
+      * 앞뒤 자르기    : start>0 과 end 함께
+      * rebase=True(기본): start 가 새 0 이 되도록 왼쪽으로 당김(잘린 인트로만큼 앞으로).
+        rebase=False     : 절대 시간 유지(앞만 비우고 당기지 않음).
+    """
+    out = []
+    for s, d, shp, ph in entries:
+        e0, e1 = s, s + d
+        if e1 <= start:                       # 완전히 앞 → 버림
+            continue
+        if end is not None and e0 >= end:     # 완전히 뒤 → 버림
+            continue
+        ns = max(e0, start)
+        ne = e1 if end is None else min(e1, end)
+        nd = ne - ns
+        if nd < min_dur:
+            continue
+        if rebase:
+            ns -= start
+        out.append((ns, nd, shp, ph))
+    out.sort(key=lambda e: e[0])
+    return out
 
 
 def format_lip_timeline(entries, head=None):
@@ -349,8 +387,15 @@ def resample_60(frames, fps_out=60.0):
     return out
 
 
-def build_sample_array(samples, scale=1.0, z_flip=False, yaw180=False):
-    """samples → DenseClip flat float array [px,py,pz, ex,ey,ez, fov] × N."""
+def build_sample_array(samples, scale=1.0, z_flip=False, yaw180=False, order=None):
+    """samples → DenseClip flat float array × N.
+
+    `order` 는 클립의 genericBindings 순서를 따른 ['pos','euler','fov'] 리스트.
+    클립마다 바인딩 순서가 다를 수 있어(예: pos,FOV,euler) 반드시 실제 순서대로 써야
+    FOV/회전이 안 뒤섞인다. 기본값은 가장 흔한 pos,euler,fov.
+    """
+    if order is None:
+        order = ["pos", "euler", "fov"]
     arr = []
     for _t, pos, rot, fov in samples:
         px, py, pz = pos[0] * scale, pos[1] * scale, pos[2] * scale
@@ -361,8 +406,25 @@ def build_sample_array(samples, scale=1.0, z_flip=False, yaw180=False):
             ey = -ey; ez = -ez
         if yaw180:
             ey += 180.0
-        arr.extend([px, py, pz, ex, ey, ez, float(fov)])
+        for b in order:
+            if b == "pos":
+                arr.extend([px, py, pz])
+            elif b == "euler":
+                arr.extend([ex, ey, ez])
+            else:                       # fov (단일 커브)
+                arr.append(float(fov))
     return arr
+
+
+# Unity transform-binding attribute: 1=position, 2=rotation, 3=scale, 4=euler.
+# 그 외(스크립트 float 해시)는 FOV.
+def _binding_order(generic_bindings):
+    """genericBindings → ['pos'|'euler'|'fov', ...] (클립의 실제 커브 순서)."""
+    out = []
+    for b in generic_bindings:
+        at = b.get("attribute")
+        out.append("pos" if at == 1 else "euler" if at == 4 else "fov")
+    return out
 
 
 def inject_camera(camera_json: Path, bundle_in: Path, bundle_out: Path,
@@ -373,7 +435,6 @@ def inject_camera(camera_json: Path, bundle_in: Path, bundle_out: Path,
     n = len(samples)
     if n == 0:
         raise ValueError("camera json has no frames")
-    sample_array = build_sample_array(samples, scale=scale, z_flip=z_flip, yaw180=yaw180)
     stop_time = (n - 1) / 60.0
 
     env = UnityPy.load(str(bundle_in))
@@ -403,10 +464,16 @@ def inject_camera(camera_json: Path, bundle_in: Path, bundle_out: Path,
     target = sorted(cam_clips, key=lambda o: o.read().m_Name)[0]
     ct = target.read_typetree()
 
+    # 이 클립의 실제 바인딩 순서대로 써야 FOV/회전이 안 뒤섞인다(클립마다 다름).
+    order = _binding_order(ct["m_ClipBindingConstant"]["genericBindings"])
+    n_curves = sum(3 if b in ("pos", "euler") else 1 for b in order)
+    sample_array = build_sample_array(samples, scale=scale, z_flip=z_flip,
+                                      yaw180=yaw180, order=order)
+
     clip = ct["m_MuscleClip"]["m_Clip"]["data"]
     clip["m_StreamedClip"]["data"] = []; clip["m_StreamedClip"]["curveCount"] = 0
     dense = clip["m_DenseClip"]
-    dense["m_FrameCount"] = n; dense["m_CurveCount"] = 7
+    dense["m_FrameCount"] = n; dense["m_CurveCount"] = n_curves
     dense["m_SampleRate"] = 60.0; dense["m_BeginTime"] = 0.0
     dense["m_SampleArray"] = sample_array
     if isinstance(clip.get("m_ConstantClip"), dict):
@@ -438,6 +505,140 @@ def inject_camera(camera_json: Path, bundle_in: Path, bundle_out: Path,
         print(f"[cam] {n} samples @60fps ({stop_time:.2f}s) fov {min(fovs):.1f}..{max(fovs):.1f} "
               f"z_flip={z_flip} yaw180={yaw180} -> overwrote '{target.read().m_Name}'")
         print(f"[ok] wrote {bundle_out}")
+
+
+# --------------------------------------------------------------------------- #
+# 따라가기 카메라 생성 (front/rear view) — 캐릭터 위치를 따라가며 앞/뒤에서 촬영
+# --------------------------------------------------------------------------- #
+# 입력: 캐릭터 위치 트랙 JSON {"fps":60,"frames":[{"t":..,"pos":[x,y,z]},...]}
+#       (noesis sifac_motion_path.py 가 동작 모션 bmarc 루트에서 추출)
+# 동작: 무대 정면(고정 방향) 기준으로 캐릭터의 앞(front) / 뒤(rear)에 카메라를 두고
+#       항상 캐릭터를 바라봄. 캐릭터가 dead-zone(임계 m) 이상 움직일 때만 따라감.
+# 출력: inject_camera 가 먹는 카메라 JSON(frames: pos/rot(quat)/fov).
+
+def _look_rotation(fwd, up=(0.0, 1.0, 0.0)):
+    """Unity 식 LookRotation: +Z가 fwd, +Y가 up 인 쿼터니언(x,y,z,w)."""
+    def _n(v):
+        m = math.sqrt(sum(c * c for c in v)) or 1.0
+        return [v[0] / m, v[1] / m, v[2] / m]
+
+    def _cross(a, b):
+        return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0]]
+    f = _n(fwd)
+    r = _n(_cross(up, f))
+    u = _cross(f, r)
+    m00, m01, m02 = r[0], u[0], f[0]
+    m10, m11, m12 = r[1], u[1], f[1]
+    m20, m21, m22 = r[2], u[2], f[2]
+    tr = m00 + m11 + m22
+    if tr > 0:
+        s = math.sqrt(tr + 1.0) * 2
+        w = 0.25 * s; x = (m21 - m12) / s; y = (m02 - m20) / s; z = (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2
+        w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2
+        w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2
+        w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    return [x / n, y / n, z / n, w / n]
+
+
+def follow_targets(positions, threshold=1.0, smooth=0.0):
+    """위치 시퀀스([(x,y,z)..]) → dead-zone 따라가기 타깃 시퀀스.
+
+    수평(x,z) 이동이 `threshold` m 를 넘을 때만 타깃이 끌려감(그 이하 움직임은 무시 →
+    화면이 안 흔들림). `smooth`(0~1)는 dead-zone 결과에 EMA 평활을 추가(0=없음).
+    """
+    if not positions:
+        return []
+    out = []
+    ax, ay, az = positions[0]          # dead-zone anchor
+    sx, sy, sz = positions[0]          # smoothed output
+    a = max(0.0, min(0.99, smooth))
+    for px, py, pz in positions:
+        dx, dz = px - ax, pz - az
+        d = math.hypot(dx, dz)
+        if d > threshold:              # dead-zone 밖 → 임계 거리만큼만 끌려감
+            f = (d - threshold) / d
+            ax += dx * f; az += dz * f
+        ay = py                        # 수직은 그대로 추종(점프 등)
+        # 선택적 EMA 평활 (급격한 스냅 완화)
+        sx += (ax - sx) * (1.0 - a)
+        sy += (ay - sy) * (1.0 - a)
+        sz += (az - sz) * (1.0 - a)
+        out.append((sx, sy, sz))
+    return out
+
+
+def generate_follow_camera(positions, *, view="front", front_dist=4.0, rear_dist=4.0,
+                           height=1.2, lookat_height=1.1, fov=32.0, threshold=1.0,
+                           front_yaw=0.0, smooth=0.0, fps=60.0,
+                           start=0.0, end=None):
+    """캐릭터 위치 트랙 → front/rear 따라가기 카메라 JSON(dict).
+
+    * positions: [{"t":sec,"pos":[x,y,z]}, ...] (시간순)
+    * view: "front"(관객 쪽에서 얼굴) | "rear"(뒤에서 등)
+    * front_yaw: 무대 정면 방향(도). 0=+Z. 카메라가 반대편이면 180 으로 뒤집기.
+    * threshold: 이 거리(m) 이상 움직여야 따라감(dead-zone).
+    * start/end: 생성 구간(초). end=None 이면 트랙 끝까지.
+    """
+    if not positions:
+        raise ValueError("position track is empty")
+    t_end = positions[-1]["t"] if end is None else end
+    # fps 그리드로 위치 보간
+    grid = []
+    j = 0
+    n = int(round((t_end - start) * fps)) + 1
+    for i in range(max(1, n)):
+        t = start + i / fps
+        while j + 1 < len(positions) and positions[j + 1]["t"] < t:
+            j += 1
+        p0 = positions[j]; p1 = positions[min(j + 1, len(positions) - 1)]
+        span = (p1["t"] - p0["t"]) or 1.0
+        a = max(0.0, min(1.0, (t - p0["t"]) / span))
+        pos = [p0["pos"][k] + (p1["pos"][k] - p0["pos"][k]) * a for k in range(3)]
+        grid.append((t, pos))
+    targets = follow_targets([p for _t, p in grid], threshold=threshold, smooth=smooth)
+    yaw = math.radians(front_yaw)
+    fdir = (math.sin(yaw), 0.0, math.cos(yaw))     # 무대 정면(수평)
+    sign = 1.0 if view == "front" else -1.0
+    dist = front_dist if view == "front" else rear_dist
+    frames = []
+    for (t, _p), (tx, ty, tz) in zip(grid, targets):
+        cam = [tx + fdir[0] * sign * dist, ty + height, tz + fdir[2] * sign * dist]
+        look = [tx, ty + lookat_height, tz]
+        rot = _look_rotation([look[0] - cam[0], look[1] - cam[1], look[2] - cam[2]])
+        frames.append({"t": round(t - start, 5), "pos": [round(c, 5) for c in cam],
+                       "rot": [round(c, 6) for c in rot], "fov": float(fov)})
+    return {"fps": fps, "view": view, "frames": frames}
+
+
+def inject_follow_camera(positions_json: Path, bundle_in: Path, bundle_out: Path, *,
+                         view="front", front_dist=4.0, rear_dist=4.0, height=1.2,
+                         lookat_height=1.1, fov=32.0, threshold=1.0, front_yaw=0.0,
+                         smooth=0.0, start=0.0, end=None, scale=1.0, z_flip=False,
+                         yaw180=False, out_json=None, verbose=True):
+    """위치 JSON → 따라가기 카메라 생성 → 첫 카메라 클립에 주입(inject_camera 재사용)."""
+    data = json.loads(Path(positions_json).read_text(encoding="utf-8"))
+    pos = data.get("frames", data) if isinstance(data, dict) else data
+    cam = generate_follow_camera(pos, view=view, front_dist=front_dist,
+                                 rear_dist=rear_dist, height=height,
+                                 lookat_height=lookat_height, fov=fov,
+                                 threshold=threshold, front_yaw=front_yaw,
+                                 smooth=smooth, end=end, start=start)
+    tmp = Path(out_json) if out_json else Path(str(bundle_out) + ".followcam.json")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(cam), encoding="utf-8")
+    if verbose:
+        print(f"[follow] view={view} dist={front_dist if view=='front' else rear_dist} "
+              f"threshold={threshold}m frames={len(cam['frames'])} -> {tmp.name}")
+    inject_camera(tmp, bundle_in, bundle_out, scale=scale, z_flip=z_flip,
+                  yaw180=yaw180, verbose=verbose)
 
 
 # =========================================================================== #
@@ -473,8 +674,8 @@ def run_gui():
     class App:
         def __init__(self, root):
             self.root = root
-            root.title("SIFAS 라이브 주입 (입 · 표정 · 카메라)")
-            root.geometry("720x620")
+            root.title("SIFAS 라이브 주입 (입 · 표정 · 카메라 · 따라가기)")
+            root.geometry("760x680")
             self.q = queue.Queue(); self.busy = False
             self.noesis = _find_noesis_tools()
             self.nb = ttk.Notebook(root)
@@ -482,6 +683,7 @@ def run_gui():
             self._lip(ttk.Frame(self.nb, padding=10))
             self._face(ttk.Frame(self.nb, padding=10))
             self._cam(ttk.Frame(self.nb, padding=10))
+            self._camfollow(ttk.Frame(self.nb, padding=10))
             lf = ttk.LabelFrame(root, text="로그", padding=4)
             lf.pack(fill="both", expand=True, padx=8, pady=8)
             self.log = tk.Text(lf, height=12, wrap="word", state="disabled",
@@ -514,6 +716,8 @@ def run_gui():
             self.nb.add(f, text="  ① 입 (립싱크)  ")
             self.l_scd = tk.StringVar(); self.l_b = tk.StringVar(); self.l_o = tk.StringVar()
             self.l_char = tk.StringVar(); self.l_w = tk.StringVar(); self.l_an = tk.BooleanVar()
+            self.l_off = tk.StringVar(); self.l_ts = tk.StringVar(); self.l_te = tk.StringVar()
+            self.l_len = tk.StringVar(); self.l_norebase = tk.BooleanVar()
             self._row(f, 0, "SCD 가사 (.scd)", self.l_scd, types=(("SCD", "*.scd"), ("All", "*.*")))
             self._row(f, 1, "SIFAS 번들 (.unity)", self.l_b,
                       types=(("Unity", "*.unity *.ab *.bundle"), ("All", "*.*")))
@@ -524,8 +728,21 @@ def run_gui():
             ttk.Label(opt, text="weight(빈칸=유지):").grid(row=0, column=2, padx=(12, 0))
             ttk.Entry(opt, textvariable=self.l_w, width=6).grid(row=0, column=3, padx=4)
             ttk.Checkbutton(opt, text="분석만", variable=self.l_an).grid(row=0, column=4, padx=12)
+            # 곡 길이 맞춤(자르기) 옵션
+            trm = ttk.LabelFrame(f, text="곡 길이 맞춤 (자르기)")
+            trm.grid(row=4, column=0, columnspan=3, sticky="we", pady=(0, 6))
+            ttk.Label(trm, text="offset(초):").grid(row=0, column=0, padx=(6, 0))
+            ttk.Entry(trm, textvariable=self.l_off, width=7).grid(row=0, column=1, padx=4)
+            ttk.Label(trm, text="앞 자르기 trim-start:").grid(row=0, column=2)
+            ttk.Entry(trm, textvariable=self.l_ts, width=7).grid(row=0, column=3, padx=4)
+            ttk.Label(trm, text="뒤 자르기 trim-end:").grid(row=0, column=4)
+            ttk.Entry(trm, textvariable=self.l_te, width=7).grid(row=0, column=5, padx=4)
+            ttk.Label(trm, text="또는 곡 길이 length:").grid(row=1, column=2, pady=(2, 4))
+            ttk.Entry(trm, textvariable=self.l_len, width=7).grid(row=1, column=3, pady=(2, 4))
+            ttk.Checkbutton(trm, text="당기지 않음(절대시간)",
+                            variable=self.l_norebase).grid(row=1, column=4, columnspan=2, sticky="w")
             ttk.Button(f, text="▶ 립싱크 주입", command=self._run_lip).grid(
-                row=4, column=0, columnspan=3, sticky="we", pady=8)
+                row=5, column=0, columnspan=3, sticky="we", pady=8)
 
         def _run_lip(self):
             scd = self.l_scd.get().strip(); b = self.l_b.get().strip()
@@ -536,14 +753,28 @@ def run_gui():
             char = int(self.l_char.get()) if self.l_char.get().strip() else None
             w = float(self.l_w.get()) if self.l_w.get().strip() else None
             an = self.l_an.get()
+
+            def _f(var, d=None):
+                s = var.get().strip()
+                return float(s) if s else d
+            off = _f(self.l_off, 0.0); ts = _f(self.l_ts, 0.0)
+            te = _f(self.l_te, None); ln = _f(self.l_len, None)
+            norebase = self.l_norebase.get()
             if not an and not b:
                 return messagebox.showerror("오류", "번들을 선택하거나 '분석만'을 켜세요")
 
             def task():
-                entries, ch, _ = parse_scd(Path(scd), char=char)
+                entries, ch, _ = parse_scd(Path(scd), char=char, offset=off)
                 print(f"[scd] char={ch} clips={len(entries)} "
                       f"shapes={dict(Counter(e[2] for e in entries))}")
-                print(format_lip_timeline(entries))      # 전체 타임라인(잘림 없음)
+                trim_end = (ts + ln) if ln is not None else te
+                if ts or trim_end is not None:
+                    before = len(entries)
+                    entries[:] = trim_entries(entries, start=ts, end=trim_end,
+                                              rebase=not norebase)
+                    print(f"[trim] start={ts} end={trim_end} rebase={not norebase}: "
+                          f"{before} → {len(entries)} clips")
+                print(format_lip_timeline(entries))      # (자른 뒤) 전체 타임라인
                 if an or not b:
                     return
                 inject_lip(Path(b), entries, Path(o), weight=w)
@@ -638,6 +869,107 @@ def run_gui():
                 inject_camera(Path(jp), Path(b), Path(o), scale=scale, z_flip=z, yaw180=yaw)
             self._go(task, "카메라")
 
+        # --- 따라가기 카메라 탭 (front/rear) --- #
+        def _camfollow(self, f):
+            self.nb.add(f, text="  ④ 따라가기 카메라  ")
+            self.cf_in = tk.StringVar(); self.cf_b = tk.StringVar(); self.cf_o = tk.StringVar()
+            self.cf_n = tk.StringVar(value=self.noesis or "")
+            self.cf_view = tk.StringVar(value="front")
+            self.cf_fd = tk.StringVar(value="4.0"); self.cf_rd = tk.StringVar(value="4.0")
+            self.cf_h = tk.StringVar(value="1.2"); self.cf_lh = tk.StringVar(value="1.1")
+            self.cf_fov = tk.StringVar(value="32"); self.cf_th = tk.StringVar(value="1.0")
+            self.cf_fy = tk.StringVar(value="0"); self.cf_sm = tk.StringVar(value="0")
+            self.cf_st = tk.StringVar(); self.cf_en = tk.StringVar()
+            self.cf_scale = tk.StringVar(value="1.0")
+            self.cf_z = tk.BooleanVar(); self.cf_yaw = tk.BooleanVar()
+            self._row(f, 0, "위치/모션 입력 (.bmarc/.json)", self.cf_in,
+                      types=(("Motion/Pos", "*.bmarc *.json"), ("All", "*.*")))
+            self._row(f, 1, "SIFAS 번들 (.unity)", self.cf_b,
+                      types=(("Unity", "*.unity *.ab *.bundle"), ("All", "*.*")))
+            self._row(f, 2, "출력 (.unity)", self.cf_o, save=True)
+            self._row(f, 3, "noesis tools (.bmarc 추출 시에만)", self.cf_n)
+            p1 = ttk.Frame(f); p1.grid(row=4, column=0, columnspan=3, sticky="w", pady=4)
+            ttk.Label(p1, text="view:").grid(row=0, column=0)
+            ttk.Combobox(p1, textvariable=self.cf_view, values=["front", "rear"],
+                         state="readonly", width=7).grid(row=0, column=1, padx=4)
+            ttk.Label(p1, text="앞거리:").grid(row=0, column=2)
+            ttk.Entry(p1, textvariable=self.cf_fd, width=5).grid(row=0, column=3, padx=2)
+            ttk.Label(p1, text="뒤거리:").grid(row=0, column=4)
+            ttk.Entry(p1, textvariable=self.cf_rd, width=5).grid(row=0, column=5, padx=2)
+            ttk.Label(p1, text="fov:").grid(row=0, column=6)
+            ttk.Entry(p1, textvariable=self.cf_fov, width=5).grid(row=0, column=7, padx=2)
+            p2 = ttk.Frame(f); p2.grid(row=5, column=0, columnspan=3, sticky="w", pady=4)
+            ttk.Label(p2, text="높이:").grid(row=0, column=0)
+            ttk.Entry(p2, textvariable=self.cf_h, width=5).grid(row=0, column=1, padx=2)
+            ttk.Label(p2, text="보는높이:").grid(row=0, column=2)
+            ttk.Entry(p2, textvariable=self.cf_lh, width=5).grid(row=0, column=3, padx=2)
+            ttk.Label(p2, text="threshold(m):").grid(row=0, column=4)
+            ttk.Entry(p2, textvariable=self.cf_th, width=5).grid(row=0, column=5, padx=2)
+            ttk.Label(p2, text="front-yaw:").grid(row=0, column=6)
+            ttk.Entry(p2, textvariable=self.cf_fy, width=5).grid(row=0, column=7, padx=2)
+            p3 = ttk.Frame(f); p3.grid(row=6, column=0, columnspan=3, sticky="w", pady=4)
+            ttk.Label(p3, text="시작(초):").grid(row=0, column=0)
+            ttk.Entry(p3, textvariable=self.cf_st, width=6).grid(row=0, column=1, padx=2)
+            ttk.Label(p3, text="끝(초):").grid(row=0, column=2)
+            ttk.Entry(p3, textvariable=self.cf_en, width=6).grid(row=0, column=3, padx=2)
+            ttk.Label(p3, text="smooth:").grid(row=0, column=4)
+            ttk.Entry(p3, textvariable=self.cf_sm, width=5).grid(row=0, column=5, padx=2)
+            ttk.Label(p3, text="scale:").grid(row=0, column=6)
+            ttk.Entry(p3, textvariable=self.cf_scale, width=5).grid(row=0, column=7, padx=2)
+            ttk.Checkbutton(p3, text="z-flip", variable=self.cf_z).grid(row=0, column=8, padx=6)
+            ttk.Checkbutton(p3, text="yaw180", variable=self.cf_yaw).grid(row=0, column=9)
+            ttk.Label(f, text="앞/뒤는 무대 정면(front-yaw) 기준. 카메라가 반대편이면 "
+                             "front-yaw=180. 캐릭터가 threshold(m) 이상 움직일 때만 따라감.",
+                      foreground="#888").grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 0))
+            ttk.Button(f, text="▶ 따라가기 카메라 주입", command=self._run_camfollow).grid(
+                row=8, column=0, columnspan=3, sticky="we", pady=8)
+
+        def _run_camfollow(self):
+            src = self.cf_in.get().strip(); b = self.cf_b.get().strip()
+            nd = self.cf_n.get().strip()
+            if not src or not b:
+                return messagebox.showerror("오류", "위치/모션 입력과 번들을 선택하세요")
+            is_bmarc = src.lower().endswith(".bmarc")
+            if is_bmarc and (not nd or not Path(nd, "sifac_motion_path.py").is_file()):
+                return messagebox.showerror("오류",
+                    ".bmarc 위치추출에는 noesis-llsifac/tools 폴더가 필요합니다 "
+                    "(sifac_motion_path.py). 또는 위치 .json 을 직접 넣으세요.")
+            self._auto(self.cf_b, self.cf_o, ".follow.unity")
+            o = self.cf_o.get().strip()
+
+            def _f(var, d=None):
+                s = var.get().strip()
+                return float(s) if s else d
+            params = dict(
+                view=self.cf_view.get() or "front",
+                front_dist=_f(self.cf_fd, 4.0), rear_dist=_f(self.cf_rd, 4.0),
+                height=_f(self.cf_h, 1.2), lookat_height=_f(self.cf_lh, 1.1),
+                fov=_f(self.cf_fov, 32.0), threshold=_f(self.cf_th, 1.0),
+                front_yaw=_f(self.cf_fy, 0.0), smooth=_f(self.cf_sm, 0.0),
+                start=_f(self.cf_st, 0.0), end=_f(self.cf_en, None),
+                scale=_f(self.cf_scale, 1.0), z_flip=self.cf_z.get(), yaw180=self.cf_yaw.get())
+
+            def task():
+                posjson = src
+                if is_bmarc:                       # .bmarc → 위치 JSON (noesis 추출)
+                    if nd and nd not in sys.path:
+                        sys.path.insert(0, nd)
+                    import importlib
+                    smp = importlib.import_module("sifac_motion_path")
+                    bm = importlib.import_module("sifac_bmarc")
+                    mm = bm.parse_bmarc(Path(src).read_bytes(), Path(src).stem)
+                    anim = mm.animations[0]
+                    bone = smp.pick_root_bone(anim, None)
+                    frames = smp.extract_path(anim, bone)
+                    posjson = str(Path(o).with_suffix("")) + ".path.json"
+                    Path(posjson).write_text(json.dumps(
+                        {"fps": 60, "bone": bone.bone_name, "frames": frames}),
+                        encoding="utf-8")
+                    print(f"[path] bone={bone.bone_name} frames={len(frames)} "
+                          f"-> {Path(posjson).name}")
+                inject_follow_camera(Path(posjson), Path(b), Path(o), **params)
+            self._go(task, "따라가기 카메라")
+
         # --- 실행 엔진 --- #
         def _go(self, task, label):
             if self.busy:
@@ -695,6 +1027,14 @@ def main(argv=None):
     pl.add_argument("--weight", type=float, default=None)
     pl.add_argument("--offset", type=float, default=0.0)
     pl.add_argument("--track", default=None)
+    pl.add_argument("--trim-start", type=float, default=0.0,
+                    help="이 시각(초) 이전을 자르고 그 지점을 새 0으로 당김 (앞 자르기)")
+    pl.add_argument("--trim-end", type=float, default=None,
+                    help="이 시각(초) 이후를 자름 (뒤 자르기)")
+    pl.add_argument("--length", type=float, default=None,
+                    help="곡 길이(초)에 맞춰 유지 구간 길이 고정 (= trim-end 를 trim-start+length 로)")
+    pl.add_argument("--no-rebase", action="store_true",
+                    help="앞을 잘라도 시간을 0으로 당기지 않음(절대 시간 유지)")
     pl.add_argument("--head", type=int, default=None, help="타임라인 출력 줄 수 제한(기본=전체)")
     pl.add_argument("--analyze-only", action="store_true")
     pl.add_argument("--dry-run", action="store_true")
@@ -714,7 +1054,30 @@ def main(argv=None):
     pc.add_argument("--z-flip", action="store_true")
     pc.add_argument("--yaw180", action="store_true")
 
-    sub.add_parser("gui", help="GUI 실행 (입·표정·카메라 탭)")
+    pcf = sub.add_parser("cam-follow",
+                         help="캐릭터 위치 따라가기 front/rear 카메라 생성→첫 카메라 주입")
+    pcf.add_argument("--positions", required=True,
+                     help="위치 트랙 JSON (noesis sifac_motion_path.py 출력)")
+    pcf.add_argument("--bundle"); pcf.add_argument("--out")
+    pcf.add_argument("--view", choices=["front", "rear"], default="front")
+    pcf.add_argument("--front-dist", type=float, default=4.0, help="앞 거리(m)")
+    pcf.add_argument("--rear-dist", type=float, default=4.0, help="뒤 거리(m)")
+    pcf.add_argument("--height", type=float, default=1.2, help="카메라 높이(m)")
+    pcf.add_argument("--lookat-height", type=float, default=1.1, help="바라보는 높이(m)")
+    pcf.add_argument("--fov", type=float, default=32.0)
+    pcf.add_argument("--threshold", type=float, default=1.0,
+                     help="이 거리(m) 이상 움직일 때만 따라감(dead-zone)")
+    pcf.add_argument("--front-yaw", type=float, default=0.0,
+                     help="무대 정면 방향(도). 카메라가 반대편이면 180")
+    pcf.add_argument("--smooth", type=float, default=0.0, help="0~1 추가 평활")
+    pcf.add_argument("--start", type=float, default=0.0, help="생성 시작(초)")
+    pcf.add_argument("--end", type=float, default=None, help="생성 끝(초, 기본=끝까지)")
+    pcf.add_argument("--scale", type=float, default=1.0)
+    pcf.add_argument("--z-flip", action="store_true")
+    pcf.add_argument("--yaw180", action="store_true")
+    pcf.add_argument("--emit-json", help="생성한 카메라 JSON만 저장(번들 없이)")
+
+    sub.add_parser("gui", help="GUI 실행 (입·표정·카메라·따라가기 탭)")
 
     args = ap.parse_args(argv)
 
@@ -725,6 +1088,15 @@ def main(argv=None):
         entries, char, cc = parse_scd(Path(args.scd), char=args.char, offset=args.offset)
         print(f"[scd] {Path(args.scd).name}  chars={dict(cc)}  char={char}  "
               f"clips={len(entries)}  shapes={dict(Counter(e[2] for e in entries))}")
+        trim_end = args.trim_end
+        if args.length is not None:
+            trim_end = args.trim_start + args.length
+        if args.trim_start or trim_end is not None:
+            before = len(entries)
+            entries = trim_entries(entries, start=args.trim_start, end=trim_end,
+                                   rebase=not args.no_rebase)
+            print(f"[trim] start={args.trim_start} end={trim_end} "
+                  f"rebase={not args.no_rebase}: {before} → {len(entries)} clips")
         print(format_lip_timeline(entries, head=args.head))
         if args.analyze_only or not args.bundle:
             return
@@ -757,6 +1129,28 @@ def main(argv=None):
         out = args.out or (str(Path(args.bundle).with_suffix("")) + ".cam.unity")
         inject_camera(Path(args.camera), Path(args.bundle), Path(out),
                       scale=args.scale, z_flip=args.z_flip, yaw180=args.yaw180)
+        return
+
+    if args.cmd == "cam-follow":
+        if args.emit_json or not args.bundle:        # 번들 없이 카메라 JSON만 생성
+            data = json.loads(Path(args.positions).read_text(encoding="utf-8"))
+            pos = data.get("frames", data) if isinstance(data, dict) else data
+            cam = generate_follow_camera(
+                pos, view=args.view, front_dist=args.front_dist, rear_dist=args.rear_dist,
+                height=args.height, lookat_height=args.lookat_height, fov=args.fov,
+                threshold=args.threshold, front_yaw=args.front_yaw, smooth=args.smooth,
+                start=args.start, end=args.end)
+            outp = args.emit_json or (str(Path(args.positions).with_suffix("")) + ".followcam.json")
+            Path(outp).write_text(json.dumps(cam), encoding="utf-8")
+            print(f"[follow] view={args.view} frames={len(cam['frames'])} -> {outp}")
+            return
+        out = args.out or (str(Path(args.bundle).with_suffix("")) + ".follow.unity")
+        inject_follow_camera(
+            Path(args.positions), Path(args.bundle), Path(out), view=args.view,
+            front_dist=args.front_dist, rear_dist=args.rear_dist, height=args.height,
+            lookat_height=args.lookat_height, fov=args.fov, threshold=args.threshold,
+            front_yaw=args.front_yaw, smooth=args.smooth, start=args.start, end=args.end,
+            scale=args.scale, z_flip=args.z_flip, yaw180=args.yaw180)
         return
 
 
