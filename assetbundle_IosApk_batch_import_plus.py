@@ -5,6 +5,171 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own; the chosen
+# language is remembered/shared via ~/.config/sifas_modding_tools/config.json.
+import os as _os
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if _os.name == "nt":
+            base = _os.environ.get("APPDATA") or _os.path.join(_os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = _os.environ.get("XDG_CONFIG_HOME") or _os.path.join(_os.path.expanduser("~"), ".config")
+        return _os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            _os.makedirs(_os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_CB_IMPORT = ("Import donor-only objects (needed for costume_transplant.py bundles: "
+              "appendage bones / swing physics / matcap textures)")
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "PID Pair Patch (Import Donor → Patch Target → Export Result)": "PID 페어 패치 (공여 임포트 → 대상 패치 → 결과 익스포트)",
+        "Error": "오류",
+        "Please select Import From (Donor) folder": "임포트 원본(공여) 폴더를 선택하세요",
+        "Please select Patch Target (Base) folder": "패치 대상(베이스) 폴더를 선택하세요",
+        "Please specify Export Result folder": "결과 익스포트 폴더를 지정하세요",
+        "Select Donor Folder": "공여 폴더 선택",
+        "Select Target Folder": "대상 폴더 선택",
+        "Select Export Folder": "익스포트 폴더 선택",
+        "Folders": "폴더",
+        "Import From (Donor) folder": "임포트 원본(공여) 폴더",
+        "Patch Target (Base) folder": "패치 대상(베이스) 폴더",
+        "Export Result folder": "결과 익스포트 폴더",
+        "Browse": "찾아보기",
+        "Pairing (pathID intersection)": "페어링 (pathID 교집합)",
+        "Coverage threshold (0~1)": "커버리지 임계값 (0~1)",
+        "Index sample_limit (0=full)": "인덱스 sample_limit (0=전체)",
+        _CB_IMPORT: "공여 전용 오브젝트 임포트 (costume_transplant.py 번들에 필요: 부속 본 / 스윙 물리 / 맷캡 텍스처)",
+        "Output naming": "출력 이름 규칙",
+        "Prefix": "접두사",
+        "Suffix": "접미사",
+        "Result = prefix + donor.stem + suffix + donor.ext": "결과 = 접두사 + donor.stem + 접미사 + donor.ext",
+        "Filters (optional)": "필터 (선택)",
+        "Include pathIDs": "포함 pathID",
+        "Exclude pathIDs": "제외 pathID",
+        "Include types": "포함 타입",
+        "Exclude types": "제외 타입",
+        "Name-based include (m_Name)": "이름 기반 포함 (m_Name)",
+        "Name-based exclude (m_Name)": "이름 기반 제외 (m_Name)",
+        "Patterns": "패턴",
+        "Example: ch*_co*_body, *Skirt*_Dyna or ^ch\\d+_co\\d+_body$": "예: ch*_co*_body, *Skirt*_Dyna 또는 ^ch\\d+_co\\d+_body$",
+        "Example: ch*_co*_head, ch*_co*_head_rim or ^ch\\d+_co\\d+_head(?:_rim)?$": "예: ch*_co*_head, ch*_co*_head_rim 또는 ^ch\\d+_co\\d+_head(?:_rim)?$",
+        "Script-class exclude (MonoBehaviour.m_Script)": "스크립트 클래스 제외 (MonoBehaviour.m_Script)",
+        "Example: SwingBone, SwingCollider, ^Swing.*$": "예: SwingBone, SwingCollider, ^Swing.*$",
+        "Run (Import Donor → Patch Target → Export)": "실행 (공여 임포트 → 대상 패치 → 익스포트)",
+        "Batch Result": "일괄 결과",
+        "Batch Result (fatal)": "일괄 결과 (치명적 오류)",
+    },
+    "ja": {
+        "Language": "言語",
+        "PID Pair Patch (Import Donor → Patch Target → Export Result)": "PID ペアパッチ（提供元インポート → 対象パッチ → 結果エクスポート）",
+        "Error": "エラー",
+        "Please select Import From (Donor) folder": "インポート元（提供元）フォルダを選択してください",
+        "Please select Patch Target (Base) folder": "パッチ対象（ベース）フォルダを選択してください",
+        "Please specify Export Result folder": "結果エクスポートフォルダを指定してください",
+        "Select Donor Folder": "提供元フォルダを選択",
+        "Select Target Folder": "対象フォルダを選択",
+        "Select Export Folder": "エクスポートフォルダを選択",
+        "Folders": "フォルダ",
+        "Import From (Donor) folder": "インポート元（提供元）フォルダ",
+        "Patch Target (Base) folder": "パッチ対象（ベース）フォルダ",
+        "Export Result folder": "結果エクスポートフォルダ",
+        "Browse": "参照",
+        "Pairing (pathID intersection)": "ペアリング（pathID の積集合）",
+        "Coverage threshold (0~1)": "カバレッジしきい値（0〜1）",
+        "Index sample_limit (0=full)": "インデックス sample_limit（0=全件）",
+        _CB_IMPORT: "提供元のみのオブジェクトをインポート（costume_transplant.py バンドルに必要: 付属ボーン / スイング物理 / マットキャップテクスチャ）",
+        "Output naming": "出力の命名",
+        "Prefix": "接頭辞",
+        "Suffix": "接尾辞",
+        "Result = prefix + donor.stem + suffix + donor.ext": "結果 = 接頭辞 + donor.stem + 接尾辞 + donor.ext",
+        "Filters (optional)": "フィルター（任意）",
+        "Include pathIDs": "含める pathID",
+        "Exclude pathIDs": "除外する pathID",
+        "Include types": "含める型",
+        "Exclude types": "除外する型",
+        "Name-based include (m_Name)": "名前ベースで含める (m_Name)",
+        "Name-based exclude (m_Name)": "名前ベースで除外 (m_Name)",
+        "Patterns": "パターン",
+        "Example: ch*_co*_body, *Skirt*_Dyna or ^ch\\d+_co\\d+_body$": "例: ch*_co*_body, *Skirt*_Dyna または ^ch\\d+_co\\d+_body$",
+        "Example: ch*_co*_head, ch*_co*_head_rim or ^ch\\d+_co\\d+_head(?:_rim)?$": "例: ch*_co*_head, ch*_co*_head_rim または ^ch\\d+_co\\d+_head(?:_rim)?$",
+        "Script-class exclude (MonoBehaviour.m_Script)": "スクリプトクラス除外 (MonoBehaviour.m_Script)",
+        "Example: SwingBone, SwingCollider, ^Swing.*$": "例: SwingBone, SwingCollider, ^Swing.*$",
+        "Run (Import Donor → Patch Target → Export)": "実行（提供元インポート → 対象パッチ → エクスポート）",
+        "Batch Result": "一括結果",
+        "Batch Result (fatal)": "一括結果（致命的エラー）",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or _os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
+
 try:
     import UnityPy
     from UnityPy.enums import TextureFormat
@@ -576,7 +741,6 @@ def show_log_window(root, title, lines):
 
 def run_gui():
     root = tk.Tk()
-    root.title("PID Pair Patch (Import Donor → Patch Target → Export Result)")
     root.geometry("1000x800")
 
     donor_dir_var = tk.StringVar()
@@ -610,11 +774,11 @@ def run_gui():
     def do_run():
         try:
             if not donor_dir_var.get():
-                messagebox.showerror("Error", "Please select Import From (Donor) folder"); return
+                messagebox.showerror(_tr("Error"), _tr("Please select Import From (Donor) folder")); return
             if not target_dir_var.get():
-                messagebox.showerror("Error", "Please select Patch Target (Base) folder"); return
+                messagebox.showerror(_tr("Error"), _tr("Please select Patch Target (Base) folder")); return
             if not export_dir_var.get():
-                messagebox.showerror("Error", "Please specify Export Result folder"); return
+                messagebox.showerror(_tr("Error"), _tr("Please specify Export Result folder")); return
 
             include_ids = _parse_id_list(include_ids_var.get())
             exclude_ids = _parse_id_list(exclude_ids_var.get())
@@ -658,91 +822,112 @@ def run_gui():
 
             lines = []
             lines.append(f"[BATCH] Donor scanned={files} Paired={paired} Candidates={cand} Applied={appl} Injected={injd} Skipped={skipd} Failed={len(failed)}")
-            show_log_window(root, "Batch Result", lines)
+            show_log_window(root, _tr("Batch Result"), lines)
 
         except Exception:
             lines = ["FATAL_ERROR:", traceback.format_exc()]
-            show_log_window(root, "Batch Result (fatal)", lines)
+            show_log_window(root, _tr("Batch Result (fatal)"), lines)
 
-    frm = ttk.Frame(root)
-    frm.pack(fill="both", expand=True, padx=12, pady=12)
+    # The window is rebuilt on a language change; the tk variables above persist,
+    # so anything the user typed survives the rebuild.
+    container = ttk.Frame(root); container.pack(fill="both", expand=True)
 
-    # Folders
-    pf = ttk.LabelFrame(frm, text="Folders")
-    pf.grid(row=0, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(pf, text="Import From (Donor) folder").grid(row=0, column=0, sticky="w")
-    ttk.Entry(pf, textvariable=donor_dir_var, width=70).grid(row=0, column=1, padx=6)
-    ttk.Button(pf, text="Browse", command=lambda: pick_dir(donor_dir_var, "Select Donor Folder")).grid(row=0, column=2)
+    def on_language(code):
+        _set_lang(code)
+        build()
 
-    ttk.Label(pf, text="Patch Target (Base) folder").grid(row=1, column=0, sticky="w")
-    ttk.Entry(pf, textvariable=target_dir_var, width=70).grid(row=1, column=1, padx=6)
-    ttk.Button(pf, text="Browse", command=lambda: pick_dir(target_dir_var, "Select Target Folder")).grid(row=1, column=2)
+    def build():
+        for w in container.winfo_children():
+            w.destroy()
+        root.title(_tr("PID Pair Patch (Import Donor → Patch Target → Export Result)"))
 
-    ttk.Label(pf, text="Export Result folder").grid(row=2, column=0, sticky="w")
-    ttk.Entry(pf, textvariable=export_dir_var, width=70).grid(row=2, column=1, padx=6)
-    ttk.Button(pf, text="Browse", command=lambda: pick_dir(export_dir_var, "Select Export Folder")).grid(row=2, column=2)
+        bar = ttk.Frame(container); bar.pack(fill="x", padx=12, pady=(10, 0))
+        ttk.Label(bar, text=_tr("Language")).pack(side="left")
+        names = [name for _c, name in _lang_opts()]
+        code_by_name = {name: code for code, name in _lang_opts()}
+        name_by_code = {code: name for code, name in _lang_opts()}
+        lang_display = tk.StringVar(value=name_by_code.get(_get_lang(), names[0]))
+        cb = ttk.Combobox(bar, textvariable=lang_display, values=names, state="readonly", width=10)
+        cb.pack(side="left", padx=(6, 0))
+        cb.bind("<<ComboboxSelected>>", lambda e: on_language(code_by_name[lang_display.get()]))
 
-    # Pairing
-    pr = ttk.LabelFrame(frm, text="Pairing (pathID intersection)")
-    pr.grid(row=1, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(pr, text="Coverage threshold (0~1)").grid(row=0, column=0, sticky="w")
-    ttk.Entry(pr, textvariable=coverage_var, width=10).grid(row=0, column=1, sticky="w")
-    ttk.Label(pr, text="Index sample_limit (0=full)").grid(row=0, column=2, sticky="w")
-    ttk.Entry(pr, textvariable=sample_limit_var, width=10).grid(row=0, column=3, sticky="w")
-    ttk.Checkbutton(
-        pr, variable=import_new_objects_var,
-        text="Import donor-only objects (needed for costume_transplant.py bundles: "
-             "appendage bones / swing physics / matcap textures)"
-    ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        frm = ttk.Frame(container)
+        frm.pack(fill="both", expand=True, padx=12, pady=12)
 
-    # Naming
-    nm = ttk.LabelFrame(frm, text="Output naming")
-    nm.grid(row=2, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(nm, text="Prefix").grid(row=0, column=0, sticky="w")
-    ttk.Entry(nm, textvariable=out_prefix_var, width=25).grid(row=0, column=1, sticky="w", padx=6)
-    ttk.Label(nm, text="Suffix").grid(row=0, column=2, sticky="w")
-    ttk.Entry(nm, textvariable=out_suffix_var, width=25).grid(row=0, column=3, sticky="w", padx=6)
-    ttk.Label(nm, text="Result = prefix + donor.stem + suffix + donor.ext").grid(row=1, column=0, columnspan=4, sticky="w")
+        # Folders
+        pf = ttk.LabelFrame(frm, text=_tr("Folders"))
+        pf.grid(row=0, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(pf, text=_tr("Import From (Donor) folder")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(pf, textvariable=donor_dir_var, width=70).grid(row=0, column=1, padx=6)
+        ttk.Button(pf, text=_tr("Browse"), command=lambda: pick_dir(donor_dir_var, _tr("Select Donor Folder"))).grid(row=0, column=2)
 
-    # Filters
-    ff = ttk.LabelFrame(frm, text="Filters (optional)")
-    ff.grid(row=3, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(ff, text="Include pathIDs").grid(row=0, column=0, sticky="w")
-    ttk.Entry(ff, textvariable=include_ids_var, width=70).grid(row=0, column=1, padx=6)
-    ttk.Label(ff, text="Exclude pathIDs").grid(row=1, column=0, sticky="w")
-    ttk.Entry(ff, textvariable=exclude_ids_var, width=70).grid(row=1, column=1, padx=6)
-    ttk.Label(ff, text="Include types").grid(row=2, column=0, sticky="w")
-    ttk.Entry(ff, textvariable=include_types_var, width=70).grid(row=2, column=1, padx=6)
-    ttk.Label(ff, text="Exclude types").grid(row=3, column=0, sticky="w")
-    ttk.Entry(ff, textvariable=exclude_types_var, width=70).grid(row=3, column=1, padx=6)
+        ttk.Label(pf, text=_tr("Patch Target (Base) folder")).grid(row=1, column=0, sticky="w")
+        ttk.Entry(pf, textvariable=target_dir_var, width=70).grid(row=1, column=1, padx=6)
+        ttk.Button(pf, text=_tr("Browse"), command=lambda: pick_dir(target_dir_var, _tr("Select Target Folder"))).grid(row=1, column=2)
 
-    # Name include/exclude
-    ni = ttk.LabelFrame(frm, text="Name-based include (m_Name)")
-    ni.grid(row=4, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(ni, text="Patterns").grid(row=0, column=0, sticky="w")
-    ttk.Entry(ni, textvariable=name_include_patterns_var, width=70).grid(row=0, column=1, padx=6)
-    ttk.Label(ni, text="Example: ch*_co*_body, *Skirt*_Dyna or ^ch\\d+_co\\d+_body$").grid(row=0, column=2, sticky="w")
+        ttk.Label(pf, text=_tr("Export Result folder")).grid(row=2, column=0, sticky="w")
+        ttk.Entry(pf, textvariable=export_dir_var, width=70).grid(row=2, column=1, padx=6)
+        ttk.Button(pf, text=_tr("Browse"), command=lambda: pick_dir(export_dir_var, _tr("Select Export Folder"))).grid(row=2, column=2)
 
-    ne = ttk.LabelFrame(frm, text="Name-based exclude (m_Name)")
-    ne.grid(row=5, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(ne, text="Patterns").grid(row=0, column=0, sticky="w")
-    ttk.Entry(ne, textvariable=name_exclude_patterns_var, width=70).grid(row=0, column=1, padx=6)
-    ttk.Label(ne, text="Example: ch*_co*_head, ch*_co*_head_rim or ^ch\\d+_co\\d+_head(?:_rim)?$").grid(row=0, column=2, sticky="w")
+        # Pairing
+        pr = ttk.LabelFrame(frm, text=_tr("Pairing (pathID intersection)"))
+        pr.grid(row=1, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(pr, text=_tr("Coverage threshold (0~1)")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(pr, textvariable=coverage_var, width=10).grid(row=0, column=1, sticky="w")
+        ttk.Label(pr, text=_tr("Index sample_limit (0=full)")).grid(row=0, column=2, sticky="w")
+        ttk.Entry(pr, textvariable=sample_limit_var, width=10).grid(row=0, column=3, sticky="w")
+        ttk.Checkbutton(pr, variable=import_new_objects_var, text=_tr(_CB_IMPORT)
+                        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-    # Script-class exclude
-    sf = ttk.LabelFrame(frm, text="Script-class exclude (MonoBehaviour.m_Script)")
-    sf.grid(row=6, column=0, columnspan=4, sticky="ew", pady=6)
-    ttk.Label(sf, text="Patterns").grid(row=0, column=0, sticky="w")
-    ttk.Entry(sf, textvariable=script_patterns_var, width=70).grid(row=0, column=1, padx=6)
-    ttk.Label(sf, text="Example: SwingBone, SwingCollider, ^Swing.*$").grid(row=0, column=2, sticky="w")
+        # Naming
+        nm = ttk.LabelFrame(frm, text=_tr("Output naming"))
+        nm.grid(row=2, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(nm, text=_tr("Prefix")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(nm, textvariable=out_prefix_var, width=25).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(nm, text=_tr("Suffix")).grid(row=0, column=2, sticky="w")
+        ttk.Entry(nm, textvariable=out_suffix_var, width=25).grid(row=0, column=3, sticky="w", padx=6)
+        ttk.Label(nm, text=_tr("Result = prefix + donor.stem + suffix + donor.ext")).grid(row=1, column=0, columnspan=4, sticky="w")
 
-    ttk.Separator(frm).grid(row=7, column=0, columnspan=4, sticky="ew", pady=8)
-    ttk.Button(frm, text="Run (Import Donor → Patch Target → Export)", command=do_run).grid(row=8, column=0, columnspan=4, pady=8)
+        # Filters
+        ff = ttk.LabelFrame(frm, text=_tr("Filters (optional)"))
+        ff.grid(row=3, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(ff, text=_tr("Include pathIDs")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(ff, textvariable=include_ids_var, width=70).grid(row=0, column=1, padx=6)
+        ttk.Label(ff, text=_tr("Exclude pathIDs")).grid(row=1, column=0, sticky="w")
+        ttk.Entry(ff, textvariable=exclude_ids_var, width=70).grid(row=1, column=1, padx=6)
+        ttk.Label(ff, text=_tr("Include types")).grid(row=2, column=0, sticky="w")
+        ttk.Entry(ff, textvariable=include_types_var, width=70).grid(row=2, column=1, padx=6)
+        ttk.Label(ff, text=_tr("Exclude types")).grid(row=3, column=0, sticky="w")
+        ttk.Entry(ff, textvariable=exclude_types_var, width=70).grid(row=3, column=1, padx=6)
 
-    for r in range(9):
-        frm.rowconfigure(r, weight=0)
-    frm.columnconfigure(1, weight=1)
+        # Name include/exclude
+        ni = ttk.LabelFrame(frm, text=_tr("Name-based include (m_Name)"))
+        ni.grid(row=4, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(ni, text=_tr("Patterns")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(ni, textvariable=name_include_patterns_var, width=70).grid(row=0, column=1, padx=6)
+        ttk.Label(ni, text=_tr("Example: ch*_co*_body, *Skirt*_Dyna or ^ch\\d+_co\\d+_body$")).grid(row=0, column=2, sticky="w")
 
+        ne = ttk.LabelFrame(frm, text=_tr("Name-based exclude (m_Name)"))
+        ne.grid(row=5, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(ne, text=_tr("Patterns")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(ne, textvariable=name_exclude_patterns_var, width=70).grid(row=0, column=1, padx=6)
+        ttk.Label(ne, text=_tr("Example: ch*_co*_head, ch*_co*_head_rim or ^ch\\d+_co\\d+_head(?:_rim)?$")).grid(row=0, column=2, sticky="w")
+
+        # Script-class exclude
+        sf = ttk.LabelFrame(frm, text=_tr("Script-class exclude (MonoBehaviour.m_Script)"))
+        sf.grid(row=6, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(sf, text=_tr("Patterns")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(sf, textvariable=script_patterns_var, width=70).grid(row=0, column=1, padx=6)
+        ttk.Label(sf, text=_tr("Example: SwingBone, SwingCollider, ^Swing.*$")).grid(row=0, column=2, sticky="w")
+
+        ttk.Separator(frm).grid(row=7, column=0, columnspan=4, sticky="ew", pady=8)
+        ttk.Button(frm, text=_tr("Run (Import Donor → Patch Target → Export)"), command=do_run).grid(row=8, column=0, columnspan=4, pady=8)
+
+        for r in range(9):
+            frm.rowconfigure(r, weight=0)
+        frm.columnconfigure(1, weight=1)
+
+    build()
     root.mainloop()
 
 if __name__ == "__main__":
