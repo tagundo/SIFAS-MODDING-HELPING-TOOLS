@@ -42,6 +42,187 @@ import importlib
 import subprocess
 from pathlib import Path
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own; the chosen
+# language is remembered/shared via ~/.config/sifas_modding_tools/config.json.
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_NS_ENTRIES_FRAME = ("NodeScaling entries  (edit originValue / scaledValue directly, "
+                     "or use the repair buttons)")
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "SIFAS NodeScaling Editor": "SIFAS NodeScaling 편집기",
+        "Target": "대상",
+        "Single file": "단일 파일",
+        "Folder (batch)": "폴더 (일괄)",
+        "Input": "입력",
+        "Output": "출력",
+        "Batch suffix": "일괄 접미사",
+        "Browse": "찾아보기",
+        "Scan": "스캔",
+        "Preview": "미리보기",
+        "Apply + Save": "적용 + 저장",
+        "ok = bone matches originValue · MISMATCH = will teleport in-game":
+            "ok = 본이 originValue와 일치 · MISMATCH = 게임 내에서 순간이동함",
+        "Log": "로그",
+        "Auto-repair inconsistent:": "불일치 자동 복구:",
+        "Compression": "압축",
+        _NS_ENTRIES_FRAME: "NodeScaling 항목  (originValue / scaledValue를 직접 편집하거나 복구 버튼 사용)",
+        "Re-anchor inconsistent": "불일치 재고정",
+        "Neutralize inconsistent": "불일치 중화",
+        "Reset scaled = origin": "scaled = origin으로 초기화",
+        "Revert to scanned": "스캔 상태로 되돌리기",
+        "Add new part →  bone": "새 부위 추가 →  본",
+        "kind": "종류",
+        "on": "대상",
+        "Add entry": "항목 추가",
+        "Bone (targetName)": "본 (targetName)",
+        "Kind": "종류",
+        "origin X": "origin X", "origin Y": "origin Y", "origin Z": "origin Z",
+        "scaled X": "scaled X", "scaled Y": "scaled Y", "scaled Z": "scaled Z",
+        "local (current)": "local (현재)",
+        "status": "상태",
+        "Add": "추가",
+        "Scan a bundle first.": "먼저 번들을 스캔하세요.",
+        "Pick a bone from the list.": "목록에서 본을 선택하세요.",
+        "No .unity files in the folder.": "폴더에 .unity 파일이 없습니다.",
+        "Check the input path.": "입력 경로를 확인하세요.",
+        "Scan failed": "스캔 실패",
+        "Path": "경로",
+        "Set the input path.": "입력 경로를 설정하세요.",
+        "Set the output folder.": "출력 폴더를 설정하세요.",
+        "Failed": "실패",
+        "Input bundle": "입력 번들",
+        "Input folder": "입력 폴더",
+        "Output bundle": "출력 번들",
+        "Output folder": "출력 폴더",
+    },
+    "ja": {
+        "Language": "言語",
+        "SIFAS NodeScaling Editor": "SIFAS NodeScaling エディタ",
+        "Target": "対象",
+        "Single file": "単一ファイル",
+        "Folder (batch)": "フォルダ（一括）",
+        "Input": "入力",
+        "Output": "出力",
+        "Batch suffix": "一括の接尾辞",
+        "Browse": "参照",
+        "Scan": "スキャン",
+        "Preview": "プレビュー",
+        "Apply + Save": "適用 + 保存",
+        "ok = bone matches originValue · MISMATCH = will teleport in-game":
+            "ok = ボーンが originValue と一致 · MISMATCH = ゲーム内でテレポートします",
+        "Log": "ログ",
+        "Auto-repair inconsistent:": "不一致を自動修復:",
+        "Compression": "圧縮",
+        _NS_ENTRIES_FRAME: "NodeScaling 項目  (originValue / scaledValue を直接編集、または修復ボタンを使用)",
+        "Re-anchor inconsistent": "不一致を再アンカー",
+        "Neutralize inconsistent": "不一致を中和",
+        "Reset scaled = origin": "scaled = origin にリセット",
+        "Revert to scanned": "スキャン状態に戻す",
+        "Add new part →  bone": "新規パーツを追加 →  ボーン",
+        "kind": "種類",
+        "on": "対象",
+        "Add entry": "項目を追加",
+        "Bone (targetName)": "ボーン (targetName)",
+        "Kind": "種類",
+        "origin X": "origin X", "origin Y": "origin Y", "origin Z": "origin Z",
+        "scaled X": "scaled X", "scaled Y": "scaled Y", "scaled Z": "scaled Z",
+        "local (current)": "local（現在）",
+        "status": "状態",
+        "Add": "追加",
+        "Scan a bundle first.": "先にバンドルをスキャンしてください。",
+        "Pick a bone from the list.": "リストからボーンを選択してください。",
+        "No .unity files in the folder.": "フォルダに .unity ファイルがありません。",
+        "Check the input path.": "入力パスを確認してください。",
+        "Scan failed": "スキャン失敗",
+        "Path": "パス",
+        "Set the input path.": "入力パスを設定してください。",
+        "Set the output folder.": "出力フォルダを設定してください。",
+        "Failed": "失敗",
+        "Input bundle": "入力バンドル",
+        "Input folder": "入力フォルダ",
+        "Output bundle": "出力バンドル",
+        "Output folder": "出力フォルダ",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
 
 # ==========================================================================
 # 0. 의존성 자동 설치
@@ -584,12 +765,40 @@ def run_gui():
     main = ttk.Frame(root, padding=PAD)
     main.pack(fill="both", expand=True)
 
+    # live language switching: register translatable widgets, re-apply on change
+    _i18n_widgets = []
+
+    def _reg(widget, key, kind="text"):
+        _i18n_widgets.append((widget, key, kind))
+        return widget
+
+    def _apply_i18n():
+        root.title(_tr("SIFAS NodeScaling Editor"))
+        for w, key, kind in _i18n_widgets:
+            try:
+                w.configure(**{kind: _tr(key)})
+            except Exception:
+                pass
+
+    # ---------- language picker (top) ----------
+    langbar = ttk.Frame(main)
+    langbar.pack(side="top", fill="x")
+    _reg(ttk.Label(langbar, text=_tr("Language")), "Language").pack(side="left")
+    _names = [n for _c, n in _lang_opts()]
+    _code_by_name = {n: c for c, n in _lang_opts()}
+    _name_by_code = {c: n for c, n in _lang_opts()}
+    _lang_var = tk.StringVar(value=_name_by_code.get(_get_lang(), _names[0]))
+    _lang_cb = ttk.Combobox(langbar, textvariable=_lang_var, values=_names, state="readonly", width=10)
+    _lang_cb.pack(side="left", padx=(6, 0))
+    _lang_cb.bind("<<ComboboxSelected>>",
+                  lambda e: (_set_lang(_code_by_name[_lang_var.get()]), _apply_i18n()))
+
     # ---------- TOP: target ----------
-    src = ttk.LabelFrame(main, text="Target", padding=PAD)
+    src = _reg(ttk.LabelFrame(main, text=_tr("Target"), padding=PAD), "Target")
     src.pack(side="top", fill="x")
     mode_io = tk.StringVar(value="file")
-    ttk.Radiobutton(src, text="Single file", variable=mode_io, value="file").grid(row=0, column=0, sticky="w")
-    ttk.Radiobutton(src, text="Folder (batch)", variable=mode_io, value="dir").grid(row=0, column=1, sticky="w")
+    _reg(ttk.Radiobutton(src, text=_tr("Single file"), variable=mode_io, value="file"), "Single file").grid(row=0, column=0, sticky="w")
+    _reg(ttk.Radiobutton(src, text=_tr("Folder (batch)"), variable=mode_io, value="dir"), "Folder (batch)").grid(row=0, column=1, sticky="w")
     in_var, out_var, suffix_var = tk.StringVar(), tk.StringVar(), tk.StringVar(value="_nodescalefix")
     _auto = {"val": ""}
 
@@ -601,13 +810,13 @@ def run_gui():
             _auto["val"] = nv; out_var.set(nv)
     in_var.trace_add("write", suggest_out)
 
-    ttk.Label(src, text="Input").grid(row=1, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Input")), "Input").grid(row=1, column=0, sticky="e")
     e_in = ttk.Entry(src, textvariable=in_var, width=84)
     e_in.grid(row=1, column=1, columnspan=3, sticky="we", padx=4)
-    ttk.Label(src, text="Output").grid(row=2, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Output")), "Output").grid(row=2, column=0, sticky="e")
     e_out = ttk.Entry(src, textvariable=out_var, width=84)
     e_out.grid(row=2, column=1, columnspan=3, sticky="we", padx=4)
-    ttk.Label(src, text="Batch suffix").grid(row=3, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Batch suffix")), "Batch suffix").grid(row=3, column=0, sticky="e")
     ttk.Entry(src, textvariable=suffix_var, width=16).grid(row=3, column=1, sticky="w", padx=4)
     src.columnconfigure(1, weight=1)
     for e in (e_in, e_out):                     # 긴 경로의 끝(파일명)이 보이도록
@@ -616,31 +825,32 @@ def run_gui():
         (in_var if e is e_in else out_var).trace_add("write", _end)
 
     def browse_in():
-        p = (filedialog.askopenfilename(title="Input bundle",
+        p = (filedialog.askopenfilename(title=_tr("Input bundle"),
              filetypes=[("Unity bundle", "*.unity *.bundle *.ab"), ("All", "*.*")])
-             if mode_io.get() == "file" else filedialog.askdirectory(title="Input folder"))
+             if mode_io.get() == "file" else filedialog.askdirectory(title=_tr("Input folder")))
         if p:
             in_var.set(p)
 
     def browse_out():
-        p = (filedialog.asksaveasfilename(title="Output bundle", defaultextension=".unity")
-             if mode_io.get() == "file" else filedialog.askdirectory(title="Output folder"))
+        p = (filedialog.asksaveasfilename(title=_tr("Output bundle"), defaultextension=".unity")
+             if mode_io.get() == "file" else filedialog.askdirectory(title=_tr("Output folder")))
         if p:
             out_var.set(p)
 
-    ttk.Button(src, text="Browse", command=browse_in).grid(row=1, column=4, padx=4)
-    ttk.Button(src, text="Browse", command=browse_out).grid(row=2, column=4, padx=4)
-    ttk.Button(src, text="Scan", command=lambda: scan()).grid(row=3, column=4, padx=4)
+    _reg(ttk.Button(src, text=_tr("Browse"), command=browse_in), "Browse").grid(row=1, column=4, padx=4)
+    _reg(ttk.Button(src, text=_tr("Browse"), command=browse_out), "Browse").grid(row=2, column=4, padx=4)
+    _reg(ttk.Button(src, text=_tr("Scan"), command=lambda: scan()), "Scan").grid(row=3, column=4, padx=4)
 
     # ---------- BOTTOM (pinned): run / log / options ----------
     run_btns = ttk.Frame(main)
     run_btns.pack(side="bottom", fill="x", pady=(PAD, 0))
-    ttk.Button(run_btns, text="Preview", command=lambda: do_run(True)).pack(side="left")
-    ttk.Button(run_btns, text="Apply + Save", command=lambda: do_run(False)).pack(side="left", padx=6)
-    ttk.Label(run_btns, foreground="#666",
-              text="ok = bone matches originValue · MISMATCH = will teleport in-game").pack(side="right")
+    _reg(ttk.Button(run_btns, text=_tr("Preview"), command=lambda: do_run(True)), "Preview").pack(side="left")
+    _reg(ttk.Button(run_btns, text=_tr("Apply + Save"), command=lambda: do_run(False)), "Apply + Save").pack(side="left", padx=6)
+    _reg(ttk.Label(run_btns, foreground="#666",
+                   text=_tr("ok = bone matches originValue · MISMATCH = will teleport in-game")),
+         "ok = bone matches originValue · MISMATCH = will teleport in-game").pack(side="right")
 
-    log_frame = ttk.LabelFrame(main, text="Log", padding=4)
+    log_frame = _reg(ttk.LabelFrame(main, text=_tr("Log"), padding=4), "Log")
     log_frame.pack(side="bottom", fill="x")
     log_text = tk.Text(log_frame, height=8, wrap="word")
     log_text.pack(side="left", fill="both", expand=True)
@@ -649,7 +859,7 @@ def run_gui():
 
     opt = ttk.Frame(main)
     opt.pack(side="bottom", fill="x", pady=(PAD, 0))
-    ttk.Label(opt, text="Auto-repair inconsistent:").pack(side="left")
+    _reg(ttk.Label(opt, text=_tr("Auto-repair inconsistent:")), "Auto-repair inconsistent:").pack(side="left")
     repair_label = tk.StringVar(value="Re-anchor (rebase · keep body shaping)")
     _REPAIR2KEY = {
         "Re-anchor (rebase · keep body shaping)": "rebase",
@@ -658,37 +868,36 @@ def run_gui():
     }
     ttk.Combobox(opt, textvariable=repair_label, width=34, state="readonly",
                  values=list(_REPAIR2KEY.keys())).pack(side="left", padx=(6, 0))
-    ttk.Label(opt, text="Compression").pack(side="left", padx=(16, 4))
+    _reg(ttk.Label(opt, text=_tr("Compression")), "Compression").pack(side="left", padx=(16, 4))
     packer_var = tk.StringVar(value="original")
     ttk.Combobox(opt, textvariable=packer_var, width=10,
                  values=["original", "lz4", "lzma", "none"], state="readonly").pack(side="left")
 
     # ---------- MIDDLE (expands): entries editor ----------
-    mid = ttk.LabelFrame(main, text="NodeScaling entries  (edit originValue / scaledValue directly, "
-                                    "or use the repair buttons)", padding=PAD)
+    mid = _reg(ttk.LabelFrame(main, text=_tr(_NS_ENTRIES_FRAME), padding=PAD), _NS_ENTRIES_FRAME)
     mid.pack(side="top", fill="both", expand=True, pady=PAD)
 
     bar = ttk.Frame(mid); bar.pack(fill="x")
-    ttk.Button(bar, text="Re-anchor inconsistent", command=lambda: bulk("rebase")).pack(side="left")
-    ttk.Button(bar, text="Neutralize inconsistent", command=lambda: bulk("neutralize")).pack(side="left", padx=6)
-    ttk.Button(bar, text="Reset scaled = origin", command=lambda: bulk("reset")).pack(side="left")
-    ttk.Button(bar, text="Revert to scanned", command=lambda: render_rows()).pack(side="left", padx=6)
+    _reg(ttk.Button(bar, text=_tr("Re-anchor inconsistent"), command=lambda: bulk("rebase")), "Re-anchor inconsistent").pack(side="left")
+    _reg(ttk.Button(bar, text=_tr("Neutralize inconsistent"), command=lambda: bulk("neutralize")), "Neutralize inconsistent").pack(side="left", padx=6)
+    _reg(ttk.Button(bar, text=_tr("Reset scaled = origin"), command=lambda: bulk("reset")), "Reset scaled = origin").pack(side="left")
+    _reg(ttk.Button(bar, text=_tr("Revert to scanned"), command=lambda: render_rows()), "Revert to scanned").pack(side="left", padx=6)
 
     # add-entry bar: target another bone that has no NodeScaling entry yet
     addbar = ttk.Frame(mid); addbar.pack(fill="x", pady=(4, 2))
-    ttk.Label(addbar, text="Add new part →  bone").pack(side="left")
+    _reg(ttk.Label(addbar, text=_tr("Add new part →  bone")), "Add new part →  bone").pack(side="left")
     add_bone_var = tk.StringVar()
     add_bone_cb = ttk.Combobox(addbar, textvariable=add_bone_var, width=26, values=[])
     add_bone_cb.pack(side="left", padx=(4, 8))
-    ttk.Label(addbar, text="kind").pack(side="left")
+    _reg(ttk.Label(addbar, text=_tr("kind")), "kind").pack(side="left")
     add_kind_var = tk.StringVar(value="scale (body shape)")
     ttk.Combobox(addbar, textvariable=add_kind_var, width=18, state="readonly",
                  values=["scale (body shape)", "pos (offset)"]).pack(side="left", padx=(4, 8))
-    ttk.Label(addbar, text="on").pack(side="left")
+    _reg(ttk.Label(addbar, text=_tr("on")), "on").pack(side="left")
     add_comp_var = tk.StringVar()
     add_comp_cb = ttk.Combobox(addbar, textvariable=add_comp_var, width=22, state="readonly", values=[])
     add_comp_cb.pack(side="left", padx=(4, 8))
-    ttk.Button(addbar, text="Add entry", command=lambda: add_new_entry()).pack(side="left")
+    _reg(ttk.Button(addbar, text=_tr("Add entry"), command=lambda: add_new_entry()), "Add entry").pack(side="left")
 
     canvas = tk.Canvas(mid, highlightthickness=0)
     inner = ttk.Frame(canvas)
@@ -710,7 +919,7 @@ def run_gui():
 
     def build_header():
         for c, h in enumerate(HEADERS):
-            ttk.Label(inner, text=h, anchor="w").grid(row=0, column=c, sticky="w", padx=2, pady=(0, 3))
+            _reg(ttk.Label(inner, text=_tr(h), anchor="w"), h).grid(row=0, column=c, sticky="w", padx=2, pady=(0, 3))
 
     def log(msg=""):
         log_text.insert("end", str(msg) + "\n"); log_text.see("end"); root.update_idletasks()
@@ -791,11 +1000,11 @@ def run_gui():
 
     def add_new_entry():
         if not state["comps"]:
-            messagebox.showwarning("Add", "Scan a bundle first."); return
+            messagebox.showwarning(_tr("Add"), _tr("Scan a bundle first.")); return
         bone = add_bone_var.get().strip()
         cat = state["catalog_map"].get(bone)
         if not cat:
-            messagebox.showwarning("Add", "Pick a bone from the list."); return
+            messagebox.showwarning(_tr("Add"), _tr("Pick a bone from the list.")); return
         kind = "pos" if add_kind_var.get().startswith("pos") else "scale"
         tname = add_comp_var.get().strip() or state["comps"][0][2]
         if any(r.get("is_new") and r["entry"].bone == bone and r["entry"].kind == kind
@@ -853,10 +1062,10 @@ def run_gui():
         if mode_io.get() == "dir":
             files = sorted(Path(path).glob("*.unity"))
             if not files:
-                messagebox.showwarning("Scan", "No .unity files in the folder."); return
+                messagebox.showwarning(_tr("Scan"), _tr("No .unity files in the folder.")); return
             path = str(files[0]); log(f"Scanning first file in folder: {Path(path).name}")
         if not path or not os.path.exists(path):
-            messagebox.showwarning("Scan", "Check the input path."); return
+            messagebox.showwarning(_tr("Scan"), _tr("Check the input path.")); return
         try:
             env = UnityPy.load(path)
             comps, entries = scan_components(env)
@@ -878,7 +1087,7 @@ def run_gui():
             if bad:
                 log("  -> click 'Re-anchor inconsistent' (keeps body shaping) then 'Apply + Save'.")
         except Exception as e:
-            messagebox.showerror("Scan failed", str(e))
+            messagebox.showerror(_tr("Scan failed"), str(e))
 
     def collect_edits():
         edits, hedits, adds = {}, {}, []
@@ -904,13 +1113,13 @@ def run_gui():
     def do_run(dry):
         inp, outp = in_var.get().strip(), out_var.get().strip()
         if not inp:
-            messagebox.showwarning("Path", "Set the input path."); return
+            messagebox.showwarning(_tr("Path"), _tr("Set the input path.")); return
         mode = _REPAIR2KEY.get(repair_label.get(), "rebase")
         log("=" * 62)
         try:
             if mode_io.get() == "dir":
                 if not outp:
-                    messagebox.showwarning("Path", "Set the output folder."); return
+                    messagebox.showwarning(_tr("Path"), _tr("Set the output folder.")); return
                 if rows:
                     log("[note] per-row manual edits apply to single-file mode only; "
                         "batch uses the auto-repair mode for every file.")
@@ -926,9 +1135,10 @@ def run_gui():
                                adds=adds, packer=packer_var.get(), log=log, dry_run=dry)
             log("Preview done." if dry else "Done.")
         except Exception as e:
-            log(f"! error: {e}"); messagebox.showerror("Failed", str(e))
+            log(f"! error: {e}"); messagebox.showerror(_tr("Failed"), str(e))
 
     build_header()
+    _apply_i18n()
     log("Select an input bundle -> 'Scan' -> review entries (MISMATCH = teleports in-game) "
         "-> 'Re-anchor inconsistent' -> 'Apply + Save'.")
     root.mainloop()
