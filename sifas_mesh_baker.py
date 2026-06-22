@@ -33,6 +33,198 @@ import importlib
 import subprocess
 from pathlib import Path
 
+# --- self-contained multi-language support (English default; 한국어 / 日本語) ---
+# Translations are embedded so this single file works on its own; the chosen
+# language is remembered/shared via ~/.config/sifas_modding_tools/config.json.
+import json as _json
+
+
+class _LangStore:
+    @staticmethod
+    def _path():
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, "sifas_modding_tools", "config.json")
+
+    def get_language(self):
+        try:
+            with open(self._path(), encoding="utf-8") as f:
+                return _json.load(f).get("language")
+        except Exception:
+            return None
+
+    def set_language(self, code):
+        try:
+            p = self._path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {}
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+            except Exception:
+                pass
+            data["language"] = code
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+_shared_i18n = _LangStore()
+_LANG_NAMES = (("en", "English"), ("ko", "한국어"), ("ja", "日本語"))
+_MB_SPINE_NOTE = ("Note — Spine (waist): ScaleX is the HEIGHT axis; changing X changes height "
+                  "and the head no longer lines up. Resize the waist with Y/Z only (keep X=1.0).")
+_TRANSLATIONS = {
+    "ko": {
+        "Language": "언어",
+        "SIFAS Mesh Baker — Pose Baking": "SIFAS 메시 베이커 — 포즈 베이킹",
+        "Target": "대상",
+        "Single file": "단일 파일",
+        "Folder (batch)": "폴더 (일괄)",
+        "Input": "입력",
+        "Output": "출력",
+        "Batch suffix": "일괄 접미사",
+        "Browse": "찾아보기",
+        "Meshes (only checked are processed)": "메시 (체크한 것만 처리)",
+        "Show hidden meshes (foot_shadow_Plane · Hair · Face)": "숨김 메시 표시 (foot_shadow_Plane · Hair · Face)",
+        "Scan": "스캔",
+        "Thigh presets (Thigh Scale · both UpLeg + child compensation)": "허벅지 프리셋 (Thigh Scale · 양쪽 UpLeg + 자식 보정)",
+        _MB_SPINE_NOTE: "참고 — Spine(허리): ScaleX는 높이 축입니다. X를 바꾸면 키가 바뀌고 머리가 어긋납니다. 허리는 Y/Z로만 조절하세요(X=1.0 유지).",
+        "Spine compensation target:": "Spine 보정 대상:",
+        "(only affects Spine targets with Child on)": "(Child가 켜진 Spine 대상에만 적용)",
+        "Preview": "미리보기",
+        "Bake + Save": "베이크 + 저장",
+        "Transforms are in bone-local space · child-comp suits 1:1 chains (legs)":
+            "변환은 본 로컬 공간 기준 · 자식 보정은 1:1 체인(다리)에 적합",
+        "Log": "로그",
+        "Bone-hierarchy propagation (Blender-style, parent→child)": "본 계층 전파 (Blender 방식, 부모→자식)",
+        "Recompute normals/tangents": "노멀/탄젠트 재계산",
+        "Compression": "압축",
+        "Bones (by influence, checked meshes)": "본 (영향도순, 체크된 메시)",
+        "Mesh": "메시",
+        "Bone": "본",
+        "Influence": "영향도",
+        "Pose (bone-local transform)": "포즈 (본 로컬 변환)",
+        "Scale (X Y Z)": "스케일 (X Y Z)",
+        "Rotate° (X Y Z)": "회전° (X Y Z)",
+        "Move (X Y Z)": "이동 (X Y Z)",
+        "Child": "자식",
+        "Add selected bone": "선택한 본 추가",
+        "Add empty row": "빈 행 추가",
+        "Scan failed": "스캔 실패",
+        "No .unity files in the folder.": "폴더에 .unity 파일이 없습니다.",
+        "Check the input path.": "입력 경로를 확인하세요.",
+        "Input error": "입력 오류",
+        "No pose": "포즈 없음",
+        "Add at least one pose.": "포즈를 하나 이상 추가하세요.",
+        "Path": "경로",
+        "Set the input path.": "입력 경로를 설정하세요.",
+        "Meshes": "메시",
+        "Check at least one mesh to process.": "처리할 메시를 하나 이상 체크하세요.",
+        "Set the output folder.": "출력 폴더를 설정하세요.",
+        "Failed": "실패",
+        "Input bundle": "입력 번들",
+        "Input folder": "입력 폴더",
+        "Output bundle": "출력 번들",
+        "Output folder": "출력 폴더",
+    },
+    "ja": {
+        "Language": "言語",
+        "SIFAS Mesh Baker — Pose Baking": "SIFAS メッシュベイカー — ポーズベイク",
+        "Target": "対象",
+        "Single file": "単一ファイル",
+        "Folder (batch)": "フォルダ（一括）",
+        "Input": "入力",
+        "Output": "出力",
+        "Batch suffix": "一括の接尾辞",
+        "Browse": "参照",
+        "Meshes (only checked are processed)": "メッシュ（チェックしたものだけ処理）",
+        "Show hidden meshes (foot_shadow_Plane · Hair · Face)": "非表示メッシュを表示 (foot_shadow_Plane · Hair · Face)",
+        "Scan": "スキャン",
+        "Thigh presets (Thigh Scale · both UpLeg + child compensation)": "太ももプリセット (Thigh Scale · 両方の UpLeg + 子補正)",
+        _MB_SPINE_NOTE: "注意 — Spine(腰): ScaleX は高さ軸です。X を変えると身長が変わり頭が合わなくなります。腰は Y/Z だけで調整してください（X=1.0 を維持）。",
+        "Spine compensation target:": "Spine 補正の対象:",
+        "(only affects Spine targets with Child on)": "(Child がオンの Spine 対象にのみ適用)",
+        "Preview": "プレビュー",
+        "Bake + Save": "ベイク + 保存",
+        "Transforms are in bone-local space · child-comp suits 1:1 chains (legs)":
+            "変換はボーンローカル空間 · 子補正は 1:1 チェーン（脚）向け",
+        "Log": "ログ",
+        "Bone-hierarchy propagation (Blender-style, parent→child)": "ボーン階層の伝播（Blender 方式、親→子）",
+        "Recompute normals/tangents": "法線/接線を再計算",
+        "Compression": "圧縮",
+        "Bones (by influence, checked meshes)": "ボーン（影響度順、チェック済みメッシュ）",
+        "Mesh": "メッシュ",
+        "Bone": "ボーン",
+        "Influence": "影響度",
+        "Pose (bone-local transform)": "ポーズ（ボーンローカル変換）",
+        "Scale (X Y Z)": "スケール (X Y Z)",
+        "Rotate° (X Y Z)": "回転° (X Y Z)",
+        "Move (X Y Z)": "移動 (X Y Z)",
+        "Child": "子",
+        "Add selected bone": "選択したボーンを追加",
+        "Add empty row": "空の行を追加",
+        "Scan failed": "スキャン失敗",
+        "No .unity files in the folder.": "フォルダに .unity ファイルがありません。",
+        "Check the input path.": "入力パスを確認してください。",
+        "Input error": "入力エラー",
+        "No pose": "ポーズなし",
+        "Add at least one pose.": "ポーズを少なくとも1つ追加してください。",
+        "Path": "パス",
+        "Set the input path.": "入力パスを設定してください。",
+        "Meshes": "メッシュ",
+        "Check at least one mesh to process.": "処理するメッシュを少なくとも1つチェックしてください。",
+        "Set the output folder.": "出力フォルダを設定してください。",
+        "Failed": "失敗",
+        "Input bundle": "入力バンドル",
+        "Input folder": "入力フォルダ",
+        "Output bundle": "出力バンドル",
+        "Output folder": "出力フォルダ",
+    },
+}
+
+
+def _normalize_lang(code):
+    c = str(code or "").strip().lower().replace("-", "_").split("_")[0].split(".")[0]
+    if c in ("ko", "kr", "kor"):
+        return "ko"
+    if c in ("ja", "jp", "jpn"):
+        return "ja"
+    return "en"
+
+
+_LANG = _normalize_lang(
+    (_shared_i18n.get_language() if _shared_i18n is not None else None)
+    or os.environ.get("SIFAS_LANG", "en")
+)
+
+
+def _get_lang():
+    return _LANG
+
+
+def _set_lang(code, **_kw):
+    global _LANG
+    _LANG = _normalize_lang(code)
+    if _shared_i18n is not None:
+        try:
+            _shared_i18n.set_language(_LANG)
+        except Exception:  # noqa: BLE001
+            pass
+    return _LANG
+
+
+def _lang_opts():
+    return [tuple(x) for x in _LANG_NAMES]
+
+
+def _tr(text, **kw):
+    s = _TRANSLATIONS.get(_LANG, {}).get(text, text)
+    return s.format(**kw) if kw else s
+
+
 
 # 기본 숨김 메시(이름 기준). 체크/--include-hidden 시 표시·처리.
 DEFAULT_HIDDEN = {"foot_shadow_Plane", "Hair", "Face"}
@@ -1246,59 +1438,82 @@ def run_gui():
     main = ttk.Frame(root, padding=PAD)
     main.pack(fill="both", expand=True)
 
+    # live language switching: register translatable widgets, re-apply on change
+    _i18n_widgets = []
+    _i18n_headings = []
+    def _reg(widget, key, kind="text"):
+        _i18n_widgets.append((widget, key, kind)); return widget
+    def _reg_heading(tv, col, key):
+        tv.heading(col, text=_tr(key)); _i18n_headings.append((tv, col, key))
+    def _apply_i18n():
+        root.title(_tr("SIFAS Mesh Baker — Pose Baking"))
+        for w, key, kind in _i18n_widgets:
+            try: w.configure(**{kind: _tr(key)})
+            except Exception: pass
+        for tv, col, key in _i18n_headings:
+            try: tv.heading(col, text=_tr(key))
+            except Exception: pass
+    _langbar = ttk.Frame(main); _langbar.pack(side="top", fill="x")
+    _reg(ttk.Label(_langbar, text=_tr("Language")), "Language").pack(side="left")
+    _names = [n for _c, n in _lang_opts()]
+    _code_by_name = {n: c for c, n in _lang_opts()}
+    _name_by_code = {c: n for c, n in _lang_opts()}
+    _lang_var = tk.StringVar(value=_name_by_code.get(_get_lang(), _names[0]))
+    _lang_cb = ttk.Combobox(_langbar, textvariable=_lang_var, values=_names, state="readonly", width=10)
+    _lang_cb.pack(side="left", padx=(6, 0))
+    _lang_cb.bind("<<ComboboxSelected>>", lambda e: (_set_lang(_code_by_name[_lang_var.get()]), _apply_i18n()))
+
     # ---------- TOP: target ----------
-    src = ttk.LabelFrame(main, text="Target", padding=PAD)
+    src = _reg(ttk.LabelFrame(main, text=_tr("Target"), padding=PAD), "Target")
     src.pack(side="top", fill="x")
     mode = tk.StringVar(value="file")
-    ttk.Radiobutton(src, text="Single file", variable=mode, value="file").grid(row=0, column=0, sticky="w")
-    ttk.Radiobutton(src, text="Folder (batch)", variable=mode, value="dir").grid(row=0, column=1, sticky="w")
+    _reg(ttk.Radiobutton(src, text=_tr("Single file"), variable=mode, value="file"), "Single file").grid(row=0, column=0, sticky="w")
+    _reg(ttk.Radiobutton(src, text=_tr("Folder (batch)"), variable=mode, value="dir"), "Folder (batch)").grid(row=0, column=1, sticky="w")
     in_var, out_var, suffix_var = tk.StringVar(), tk.StringVar(), tk.StringVar(value="_baked")
-    ttk.Label(src, text="Input").grid(row=1, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Input")), "Input").grid(row=1, column=0, sticky="e")
     ttk.Entry(src, textvariable=in_var, width=80).grid(row=1, column=1, columnspan=3, sticky="we", padx=4)
-    ttk.Label(src, text="Output").grid(row=2, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Output")), "Output").grid(row=2, column=0, sticky="e")
     ttk.Entry(src, textvariable=out_var, width=80).grid(row=2, column=1, columnspan=3, sticky="we", padx=4)
-    ttk.Label(src, text="Batch suffix").grid(row=3, column=0, sticky="e")
+    _reg(ttk.Label(src, text=_tr("Batch suffix")), "Batch suffix").grid(row=3, column=0, sticky="e")
     ttk.Entry(src, textvariable=suffix_var, width=16).grid(row=3, column=1, sticky="w", padx=4)
     src.columnconfigure(1, weight=1)
 
     def browse_in():
-        p = (filedialog.askopenfilename(title="Input bundle",
+        p = (filedialog.askopenfilename(title=_tr("Input bundle"),
              filetypes=[("Unity bundle", "*.unity *.bundle *.ab"), ("All", "*.*")])
-             if mode.get() == "file" else filedialog.askdirectory(title="Input folder"))
+             if mode.get() == "file" else filedialog.askdirectory(title=_tr("Input folder")))
         if p:
             in_var.set(p)
 
     def browse_out():
-        p = (filedialog.asksaveasfilename(title="Output bundle", defaultextension=".unity")
-             if mode.get() == "file" else filedialog.askdirectory(title="Output folder"))
+        p = (filedialog.asksaveasfilename(title=_tr("Output bundle"), defaultextension=".unity")
+             if mode.get() == "file" else filedialog.askdirectory(title=_tr("Output folder")))
         if p:
             out_var.set(p)
 
-    ttk.Button(src, text="Browse", command=lambda: browse_in()).grid(row=1, column=4, padx=4)
-    ttk.Button(src, text="Browse", command=lambda: browse_out()).grid(row=2, column=4, padx=4)
+    _reg(ttk.Button(src, text=_tr("Browse"), command=lambda: browse_in()), "Browse").grid(row=1, column=4, padx=4)
+    _reg(ttk.Button(src, text=_tr("Browse"), command=lambda: browse_out()), "Browse").grid(row=2, column=4, padx=4)
 
     # ---------- TOP: meshes ----------
-    mesh_frame = ttk.LabelFrame(main, text="Meshes (only checked are processed)", padding=PAD)
+    mesh_frame = _reg(ttk.LabelFrame(main, text=_tr("Meshes (only checked are processed)"), padding=PAD), "Meshes (only checked are processed)")
     mesh_frame.pack(side="top", fill="x", pady=(PAD, 0))
     show_hidden = tk.BooleanVar(value=False)
     top_mesh = ttk.Frame(mesh_frame); top_mesh.pack(fill="x")
-    ttk.Checkbutton(top_mesh, text="Show hidden meshes (foot_shadow_Plane · Hair · Face)",
-                    variable=show_hidden, command=lambda: render_mesh_checks()).pack(side="left")
-    ttk.Button(top_mesh, text="Scan", command=lambda: scan()).pack(side="right")
+    _reg(ttk.Checkbutton(top_mesh, text=_tr("Show hidden meshes (foot_shadow_Plane · Hair · Face)"),
+                    variable=show_hidden, command=lambda: render_mesh_checks()), "Show hidden meshes (foot_shadow_Plane · Hair · Face)").pack(side="left")
+    _reg(ttk.Button(top_mesh, text=_tr("Scan"), command=lambda: scan()), "Scan").pack(side="right")
     mesh_checks = ttk.Frame(mesh_frame); mesh_checks.pack(fill="x", pady=(4, 0))
 
     # ---------- TOP: thigh presets ----------
-    preset = ttk.LabelFrame(main, text="Thigh presets (Thigh Scale · both UpLeg + child compensation)", padding=PAD)
+    preset = _reg(ttk.LabelFrame(main, text=_tr("Thigh presets (Thigh Scale · both UpLeg + child compensation)"), padding=PAD), "Thigh presets (Thigh Scale · both UpLeg + child compensation)")
     preset.pack(side="top", fill="x", pady=(PAD, 0))
     pbtns = ttk.Frame(preset); pbtns.pack(fill="x")
     for a, b in THIGH_TRANSITIONS:
         ttk.Button(pbtns, text=f"{a} \u2192 {b}", width=15,
                    command=lambda a=a, b=b: apply_thigh_preset(a, b)).pack(side="left", padx=2)
-    ttk.Label(preset, foreground="#a33",
-              text="Note — Spine (waist): ScaleX is the HEIGHT axis; changing X changes height "
-                   "and the head no longer lines up. Resize the waist with Y/Z only (keep X=1.0).").pack(anchor="w", pady=(4, 0))
+    _reg(ttk.Label(preset, foreground="#a33", text=_tr(_MB_SPINE_NOTE)), _MB_SPINE_NOTE).pack(anchor="w", pady=(4, 0))
     spine_row = ttk.Frame(preset); spine_row.pack(anchor="w", pady=(4, 0))
-    ttk.Label(spine_row, text="Spine compensation target:").pack(side="left")
+    _reg(ttk.Label(spine_row, text=_tr("Spine compensation target:")), "Spine compensation target:").pack(side="left")
     spine_comp_label = tk.StringVar(value="Spine2 (widens Spine+Spine1)")
     _SPINE_LABEL2KEY = {
         "Spine2 (widens Spine+Spine1)": "spine2",
@@ -1308,17 +1523,16 @@ def run_gui():
     }
     ttk.Combobox(spine_row, textvariable=spine_comp_label, width=26, state="readonly",
                  values=list(_SPINE_LABEL2KEY.keys())).pack(side="left", padx=(6, 0))
-    ttk.Label(spine_row, foreground="#666",
-              text="(only affects Spine targets with Child on)").pack(side="left", padx=(8, 0))
+    _reg(ttk.Label(spine_row, foreground="#666", text=_tr("(only affects Spine targets with Child on)")), "(only affects Spine targets with Child on)").pack(side="left", padx=(8, 0))
 
     # ---------- BOTTOM (pinned): run / log / options ----------
     run_btns = ttk.Frame(main)
     run_btns.pack(side="bottom", fill="x", pady=(PAD, 0))
-    ttk.Button(run_btns, text="Preview", command=lambda: do_run(True)).pack(side="left")
-    ttk.Button(run_btns, text="Bake + Save", command=lambda: do_run(False)).pack(side="left", padx=6)
-    ttk.Label(run_btns, text="Transforms are in bone-local space · child-comp suits 1:1 chains (legs)").pack(side="right")
+    _reg(ttk.Button(run_btns, text=_tr("Preview"), command=lambda: do_run(True)), "Preview").pack(side="left")
+    _reg(ttk.Button(run_btns, text=_tr("Bake + Save"), command=lambda: do_run(False)), "Bake + Save").pack(side="left", padx=6)
+    _reg(ttk.Label(run_btns, text=_tr("Transforms are in bone-local space · child-comp suits 1:1 chains (legs)")), "Transforms are in bone-local space · child-comp suits 1:1 chains (legs)").pack(side="right")
 
-    log_frame = ttk.LabelFrame(main, text="Log", padding=4)
+    log_frame = _reg(ttk.LabelFrame(main, text=_tr("Log"), padding=4), "Log")
     log_frame.pack(side="bottom", fill="x")
     log_text = tk.Text(log_frame, height=7, wrap="word")
     log_text.pack(side="left", fill="both", expand=True)
@@ -1328,11 +1542,11 @@ def run_gui():
     opt = ttk.Frame(main)
     opt.pack(side="bottom", fill="x", pady=(PAD, 0))
     hier_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opt, text="Bone-hierarchy propagation (Blender-style, parent\u2192child)",
-                    variable=hier_var).pack(side="left")
+    _reg(ttk.Checkbutton(opt, text=_tr("Bone-hierarchy propagation (Blender-style, parent→child)"),
+                    variable=hier_var), "Bone-hierarchy propagation (Blender-style, parent→child)").pack(side="left")
     norm_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opt, text="Recompute normals/tangents", variable=norm_var).pack(side="left", padx=(16, 0))
-    ttk.Label(opt, text="Compression").pack(side="left", padx=(16, 4))
+    _reg(ttk.Checkbutton(opt, text=_tr("Recompute normals/tangents"), variable=norm_var), "Recompute normals/tangents").pack(side="left", padx=(16, 0))
+    _reg(ttk.Label(opt, text=_tr("Compression")), "Compression").pack(side="left", padx=(16, 4))
     packer_var = tk.StringVar(value="original")
     ttk.Combobox(opt, textvariable=packer_var, width=10,
                  values=["original", "lz4", "lzma", "none"], state="readonly").pack(side="left")
@@ -1341,16 +1555,16 @@ def run_gui():
     mid = ttk.Frame(main)
     mid.pack(side="top", fill="both", expand=True, pady=PAD)
 
-    bones_frame = ttk.LabelFrame(mid, text="Bones (by influence, checked meshes)", padding=PAD)
+    bones_frame = _reg(ttk.LabelFrame(mid, text=_tr("Bones (by influence, checked meshes)"), padding=PAD), "Bones (by influence, checked meshes)")
     bones_frame.pack(side="left", fill="y")
     tree = ttk.Treeview(bones_frame, columns=("mesh", "bone", "infl"), show="headings", height=12)
     for c, w, txt in (("mesh", 70, "Mesh"), ("bone", 160, "Bone"), ("infl", 60, "Influence")):
-        tree.heading(c, text=txt); tree.column(c, width=w, anchor="w")
+        _reg_heading(tree, c, txt); tree.column(c, width=w, anchor="w")
     tree.pack(side="left", fill="both", expand=True)
     sb = ttk.Scrollbar(bones_frame, orient="vertical", command=tree.yview); sb.pack(side="right", fill="y")
     tree.configure(yscrollcommand=sb.set)
 
-    pose_frame = ttk.LabelFrame(mid, text="Pose (bone-local transform)", padding=PAD)
+    pose_frame = _reg(ttk.LabelFrame(mid, text=_tr("Pose (bone-local transform)"), padding=PAD), "Pose (bone-local transform)")
     pose_frame.pack(side="right", fill="both", expand=True, padx=(PAD, 0))
     pose_canvas = tk.Canvas(pose_frame, highlightthickness=0, width=640)
     pose_inner = ttk.Frame(pose_canvas)
@@ -1371,11 +1585,11 @@ def run_gui():
         pose_inner.columnconfigure(c, minsize=wd, weight=0)
 
     def build_pose_header():
-        ttk.Label(pose_inner, text="Bone").grid(row=0, column=0, sticky="w", padx=2, pady=(0, 2))
-        ttk.Label(pose_inner, text="Scale (X Y Z)", anchor="center").grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 2))
-        ttk.Label(pose_inner, text="Rotate\u00b0 (X Y Z)", anchor="center").grid(row=0, column=4, columnspan=3, sticky="ew", pady=(0, 2))
-        ttk.Label(pose_inner, text="Move (X Y Z)", anchor="center").grid(row=0, column=7, columnspan=3, sticky="ew", pady=(0, 2))
-        ttk.Label(pose_inner, text="Child", anchor="center").grid(row=0, column=10, sticky="ew", pady=(0, 2))
+        _reg(ttk.Label(pose_inner, text=_tr("Bone")), "Bone").grid(row=0, column=0, sticky="w", padx=2, pady=(0, 2))
+        _reg(ttk.Label(pose_inner, text=_tr("Scale (X Y Z)"), anchor="center"), "Scale (X Y Z)").grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 2))
+        _reg(ttk.Label(pose_inner, text=_tr("Rotate° (X Y Z)"), anchor="center"), "Rotate° (X Y Z)").grid(row=0, column=4, columnspan=3, sticky="ew", pady=(0, 2))
+        _reg(ttk.Label(pose_inner, text=_tr("Move (X Y Z)"), anchor="center"), "Move (X Y Z)").grid(row=0, column=7, columnspan=3, sticky="ew", pady=(0, 2))
+        _reg(ttk.Label(pose_inner, text=_tr("Child"), anchor="center"), "Child").grid(row=0, column=10, sticky="ew", pady=(0, 2))
 
     def regrid_rows():
         for i, row in enumerate(target_rows):
@@ -1420,8 +1634,8 @@ def run_gui():
             add_target_row(bone=tree.item(s, "values")[1])
 
     pb = ttk.Frame(pose_frame); pb.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-    ttk.Button(pb, text="Add selected bone", command=lambda: add_selected()).pack(side="left")
-    ttk.Button(pb, text="Add empty row", command=lambda: add_target_row()).pack(side="left", padx=4)
+    _reg(ttk.Button(pb, text=_tr("Add selected bone"), command=lambda: add_selected()), "Add selected bone").pack(side="left")
+    _reg(ttk.Button(pb, text=_tr("Add empty row"), command=lambda: add_target_row()), "Add empty row").pack(side="left", padx=4)
 
     # ---------- logic ----------
     def log(msg=""):
@@ -1488,10 +1702,10 @@ def run_gui():
         if mode.get() == "dir":
             files = sorted(Path(path).glob("*.unity"))
             if not files:
-                messagebox.showwarning("Scan", "No .unity files in the folder."); return
+                messagebox.showwarning(_tr("Scan"), _tr("No .unity files in the folder.")); return
             path = str(files[0]); log(f"Scanning first file in folder: {Path(path).name}")
         if not path or not os.path.exists(path):
-            messagebox.showwarning("Scan", "Check the input path."); return
+            messagebox.showwarning(_tr("Scan"), _tr("Check the input path.")); return
         try:
             env = UnityPy.load(path)
             id2obj = build_id_map(env)
@@ -1503,7 +1717,7 @@ def run_gui():
             sk = sum(1 for m in state["all_meshes"] if m.skinned)
             log(f"Scan done: {len(state['all_meshes'])} meshes ({sk} skinned)")
         except Exception as e:
-            messagebox.showerror("Scan failed", str(e))
+            messagebox.showerror(_tr("Scan failed"), str(e))
 
     def collect_targets():
         out = []
@@ -1524,23 +1738,23 @@ def run_gui():
         try:
             targets = collect_targets()
         except ValueError as e:
-            messagebox.showerror("Input error", str(e)); return
+            messagebox.showerror(_tr("Input error"), str(e)); return
         if not targets:
-            messagebox.showwarning("No pose", "Add at least one pose."); return
+            messagebox.showwarning(_tr("No pose"), _tr("Add at least one pose.")); return
         apply_spine_comp(targets, _SPINE_LABEL2KEY.get(spine_comp_label.get(), "spine2"))
         inp, outp = in_var.get().strip(), out_var.get().strip()
         if not inp:
-            messagebox.showwarning("Path", "Set the input path."); return
+            messagebox.showwarning(_tr("Path"), _tr("Set the input path.")); return
         mf = checked_mesh_names() if mesh_vars else None
         if mesh_vars and not mf:
-            messagebox.showwarning("Meshes", "Check at least one mesh to process."); return
+            messagebox.showwarning(_tr("Meshes"), _tr("Check at least one mesh to process.")); return
         log("=" * 62)
         for m in target_notes(targets):
             log(m)
         try:
             if mode.get() == "dir":
                 if not outp:
-                    messagebox.showwarning("Path", "Set the output folder."); return
+                    messagebox.showwarning(_tr("Path"), _tr("Set the output folder.")); return
                 process_folder(inp, outp, targets, suffix=suffix_var.get(),
                                recompute_normals=norm_var.get(), packer=packer_var.get(),
                                mesh_filter=mf, hierarchical=hier_var.get(), log=log, dry_run=dry)
@@ -1554,9 +1768,10 @@ def run_gui():
                                hierarchical=hier_var.get(), log=log, dry_run=dry)
             log("Preview done." if dry else "Done.")
         except Exception as e:
-            log(f"! error: {e}"); messagebox.showerror("Failed", str(e))
+            log(f"! error: {e}"); messagebox.showerror(_tr("Failed"), str(e))
 
     build_pose_header()
+    _apply_i18n()
     log("Select an input bundle -> 'Scan' -> check meshes -> select a bone and 'Add selected bone' "
         "-> set values / child-comp -> 'Bake + Save'.")
     root.mainloop()
