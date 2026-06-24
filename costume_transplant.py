@@ -101,6 +101,63 @@ import subprocess
 import json as _json
 
 
+# SwingColliderId enum from the SIFAS 3.12.0 decompile: colliderIds entries are a
+# STABLE body-region identity, not a positional index into the manager's collider
+# list. Mapping the owning body-bone name -> this value is order-independent and
+# matches what the engine actually reads.
+SWING_COLLIDER_ID = {
+    "Hips": 1, "LeftUpLeg": 2, "LeftLeg": 3, "LeftFoot": 4,
+    "RightUpLeg": 5, "RightLeg": 6, "RightFoot": 7, "Spine1": 8, "Spine2": 9,
+    "LeftShoulder": 10, "LeftArm": 11, "LeftForeArm": 12, "LeftHand": 13,
+    "Neck": 14, "RightShoulder": 15, "RightArm": 16, "RightForeArm": 17,
+    "RightHand": 18,
+}
+
+# Runtime mesh-combine hard limits the engine enforces in MergeAndCombineBodyMesh
+# (SIFAS 3.12.0 decompile). A transplant can load fine in Blender/AssetStudio yet
+# fail CombineBody in-game if it blows past these.
+COMBINE_BONE_MAX = 256      # bones in one combined SkinnedMeshRenderer
+COMBINE_SKIN_MAX = 8        # bone influences per vertex
+COMBINE_SAFE_SCALE = (0.2, 2.5)  # body-shape scale clamp range
+
+
+def _collider_id_for_bone(bone, fallback_index):
+    """colliderIds value for a collider sitting on `bone`. Uses the engine's
+    SwingColliderId enum when the bone is a known body region, else falls back to
+    the old 1-based manager index (no regression for unrecognised bones)."""
+    return SWING_COLLIDER_ID.get(bone, fallback_index + 1)
+
+
+def check_combine_limits(path, verbose=True):
+    """Warn (never modifies) if the written bundle exceeds the runtime mesh-combine
+    limits. Read-only sanity pass; safe to run on any output bundle."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    try:
+        env = UnityPy.load(path)
+    except Exception as e:
+        log(f"[limits] skipped ({e})")
+        return True
+    ok = True
+    for o in env.objects:
+        if o.type.name != "SkinnedMeshRenderer":
+            continue
+        t = o.read_typetree()
+        nbones = len(t.get("m_Bones", []))
+        if nbones > COMBINE_BONE_MAX:
+            ok = False
+            log(f"[limits] WARNING: SkinnedMeshRenderer has {nbones} bones "
+                f"(> {COMBINE_BONE_MAX}); CombineBody may fail in-game. Reduce the "
+                f"merged bone count (e.g. drop unused costume-appendage bones).")
+    if ok and verbose:
+        log(f"[limits] OK: bone counts within the {COMBINE_BONE_MAX}-bone combine limit "
+            f"(note: per-vertex influences must stay <= {COMBINE_SKIN_MAX} and body "
+            f"scale within {COMBINE_SAFE_SCALE[0]}-{COMBINE_SAFE_SCALE[1]}, which the "
+            f"engine trims/clamps silently).")
+    return ok
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -526,6 +583,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
 
     total = 0
     skipped_total = 0
+    rot_warn_total = 0
     for o in objs:
         if o.type.name != "MonoBehaviour":
             continue
@@ -574,6 +632,14 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
             changed += 1
             log(f"   [rebase] SCALE {bn}: origin -> {tuple(round(ls[k],4) for k in 'xyz')} "
                 f"(kept ratio {tuple(round(ratio[k],3) for k in 'xyz')})")
+        # rotationValues exist on NodeScaling too (verified in the 3.12.0 decompile),
+        # but are deliberately NOT auto-rebased: the stored Vector3 is Euler in Unity's
+        # ZXY convention and the engine's rotation invariant can't be confirmed from the
+        # stripped decompile, so silently rewriting them could warp a working costume.
+        # Surface them so they can be checked by hand if a donor actually uses them.
+        nrot = len(mb.get("rotationValues", []))
+        if nrot:
+            rot_warn_total += nrot
         if changed:
             o.save_typetree(mb)
             total += changed
@@ -585,6 +651,11 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
     if skipped_total:
         log(f"[mask] kept {skipped_total} NodeScaling entr{'y' if skipped_total == 1 else 'ies'} "
             f"intact (bone already at scaledValue — model ships body-shape-applied)")
+    if rot_warn_total:
+        log(f"[rot] NOTE: {rot_warn_total} NodeScaling rotationValues entr"
+            f"{'y was' if rot_warn_total == 1 else 'ies were'} left un-rebased "
+            f"(rotation rebasing is manual — if the costume rotates oddly in-game, "
+            f"check these by hand).")
     return total
 
 
@@ -1110,16 +1181,17 @@ def inject_appendage_bones(donor, target, inject_names, name2tf_target,
         for key in ("parentIndex", "childIndex", "siblingIndex"):
             if key in sb:
                 sb[key] = remap_idx(sb[key])
-        # body colliders are bundle-specific objects: remap them to the target's
-        # collider on the same bone (colliderIds are 1-based indices into the
-        # manager's collider list, 0 = none). Drop refs whose bone is absent.
+        # body colliders are bundle-specific objects: remap the PPtr to the target's
+        # collider on the same bone, and set colliderIds to the engine's
+        # SwingColliderId body-region enum (NOT a positional index). Drop refs whose
+        # bone is absent.
         new_cols, new_ids = [], []
         if restore_collision:
             for c in donor_sb.get("colliders", []):
                 bone = d_colpid_to_bone.get(c.get("m_PathID"))
                 if bone in t_bone_to_colpid:
                     new_cols.append({"m_FileID": 0, "m_PathID": t_bone_to_colpid[bone]})
-                    new_ids.append(t_bone_to_colidx[bone] + 1)
+                    new_ids.append(_collider_id_for_bone(bone, t_bone_to_colidx[bone]))
         if "colliders" in sb:
             sb["colliders"] = new_cols
         if "colliderIds" in sb:
@@ -1230,11 +1302,21 @@ def sync_body_material(donor, target, d_mat_pid, t_mat_pid, log=lambda *a: None)
                 injected_by_name[dname] = tpid
                 n_inj += 1
         tex["m_PathID"], tex["m_FileID"] = tpid, 0
+    # carry the donor material's shader KEYWORDS too. Copying only m_SavedProperties
+    # drops keyword-gated variants (e.g. _MATCAP), so the injected matcap textures and
+    # the _MATCAP float would be present but the variant would never activate in-game.
+    # Copy whichever keyword field this Unity version uses (2020: m_ShaderKeywords;
+    # 2021+: m_ValidKeywords / m_InvalidKeywords).
+    n_kw = 0
+    for kw_field in ("m_ShaderKeywords", "m_ValidKeywords", "m_InvalidKeywords"):
+        if kw_field in d_mat_tt:
+            t_mat_tt[kw_field] = copy.deepcopy(d_mat_tt[kw_field])
+            n_kw += 1
     # keep wearer's shader + material name; swap in the costume's properties
     t_mat_tt["m_SavedProperties"] = sp
     t_mat.save_typetree(t_mat_tt)
     log(f"[ok] body material synced: {n_over} texture(s) overwritten, "
-        f"{n_inj} injected (matcap/emissive), properties copied")
+        f"{n_inj} injected (matcap/emissive), properties + {n_kw} keyword field(s) copied")
 
 
 # --------------------------------------------------------------------------
@@ -1307,7 +1389,7 @@ def sync_costume_swing_physics(donor, target, costume_bone_names,
                 bone = d_colpid_to_bone.get(c.get("m_PathID"))
                 if bone in t_bone_to_colpid:
                     new_cols.append({"m_FileID": 0, "m_PathID": t_bone_to_colpid[bone]})
-                    new_ids.append(t_bone_to_colidx[bone] + 1)
+                    new_ids.append(_collider_id_for_bone(bone, t_bone_to_colidx[bone]))
             if "colliders" in t_sb:
                 t_sb["colliders"] = new_cols
             if "colliderIds" in t_sb:
@@ -1497,6 +1579,9 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     #         (the correction is preserved, only re-anchored to the new rest) ----
     if fix_nodescaling and realign:
         rebase_node_scaling(out_path, verbose=verbose)
+
+    # ---- 8) warn (read-only) if the result blows past the runtime combine limits
+    check_combine_limits(out_path, verbose=verbose)
 
     log(f"[done] wrote {out_path}")
     return out_path
