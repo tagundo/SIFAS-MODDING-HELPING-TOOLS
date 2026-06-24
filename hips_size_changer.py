@@ -406,6 +406,15 @@ def modify_livecore_scaling(
 
             after = (sv.get("x"), sv.get("y"), sv.get("z"))
 
+            # degenerate-scale guard: the engine's safe body-scale band is 0.2-2.5
+            # (MergeAndCombineBodyMesh SafeScaleMin/Max). Values <=0 collapse or invert
+            # the node (broken/inside-out skinning). Warn, don't block.
+            _bad = [round(a, 3) for a in after if a is not None and not (0.2 <= a <= 2.5)]
+            if _bad:
+                logs.append(f"[SCALE_WARN] pid={obj.path_id} scaledValue {after} has component(s) "
+                            f"{_bad} outside the safe range 0.2-2.5 (<=0 collapses/inverts the node); "
+                            f"hips/skinning may break in-game.")
+
             # save attempt: save with default style first, fallback to opposite style on failure
             try:
                 scale_list[idx] = make_elem_for_node(node, style)
