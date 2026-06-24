@@ -91,7 +91,10 @@ from UnityPy.enums import TextureFormat
 from PIL import Image, ImageTk, ImageDraw
 
 SUPPORTED_IMG_EXTS = [".png", ".jpg", ".jpeg", ".bmp", ".tga"]
-SUPPORTED_BUNDLE_EXTS = [".bundle", ".unity3d", ".ab", ".assets", ""]
+# SIFAS bundles use the ".unity" extension, so it leads the list. The rest are
+# kept for compatibility with other Unity asset-bundle naming conventions, and
+# "" matches extension-less bundles.
+SUPPORTED_BUNDLE_EXTS = [".unity", ".bundle", ".unity3d", ".ab", ".assets", ""]
 DEFAULT_SUFFIX = "_textured"
 PREVIEW_W, PREVIEW_H = 260, 280
 
@@ -813,7 +816,8 @@ class App:
     def _browse_bundle(self, var):
         fp = filedialog.askopenfilename(
             title="Select Bundle File",
-            filetypes=[("All Files", "*.*"), ("Bundle", "*.bundle"), ("Unity3D", "*.unity3d")])
+            filetypes=[("Unity bundle", "*.unity *.unity3d *.bundle *.ab *.assets"),
+                       ("All Files", "*.*")])
         if fp:
             var.set(fp)
 
@@ -850,7 +854,8 @@ class App:
     def _add_bundle_files(self):
         files = filedialog.askopenfilenames(
             title="Select Bundle Files (Multiple)",
-            filetypes=[("All Files", "*.*"), ("Bundle", "*.bundle"), ("Unity3D", "*.unity3d")])
+            filetypes=[("Unity bundle", "*.unity *.unity3d *.bundle *.ab *.assets"),
+                       ("All Files", "*.*")])
         if not files:
             return
         added = 0
