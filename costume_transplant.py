@@ -76,7 +76,10 @@ Usage
 
     # command line:
     python3 costume_transplant.py --donor YOU.unity --target MAKI.unity --out OUT.unity \
-            [--physics] [--no-collision] [--no-realign]
+            [--physics] [--no-collision] [--no-realign] [--no-textures]
+
+`--no-textures` grafts the costume mesh + bones but leaves the wearer's own body
+textures/material in place (off by default; handy if you'll paint your own texture).
 
 On a desktop with tkinter the GUI opens automatically; on Termux/headless it
 falls back to the CLI. The output replaces the target's model file 1:1 (same
@@ -154,6 +157,8 @@ _TRANSLATIONS = {
             "공유 코스튬 부위(치마 / 리본)에 공여의 스윙 물리 사용 — 가슴은 항상 착용자 것 유지",
         "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
             "마스크 / 보드 얼굴 모델(리나쨩 보드) 특수 처리: 자동 감지, 머리 + 체형 스케일링 보호",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "바디 텍스처 없이 이식 (착용자의 텍스처 유지; 코스튬 메시 + 본만 이식)",
         "Transplant": "이식",
         "Save output bundle": "출력 번들 저장",
         "Select bundle": "번들 선택",
@@ -182,6 +187,8 @@ _TRANSLATIONS = {
             "共有衣装パーツ（スカート / リボン）に提供元のスイング物理を使用 — バストは常に着用者のもの",
         "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
             "マスク / ボードフェイスモデル（りなちゃんボード）の特別処理: 自動検出、頭部 + 体型スケーリングを保護",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "ボディテクスチャなしで移植（着用者のテクスチャを保持; 衣装メッシュ + ボーンのみ移植）",
         "Transplant": "移植",
         "Save output bundle": "出力バンドルを保存",
         "Select bundle": "バンドルを選択",
@@ -1319,7 +1326,7 @@ def sync_costume_swing_physics(donor, target, costume_bone_names,
 def transplant(donor_path, target_path, out_path, verbose=True,
                preserve_physics=False, realign=True, restore_collision=True,
                worldspace=True, fix_nodescaling=True, mask_handling="auto",
-               costume_physics="donor"):
+               costume_physics="donor", sync_textures=True):
     def log(*a):
         if verbose:
             print(*a)
@@ -1430,9 +1437,19 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     log(f"[ok] body renderer rewired: {len(bone_pids)} bones, {n_sub} submesh(es)")
 
     # ---- 3) sync body material: properties + every texture slot (incl. matcap) ----
-    d_body_mat = d_smr_tt.get("m_Materials", [{}])[0].get("m_PathID")
-    t_body_mat = t_smr_tt.get("m_Materials", [{}])[0].get("m_PathID")
-    sync_body_material(donor, target, d_body_mat, t_body_mat, log)
+    #         When sync_textures is False this whole step is skipped, so the wearer
+    #         keeps its own body material (textures + shader properties) and only the
+    #         costume's geometry/bones are transplanted. Skipping the step entirely
+    #         (rather than copying the donor material's properties but not its textures)
+    #         avoids leaving dangling donor texture references such as a matcap slot the
+    #         wearer's material does not have.
+    if sync_textures:
+        d_body_mat = d_smr_tt.get("m_Materials", [{}])[0].get("m_PathID")
+        t_body_mat = t_smr_tt.get("m_Materials", [{}])[0].get("m_PathID")
+        sync_body_material(donor, target, d_body_mat, t_body_mat, log)
+    else:
+        log("[skip] body textures not transplanted: the wearer keeps its own body "
+            "material and textures (costume geometry/bones still grafted)")
 
     # ---- 4) snap the wearer's body bones to the costume's rest pose, and wire
     #         any injected appendage roots into their parent (one save per bone) ----
@@ -1575,6 +1592,11 @@ def build_parser():
                         "(default) makes the donor outfit sway/collide as designed; 'target' "
                         "keeps the wearer's old-costume physics. Body bones (the bust) always "
                         "stay the wearer's either way.")
+    p.add_argument("--no-textures", action="store_true",
+                   help="transplant the costume mesh + bones but do NOT copy the donor's "
+                        "body textures/material; the wearer keeps its own body texture. "
+                        "Useful when you intend to paint your own texture afterwards. "
+                        "Off by default (textures are transplanted).")
     p.add_argument("--gui", action="store_true", help="force the graphical interface")
     p.add_argument("-q", "--quiet", action="store_true", help="less logging")
     return p
@@ -1590,7 +1612,8 @@ def run_cli(args):
                worldspace=not args.no_worldspace,
                fix_nodescaling=not args.no_nodescaling_fix,
                mask_handling=args.mask_handling,
-               costume_physics=args.costume_physics)
+               costume_physics=args.costume_physics,
+               sync_textures=not args.no_textures)
     ok = validate(args.out, verbose=not args.quiet)
     if not ok:
         print("[error] output has dangling references; aborting", file=sys.stderr)
@@ -1714,6 +1737,8 @@ def run_gui():
                  "ribbon) — the bust always stays the wearer's")
     _CB_MASK = ("Special handling for masked / board-face models (Rina-chan board): "
                 "auto-detect, protect head + body-shape scaling")
+    _CB_NOTEX = ("Transplant without the body textures (keep the wearer's own texture; "
+                 "only the costume mesh + bones are grafted)")
     cb_phys = _reg(ttk.Checkbutton(opts, variable=physics_v, text=_tr(_CB_PHYS)), _CB_PHYS)
     cb_phys.grid(row=0, column=0, sticky="w", columnspan=2)
     cb_col = _reg(ttk.Checkbutton(opts, variable=collision_v, text=_tr(_CB_COL)), _CB_COL)
@@ -1734,6 +1759,10 @@ def run_gui():
          ).grid(row=6, column=0, sticky="w", columnspan=2)
     mask_status = ttk.Label(opts, text="", foreground="#207a3c")
     mask_status.grid(row=7, column=0, sticky="w", columnspan=2, padx=(22, 0))
+    # Off by default: textures are transplanted unless the user opts out.
+    no_textures_v = tk.BooleanVar(value=False)
+    _reg(ttk.Checkbutton(opts, variable=no_textures_v, text=_tr(_CB_NOTEX)), _CB_NOTEX
+         ).grid(row=8, column=0, sticky="w", columnspan=2)
 
     def sync_collision_state(*_):
         cb_col.configure(state=("normal" if physics_v.get() else "disabled"))
@@ -1790,14 +1819,14 @@ def run_gui():
 
     run_btn = _reg(ttk.Button(frm, text=_tr("Transplant")), "Transplant")
 
-    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys):
+    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys, notex):
         old = sys.stdout
         sys.stdout = _QWriter()
         try:
             transplant(d, t, o, verbose=True, preserve_physics=phys,
                        realign=realign, restore_collision=col, worldspace=wspace,
                        fix_nodescaling=nscale, mask_handling=maskh,
-                       costume_physics=cphys)
+                       costume_physics=cphys, sync_textures=not notex)
             ok = validate(o, verbose=True)
             print(_tr("\n[success] done — verified ✓\n") if ok
                   else _tr("\n[error] output has dangling references!\n"))
@@ -1820,7 +1849,8 @@ def run_gui():
                                realign_v.get(), worldspace_v.get(),
                                nodescale_v.get(),
                                "auto" if mask_v.get() else "off",
-                               "donor" if costume_phys_v.get() else "target")).start()
+                               "donor" if costume_phys_v.get() else "target",
+                               no_textures_v.get())).start()
 
     run_btn.configure(command=go)
     run_btn.grid(row=len(rows), column=1, sticky="e", pady=8)
