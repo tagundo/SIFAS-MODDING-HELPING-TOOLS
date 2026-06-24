@@ -121,7 +121,18 @@ def global_time_correction(text: str, a=0.0, s=1.0, grid_places=4):
         v = float(m.group(2))
         vp = round_grid(a + s*v, grid_places)
         return m.group(1) + f"{vp}"
-    return RE_START.sub(sub_start, text)
+    text = RE_START.sub(sub_start, text)
+    # A duration is a delta (end - start), so under t' = a + s*t only the SCALE applies
+    # (the offset a cancels). Previously only m_Start was scaled, so with s != 1 every
+    # clip kept its old length -> clips overlapped/gapped, and overlaps past
+    # MaxClipBlend=3 get silently dropped by the mixer. Scale m_Duration by s too.
+    if s != 1.0:
+        def sub_dur(m):
+            v = float(m.group(2))
+            vp = round_grid(s*v, grid_places)
+            return m.group(1) + f"{vp}"
+        text = RE_DURATION.sub(sub_dur, text)
+    return text
 
 def clamp_ease_vs_duration(text: str):
     # one-pass: read durations, then clamp ease if needed
