@@ -382,6 +382,27 @@ def modify_swingcolliders(
             off["x"] = nx; off["y"] = ny; off["z"] = nz
             any_change = True
 
+        # final clamp pass — apply radius/offset min-max regardless of the set-vs-add
+        # path. Previously the clamps only ran inside the additive blocks, so the
+        # "Set radius"/"Set offset" workflow wrote values completely unclamped.
+        if any_change:
+            cur_r = get_from_tree(tree, "radius")
+            if cur_r is not None and (radius_min is not None or radius_max is not None):
+                set_in_tree_if_exists(tree, "radius", clamp(float(cur_r), radius_min, radius_max))
+            if offset_min is not None or offset_max is not None:
+                cx = float(off.get("x") or 0.0)
+                cy = float(off.get("y") or 0.0)
+                cz = float(off.get("z") or 0.0)
+                if offset_min is not None:
+                    cx = clamp(cx, offset_min[0], None)
+                    cy = clamp(cy, offset_min[1], None)
+                    cz = clamp(cz, offset_min[2], None)
+                if offset_max is not None:
+                    cx = clamp(cx, None, offset_max[0])
+                    cy = clamp(cy, None, offset_max[1])
+                    cz = clamp(cz, None, offset_max[2])
+                off["x"] = cx; off["y"] = cy; off["z"] = cz
+
         if not any_change:
             logs.append(f"[SKIP_NO_CHANGE] pid={obj.path_id} go='{go_name}' cls='{cls}'")
             continue
@@ -394,6 +415,19 @@ def modify_swingcolliders(
                 f"radius: {orig_r} -> {get_from_tree(tree,'radius')} "
                 f"offset: ({orig_x},{orig_y},{orig_z}) -> ({off.get('x')},{off.get('y')},{off.get('z')})"
             )
+            # A SwingCollider with a non-null `sibling` PPtr is ONE END of a capsule
+            # (the engine lerps the radius from this end to the sibling end). Editing
+            # only one end's radius/offset warps the capsule's taper/axis — verified
+            # against SwingCollider.cs in the SIFAS 3.12.0 decompile.
+            sib = get_from_tree(tree, "sibling")
+            sib_pid = sib.get("m_PathID") if isinstance(sib, dict) else None
+            if sib_pid not in (None, 0):
+                sib_idx = get_from_tree(tree, "siblingIndex")
+                logs.append(
+                    f"[CAPSULE_WARN] pid={obj.path_id} go='{go_name}' is a CAPSULE end "
+                    f"(siblingIndex={sib_idx}). You edited only this end — edit the "
+                    f"sibling end to match, or the thigh capsule will taper asymmetrically."
+                )
         except Exception as e:
             logs.append(f"[SAVE_FAIL] pid={obj.path_id} go='{go_name}' err={e}")
 
