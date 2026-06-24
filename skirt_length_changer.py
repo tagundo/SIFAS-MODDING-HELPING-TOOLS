@@ -589,6 +589,14 @@ def modify_skirt_scaling(
 
             after = (sv.get("x"), sv.get("y"), sv.get("z"))
 
+            # degenerate-scale guard: safe body-scale band is 0.2-2.5; <=0 collapses or
+            # inverts the node (inside-out skirt). Warn, don't block.
+            _bad = [round(a, 3) for a in after if a is not None and not (0.2 <= a <= 2.5)]
+            if _bad:
+                logs.append(f"[SCALE_WARN] livecore={obj.path_id} go='{nm}' scaledValue {after} has "
+                            f"component(s) {_bad} outside the safe range 0.2-2.5 (<=0 collapses/inverts "
+                            f"the node); skirt/skinning may break in-game.")
+
             try:
                 scale_list[idx] = make_elem_for_node(node, style)
                 save_tree_safe(obj, data, tree, where)
