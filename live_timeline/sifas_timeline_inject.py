@@ -16,10 +16,12 @@ SIFAC 라이브 데이터를 SIFAS 라이브 번들의 멤버 타임라인에 Un
   #     (oto→O, usu→U, ete→E). 화이트리스트 없이 미지 코드 0%.
   # 입모양 테이블(실번들 확인): A=1 I=2 U=3 E=4 O=5 N=6  (E2=13, Laugh=8)
   # 표정 테이블(실번들 확인):
-  #   Eye : Close=1 Closish=2 Open=3 WideOpen=4 Close_Smile=5
-  #         WinkR=12 WinkL=13 Trouble=14 Sad=15 Angry=16 Missing=18  (+weight)
-  #   Gaze: Camera=21 Audience=22 Up=31 Down=32 Left=33 Right=34   (+weightForDirection)
-  #   Cheek: Ppo (볼터치)
+  #   Eye : Close=1 Closish=2 Open=3 WideOpen=4 Close_Smile=5 WinkR=12 WinkL=13
+  #         Trouble=14 Sad=15 Angry=16 Shy=17 Missing=18 Tightly=19 EyeGreatSmile=20
+  #         EyeDepend=21 EyeSmug=22 EyeHalf=23 EyeKobi=24 EyeAngryClose=25  (+weight)
+  #   Gaze: Member1..12=1..12 Camera=21 Audience=22 Up=31 Down=32 Left=33 Right=34
+  #         LeftUp=35 RightUp=36 SplitScreenCamera1..4=37..40   (+weightForDirection)
+  #   Cheek: Ppo, Akarame  (+intensity)  ← cheekType, NOT weight
 
 예:
     python3 sifas_timeline_inject.py lip  --scd lyrics.scd --bundle live.unity --out o.unity --weight 1.0
@@ -178,6 +180,11 @@ def inject_lip(bundle_in: Path, entries, bundle_out: Path, weight=None,
         if verbose:
             print(f"[lip] '{t.get('m_Name')}'  clips={len(clips)} entries={len(entries)} "
                   f"-> writing {n_used}, parking {max(0, len(clips) - n_used)}")
+        if len(entries) > len(clips):
+            print(f"[lip] WARNING: {len(entries) - len(clips)} of {len(entries)} entries "
+                  f"DROPPED on '{t.get('m_Name')}' — it has only {len(clips)} clips and this "
+                  f"tool overwrites existing clips (it cannot add new ones), so the tail of the "
+                  f"song will have NO lip-sync. Use fewer/merged entries or a track with more clips.")
         for i, clip in enumerate(clips):
             pa = mb.get(clip.get("m_Asset", {}).get("m_PathID"))
             if i < len(entries):
@@ -216,17 +223,31 @@ def inject_lip(bundle_in: Path, entries, bundle_out: Path, weight=None,
 # =========================================================================== #
 # 표정 (눈 / 시선 / 볼)
 # =========================================================================== #
+# Values verified against the SIFAS 3.12.0 client decompile (MemberEyeClip /
+# MemberGazeClip / MemberCheekClip AnimationIndex enums).
+# NOTE: eye 6..11 are directional GAZE poses (not in MemberEyeClip's enum), so they
+# are intentionally absent here — set them through the gaze track instead.
 EYE = {"Close": 1, "Closish": 2, "Open": 3, "WideOpen": 4, "Close_Smile": 5,
-       "WinkR": 12, "WinkL": 13, "Trouble": 14, "Sad": 15, "Angry": 16, "Missing": 18}
-GAZE = {"Camera": 21, "Audience": 22, "Up": 31, "Down": 32, "Left": 33, "Right": 34}
-CHEEK = {"Ppo"}
+       "WinkR": 12, "WinkL": 13, "Trouble": 14, "Sad": 15, "Angry": 16, "Shy": 17,
+       "Missing": 18, "Tightly": 19, "EyeGreatSmile": 20, "EyeDepend": 21,
+       "EyeSmug": 22, "EyeHalf": 23, "EyeKobi": 24, "EyeAngryClose": 25,
+       "RinNyaa": 101, "RinaMaskOdoroki": 102, "EyeBlinkNavi": 900}
+GAZE = {"Member1": 1, "Member2": 2, "Member3": 3, "Member4": 4, "Member5": 5,
+        "Member6": 6, "Member7": 7, "Member8": 8, "Member9": 9, "Member10": 10,
+        "Member11": 11, "Member12": 12, "Camera": 21, "Audience": 22,
+        "Up": 31, "Down": 32, "Left": 33, "Right": 34, "LeftUp": 35, "RightUp": 36,
+        "SplitScreenCamera1": 37, "SplitScreenCamera2": 38,
+        "SplitScreenCamera3": 39, "SplitScreenCamera4": 40}
+# Cheek clips carry `cheekType` (Ppo=0/Akarame=1) + `intensity` — there is NO
+# `weight` field on MemberCheekClip (writing 'weight' silently does nothing).
+CHEEK = {"Ppo": 0, "Akarame": 1}
 
 TRACK_CLASS = {
     "eye":   ("MemberEyeTrack",   "index", EYE),
     "gaze":  ("MemberGazeTrack",  "target", GAZE),
-    "cheek": ("MemberCheekTrack", None, None),
+    "cheek": ("MemberCheekTrack", "cheekType", CHEEK),
 }
-WEIGHT_FIELD = {"eye": "weight", "gaze": "weightForDirection", "cheek": "weight"}
+WEIGHT_FIELD = {"eye": "weight", "gaze": "weightForDirection", "cheek": "intensity"}
 
 
 class FaceEntry:
@@ -297,36 +318,46 @@ def inject_face(bundle_in: Path, entries, bundle_out: Path, dry_run=False, verbo
             if verbose:
                 print(f"[warn] {cls} not in bundle; skipping {len(ents)} {kind} entries")
             continue
-        o = track_objs[0]
-        t = o.read_typetree()
-        clips = t.get("m_Clips", [])
+        # one track per on-stage member — write ALL of them, not just the first, so
+        # every member gets the eye/gaze/cheek (esp. the ambient --auto-blink). Writing
+        # only track_objs[0] left 8 of 9 members un-animated.
         wfield = WEIGHT_FIELD[kind]
-        for i, clip in enumerate(clips):
-            pa = mb.get(clip.get("m_Asset", {}).get("m_PathID"))
-            if i < len(ents):
-                e = ents[i]
-                clip["m_Start"] = float(e.start); clip["m_Duration"] = float(e.dur)
-                clip["m_DisplayName"] = e.name
-                if pa is not None:
-                    pt = pa.read_typetree()
-                    if idx_field and idx_field in pt and table:
-                        pt[idx_field] = table[e.name]
-                    if wfield in pt:
-                        pt[wfield] = float(e.weight)
-                    if not dry_run:
-                        pa.save_typetree(pt)
-            else:
-                clip["m_Duration"] = 0.0
-                if pa is not None:
-                    pt = pa.read_typetree()
-                    if wfield in pt:
-                        pt[wfield] = 0.0
-                    if not dry_run:
-                        pa.save_typetree(pt)
-        if not dry_run:
-            o.save_typetree(t)
+        track_data = [(o, o.read_typetree()) for o in track_objs]
+        max_clips = max((len(t.get("m_Clips", [])) for _, t in track_data), default=0)
+        if len(ents) > max_clips:
+            print(f"[face] WARNING: {len(ents) - max_clips} of {len(ents)} {kind} entries "
+                  f"DROPPED — '{cls}' tracks have at most {max_clips} clips and this tool "
+                  f"overwrites existing clips (it cannot add new ones), so late {kind} entries "
+                  f"are lost.")
+        for o, t in track_data:
+            clips = t.get("m_Clips", [])
+            for i, clip in enumerate(clips):
+                pa = mb.get(clip.get("m_Asset", {}).get("m_PathID"))
+                if i < len(ents):
+                    e = ents[i]
+                    clip["m_Start"] = float(e.start); clip["m_Duration"] = float(e.dur)
+                    clip["m_DisplayName"] = e.name
+                    if pa is not None:
+                        pt = pa.read_typetree()
+                        if idx_field and idx_field in pt and table:
+                            pt[idx_field] = table[e.name]
+                        if wfield in pt:
+                            pt[wfield] = float(e.weight)
+                        if not dry_run:
+                            pa.save_typetree(pt)
+                else:
+                    clip["m_Duration"] = 0.0
+                    if pa is not None:
+                        pt = pa.read_typetree()
+                        if wfield in pt:
+                            pt[wfield] = 0.0
+                        if not dry_run:
+                            pa.save_typetree(pt)
+            if not dry_run:
+                o.save_typetree(t)
         if verbose:
-            print(f"[face] {cls}: wrote {min(len(clips), len(ents))}/{len(clips)} clips ({kind})")
+            print(f"[face] {cls}: wrote up to {len(ents)} entries across "
+                  f"{len(track_objs)} track(s) ({kind})")
 
     if not dry_run:
         Path(bundle_out).parent.mkdir(parents=True, exist_ok=True)
