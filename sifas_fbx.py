@@ -657,9 +657,25 @@ class _FbxReader:
 
     def __init__(self, path):
         self.buf = bytearray(open(path, "rb").read())
+        if self.buf[:20] != b'Kaydara FBX Binary  ':
+            raise ValueError("not a binary FBX (it looks like an ASCII FBX, or isn't an FBX). "
+                             "Re-export from Blender as BINARY FBX (untick the 'ASCII' option).")
         self.version = struct.unpack("<I", self.buf[23:27])[0]
-        self.W = 8 if self.version >= 7500 else 4
-        self.root = self._parse()
+        primary = 8 if self.version >= 7500 else 4
+        last = None
+        for W in (primary, 12 - primary):      # auto-detect 32- vs 64-bit node records (4<->8)
+            self.W = W
+            try:
+                root = self._parse()
+            except Exception as ex:
+                last = ex
+                continue
+            if root.first("Objects") is not None:   # sanity: a real FBX has an Objects section
+                self.root = root
+                return
+            last = last or ValueError("parsed but no Objects section")
+        raise ValueError("could not parse this FBX (version %d) — it may be corrupt or an "
+                         "unsupported variant. Last error: %s" % (self.version, last))
 
     def _parse(self):
         d, W = self.buf, self.W
@@ -876,17 +892,19 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
     (new_vertex_count, triangle_count)."""
     verts = np.array(geo.first("Vertices").props[0], float).reshape(-1, 3)
     pvi = np.array(geo.first("PolygonVertexIndex").props[0], np.int64)
-    faces, cur = [], []
-    for raw in pvi:
+    faces, pvfaces, cur = [], [], []
+    for pvpos, raw in enumerate(pvi):
         idx = int(raw)
         if idx < 0:
-            cur.append(~idx)
+            cur.append((~idx, pvpos))
             for k in range(1, len(cur) - 1):
-                faces.append((cur[0], cur[k], cur[k + 1]))
+                faces.append((cur[0][0], cur[k][0], cur[k + 1][0]))
+                pvfaces.append((cur[0][1], cur[k][1], cur[k + 1][1]))
             cur = []
         else:
-            cur.append(idx)
-    corners = np.array([c for f in faces for c in f], np.int64)
+            cur.append((idx, pvpos))
+    corners = np.array([c for f in faces for c in f], np.int64)        # control-point idx / tri-corner
+    pv_corners = np.array([c for f in pvfaces for c in f], np.int64)   # polygon-vertex pos / tri-corner
 
     def layer(name, sub):
         le = geo.first(name)
@@ -908,8 +926,10 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
                   "LayerElementColor": "ColorIndex"}
         if mapping == "ByPolygonVertex":
             if ref.startswith("IndexToDirect"):
-                return data[np.array(le.first(idxmap.get(le.name)).props[0], np.int64)]
-            return data
+                per_pv = data[np.array(le.first(idxmap.get(le.name)).props[0], np.int64)]
+            else:
+                per_pv = data
+            return per_pv[pv_corners]          # polygon-vertex data -> per triangulated corner
         # per-vertex: AssetStudio writes 'ByVertice', other tools 'ByVertex'/'ByControlPoint'
         if mapping in ("ByVertex", "ByVertice", "ByVertices", "ByControlPoint"):
             if ref.startswith("IndexToDirect"):
@@ -1542,7 +1562,8 @@ input[type=text]{width:100%;background:#1e1f22;border:1px solid #3a3d44;color:#d
 .drop.hover{border-color:#57b97f;color:#57b97f;background:#23351f}
 button.go{width:100%;margin-top:14px;background:#5865f2;color:#fff;border:0;border-radius:7px;padding:11px;cursor:pointer;font-weight:600;font-size:14px}
 #out{margin-top:11px}#out a{display:inline-block;margin:3px 11px 0 0;color:#7bdfff;font-weight:600;font-size:13px}
-#log{white-space:pre-wrap;background:#111;border-radius:8px;padding:11px;margin-top:10px;height:160px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#cdd}
+#log{white-space:pre-wrap;background:#111;border-radius:8px;padding:11px;margin-top:10px;height:160px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#cdd;-webkit-user-select:text;user-select:text;cursor:text}
+.minibtn{background:#4a4d55;color:#fff;border:0;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px;margin-top:6px}
 .note{color:#7c8590;font-size:11.5px;margin:9px 3px 0}
 </style></head><body>
 <div class="app">
@@ -1581,10 +1602,22 @@ button.go{width:100%;margin-top:14px;background:#5865f2;color:#fff;border:0;bord
 </div>
 <div id="out"></div>
 <pre id="log"></pre>
+<div style="display:flex;gap:8px;justify-content:flex-end">
+ <button class="minibtn" onclick="copyLog()">Copy log</button>
+ <button class="minibtn" onclick="document.getElementById('log').textContent=''">Clear</button>
+</div>
 <div class="note">Drag a file onto a box (uploads to this local app) or type an absolute path.</div>
 </div>
 <script>
 function val(id){return document.getElementById(id).value.trim()}
+function copyLog(){
+  const txt=document.getElementById('log').textContent||'';
+  let ok=false;
+  try{ const ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0';
+       document.body.appendChild(ta); ta.focus(); ta.select(); ok=document.execCommand('copy'); document.body.removeChild(ta); }catch(e){}
+  if(navigator.clipboard){ navigator.clipboard.writeText(txt).then(()=>{},()=>{}); ok=true; }
+  const b=event&&event.target; if(b){ const o=b.textContent; b.textContent=ok?'Copied!':'Select & ⌘C'; setTimeout(()=>b.textContent=o,1200); }
+}
 function runExport(){
   run('export',{bundle:val('ex_bundle'),
                 textures:document.getElementById('ex_tex').checked,
