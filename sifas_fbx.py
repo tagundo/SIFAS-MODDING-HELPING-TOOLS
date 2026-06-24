@@ -890,6 +890,18 @@ def _compute_tangents(pos, nrm, uv, tris):
 def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
     """Rebuild one bundle mesh tree (in place) from one FBX Geometry. Returns
     (new_vertex_count, triangle_count)."""
+    # Capture the original secondary UV sets (channels 5/6/... = uv2/uv3) and a
+    # (position, uv0) -> row lookup BEFORE we mutate `mesh`. The FBX round-trip carries
+    # only UV0, so we preserve these from the source instead of overwriting them with a
+    # copy of UV0 (the old behaviour silently corrupted secondary UV sets).
+    _ovc, _ochans, _ostride, _ostart, _ = stream_layout(mesh)
+    _ou8 = np.frombuffer(bytes(mesh["m_VertexData"]["m_DataSize"]), np.uint8)
+    _extra_src = {}
+    for _ci, _ch in enumerate(_ochans):
+        if _ci != CH_UV0 and _ch.get("dimension", 0) == 2:
+            _esrc = read_attr(_ou8, _ochans, _ci, _ostride, _ostart, _ovc)
+            if _esrc is not None:
+                _extra_src[_ci] = _esrc
     verts = np.array(geo.first("Vertices").props[0], float).reshape(-1, 3)
     pvi = np.array(geo.first("PolygonVertexIndex").props[0], np.int64)
     faces, pvfaces, cur = [], [], []
@@ -1006,6 +1018,21 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
     out_col = c_col[first_idx] if c_col is not None else None
     new_tris = inv.reshape(-1, 3)
 
+    # preserve the original secondary UV sets (uv2/uv3). Export writes FBX control
+    # points 1:1 with the source verts, so when topology is unchanged the control-point
+    # index (cp_of) IS the original vertex index -> exact, seam-safe mapping. If the
+    # vertex count changed in the editor, the per-vertex special UVs can't be mapped.
+    extra_out = {}
+    if _extra_src:
+        if len(verts) == _ovc:
+            for _ci, _src in _extra_src.items():
+                extra_out[_ci] = _src[cp_of]
+        else:
+            print(f"[uv] {mesh.get('m_Name','?')}: vertex count changed "
+                  f"({_ovc} -> {len(verts)}); secondary UV set(s) cannot be mapped -> set to 0")
+            for _ci, _src in _extra_src.items():
+                extra_out[_ci] = np.zeros((new_vc, _src.shape[1]))
+
     bone_idx = {n: i for i, n in enumerate(bones)}
     BW = np.zeros((new_vc, 4)); BI = np.zeros((new_vc, 4), np.int64)
     if bone_idx:
@@ -1017,7 +1044,13 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
                 BW[v, k] = w / s; BI[v, k] = bidx
 
     if c_tan is not None:
-        tan4 = np.zeros((new_vc, 4)); tan4[:, :3] = out_tan[:, :3]; tan4[:, 3] = -1.0
+        # Keep the FBX/Blender tangent DIRECTION but recompute the w (bitangent
+        # handedness) from UV winding instead of hardcoding -1.0. SIFAS tangent.w is
+        # genuinely mixed (~50/50 on body meshes), so a constant -1 inverted normal-map
+        # lighting on roughly half the surface. UV-winding handedness reproduces the
+        # original w at ~98-100% (validated against a real body bundle).
+        _td, _tw = _compute_tangents(out_pos, out_nrm, out_uv, new_tris)
+        tan4 = np.zeros((new_vc, 4)); tan4[:, :3] = out_tan[:, :3]; tan4[:, 3] = _tw
     else:                                    # FBX had no tangents -> compute from UV + normal
         _td, _tw = _compute_tangents(out_pos, out_nrm, out_uv, new_tris)
         tan4 = np.zeros((new_vc, 4)); tan4[:, :3] = _td; tan4[:, 3] = _tw
@@ -1035,10 +1068,12 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
     put(tan4, CH_TANGENT)
     if nchans[CH_COLOR].get("dimension", 0):
         put(out_col if out_col is not None else np.ones((nvc, 4)), CH_COLOR)
-    uvstream = nchans[CH_UV0]["stream"] if nchans[CH_UV0].get("dimension", 0) else None
-    for ci, ch in enumerate(nchans):
-        if ch.get("dimension", 0) == 2 and ch["stream"] == uvstream:
-            put(out_uv, ci)
+    # write UV0 to its own channel; preserve the original UV1/UV2/... instead of
+    # overwriting every secondary UV channel with a copy of UV0 (the old bug).
+    if nchans[CH_UV0].get("dimension", 0):
+        put(out_uv, CH_UV0)
+    for ci, arr in extra_out.items():
+        put(arr, ci)
     if nchans[CH_BLENDWEIGHT].get("dimension", 0):
         put(BW, CH_BLENDWEIGHT)
         put(BI.astype(np.float64), CH_BLENDINDICES)
