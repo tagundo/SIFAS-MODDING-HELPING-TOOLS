@@ -216,6 +216,8 @@ _TRANSLATIONS = {
             "마스크 / 보드 얼굴 모델(리나쨩 보드) 특수 처리: 자동 감지, 머리 + 체형 스케일링 보호",
         "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
             "바디 텍스처 없이 이식 (착용자의 텍스처 유지; 코스튬 메시 + 본만 이식)",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "체형 스케일된 대상에 스윙 물리 스케일 (리나 보드에서 치마/리본/날개/꼬리 비율 유지; 일반 대상엔 영향 없음)",
         "Transplant": "이식",
         "Save output bundle": "출력 번들 저장",
         "Select bundle": "번들 선택",
@@ -246,6 +248,8 @@ _TRANSLATIONS = {
             "マスク / ボードフェイスモデル（りなちゃんボード）の特別処理: 自動検出、頭部 + 体型スケーリングを保護",
         "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
             "ボディテクスチャなしで移植（着用者のテクスチャを保持; 衣装メッシュ + ボーンのみ移植）",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "ボディスケールされた対象にスイング物理をスケール（りなボードでスカート/リボン/翼/尻尾の比率を維持; 通常対象では無効）",
         "Transplant": "移植",
         "Save output bundle": "出力バンドルを保存",
         "Select bundle": "バンドルを選択",
@@ -432,13 +436,13 @@ def worldspace_normalize(path, verbose=True, body_only=False):
     inverse into the bind poses, so meshRoot == I (world space). In-game render is
     unchanged, but SwingBone-driven pieces (ribbon/skirt) no longer shift.
 
-    body_only restricts the bake to the body (costume) renderer and leaves the
-    identity head meshes (Face/Hair/EyeBrow) exactly as shipped. A standard model's
-    head meshes have an identity mesh root (or no bones) so they are skipped anyway,
-    but a masked / board-face model's Face/EyeBrow/Hair sit under a large head-
-    accessory offset, so they WOULD be baked — which rewrites the very meshes the
-    Rina-chan board face system loads, breaking it in-game. For those targets we
-    bake only the body."""
+    body_only restricts the bake to the body (costume) renderer and leaves the head
+    meshes (Face/Hair/EyeBrow) untouched. NOTE: this was an earlier, INCOMPLETE attempt
+    at board-face handling. Baking the body alone still desyncs it from a board's
+    offset-space head/expression meshes and hangs the load in-game, so board-face targets
+    now skip this bake ENTIRELY in transplant() and never pass body_only. The flag is kept
+    only for completeness; on a standard model meshRoot is ~identity so the bake no-ops on
+    the head meshes anyway (see the per-mesh identity skip below)."""
     def log(*a):
         if verbose:
             print(*a)
@@ -702,6 +706,38 @@ def _transform_parent_byname(id2):
         pn = _transform_goname(id2, fp) if fp else None
         if cn is not None:
             out[cn] = pn
+    return out
+
+
+def _accumulated_scale_byname(id2):
+    """GO name -> accumulated WORLD (uniform) scale: the product of the averaged local
+    scale of every Transform from the bone up to the root.
+
+    SIFAS body-shape nodes (Move, Head, *Size) scale ~uniformly, so averaging x/y/z is
+    a faithful scalar. This is what lets the tool tell that a board target scales its
+    whole body (Move ~0.927) while a head-anchored piece nets back to ~1.0 (Head 1.077
+    cancels Move) — the per-bone ratio comes out right for every appendage."""
+    tf = {}
+    for pid, o in id2.items():
+        if o.type.name != "Transform":
+            continue
+        t = o.read_typetree()
+        ls = t.get("m_LocalScale", {}) or {}
+        avg = (float(ls.get("x", 1.0)) + float(ls.get("y", 1.0)) + float(ls.get("z", 1.0))) / 3.0
+        father = t.get("m_Father", {}).get("m_PathID", 0)
+        nm = _go_name(id2, t.get("m_GameObject", {}).get("m_PathID"))
+        tf[pid] = (avg, father, nm)
+    out = {}
+    for pid, (avg, father, nm) in tf.items():
+        if nm is None:
+            continue
+        s, cur, guard = 1.0, pid, 0
+        while cur in tf and guard < 512:       # guard against a malformed parent cycle
+            a, f, _ = tf[cur]
+            s *= a
+            cur = f
+            guard += 1
+        out[nm] = s
     return out
 
 
@@ -1403,12 +1439,301 @@ def sync_costume_swing_physics(donor, target, costume_bone_names,
 
 
 # --------------------------------------------------------------------------
+# swing-physics length rescale for body-scaled targets (e.g. the Rina board)
+# --------------------------------------------------------------------------
+# A SwingBone's radius / knee-space offsets are absolute distances in the rig's
+# units. The donor tuned them at the donor's body scale (normally 1.0). A masked /
+# board-face target (Rina board) shrinks its whole body via the `Move` node
+# (~0.927): the grafted donor appendage bones inherit that scale through the
+# hierarchy, but their tuning *fields* do not — so a skirt / ribbon / wing / tail
+# collides and swings as if it were still on a full-size body and splays out.
+#
+# The fix is general and part-agnostic: multiply each costume dynamic bone's
+# length fields by  S_bone = target_world_scale / donor_world_scale, computed
+# per bone from the accumulated hierarchy scale. Body pieces (under Move) get
+# ~0.927; head-anchored pieces (Head 1.077 cancels Move) net ~1.0 and are left
+# alone automatically. Forces / angles / dot-limits are scale-invariant and kept.
+# Only the SwingBone MonoBehaviours change — no mesh / bind pose is touched, so a
+# board target still loads (mesh edits are what hang the board, not these).
+#
+# No-op on a standard target, where donor and target body scales both = 1.0.
+_SWING_LENGTH_FIELDS = ("radius", "kneeSpaceOffsetFront", "kneeSpaceOffsetOther")
+
+
+def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbose=True):
+    """Rescale donor-authored SwingBone length tuning on every costume dynamic bone by
+    the target/donor body-scale ratio, so donor pieces keep their proportions when the
+    target scales the body. Re-opens the written bundle (so it sees the final realigned
+    rig) and the donor. Returns the number of bones rescaled (0 = scales matched)."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    env = UnityPy.load(out_path)
+    objs, id2 = _index(env)
+    scripts = _scriptname_map(objs)
+    donor = UnityPy.load(donor_path)
+    do, did = _index(donor)
+
+    t_scale = _accumulated_scale_byname(id2)
+    d_scale = _accumulated_scale_byname(did)
+    names = {n for n in costume_bone_names if n}
+
+    n_scaled, ratios = 0, {}
+    for o in objs:
+        if o.type.name != "MonoBehaviour" or \
+                scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) != "SwingBone":
+            continue
+        tt = o.read_typetree()
+        name = _go_name(id2, tt.get("m_GameObject", {}).get("m_PathID"))
+        if name not in names:
+            continue
+        ts, ds = t_scale.get(name), d_scale.get(name)
+        if not ts or not ds:
+            continue
+        s = ts / ds
+        if abs(s - 1.0) < 1e-3:               # scales agree -> nothing to do
+            continue
+        for k in _SWING_LENGTH_FIELDS:
+            if isinstance(tt.get(k), (int, float)):
+                tt[k] = tt[k] * s
+        o.save_typetree(tt)
+        n_scaled += 1
+        ratios[name] = s
+    if n_scaled:
+        bf = list(env.files.values())[0]
+        bf.mark_changed()
+        with open(out_path, "wb") as f:
+            f.write(bf.save(packer="original"))
+        avg = sum(ratios.values()) / len(ratios)
+        log(f"[scale] body-scaled target: rescaled swing-physics lengths on {n_scaled} "
+            f"costume bone(s) by ~{avg:.3f} (target/donor body-scale ratio) so the donor's "
+            f"skirt/ribbon/wing/tail keeps its proportions; mesh untouched (load-safe)")
+    else:
+        log("[scale] target and donor body scales match — swing-physics lengths unchanged")
+    return n_scaled
+
+
+# --------------------------------------------------------------------------
+# costume swing-chain repair (donor skirt deeper than the wearer's)
+# --------------------------------------------------------------------------
+# A SwingBone chain links parent->child by both an integer childIndex (into
+# SwingBoneManager.bones) and a `child` PPtr<Transform>. When the donor costume's
+# skirt is a DEEPER chain than the wearer's (donor 2-segment B1->B2->End vs a
+# 1-segment wearer B1->End), --physics injects the donor's extra segment bones
+# (B2/C2/D2) and points each one's parentIndex at its parent — but the PARENT bone
+# is a native wearer bone kept by sync_costume_swing_physics, so its childIndex /
+# child still skip straight to the End as the 1-segment wearer chain did. The
+# injected lower segment is therefore orphaned: it never simulates, the lower skirt
+# stays rigid, and the legs clip through it (most visible on whichever leg lifts).
+#
+# This re-derives each costume bone's downward link from the DONOR: if the donor's
+# bone chains to a child that is itself a costume bone, the output bone's child /
+# childIndex are set to that same bone (remapped to the output's pids/indices),
+# inserting the deeper segment back into the chain. Sibling links are left alone
+# (the root-level sibling ring already includes wearer-only bones like SkirtE1).
+# No-op when the donor and output chains already agree.
+def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose=True):
+    """Insert donor-only deeper swing segments back into the chain by fixing each
+    costume bone's child / childIndex to match the donor's topology. Returns the
+    number of links repaired (0 = chains already agree)."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    env = UnityPy.load(out_path)
+    objs, id2 = _index(env)
+    scripts = _scriptname_map(objs)
+    donor = UnityPy.load(donor_path)
+    do, did = _index(donor)
+    d_scripts = _scriptname_map(do)
+    names = {n for n in costume_bone_names if n}
+
+    def go_name(idx, go_pid):
+        o = idx.get(go_pid)
+        return o.read().m_Name if o else None
+
+    def resolve_to_bonename(idx, pid):
+        """A child/sibling PPtr points at the bone's Transform -> resolve to GO name."""
+        o = idx.get(pid)
+        if not o:
+            return None
+        if o.type.name in ("Transform", "MonoBehaviour"):
+            return go_name(idx, o.read_typetree().get("m_GameObject", {}).get("m_PathID"))
+        if o.type.name == "GameObject":
+            return o.read().m_Name
+        return None
+
+    # output: bone name -> SwingBone object + transform pid + manager index
+    out_swing, out_tf_pid = {}, {}
+    for o in objs:
+        if o.type.name == "MonoBehaviour" and \
+                scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) == "SwingBone":
+            out_swing[go_name(id2, o.read_typetree().get("m_GameObject", {}).get("m_PathID"))] = o
+    for pid, o in id2.items():
+        if o.type.name == "Transform":
+            nm = go_name(id2, o.read_typetree().get("m_GameObject", {}).get("m_PathID"))
+            if nm:
+                out_tf_pid[nm] = pid
+    out_mgr = _find_swingbone_manager(objs, scripts)
+    out_idx_of = {}
+    if out_mgr:
+        for i, b in enumerate(out_mgr.read_typetree().get("bones", [])):
+            co = id2.get(b["m_PathID"])
+            nm = go_name(id2, co.read_typetree().get("m_GameObject", {}).get("m_PathID")) if co else None
+            if nm:
+                out_idx_of[nm] = i
+
+    # donor: bone name -> its child bone's name (downward swing link)
+    donor_child = {}
+    for o in do:
+        if o.type.name == "MonoBehaviour" and \
+                d_scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) == "SwingBone":
+            tt = o.read_typetree()
+            nm = go_name(did, tt.get("m_GameObject", {}).get("m_PathID"))
+            cp = tt.get("child", {}).get("m_PathID", 0)
+            donor_child[nm] = resolve_to_bonename(did, cp) if cp else None
+
+    n_fixed = 0
+    for name, o in out_swing.items():
+        if name not in names:
+            continue
+        desired_child = donor_child.get(name)
+        # only act when the donor chains DOWN into another costume bone present here
+        if not desired_child or desired_child not in names or desired_child not in out_swing:
+            continue
+        tt = o.read_typetree()
+        cur_child = resolve_to_bonename(id2, tt.get("child", {}).get("m_PathID", 0))
+        if cur_child == desired_child:
+            continue                                   # already wired correctly
+        tt["child"] = {"m_FileID": 0, "m_PathID": out_tf_pid.get(desired_child, 0)}
+        if "childIndex" in tt:
+            tt["childIndex"] = out_idx_of.get(desired_child, -1)
+        o.save_typetree(tt)
+        n_fixed += 1
+    if n_fixed:
+        bf = list(env.files.values())[0]
+        bf.mark_changed()
+        with open(out_path, "wb") as f:
+            f.write(bf.save(packer="original"))
+        log(f"[chain] repaired {n_fixed} costume swing-chain link(s): the donor's deeper "
+            f"skirt/appendage segments now sit IN the chain (parent->child restored) so the "
+            f"lower pieces simulate and collide instead of staying rigid")
+    else:
+        log("[chain] costume swing chains already match the donor — no repair needed")
+    return n_fixed
+
+
+# --------------------------------------------------------------------------
+# adopt the donor's body colliders (the grafted body is the donor's)
+# --------------------------------------------------------------------------
+# transplant() grafts the DONOR's body MESH but keeps the WEARER's body COLLIDERS.
+# A SwingCollider's geometry (radius/offset) and capsule link (`sibling`, which forms
+# a capsule with the collider it points at) were authored for the WEARER's body and
+# its old costume — so the donor skirt/ribbon/wing now collides with a body shape it
+# was never authored for. The wearer's per-leg capsule chains are often ASYMMETRIC
+# (e.g. one leg has a groin/hip capsule the other lacks); when that side differs from
+# what the donor outfit expects, that leg clips through the skirt while the matching
+# side is fine — i.e. a one-sided clip that has nothing to do with the bones (those
+# were realigned to the donor and are symmetric).
+#
+# Since the grafted body IS the donor's, its colliders should be the donor's too. The
+# collider POSITIONS already match (bones were realigned to the donor), so we copy the
+# donor collider's radius / offset / sibling capsule link onto the wearer's same-named
+# collider, remapping the sibling to the wearer's collider of that name. Body identity
+# is unaffected (the wearer keeps its head/face; the body was already the donor's).
+def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
+    """Copy each donor body collider's geometry + capsule sibling onto the wearer's
+    same-named collider so the transplanted outfit collides with the body it was
+    authored for. Returns the number of colliders updated."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    env = UnityPy.load(out_path)
+    objs, id2 = _index(env)
+    scripts = _scriptname_map(objs)
+    donor = UnityPy.load(donor_path)
+    do, did = _index(donor)
+    d_scripts = _scriptname_map(do)
+
+    def go_name(idx, go_pid):
+        o = idx.get(go_pid)
+        return o.read().m_Name if o else None
+
+    def collider_name(idx, o):
+        return go_name(idx, o.read_typetree().get("m_GameObject", {}).get("m_PathID"))
+
+    out_col, out_idx_of = {}, {}
+    for o in objs:
+        if o.type.name == "MonoBehaviour" and \
+                scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) == "SwingCollider":
+            nm = collider_name(id2, o)
+            if nm:
+                out_col[nm] = o
+    out_mgr = _find_swingbone_manager(objs, scripts)
+    if out_mgr:
+        for i, c in enumerate(out_mgr.read_typetree().get("colliders", [])):
+            co = id2.get(c["m_PathID"])
+            nm = collider_name(id2, co) if co else None
+            if nm:
+                out_idx_of[nm] = i
+
+    # donor: name -> (radius, offset, sibling collider name)
+    donor_cfg = {}
+    for o in do:
+        if o.type.name == "MonoBehaviour" and \
+                d_scripts.get(o.read_typetree().get("m_Script", {}).get("m_PathID")) == "SwingCollider":
+            tt = o.read_typetree()
+            nm = collider_name(did, o)
+            sp = tt.get("sibling", {}).get("m_PathID", 0)
+            sib = None
+            if sp:
+                sco = did.get(sp)
+                sib = collider_name(did, sco) if sco and sco.type.name == "MonoBehaviour" else \
+                    go_name(did, did.get(sp).read_typetree().get("m_GameObject", {}).get("m_PathID")) if sp in did else None
+            donor_cfg[nm] = (tt.get("radius"), tt.get("offset"), sib)
+
+    n = 0
+    for nm, o in out_col.items():
+        if nm not in donor_cfg:
+            continue
+        rad, off, sib = donor_cfg[nm]
+        tt = o.read_typetree()
+        changed = False
+        if rad is not None and tt.get("radius") != rad:
+            tt["radius"] = rad
+            changed = True
+        if off is not None and tt.get("offset") != off:
+            tt["offset"] = copy.deepcopy(off)
+            changed = True
+        # capsule link: point at the wearer's collider of the donor's sibling name
+        if "sibling" in tt:
+            want_pid = out_col[sib].path_id if (sib and sib in out_col) else 0
+            if tt.get("sibling", {}).get("m_PathID", 0) != want_pid:
+                tt["sibling"] = {"m_FileID": 0, "m_PathID": want_pid}
+                if "siblingIndex" in tt:
+                    tt["siblingIndex"] = out_idx_of.get(sib, -1)
+                changed = True
+        if changed:
+            o.save_typetree(tt)
+            n += 1
+    if n:
+        bf = list(env.files.values())[0]
+        bf.mark_changed()
+        with open(out_path, "wb") as f:
+            f.write(bf.save(packer="original"))
+        log(f"[collider] adopted the donor's body collider geometry + capsule links on "
+            f"{n} collider(s) (the grafted body is the donor's) so the transplanted outfit "
+            f"collides with the body it was authored for, not the wearer's old shape")
+    return n
+
+
+# --------------------------------------------------------------------------
 # core
 # --------------------------------------------------------------------------
 def transplant(donor_path, target_path, out_path, verbose=True,
                preserve_physics=False, realign=True, restore_collision=True,
                worldspace=True, fix_nodescaling=True, mask_handling="auto",
-               costume_physics="donor", sync_textures=True):
+               costume_physics="donor", sync_textures=True,
+               scale_swing_physics=True):
     def log(*a):
         if verbose:
             print(*a)
@@ -1550,6 +1875,7 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     # ---- 4b) costume dynamic bones the wearer also has (skirt / shared ribbon):
     #          take the donor's swing physics + collision so the donor outfit sways
     #          as designed. Body-identity dynamics (the bust) stay the wearer's. ----
+    costume_dyn = []
     if costume_physics == "donor":
         costume_dyn = [n for n in dict.fromkeys(d_bone_names)
                        if n is not None and not _is_body_identity_bone(n)]
@@ -1562,23 +1888,53 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     with open(out_path, "wb") as f:
         f.write(bf.save(packer="original"))
 
-    # ---- 6) bake the grafted body mesh into world space (re-read the file so it
-    #         reflects the graft; needed so swinging pieces like the ribbon render
-    #         in the right place in-game). For a board-face target, bake ONLY the body
-    #         so the Rina-chan board's Face/EyeBrow/Hair meshes are left untouched
-    #         (world-spacing them rewrites what the board face system loads -> the
-    #         model fails to load in-game). ----
-    if worldspace:
-        if board:
-            log("[mask] world-spacing the body mesh only (leaving the board's "
-                "Face/Hair/EyeBrow identity meshes untouched)")
-        worldspace_normalize(out_path, verbose=verbose, body_only=bool(board))
+    # ---- 6) bake the grafted body mesh into world space (re-read so it reflects the
+    #         graft; needed so SwingBone-driven pieces like the ribbon render in the
+    #         right place on a STANDARD model whose body sits under a non-identity mesh
+    #         root). ----
+    #
+    #         BOARD-FACE EXCEPTION: a masked / board-face model (Rina-chan board, ch9999)
+    #         is authored entirely in its OWN offset coordinate space — body, Face, Hair,
+    #         EyeBrow and the 30+ expression meshes all share that offset. World-spacing
+    #         forces the body's mesh root to identity, which DESYNCS the body from the
+    #         (untouched) head/expression meshes; the board's runtime model assembly then
+    #         never completes and the game hangs on an infinite load. The shipped board is
+    #         not world-spaced, so the correct handling is to leave the WHOLE board in its
+    #         native space and bake nothing. (The earlier body_only bake was incomplete:
+    #         baking the body is itself the problem, not just baking the head meshes.)
+    #         Verified in-game: skipping the bake loads, baking hangs.
+    if worldspace and not board:
+        worldspace_normalize(out_path, verbose=verbose)
+    elif worldspace and board:
+        log("[mask] board-face target: skipping the world-space bake — the board is "
+            "authored in its own offset space; forcing the body to world space (meshRoot"
+            "=I) desyncs it from the untouched face/expression meshes and hangs the load.")
 
     # ---- 7) keep LiveCoreMemberNodeScaling consistent with the realigned bones
     #         so the runtime body-shape pass doesn't teleport ribbon/skirt pieces
     #         (the correction is preserved, only re-anchored to the new rest) ----
     if fix_nodescaling and realign:
         rebase_node_scaling(out_path, verbose=verbose)
+
+    # ---- 7a) repair the costume swing chain when the donor skirt/appendage is a
+    #          DEEPER chain than the wearer's (e.g. donor 2-segment skirt onto a
+    #          1-segment wearer): re-insert the donor's lower segments so they
+    #          simulate instead of staying rigid (legs would otherwise clip through). ----
+    if costume_physics == "donor" and costume_dyn:
+        repair_costume_swing_chain(out_path, donor_path, costume_dyn, verbose=verbose)
+
+    # ---- 7a2) the grafted body is the donor's, so adopt the donor's body colliders
+    #           (geometry + capsule links) onto the wearer's same-named colliders. Fixes
+    #           one-sided skirt clipping where the wearer's leg capsule chain differs from
+    #           what the donor outfit was authored for. Positions already match (realign). ----
+    adopt_donor_body_colliders(out_path, donor_path, verbose=verbose)
+
+    # ---- 7b) if the target scales the whole body (e.g. the Rina board's Move~0.927),
+    #          rescale the donor's swing-physics lengths so the grafted skirt/ribbon/
+    #          wing/tail keeps its proportions instead of splaying on the smaller body.
+    #          No-op on a standard target (scales match). Mesh untouched -> load-safe. ----
+    if scale_swing_physics and costume_physics == "donor" and costume_dyn:
+        scale_costume_swing_lengths(out_path, donor_path, costume_dyn, verbose=verbose)
 
     # ---- 8) warn (read-only) if the result blows past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
@@ -1682,6 +2038,13 @@ def build_parser():
                         "body textures/material; the wearer keeps its own body texture. "
                         "Useful when you intend to paint your own texture afterwards. "
                         "Off by default (textures are transplanted).")
+    p.add_argument("--no-swing-scale", action="store_true",
+                   help="do NOT rescale the donor's swing-physics lengths to a body-scaled "
+                        "target. By default, when the target shrinks the body (e.g. the Rina "
+                        "board's Move~0.927), the grafted skirt/ribbon/wing/tail's radius and "
+                        "knee-space offsets are scaled by the target/donor body ratio so the "
+                        "pieces keep their proportions instead of splaying. No-op on a normal "
+                        "target. Mesh is never touched, so loading is unaffected.")
     p.add_argument("--gui", action="store_true", help="force the graphical interface")
     p.add_argument("-q", "--quiet", action="store_true", help="less logging")
     return p
@@ -1698,7 +2061,8 @@ def run_cli(args):
                fix_nodescaling=not args.no_nodescaling_fix,
                mask_handling=args.mask_handling,
                costume_physics=args.costume_physics,
-               sync_textures=not args.no_textures)
+               sync_textures=not args.no_textures,
+               scale_swing_physics=not args.no_swing_scale)
     ok = validate(args.out, verbose=not args.quiet)
     if not ok:
         print("[error] output has dangling references; aborting", file=sys.stderr)
@@ -1824,6 +2188,8 @@ def run_gui():
                 "auto-detect, protect head + body-shape scaling")
     _CB_NOTEX = ("Transplant without the body textures (keep the wearer's own texture; "
                  "only the costume mesh + bones are grafted)")
+    _CB_SWSCALE = ("Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/"
+                   "tail proportions on the Rina board; no-op on normal targets)")
     cb_phys = _reg(ttk.Checkbutton(opts, variable=physics_v, text=_tr(_CB_PHYS)), _CB_PHYS)
     cb_phys.grid(row=0, column=0, sticky="w", columnspan=2)
     cb_col = _reg(ttk.Checkbutton(opts, variable=collision_v, text=_tr(_CB_COL)), _CB_COL)
@@ -1848,6 +2214,9 @@ def run_gui():
     no_textures_v = tk.BooleanVar(value=False)
     _reg(ttk.Checkbutton(opts, variable=no_textures_v, text=_tr(_CB_NOTEX)), _CB_NOTEX
          ).grid(row=8, column=0, sticky="w", columnspan=2)
+    swing_scale_v = tk.BooleanVar(value=True)
+    _reg(ttk.Checkbutton(opts, variable=swing_scale_v, text=_tr(_CB_SWSCALE)), _CB_SWSCALE
+         ).grid(row=9, column=0, sticky="w", columnspan=2)
 
     def sync_collision_state(*_):
         cb_col.configure(state=("normal" if physics_v.get() else "disabled"))
@@ -1904,14 +2273,15 @@ def run_gui():
 
     run_btn = _reg(ttk.Button(frm, text=_tr("Transplant")), "Transplant")
 
-    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys, notex):
+    def worker(d, t, o, phys, col, realign, wspace, nscale, maskh, cphys, notex, swscale):
         old = sys.stdout
         sys.stdout = _QWriter()
         try:
             transplant(d, t, o, verbose=True, preserve_physics=phys,
                        realign=realign, restore_collision=col, worldspace=wspace,
                        fix_nodescaling=nscale, mask_handling=maskh,
-                       costume_physics=cphys, sync_textures=not notex)
+                       costume_physics=cphys, sync_textures=not notex,
+                       scale_swing_physics=swscale)
             ok = validate(o, verbose=True)
             print(_tr("\n[success] done — verified ✓\n") if ok
                   else _tr("\n[error] output has dangling references!\n"))
@@ -1935,7 +2305,7 @@ def run_gui():
                                nodescale_v.get(),
                                "auto" if mask_v.get() else "off",
                                "donor" if costume_phys_v.get() else "target",
-                               no_textures_v.get())).start()
+                               no_textures_v.get(), swing_scale_v.get())).start()
 
     run_btn.configure(command=go)
     run_btn.grid(row=len(rows), column=1, sticky="e", pady=8)
