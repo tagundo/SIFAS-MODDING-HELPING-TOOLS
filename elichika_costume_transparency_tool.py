@@ -37,7 +37,6 @@ import glob
 import json
 import time
 import zlib
-import random
 import shutil
 import sqlite3
 import hashlib
@@ -99,6 +98,11 @@ def db_platform(path):
 def backup(path, log):
     dst = path + ".bak-" + time.strftime("%Y%m%d-%H%M%S")
     shutil.copy(path, dst)
+    # WAL-mode DBs keep committed-but-uncheckpointed data in sidecars; copy them
+    # too so the backup is a consistent, restorable snapshot.
+    for ext in ("-wal", "-shm"):
+        if os.path.exists(path + ext):
+            shutil.copy(path + ext, dst + ext)
     log("  backup -> " + os.path.basename(dst))
 
 
@@ -153,10 +157,20 @@ def find_member_main(root, asset_db, want_shader="Hidden/AS/Member/Main", log=pr
             "SELECT asset_path,pack_name,head,size,key1,key2 FROM shader").fetchall()
     finally:
         con.close()
-    # fast path: a row already on one of our packs (8 hex prefix) is the member shader
+    # fast path: a row already on one of our packs (8 hex prefix) is *probably*
+    # our member shader — but VERIFY by decrypting it (don't blindly trust the
+    # prefix, in case other shaders were also modded).
     for ap, pn, head, size, k1, k2 in rows:
         if pn and re.match(r'^[0-9a-f]{8}', str(pn)):
-            return (ap, pn, head, size, k1, k2)
+            pp = find_pack_file(root, pn)
+            if not pp:
+                continue
+            try:
+                data = decrypt_section(pp, head, size, k1, k2)
+                if data[:7] == b"UnityFS" and want_shader in shader_names_of(data):
+                    return (ap, pn, head, size, k1, k2)
+            except Exception:
+                pass
     # robust path: decrypt each pack, read shader name
     for ap, pn, head, size, k1, k2 in rows:
         pp = find_pack_file(root, pn)
@@ -209,31 +223,54 @@ def apply_transparent_blend(src_bytes):
     return env.file.save(packer="lz4")
 
 
-def register_pack(cur, pack_name, size):
+def register_pack(cur, pack_name, size, old_pack=None):
+    """Register the new pack as a downloadable 'main' package and bump the
+    client-facing version so it re-syncs.  This mirrors elichika's own resolver:
+      - m_asset_package_mapping.package_key == 'main' is what marks a pack as
+        downloadable (asset_database.go: PackIsMainPackage);
+      - the client re-syncs when the 'main' row of m_asset_package gets a fresh
+        version + pack_num (asset_database_update.go).
+    Registering under any other package_key, or failing to bump 'main', means the
+    client never fetches the new pack — the shader silently won't load."""
+    # carry over the category from the original member pack's 'main' mapping
+    category = 1
+    if old_pack and table_exists(cur, "m_asset_package_mapping"):
+        r = cur.execute("SELECT category FROM m_asset_package_mapping "
+                        "WHERE pack_name=? ORDER BY (package_key='main') DESC LIMIT 1",
+                        (old_pack,)).fetchone()
+        if r and r[0] is not None:
+            category = r[0]
     if table_exists(cur, "m_asset_pack"):
-        cur.execute("INSERT OR IGNORE INTO m_asset_pack (pack_name, auto_delete) VALUES (?, '0')",
-                    (pack_name,))
+        if not cur.execute("SELECT 1 FROM m_asset_pack WHERE pack_name=?", (pack_name,)).fetchone():
+            cur.execute("INSERT INTO m_asset_pack (pack_name, auto_delete) VALUES (?, '0')",
+                        (pack_name,))
     if table_exists(cur, "m_asset_package_mapping"):
-        if cur.execute("SELECT 1 FROM m_asset_package_mapping WHERE pack_name=?", (pack_name,)).fetchone():
-            cur.execute("UPDATE m_asset_package_mapping SET file_size=?, metapack_name=NULL, metapack_offset=0 "
-                        "WHERE pack_name=?", (size, pack_name))
+        if cur.execute("SELECT 1 FROM m_asset_package_mapping WHERE package_key='main' AND pack_name=?",
+                       (pack_name,)).fetchone():
+            cur.execute("UPDATE m_asset_package_mapping "
+                        "SET file_size=?, metapack_name=NULL, metapack_offset='0', category=? "
+                        "WHERE package_key='main' AND pack_name=?", (size, category, pack_name))
         else:
             cur.execute("INSERT INTO m_asset_package_mapping "
                         "(package_key,pack_name,file_size,metapack_name,metapack_offset,category) "
-                        "VALUES ('main',?,?,NULL,0,1)", (pack_name, size))
+                        "VALUES ('main',?,?,NULL,'0',?)", (pack_name, size, category))
+    # bump the 'main' package version -> client re-syncs and fetches the new pack
     if table_exists(cur, "m_asset_package"):
-        if not cur.execute("SELECT 1 FROM m_asset_package WHERE package_key=?", (pack_name,)).fetchone():
-            ver = hashlib.sha1(str(random.random()).encode()).hexdigest()
-            cur.execute("INSERT INTO m_asset_package (package_key,version,pack_num) VALUES (?,?,'1')",
-                        (pack_name, ver))
+        fresh = hashlib.sha1(os.urandom(16)).hexdigest()
+        cnt = cur.execute("SELECT COUNT(*) FROM m_asset_package_mapping "
+                          "WHERE package_key='main'").fetchone()[0]
+        cur.execute("REPLACE INTO m_asset_package (package_key,version,pack_num) VALUES ('main',?,?)",
+                    (fresh, str(cnt)))
 
 
-def install_shader(root, bundle_path, platform="auto", make_transparent=True,
-                   do_backup=True, log=print):
+def install_shader(root, bundle_path, platform="ios", make_transparent=True,
+                   do_backup=True, asset_path=None, log=print):
     """Install a member-Main shader bundle into elichika for the chosen platform.
-    platform: 'ios' | 'android' | 'both' | 'auto' (auto = whichever DBs the
-    bundle's shader name is found in via the member-Main row)."""
-    raw = open(bundle_path, "rb").read()
+    platform: 'ios' | 'android' | 'both'.  The compiled shader is platform-specific
+    (iOS=Metal, Android=GLES), so the bundle is written ONLY to DBs whose platform
+    matches; an iOS bundle is never written to Android DBs (or vice versa)."""
+    with open(bundle_path, "rb") as f:
+        raw = f.read()
     if make_transparent:
         raw = apply_transparent_blend(raw)
         log("[shader] applied transparent-skirt blend (SrcAlpha/OneMinusSrcAlpha)")
@@ -242,38 +279,47 @@ def install_shader(root, bundle_path, platform="auto", make_transparent=True,
     pack_name = ("%08x" % (zlib.crc32(raw) & 0xFFFFFFFF)) + "membertransp"
     static = os.path.join(root, "static")
     os.makedirs(static, exist_ok=True)
-    open(os.path.join(static, pack_name), "wb").write(enc)
+    with open(os.path.join(static, pack_name), "wb") as f:
+        f.write(enc)
     log("[shader] wrote pack static/%s (%d bytes)" % (pack_name, size))
 
-    # member Main asset_path is shared across platforms; find it once.
-    member_ap = None
-    for adb in asset_dbs(root):
-        r = find_member_main(root, adb, log=log)
-        if r:
-            member_ap = r[0]
-            log("[shader] member Main asset_path = %r (from %s)" % (member_ap, os.path.basename(adb)))
-            break
+    # member Main asset_path is shared across platforms; find it once (or use override).
+    member_ap = asset_path
+    if member_ap:
+        log("[shader] using provided asset_path = %r" % member_ap)
+    else:
+        for adb in asset_dbs(root):
+            r = find_member_main(root, adb, log=log)
+            if r:
+                member_ap = r[0]
+                log("[shader] member Main asset_path = %r (from %s)" % (member_ap, os.path.basename(adb)))
+                break
     if member_ap is None:
         raise RuntimeError("could not locate the member Main shader row in any asset DB "
-                           "(no decryptable pack contained 'Hidden/AS/Member/Main').")
+                           "(no decryptable pack contained 'Hidden/AS/Member/Main'). "
+                           "Pass an explicit --asset-path if you know it.")
 
-    want = {"ios", "android"} if platform in ("both", "auto") else {platform}
+    want = {"ios", "android"} if platform == "both" else {platform}
     touched = []
     for adb in asset_dbs(root):
         plat = db_platform(adb)
-        if platform not in ("both", "auto") and plat not in want:
+        # only write the bundle to DBs whose platform matches (never cross-install
+        # a Metal bundle into a GLES DB, and skip 'unknown'-named DBs entirely)
+        if plat not in want:
             continue
         con = sqlite3.connect(adb)
         try:
             cur = con.cursor()
             if not table_exists(cur, "shader"):
                 continue
+            old = cur.execute("SELECT pack_name FROM shader WHERE asset_path=?",
+                              (member_ap,)).fetchone()
             n = cur.execute("UPDATE shader SET pack_name=?, head='0', size=?, key1='0', key2='0' "
                             "WHERE asset_path=?", (pack_name, size, member_ap)).rowcount
             if n:
                 if do_backup:
                     backup(adb, log)
-                register_pack(cur, pack_name, size)
+                register_pack(cur, pack_name, size, old_pack=(old[0] if old else None))
                 con.commit()
                 touched.append((os.path.basename(adb), plat))
                 log("  [ok] %s [%s]" % (os.path.basename(adb), plat))
@@ -283,14 +329,21 @@ def install_shader(root, bundle_path, platform="auto", make_transparent=True,
     cfg = os.path.join(root, "config.json")
     if os.path.exists(cfg):
         try:
-            c = json.load(open(cfg))
+            with open(cfg) as f:
+                c = json.load(f)
             if c.get("cdn_server") != "http://127.0.0.1:8080/static":
                 c["cdn_server"] = "http://127.0.0.1:8080/static"
-                json.dump(c, open(cfg, "w"), indent=4)
+                with open(cfg, "w") as f:
+                    json.dump(c, f, indent=4)
                 log("[config] cdn_server -> local")
         except Exception:
             pass
-    log("[shader] updated %d DB(s). Re-sync the client to apply." % len(touched))
+    if not touched:
+        log("[shader] WARNING: no %s DB was updated (member row not found in a matching "
+            "platform DB). Nothing applied — check --platform and --asset-path."
+            % ("/".join(sorted(want))))
+    else:
+        log("[shader] updated %d DB(s). Re-sync the client to apply." % len(touched))
     return touched
 
 
@@ -298,9 +351,10 @@ def install_shader(root, bundle_path, platform="auto", make_transparent=True,
 # masterdata: per-live skin-merge fix
 # --------------------------------------------------------------------------- #
 VISDEF = "m_live_visible_definition"
+SENTINEL_LIVE_M_ID = 9999  # default-template row; never overwrite it
 
 
-def resolve_live_m_id(cur, key):
+def resolve_live_m_id(cur, key, log=print):
     """key may be a live_m_id (e.g. 12055), a song id (2055 -> 12055 via m_live),
     or a string. Returns the matching live_m_id, or None."""
     s = str(key).strip()
@@ -313,6 +367,12 @@ def resolve_live_m_id(cur, key):
         if table_exists(cur, "m_live"):
             r = cur.execute("SELECT live_id FROM m_live WHERE live_id=?", (n,)).fetchone()
             if r:
+                # warn if this same number ALSO matches a different live by music_id
+                m = cur.execute("SELECT live_id FROM m_live WHERE music_id=?", (n,)).fetchone()
+                if m and m[0] != r[0]:
+                    log("  [warn] %r matches both live_id=%s and music_id-of-live=%s; "
+                        "using live_id=%s (pass the live_m_id directly to disambiguate)"
+                        % (s, r[0], m[0], r[0]))
                 return r[0]
             # treat as song/music id
             r = cur.execute("SELECT live_id FROM m_live WHERE music_id=?", (n,)).fetchone()
@@ -331,7 +391,8 @@ def resolve_live_m_id(cur, key):
 
 def default_mixer(cur):
     if table_exists(cur, VISDEF):
-        r = cur.execute("SELECT live_mixer_base_mode FROM %s WHERE live_m_id=9999" % VISDEF).fetchone()
+        r = cur.execute("SELECT live_mixer_base_mode FROM %s WHERE live_m_id=?" % VISDEF,
+                        (SENTINEL_LIVE_M_ID,)).fetchone()
         if r and r[0] is not None:
             return r[0]
     return 1
@@ -360,35 +421,51 @@ def fix_live(root, keys, skin_merge=0, safe_swing=None, do_backup=True, log=prin
                         targets += [r[0] for r in cur.execute("SELECT live_id FROM m_live").fetchall()]
                     targets += [r[0] for r in cur.execute("SELECT live_m_id FROM %s" % VISDEF).fetchall()]
                 else:
-                    lid = resolve_live_m_id(cur, key)
+                    lid = resolve_live_m_id(cur, key, log=log)
                     if lid is None:
                         log("  [warn] %s: could not resolve live %r" % (os.path.basename(mdb), key))
                         continue
                     targets.append(lid)
-            targets = sorted(set(targets))
+            # never touch the 9999 sentinel/default-template row (default_mixer reads it)
+            targets = sorted(set(t for t in targets if t != SENTINEL_LIVE_M_ID))
             if not targets:
                 continue
             if do_backup:
                 backup(mdb, log)
             mixer = default_mixer(cur)
             done = 0
+            failed = 0
             for lid in targets:
                 exists = cur.execute("SELECT 1 FROM %s WHERE live_m_id=?" % VISDEF, (lid,)).fetchone()
-                if exists:
-                    sets = ["live_enable_skin_merge=?"]
-                    vals = [skin_merge]
-                    if safe_swing is not None:
-                        sets.append("safe_swing_bone=?"); vals.append(safe_swing)
-                    cur.execute("UPDATE %s SET %s WHERE live_m_id=?" % (VISDEF, ",".join(sets)),
-                                (*vals, lid))
-                else:
-                    cur.execute("INSERT INTO %s (live_m_id,safe_swing_bone,live_mixer_base_mode,"
-                                "live_enable_skin_merge) VALUES (?,?,?,?)" % VISDEF,
-                                (lid, safe_swing, mixer, skin_merge))
-                done += 1
+                try:
+                    if exists:
+                        sets = ["live_enable_skin_merge=?"]
+                        vals = [skin_merge]
+                        if safe_swing is not None:
+                            sets.append("safe_swing_bone=?"); vals.append(safe_swing)
+                        cur.execute("UPDATE %s SET %s WHERE live_m_id=?" % (VISDEF, ",".join(sets)),
+                                    (*vals, lid))
+                    else:
+                        # schema-driven INSERT: only set columns that actually exist, so we
+                        # don't break on schema variants (extra cols just take their default)
+                        row = {"live_m_id": lid,
+                               "live_enable_skin_merge": skin_merge,
+                               "live_mixer_base_mode": mixer,
+                               "safe_swing_bone": safe_swing}
+                        use = [c for c in cols if c in row]
+                        cur.execute("INSERT INTO %s (%s) VALUES (%s)"
+                                    % (VISDEF, ",".join(use), ",".join("?" * len(use))),
+                                    tuple(row[c] for c in use))
+                    done += 1
+                except sqlite3.Error as e:
+                    failed += 1
+                    log("  [warn] %s: live_m_id=%s failed: %s" % (os.path.basename(mdb), lid, e))
             con.commit()
             total.append((os.path.basename(mdb), done))
-            log("  [ok] %s: %d live(s) set skin_merge=%d" % (os.path.basename(mdb), done, skin_merge))
+            msg = "  [ok] %s: %d live(s) set skin_merge=%d" % (os.path.basename(mdb), done, skin_merge)
+            if failed:
+                msg += " (%d failed)" % failed
+            log(msg)
         finally:
             con.close()
     log("[live-fix] done. Re-sync the client (masterdata) to apply.")
@@ -556,6 +633,7 @@ def main():
     ap.add_argument("--shader", metavar="BUNDLE", help="install transparent member shader from BUNDLE")
     ap.add_argument("--platform", choices=["ios", "android", "both"], default="ios")
     ap.add_argument("--no-transparent", action="store_true", help="bundle is already edited; don't re-blend")
+    ap.add_argument("--asset-path", default=None, help="member shader asset_path override (if auto-detect fails)")
     ap.add_argument("--fix-live", metavar="LIVES", nargs="?", const="ALL",
                     help="comma-separated live ids/song ids/names, or ALL. "
                          "Bare --fix-live (no value) = ALL (default).")
@@ -570,14 +648,25 @@ def main():
             print(r)
         return
     did = False
+    changed = False
     if a.shader:
-        install_shader(a.root, a.shader, platform=a.platform,
-                       make_transparent=not a.no_transparent, log=print); did = True
+        touched = install_shader(a.root, a.shader, platform=a.platform,
+                                 make_transparent=not a.no_transparent,
+                                 asset_path=a.asset_path, log=print)
+        did = True
+        changed = changed or bool(touched)
     if a.fix_live:
-        fix_live(a.root, [k.strip() for k in a.fix_live.split(",") if k.strip()],
-                 skin_merge=0, safe_swing=(0 if a.safe_swing_off else None), log=print); did = True
+        total = fix_live(a.root, [k.strip() for k in a.fix_live.split(",") if k.strip()],
+                         skin_merge=0, safe_swing=(0 if a.safe_swing_off else None), log=print)
+        did = True
+        changed = changed or any(n for _, n in total)
     if not did:
         run_gui()
+        return
+    # non-zero exit if an action was requested but nothing was actually changed
+    if not changed:
+        print("[done] nothing was changed (no matching DB/live). See warnings above.")
+        sys.exit(3)
 
 
 if __name__ == "__main__":
