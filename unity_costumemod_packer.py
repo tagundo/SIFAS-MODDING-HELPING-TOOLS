@@ -1777,7 +1777,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.chara_id = tk.IntVar(value=209) # Default for Rina
         self.auto_chara_id = tk.BooleanVar(value=True)
         self.batch_mode = tk.BooleanVar(value=True) # Default to batch
-        self.output_to_bundle_location = tk.BooleanVar(value=False)
+        self.output_to_bundle_location = tk.BooleanVar(value=True)
         self.append_platform_suffix = tk.BooleanVar(value=True)
         self.combine_pairs = tk.BooleanVar(value=True)
         self.is_processing = False
