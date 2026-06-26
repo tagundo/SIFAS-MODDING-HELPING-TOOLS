@@ -1609,17 +1609,78 @@ def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose
             tt["childIndex"] = out_idx_of.get(desired_child, -1)
         o.save_typetree(tt)
         n_fixed += 1
-    if n_fixed:
+
+    # --- transform-hierarchy repair (the other half of the chain) ---
+    # Fixing the SwingBone child link above is not enough: when the donor's deeper
+    # segment (B2) is injected as a child of the shallow wearer bone (B1), the
+    # pre-existing leaf TIP (B_End) is left hanging off B1 instead of being moved
+    # under B2. The SIMULATION then runs B1->B2->B_End while the TRANSFORM/skinning
+    # tree is still B1->{B_End, B2}, so when B2 swings the tip mesh (parented to B1)
+    # does not follow it and the tip detaches / flails (~21 cm off). Reparent every
+    # costume bone whose donor transform-parent differs from the output's so the
+    # skinning tree matches the donor (B1->B2->B_End). Edits are batched per object
+    # (m_Father + m_Children together) so a parent that also moves keeps both edits.
+    donor_tparent = {}
+    for o in do:
+        if o.type.name == "Transform":
+            t = o.read_typetree()
+            nm = go_name(did, t.get("m_GameObject", {}).get("m_PathID"))
+            fo = did.get(t.get("m_Father", {}).get("m_PathID", 0))
+            donor_tparent[nm] = go_name(did, fo.read_typetree().get("m_GameObject", {}).get("m_PathID")) if fo else None
+
+    def out_parent_name(pid):
+        o = id2.get(pid)
+        fo = id2.get(o.read_typetree().get("m_Father", {}).get("m_PathID", 0)) if o else None
+        return go_name(id2, fo.read_typetree().get("m_GameObject", {}).get("m_PathID")) if fo else None
+
+    reparents = []
+    for nm in names:
+        pid = out_tf_pid.get(nm)
+        want = donor_tparent.get(nm)
+        if pid is None or not want or want not in out_tf_pid:
+            continue
+        if out_parent_name(pid) != want:
+            reparents.append((nm, pid, want))
+
+    if reparents:
+        edits = {}   # pid -> {'father': pid, 'rm': set(child pids), 'add': set(child pids)}
+        for nm, pid, want in reparents:
+            cur = out_parent_name(pid)
+            edits.setdefault(pid, {})["father"] = out_tf_pid[want]
+            if cur in out_tf_pid:
+                edits.setdefault(out_tf_pid[cur], {}).setdefault("rm", set()).add(pid)
+            edits.setdefault(out_tf_pid[want], {}).setdefault("add", set()).add(pid)
+        for pid, ch in edits.items():
+            t = id2[pid].read_typetree()
+            if "father" in ch:
+                t["m_Father"] = {"m_FileID": 0, "m_PathID": ch["father"]}
+            if "rm" in ch or "add" in ch:
+                kids = [c for c in t.get("m_Children", []) if c["m_PathID"] not in ch.get("rm", set())]
+                seen = {c["m_PathID"] for c in kids}
+                for cpid in ch.get("add", set()):
+                    if cpid not in seen:
+                        kids.append({"m_FileID": 0, "m_PathID": cpid})
+                        seen.add(cpid)
+                t["m_Children"] = kids
+            id2[pid].save_typetree(t)
+
+    if n_fixed or reparents:
         bf = list(env.files.values())[0]
         bf.mark_changed()
         with open(out_path, "wb") as f:
             f.write(bf.save(packer="original"))
-        log(f"[chain] repaired {n_fixed} costume swing-chain link(s): the donor's deeper "
-            f"skirt/appendage segments now sit IN the chain (parent->child restored) so the "
-            f"lower pieces simulate and collide instead of staying rigid")
+        if n_fixed:
+            log(f"[chain] repaired {n_fixed} costume swing-chain link(s): the donor's deeper "
+                f"skirt/appendage segments now sit IN the chain (parent->child restored) so the "
+                f"lower pieces simulate and collide instead of staying rigid")
+        if reparents:
+            log(f"[chain] reparented {len(reparents)} costume tip/segment bone(s) to match the "
+                f"donor skinning tree ({', '.join(n for n, _, _ in reparents[:6])}"
+                f"{'...' if len(reparents) > 6 else ''}) so the tips follow the last swing "
+                f"segment instead of detaching")
     else:
         log("[chain] costume swing chains already match the donor — no repair needed")
-    return n_fixed
+    return n_fixed + len(reparents)
 
 
 # --------------------------------------------------------------------------
