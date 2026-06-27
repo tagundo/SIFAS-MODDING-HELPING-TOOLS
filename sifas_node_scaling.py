@@ -390,7 +390,7 @@ def neutralize_values(local):
 # 3. 번들 처리
 # ==========================================================================
 def process_bundle(in_path, out_path, mode="rebase", edits=None, height_edits=None,
-                   adds=None, eps=1e-3, packer="original", log=print, dry_run=False):
+                   adds=None, eps=1e-3, packer="lz4", log=print, dry_run=False):
     """mode: 'rebase' | 'neutralize' | 'none'  — 불일치 항목 자동 수리 방식.
     edits: {(target_name, kind, bone): {'origin':(x,y,z)|None, 'scaled':(x,y,z)|None}}
            수동 편집(자동 수리보다 우선).
@@ -521,7 +521,7 @@ def process_bundle(in_path, out_path, mode="rebase", edits=None, height_edits=No
 
 
 def process_folder(in_dir, out_dir, mode="rebase", suffix="_nodescalefix",
-                   prefix="", eps=1e-3, packer="original", patterns=("*.unity",),
+                   prefix="", eps=1e-3, packer="lz4", patterns=("*.unity",),
                    log=print, dry_run=False):
     in_dir, out_dir = Path(in_dir), Path(out_dir)
     files = []
@@ -670,7 +670,7 @@ def build_parser():
     p.add_argument("--list-bones", action="store_true",
                    help="list every bone name you can target with --add, then exit")
     p.add_argument("--eps", type=float, default=1e-3, help="tolerance (origin vs local)")
-    p.add_argument("--packer", default="original",
+    p.add_argument("--packer", default="lz4",
                    choices=["original", "lz4", "lzma", "none"], help="save compression")
     p.add_argument("--list", dest="list_entries", action="store_true",
                    help="list NodeScaling entries then exit")
@@ -869,7 +869,7 @@ def run_gui():
     ttk.Combobox(opt, textvariable=repair_label, width=34, state="readonly",
                  values=list(_REPAIR2KEY.keys())).pack(side="left", padx=(6, 0))
     _reg(ttk.Label(opt, text=_tr("Compression")), "Compression").pack(side="left", padx=(16, 4))
-    packer_var = tk.StringVar(value="original")
+    packer_var = tk.StringVar(value="lz4")
     ttk.Combobox(opt, textvariable=packer_var, width=10,
                  values=["original", "lz4", "lzma", "none"], state="readonly").pack(side="left")
 

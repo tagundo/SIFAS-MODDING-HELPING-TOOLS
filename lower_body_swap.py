@@ -845,7 +845,7 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as f:
-        f.write(T.env.file.save(packer="original"))
+        f.write(T.env.file.save(packer="lz4"))
     log(_tr("Saved: %s") % out_path)
     log("  verts %d -> %d   tris %d -> %d" % (T.n, nNew, len(trisT), len(newtris)))
     return out_path

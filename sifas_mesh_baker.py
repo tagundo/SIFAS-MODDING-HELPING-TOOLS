@@ -895,7 +895,7 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
 # 5. 번들 / 폴더 처리
 # ==========================================================================
 def process_bundle(in_path, out_path, targets, recompute_normals=True,
-                   packer="original", mesh_filter=None, hierarchical=True,
+                   packer="lz4", mesh_filter=None, hierarchical=True,
                    include_hidden=False, log=print, dry_run=False):
     env = UnityPy.load(str(in_path))
     tos = build_bone_name_map(env)
@@ -949,7 +949,7 @@ def process_bundle(in_path, out_path, targets, recompute_normals=True,
 
 
 def process_folder(in_dir, out_dir, targets, prefix="", suffix="_baked",
-                   recompute_normals=True, packer="original", mesh_filter=None,
+                   recompute_normals=True, packer="lz4", mesh_filter=None,
                    hierarchical=True, include_hidden=False,
                    patterns=("*.unity",), log=print, dry_run=False):
     in_dir, out_dir = Path(in_dir), Path(out_dir)
@@ -1090,7 +1090,7 @@ def build_parser():
                    help="also process hidden meshes (foot_shadow_Plane/Hair/Face)")
     p.add_argument("--independent", action="store_true",
                    help="disable bone-hierarchy propagation (apply each bone independently)")
-    p.add_argument("--packer", default="original",
+    p.add_argument("--packer", default="lz4",
                    choices=["original", "lz4", "lzma", "none"], help="save compression")
     p.add_argument("--no-normals", action="store_true", help="skip normal/tangent recompute")
     p.add_argument("--list-bones", action="store_true", help="list bones then exit")
@@ -1247,7 +1247,7 @@ def _collect_targets_interactive():
         print(f"  + {targets[-1].describe()}")
     if not targets:
         return None
-    packer = _ask("Compression (original/lz4/lzma/none)", "original")
+    packer = _ask("Compression (lz4/original/lzma/none)", "lz4")
     norm = _ask_yn("Recompute normals?", "y")
     if any(t.bone.startswith("Spine") and t.compensate for t in targets):
         sc = _ask("Spine comp target (spine2/spine1/both/auto)", "spine2")
@@ -1396,7 +1396,7 @@ def _run_menu_single():
     if not targets:
         print("No poses added."); return
 
-    packer = _ask("Compression (original/lz4/lzma/none)", "original")
+    packer = _ask("Compression (lz4/original/lzma/none)", "lz4")
     norm = _ask_yn("Recompute normals?", "y")
     default_out = str(Path(infile).with_name(Path(infile).stem + "_baked" + Path(infile).suffix))
     outfile = _ask("Output path", default_out)
@@ -1547,7 +1547,7 @@ def run_gui():
     norm_var = tk.BooleanVar(value=True)
     _reg(ttk.Checkbutton(opt, text=_tr("Recompute normals/tangents"), variable=norm_var), "Recompute normals/tangents").pack(side="left", padx=(16, 0))
     _reg(ttk.Label(opt, text=_tr("Compression")), "Compression").pack(side="left", padx=(16, 4))
-    packer_var = tk.StringVar(value="original")
+    packer_var = tk.StringVar(value="lz4")
     ttk.Combobox(opt, textvariable=packer_var, width=10,
                  values=["original", "lz4", "lzma", "none"], state="readonly").pack(side="left")
 

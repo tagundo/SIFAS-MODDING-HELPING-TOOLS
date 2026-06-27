@@ -409,7 +409,7 @@ def normalize(in_path, out_path, verbose=True):
     bf = list(env.files.values())[0]
     bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+        f.write(bf.save(packer="lz4"))
     log(f"[done] wrote {out_path}")
     return n_fixed
 

@@ -858,7 +858,7 @@ def import_textures_only(texdir, bundle_path, out_path, verbose=True):
     bf = list(env.files.values())[0]
     bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+        f.write(bf.save(packer="lz4"))
     log(f"[done] imported {n} texture(s) -> {out_path}")
     return out_path
 
@@ -1265,7 +1265,7 @@ def import_fbx(fbx_path, bundle_path, out_path, texdir=None, verbose=True, only_
         apply_textures(env, texdir, log)
     bf = list(env.files.values())[0]; bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+        f.write(bf.save(packer="lz4"))
     log(f"[done] -> {out_path}")
     return out_path
 

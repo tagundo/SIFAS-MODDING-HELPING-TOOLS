@@ -59,7 +59,7 @@ def process_single_bundle(bundle_path, img_folder, out_path, selected_format_nam
 
     _safe_make_dir(out_path)
     with open(out_path, "wb") as f:
-        f.write(env.file.save())
+        f.write(env.file.save(packer="lz4"))
     return imported_count
 
 

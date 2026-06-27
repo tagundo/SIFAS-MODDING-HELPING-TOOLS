@@ -1423,7 +1423,7 @@ def worldspace_normalize(path, verbose=True, body_only=True):
     if n_fixed:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="original"))
+            f.write(bf.save(packer="lz4"))
 
 
 def _is_node_scaling(mb):
@@ -1496,7 +1496,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
     if changed:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="original"))
+            f.write(bf.save(packer="lz4"))
         log(f"[ok] re-anchored NodeScaling on {changed} component(s)")
 
 
@@ -1771,7 +1771,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     bf, _ = _serialized_file(target)
     bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+        f.write(bf.save(packer="lz4"))
     log(f"[ok] wrote {out_path}")
 
     if worldspace:
