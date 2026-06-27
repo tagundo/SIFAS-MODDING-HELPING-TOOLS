@@ -612,6 +612,25 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     cdisk, cnewy = _open_cap(T.pos, trisT, nmT, open_cap_lift, open_cap_edge)
     capset = set(int(i) for i in cdisk)
     cap_newy = {int(cdisk[i]): float(cnewy[i]) for i in range(len(cdisk))}
+    # The detected disk holds only ONE vertex per position (the hip-bone copy),
+    # but a position is usually shared by duplicated twins split for UV / normal /
+    # material seams.  Lifting only the detected copy tears the cap away from its
+    # twins.  So widen the LIFT (not the face-protection mask) to every TARGET
+    # vertex coincident with a disk vertex, applying the same Y delta -> the
+    # coincident set moves together and stays welded.
+    if cap_newy and (open_cap_lift > 0 or open_cap_edge > 0):
+        keyT = np.round(T.pos, 4)
+        pos2dy = {}
+        for oi, ny in cap_newy.items():
+            k = tuple(keyT[oi]); dy = ny - float(T.pos[oi, 1])
+            if k not in pos2dy or abs(dy) > abs(pos2dy[k]):
+                pos2dy[k] = dy
+        for i in range(T.n):
+            if i in cap_newy:
+                continue
+            dy = pos2dy.get(tuple(keyT[i]))
+            if dy is not None:
+                cap_newy[i] = float(T.pos[i, 1]) + dy
     capT = np.zeros(T.n, bool)
     if capset:
         capT[list(capset)] = True
@@ -982,19 +1001,21 @@ def main_gui():
     cut_box.current(0); cut_box.grid(row=3, column=1, sticky="we", padx=4)
 
     # custom band: low / high Y + region (used when "custom range…" is picked)
-    cust = ttk.Frame(root); cust.grid(row=4, column=1, sticky="w")
-    ttk.Label(cust, text=_tr("Custom band  low Y:")).pack(side="left")
-    low_e = ttk.Entry(cust, width=7); low_e.pack(side="left", padx=2)
-    ttk.Label(cust, text=_tr("high Y:")).pack(side="left")
-    high_e = ttk.Entry(cust, width=7); high_e.pack(side="left", padx=2)
-    ttk.Label(cust, text=_tr("region:")).pack(side="left", padx=(8,0))
-    region_box = ttk.Combobox(cust, state="readonly", width=12, values=list(REGIONS))
+    cust = ttk.Frame(root); cust.grid(row=4, column=1, columnspan=2, sticky="w")
+    crow = ttk.Frame(cust); crow.pack(side="top", anchor="w")
+    ttk.Label(crow, text=_tr("Custom band  low Y:")).pack(side="left")
+    low_e = ttk.Entry(crow, width=7); low_e.pack(side="left", padx=2)
+    ttk.Label(crow, text=_tr("high Y:")).pack(side="left")
+    high_e = ttk.Entry(crow, width=7); high_e.pack(side="left", padx=2)
+    ttk.Label(crow, text=_tr("region:")).pack(side="left", padx=(8,0))
+    region_box = ttk.Combobox(crow, state="readonly", width=12, values=list(REGIONS))
     region_box.current(0); region_box.pack(side="left")
-    # height reference so a typed cut Y is easy to place on the body
-    ttk.Label(root, foreground="#888",
+    # height reference, placed directly under the custom Y fields it explains
+    # (kept off row 10 so the Run button no longer covers the knee value)
+    ttk.Label(cust, foreground="#888",
               text=_tr("Y guide: ankle .11 · calf .30 · knee .50 · thigh .67 "
                        "· crotch .85 · belly .92 · waist 1.05")
-              ).grid(row=10, column=1, columnspan=2, sticky="w", padx=4)
+              ).pack(side="top", anchor="w", pady=(2, 0))
 
     capf = ttk.Frame(root); capf.grid(row=9, column=1, sticky="w")
     ttk.Label(capf, text=_tr("Open skirt cap lift (0=off):")).pack(side="left")
