@@ -102,6 +102,11 @@ _TR = {
     "높이 가이드: 발목 0.11 · 종아리 0.30 · 무릎 0.50 · 허벅지 0.67 · 사타구니 0.85 · 아랫배 0.92 · 허리 1.05",
   "Open skirt cap lift (0=off):": "치마 바닥캡 열기 (0=끔):",
   "edge:": "외각:",
+  "edge all:": "가장자리 전체:",
+  "edge per-side (blank=all)  front:": "가장자리 방향별 (빈칸=전체)  앞:",
+  "back:": "뒤:",
+  "left:": "왼쪽:",
+  "right:": "오른쪽:",
   "Keep donor accessories (dagger/garter)": "도너 액세서리 유지 (단검/가터)",
   "Batch (target is a folder)": "일괄 처리 (타겟이 폴더)",
   "Merge rim map too": "Rim맵도 병합",
@@ -136,6 +141,11 @@ _TR = {
     "高さ目安: 足首0.11 · ふくらはぎ0.30 · ひざ0.50 · 太もも0.67 · 股0.85 · 下腹0.92 · 腰1.05",
   "Open skirt cap lift (0=off):": "スカート底キャップを開く (0=無効):",
   "edge:": "外縁:",
+  "edge all:": "外縁 全体:",
+  "edge per-side (blank=all)  front:": "外縁 方向別 (空欄=全体)  前:",
+  "back:": "後:",
+  "left:": "左:",
+  "right:": "右:",
   "Keep donor accessories (dagger/garter)": "ドナー装飾品を残す (短剣/ガーター)",
   "Batch (target is a folder)": "一括処理 (ターゲットがフォルダ)",
   "Merge rim map too": "リムマップも統合",
@@ -493,44 +503,103 @@ def skin_vertex_mask(pos, tris, dom_names, n):
     return ~np.isin(comp, list(bad)) if bad else np.ones(n, bool)
 
 CAP_BONES = {"Hips", "HipsSize"}   # the fake-skirt-bottom cap rides on the body hip bones
-def _open_cap(pos, tris, dom_names, lift, edge_lift=0.0,
-              ymin=0.60, ymax=0.95, rmax_lim=0.22, flat_tol=0.012):
+def _open_cap(pos, tris, dom_names, lift, edge_front=0.0, edge_back=0.0,
+              edge_left=0.0, edge_right=0.0,
+              ymin=0.60, ymax=0.95, rmax_lim=0.22, flat_tol=0.012, log=None):
     """Find the flat downward-facing disk (the fake skirt-bottom cap) and return
-    (vertex indices, raised Y) that turn it into an open dome.  STRICT detection:
-    a cap face must (a) face down, (b) be near-horizontal/flat, (c) have ALL three
-    verts on a body HIP bone (Hips/HipsSize) — never a skirt/costume bone — and
-    (d) sit near the body centre.  This stops skirt undersides (SkirtX_Dyna) being
-    mistaken for the cap.  Centre rises by `lift`, outer rim by `edge_lift`."""
+    (vertex indices, new Y) that open it into a dome.  "Open" = move the cap
+    vertices UP (+Y); the CENTRE rises by `lift`, the OUTER RIM rises by `edge`,
+    smoothly blended in between.  (Negative values push down instead.)
+
+    `edge` varies by DIRECTION around the rim in the XZ plane, so the opening can
+    be tilted any way: front (+Z) -> edge_front, back (-Z) -> edge_back,
+    right (+X) -> edge_right, left (-X) -> edge_left, blended in between.
+
+    Detection: SEED with strict cap faces — face down, near-flat, all three verts
+    on a body HIP bone (Hips/HipsSize), near the centre.  Then FLOOD-FILL across
+    the flat cap surface to also grab disk verts that some models weight to a LEG
+    bone (e.g. part of the disk on LeftUpLeg): expansion only crosses BODY
+    (anatomy) verts on flat, downward, ~coplanar faces, so it never enters the
+    skirt (costume bones) or descends the leg.  Finally every position-coincident
+    twin (UV/normal seams) is included so the cap can never tear at a duplicate."""
     import numpy as np
     if len(tris) == 0:
         return np.array([], int), np.array([])
     on_hip = np.isin(dom_names, list(CAP_BONES))
+    is_anat = np.isin(dom_names, list(ANATOMY))          # body bones (incl. legs), not costume
     fy = pos[tris, 1]
     flat = (fy.max(1) - fy.min(1)) < flat_tol            # the face itself is flat
     v0 = pos[tris[:,0]]; v1 = pos[tris[:,1]]; v2 = pos[tris[:,2]]
     fn = np.cross(v1-v0, v2-v0); nl = np.linalg.norm(fn, axis=1); nl[nl==0]=1; fn/=nl[:,None]
+    ny = fn[:,1]
     cy = pos[tris,1].mean(1); cr = np.sqrt(pos[tris,0].mean(1)**2 + pos[tris,2].mean(1)**2)
-    cap = ((fn[:,1] < -0.7) & flat & on_hip[tris].all(1)
-           & (cy > ymin) & (cy < ymax) & (cr < rmax_lim))
-    if cap.sum() == 0:
+    seed = ((ny < -0.7) & flat & on_hip[tris].all(1)
+            & (cy > ymin) & (cy < ymax) & (cr < rmax_lim))
+    if seed.sum() == 0:
         return np.array([], int), np.array([])
-    cv = np.unique(tris[cap])
-    cv = cv[on_hip[cv]]                                   # belt-and-braces: hip-bone verts only
+    cv = np.unique(tris[seed]); cv = cv[on_hip[cv]]
     if len(cv) == 0:
         return np.array([], int), np.array([])
     yp = np.median(pos[cv, 1])
-    disk = cv[np.abs(pos[cv,1] - yp) < 0.02]
-    rr = np.sqrt(pos[disk,0]**2 + pos[disk,2]**2)
-    rm = rr.max() if rr.max() > 0 else 1.0
-    t = np.clip(1 - rr/rm, 0, 1); t = t*t*(3-2*t)     # smoothstep, 1=centre 0=rim
-    raise_ = edge_lift + (lift - edge_lift) * t        # rim->edge_lift, centre->lift
-    return disk, pos[disk,1] + raise_
+    # flood-fill the flat cap surface across BODY verts only (never costume).
+    # cotol is the coplanarity band; bounded so a real flat cap is fully covered
+    # (e.g. spread 0.023) but the fill can never run away down a rounded hip/butt.
+    cotol = min(0.04, max(0.025, (pos[cv,1].max() - pos[cv,1].min()) * 1.5))
+    cand = ((ny < -0.7) & flat & is_anat[tris].all(1)
+            & (np.abs(cy - yp) < cotol) & (cr < rmax_lim * 1.25))
+    # Connectivity is by POSITION, not raw index: SIFAS duplicates verts at UV /
+    # normal seams (same as _components), so a leg-weighted patch joined to the
+    # seed only across a seam still gets absorbed instead of left behind.
+    key = np.round(pos, 4)
+    kv = np.ascontiguousarray(key).view([('', key.dtype)] * key.shape[1]).ravel()
+    capkeys = set(kv[np.unique(tris[seed])].tolist())
+    cand_idx = [fi for fi in np.where(cand)[0].tolist() if not seed[fi]]
+    changed = True
+    while changed and cand_idx:
+        changed = False; rest = []
+        for fi in cand_idx:
+            f = tris[fi]
+            if sum(1 for v in f if kv[int(v)].item() in capkeys) >= 2:  # edge-connected
+                capkeys.update(kv[int(v)].item() for v in f); changed = True
+            else:
+                rest.append(fi)
+        cand_idx = rest
+    # capall = every vertex whose welded position was captured AND is coplanar.
+    # This already folds in all position-coincident twins, vectorised (no O(N) loop).
+    if capkeys:
+        ck = np.ascontiguousarray(np.array(list(capkeys), key.dtype)
+                                  ).view([('', key.dtype)] * key.shape[1]).ravel()
+        capall = np.where(np.isin(kv, ck) & (np.abs(pos[:,1] - yp) < cotol))[0]
+    else:
+        capall = np.unique(tris[seed])
+    # radial dome + directional edge blend.  Whole cap lifts; the rim height
+    # varies by direction in the XZ plane (front +Z, back -Z, right +X, left -X).
+    x = pos[capall, 0]; z = pos[capall, 2]
+    r = np.hypot(x, z)
+    rm = r.max() if r.max() > 0 else 1.0
+    u = np.clip(r / rm, 0.0, 1.0)                         # 0 = centre, 1 = rim
+    def ss(a):
+        a = np.clip(a, 0.0, 1.0); return a * a * (3 - 2 * a)
+    t = ss(1 - u)                                         # 1 at centre, 0 at rim
+    safe = np.where(r > 1e-6, r, 1.0)
+    nx = x / safe; nz = z / safe                          # unit XZ direction
+    wf = np.clip(nz, 0, None); wb = np.clip(-nz, 0, None) # front / back weights
+    wr = np.clip(nx, 0, None); wl = np.clip(-nx, 0, None) # right / left weights
+    wsum = wf + wb + wr + wl; wsum = np.where(wsum > 1e-6, wsum, 1.0)
+    edge = (edge_front*wf + edge_back*wb + edge_right*wr + edge_left*wl) / wsum
+    raise_ = edge + (lift - edge) * t                    # centre -> lift, rim -> edge(direction)
+    if log:
+        log("  cap detected: %d verts (centre +%.3f; rim F+%.3f B+%.3f L+%.3f R+%.3f)"
+            % (len(capall), lift, edge_front, edge_back, edge_left, edge_right))
+    return capall, pos[capall, 1] + raise_
 
 # --------------------------------------------------------------------------- #
 #  Core graft                                                                  #
 # --------------------------------------------------------------------------- #
 def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               region="lower", weld=True, open_cap_lift=0.0, open_cap_edge=0.0,
+              open_cap_edge_front=None, open_cap_edge_back=None,
+              open_cap_edge_left=None, open_cap_edge_right=None,
               exclude_accessories=True, gutter_px=4, merge_rim=True, mipmaps=True,
               dry_run=False, log=print):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
@@ -609,28 +678,20 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     # Detect the TARGET's flat cap and, IF requested, its raised Y — computed on
     # the target alone, BEFORE merging.  This is the key: only the target cap
     # moves; the donor panty/skin (added later) is never touched.
-    cdisk, cnewy = _open_cap(T.pos, trisT, nmT, open_cap_lift, open_cap_edge)
+    # resolve per-direction edge: open_cap_edge is the common value applied to ALL
+    # directions; an explicit front/back/left/right overrides just that side.
+    cap_ef = open_cap_edge if open_cap_edge_front is None else open_cap_edge_front
+    cap_eb = open_cap_edge if open_cap_edge_back  is None else open_cap_edge_back
+    cap_el = open_cap_edge if open_cap_edge_left  is None else open_cap_edge_left
+    cap_er = open_cap_edge if open_cap_edge_right is None else open_cap_edge_right
+    cap_active = any(v != 0 for v in (open_cap_lift, cap_ef, cap_eb, cap_el, cap_er))
+    # _open_cap returns the FULL cap (disk + coincident twins); the whole cap
+    # lifts (rim height varies by direction) and twins move together so nothing
+    # tears.  Opening = moving the cap UP (+Y).
+    cdisk, cnewy = _open_cap(T.pos, trisT, nmT, open_cap_lift, cap_ef, cap_eb,
+                             cap_el, cap_er, log=(log if cap_active else None))
     capset = set(int(i) for i in cdisk)
     cap_newy = {int(cdisk[i]): float(cnewy[i]) for i in range(len(cdisk))}
-    # The detected disk holds only ONE vertex per position (the hip-bone copy),
-    # but a position is usually shared by duplicated twins split for UV / normal /
-    # material seams.  Lifting only the detected copy tears the cap away from its
-    # twins.  So widen the LIFT (not the face-protection mask) to every TARGET
-    # vertex coincident with a disk vertex, applying the same Y delta -> the
-    # coincident set moves together and stays welded.
-    if cap_newy and (open_cap_lift > 0 or open_cap_edge > 0):
-        keyT = np.round(T.pos, 4)
-        pos2dy = {}
-        for oi, ny in cap_newy.items():
-            k = tuple(keyT[oi]); dy = ny - float(T.pos[oi, 1])
-            if k not in pos2dy or abs(dy) > abs(pos2dy[k]):
-                pos2dy[k] = dy
-        for i in range(T.n):
-            if i in cap_newy:
-                continue
-            dy = pos2dy.get(tuple(keyT[i]))
-            if dy is not None:
-                cap_newy[i] = float(T.pos[i, 1]) + dy
     capT = np.zeros(T.n, bool)
     if capset:
         capT[list(capset)] = True
@@ -757,10 +818,11 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     allpos = allpos[used]
     nNew = len(used)
 
-    # OPEN the flat "fake-skirt-bottom" cap by raising ONLY the target cap verts
+    # OPEN the flat "fake-skirt-bottom" cap by moving ONLY the target cap verts
     # detected earlier (mapped through compaction).  The donor panty/skin is left
-    # exactly where it is — it is never part of cap_newy.
-    if (open_cap_lift > 0 or open_cap_edge > 0) and cap_newy:
+    # exactly where it is — it is never part of cap_newy.  Boundary verts have a
+    # new Y equal to their old Y (anchored), so writing them is a harmless no-op.
+    if cap_active and cap_newy:
         moved = 0
         for orig, yv in cap_newy.items():
             ni = o2n.get(int(orig))
@@ -771,8 +833,8 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
             newrec[0][ni] = bytes(r)
             allpos[ni, 1] = yv
             moved += 1
-        log("  opened skirt cap: raised %d TARGET cap verts (centre %.3f, edge %.3f)"
-            % (moved, open_cap_lift, open_cap_edge))
+        log("  opened skirt cap: %d verts (centre +%.3f; rim F+%.3f B+%.3f L+%.3f R+%.3f)"
+            % (moved, open_cap_lift, cap_ef, cap_eb, cap_el, cap_er))
 
     # build the combined atlas(es) and inject into the TARGET textures.
     # CRITICAL: paste each source into the EXACT pixel rectangle that uL()/uR()
@@ -845,7 +907,7 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as f:
-        f.write(T.env.file.save(packer="lz4"))
+        f.write(T.env.file.save(packer="original"))
     log(_tr("Saved: %s") % out_path)
     log("  verts %d -> %d   tris %d -> %d" % (T.n, nNew, len(trisT), len(newtris)))
     return out_path
@@ -915,7 +977,16 @@ def main_cli(argv):
                    help="open the flat fake-skirt-bottom by raising its CENTRE "
                         "by LIFT (e.g. 0.08); 0 = off (cap kept flat)")
     p.add_argument("--open-cap-edge", type=float, default=0.0, metavar="LIFT",
-                   help="also raise the cap's OUTER RIM by this much (e.g. 0.02)")
+                   help="raise the cap's OUTER RIM by this much (e.g. 0.03) in ALL "
+                        "directions; per-side flags below override individual sides")
+    p.add_argument("--open-cap-edge-front", type=float, default=None, metavar="LIFT",
+                   help="rim lift on the FRONT/belly side (+Z); overrides --open-cap-edge")
+    p.add_argument("--open-cap-edge-back", type=float, default=None, metavar="LIFT",
+                   help="rim lift on the BACK/buttock side (-Z); overrides --open-cap-edge")
+    p.add_argument("--open-cap-edge-left", type=float, default=None, metavar="LIFT",
+                   help="rim lift on the LEFT side (-X, character's left); overrides --open-cap-edge")
+    p.add_argument("--open-cap-edge-right", type=float, default=None, metavar="LIFT",
+                   help="rim lift on the RIGHT side (+X, character's right); overrides --open-cap-edge")
     p.add_argument("--gutter", type=int, default=4, help="atlas gutter in px")
     p.add_argument("--no-rim", action="store_true", help="do not merge the rim map")
     p.add_argument("--no-mipmaps", action="store_true", help="do not build mipmaps")
@@ -929,6 +1000,8 @@ def main_cli(argv):
     cut_high = _num(a.cut_high, pre_high)
     kw = dict(cut_low=cut_low, cut_high=cut_high, region=a.region,
               weld=not a.no_weld, open_cap_lift=a.open_cap, open_cap_edge=a.open_cap_edge,
+              open_cap_edge_front=a.open_cap_edge_front, open_cap_edge_back=a.open_cap_edge_back,
+              open_cap_edge_left=a.open_cap_edge_left, open_cap_edge_right=a.open_cap_edge_right,
               exclude_accessories=not a.keep_accessories,
               gutter_px=a.gutter, merge_rim=not a.no_rim, mipmaps=not a.no_mipmaps,
               dry_run=a.dry_run)
@@ -962,7 +1035,17 @@ def main_menu():
         cut_low = _num(input("  low Y (bottom, blank=feet): ").strip() or None, -INF)
         cut_high = _num(input("  high Y (top, blank=no limit): ").strip() or None, INF)
     out = input(_tr("Output file / folder:") + " ").strip() or default_modded_path(target)
-    graft_one(target, donor, out, cut_low=cut_low, cut_high=cut_high)
+    lift = _num(input(_tr("Open skirt cap lift (0=off):").rstrip(":") + " (centre, blank=0): ").strip() or None, 0.0)
+    common = ef = eb = el = er = 0.0
+    if lift != 0:
+        common = _num(input("  cap edge — ALL sides (blank=0): ").strip() or None, 0.0)
+        ef = _num(input("  edge FRONT(+Z) override (blank=ALL): ").strip() or None, common)
+        eb = _num(input("  edge BACK (-Z) override (blank=ALL): ").strip() or None, common)
+        el = _num(input("  edge LEFT (-X) override (blank=ALL): ").strip() or None, common)
+        er = _num(input("  edge RIGHT(+X) override (blank=ALL): ").strip() or None, common)
+    graft_one(target, donor, out, cut_low=cut_low, cut_high=cut_high,
+              open_cap_lift=lift, open_cap_edge=common, open_cap_edge_front=ef,
+              open_cap_edge_back=eb, open_cap_edge_left=el, open_cap_edge_right=er)
 
 # --------------------------------------------------------------------------- #
 #  GUI (tkinter)                                                               #
@@ -1017,11 +1100,21 @@ def main_gui():
                        "· crotch .85 · belly .92 · waist 1.05")
               ).pack(side="top", anchor="w", pady=(2, 0))
 
-    capf = ttk.Frame(root); capf.grid(row=9, column=1, sticky="w")
-    ttk.Label(capf, text=_tr("Open skirt cap lift (0=off):")).pack(side="left")
-    cap_e = ttk.Entry(capf, width=6); cap_e.insert(0, "0"); cap_e.pack(side="left", padx=2)
-    ttk.Label(capf, text=_tr("edge:")).pack(side="left")
-    cape_e = ttk.Entry(capf, width=6); cape_e.insert(0, "0"); cape_e.pack(side="left", padx=2)
+    capf = ttk.Frame(root); capf.grid(row=9, column=1, columnspan=2, sticky="w")
+    caprow1 = ttk.Frame(capf); caprow1.pack(side="top", anchor="w")
+    ttk.Label(caprow1, text=_tr("Open skirt cap lift (0=off):")).pack(side="left")
+    cap_e = ttk.Entry(caprow1, width=6); cap_e.insert(0, "0"); cap_e.pack(side="left", padx=2)
+    ttk.Label(caprow1, text=_tr("edge all:")).pack(side="left", padx=(8, 0))
+    capea_e = ttk.Entry(caprow1, width=6); capea_e.insert(0, "0"); capea_e.pack(side="left", padx=2)
+    caprow2 = ttk.Frame(capf); caprow2.pack(side="top", anchor="w")
+    ttk.Label(caprow2, text=_tr("edge per-side (blank=all)  front:")).pack(side="left")
+    capef_e = ttk.Entry(caprow2, width=5); capef_e.pack(side="left", padx=2)
+    ttk.Label(caprow2, text=_tr("back:")).pack(side="left")
+    capeb_e = ttk.Entry(caprow2, width=5); capeb_e.pack(side="left", padx=2)
+    ttk.Label(caprow2, text=_tr("left:")).pack(side="left")
+    capel_e = ttk.Entry(caprow2, width=5); capel_e.pack(side="left", padx=2)
+    ttk.Label(caprow2, text=_tr("right:")).pack(side="left")
+    caper_e = ttk.Entry(caprow2, width=5); caper_e.pack(side="left", padx=2)
 
     rim_var = tk.BooleanVar(value=True)
     mip_var = tk.BooleanVar(value=True)
@@ -1049,9 +1142,16 @@ def main_gui():
                 region = region_box.get() or "lower"
             else:
                 cut_low, cut_high = CUT_PRESETS.get(key, (-INF, INF))
+            def _side(entry):   # blank per-side field -> None (use the "all" value)
+                s = entry.get().strip()
+                return _num(s, 0.0) if s else None
             kw = dict(cut_low=cut_low, cut_high=cut_high, region=region,
                       open_cap_lift=_num(cap_e.get().strip() or None, 0.0),
-                      open_cap_edge=_num(cape_e.get().strip() or None, 0.0),
+                      open_cap_edge=_num(capea_e.get().strip() or None, 0.0),
+                      open_cap_edge_front=_side(capef_e),
+                      open_cap_edge_back=_side(capeb_e),
+                      open_cap_edge_left=_side(capel_e),
+                      open_cap_edge_right=_side(caper_e),
                       exclude_accessories=not acc_var.get(),
                       merge_rim=rim_var.get(), mipmaps=mip_var.get(),
                       dry_run=dry_var.get(), log=put)
