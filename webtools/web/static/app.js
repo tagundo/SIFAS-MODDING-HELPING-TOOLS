@@ -228,6 +228,22 @@ function renderField(field) {
       }
     });
     wrap.appendChild(sel);
+  } else if (field.type === "vec3") {
+    // three small X/Y/Z inputs on one line, each keeping its own param name
+    const row = el("div", { class: "vec3-row" });
+    for (const [axis, nm] of [["X", field.name_x], ["Y", field.name_y], ["Z", field.name_z]]) {
+      const input = el("input", {
+        type: "text",
+        value: field.default !== undefined ? String(field.default) : "",
+      });
+      input.setAttribute("inputmode", "decimal");
+      input.setAttribute("placeholder", axis);
+      input.setAttribute("aria-label", field.label + " " + axis);
+      input.dataset.name = nm;
+      input.dataset.ftype = "number";
+      row.appendChild(input);
+    }
+    wrap.appendChild(row);
   } else if (field.type === "path" || field.type === "dir") {
     const input = el("input", { type: "text", id, value: defaultPath(field) });
     input.dataset.name = field.name;
@@ -239,10 +255,13 @@ function renderField(field) {
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
   } else {
     const input = el("input", {
-      type: field.type === "number" ? "text" : "text", id,
+      type: "text", id,
       value: field.default !== undefined ? String(field.default) : "",
     });
-    if (field.type === "number") input.setAttribute("inputmode", "decimal");
+    if (field.type === "number") {
+      input.setAttribute("inputmode", "decimal");
+      input.classList.add("num"); // narrower than full-width text fields
+    }
     input.dataset.name = field.name;
     input.dataset.ftype = field.type;
     wrap.appendChild(input);

@@ -87,6 +87,11 @@ main { padding: 14px; }
 }
 .path-row { display: flex; gap: 8px; }
 .path-row input { flex: 1; }
+/* three compact X/Y/Z inputs on one line instead of three stacked fields */
+.vec3-row { display: flex; gap: 8px; }
+.vec3-row input { flex: 1; min-width: 0; text-align: center; }
+/* plain number fields don't need the full width of a text field */
+.field input.num { max-width: 160px; }
 .path-row button, .gallery-bar button, .modal-foot button {
   background: var(--panel2); color: var(--text); border: 1px solid var(--line);
   border-radius: 8px; padding: 9px 12px; cursor: pointer; font-size: 14px; white-space: nowrap;

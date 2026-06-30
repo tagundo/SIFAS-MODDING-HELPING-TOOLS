@@ -51,13 +51,14 @@ def _common_io(suffix_default="_mod"):
 
 
 def _xyz(prefix_label, names, default="", help_first=None):
-    fields = []
-    for axis, name in zip(("X", "Y", "Z"), names):
-        f = {"name": name, "label": f"{prefix_label} {axis}", "type": "number", "default": default}
-        if help_first and axis == "X":
-            f["help"] = help_first
-        fields.append(f)
-    return fields
+    # One compact row of three small X/Y/Z number inputs under a single label,
+    # instead of three full-width fields stacked vertically. Each input keeps its
+    # own name (set_x/set_y/set_z) so the server still receives them separately.
+    f = {"type": "vec3", "label": prefix_label, "default": default,
+         "name_x": names[0], "name_y": names[1], "name_z": names[2]}
+    if help_first:
+        f["help"] = help_first
+    return [f]
 
 
 # ---- the tools ---------------------------------------------------------------
