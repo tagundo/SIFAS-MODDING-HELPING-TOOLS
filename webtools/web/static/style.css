@@ -139,6 +139,7 @@ main { padding: 14px; }
 
 @media (max-width: 720px) {
   #tab-tools.active { grid-template-columns: 1fr; }
-  .tool-list { flex-direction: row; overflow-x: auto; }
-  .tool-list button { min-width: 150px; }
+  .tool-list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  /* title-only chips, compact (no long descriptions to wrap/cut) */
+  .tool-list button { min-width: max-content; white-space: nowrap; }
 }

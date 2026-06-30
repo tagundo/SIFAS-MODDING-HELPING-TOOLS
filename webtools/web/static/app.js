@@ -133,8 +133,9 @@ function renderToolList() {
   const list = $("#tool-list");
   list.innerHTML = "";
   for (const tool of state.tools) {
+    // list shows the title only; the description is shown in the tool panel when opened
     const b = el("button", { onclick: () => selectTool(tool.id) },
-      [el("span", { text: tool.label }), el("small", { text: tool.description || "" })]);
+      [el("span", { text: tool.label })]);
     b.dataset.id = tool.id;
     list.appendChild(b);
   }
