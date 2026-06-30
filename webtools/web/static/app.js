@@ -200,10 +200,33 @@ function renderField(field) {
     sel.dataset.name = field.name;
     sel.dataset.ftype = "select";
     for (const opt of field.options || []) {
-      const o = el("option", { value: opt, text: opt });
-      if (opt === field.default) o.selected = true;
+      // options may be plain strings (value == label) or {value, label} objects
+      const value = (opt && typeof opt === "object") ? opt.value : opt;
+      const label = (opt && typeof opt === "object") ? opt.label : opt;
+      const o = el("option", { value: String(value), text: String(label) });
+      if (value === field.default) o.selected = true;
       sel.appendChild(o);
     }
+    wrap.appendChild(sel);
+  } else if (field.type === "preset") {
+    // A convenience picker: choosing a preset fills sibling fields with named
+    // values (restores the GUI's preset buttons). UI-only — not submitted.
+    const sel = el("select", { id });
+    sel.dataset.name = field.name;
+    sel.dataset.ftype = "preset";
+    for (const opt of field.options || []) {
+      sel.appendChild(el("option", { value: opt.label, text: opt.label }));
+    }
+    sel.addEventListener("change", () => {
+      const chosen = (field.options || []).find((o) => o.label === sel.value);
+      if (!chosen || !chosen.set) return;
+      for (const k in chosen.set) {
+        const t = document.querySelector(`#tool-form [data-name="${k}"]`);
+        if (!t) continue;
+        if (t.dataset.ftype === "checkbox") t.checked = !!chosen.set[k];
+        else t.value = String(chosen.set[k]);
+      }
+    });
     wrap.appendChild(sel);
   } else if (field.type === "path" || field.type === "dir") {
     const input = el("input", { type: "text", id, value: defaultPath(field) });
@@ -238,6 +261,7 @@ function collectParams() {
   const params = { mode: state.currentMode };
   document.querySelectorAll("#tool-form [data-name]").forEach((inp) => {
     const name = inp.dataset.name;
+    if (inp.dataset.ftype === "preset") return; // UI-only; it fills other fields
     if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
     else params[name] = inp.value;
   });

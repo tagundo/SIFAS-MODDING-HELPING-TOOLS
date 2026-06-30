@@ -148,6 +148,28 @@ _TABLES = {
         "World-space normalize": "월드 공간 정규화",
         "Fix node scaling": "노드 스케일링 수정",
         "Target spec(s)": "대상 스펙",
+        "Target spec(s) — advanced": "대상 스펙 — 고급",
+        "Thigh preset": "허벅지 프리셋",
+        "Physics feel (preset)": "물리 느낌 (프리셋)",
+        "Size preset (by character)": "크기 프리셋 (캐릭터별)",
+        "Length preset": "길이 프리셋",
+        "One-click thigh resize: scales both UpLeg bones with child compensation.":
+            "원클릭 허벅지 크기조절: 양쪽 UpLeg 본을 자식 보정과 함께 스케일합니다.",
+        "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1":
+            "선택: 수동 본, 한 줄에 하나씩: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
+        "Fills stiffnessForce / dragForce below; you can still fine-tune.":
+            "아래 stiffnessForce / dragForce를 채웁니다. 직접 미세조정도 가능합니다.",
+        "Fills the X/Y/Z scale below with a character's in-game breast size.":
+            "아래 X/Y/Z 스케일을 캐릭터의 인게임 가슴 크기로 채웁니다.",
+        "Skirts usually scale uniformly; this fills X/Y/Z together.":
+            "치마는 보통 균일하게 스케일됩니다. X/Y/Z를 함께 채웁니다.",
+        "(custom)": "(직접 입력)",
+        "Softer (0.01 / 0.2)": "더 부드럽게 (0.01 / 0.2)",
+        "Soft (0.02 / 0.3)": "부드럽게 (0.02 / 0.3)",
+        "Firm (0.05 / 0.5)": "탄탄하게 (0.05 / 0.5)",
+        "Shorter (0.85)": "짧게 (0.85)",
+        "Longer (1.15)": "길게 (1.15)",
+        "Reset (1.0)": "초기화 (1.0)",
         "Thigh preset (FROM:TO)": "허벅지 프리셋 (FROM:TO)",
         "Recompute normals": "노멀 재계산",
         "Hierarchical skinning": "계층적 스키닝",
@@ -351,6 +373,28 @@ _TABLES = {
         "World-space normalize": "ワールド空間で正規化",
         "Fix node scaling": "ノードスケーリング修正",
         "Target spec(s)": "対象スペック",
+        "Target spec(s) — advanced": "対象スペック — 上級",
+        "Thigh preset": "太ももプリセット",
+        "Physics feel (preset)": "物理の感触（プリセット）",
+        "Size preset (by character)": "サイズプリセット（キャラ別）",
+        "Length preset": "長さプリセット",
+        "One-click thigh resize: scales both UpLeg bones with child compensation.":
+            "ワンクリック太ももリサイズ: 両方のUpLegボーンを子補正付きでスケールします。",
+        "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1":
+            "任意: 手動ボーン、1行に1つ: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
+        "Fills stiffnessForce / dragForce below; you can still fine-tune.":
+            "下のstiffnessForce / dragForceを埋めます。手動での微調整も可能です。",
+        "Fills the X/Y/Z scale below with a character's in-game breast size.":
+            "下のX/Y/Zスケールをキャラのゲーム内バストサイズで埋めます。",
+        "Skirts usually scale uniformly; this fills X/Y/Z together.":
+            "スカートは通常均一にスケールします。X/Y/Zをまとめて埋めます。",
+        "(custom)": "(カスタム)",
+        "Softer (0.01 / 0.2)": "より柔らかい (0.01 / 0.2)",
+        "Soft (0.02 / 0.3)": "柔らかい (0.02 / 0.3)",
+        "Firm (0.05 / 0.5)": "しっかり (0.05 / 0.5)",
+        "Shorter (0.85)": "短く (0.85)",
+        "Longer (1.15)": "長く (1.15)",
+        "Reset (1.0)": "リセット (1.0)",
         "Thigh preset (FROM:TO)": "太ももプリセット (FROM:TO)",
         "Recompute normals": "法線を再計算",
         "Hierarchical skinning": "階層スキニング",

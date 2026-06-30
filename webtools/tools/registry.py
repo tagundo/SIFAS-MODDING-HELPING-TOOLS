@@ -73,6 +73,14 @@ TOOLS = [
             {"name": "patterns", "label": "Bone name patterns", "type": "text",
              "default": ", ".join(DEFAULT_DYNA_PATTERNS),
              "help": "Comma/space separated SwingBone GameObject name patterns."},
+            {"name": "_phys_preset", "label": "Physics feel (preset)", "type": "preset",
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Softer (0.01 / 0.2)", "set": {"stiff": "0.01", "drag": "0.2"}},
+                 {"label": "Soft (0.02 / 0.3)", "set": {"stiff": "0.02", "drag": "0.3"}},
+                 {"label": "Firm (0.05 / 0.5)", "set": {"stiff": "0.05", "drag": "0.5"}},
+             ],
+             "help": "Fills stiffnessForce / dragForce below; you can still fine-tune."},
             {"name": "stiff", "label": "stiffnessForce", "type": "number", "default": "",
              "help": "Blank = leave unchanged."},
             {"name": "drag", "label": "dragForce", "type": "number", "default": "",
@@ -95,6 +103,27 @@ TOOLS = [
             *_common_io(),
             {"name": "breast_name", "label": "Scale node name", "type": "text",
              "default": DEFAULT_BREAST_NAME},
+            {"name": "_size_preset", "label": "Size preset (by character)", "type": "preset",
+             # canonical in-game sizes; see BREAST_*_PRESETS in sifas_breast_tuner.py
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Rina  (0.61, 0.91, 0.85)", "set": {"set_x": "0.61", "set_y": "0.91", "set_z": "0.85"}},
+                 {"label": "Nico  (0.64, 0.94, 0.88)", "set": {"set_x": "0.64", "set_y": "0.94", "set_z": "0.88"}},
+                 {"label": "Rin  (0.72, 0.95, 0.90)", "set": {"set_x": "0.72", "set_y": "0.95", "set_z": "0.90"}},
+                 {"label": "Umi / Ruby / Kasumi  (0.80, 0.96, 0.92)", "set": {"set_x": "0.80", "set_y": "0.96", "set_z": "0.92"}},
+                 {"label": "Honoka / Maki  (0.90, 0.98, 0.96)", "set": {"set_x": "0.90", "set_y": "0.98", "set_z": "0.96"}},
+                 {"label": "Yoshiko / Shioriko  (0.95, 0.99, 0.98)", "set": {"set_x": "0.95", "set_y": "0.99", "set_z": "0.98"}},
+                 {"label": "Chika / You / Ayumu  (1.04, 1.02, 1.04)", "set": {"set_x": "1.04", "set_y": "1.02", "set_z": "1.04"}},
+                 {"label": "Hanayo / Setsuna  (1.08, 1.04, 1.08)", "set": {"set_x": "1.08", "set_y": "1.04", "set_z": "1.08"}},
+                 {"label": "Hanamaru / Ai  (1.12, 1.06, 1.12)", "set": {"set_x": "1.12", "set_y": "1.06", "set_z": "1.12"}},
+                 {"label": "Lanzhu  (1.14, 1.07, 1.14)", "set": {"set_x": "1.14", "set_y": "1.07", "set_z": "1.14"}},
+                 {"label": "Eli / Kanan / Kanata  (1.16, 1.08, 1.16)", "set": {"set_x": "1.16", "set_y": "1.08", "set_z": "1.16"}},
+                 {"label": "Mari  (1.20, 1.10, 1.20)", "set": {"set_x": "1.20", "set_y": "1.10", "set_z": "1.20"}},
+                 {"label": "Karin  (1.22, 1.11, 1.22)", "set": {"set_x": "1.22", "set_y": "1.11", "set_z": "1.22"}},
+                 {"label": "Nozomi  (1.30, 1.15, 1.30)", "set": {"set_x": "1.30", "set_y": "1.15", "set_z": "1.30"}},
+                 {"label": "Emma  (1.30, 1.18, 1.30)", "set": {"set_x": "1.30", "set_y": "1.18", "set_z": "1.30"}},
+             ],
+             "help": "Fills the X/Y/Z scale below with a character's in-game breast size."},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
                   help_first="Absolute scale; blank to skip this axis."),
             *_xyz("add Δ", ("add_x", "add_y", "add_z"), default="0"),
@@ -110,6 +139,14 @@ TOOLS = [
             *_common_io(),
             {"name": "patterns", "label": "Skirt GO name patterns", "type": "text",
              "default": ", ".join(DEFAULT_SKIRT_PATTERNS)},
+            {"name": "_len_preset", "label": "Length preset", "type": "preset",
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Shorter (0.85)", "set": {"set_x": "0.85", "set_y": "0.85", "set_z": "0.85"}},
+                 {"label": "Longer (1.15)", "set": {"set_x": "1.15", "set_y": "1.15", "set_z": "1.15"}},
+                 {"label": "Reset (1.0)", "set": {"set_x": "1.0", "set_y": "1.0", "set_z": "1.0"}},
+             ],
+             "help": "Skirts usually scale uniformly; this fills X/Y/Z together."},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
                   help_first="Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer."),
             *_xyz("add Δ", ("add_x", "add_y", "add_z"), default="0"),
@@ -222,10 +259,19 @@ TOOLS = [
         "run": run_mesh_baker,
         "fields": [
             *_common_io("_baked"),
-            {"name": "target_spec", "label": "Target spec(s)", "type": "text", "default": "",
-             "help": "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
-            {"name": "thigh", "label": "Thigh preset (FROM:TO)", "type": "text", "default": "",
-             "help": "e.g. slim:thick (optional; slim/default/thick)."},
+            {"name": "thigh", "label": "Thigh preset", "type": "select", "default": "",
+             "options": [
+                 {"value": "", "label": "(none)"},
+                 {"value": "slim:default", "label": "slim → default"},
+                 {"value": "slim:thick", "label": "slim → thick"},
+                 {"value": "default:slim", "label": "default → slim"},
+                 {"value": "default:thick", "label": "default → thick"},
+                 {"value": "thick:slim", "label": "thick → slim"},
+                 {"value": "thick:default", "label": "thick → default"},
+             ],
+             "help": "One-click thigh resize: scales both UpLeg bones with child compensation."},
+            {"name": "target_spec", "label": "Target spec(s) — advanced", "type": "text", "default": "",
+             "help": "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
             {"name": "recompute_normals", "label": "Recompute normals", "type": "checkbox", "default": True},
             {"name": "hierarchical", "label": "Hierarchical skinning", "type": "checkbox", "default": True},
         ],
@@ -320,4 +366,13 @@ def _translate_field(field, lang):
         f["label"] = i18n.tr(f["label"], lang=lang)
     if "help" in f:
         f["help"] = i18n.tr(f["help"], lang=lang)
+    # Preset option labels are display-only (the value is the `set` dict), so
+    # they are safe to translate; normal select options are left untranslated
+    # because their values double as dispatch identifiers.
+    if f.get("type") == "preset" and isinstance(f.get("options"), list):
+        f["options"] = [
+            {**o, "label": i18n.tr(o["label"], lang=lang)}
+            if isinstance(o, dict) and "label" in o else o
+            for o in f["options"]
+        ]
     return f
