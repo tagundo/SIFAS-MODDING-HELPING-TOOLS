@@ -49,6 +49,8 @@ def run_mesh_baker(job, params):
     in_file = params.get("in_path")
     out_path = single_out_path(out_dir, in_file, prefix, suffix)
     job.progress(0, 1)
+    job.log(f"baking {Path(in_file).name} … "
+            "(mesh processing + save can take a while on mobile)")
     edit(in_file, out_path)
     job.progress(1, 1)
     return f"baked -> {out_path}"

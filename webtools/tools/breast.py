@@ -47,6 +47,8 @@ def run_dyna(job, params):
     in_file = params.get("in_path")
     out_path = single_out_path(out_dir, in_file, prefix, suffix)
     job.progress(0, 1)
+    job.log(f"reading + editing + saving {Path(in_file).name} … "
+            "(parse/save is the slow part on mobile)")
     scanned, changed, _lines, n = m.modify_swingbones_in_bundle(
         Path(in_file), out_path, patterns, stiff, drag, ldy, ldz, hdy, hdz,
         use_character_specific=use_auto,
@@ -75,6 +77,8 @@ def run_size(job, params):
     in_file = params.get("in_path")
     out_path = single_out_path(out_dir, in_file, prefix, suffix)
     job.progress(0, 1)
+    job.log(f"reading + editing + saving {Path(in_file).name} … "
+            "(parse/save is the slow part on mobile)")
     scanned, changed, _lines = m.modify_livecore_scaling(
         Path(in_file), out_path, breast_name, set_xyz, add_dxyz,
     )
