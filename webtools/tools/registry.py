@@ -21,8 +21,16 @@ from webtools.tools.costume import (
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
+from webtools.tools.info import run_charinfo
+from webtools.core.charinfo import NAMES as _CHAR_NAMES
 
 from webtools import i18n
+
+
+# Character options for the info tool: "all" plus every idol by name.
+_CHAR_INFO_OPTIONS = [{"value": "all", "label": "All characters"}] + [
+    {"value": str(cid), "label": _CHAR_NAMES[cid]} for cid in sorted(_CHAR_NAMES)
+]
 
 
 # ---- reusable field fragments ------------------------------------------------
@@ -71,6 +79,18 @@ def _xyz(prefix_label, names, default="", help_first=None):
 
 # ---- the tools ---------------------------------------------------------------
 TOOLS = [
+    {
+        "id": "character_info",
+        "label": "Character Body Info",
+        "description": ("Reference: character ID, skin tone, default breast size + jiggle tier, "
+                        "and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). "
+                        "Output appears in the log."),
+        "run": run_charinfo,
+        "fields": [
+            {"name": "character", "label": "Character", "type": "select",
+             "options": _CHAR_INFO_OPTIONS, "default": "all"},
+        ],
+    },
     {
         "id": "breast_dyna",
         "label": "Breast Physics (Dyna)",
