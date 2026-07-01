@@ -165,8 +165,9 @@ TOOLS = [
              "help": "Replacement images named after the texture (e.g. ch0107_co0001_body.png)."},
             {"name": "format", "label": "Texture format", "type": "select",
              "options": TEXTURE_FORMATS, "default": "Keep Original",
-             "help": "On the phone app pick RGBA32 (uncompressed — works on-device). "
-                     "Compressed formats (ASTC/ETC/DXT) and Keep Original need the desktop tools."},
+             "help": "In the phone app pick RGBA32 (uncompressed) or an ASTC format "
+                     "(what SIFAS uses — encoded on-device). ETC/DXT/BC and Keep "
+                     "Original need the desktop tools."},
             {"name": "recursive", "label": "Recurse subfolders", "type": "checkbox",
              "default": True, "mode": "batch"},
         ],

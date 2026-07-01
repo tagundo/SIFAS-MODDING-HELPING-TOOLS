@@ -12,10 +12,12 @@ SUPPORTED_IMG_EXTS = [".png", ".jpg", ".jpeg", ".bmp", ".tga"]
 SUPPORTED_BUNDLE_EXTS = [".bundle", ".unity3d", ".ab", ".assets", ""]
 
 # Common Texture2D formats offered in the UI ("Keep Original" leaves it untouched).
+# ASTC uses the real UnityPy enum names (ASTC_RGBA_*); SIFAS Android textures are
+# ASTC, and the app can encode these via a bundled astcenc CLI (see below).
 TEXTURE_FORMATS = [
     "Keep Original", "RGBA32", "RGB24", "ARGB32", "RGB565",
-    "DXT1", "DXT5", "BC4", "BC5", "BC7",
-    "ETC_RGB4", "ETC2_RGBA8", "ASTC_4x4", "ASTC_6x6", "ASTC_8x8",
+    "ASTC_RGBA_4x4", "ASTC_RGBA_6x6", "ASTC_RGBA_8x8",
+    "DXT1", "DXT5", "BC4", "BC5", "BC7", "ETC_RGB4", "ETC2_RGBA8",
 ]
 
 
@@ -83,13 +85,12 @@ def iter_bundle_files(input_root, recursive):
                     yield fp
 
 
-# Formats encoded with pure PIL (no native codec) — these work everywhere,
-# including the phone app. Everything else (ASTC/ETC/DXT/BC, and "Keep Original"
-# on an already-compressed texture) needs the native codecs.
+# Formats encoded with pure PIL (no native codec) — work everywhere incl. the app.
 _UNCOMPRESSED_FORMATS = {"RGBA32", "RGB24", "ARGB32", "RGB565"}
 
 
 def _codec_available():
+    """The full native codec stack (needed for ETC/DXT/BC and for decoding)."""
     try:
         import texture2ddecoder  # noqa: F401
         return True
@@ -97,16 +98,64 @@ def _codec_available():
         return False
 
 
-def _validate_texture_format(fmt):
-    """Uncompressed targets import fine on-device; compressed ones need the native
-    codecs (absent on Android). Fail early with an actionable message."""
-    if fmt in _UNCOMPRESSED_FORMATS or _codec_available():
+def _astcenc_bin():
+    """Path to a bundled astcenc CLI encoder (the app sets ASTCENC_BIN), or None."""
+    b = os.environ.get("ASTCENC_BIN")
+    return b if (b and os.path.isfile(b)) else None
+
+
+def _install_astc_cli(binp):
+    """When UnityPy's Python astc_encoder is absent but a native astcenc CLI is
+    bundled, monkeypatch UnityPy's compress_astc to encode via that CLI. UnityPy
+    stores the raw ASTC blocks (its own compress_astc returns exactly astcenc's
+    output minus the 16-byte .astc header), so this yields byte-compatible data.
+    Idempotent."""
+    import subprocess
+    import tempfile
+    from PIL import Image
+    from UnityPy.export import Texture2DConverter as T
+
+    if getattr(T, "astc_encoder", None) is not None:
+        return  # native Python encoder present; nothing to patch
+    if getattr(T, "_astc_cli_installed", False):
         return
+
+    def compress_astc_cli(data, width, height, target_texture_format):
+        bs = T.TEXTURE_FORMAT_BLOCK_SIZE_TABLE[target_texture_format]
+        block = f"{bs[0]}x{bs[1]}"
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.png")
+            dst = os.path.join(td, "out.astc")
+            Image.frombytes("RGBA", (width, height), data, "raw", "RGBA").save(src)
+            # astcenc -cl <in> <out> <blocksize> <quality>   (LDR, matches UnityPy)
+            subprocess.run([binp, "-cl", src, dst, block, "-fast"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            with open(dst, "rb") as f:
+                return f.read()[16:]  # strip the 16-byte .astc header -> raw blocks
+
+    T.compress_astc = compress_astc_cli
+    T._astc_cli_installed = True
+
+
+def _validate_texture_format(fmt):
+    """Decide whether *fmt* can be encoded on this platform, wiring up the ASTC CLI
+    encoder when needed. Raise an actionable error otherwise."""
+    if fmt in _UNCOMPRESSED_FORMATS:
+        return  # pure PIL, no codec
+    if _codec_available():
+        return  # full native stack present (desktop)
+    if fmt.startswith("ASTC"):
+        binp = _astcenc_bin()
+        if binp:
+            _install_astc_cli(binp)
+            return
+        raise RuntimeError(
+            f"'{fmt}': no ASTC encoder available. (The app ships astcenc; if you see "
+            "this, ASTCENC_BIN isn't set.)")
     raise RuntimeError(
-        f"'{fmt}' needs the native texture codecs, which aren't available in the "
-        "phone app. Choose an uncompressed format instead — RGBA32 (recommended), "
-        "RGB24, ARGB32 or RGB565 — which import fine on-device. Compressed formats "
-        "(ASTC/ETC/DXT) and 'Keep Original' need the desktop tools.")
+        f"'{fmt}' needs native codecs not available in the phone app. Use an "
+        "uncompressed format (RGBA32) or an ASTC format — both work on-device — "
+        "for texture import; ETC/DXT/BC and 'Keep Original' need the desktop tools.")
 
 
 def run_texture(job, params):
