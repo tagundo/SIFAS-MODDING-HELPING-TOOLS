@@ -699,6 +699,61 @@ BREAST_PRESETS_ALL = sorted(
 )
 
 
+def read_current_breast_size(env, breast_go_name="BreastSize"):
+    """Return the LiveCore scaledValue (x, y, z) currently applied to the
+    BreastSize node, or None when there is no explicit scaling entry (stock size).
+
+    Lets the auto-jiggle follow a breast size that was *already* modified instead
+    of blindly using the character's stock tier."""
+    obj_by_pid = build_obj_index(env)
+    breast_tr = get_transform_for_breastsize(env, obj_by_pid, breast_go_name=breast_go_name)
+    if not breast_tr:
+        return None
+    target_pid = breast_tr.path_id
+    for obj in env.objects:
+        if not is_obj_type(obj, ("MonoBehaviour", 114)):
+            continue
+        try:
+            tree, _data, _where = read_tree_safe(obj)
+        except Exception:
+            continue
+        if not is_livecore_scaling_tree(tree, obj_by_pid):
+            continue
+        scale_list = get_from_tree(tree, "scaleValues")
+        if not isinstance(scale_list, list):
+            continue
+        for elem in scale_list:
+            node, _estyle = get_node_from_elem(elem)
+            tgt = node.get("target") or {}
+            pid = tgt.get("m_PathID") or tgt.get("pathID")
+            if isinstance(pid, int) and (pid == target_pid or pid == -target_pid):
+                sv = node.get("scaledValue") or {}
+                try:
+                    return (float(sv.get("x", 1.0)),
+                            float(sv.get("y", 1.0)),
+                            float(sv.get("z", 1.0)))
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def n_from_breast_size(size, tol=0.03):
+    """Map a current breast scaledValue to the jiggle tier (n) of the nearest size
+    preset. Returns None when the size is effectively stock (~1.0 on every axis),
+    so the caller can fall back to the character-ID tier."""
+    if not size:
+        return None
+    x, y, z = size
+    if all(abs(v - 1.0) <= tol for v in (x, y, z)):
+        return None  # unmodified -> use the stock (character-ID) jiggle
+    best_n, best_d = None, None
+    for _label, (sx, sy, sz), n in BREAST_PRESETS_ALL:
+        d = (x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2
+        if best_d is None or d < best_d:
+            best_d, best_n = d, n
+    return best_n
+
+
 def _fmt_num(v):
     """Compact number formatting for labels (1.0 -> '1', 1.04 -> '1.04')."""
     return f"{v:g}"
@@ -755,17 +810,26 @@ def _apply_swingbones(
     obj_by_pid, go_name_by_pid = build_maps(env)
     th = type_histogram(env)
 
-    # auto mode: derive rotation-limit deltas from the character ID
+    # auto mode: derive rotation-limit deltas from the breast size when it has
+    # already been resized (so the physics match the *current* size), otherwise
+    # fall back to the character's stock tier (by character ID).
     char_specific_n = None
+    jiggle_source = None
     if use_character_specific:
-        char_id = find_character_id_from_bundle(env)
-        if char_id is not None:
-            char_specific_n = get_n_value_for_char_id(char_id)
-            if char_specific_n is not None:
-                low_dy = -char_specific_n
-                low_dz = -char_specific_n
-                high_dy = char_specific_n
-                high_dz = char_specific_n
+        size_n = n_from_breast_size(read_current_breast_size(env))
+        if size_n is not None:
+            char_specific_n = size_n
+            jiggle_source = "current breast size"
+        else:
+            char_id = find_character_id_from_bundle(env)
+            if char_id is not None:
+                char_specific_n = get_n_value_for_char_id(char_id)
+                jiggle_source = f"character ID {char_id} (stock size)"
+        if char_specific_n is not None:
+            low_dy = -char_specific_n
+            low_dz = -char_specific_n
+            high_dy = char_specific_n
+            high_dz = char_specific_n
 
     changed = 0
     scanned = 0
@@ -883,7 +947,7 @@ def _apply_swingbones(
     ]
     if use_character_specific and char_specific_n is not None:
         header.append(
-            f"Character ID found: {find_character_id_from_bundle(env)}, n-value: {char_specific_n}"
+            f"Auto jiggle from {jiggle_source}: n-value {char_specific_n}"
         )
     header.append(
         f"Input: stiff={stiff_value} drag={drag_value} "
