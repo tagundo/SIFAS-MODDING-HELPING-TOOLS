@@ -12,13 +12,15 @@ from webtools.tools.skirt import DEFAULT_SKIRT_PATTERNS, run_skirt
 from webtools.tools.texture import TEXTURE_FORMATS, run_texture
 from webtools.tools.bodymod import (
     DEFAULT_HIPS_NAME, DEFAULT_UPLEG_PATTERNS, NODE_SCALING_MODES,
-    run_hips, run_node_scaling, run_upleg,
+    run_accessory_unclip, run_hips, run_node_scaling, run_upleg,
 )
 from webtools.tools.costume import (
-    run_costume_packer, run_costume_transplant, run_iosapk_import,
+    run_costume_packer, run_costume_part_transplant, run_costume_transplant,
+    run_iosapk_import, run_lower_body_swap,
 )
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
+from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
 
 from webtools import i18n
 
@@ -329,6 +331,88 @@ TOOLS = [
         "run": run_fix_export,
         "fields": [
             *_common_io("_fixed"),
+        ],
+    },
+    {
+        "id": "accessory_unclip",
+        "label": "Accessory Un-clip",
+        "description": "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).",
+        "modes": ["single"],
+        "run": run_accessory_unclip,
+        "fields": [
+            _in_single(), _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_unclip"},
+            {"name": "strength", "label": "Lift strength", "type": "number", "default": "1.0",
+             "help": "1.0 = match the bust exactly."},
+            {"name": "overlap", "label": "Min bust overlap", "type": "number", "default": "0.15",
+             "help": "Only lift parts overlapping the bust by at least this fraction."},
+            {"name": "close_gaps", "label": "Also pull in when shrunk", "type": "checkbox", "default": False},
+            {"name": "anchors", "label": "Force anchors (optional)", "type": "text", "default": "",
+             "help": "Comma-separated bone names to force; blank = auto-detect."},
+        ],
+    },
+    {
+        "id": "skin_tone",
+        "label": "Skin Tone Changer",
+        "description": "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).",
+        "modes": ["single", "batch"],
+        "run": run_skintone,
+        "fields": [
+            {"name": "in_path", "label": "Input image", "type": "path", "required": True,
+             "mode": "single", "root": "modded", "help": "A texture PNG/JPG (not a bundle)."},
+            {"name": "in_dir", "label": "Input folder", "type": "dir", "required": True,
+             "mode": "batch", "root": "modded"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_tone"},
+            {"name": "src", "label": "From tone", "type": "select", "options": SRC_TONES, "default": "auto",
+             "help": "auto = detect from the image."},
+            {"name": "dst", "label": "To tone", "type": "select", "options": TONES, "default": "default"},
+            {"name": "skin_only", "label": "Skin only (keep costume colours)", "type": "checkbox", "default": False},
+            {"name": "strength", "label": "Strength (0–1)", "type": "number", "default": "1.0"},
+        ],
+    },
+    {
+        "id": "costume_part_transplant",
+        "label": "Costume Part Transplant",
+        "description": "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.",
+        "modes": ["single"],
+        "run": run_costume_part_transplant,
+        "fields": [
+            {"name": "donor", "label": "Donor bundle (has the part)", "type": "path", "required": True,
+             "root": "extracted"},
+            {"name": "target", "label": "Target bundle (wearer)", "type": "path", "required": True,
+             "root": "extracted"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_part"},
+            {"name": "part_root", "label": "Part root bone (optional)", "type": "text", "default": "",
+             "help": "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part."},
+            {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
+            {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
+            {"name": "patch_texture", "label": "Patch part texture onto target atlas", "type": "checkbox", "default": False},
+        ],
+    },
+    {
+        "id": "lower_body_swap",
+        "label": "Lower Body Swap",
+        "description": "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).",
+        "modes": ["single", "batch"],
+        "run": run_lower_body_swap,
+        "fields": [
+            {"name": "donor", "label": "Donor bundle (good lower body)", "type": "path", "required": True,
+             "root": "extracted"},
+            {"name": "target", "label": "Target bundle (to fix)", "type": "path", "required": True,
+             "mode": "single", "root": "extracted"},
+            {"name": "in_dir", "label": "Target folder", "type": "dir", "required": True,
+             "mode": "batch", "root": "extracted"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_lower"},
+            {"name": "region", "label": "Region", "type": "select",
+             "options": ["lower", "lower_belly", "central"], "default": "lower"},
+            {"name": "cut_low", "label": "Cut low Y (optional)", "type": "number", "default": "",
+             "help": "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
+            {"name": "cut_high", "label": "Cut high Y (optional)", "type": "number", "default": "",
+             "help": "Blank = no upper limit. e.g. 0.96 = just below waist."},
+            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True},
         ],
     },
 ]

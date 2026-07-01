@@ -104,6 +104,18 @@ _TABLES = {
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID 기준으로 공여 번들의 일치 오브젝트를 대상에 복사합니다(iOS/APK 변형 이전).",
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "번들을 ch####_co#### 텍스처 이름으로 변경해 폴더에 복사합니다(원본 유지).",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "올바른 FBX 익스포트를 위해 스킨드 메시를 월드 공간으로 정규화합니다(게임 내 렌더링은 그대로).",
+        "Accessory Un-clip": "액세서리 클리핑 해제",
+        "Skin Tone Changer": "스킨톤 변경",
+        "Costume Part Transplant": "코스튬 부분 이식",
+        "Lower Body Swap": "하체 교체",
+        "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).":
+            "리사이즈된 바디에 이식한 액세서리가 파묻히는 것을 방지합니다(가슴 장식을 버스트에 맞춰 올림).",
+        "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).":
+            "바디/핸드 텍스처 이미지의 스킨톤을 공식 톤 클래스 간에 변경합니다(번들이 아닌 PNG 이미지 대상).",
+        "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.":
+            "코스튬의 한 부분(날개/꼬리/망토)만 공여 모델에서 대상 착용자에게 옮깁니다.",
+        "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
+            "하체 스킨이 삭제된 대상에 공여의 정상 하체를 이식합니다('허벅지 분리' 수정).",
         "Input bundle": "입력 번들",
         "Input folder": "입력 폴더",
         "Output folder": "출력 폴더",
@@ -335,6 +347,18 @@ _TABLES = {
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID基準で提供元の一致オブジェクトを対象にコピーします（iOS/APK間の移植）。",
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "バンドルをch####_co####テクスチャ名に変更してフォルダにコピーします（原本はそのまま）。",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "正しいFBXエクスポートのためスキンドメッシュをワールド空間に正規化します（ゲーム内描画は不変）。",
+        "Accessory Un-clip": "アクセサリークリップ解除",
+        "Skin Tone Changer": "肌色チェンジャー",
+        "Costume Part Transplant": "衣装パーツ移植",
+        "Lower Body Swap": "下半身スワップ",
+        "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).":
+            "リサイズしたボディに移植したアクセサリーが埋もれるのを防ぎます（胸の装飾をバストに合わせて持ち上げ）。",
+        "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).":
+            "ボディ/ハンドのテクスチャ画像の肌色を公式トーンクラス間で変更します（バンドルではなくPNG画像が対象）。",
+        "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.":
+            "衣装の1パーツ（羽/尻尾/マント）だけを提供元モデルから対象の着用者へ移します。",
+        "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
+            "下半身の肌が削除された対象に、提供元の正常な下半身を移植します（「太もも分離」修正）。",
         "Input bundle": "入力バンドル",
         "Input folder": "入力フォルダ",
         "Output folder": "出力フォルダ",

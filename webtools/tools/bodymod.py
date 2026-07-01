@@ -79,6 +79,32 @@ def run_upleg(job, params):
     return f"{status} -> {out_path}"
 
 
+# --------------------------------------------------- accessory un-clip
+def run_accessory_unclip(job, params):
+    # lazy tkinter (no stub needed); mesh/transform surgery, no texture codec.
+    ensure_repo_on_path()
+    import sifas_accessory_unclip as m
+
+    strength = as_float(params.get("strength"), 1.0)
+    overlap = as_float(params.get("overlap"), 0.15)
+    close_gaps = bool(params.get("close_gaps"))
+    anchors = (params.get("anchors") or "").strip() or None
+    prefix = params.get("prefix") or ""
+    suffix = params.get("suffix") or "_unclip"
+    out_dir = params.get("out_dir")
+
+    in_file = params.get("in_path")
+    out_path = single_out_path(out_dir, in_file, prefix, suffix)
+    job.progress(0, 1)
+    job.log(f"un-clipping {Path(in_file).name} …")
+    res = m.process(in_file, out=str(out_path), report=False, strength=strength,
+                    overlap=overlap, anchors=anchors, close_gaps=close_gaps, verbose=False)
+    job.progress(1, 1)
+    lifted = (res or {}).get("lifted") or []
+    job.log(f"OK {Path(in_file).name} -> {out_path.name} (lifted {len(lifted)} part(s))")
+    return f"lifted {len(lifted)} accessory anchor(s) -> {out_path}"
+
+
 # ------------------------------------------------------------- node scaling
 def run_node_scaling(job, params):
     ensure_repo_on_path()

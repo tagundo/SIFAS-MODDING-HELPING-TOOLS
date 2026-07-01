@@ -82,6 +82,67 @@ def run_costume_transplant(job, params):
     return f"transplanted -> {out_path}  (validate: {'ok' if ok else 'fail'})"
 
 
+# ------------------------------------------------- costume part transplant
+def run_costume_part_transplant(job, params):
+    # decodes + re-encodes textures, so wire the ASTC CLI bridge first
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()
+    ensure_repo_on_path()
+    import costume_part_transplant as m
+
+    donor = params.get("donor")
+    target = params.get("target")
+    out_dir = params.get("out_dir")
+    suffix = params.get("suffix") or "_part"
+    out_path = single_out_path(out_dir, target, "", suffix)
+    part_root = (params.get("part_root") or "").strip() or None
+
+    job.progress(0, 1)
+    job.log(f"transplanting part from {Path(donor).name} onto {Path(target).name} …")
+    m.transplant_part(
+        str(donor), str(target), str(out_path),
+        part_root=part_root, auto=(part_root is None),
+        preserve_physics=bool(params.get("preserve_physics", True)),
+        restore_collision=bool(params.get("restore_collision", True)),
+        patch_texture=bool(params.get("patch_texture", False)),
+        worldspace=True, fix_nodescaling=True, verbose=False,
+    )
+    job.progress(1, 1)
+    job.log(f"OK -> {out_path.name}")
+    return f"part transplanted -> {out_path}"
+
+
+# --------------------------------------------------------- lower body swap
+def run_lower_body_swap(job, params):
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()
+    ensure_repo_on_path()
+    import lower_body_swap as m
+
+    donor = params.get("donor")
+    out_dir = params.get("out_dir")
+    suffix = params.get("suffix") or "_lower"
+    region = params.get("region") or "lower"
+    exclude_acc = bool(params.get("exclude_accessories", True))
+    kw = dict(region=region, exclude_accessories=exclude_acc, log=job.log)
+    for k in ("cut_low", "cut_high"):
+        v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
+        if v is not None:
+            kw[k] = v
+
+    if params.get("mode") == "batch":
+        m.run_batch(str(donor), params.get("in_dir"), out_root=out_dir, **kw)
+        return "batch lower-body swap done (see log)"
+
+    target = params.get("target")
+    out_path = single_out_path(out_dir, target, "", suffix)
+    job.progress(0, 1)
+    job.log(f"grafting lower body from {Path(donor).name} onto {Path(target).name} …")
+    m.graft_one(str(target), str(donor), str(out_path), **kw)
+    job.progress(1, 1)
+    return f"lower body swapped -> {out_path}"
+
+
 # ---------------------------------------------- iOS/APK selective pair import
 def run_iosapk_import(job, params):
     ensure_tk_stub()
