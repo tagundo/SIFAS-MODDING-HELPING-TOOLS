@@ -214,6 +214,15 @@ _TABLES = {
         "Restore collision": "콜리전 복원",
         "World-space normalize": "월드 공간 정규화",
         "Fix node scaling": "노드 스케일링 수정",
+        "Match thigh to target character": "허벅지를 대상 캐릭터에 맞춤",
+        "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
+            "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
+        "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
+        "Recolour the body skin from the donor's tone to the target's (skin tone changer).":
+            "바디 스킨을 공여 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경).",
+        "Recolour skin only": "피부만 재색상화",
+        "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
+            "감지된 피부에만 재색상을 적용합니다(의상 색은 유지). 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
         "Target spec(s)": "대상 스펙",
         "Target spec(s) — advanced": "대상 스펙 — 고급",
         "Thigh preset": "허벅지 프리셋",
@@ -516,6 +525,15 @@ _TABLES = {
         "Restore collision": "コリジョン復元",
         "World-space normalize": "ワールド空間で正規化",
         "Fix node scaling": "ノードスケーリング修正",
+        "Match thigh to target character": "太ももを対象キャラに合わせる",
+        "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
+            "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
+        "Match skin tone to target character": "肌色を対象キャラに合わせる",
+        "Recolour the body skin from the donor's tone to the target's (skin tone changer).":
+            "ボディの肌を提供元のトーンから対象のトーンへ再着色します（肌色チェンジャー）。",
+        "Recolour skin only": "肌のみ再着色",
+        "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
+            "検出した肌にのみ再着色を適用します（衣装の色は保持）。スマホアプリでは既定でオン、デスクトップではオフ。",
         "Target spec(s)": "対象スペック",
         "Target spec(s) — advanced": "対象スペック — 上級",
         "Thigh preset": "太ももプリセット",

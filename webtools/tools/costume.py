@@ -76,10 +76,54 @@ def run_costume_transplant(job, params):
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)),
     )
+
+    # Optionally match the transplanted costume to the target character: thigh size
+    # (donor body type -> target's) and/or skin tone (donor tone -> target's).
+    _match_to_target(job, params, donor, target, out_path)
+
     ok = m.validate(str(out_path), verbose=False)
     job.log(f"OK -> {out_path.name}  (validation: {'passed' if ok else 'FAILED'})")
     job.progress(1, 1)
     return f"transplanted -> {out_path}  (validate: {'ok' if ok else 'fail'})"
+
+
+def _match_to_target(job, params, donor, target, out_path):
+    from webtools.core import bodymatch
+    match_thigh = bool(params.get("match_thigh", False))
+    match_skin = bool(params.get("match_skin", False))
+    if not (match_thigh or match_skin):
+        return
+    from webtools.core import charinfo
+    dchar = bodymatch.detect_char_from_bundle(donor)
+    tchar = bodymatch.detect_char_from_bundle(target)
+    if not dchar or not tchar:
+        job.log(f"[match] could not detect characters (donor={dchar}, target={tchar}); skipped")
+        return
+    job.log(f"[match] donor {dchar} ({charinfo.NAMES.get(dchar, '?')}) "
+            f"-> target {tchar} ({charinfo.NAMES.get(tchar, '?')})")
+    if match_thigh:
+        tmp = str(out_path) + ".thigh.tmp"
+        try:
+            if bodymatch.apply_thigh_match(out_path, tmp,
+                                           charinfo.THIGH.get(dchar), charinfo.THIGH.get(tchar),
+                                           log=job.log):
+                os.replace(tmp, str(out_path))
+        except Exception as exc:
+            job.log(f"[thigh] failed: {exc}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    if match_skin:
+        skin_only = bool(params.get("skin_only", bodymatch.is_android()))
+        tmp = str(out_path) + ".skin.tmp"
+        try:
+            if bodymatch.apply_skin_match(out_path, tmp,
+                                          charinfo.SKIN_TONE.get(dchar), charinfo.SKIN_TONE.get(tchar),
+                                          skin_only=skin_only, log=job.log):
+                os.replace(tmp, str(out_path))
+        except Exception as exc:
+            job.log(f"[skin] failed: {exc}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
 
 # ------------------------------------------------- costume part transplant

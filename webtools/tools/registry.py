@@ -23,6 +23,7 @@ from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
 from webtools.tools.info import run_charinfo
 from webtools.core.charinfo import NAMES as _CHAR_NAMES
+from webtools.core.bodymatch import is_android as _is_android
 
 from webtools import i18n
 
@@ -288,6 +289,16 @@ TOOLS = [
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "worldspace", "label": "World-space normalize", "type": "checkbox", "default": True},
             {"name": "fix_nodescaling", "label": "Fix node scaling", "type": "checkbox", "default": True},
+            {"name": "match_thigh", "label": "Match thigh to target character", "type": "checkbox",
+             "default": False,
+             "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
+            {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
+             "default": False,
+             "help": "Recolour the body skin from the donor's tone to the target's (skin tone changer)."},
+            {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
+             "default": _is_android(),
+             "help": "Feather the recolour onto detected skin only (keeps costume colours). "
+             "On by default on the phone app, off on desktop."},
         ],
     },
     {
