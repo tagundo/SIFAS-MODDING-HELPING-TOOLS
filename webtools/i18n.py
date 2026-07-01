@@ -116,6 +116,46 @@ _TABLES = {
             "코스튬의 한 부분(날개/꼬리/망토)만 공여 모델에서 대상 착용자에게 옮깁니다.",
         "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
             "하체 스킨이 삭제된 대상에 공여의 정상 하체를 이식합니다('허벅지 분리' 수정).",
+        # Accessory Un-clip
+        "Lift strength": "올림 강도",
+        "1.0 = match the bust exactly.": "1.0 = 버스트에 정확히 맞춤.",
+        "Min bust overlap": "최소 버스트 겹침",
+        "Only lift parts overlapping the bust by at least this fraction.":
+            "버스트와 이 비율 이상 겹치는 부분만 올립니다.",
+        "Also pull in when shrunk": "축소 시에도 끌어당기기",
+        "Force anchors (optional)": "앵커 강제 지정 (선택)",
+        "Comma-separated bone names to force; blank = auto-detect.":
+            "강제할 본 이름(쉼표 구분); 비우면 자동 감지.",
+        # Skin Tone Changer
+        "Input image": "입력 이미지",
+        "A texture PNG/JPG (not a bundle).": "텍스처 PNG/JPG (번들 아님).",
+        "From tone": "원본 톤",
+        "To tone": "대상 톤",
+        "auto = detect from the image.": "auto = 이미지에서 자동 감지.",
+        "Skin only (keep costume colours)": "피부만 (의상 색상 유지)",
+        "Strength (0–1)": "강도 (0–1)",
+        # Costume Part Transplant
+        "Donor bundle (has the part)": "공여 번들 (해당 부분 보유)",
+        "Target bundle (wearer)": "대상 번들 (착용자)",
+        "Part root bone (optional)": "부분 루트 본 (선택)",
+        "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
+            "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
+        "Preserve part physics": "부분 물리 유지",
+        "Patch part texture onto target atlas": "부분 텍스처를 대상 아틀라스에 패치",
+        # Lower Body Swap
+        "Donor bundle (good lower body)": "공여 번들 (정상 하체)",
+        "Target bundle (to fix)": "대상 번들 (수정할 대상)",
+        "Region": "영역",
+        "Cut low Y (optional)": "하단 절단 Y (선택)",
+        "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "하단 절단의 월드 공간 Y; 비우면 바닥. 예: 0.50 = 무릎.",
+        "Cut high Y (optional)": "상단 절단 Y (선택)",
+        "Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "비우면 상한 없음. 예: 0.96 = 허리 바로 아래.",
+        "Exclude donor accessories": "공여 액세서리 제외",
+        # Breast physics parameter labels
+        "stiffnessForce": "강성 (stiffnessForce)",
+        "dragForce": "저항 (dragForce)",
         "Input bundle": "입력 번들",
         "Input folder": "입력 폴더",
         "Output folder": "출력 폴더",
@@ -359,6 +399,46 @@ _TABLES = {
             "衣装の1パーツ（羽/尻尾/マント）だけを提供元モデルから対象の着用者へ移します。",
         "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
             "下半身の肌が削除された対象に、提供元の正常な下半身を移植します（「太もも分離」修正）。",
+        # Accessory Un-clip
+        "Lift strength": "持ち上げ強度",
+        "1.0 = match the bust exactly.": "1.0 = バストにぴったり合わせる。",
+        "Min bust overlap": "最小バスト重なり",
+        "Only lift parts overlapping the bust by at least this fraction.":
+            "バストとこの割合以上重なるパーツのみ持ち上げます。",
+        "Also pull in when shrunk": "縮小時も引き寄せる",
+        "Force anchors (optional)": "アンカーを強制指定（任意）",
+        "Comma-separated bone names to force; blank = auto-detect.":
+            "強制するボーン名（カンマ区切り）; 空欄で自動検出。",
+        # Skin Tone Changer
+        "Input image": "入力画像",
+        "A texture PNG/JPG (not a bundle).": "テクスチャPNG/JPG（バンドルではない）。",
+        "From tone": "元のトーン",
+        "To tone": "変換先トーン",
+        "auto = detect from the image.": "auto = 画像から自動検出。",
+        "Skin only (keep costume colours)": "肌のみ（衣装の色は保持）",
+        "Strength (0–1)": "強さ (0–1)",
+        # Costume Part Transplant
+        "Donor bundle (has the part)": "提供元バンドル（パーツを持つ）",
+        "Target bundle (wearer)": "対象バンドル（着用者）",
+        "Part root bone (optional)": "パーツのルートボーン（任意）",
+        "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
+            "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
+        "Preserve part physics": "パーツの物理を保持",
+        "Patch part texture onto target atlas": "パーツのテクスチャを対象アトラスにパッチ",
+        # Lower Body Swap
+        "Donor bundle (good lower body)": "提供元バンドル（正常な下半身）",
+        "Target bundle (to fix)": "対象バンドル（修正対象）",
+        "Region": "領域",
+        "Cut low Y (optional)": "下部カットY（任意）",
+        "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "下部カットのワールド空間Y; 空欄で床。例: 0.50 = 膝。",
+        "Cut high Y (optional)": "上部カットY（任意）",
+        "Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "空欄で上限なし。例: 0.96 = 腰のすぐ下。",
+        "Exclude donor accessories": "提供元のアクセサリーを除外",
+        # Breast physics parameter labels
+        "stiffnessForce": "剛性 (stiffnessForce)",
+        "dragForce": "抵抗 (dragForce)",
         "Input bundle": "入力バンドル",
         "Input folder": "入力フォルダ",
         "Output folder": "出力フォルダ",
