@@ -104,37 +104,65 @@ def _astcenc_bin():
     return b if (b and os.path.isfile(b)) else None
 
 
-def _install_astc_cli(binp):
-    """When UnityPy's Python astc_encoder is absent but a native astcenc CLI is
-    bundled, monkeypatch UnityPy's compress_astc to encode via that CLI. UnityPy
-    stores the raw ASTC blocks (its own compress_astc returns exactly astcenc's
-    output minus the 16-byte .astc header), so this yields byte-compatible data.
-    Idempotent."""
+def _astc_header(bx, by, width, height):
+    """16-byte .astc file header: magic + block dims (x,y,z) + image dims (x,y,z)."""
+    return (bytes([0x13, 0xAB, 0xA1, 0x5C, bx, by, 1])
+            + width.to_bytes(3, "little") + height.to_bytes(3, "little")
+            + (1).to_bytes(3, "little"))
+
+
+def ensure_astc_cli():
+    """When UnityPy's native astc_encoder is absent but the app bundles an astcenc
+    CLI (ASTCENC_BIN), wire ASTC *encode* (compress_astc) and *decode* (CONV_TABLE
+    entries) through that CLI so ASTC texture import AND thumbnail decode work
+    on-device. UnityPy stores raw ASTC blocks (== astcenc output minus the 16-byte
+    .astc header), so this is byte-compatible. No-op on desktop / if unavailable.
+    Idempotent. Returns True if the CLI bridge is active (or the native codec is)."""
+    import math
     import subprocess
     import tempfile
     from PIL import Image
     from UnityPy.export import Texture2DConverter as T
 
     if getattr(T, "astc_encoder", None) is not None:
-        return  # native Python encoder present; nothing to patch
+        return True  # native Python encoder present; use it
+    binp = _astcenc_bin()
+    if not binp:
+        return False
     if getattr(T, "_astc_cli_installed", False):
-        return
+        return True
 
     def compress_astc_cli(data, width, height, target_texture_format):
         bs = T.TEXTURE_FORMAT_BLOCK_SIZE_TABLE[target_texture_format]
-        block = f"{bs[0]}x{bs[1]}"
         with tempfile.TemporaryDirectory() as td:
             src = os.path.join(td, "in.png")
             dst = os.path.join(td, "out.astc")
             Image.frombytes("RGBA", (width, height), data, "raw", "RGBA").save(src)
             # astcenc -cl <in> <out> <blocksize> <quality>   (LDR, matches UnityPy)
-            subprocess.run([binp, "-cl", src, dst, block, "-fast"],
+            subprocess.run([binp, "-cl", src, dst, f"{bs[0]}x{bs[1]}", "-fast"],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             with open(dst, "rb") as f:
-                return f.read()[16:]  # strip the 16-byte .astc header -> raw blocks
+                return f.read()[16:]  # strip the 16-byte header -> raw blocks
+
+    def astc_decode_cli(image_data, width, height, block_size):
+        bx, by = block_size
+        tex_size = math.ceil(width / bx) * math.ceil(height / by) * 16
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.astc")
+            dst = os.path.join(td, "out.png")
+            with open(src, "wb") as f:
+                f.write(_astc_header(bx, by, width, height) + bytes(image_data[:tex_size]))
+            subprocess.run([binp, "-dl", src, dst],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return Image.open(dst).convert("RGBA")
 
     T.compress_astc = compress_astc_cli
+    # CONV_TABLE holds direct function refs, so patch each ASTC decode entry.
+    for tf, (fn, args) in list(T.CONV_TABLE.items()):
+        if tf.name.startswith("ASTC"):
+            T.CONV_TABLE[tf] = (astc_decode_cli, args)
     T._astc_cli_installed = True
+    return True
 
 
 def _validate_texture_format(fmt):
@@ -145,9 +173,7 @@ def _validate_texture_format(fmt):
     if _codec_available():
         return  # full native stack present (desktop)
     if fmt.startswith("ASTC"):
-        binp = _astcenc_bin()
-        if binp:
-            _install_astc_cli(binp)
+        if ensure_astc_cli():
             return
         raise RuntimeError(
             f"'{fmt}': no ASTC encoder available. (The app ships astcenc; if you see "

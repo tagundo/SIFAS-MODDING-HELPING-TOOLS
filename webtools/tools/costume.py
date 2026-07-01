@@ -18,6 +18,16 @@ def run_costume_packer(job, params):
     ensure_repo_on_path()
     import unity_costumemod_packer as m
 
+    # On the app the native texture decoders are absent, so thumbnail decode would
+    # fall back to a name-only placeholder. Wire ASTC decode through the bundled
+    # astcenc CLI so SIFAS's (ASTC) textures give real image thumbnails. No-op on
+    # desktop / if unavailable; the packer already tolerates decode failures.
+    try:
+        from webtools.tools.texture import ensure_astc_cli
+        ensure_astc_cli()
+    except Exception as exc:  # never let thumbnail wiring break packing
+        job.log(f"(astc thumbnail bridge unavailable: {exc})")
+
     out_dir = params.get("out_dir")
     auto_chara_id = bool(params.get("auto_chara_id", True))
     manual_chara_id = int(as_float(params.get("manual_chara_id"), 0))
