@@ -174,15 +174,38 @@ def run_lower_body_swap(job, params):
         if v is not None:
             kw[k] = v
 
+    match = bool(params.get("match_thigh", False)) or bool(params.get("match_skin", False))
+
     if params.get("mode") == "batch":
-        m.run_batch(str(donor), params.get("in_dir"), out_root=out_dir, **kw)
-        return "batch lower-body swap done (see log)"
+        if not match:
+            m.run_batch(str(donor), params.get("in_dir"), out_root=out_dir, **kw)
+            return "batch lower-body swap done (see log)"
+        # matching requested: loop so each output can be matched to its own target
+        # (mirrors run_batch's donor-skip + relative-path layout).
+        from webtools.core.sukusta import find_bundles
+        folder = params.get("in_dir")
+        targets = [str(t) for t in find_bundles(folder)
+                   if os.path.abspath(str(t)) != os.path.abspath(str(donor))]
+        ok = 0
+        for i, tgt in enumerate(targets):
+            out = os.path.join(out_dir, os.path.relpath(tgt, folder))
+            try:
+                os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+                job.log(f"• {os.path.relpath(tgt, folder)}")
+                m.graft_one(tgt, str(donor), out, **kw)
+                _match_to_target(job, params, donor, tgt, out)
+                ok += 1
+            except Exception as exc:
+                job.log(f"  skip ({exc})")
+            job.progress(i + 1, len(targets))
+        return f"batch lower-body swap + match: {ok}/{len(targets)}"
 
     target = params.get("target")
     out_path = single_out_path(out_dir, target, "", suffix)
     job.progress(0, 1)
     job.log(f"grafting lower body from {Path(donor).name} onto {Path(target).name} …")
     m.graft_one(str(target), str(donor), str(out_path), **kw)
+    _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
     return f"lower body swapped -> {out_path}"
 

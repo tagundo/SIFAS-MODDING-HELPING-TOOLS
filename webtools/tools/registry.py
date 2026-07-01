@@ -51,6 +51,24 @@ def _in_multi(root="extracted"):
             "help": "Pick several bundles; each is processed like Single."}
 
 
+def _match_fields():
+    """Optional 'match the donor's costume to the target character' fields, shared
+    by the costume transplant and lower body swap. 'Recolour skin only' defaults
+    on for the phone app and off on desktop."""
+    return [
+        {"name": "match_thigh", "label": "Match thigh to target character", "type": "checkbox",
+         "default": False,
+         "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
+        {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
+         "default": False,
+         "help": "Recolour the body skin from the donor's tone to the target's (skin tone changer)."},
+        {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
+         "default": _is_android(),
+         "help": "Feather the recolour onto detected skin only (keeps costume colours). "
+         "On by default on the phone app, off on desktop."},
+    ]
+
+
 def _out_dir():
     return {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True,
             "root": "modded", "help": "Where modified bundles are written."}
@@ -289,16 +307,7 @@ TOOLS = [
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "worldspace", "label": "World-space normalize", "type": "checkbox", "default": True},
             {"name": "fix_nodescaling", "label": "Fix node scaling", "type": "checkbox", "default": True},
-            {"name": "match_thigh", "label": "Match thigh to target character", "type": "checkbox",
-             "default": False,
-             "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
-            {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
-             "default": False,
-             "help": "Recolour the body skin from the donor's tone to the target's (skin tone changer)."},
-            {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
-             "default": _is_android(),
-             "help": "Feather the recolour onto detected skin only (keeps costume colours). "
-             "On by default on the phone app, off on desktop."},
+            *_match_fields(),
         ],
     },
     {
@@ -457,6 +466,7 @@ TOOLS = [
             {"name": "cut_high", "label": "Cut high Y (optional)", "type": "number", "default": "",
              "help": "Blank = no upper limit. e.g. 0.96 = just below waist."},
             {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True},
+            *_match_fields(),
         ],
     },
 ]
