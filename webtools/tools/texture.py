@@ -83,25 +83,36 @@ def iter_bundle_files(input_root, recursive):
                     yield fp
 
 
-def _require_texture_codec():
-    """Texture (re)encoding needs the native decoders (texture2ddecoder / astc /
-    etcpak). They don't build for Android, so they're absent in the phone app.
-    Fail early with a clear message instead of a cryptic error deep in a save."""
+# Formats encoded with pure PIL (no native codec) — these work everywhere,
+# including the phone app. Everything else (ASTC/ETC/DXT/BC, and "Keep Original"
+# on an already-compressed texture) needs the native codecs.
+_UNCOMPRESSED_FORMATS = {"RGBA32", "RGB24", "ARGB32", "RGB565"}
+
+
+def _codec_available():
     try:
         import texture2ddecoder  # noqa: F401
+        return True
     except Exception:
-        raise RuntimeError(
-            "Texture import/export isn't available in the phone app: it needs the "
-            "native texture codecs (texture2ddecoder / astc / etcpak), which can't "
-            "be built for Android. Use the desktop tools for texture edits. "
-            "Bone / mesh / physics / skirt / collider editing all work here.")
+        return False
+
+
+def _validate_texture_format(fmt):
+    """Uncompressed targets import fine on-device; compressed ones need the native
+    codecs (absent on Android). Fail early with an actionable message."""
+    if fmt in _UNCOMPRESSED_FORMATS or _codec_available():
+        return
+    raise RuntimeError(
+        f"'{fmt}' needs the native texture codecs, which aren't available in the "
+        "phone app. Choose an uncompressed format instead — RGBA32 (recommended), "
+        "RGB24, ARGB32 or RGB565 — which import fine on-device. Compressed formats "
+        "(ASTC/ETC/DXT) and 'Keep Original' need the desktop tools.")
 
 
 def run_texture(job, params):
     from pathlib import Path
     from webtools.tools.common import batch_out_path, single_out_path
 
-    _require_texture_codec()
     img_folder = params.get("img_folder")
     fmt = params.get("format") or "Keep Original"
     prefix = params.get("prefix") or ""
@@ -110,6 +121,7 @@ def run_texture(job, params):
 
     if not img_folder:
         raise ValueError("Image folder is required for texture import")
+    _validate_texture_format(fmt)
 
     if params.get("mode") == "batch":
         in_dir = params.get("in_dir")

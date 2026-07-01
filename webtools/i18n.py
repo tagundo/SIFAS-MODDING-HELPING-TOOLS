@@ -196,6 +196,8 @@ _TABLES = {
         "Absolute scale; blank to skip this axis.": "절대 스케일. 비워두면 이 축은 건너뜀.",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "절대 스케일. 비워두면 건너뜀. 균일 0.85 = 짧게, 1.15 = 길게.",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "텍스처 이름과 동일한 교체 이미지(예: ch0107_co0001_body.png).",
+        "On the phone app pick RGBA32 (uncompressed — works on-device). Compressed formats (ASTC/ETC/DXT) and Keep Original need the desktop tools.":
+            "폰 앱에서는 RGBA32(비압축 — 기기에서 작동)를 고르세요. 압축 포맷(ASTC/ETC/DXT)과 Keep Original은 데스크톱 도구가 필요합니다.",
         "rebase = re-anchor to current local; neutralize = reset; none = scan only.": "rebase = 현재 로컬 기준 재설정, neutralize = 초기화, none = 검사만.",
         "Used when auto-detect is off or fails.": "자동 감지가 꺼져 있거나 실패할 때 사용됩니다.",
         "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1": "한 줄에 하나씩: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
@@ -425,6 +427,8 @@ _TABLES = {
         "Absolute scale; blank to skip this axis.": "絶対スケール。空欄ならこの軸をスキップ。",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "絶対スケール。空欄ならスキップ。均一0.85=短く、1.15=長く。",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "テクスチャ名と同名の置換画像（例: ch0107_co0001_body.png）。",
+        "On the phone app pick RGBA32 (uncompressed — works on-device). Compressed formats (ASTC/ETC/DXT) and Keep Original need the desktop tools.":
+            "スマホアプリではRGBA32（非圧縮 — 端末で動作）を選んでください。圧縮形式（ASTC/ETC/DXT）とKeep Originalはデスクトップ版が必要です。",
         "rebase = re-anchor to current local; neutralize = reset; none = scan only.": "rebase=現在のローカルに再アンカー、neutralize=リセット、none=スキャンのみ。",
         "Used when auto-detect is off or fails.": "自動検出がオフ、または失敗した場合に使用します。",
         "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1": "1行に1つ: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
