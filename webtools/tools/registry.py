@@ -92,8 +92,14 @@ TOOLS = [
             {"name": "low_dz", "label": "low RotationLimit Δz", "type": "number", "default": "0"},
             {"name": "high_dy", "label": "high RotationLimit Δy", "type": "number", "default": "0"},
             {"name": "high_dz", "label": "high RotationLimit Δz", "type": "number", "default": "0"},
-            {"name": "use_character_specific", "label": "Auto per-character jiggle", "type": "checkbox",
-             "default": False, "help": "Detect the character and tag the output with its jiggleN tier."},
+            {"name": "jiggle_auto", "label": "Auto jiggle", "type": "select",
+             "options": [
+                 {"value": "off", "label": "Off"},
+                 {"value": "size", "label": "Match current breast size"},
+                 {"value": "character", "label": "Follow character (stock)"},
+             ], "default": "off",
+             "help": "Match current breast size = follow the size already in the bundle "
+             "(best after resizing). Follow character = the character's stock tier."},
         ],
     },
     {
@@ -228,7 +234,8 @@ TOOLS = [
         "fields": [
             _in_single(), _in_batch(),
             {"name": "out_dir", "label": "Output folder (zips)", "type": "dir", "required": True,
-             "root": "modded"},
+             "root": "suit", "help": "Defaults to the installer's suit/ drop folder, so "
+             "Install Costume picks the pack up right away."},
             {"name": "auto_chara_id", "label": "Auto-detect character ID", "type": "checkbox", "default": True},
             {"name": "manual_chara_id", "label": "Manual character ID", "type": "number", "default": "0",
              "help": "Used when auto-detect is off or fails."},

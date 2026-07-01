@@ -245,6 +245,14 @@ _TABLES = {
         "Comma/space separated SwingBone GameObject name patterns.": "쉼표/공백으로 구분한 SwingBone GameObject 이름 패턴.",
         "Blank = leave unchanged.": "비워두면 변경하지 않음.",
         "Detect the character and tag the output with its jiggleN tier.": "캐릭터를 감지해 출력 파일에 jiggleN 등급을 표시합니다.",
+        "Auto jiggle": "자동 jiggle",
+        "Off": "끄기",
+        "Match current breast size": "현재 가슴 크기에 맞춤",
+        "Follow character (stock)": "캐릭터 기본값 따라가기",
+        "Match current breast size = follow the size already in the bundle (best after resizing). Follow character = the character's stock tier.":
+            "현재 가슴 크기에 맞춤 = 번들에 이미 적용된 크기를 따릅니다(리사이즈 후 권장). 캐릭터 기본값 = 캐릭터의 기본 tier.",
+        "Defaults to the installer's suit/ drop folder, so Install Costume picks the pack up right away.":
+            "설치 도구의 suit/ 드롭 폴더가 기본값이라 Install Costume이 바로 팩을 인식합니다.",
         "Absolute scale; blank to skip this axis.": "절대 스케일. 비워두면 이 축은 건너뜀.",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "절대 스케일. 비워두면 건너뜀. 균일 0.85 = 짧게, 1.15 = 길게.",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "텍스처 이름과 동일한 교체 이미지(예: ch0107_co0001_body.png).",
@@ -528,6 +536,14 @@ _TABLES = {
         "Comma/space separated SwingBone GameObject name patterns.": "カンマ/空白区切りのSwingBone GameObject名パターン。",
         "Blank = leave unchanged.": "空欄なら変更しません。",
         "Detect the character and tag the output with its jiggleN tier.": "キャラを検出し、出力にjiggleNティアを付与します。",
+        "Auto jiggle": "自動jiggle",
+        "Off": "オフ",
+        "Match current breast size": "現在の胸サイズに合わせる",
+        "Follow character (stock)": "キャラの標準に従う",
+        "Match current breast size = follow the size already in the bundle (best after resizing). Follow character = the character's stock tier.":
+            "現在の胸サイズに合わせる = バンドルに既に適用されたサイズに従います（リサイズ後に推奨）。キャラの標準 = キャラの標準tier。",
+        "Defaults to the installer's suit/ drop folder, so Install Costume picks the pack up right away.":
+            "インストーラーのsuit/ドロップフォルダが既定なので、Install Costumeがすぐにパックを認識します。",
         "Absolute scale; blank to skip this axis.": "絶対スケール。空欄ならこの軸をスキップ。",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "絶対スケール。空欄ならスキップ。均一0.85=短く、1.15=長く。",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "テクスチャ名と同名の置換画像（例: ch0107_co0001_body.png）。",

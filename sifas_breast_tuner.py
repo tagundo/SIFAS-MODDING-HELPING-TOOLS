@@ -780,12 +780,14 @@ def modify_swingbones_in_bundle(
     high_dz: float = 0.0,
     use_character_specific=False,
     write_log_file=True,
+    jiggle_by="size",
 ):
     """Load a bundle, edit swing-bone physics, save (thin load/save wrapper)."""
     env = UnityPy.load(str(in_path))
     scanned, changed, lines, n = _apply_swingbones(
         env, target_name_patterns, stiff_value, drag_value,
         low_dy, low_dz, high_dy, high_dz, use_character_specific,
+        jiggle_by=jiggle_by,
     )
     _save_env(env, out_path)
     if write_log_file:
@@ -805,8 +807,13 @@ def _apply_swingbones(
     high_dy: float = 0.0,
     high_dz: float = 0.0,
     use_character_specific=False,
+    jiggle_by="size",
 ):
-    """Edit swing-bone physics on an already-loaded env (no load/save)."""
+    """Edit swing-bone physics on an already-loaded env (no load/save).
+
+    jiggle_by controls the auto tier source: "size" follows the current BreastSize
+    scale when it has been resized (falling back to the character's stock tier),
+    while "character" always uses the character's stock tier."""
     obj_by_pid, go_name_by_pid = build_maps(env)
     th = type_histogram(env)
 
@@ -816,7 +823,7 @@ def _apply_swingbones(
     char_specific_n = None
     jiggle_source = None
     if use_character_specific:
-        size_n = n_from_breast_size(read_current_breast_size(env))
+        size_n = None if jiggle_by == "character" else n_from_breast_size(read_current_breast_size(env))
         if size_n is not None:
             char_specific_n = size_n
             jiggle_source = "current breast size"
@@ -1237,7 +1244,7 @@ def _iter_files(in_dir):
 
 def run_dyna_batch(in_dir, out_dir, prefix, suffix, patterns,
                    stiff, drag, ldy, ldz, hdy, hdz, use_auto,
-                   on_log, on_progress, should_stop=None):
+                   on_log, on_progress, should_stop=None, jiggle_by="size"):
     files = _iter_files(in_dir)
     total = len(files)
     ok = fail = 0
@@ -1255,7 +1262,7 @@ def run_dyna_batch(in_dir, out_dir, prefix, suffix, patterns,
             out_path = Path(out_dir) / rel.parent / out_name
             _, changed, _, n = modify_swingbones_in_bundle(
                 file, out_path, patterns, stiff, drag, ldy, ldz, hdy, hdz,
-                use_character_specific=use_auto,
+                use_character_specific=use_auto, jiggle_by=jiggle_by,
             )
             ok += 1
             tag = f"(jiggle{n})" if (use_auto and n is not None) else ""

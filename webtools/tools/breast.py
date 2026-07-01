@@ -31,7 +31,13 @@ def run_dyna(job, params):
     ldz = as_float(params.get("low_dz"))
     hdy = as_float(params.get("high_dy"))
     hdz = as_float(params.get("high_dz"))
-    use_auto = bool(params.get("use_character_specific"))
+    # jiggle_auto: "off" | "size" (follow current bundle size) | "character"
+    # (character's stock tier). Fall back to the old use_character_specific bool.
+    jiggle_auto = (params.get("jiggle_auto") or "").strip().lower()
+    if not jiggle_auto:
+        jiggle_auto = "size" if bool(params.get("use_character_specific")) else "off"
+    use_auto = jiggle_auto in ("size", "character")
+    jiggle_by = "character" if jiggle_auto == "character" else "size"
     prefix = params.get("prefix") or ""
     suffix = params.get("suffix") or ""
     out_dir = params.get("out_dir")
@@ -40,7 +46,7 @@ def run_dyna(job, params):
         total, ok, fail = m.run_dyna_batch(
             params.get("in_dir"), out_dir, prefix, suffix, patterns,
             stiff, drag, ldy, ldz, hdy, hdz, use_auto,
-            job.log, job.progress, job.should_stop,
+            job.log, job.progress, job.should_stop, jiggle_by=jiggle_by,
         )
         return f"batch done: total={total} ok={ok} fail={fail}"
 
@@ -51,7 +57,7 @@ def run_dyna(job, params):
             "(parse/save is the slow part on mobile)")
     scanned, changed, _lines, n = m.modify_swingbones_in_bundle(
         Path(in_file), out_path, patterns, stiff, drag, ldy, ldz, hdy, hdz,
-        use_character_specific=use_auto,
+        use_character_specific=use_auto, jiggle_by=jiggle_by,
     )
     job.log(f"OK {Path(in_file).name} -> {out_path.name} (scanned={scanned}, changed={changed})")
     job.progress(1, 1)
