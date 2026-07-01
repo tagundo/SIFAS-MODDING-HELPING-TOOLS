@@ -53,6 +53,19 @@ _JIGGLE_GROUPS = {
 }
 JIGGLE = {cid: n for n, ids in _JIGGLE_GROUPS.items() for cid in ids}
 
+# [Thigh Scale] per-character thigh body type (LeftUpLeg/RightUpLeg), from
+# sifas_mesh_baker.THIGH_STATES. X stays 1.0 (leg length); Y/Z are the thickness.
+THIGH_STATES = {
+    "slim":    (1.0, 0.941748, 0.932695),
+    "default": (1.0, 1.0, 1.0),
+    "thick":   (1.0, 1.03884, 1.0577),
+}
+_THIGH_SLIM = {9, 109, 209, 212}    # Nico, Ruby, Rina, Lanzhu
+_THIGH_THICK = {7, 108, 204, 208}   # Nozomi, Mari, Karin, Emma
+THIGH = {cid: ("slim" if cid in _THIGH_SLIM
+               else "thick" if cid in _THIGH_THICK else "default")
+         for cid in NAMES}
+
 # (height, breasts, head, hips, ribbon); each is (x, y, z) or None if unscaled.
 BODY = {
     1:   ((0.985, 0.985, 0.985), (0.9, 0.98, 0.96),  (1.015, 1.015, 1.015), None, None),
@@ -105,10 +118,14 @@ def describe(cid):
     breast_line = _fmt_vec(breasts)
     if breasts is not None and tier is not None:
         breast_line += f"   (jiggle tier {tier})"
+    tclass = THIGH.get(cid, "default")
+    thigh_line = ("default (standard)" if tclass == "default"
+                  else f"{tclass}  ({_fmt_vec(THIGH_STATES[tclass])})")
     return [
         f"{name}  (ID {cid})",
         f"  Skin tone : {SKIN_TONE.get(cid, '?')}",
         f"  Breasts   : {breast_line}",
+        f"  Thighs    : {thigh_line}",
         f"  Height    : {_fmt_vec(height)}",
         f"  Head      : {_fmt_vec(head)}",
         f"  Hips      : {_fmt_vec(hips)}",

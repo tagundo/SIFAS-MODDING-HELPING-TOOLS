@@ -111,8 +111,8 @@ _TABLES = {
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "번들을 ch####_co#### 텍스처 이름으로 변경해 폴더에 복사합니다(원본 유지).",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "올바른 FBX 익스포트를 위해 스킨드 메시를 월드 공간으로 정규화합니다(게임 내 렌더링은 그대로).",
         "Character Body Info": "캐릭터 신체 정보",
-        "Reference: character ID, skin tone, default breast size + jiggle tier, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
-            "참고용: 캐릭터 ID, 스킨톤, 기본 가슴 크기 + jiggle 등급, 신체 스케일링(Summer Splash 2020 코스튬; Mia/Lanzhu는 Fest 3rd UR). 결과는 로그에 표시됩니다.",
+        "Reference: character ID, skin tone, breast size + jiggle tier, thigh type, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
+            "참고용: 캐릭터 ID, 스킨톤, 가슴 크기 + jiggle 등급, 허벅지 타입, 신체 스케일링(Summer Splash 2020 코스튬; Mia/Lanzhu는 Fest 3rd UR). 결과는 로그에 표시됩니다.",
         "Character": "캐릭터",
         "All characters": "전체 캐릭터",
         "Accessory Un-clip": "액세서리 클리핑 해제",
@@ -413,8 +413,8 @@ _TABLES = {
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "バンドルをch####_co####テクスチャ名に変更してフォルダにコピーします（原本はそのまま）。",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "正しいFBXエクスポートのためスキンドメッシュをワールド空間に正規化します（ゲーム内描画は不変）。",
         "Character Body Info": "キャラ身体情報",
-        "Reference: character ID, skin tone, default breast size + jiggle tier, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
-            "参考用: キャラID、肌色、標準の胸サイズ + jiggleティア、身体スケーリング（Summer Splash 2020 衣装; Mia/Lanzhu は Fest 3rd UR）。結果はログに表示されます。",
+        "Reference: character ID, skin tone, breast size + jiggle tier, thigh type, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
+            "参考用: キャラID、肌色、胸サイズ + jiggleティア、太ももタイプ、身体スケーリング（Summer Splash 2020 衣装; Mia/Lanzhu は Fest 3rd UR）。結果はログに表示されます。",
         "Character": "キャラ",
         "All characters": "全キャラ",
         "Accessory Un-clip": "アクセサリークリップ解除",

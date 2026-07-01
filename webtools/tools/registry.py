@@ -82,7 +82,7 @@ TOOLS = [
     {
         "id": "character_info",
         "label": "Character Body Info",
-        "description": ("Reference: character ID, skin tone, default breast size + jiggle tier, "
+        "description": ("Reference: character ID, skin tone, breast size + jiggle tier, thigh type, "
                         "and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). "
                         "Output appears in the log."),
         "run": run_charinfo,
