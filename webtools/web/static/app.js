@@ -161,7 +161,8 @@ function renderForm() {
     const toggle = el("div", { class: "mode-toggle" });
     for (const m of modes) {
       const mb = el("button", {
-        text: m === "single" ? T("Single file") : T("Batch folder"),
+        text: m === "single" ? T("Single file")
+          : m === "multi" ? T("Selected files") : T("Batch folder"),
         onclick: () => { state.currentMode = m; renderForm(); },
       });
       if (m === state.currentMode) mb.classList.add("active");
@@ -253,6 +254,40 @@ function renderField(field) {
       onclick: () => openPicker(field.type, (p) => { input.value = p; }, field.root, input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
+  } else if (field.type === "paths") {
+    // multi-select: a hidden newline-joined value (collected as the param) plus a
+    // visible removable list; "Add file" opens the picker and appends each pick.
+    const hidden = el("input", { type: "hidden" });
+    hidden.dataset.name = field.name;
+    hidden.dataset.ftype = "paths";
+    hidden.value = "";
+    const listEl = el("ul", { class: "multi-list" });
+    const items = () => (hidden.value ? hidden.value.split("\n").filter(Boolean) : []);
+    const rerender = () => {
+      listEl.innerHTML = "";
+      const cur = items();
+      if (!cur.length) {
+        listEl.appendChild(el("li", { class: "muted", text: T("No files selected.") }));
+      }
+      for (const p of cur) {
+        const rm = el("button", {
+          type: "button", class: "multi-rm", text: "✕",
+          onclick: () => { hidden.value = items().filter((q) => q !== p).join("\n"); rerender(); },
+        });
+        listEl.appendChild(el("li", {}, [el("span", { text: baseName(p) }), rm]));
+      }
+    };
+    const add = el("button", {
+      type: "button", text: T("Add file"),
+      onclick: () => openPicker("path", (p) => {
+        const cur = items();
+        if (!cur.includes(p)) { cur.push(p); hidden.value = cur.join("\n"); rerender(); }
+      }, field.root, ""),
+    });
+    wrap.appendChild(hidden);
+    wrap.appendChild(el("div", { class: "path-row" }, [add]));
+    wrap.appendChild(listEl);
+    rerender();
   } else {
     const input = el("input", {
       type: "text", id,
@@ -274,6 +309,10 @@ function defaultPath(field) {
   // dir fields prefill with their root; file fields start blank
   if (field.type === "dir" && field.root && state.roots[field.root]) return state.roots[field.root];
   return "";
+}
+
+function baseName(p) {
+  return String(p).replace(/\/+$/, "").split("/").pop();
 }
 
 function collectParams() {

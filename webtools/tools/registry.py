@@ -36,6 +36,12 @@ def _in_batch():
             "mode": "batch", "root": "extracted", "help": "All bundles under here are processed."}
 
 
+def _in_multi(root="extracted"):
+    return {"name": "in_paths", "label": "Input bundles", "type": "paths", "required": True,
+            "mode": "multi", "root": root,
+            "help": "Pick several bundles; each is processed like Single."}
+
+
 def _out_dir():
     return {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True,
             "root": "modded", "help": "Where modified bundles are written."}
@@ -423,6 +429,26 @@ TOOLS = [
         ],
     },
 ]
+
+
+def _enable_multi(tools):
+    """Give every tool that accepts a single-file input a 'multi' (multi-select)
+    mode as well, without touching each tool: insert 'multi' after 'single' and a
+    matching in_paths picker right after the in_path field. The server runs each
+    selected file through the tool's own single path (see common.run_multi)."""
+    for t in tools:
+        modes = t.get("modes")
+        fields = t.get("fields", [])
+        idx = next((k for k, f in enumerate(fields) if f.get("name") == "in_path"), None)
+        if not modes or "single" not in modes or "multi" in modes or idx is None:
+            continue
+        i = modes.index("single")
+        t["modes"] = modes[:i + 1] + ["multi"] + modes[i + 1:]
+        fields.insert(idx + 1, _in_multi(root=fields[idx].get("root", "extracted")))
+    return tools
+
+
+_enable_multi(TOOLS)
 
 _BY_ID = {t["id"]: t for t in TOOLS}
 

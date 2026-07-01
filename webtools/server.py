@@ -165,6 +165,11 @@ class Handler(BaseHTTPRequestHandler):
                 val = params.get(field["name"])
                 if val and not filebrowser.is_within_allowed(val):
                     raise PermissionError(f"{field['name']} is outside the allowed roots")
+            elif field["type"] == "paths":
+                for p in str(params.get(field["name"]) or "").split("\n"):
+                    p = p.strip()
+                    if p and not filebrowser.is_within_allowed(p):
+                        raise PermissionError(f"{field['name']} is outside the allowed roots")
 
     def _api_run(self, tool_id):
         tool = registry.get_tool(tool_id)
@@ -178,7 +183,11 @@ class Handler(BaseHTTPRequestHandler):
 
         job = MANAGER.create(tool_id)
         run_fn = tool["run"]
-        MANAGER.run_async(job, lambda j: run_fn(j, params))
+        if params.get("mode") == "multi":
+            from webtools.tools.common import run_multi
+            MANAGER.run_async(job, lambda j: run_multi(run_fn, j, params))
+        else:
+            MANAGER.run_async(job, lambda j: run_fn(j, params))
         return self._send_json({"job_id": job.id})
 
     def _api_events(self, job_id):

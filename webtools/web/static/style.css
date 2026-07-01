@@ -148,3 +148,12 @@ main { padding: 14px; }
   /* title-only chips, compact (no long descriptions to wrap/cut) */
   .tool-list button { min-width: max-content; white-space: nowrap; }
 }
+
+/* multi-select (Selected files mode): the chosen-bundle list */
+.multi-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.multi-list li { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 4px 8px; border: 1px solid var(--border, #444);
+  border-radius: 6px; margin-top: 4px; font-size: 0.9em; }
+.multi-list li.muted { opacity: 0.6; border-style: dashed; justify-content: center; }
+.multi-rm { border: none; background: transparent; cursor: pointer;
+  font-size: 1em; line-height: 1; padding: 2px 6px; }

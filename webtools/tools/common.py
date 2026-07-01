@@ -1,6 +1,63 @@
 """Small shared helpers for turning loosely-typed form params into the exact
 argument types the tool core functions expect."""
+import os
 from pathlib import Path
+
+
+def parse_multi_paths(params):
+    """The selected files from a `paths` field (newline-joined 'in_paths')."""
+    raw = params.get("in_paths") or ""
+    return [p.strip() for p in str(raw).replace("\r", "").split("\n") if p.strip()]
+
+
+class _MultiJobProxy:
+    """Wraps a Job for a single sub-run inside a multi run: log/cancel pass
+    through, but the sub-run's own progress(0..1) is swallowed — the outer
+    dispatcher drives the overall N-file progress bar."""
+    def __init__(self, job):
+        self._job = job
+
+    def log(self, line):
+        self._job.log(line)
+
+    def should_stop(self):
+        return self._job.should_stop()
+
+    def progress(self, done, total):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._job, name)
+
+
+def run_multi(tool_run, job, params):
+    """Run each explicitly-selected file (multi-select mode) through the tool's
+    own single-file path — so every tool that supports Single supports multi with
+    no tool-specific code. Mirrors run_batch's log/progress/cancel/summary."""
+    paths = parse_multi_paths(params)
+    if not paths:
+        raise ValueError("No files selected.")
+    proxy = _MultiJobProxy(job)
+    total = len(paths)
+    ok = fail = 0
+    job.progress(0, total)
+    for i, p in enumerate(paths):
+        if job.should_stop():
+            job.log("[stopped]")
+            break
+        job.log(f"[{i + 1}/{total}] {os.path.basename(p)}")
+        sub = dict(params)
+        sub["mode"] = "single"
+        sub["in_path"] = p
+        try:
+            tool_run(proxy, sub)
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            job.log(f"FAIL {os.path.basename(p)}: {exc}")
+        job.progress(i + 1, total)
+    job.log(f"Done. total={total}  ok={ok}  fail={fail}")
+    return f"multi done: total={total} ok={ok} fail={fail}"
 
 
 def as_float_or_none(value):
