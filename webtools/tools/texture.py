@@ -83,10 +83,25 @@ def iter_bundle_files(input_root, recursive):
                     yield fp
 
 
+def _require_texture_codec():
+    """Texture (re)encoding needs the native decoders (texture2ddecoder / astc /
+    etcpak). They don't build for Android, so they're absent in the phone app.
+    Fail early with a clear message instead of a cryptic error deep in a save."""
+    try:
+        import texture2ddecoder  # noqa: F401
+    except Exception:
+        raise RuntimeError(
+            "Texture import/export isn't available in the phone app: it needs the "
+            "native texture codecs (texture2ddecoder / astc / etcpak), which can't "
+            "be built for Android. Use the desktop tools for texture edits. "
+            "Bone / mesh / physics / skirt / collider editing all work here.")
+
+
 def run_texture(job, params):
     from pathlib import Path
     from webtools.tools.common import batch_out_path, single_out_path
 
+    _require_texture_codec()
     img_folder = params.get("img_folder")
     fmt = params.get("format") or "Keep Original"
     prefix = params.get("prefix") or ""
