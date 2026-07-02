@@ -117,7 +117,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_dyna,
         "fields": [
-            *_common_io(),
+            *_common_io("_jiggle"),
             {"name": "patterns", "label": "Bone name patterns", "type": "text",
              "default": ", ".join(DEFAULT_DYNA_PATTERNS),
              "help": "Comma/space separated SwingBone GameObject name patterns."},
@@ -154,7 +154,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_size,
         "fields": [
-            *_common_io(),
+            *_common_io("_bust"),
             {"name": "breast_name", "label": "Scale node name", "type": "text",
              "default": DEFAULT_BREAST_NAME},
             {"name": "_size_preset", "label": "Size preset (by character)", "type": "preset",
@@ -190,7 +190,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_skirt,
         "fields": [
-            *_common_io(),
+            *_common_io("_skirt"),
             {"name": "patterns", "label": "Skirt GO name patterns", "type": "text",
              "default": ", ".join(DEFAULT_SKIRT_PATTERNS)},
             {"name": "_len_preset", "label": "Length preset", "type": "preset",
@@ -213,7 +213,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_texture,
         "fields": [
-            _in_single(), _in_batch(), _out_dir(), *_prefix_suffix(),
+            _in_single(), _in_batch(), _out_dir(), *_prefix_suffix("_tex"),
             {"name": "img_folder", "label": "Image folder", "type": "dir", "required": True, "root": "home",
              "help": "Replacement images named after the texture (e.g. ch0107_co0001_body.png)."},
             {"name": "format", "label": "Texture format", "type": "select",
@@ -232,7 +232,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_hips,
         "fields": [
-            *_common_io(),
+            *_common_io("_hips"),
             {"name": "target_go_name", "label": "Scale node name", "type": "text",
              "default": DEFAULT_HIPS_NAME},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
@@ -260,7 +260,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_upleg,
         "fields": [
-            *_common_io(),
+            *_common_io("_collider"),
             {"name": "patterns", "label": "Bone name patterns", "type": "text",
              "default": ", ".join(DEFAULT_UPLEG_PATTERNS)},
             {"name": "set_radius", "label": "set radius", "type": "number", "default": "",
