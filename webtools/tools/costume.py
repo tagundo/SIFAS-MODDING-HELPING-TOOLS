@@ -96,23 +96,29 @@ def _match_to_target(job, params, donor, target, out_path):
     from webtools.core import charinfo
     dchar = bodymatch.detect_char_from_bundle(donor)
     tchar = bodymatch.detect_char_from_bundle(target)
-    if not dchar or not tchar:
-        job.log(f"[match] could not detect characters (donor={dchar}, target={tchar}); skipped")
-        return
-    job.log(f"[match] donor {dchar} ({charinfo.NAMES.get(dchar, '?')}) "
-            f"-> target {tchar} ({charinfo.NAMES.get(tchar, '?')})")
+    job.log(f"[match] donor {dchar or '?'} ({charinfo.NAMES.get(dchar, '?')}) "
+            f"-> target {tchar or '?'} ({charinfo.NAMES.get(tchar, '?')})")
     if match_thigh:
-        tmp = str(out_path) + ".thigh.tmp"
-        try:
-            if bodymatch.apply_thigh_match(out_path, tmp,
-                                           charinfo.THIGH.get(dchar), charinfo.THIGH.get(tchar),
-                                           log=job.log):
-                os.replace(tmp, str(out_path))
-        except Exception as exc:
-            job.log(f"[thigh] failed: {exc}")
-            if os.path.exists(tmp):
-                os.remove(tmp)
+        if not dchar or not tchar:
+            job.log("[thigh] could not detect both characters; skipped")
+        else:
+            tmp = str(out_path) + ".thigh.tmp"
+            try:
+                if bodymatch.apply_thigh_match(out_path, tmp,
+                                               charinfo.THIGH.get(dchar), charinfo.THIGH.get(tchar),
+                                               log=job.log):
+                    os.replace(tmp, str(out_path))
+            except Exception as exc:
+                job.log(f"[thigh] failed: {exc}")
+                if os.path.exists(tmp):
+                    os.remove(tmp)
     if match_skin:
+        # only the TARGET character (the destination tone) is required: the
+        # source tone is auto-detected from the texture pixels, with the
+        # donor's table tone as fallback (bodymatch.apply_skin_match).
+        if not tchar:
+            job.log("[skin] could not detect the target character; skipped")
+            return
         skin_only = bool(params.get("skin_only", bodymatch.is_android()))
         tmp = str(out_path) + ".skin.tmp"
         try:

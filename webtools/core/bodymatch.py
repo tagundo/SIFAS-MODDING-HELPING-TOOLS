@@ -70,11 +70,16 @@ def apply_thigh_match(in_path, out_path, src_class, dst_class, log=print):
 
 def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                      strength=1.0, log=print):
-    """Recolour the body skin texture from src_tone -> dst_tone (skin tone changer).
-    Returns True when it wrote out_path, False on a no-op (tones equal / no body
-    texture / unavailable)."""
-    if not src_tone or not dst_tone or src_tone == dst_tone:
-        log(f"[skin] tone already {src_tone or '?'}; skipped")
+    """Recolour the body skin texture to dst_tone (skin tone changer).
+
+    The source tone is auto-detected from each texture's actual pixels
+    (skin_tone_changer.detect_tone), so a donor that was itself transplanted or
+    already recoloured — whose texture NAME still carries another character's id
+    — converts correctly; src_tone (the roster-table tone) is only the fallback
+    when detection finds too little skin. Returns True when it wrote out_path,
+    False on a no-op (already dst_tone / no body texture / unavailable)."""
+    if not dst_tone:
+        log("[skin] target tone unknown; skipped")
         return False
     ensure_repo_on_path()
     try:
@@ -108,18 +113,32 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 continue
             arr = np.asarray(pil.convert("RGBA")).astype(np.float64)
             rgb, alpha = arr[..., :3], arr[..., 3]
-            out = stc.convert_array(rgb, src_tone, dst_tone,
+            # what the skin actually looks like beats the roster table: pixels
+            # don't lie even when the texture name / character id does.
+            detected = stc.detect_tone(rgb, alpha)
+            tone = detected or src_tone
+            if detected and src_tone and detected != src_tone:
+                log(f"[skin] {name}: looks {detected} (table said {src_tone}); "
+                    f"using {detected}")
+            if not tone:
+                log(f"[skin] {name}: source tone unknown; skipped")
+                continue
+            if tone == dst_tone:
+                log(f"[skin] {name}: already {dst_tone}; nothing to recolour "
+                    "(official tone classes only differ subtly)")
+                continue
+            out = stc.convert_array(rgb, tone, dst_tone,
                                     skin_only=skin_only, strength=strength)
             u8 = np.clip(out, 0, 255).astype(np.uint8)
             data.image = Image.fromarray(
                 np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
             data.save()
             changed += 1
-            log(f"[skin] recoloured {name}: {src_tone} -> {dst_tone}")
+            log(f"[skin] recoloured {name}: {tone} -> {dst_tone}")
         except Exception as exc:
             log(f"[skin] recolour failed on {name}: {exc}")
     if not changed:
-        log("[skin] no body texture to recolour; skipped")
+        log("[skin] no body texture recoloured; output left as-is")
         return False
     with open(str(out_path), "wb") as f:
         f.write(env.file.save(packer="lz4"))
