@@ -61,8 +61,14 @@ def _match_fields():
          "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
         {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
          "default": False,
-         "help": "Recolour the body skin to the target's tone; the current tone is "
-         "auto-detected from the texture (skin tone changer)."},
+         "help": "Recolour the body skin from the donor's official tone to the "
+         "target's (skin tone changer)."},
+        {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
+         "options": ["auto", "bright", "default", "slight", "medium_tone"],
+         "default": "auto",
+         "help": "auto = the donor character's official tone (pixel detection only "
+         "when that is unknown). Set explicitly if the donor bundle was already "
+         "recoloured."},
         {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
          "default": _is_android(),
          "help": "Feather the recolour onto detected skin only (keeps costume colours). "

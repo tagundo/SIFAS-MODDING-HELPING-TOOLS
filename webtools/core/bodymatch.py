@@ -69,15 +69,17 @@ def apply_thigh_match(in_path, out_path, src_class, dst_class, log=print):
 
 
 def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
-                     strength=1.0, log=print):
+                     strength=1.0, src_override=None, log=print):
     """Recolour the body skin texture to dst_tone (skin tone changer).
 
-    The source tone is auto-detected from each texture's actual pixels
-    (skin_tone_changer.detect_tone), so a donor that was itself transplanted or
-    already recoloured — whose texture NAME still carries another character's id
-    — converts correctly; src_tone (the roster-table tone) is only the fallback
-    when detection finds too little skin. Returns True when it wrote out_path,
-    False on a no-op (already dst_tone / no body texture / unavailable)."""
+    Source-tone precedence: src_override (the user's explicit choice) >
+    src_tone (the donor character's official roster tone) > pixel detection.
+    The official classes differ by only a few /255 — inside costume-to-costume
+    variation — so close pairs (bright vs default) cannot be told apart
+    reliably from pixels alone; detection is a fallback for when the donor
+    character is unknown, never an override. Returns True when it wrote
+    out_path, False on a no-op (already dst_tone / no body texture /
+    unavailable)."""
     if not dst_tone:
         log("[skin] target tone unknown; skipped")
         return False
@@ -113,16 +115,15 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 continue
             arr = np.asarray(pil.convert("RGBA")).astype(np.float64)
             rgb, alpha = arr[..., :3], arr[..., 3]
-            # what the skin actually looks like beats the roster table: pixels
-            # don't lie even when the texture name / character id does.
             detected = stc.detect_tone(rgb, alpha)
-            tone = detected or src_tone
-            if detected and src_tone and detected != src_tone:
-                log(f"[skin] {name}: looks {detected} (table said {src_tone}); "
-                    f"using {detected}")
+            tone = src_override or src_tone or detected
             if not tone:
                 log(f"[skin] {name}: source tone unknown; skipped")
                 continue
+            if detected and detected != tone:
+                log(f"[skin] {name}: note - pixels look closer to {detected}, "
+                    f"using {tone}; set 'Donor skin tone' if the donor was "
+                    "already recoloured")
             if tone == dst_tone:
                 log(f"[skin] {name}: already {dst_tone}; nothing to recolour "
                     "(official tone classes only differ subtly)")

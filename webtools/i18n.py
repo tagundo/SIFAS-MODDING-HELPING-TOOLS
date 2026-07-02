@@ -238,8 +238,11 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
         "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
-        "Recolour the body skin to the target's tone; the current tone is auto-detected from the texture (skin tone changer).":
-            "바디 스킨을 대상 캐릭터의 톤으로 재색상화합니다. 현재 톤은 텍스처에서 자동 감지됩니다 (스킨톤 변경).",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer).":
+            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경).",
+        "Donor skin tone": "공여 스킨톤",
+        "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
+            "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
         "Recolour skin only": "피부만 재색상화",
         "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
             "감지된 피부에만 재색상을 적용합니다(의상 색은 유지). 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
@@ -569,8 +572,11 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
         "Match skin tone to target character": "肌色を対象キャラに合わせる",
-        "Recolour the body skin to the target's tone; the current tone is auto-detected from the texture (skin tone changer).":
-            "ボディの肌を対象キャラのトーンへ再着色します。現在のトーンはテクスチャから自動検出されます（肌色チェンジャー）。",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer).":
+            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。",
+        "Donor skin tone": "提供元の肌トーン",
+        "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
+            "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",
         "Recolour skin only": "肌のみ再着色",
         "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
             "検出した肌にのみ再着色を適用します（衣装の色は保持）。スマホアプリでは既定でオン、デスクトップではオフ。",
