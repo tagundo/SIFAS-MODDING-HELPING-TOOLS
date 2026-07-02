@@ -16,7 +16,8 @@ from webtools.tools.bodymod import (
 )
 from webtools.tools.costume import (
     part_root_options, run_costume_packer, run_costume_part_transplant,
-    run_costume_transplant, run_iosapk_import, run_lower_body_swap,
+    run_costume_recolour, run_costume_transplant, run_iosapk_import,
+    run_lower_body_swap,
 )
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
@@ -518,6 +519,26 @@ TOOLS = [
             {"name": "skin_only", "label": "Skin only (keep costume colours)", "type": "checkbox", "default": False},
             {"name": "strength", "label": "Strength (0–1)", "type": "number", "default": "1.0"},
             {"name": "recursive", "label": "Recurse subfolders", "type": "checkbox", "default": True, "mode": "batch"},
+        ],
+    },
+    {
+        "id": "costume_recolour",
+        "label": "Costume Recolour (irochi)",
+        "description": "Apply a colour-variant (irochi) texture bundle onto its base costume "
+                       "model, so the model shows the alt colour (the _cN textures are a "
+                       "separate texture-only bundle in SIFAS).",
+        "modes": ["single"],
+        "run": run_costume_recolour,
+        "fields": [
+            {"name": "base", "label": "Base costume model bundle", "type": "path", "required": True,
+             "root": "extracted",
+             "help": "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head)."},
+            {"name": "variant", "label": "Colour-variant texture bundle (irochi)", "type": "path",
+             "required": True, "root": "extracted",
+             "help": "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). "
+                     "Must be the SAME costume as the base."},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_recolour"},
         ],
     },
     {

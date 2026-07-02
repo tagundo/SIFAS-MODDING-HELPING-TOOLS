@@ -5,6 +5,7 @@ packer and transplant are import-safe (lazy Tk). The IosApk importer `import`s
 tkinter at top, so the headless stub is installed first.
 """
 import os
+import re
 from pathlib import Path
 
 from webtools.core.repo import ensure_repo_on_path
@@ -287,6 +288,79 @@ def run_lower_body_swap(job, params):
     _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
     return f"lower body swapped -> {out_path}"
+
+
+# ---------------------------------------------- costume recolour (irochi)
+_CN_SUFFIX = re.compile(r"_c\d+$", re.IGNORECASE)
+
+
+def run_costume_recolour(job, params):
+    """Apply a colour-variant (irochi) texture bundle onto its base costume model.
+
+    In SIFAS an alt-colour costume is NOT a separate model: it's a texture-only
+    bundle whose textures carry a `_cN` suffix (e.g. chXXXX_coYYYY_body_c1), meant
+    to override the shared base model's textures (chXXXX_coYYYY_body). Extracting
+    the model alone gives the base colour; extracting the variant gives textures
+    with no mesh. This composites them: it reads the variant's `_cN` textures and
+    imports each onto the base model's matching texture (suffix stripped), keeping
+    the base format, so the output is a self-contained recoloured model bundle."""
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()                        # ASTC decode/encode on-device
+    ensure_repo_on_path()
+    ensure_tk_stub()                         # texture_importer imports tkinter at top
+    import tempfile
+    import shutil
+    import UnityPy
+    import texture_importer as ti
+
+    base = (params.get("base") or "").strip()
+    variant = (params.get("variant") or "").strip()
+    if not base or not variant:
+        raise ValueError("Pick both the base model bundle and the colour-variant "
+                         "(irochi) texture bundle.")
+    out_dir = params.get("out_dir")
+    suffix = params.get("suffix") or "_recolour"
+
+    # 1) pull each variant texture to a temp PNG, keyed by its BASE name (strip _cN)
+    job.log(f"reading colour-variant textures from {Path(variant).name} …")
+    env = UnityPy.load(str(variant))
+    tmp = tempfile.mkdtemp(prefix="irochi_")
+    mapping = {}
+    try:
+        for obj in env.objects:
+            if obj.type.name != "Texture2D":
+                continue
+            data = obj.read()
+            nm = getattr(data, "m_Name", "") or ""
+            base_nm = _CN_SUFFIX.sub("", nm)     # ..._body_c1 -> ..._body
+            png = os.path.join(tmp, base_nm + ".png")
+            try:
+                data.image.save(png)
+                mapping[base_nm] = png
+                job.log(f"  variant {nm}  ->  base {base_nm}")
+            except Exception as exc:             # noqa: BLE001
+                job.log(f"  ! could not read variant texture {nm}: {exc}")
+        if not mapping:
+            raise ValueError("The variant bundle has no readable textures to import.")
+
+        # 2) import onto the base model, keeping each base texture's own format
+        out_path = single_out_path(out_dir, base, "", suffix)
+        job.progress(0, 1)
+        job.log(f"importing onto base model {Path(base).name} …")
+        imported, skipped, errors = ti.process_bundle(
+            str(base), str(out_path), lambda name: mapping.get(name),
+            "Keep Original", job.log)
+        job.progress(1, 1)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if imported == 0:
+        raise ValueError(
+            "No textures matched — the variant names didn't line up with the base "
+            "model's textures. Are these the same costume (chXXXX_coYYYY)? Base and "
+            "variant must be the same suit.")
+    return (f"recoloured -> {out_path}  (imported {imported}, "
+            f"skipped {skipped}, errors {len(errors)})")
 
 
 # ---------------------------------------------- iOS/APK selective pair import

@@ -152,6 +152,9 @@ _TABLES = {
         "Part root bone": "부분 루트 본",
         "(auto — biggest part)": "(자동 — 가장 큰 부분)",
         "loading…": "불러오는 중…",
+        "Costume Recolour (irochi)": "의상 리컬러(이로치)",
+        "Base costume model bundle": "기본 의상 모델 번들",
+        "Colour-variant texture bundle (irochi)": "색상 변형 텍스처 번들(이로치)",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
@@ -561,6 +564,9 @@ _TABLES = {
         "Part root bone": "パーツのルートボーン",
         "(auto — biggest part)": "(自動 — 最大パーツ)",
         "loading…": "読み込み中…",
+        "Costume Recolour (irochi)": "衣装リカラー（色違い）",
+        "Base costume model bundle": "ベース衣装モデルバンドル",
+        "Colour-variant texture bundle (irochi)": "色変えテクスチャバンドル（色違い）",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",
