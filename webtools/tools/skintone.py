@@ -21,16 +21,17 @@ def _module():
 def run_skintone(job, params):
     m = _module()
     src = params.get("src") or "auto"
-    dst = params.get("dst") or "default"
+    dst = params.get("dst") or "bright"
     skin_only = bool(params.get("skin_only"))
     strength = as_float(params.get("strength"), 1.0)
     suffix = params.get("suffix") or "_tone"
     out_dir = params.get("out_dir")
 
     if params.get("mode") == "batch":
+        recursive = bool(params.get("recursive", True))
         ok, fail, total = m.run_batch(
             params.get("in_dir"), out_dir, src, dst, suffix,
-            skin_only=skin_only, strength=strength, recursive=True,
+            skin_only=skin_only, strength=strength, recursive=recursive,
             log=job.log, should_stop=job.should_stop)
         return f"batch done: total={total} ok={ok} fail={fail}"
 

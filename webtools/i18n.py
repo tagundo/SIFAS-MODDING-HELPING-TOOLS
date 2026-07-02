@@ -243,6 +243,57 @@ _TABLES = {
         "Donor skin tone": "공여 스킨톤",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
+        # --- desktop-parity options added to existing tools ---
+        "Blank = leave unchanged. Desktop default 0.02 (the Soft feel).":
+            "비우면 변경 안 함. 데스크톱 기본값 0.02 (Soft 느낌).",
+        "Blank = leave unchanged. Desktop default 0.3 (the Soft feel).":
+            "비우면 변경 안 함. 데스크톱 기본값 0.3 (Soft 느낌).",
+        "Edit entries (advanced, single-file)": "항목 편집 (고급, 단일 파일)",
+        "One per line, same grammar as the desktop --set: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. Edits existing entries. Ignored in batch (auto-repair only).":
+            "한 줄에 하나, 데스크톱 --set 과 동일한 문법: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. 기존 항목을 편집합니다. 배치에서는 무시(자동 수리만).",
+        "Add entries (advanced, single-file)": "항목 추가 (고급, 단일 파일)",
+        "One per line, same grammar as the desktop --add: 'Bone;scaled=x,y,z;kind=scale'. Adds a new entry for another bone (kind defaults to scale; origin defaults to the bone's current local).":
+            "한 줄에 하나, 데스크톱 --add 와 동일한 문법: 'Bone;scaled=x,y,z;kind=scale'. 다른 본에 새 항목을 추가합니다(kind 기본 scale, origin 기본은 본의 현재 local).",
+        "clamp radius min": "반경 클램프 최소",
+        "Blank = no lower bound.": "비우면 하한 없음.",
+        "clamp radius max": "반경 클램프 최대",
+        "Blank = no upper bound.": "비우면 상한 없음.",
+        "clamp offset min": "오프셋 클램프 최소",
+        "Per-axis lower bound; blank = free.": "축별 하한; 비우면 제한 없음.",
+        "clamp offset max": "오프셋 클램프 최대",
+        "Per-axis upper bound; blank = free.": "축별 상한; 비우면 제한 없음.",
+        "Spine compensation target": "스파인 보정 대상",
+        "Which child bone absorbs the inverse scale for compensated Spine* targets. Only affects Spine* bakes.":
+            "보정된 Spine* 타깃에서 역스케일을 흡수할 자식 본. Spine* 베이크에만 영향.",
+        "Spine2 (widens Spine+Spine1)": "Spine2 (Spine+Spine1 확장)",
+        "Spine1": "Spine1",
+        "Spine1 + Spine2": "Spine1 + Spine2",
+        "Auto": "자동",
+        "Include hidden meshes (foot_shadow · Hair · Face)": "숨은 메시 포함 (foot_shadow · Hair · Face)",
+        "Only these meshes (advanced)": "이 메시만 (고급)",
+        "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes.":
+            "쉼표/줄바꿈으로 구분한 메시 이름; 비우면 숨겨지지 않은 모든 스킨 메시.",
+        "Objects whose m_Name matches are left as the target's (protects the wearer's face/head + shadows). Desktop default shown.":
+            "m_Name 이 일치하는 오브젝트는 대상 것으로 유지(착용자의 얼굴/머리 + 그림자 보호). 데스크톱 기본값 표시.",
+        "Script class exclude (MonoBehaviour)": "스크립트 클래스 제외 (MonoBehaviour)",
+        "Donor MonoBehaviours of these script classes are not copied, so the wearer keeps its own swing physics. Desktop default shown.":
+            "이 스크립트 클래스의 공여 MonoBehaviour 는 복사하지 않아 착용자가 자신의 스윙 물리를 유지합니다. 데스크톱 기본값 표시.",
+        "Digit-agnostic name matching": "숫자 무시 이름 매칭",
+        "Treat digits as wildcards, so ch0001_* matches any character id.":
+            "숫자를 와일드카드로 처리하여 ch0001_* 가 모든 캐릭터 ID 에 일치.",
+        "Name match mode": "이름 매칭 모드",
+        "Remove original filename completely": "원본 파일명 완전 제거",
+        "Name purely from the texture; collisions are auto-numbered so nothing is overwritten.":
+            "텍스처만으로 이름 생성; 충돌 시 자동 번호로 덮어쓰기 방지.",
+        "Add the part as its own sub-mesh + material (keep its texture)":
+            "부위를 자체 서브메시 + 머티리얼로 추가 (텍스처 유지)",
+        "World-space the body mesh (so swinging parts render correctly)":
+            "바디 메시를 월드 공간으로 (흔들리는 부위가 올바르게 렌더링되도록)",
+        "Re-anchor NodeScaling (keep the wearer's body shaping)":
+            "NodeScaling 재고정 (착용자의 체형 유지)",
+        "Open skirt cap lift (0 = off)": "열린 치마 캡 리프트 (0 = 끔)",
+        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
+            "짧은 공여 하체가 구멍을 남기지 않도록 열린 캡을 들어올림; 0 = 평평한 캡.",
         "Recolour skin only": "피부만 재색상화",
         "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
             "감지된 피부에만 재색상을 적용합니다(의상 색은 유지). 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
@@ -577,6 +628,57 @@ _TABLES = {
         "Donor skin tone": "提供元の肌トーン",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",
+        # --- desktop-parity options added to existing tools ---
+        "Blank = leave unchanged. Desktop default 0.02 (the Soft feel).":
+            "空欄で変更なし。デスクトップ既定値 0.02（Soft の感触）。",
+        "Blank = leave unchanged. Desktop default 0.3 (the Soft feel).":
+            "空欄で変更なし。デスクトップ既定値 0.3（Soft の感触）。",
+        "Edit entries (advanced, single-file)": "エントリ編集（上級・単一ファイル）",
+        "One per line, same grammar as the desktop --set: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. Edits existing entries. Ignored in batch (auto-repair only).":
+            "1行に1つ、デスクトップの --set と同じ文法: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'。既存エントリを編集。バッチでは無視（自動修復のみ）。",
+        "Add entries (advanced, single-file)": "エントリ追加（上級・単一ファイル）",
+        "One per line, same grammar as the desktop --add: 'Bone;scaled=x,y,z;kind=scale'. Adds a new entry for another bone (kind defaults to scale; origin defaults to the bone's current local).":
+            "1行に1つ、デスクトップの --add と同じ文法: 'Bone;scaled=x,y,z;kind=scale'。別のボーンに新エントリを追加（kind 既定 scale、origin 既定はボーンの現在の local）。",
+        "clamp radius min": "半径クランプ 最小",
+        "Blank = no lower bound.": "空欄で下限なし。",
+        "clamp radius max": "半径クランプ 最大",
+        "Blank = no upper bound.": "空欄で上限なし。",
+        "clamp offset min": "オフセットクランプ 最小",
+        "Per-axis lower bound; blank = free.": "軸ごとの下限; 空欄で制限なし。",
+        "clamp offset max": "オフセットクランプ 最大",
+        "Per-axis upper bound; blank = free.": "軸ごとの上限; 空欄で制限なし。",
+        "Spine compensation target": "スパイン補正の対象",
+        "Which child bone absorbs the inverse scale for compensated Spine* targets. Only affects Spine* bakes.":
+            "補正された Spine* ターゲットで逆スケールを吸収する子ボーン。Spine* のベイクのみに影響。",
+        "Spine2 (widens Spine+Spine1)": "Spine2（Spine+Spine1 を広げる）",
+        "Spine1": "Spine1",
+        "Spine1 + Spine2": "Spine1 + Spine2",
+        "Auto": "自動",
+        "Include hidden meshes (foot_shadow · Hair · Face)": "非表示メッシュを含める（foot_shadow · Hair · Face）",
+        "Only these meshes (advanced)": "これらのメッシュのみ（上級）",
+        "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes.":
+            "カンマ/改行区切りのメッシュ名; 空欄で非表示以外の全スキンメッシュ。",
+        "Objects whose m_Name matches are left as the target's (protects the wearer's face/head + shadows). Desktop default shown.":
+            "m_Name が一致するオブジェクトは対象のものを維持（着用者の顔/頭 + 影を保護）。デスクトップ既定値を表示。",
+        "Script class exclude (MonoBehaviour)": "スクリプトクラス除外（MonoBehaviour）",
+        "Donor MonoBehaviours of these script classes are not copied, so the wearer keeps its own swing physics. Desktop default shown.":
+            "これらのスクリプトクラスの提供元 MonoBehaviour はコピーせず、着用者が自身のスイング物理を維持します。デスクトップ既定値を表示。",
+        "Digit-agnostic name matching": "数字を無視した名前マッチング",
+        "Treat digits as wildcards, so ch0001_* matches any character id.":
+            "数字をワイルドカードとして扱い、ch0001_* が任意のキャラ ID に一致。",
+        "Name match mode": "名前マッチモード",
+        "Remove original filename completely": "元のファイル名を完全に削除",
+        "Name purely from the texture; collisions are auto-numbered so nothing is overwritten.":
+            "テクスチャのみから命名; 衝突時は自動採番で上書きを防止。",
+        "Add the part as its own sub-mesh + material (keep its texture)":
+            "パーツを独自のサブメッシュ + マテリアルとして追加（テクスチャを保持）",
+        "World-space the body mesh (so swinging parts render correctly)":
+            "ボディメッシュをワールド空間に（揺れるパーツが正しく描画されるよう）",
+        "Re-anchor NodeScaling (keep the wearer's body shaping)":
+            "NodeScaling を再アンカー（着用者の体型を維持）",
+        "Open skirt cap lift (0 = off)": "開いたスカートキャップのリフト（0 = オフ）",
+        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
+            "短い提供元の下半身が穴を残さないように開いたキャップを持ち上げる; 0 = 平らなキャップ。",
         "Recolour skin only": "肌のみ再着色",
         "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
             "検出した肌にのみ再着色を適用します（衣装の色は保持）。スマホアプリでは既定でオン、デスクトップではオフ。",

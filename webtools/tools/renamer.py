@@ -39,12 +39,19 @@ def run_renamer(job, params):
     out_dir = params.get("out_dir")
     include_costume_id = bool(params.get("include_costume_id", False))
     remove_special = bool(params.get("remove_special_chars", False))
+    remove_original = bool(params.get("remove_original_name", False))
     length_limit = as_float_or_none(params.get("filename_length_limit"))
     length_limit = int(length_limit) if length_limit else None
 
     os.makedirs(out_dir, exist_ok=True)
     bundles = find_bundles(in_dir)
     total = len(bundles)
+    # dropping the original name collapses many bundles to the same character-only
+    # name; track chosen names and disambiguate (mirrors the desktop tool) so a
+    # shutil.copy2 never silently overwrites a sibling. sep="" keeps it special-
+    # char free when remove_special is on, matching generate_new_filename.
+    used_names = set()
+    sep = "" if remove_special else "_"
     ok = renamed = skipped = 0
     for i, src in enumerate(bundles, 1):
         if job.should_stop():
@@ -54,7 +61,9 @@ def run_renamer(job, params):
             tex = m.extract_texture_name(str(src))
             new_name = m.generate_new_filename(
                 src.name, tex, include_costume_id=include_costume_id,
-                remove_special_chars=remove_special, filename_length_limit=length_limit)
+                remove_special_chars=remove_special, filename_length_limit=length_limit,
+                remove_original_name=remove_original)
+            new_name = m.make_unique_filename(new_name, used_names, sep=sep)
             dst = Path(out_dir) / new_name
             shutil.copy2(str(src), str(dst))
             ok += 1

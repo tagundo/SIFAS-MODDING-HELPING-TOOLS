@@ -10,7 +10,7 @@ from pathlib import Path
 from webtools.core.repo import ensure_repo_on_path
 from webtools.core.sukusta import find_bundles
 from webtools.core.tkstub import ensure_tk_stub
-from webtools.tools.common import as_float, parse_patterns, single_out_path
+from webtools.tools.common import as_float, single_out_path
 
 
 # ---------------------------------------------------------- costume packer
@@ -157,6 +157,8 @@ def run_costume_part_transplant(job, params):
     out_path = single_out_path(out_dir, target, "", suffix)
     part_root = (params.get("part_root") or "").strip() or None
 
+    # GUI maps the unchecked "own sub-mesh" box to new_submesh="auto"; checked -> True
+    new_submesh = True if params.get("new_submesh") else "auto"
     job.progress(0, 1)
     job.log(f"transplanting part from {Path(donor).name} onto {Path(target).name} …")
     m.transplant_part(
@@ -164,8 +166,10 @@ def run_costume_part_transplant(job, params):
         part_root=part_root, auto=(part_root is None),
         preserve_physics=bool(params.get("preserve_physics", True)),
         restore_collision=bool(params.get("restore_collision", True)),
+        new_submesh=new_submesh,
         patch_texture=bool(params.get("patch_texture", False)),
-        worldspace=True, fix_nodescaling=True, verbose=False,
+        worldspace=bool(params.get("worldspace", True)),
+        fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,
     )
     job.progress(1, 1)
     job.log(f"OK -> {out_path.name}")
@@ -189,6 +193,11 @@ def run_lower_body_swap(job, params):
         v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
         if v is not None:
             kw[k] = v
+    # lift the open skirt cap so a shorter donor lower body doesn't leave a hole
+    # (0 = off = flat cap, the current behaviour). Applies to single and batch.
+    cap = as_float(params.get("open_cap"), 0.0)
+    if cap:
+        kw["open_cap_lift"] = cap
 
     match = bool(params.get("match_thigh", False)) or bool(params.get("match_skin", False))
 
@@ -233,8 +242,23 @@ def run_iosapk_import(job, params):
     import assetbundle_IosApk_batch_import_plus as m
 
     import_new = bool(params.get("import_new_objects", True))
-    name_inc = parse_patterns(params.get("name_include"), [])
-    name_exc = parse_patterns(params.get("name_exclude"), [])
+    # The matcher consumers expect (matcher_fn, pattern) tuples from
+    # compile_name_patterns, NOT raw strings — passing strings crashes (unpack
+    # error) or silently no-ops. Compile with the tool's own function so the web
+    # filters behave exactly like the desktop GUI. digit_agnostic defaults on
+    # (GUI default) so ch0001_* patterns match any character id.
+    name_mode = params.get("name_mode") or "glob"
+    digit_agnostic = bool(params.get("digit_agnostic", True))
+
+    def _compile(raw):
+        return m.compile_name_patterns(raw or "", mode=name_mode, digit_agnostic=digit_agnostic)
+
+    name_inc = _compile(params.get("name_include"))
+    name_exc = _compile(params.get("name_exclude"))
+    # protect the wearer's own script components (swing physics) from being
+    # clobbered by a same-path_id donor MonoBehaviour, matching the GUI default.
+    script_exc = _compile(params.get("script_exclude") if params.get("script_exclude") is not None
+                          else "SwingBone, SwingCollider")
     empty = set()
     out_dir = params.get("out_dir")
 
@@ -245,7 +269,7 @@ def run_iosapk_import(job, params):
         job.progress(0, 1)
         m.batch_by_pid(
             Path(params.get("donor_dir")), Path(params.get("target_dir")), Path(out_dir),
-            empty, empty, empty, empty, name_inc, name_exc, [],
+            empty, empty, empty, empty, name_inc, name_exc, script_exc,
             out_prefix=prefix, out_suffix=suffix, import_new_objects=import_new)
         job.progress(1, 1)
         return "batch import complete (see log)"
@@ -257,7 +281,7 @@ def run_iosapk_import(job, params):
     job.progress(0, 1)
     candidates, applied, skipped, injected, failed = m.copy_selective_from_pair(
         Path(donor), Path(target), export,
-        empty, empty, empty, empty, name_inc, name_exc, [], import_new_objects=import_new)
+        empty, empty, empty, empty, name_inc, name_exc, script_exc, import_new_objects=import_new)
     job.log(f"OK -> {export.name}  (candidates={candidates}, applied={applied}, "
             f"injected={injected}, skipped={skipped}, failed={len(failed)})")
     job.progress(1, 1)

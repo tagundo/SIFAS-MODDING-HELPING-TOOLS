@@ -288,6 +288,12 @@ function renderField(field) {
     wrap.appendChild(el("div", { class: "path-row" }, [add]));
     wrap.appendChild(listEl);
     rerender();
+  } else if (field.type === "textarea") {
+    const ta = el("textarea", { id, rows: "3" });
+    ta.value = field.default !== undefined ? String(field.default) : "";
+    ta.dataset.name = field.name;
+    ta.dataset.ftype = field.type;
+    wrap.appendChild(ta);
   } else {
     const input = el("input", {
       type: "text", id,

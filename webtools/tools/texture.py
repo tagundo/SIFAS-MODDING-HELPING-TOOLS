@@ -16,7 +16,8 @@ SUPPORTED_BUNDLE_EXTS = [".bundle", ".unity3d", ".ab", ".assets", ""]
 # ASTC, and the app can encode these via a bundled astcenc CLI (see below).
 TEXTURE_FORMATS = [
     "Keep Original", "RGBA32", "RGB24", "ARGB32", "RGB565",
-    "ASTC_RGBA_4x4", "ASTC_RGBA_6x6", "ASTC_RGBA_8x8",
+    "ASTC_RGBA_4x4", "ASTC_RGBA_5x5", "ASTC_RGBA_6x6", "ASTC_RGBA_8x8",
+    "ASTC_RGBA_10x10", "ASTC_RGBA_12x12",
     "DXT1", "DXT5", "BC4", "BC5", "BC7", "ETC_RGB4", "ETC2_RGBA8",
 ]
 
