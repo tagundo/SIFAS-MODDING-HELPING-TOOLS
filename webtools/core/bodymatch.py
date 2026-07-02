@@ -134,7 +134,15 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
             data.save()
             changed += 1
-            log(f"[skin] recoloured {name}: {tone} -> {dst_tone}")
+            # quantify the applied change so "nothing happened" is answerable
+            # from the log: SIFAS's official tone classes only differ by a few
+            # /255 on the skin, so a correct match is often nearly invisible.
+            m = stc._skin_mask(rgb, alpha)
+            shift = float(np.abs(out - rgb)[m].mean()) if m.any() else 0.0
+            note = (" - official tones differ subtly, a small shift is correct"
+                    if shift < 8 else "")
+            log(f"[skin] recoloured {name}: {tone} -> {dst_tone} "
+                f"(mean skin shift {shift:.1f}/255{note})")
         except Exception as exc:
             log(f"[skin] recolour failed on {name}: {exc}")
     if not changed:
