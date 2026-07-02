@@ -755,7 +755,7 @@ def _local_trs_byname(id2):
 
 
 def apply_bone_edits(donor_id2, target_id2, bone_names, child_adds=None,
-                     log=lambda *a: None):
+                     realign_alias=None, log=lambda *a: None):
     """Apply both kinds of per-bone edit in ONE save_typetree per object.
 
     1. realign: copy the donor's rest (local) transform onto each bone in
@@ -765,13 +765,16 @@ def apply_bone_edits(donor_id2, target_id2, bone_names, child_adds=None,
        Snapping the shared body bones to the donor's rest pose makes mesh + bind
        poses + bones self-consistent and the costume sits exactly as designed.
        Head/hair/face bones are not in this list, so identity is preserved.
+       `realign_alias` {target_name: donor_name} lets a target bone take its rest
+       pose from a differently-named donor bone (used for bust-offset aliasing).
     2. child_adds: append injected appendage roots to their parent bone's
        m_Children. Merged here because read_typetree() does not reflect a prior
        save on the same object, so a parent that is also realigned would lose one
        edit if the two were saved separately.
     """
     child_adds = child_adds or {}
-    d_local = _local_trs_byname(donor_id2) if bone_names else {}
+    realign_alias = realign_alias or {}
+    d_local = _local_trs_byname(donor_id2) if (bone_names or realign_alias) else {}
     realign_set = set(bone_names)
     # target name -> Transform ObjectReader
     t_tf = {}
@@ -786,8 +789,9 @@ def apply_bone_edits(donor_id2, target_id2, bone_names, child_adds=None,
         if o is None:
             continue
         tt = o.read_typetree()
-        if name in realign_set and name in d_local:
-            lp, lr, ls = d_local[name]
+        _src = realign_alias.get(name, name)
+        if name in realign_set and _src in d_local:
+            lp, lr, ls = d_local[_src]
             tt["m_LocalPosition"] = copy.deepcopy(lp)
             tt["m_LocalRotation"] = copy.deepcopy(lr)
             tt["m_LocalScale"] = copy.deepcopy(ls)
@@ -1840,6 +1844,35 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     d_parent = _transform_parent_byname(did)
     d_name_to_idx = {n: i for i, n in enumerate(d_bone_names)}
 
+    # ---- bust-offset bone aliasing --------------------------------------------
+    # Characters / costumes name the chest-offset bone differently (a donor may use
+    # a BreastA_Offset[->BreastB_Offset] chain, the target a single Breast_Offset) —
+    # the same skeletal role: the bone the bust and the chest ribbon hang off, and
+    # the one the target's Avatar/animation actually drives. Map the donor's
+    # bust-offset bones onto the target's existing one so the costume REUSES that
+    # Avatar-known bone instead of injecting a dead duplicate — which would leave the
+    # ribbon anchored to a bone the runtime never moves and orphan the target's real
+    # bust. The target bone is realigned to the donor's bust rest pose so the grafted
+    # mesh's bind poses stay consistent.
+    bust_alias, realign_alias = {}, {}
+    _BUST_RE = re.compile(r"^Breast[A-Za-z0-9]*_Offset$")
+    _donor_bust = [n for n in dict.fromkeys(d_bone_names) if n and _BUST_RE.match(n)]
+    _target_bust = [n for n in native_target_bones if _BUST_RE.match(n)]
+    if _donor_bust and _target_bust and not set(_donor_bust) <= native_target_bones:
+        def _bust_root(names, parent):
+            roots = [n for n in names if not _BUST_RE.match(parent.get(n) or "")]
+            return (roots or names)[0]
+        t_anchor = _bust_root(_target_bust, _transform_parent_byname(tid))
+        d_root = _bust_root(_donor_bust, d_parent)
+        for dn in _donor_bust:
+            if dn not in native_target_bones:
+                bust_alias[dn] = t_anchor
+                name2tf[dn] = name2tf[t_anchor]
+        if bust_alias:
+            realign_alias[t_anchor] = d_root
+            log(f"[bust] donor bust bone(s) {sorted(bust_alias)} -> target "
+                f"'{t_anchor}' (reuse the Avatar-known bone; rest pose from '{d_root}')")
+
     # ---- optionally recreate costume-appendage bones (with their jiggle physics) ----
     # When enabled, the donor's costume-only bones are injected into the target as
     # real GameObjects/Transforms + SwingBone components, so they keep their sway.
@@ -1854,6 +1887,15 @@ def transplant(donor_path, target_path, out_path, verbose=True,
                 donor, target, inject_names, name2tf,
                 restore_collision=restore_collision, log=log)
             name2tf.update(new_map)
+            # An injected appendage whose donor parent is an aliased bust bone (e.g.
+            # buttons under BreastB_Offset) must attach to the alias TARGET, since no
+            # target transform carries the donor bust name. Its m_Father is already
+            # correct (via the aliased name2tf); remap the parent's m_Children key too.
+            if bust_alias and child_adds:
+                remapped = {}
+                for pn, kids in child_adds.items():
+                    remapped.setdefault(bust_alias.get(pn, pn), []).extend(kids)
+                child_adds = remapped
 
     # ---- resolve every donor body bone to a target transform ----
     # costume-specific bones still absent in target re-bind to the nearest ancestor
@@ -1923,6 +1965,10 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     #         any injected appendage roots into their parent (one save per bone) ----
     align_names = ([n for n in dict.fromkeys(d_bone_names) if n in native_target_bones]
                    if realign else [])
+    # the aliased bust anchor is a target-only name (not in d_bone_names), so add it
+    # explicitly so it is realigned to the donor bust rest pose via realign_alias.
+    if realign and realign_alias:
+        align_names = align_names + [a for a in realign_alias if a not in align_names]
     if board and align_names:
         # never snap an accessory-anchor bone (e.g. Head, which carries the whole
         # mask) to the donor's rest pose — that would drag/rescale the mask.
@@ -1931,7 +1977,7 @@ def transplant(donor_path, target_path, out_path, verbose=True,
         if protected:
             log(f"[mask] excluded {protected} from realign (mask anchor)")
     if align_names or child_adds:
-        apply_bone_edits(did, tid, align_names, child_adds, log)
+        apply_bone_edits(did, tid, align_names, child_adds, realign_alias=realign_alias, log=log)
 
     # ---- 4b) costume dynamic bones the wearer also has (skirt / shared ribbon):
     #          take the donor's swing physics + collision so the donor outfit sways
