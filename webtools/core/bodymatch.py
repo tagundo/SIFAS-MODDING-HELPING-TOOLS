@@ -68,8 +68,90 @@ def apply_thigh_match(in_path, out_path, src_class, dst_class, log=print):
     return True
 
 
+# Bones that carry COSTUME geometry (flowy / dynamic parts) rather than the body.
+# A mesh triangle weighted to one of these is clothing, not skin — even when it is
+# skin-coloured (a cream skirt). Breast* is the bust (skin), so it is excluded here.
+_COSTUME_BONE_RE = re.compile(
+    r"Skirt|Ribbon|Sleeve|Sailor|Button|Cape|Tail|Wing|Frill|Muffler|Scarf|"
+    r"Necktie|Tie|Sode|Acce|Collar|Apron|Hood|Bow|Belt|Pocket|Lace", re.IGNORECASE)
+
+
+def build_skin_uv_mask(env, width, height, log=print):
+    """Rasterise a skin-region mask (H×W bool) from the body mesh: texels covered by
+    triangles weighted to BODY bones, minus those weighted to dynamic COSTUME bones
+    (skirt / sleeve / ribbon / accessory). This separates skin from skin-coloured
+    clothing far better than pixel colour, and — unlike a colour mask — never drops
+    real skin. Returns None when the mesh can't be decoded (caller falls back to the
+    colour mask). Torso-tight clothing on body bones (a bodice) can't be told from
+    chest skin by any signal, so it is not excluded here."""
+    try:
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFilter
+        from UnityPy.export.MeshExporter import MeshHandler
+    except Exception as exc:
+        log(f"[skin] UV mask deps missing ({exc}); using colour mask")
+        return None
+    try:
+        obj = {o.path_id: o for o in env.objects}
+        goname = {p: o.read_typetree().get("m_Name")
+                  for p, o in obj.items() if o.type.name == "GameObject"}
+        # body SMR = the skinned renderer with the most bones
+        smr, best = None, -1
+        for o in env.objects:
+            if o.type.name != "SkinnedMeshRenderer":
+                continue
+            tt = o.read_typetree()
+            if len(tt.get("m_Bones", [])) > best:
+                smr, best = tt, len(tt.get("m_Bones", []))
+        if not smr or best <= 0:
+            return None
+
+        def bone_name(bp):
+            bo = obj.get(bp)
+            return goname.get(bo.read_typetree().get("m_GameObject", {}).get("m_PathID")) if bo else None
+
+        bnames = [bone_name(b["m_PathID"]) for b in smr["m_Bones"]]
+        cost_idx = {i for i, nm in enumerate(bnames)
+                    if nm and "Breast" not in nm and _COSTUME_BONE_RE.search(nm)}
+        if not cost_idx:
+            return None   # nothing costume-boned to exclude; colour mask is no worse
+        mo = obj.get(smr["m_Mesh"]["m_PathID"])
+        if not mo:
+            return None
+        h = MeshHandler(mo.read())
+        h.process()
+        uv = np.asarray(h.m_UV0).reshape(-1, 2)
+        bi = np.asarray(h.m_BoneIndices).reshape(-1, 4)
+        bw = np.asarray(h.m_BoneWeights).reshape(-1, 4)
+        tris = np.asarray(h.get_triangles()).reshape(-1, 3)
+        dom = bi[np.arange(len(bi)), bw.argmax(1)]
+        vcost = np.isin(dom, list(cost_idx))
+
+        skin_im = Image.new("L", (width, height), 0)
+        cost_im = Image.new("L", (width, height), 0)
+        ds, dc = ImageDraw.Draw(skin_im), ImageDraw.Draw(cost_im)
+
+        def px(i):
+            u, v = uv[i]
+            return (u * width, (1.0 - v) * height)   # V is flipped in texture space
+
+        for a, b, c in tris:
+            poly = [px(a), px(b), px(c)]
+            (dc if (vcost[a] or vcost[b] or vcost[c]) else ds).polygon(poly, fill=255)
+        skin_m = (np.asarray(skin_im) > 0) & ~(np.asarray(cost_im) > 0)
+        # grow a few px so the UV-seam border between skin and cloth still recolours
+        grown = Image.fromarray((skin_m * 255).astype("uint8")).filter(ImageFilter.MaxFilter(5))
+        mask = np.asarray(grown) > 0
+        log(f"[skin] UV/bone skin mask built ({100 * mask.mean():.0f}% of atlas; "
+            f"{len(cost_idx)} costume bones excluded)")
+        return mask
+    except Exception as exc:
+        log(f"[skin] UV mask unavailable ({exc}); using colour mask")
+        return None
+
+
 def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
-                     strength=1.0, src_override=None, log=print):
+                     strength=1.0, src_override=None, colour_guard=False, log=print):
     """Recolour the body skin texture to dst_tone (skin tone changer).
 
     Source-tone precedence: src_override (the user's explicit choice) >
@@ -115,6 +197,19 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
             force_rgba32 = None
 
     env = UnityPy.load(str(in_path))
+    # Prefer a UV/bone-derived skin region (excludes skirt/sleeve/ribbon/accessory
+    # geometry even when it is skin-coloured) over the pixel-colour detector. Built
+    # lazily per texture size and cached (body textures share the mesh UV). None ->
+    # fall back to the colour mask. Only built when restricting to skin (skin_only).
+    _uv_cache = {}
+
+    def _uv_mask_for(w, h):
+        if not skin_only:
+            return None
+        if (w, h) not in _uv_cache:
+            _uv_cache[(w, h)] = build_skin_uv_mask(env, w, h, log)
+        return _uv_cache[(w, h)]
+
     changed = 0
     originals = {}   # pathID -> (rgb, alpha, intended_shift) for post-save verify
     for obj in env.objects:
@@ -143,8 +238,17 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 log(f"[skin] {name}: already {dst_tone}; nothing to recolour "
                     "(official tone classes only differ subtly)")
                 continue
-            out = stc.convert_array(rgb, tone, dst_tone,
-                                    skin_only=skin_only, strength=strength)
+            uv = _uv_mask_for(rgb.shape[1], rgb.shape[0])
+            if uv is not None:
+                region = uv.astype(np.float64)
+                if colour_guard:
+                    # also require skin colour: removes non-skin-coloured body-bone
+                    # clothing (a blue bodice) but may drop deeply shadowed skin.
+                    region = region * stc._skin_mask(rgb, alpha).astype(np.float64)
+                out = stc.convert_array(rgb, tone, dst_tone, mask=region, strength=strength)
+            else:
+                out = stc.convert_array(rgb, tone, dst_tone,
+                                        skin_only=skin_only, strength=strength)
             u8 = np.clip(out, 0, 255).astype(np.uint8)
             newpil = Image.fromarray(np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
             if force_rgba32 is not None:

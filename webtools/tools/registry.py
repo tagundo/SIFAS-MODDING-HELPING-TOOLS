@@ -62,7 +62,9 @@ def _match_fields():
         {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
          "default": False,
          "help": "Recolour the body skin from the donor's official tone to the "
-         "target's (skin tone changer)."},
+         "target's (skin tone changer). NOTE: the recolour is not perfect — some "
+         "costume colours may shift too. For an exact result, export the texture "
+         "and edit it yourself with the Skin Tone Changer tool."},
         {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
          "options": ["auto", "bright", "default", "slight", "medium_tone"],
          "default": "auto",
@@ -71,8 +73,17 @@ def _match_fields():
          "recoloured."},
         {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
          "default": _is_android(),
-         "help": "Feather the recolour onto detected skin only (keeps costume colours). "
-         "On by default on the phone app, off on desktop."},
+         "help": "Restrict the recolour to the skin region, using the mesh's bone "
+         "weights when available (excludes skirt / sleeves / ribbon / accessories) "
+         "and never dropping real skin. NOTE: torso-tight clothing on body bones "
+         "(a bodice) can't be told from chest skin, so its colour may still shift. "
+         "For an exact result, export the texture and edit it with the Skin Tone "
+         "Changer. On by default on the phone app, off on desktop."},
+        {"name": "skin_colour_guard", "label": "Also restrict by skin colour", "type": "checkbox",
+         "default": False,
+         "help": "Additionally require skin-like colour, so non-skin-coloured "
+         "body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply "
+         "shadowed skin — leave off if any real skin gets missed."},
     ]
 
 

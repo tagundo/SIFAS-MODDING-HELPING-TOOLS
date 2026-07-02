@@ -238,8 +238,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
         "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer).":
-            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경).",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
+            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경). 주의: 채색이 완벽하지 않아 의상 색 일부도 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경(Skin Tone Changer) 도구로 직접 수정하세요.",
         "Donor skin tone": "공여 스킨톤",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
@@ -295,8 +295,11 @@ _TABLES = {
         "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
             "짧은 공여 하체가 구멍을 남기지 않도록 열린 캡을 들어올림; 0 = 평평한 캡.",
         "Recolour skin only": "피부만 재색상화",
-        "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
-            "감지된 피부에만 재색상을 적용합니다(의상 색은 유지). 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
+        "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
+            "재색상화를 피부 영역으로 제한합니다. 가능하면 메시의 본 가중치를 사용해(치마/소매/리본/악세서리 제외) 실제 피부는 절대 빠뜨리지 않습니다. 주의: 몸통 본에 밀착된 옷(보디스)은 가슴 피부와 구분이 안 되어 색이 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경 도구로 직접 수정하세요. 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
+        "Also restrict by skin colour": "스킨색으로도 제한",
+        "Additionally require skin-like colour, so non-skin-coloured body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply shadowed skin — leave off if any real skin gets missed.":
+            "스킨색 조건을 추가로 요구해, 스킨색이 아닌 몸통 본 의상(예: 파란 보디스)은 건드리지 않습니다. 짙게 그늘진 피부는 빠질 수 있으니, 실제 피부가 누락되면 끄세요.",
         "Target spec(s)": "대상 스펙",
         "Target spec(s) — advanced": "대상 스펙 — 고급",
         "Thigh preset": "허벅지 프리셋",
@@ -623,8 +626,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
         "Match skin tone to target character": "肌色を対象キャラに合わせる",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer).":
-            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
+            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。注意: 着色は完璧ではなく、衣装の色も一部変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャー（Skin Tone Changer）で直接編集してください。",
         "Donor skin tone": "提供元の肌トーン",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",
@@ -680,8 +683,11 @@ _TABLES = {
         "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
             "短い提供元の下半身が穴を残さないように開いたキャップを持ち上げる; 0 = 平らなキャップ。",
         "Recolour skin only": "肌のみ再着色",
-        "Feather the recolour onto detected skin only (keeps costume colours). On by default on the phone app, off on desktop.":
-            "検出した肌にのみ再着色を適用します（衣装の色は保持）。スマホアプリでは既定でオン、デスクトップではオフ。",
+        "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
+            "再着色を肌の領域に限定します。可能ならメッシュのボーンウェイトを使い（スカート/袖/リボン/アクセサリを除外）、実際の肌は決して取りこぼしません。注意: ボディボーンに密着した衣装（ボディス）は胸の肌と区別できず、色が変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャーで直接編集してください。スマホアプリでは既定でオン、デスクトップではオフ。",
+        "Also restrict by skin colour": "肌色でも制限",
+        "Additionally require skin-like colour, so non-skin-coloured body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply shadowed skin — leave off if any real skin gets missed.":
+            "肌に近い色であることを追加条件にし、肌色でないボディボーンの衣装（例: 青いボディス）はそのまま残します。濃い影の肌は取りこぼす場合があるため、実際の肌が抜けるならオフにしてください。",
         "Target spec(s)": "対象スペック",
         "Target spec(s) — advanced": "対象スペック — 上級",
         "Thigh preset": "太ももプリセット",

@@ -126,6 +126,7 @@ def _match_to_target(job, params, donor, target, out_path):
             job.log("[skin] could not detect the target character; skipped")
             return
         skin_only = bool(params.get("skin_only", bodymatch.is_android()))
+        colour_guard = bool(params.get("skin_colour_guard", False))
         donor_tone = params.get("donor_tone")
         src_override = donor_tone if donor_tone in (
             "bright", "default", "slight", "medium_tone") else None
@@ -134,7 +135,7 @@ def _match_to_target(job, params, donor, target, out_path):
             if bodymatch.apply_skin_match(out_path, tmp,
                                           charinfo.SKIN_TONE.get(dchar), charinfo.SKIN_TONE.get(tchar),
                                           skin_only=skin_only, src_override=src_override,
-                                          log=job.log):
+                                          colour_guard=colour_guard, log=job.log):
                 os.replace(tmp, str(out_path))
         except Exception as exc:
             job.log(f"[skin] failed: {exc}")
