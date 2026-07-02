@@ -699,6 +699,61 @@ BREAST_PRESETS_ALL = sorted(
 )
 
 
+def read_current_breast_size(env, breast_go_name="BreastSize"):
+    """Return the LiveCore scaledValue (x, y, z) currently applied to the
+    BreastSize node, or None when there is no explicit scaling entry (stock size).
+
+    Lets the auto-jiggle follow a breast size that was *already* modified instead
+    of blindly using the character's stock tier."""
+    obj_by_pid = build_obj_index(env)
+    breast_tr = get_transform_for_breastsize(env, obj_by_pid, breast_go_name=breast_go_name)
+    if not breast_tr:
+        return None
+    target_pid = breast_tr.path_id
+    for obj in env.objects:
+        if not is_obj_type(obj, ("MonoBehaviour", 114)):
+            continue
+        try:
+            tree, _data, _where = read_tree_safe(obj)
+        except Exception:
+            continue
+        if not is_livecore_scaling_tree(tree, obj_by_pid):
+            continue
+        scale_list = get_from_tree(tree, "scaleValues")
+        if not isinstance(scale_list, list):
+            continue
+        for elem in scale_list:
+            node, _estyle = get_node_from_elem(elem)
+            tgt = node.get("target") or {}
+            pid = tgt.get("m_PathID") or tgt.get("pathID")
+            if isinstance(pid, int) and (pid == target_pid or pid == -target_pid):
+                sv = node.get("scaledValue") or {}
+                try:
+                    return (float(sv.get("x", 1.0)),
+                            float(sv.get("y", 1.0)),
+                            float(sv.get("z", 1.0)))
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def n_from_breast_size(size, tol=0.03):
+    """Map a current breast scaledValue to the jiggle tier (n) of the nearest size
+    preset. Returns None when the size is effectively stock (~1.0 on every axis),
+    so the caller can fall back to the character-ID tier."""
+    if not size:
+        return None
+    x, y, z = size
+    if all(abs(v - 1.0) <= tol for v in (x, y, z)):
+        return None  # unmodified -> use the stock (character-ID) jiggle
+    best_n, best_d = None, None
+    for _label, (sx, sy, sz), n in BREAST_PRESETS_ALL:
+        d = (x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2
+        if best_d is None or d < best_d:
+            best_d, best_n = d, n
+    return best_n
+
+
 def _fmt_num(v):
     """Compact number formatting for labels (1.0 -> '1', 1.04 -> '1.04')."""
     return f"{v:g}"
@@ -725,12 +780,14 @@ def modify_swingbones_in_bundle(
     high_dz: float = 0.0,
     use_character_specific=False,
     write_log_file=True,
+    jiggle_by="size",
 ):
     """Load a bundle, edit swing-bone physics, save (thin load/save wrapper)."""
     env = UnityPy.load(str(in_path))
     scanned, changed, lines, n = _apply_swingbones(
         env, target_name_patterns, stiff_value, drag_value,
         low_dy, low_dz, high_dy, high_dz, use_character_specific,
+        jiggle_by=jiggle_by,
     )
     _save_env(env, out_path)
     if write_log_file:
@@ -750,22 +807,36 @@ def _apply_swingbones(
     high_dy: float = 0.0,
     high_dz: float = 0.0,
     use_character_specific=False,
+    jiggle_by="size",
 ):
-    """Edit swing-bone physics on an already-loaded env (no load/save)."""
+    """Edit swing-bone physics on an already-loaded env (no load/save).
+
+    jiggle_by controls the auto tier source: "size" follows the current BreastSize
+    scale when it has been resized (falling back to the character's stock tier),
+    while "character" always uses the character's stock tier."""
     obj_by_pid, go_name_by_pid = build_maps(env)
     th = type_histogram(env)
 
-    # auto mode: derive rotation-limit deltas from the character ID
+    # auto mode: derive rotation-limit deltas from the breast size when it has
+    # already been resized (so the physics match the *current* size), otherwise
+    # fall back to the character's stock tier (by character ID).
     char_specific_n = None
+    jiggle_source = None
     if use_character_specific:
-        char_id = find_character_id_from_bundle(env)
-        if char_id is not None:
-            char_specific_n = get_n_value_for_char_id(char_id)
-            if char_specific_n is not None:
-                low_dy = -char_specific_n
-                low_dz = -char_specific_n
-                high_dy = char_specific_n
-                high_dz = char_specific_n
+        size_n = None if jiggle_by == "character" else n_from_breast_size(read_current_breast_size(env))
+        if size_n is not None:
+            char_specific_n = size_n
+            jiggle_source = "current breast size"
+        else:
+            char_id = find_character_id_from_bundle(env)
+            if char_id is not None:
+                char_specific_n = get_n_value_for_char_id(char_id)
+                jiggle_source = f"character ID {char_id} (stock size)"
+        if char_specific_n is not None:
+            low_dy = -char_specific_n
+            low_dz = -char_specific_n
+            high_dy = char_specific_n
+            high_dz = char_specific_n
 
     changed = 0
     scanned = 0
@@ -883,7 +954,7 @@ def _apply_swingbones(
     ]
     if use_character_specific and char_specific_n is not None:
         header.append(
-            f"Character ID found: {find_character_id_from_bundle(env)}, n-value: {char_specific_n}"
+            f"Auto jiggle from {jiggle_source}: n-value {char_specific_n}"
         )
     header.append(
         f"Input: stiff={stiff_value} drag={drag_value} "
@@ -1173,7 +1244,7 @@ def _iter_files(in_dir):
 
 def run_dyna_batch(in_dir, out_dir, prefix, suffix, patterns,
                    stiff, drag, ldy, ldz, hdy, hdz, use_auto,
-                   on_log, on_progress, should_stop=None):
+                   on_log, on_progress, should_stop=None, jiggle_by="size"):
     files = _iter_files(in_dir)
     total = len(files)
     ok = fail = 0
@@ -1191,7 +1262,7 @@ def run_dyna_batch(in_dir, out_dir, prefix, suffix, patterns,
             out_path = Path(out_dir) / rel.parent / out_name
             _, changed, _, n = modify_swingbones_in_bundle(
                 file, out_path, patterns, stiff, drag, ldy, ldz, hdy, hdz,
-                use_character_specific=use_auto,
+                use_character_specific=use_auto, jiggle_by=jiggle_by,
             )
             ok += 1
             tag = f"(jiggle{n})" if (use_auto and n is not None) else ""

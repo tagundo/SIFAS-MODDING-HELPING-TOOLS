@@ -133,8 +133,9 @@ function renderToolList() {
   const list = $("#tool-list");
   list.innerHTML = "";
   for (const tool of state.tools) {
+    // list shows the title only; the description is shown in the tool panel when opened
     const b = el("button", { onclick: () => selectTool(tool.id) },
-      [el("span", { text: tool.label }), el("small", { text: tool.description || "" })]);
+      [el("span", { text: tool.label })]);
     b.dataset.id = tool.id;
     list.appendChild(b);
   }
@@ -160,7 +161,8 @@ function renderForm() {
     const toggle = el("div", { class: "mode-toggle" });
     for (const m of modes) {
       const mb = el("button", {
-        text: m === "single" ? T("Single file") : T("Batch folder"),
+        text: m === "single" ? T("Single file")
+          : m === "multi" ? T("Selected files") : T("Batch folder"),
         onclick: () => { state.currentMode = m; renderForm(); },
       });
       if (m === state.currentMode) mb.classList.add("active");
@@ -199,11 +201,50 @@ function renderField(field) {
     sel.dataset.name = field.name;
     sel.dataset.ftype = "select";
     for (const opt of field.options || []) {
-      const o = el("option", { value: opt, text: opt });
-      if (opt === field.default) o.selected = true;
+      // options may be plain strings (value == label) or {value, label} objects
+      const value = (opt && typeof opt === "object") ? opt.value : opt;
+      const label = (opt && typeof opt === "object") ? opt.label : opt;
+      const o = el("option", { value: String(value), text: String(label) });
+      if (value === field.default) o.selected = true;
       sel.appendChild(o);
     }
     wrap.appendChild(sel);
+  } else if (field.type === "preset") {
+    // A convenience picker: choosing a preset fills sibling fields with named
+    // values (restores the GUI's preset buttons). UI-only — not submitted.
+    const sel = el("select", { id });
+    sel.dataset.name = field.name;
+    sel.dataset.ftype = "preset";
+    for (const opt of field.options || []) {
+      sel.appendChild(el("option", { value: opt.label, text: opt.label }));
+    }
+    sel.addEventListener("change", () => {
+      const chosen = (field.options || []).find((o) => o.label === sel.value);
+      if (!chosen || !chosen.set) return;
+      for (const k in chosen.set) {
+        const t = document.querySelector(`#tool-form [data-name="${k}"]`);
+        if (!t) continue;
+        if (t.dataset.ftype === "checkbox") t.checked = !!chosen.set[k];
+        else t.value = String(chosen.set[k]);
+      }
+    });
+    wrap.appendChild(sel);
+  } else if (field.type === "vec3") {
+    // three small X/Y/Z inputs on one line, each keeping its own param name
+    const row = el("div", { class: "vec3-row" });
+    for (const [axis, nm] of [["X", field.name_x], ["Y", field.name_y], ["Z", field.name_z]]) {
+      const input = el("input", {
+        type: "text",
+        value: field.default !== undefined ? String(field.default) : "",
+      });
+      input.setAttribute("inputmode", "decimal");
+      input.setAttribute("placeholder", axis);
+      input.setAttribute("aria-label", field.label + " " + axis);
+      input.dataset.name = nm;
+      input.dataset.ftype = "number";
+      row.appendChild(input);
+    }
+    wrap.appendChild(row);
   } else if (field.type === "path" || field.type === "dir") {
     const input = el("input", { type: "text", id, value: defaultPath(field) });
     input.dataset.name = field.name;
@@ -213,12 +254,55 @@ function renderField(field) {
       onclick: () => openPicker(field.type, (p) => { input.value = p; }, field.root, input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
+  } else if (field.type === "paths") {
+    // multi-select: a hidden newline-joined value (collected as the param) plus a
+    // visible removable list; "Add file" opens the picker and appends each pick.
+    const hidden = el("input", { type: "hidden" });
+    hidden.dataset.name = field.name;
+    hidden.dataset.ftype = "paths";
+    hidden.value = "";
+    const listEl = el("ul", { class: "multi-list" });
+    const items = () => (hidden.value ? hidden.value.split("\n").filter(Boolean) : []);
+    const rerender = () => {
+      listEl.innerHTML = "";
+      const cur = items();
+      if (!cur.length) {
+        listEl.appendChild(el("li", { class: "muted", text: T("No files selected.") }));
+      }
+      for (const p of cur) {
+        const rm = el("button", {
+          type: "button", class: "multi-rm", text: "✕",
+          onclick: () => { hidden.value = items().filter((q) => q !== p).join("\n"); rerender(); },
+        });
+        listEl.appendChild(el("li", {}, [el("span", { text: baseName(p) }), rm]));
+      }
+    };
+    const add = el("button", {
+      type: "button", text: T("Add file"),
+      onclick: () => openPicker("path", (p) => {
+        const cur = items();
+        if (!cur.includes(p)) { cur.push(p); hidden.value = cur.join("\n"); rerender(); }
+      }, field.root, ""),
+    });
+    wrap.appendChild(hidden);
+    wrap.appendChild(el("div", { class: "path-row" }, [add]));
+    wrap.appendChild(listEl);
+    rerender();
+  } else if (field.type === "textarea") {
+    const ta = el("textarea", { id, rows: "3" });
+    ta.value = field.default !== undefined ? String(field.default) : "";
+    ta.dataset.name = field.name;
+    ta.dataset.ftype = field.type;
+    wrap.appendChild(ta);
   } else {
     const input = el("input", {
-      type: field.type === "number" ? "text" : "text", id,
+      type: "text", id,
       value: field.default !== undefined ? String(field.default) : "",
     });
-    if (field.type === "number") input.setAttribute("inputmode", "decimal");
+    if (field.type === "number") {
+      input.setAttribute("inputmode", "decimal");
+      input.classList.add("num"); // narrower than full-width text fields
+    }
     input.dataset.name = field.name;
     input.dataset.ftype = field.type;
     wrap.appendChild(input);
@@ -233,10 +317,15 @@ function defaultPath(field) {
   return "";
 }
 
+function baseName(p) {
+  return String(p).replace(/\/+$/, "").split("/").pop();
+}
+
 function collectParams() {
   const params = { mode: state.currentMode };
   document.querySelectorAll("#tool-form [data-name]").forEach((inp) => {
     const name = inp.dataset.name;
+    if (inp.dataset.ftype === "preset") return; // UI-only; it fills other fields
     if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
     else params[name] = inp.value;
   });

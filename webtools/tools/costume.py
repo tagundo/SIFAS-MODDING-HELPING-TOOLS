@@ -10,13 +10,23 @@ from pathlib import Path
 from webtools.core.repo import ensure_repo_on_path
 from webtools.core.sukusta import find_bundles
 from webtools.core.tkstub import ensure_tk_stub
-from webtools.tools.common import as_float, parse_patterns, single_out_path
+from webtools.tools.common import as_float, single_out_path
 
 
 # ---------------------------------------------------------- costume packer
 def run_costume_packer(job, params):
     ensure_repo_on_path()
     import unity_costumemod_packer as m
+
+    # On the app the native texture decoders are absent, so thumbnail decode would
+    # fall back to a name-only placeholder. Wire ASTC decode through the bundled
+    # astcenc CLI so SIFAS's (ASTC) textures give real image thumbnails. No-op on
+    # desktop / if unavailable; the packer already tolerates decode failures.
+    try:
+        from webtools.tools.texture import ensure_astc_cli
+        ensure_astc_cli()
+    except Exception as exc:  # never let thumbnail wiring break packing
+        job.log(f"(astc thumbnail bridge unavailable: {exc})")
 
     out_dir = params.get("out_dir")
     auto_chara_id = bool(params.get("auto_chara_id", True))
@@ -58,18 +68,172 @@ def run_costume_transplant(job, params):
 
     job.log(f"transplanting {Path(donor).name} (costume) onto {Path(target).name} (wearer)...")
     job.progress(0, 1)
+    # full desktop-GUI option surface; checkbox -> mode mappings mirror run_gui's
+    # go(): mask on->"auto"/off->"off", donor-physics on->"donor"/off->"target".
     m.transplant(
         str(donor), str(target), str(out_path), verbose=False,
-        preserve_physics=bool(params.get("preserve_physics", False)),
+        preserve_physics=bool(params.get("preserve_physics", True)),
         realign=bool(params.get("realign", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)),
+        mask_handling="auto" if bool(params.get("mask_handling", True)) else "off",
+        costume_physics="donor" if bool(params.get("donor_costume_physics", True)) else "target",
+        sync_textures=not bool(params.get("no_textures", False)),
+        scale_swing_physics=bool(params.get("scale_swing_physics", True)),
     )
+
+    # Optionally match the transplanted costume to the target character: thigh size
+    # (donor body type -> target's) and/or skin tone (donor tone -> target's).
+    _match_to_target(job, params, donor, target, out_path)
+
     ok = m.validate(str(out_path), verbose=False)
     job.log(f"OK -> {out_path.name}  (validation: {'passed' if ok else 'FAILED'})")
     job.progress(1, 1)
     return f"transplanted -> {out_path}  (validate: {'ok' if ok else 'fail'})"
+
+
+def _match_to_target(job, params, donor, target, out_path):
+    from webtools.core import bodymatch
+    match_thigh = bool(params.get("match_thigh", False))
+    match_skin = bool(params.get("match_skin", False))
+    if not (match_thigh or match_skin):
+        return
+    from webtools.core import charinfo
+    dchar = bodymatch.detect_char_from_bundle(donor)
+    tchar = bodymatch.detect_char_from_bundle(target)
+    job.log(f"[match] donor {dchar or '?'} ({charinfo.NAMES.get(dchar, '?')}) "
+            f"-> target {tchar or '?'} ({charinfo.NAMES.get(tchar, '?')})")
+    if match_thigh:
+        if not dchar or not tchar:
+            job.log("[thigh] could not detect both characters; skipped")
+        else:
+            tmp = str(out_path) + ".thigh.tmp"
+            try:
+                if bodymatch.apply_thigh_match(out_path, tmp,
+                                               charinfo.THIGH.get(dchar), charinfo.THIGH.get(tchar),
+                                               log=job.log):
+                    os.replace(tmp, str(out_path))
+            except Exception as exc:
+                job.log(f"[thigh] failed: {exc}")
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+    if match_skin:
+        # only the TARGET character (the destination tone) is required: the
+        # source tone is auto-detected from the texture pixels, with the
+        # donor's table tone as fallback (bodymatch.apply_skin_match).
+        if not tchar:
+            job.log("[skin] could not detect the target character; skipped")
+            return
+        skin_only = bool(params.get("skin_only", bodymatch.is_android()))
+        colour_guard = bool(params.get("skin_colour_guard", False))
+        donor_tone = params.get("donor_tone")
+        src_override = donor_tone if donor_tone in (
+            "bright", "default", "slight", "medium_tone") else None
+        tmp = str(out_path) + ".skin.tmp"
+        try:
+            if bodymatch.apply_skin_match(out_path, tmp,
+                                          charinfo.SKIN_TONE.get(dchar), charinfo.SKIN_TONE.get(tchar),
+                                          skin_only=skin_only, src_override=src_override,
+                                          colour_guard=colour_guard, log=job.log):
+                os.replace(tmp, str(out_path))
+        except Exception as exc:
+            job.log(f"[skin] failed: {exc}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+
+# ------------------------------------------------- costume part transplant
+def run_costume_part_transplant(job, params):
+    # decodes + re-encodes textures, so wire the ASTC CLI bridge first
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()
+    ensure_repo_on_path()
+    import costume_part_transplant as m
+
+    donor = params.get("donor")
+    target = params.get("target")
+    out_dir = params.get("out_dir")
+    suffix = params.get("suffix") or "_part"
+    out_path = single_out_path(out_dir, target, "", suffix)
+    part_root = (params.get("part_root") or "").strip() or None
+
+    # GUI maps the unchecked "own sub-mesh" box to new_submesh="auto"; checked -> True
+    new_submesh = True if params.get("new_submesh") else "auto"
+    job.progress(0, 1)
+    job.log(f"transplanting part from {Path(donor).name} onto {Path(target).name} …")
+    m.transplant_part(
+        str(donor), str(target), str(out_path),
+        part_root=part_root, auto=(part_root is None),
+        preserve_physics=bool(params.get("preserve_physics", True)),
+        restore_collision=bool(params.get("restore_collision", True)),
+        new_submesh=new_submesh,
+        patch_texture=bool(params.get("patch_texture", False)),
+        worldspace=bool(params.get("worldspace", True)),
+        fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,
+    )
+    job.progress(1, 1)
+    job.log(f"OK -> {out_path.name}")
+    return f"part transplanted -> {out_path}"
+
+
+# --------------------------------------------------------- lower body swap
+def run_lower_body_swap(job, params):
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()
+    ensure_repo_on_path()
+    import lower_body_swap as m
+
+    donor = params.get("donor")
+    out_dir = params.get("out_dir")
+    suffix = params.get("suffix") or "_lower"
+    region = params.get("region") or "lower"
+    exclude_acc = bool(params.get("exclude_accessories", True))
+    kw = dict(region=region, exclude_accessories=exclude_acc, log=job.log)
+    for k in ("cut_low", "cut_high"):
+        v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
+        if v is not None:
+            kw[k] = v
+    # lift the open skirt cap so a shorter donor lower body doesn't leave a hole
+    # (0 = off = flat cap, the current behaviour). Applies to single and batch.
+    cap = as_float(params.get("open_cap"), 0.0)
+    if cap:
+        kw["open_cap_lift"] = cap
+
+    match = bool(params.get("match_thigh", False)) or bool(params.get("match_skin", False))
+
+    if params.get("mode") == "batch":
+        if not match:
+            m.run_batch(str(donor), params.get("in_dir"), out_root=out_dir, **kw)
+            return "batch lower-body swap done (see log)"
+        # matching requested: loop so each output can be matched to its own target
+        # (mirrors run_batch's donor-skip + relative-path layout).
+        from webtools.core.sukusta import find_bundles
+        folder = params.get("in_dir")
+        targets = [str(t) for t in find_bundles(folder)
+                   if os.path.abspath(str(t)) != os.path.abspath(str(donor))]
+        ok = 0
+        for i, tgt in enumerate(targets):
+            out = os.path.join(out_dir, os.path.relpath(tgt, folder))
+            try:
+                os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+                job.log(f"• {os.path.relpath(tgt, folder)}")
+                m.graft_one(tgt, str(donor), out, **kw)
+                _match_to_target(job, params, donor, tgt, out)
+                ok += 1
+            except Exception as exc:
+                job.log(f"  skip ({exc})")
+            job.progress(i + 1, len(targets))
+        return f"batch lower-body swap + match: {ok}/{len(targets)}"
+
+    target = params.get("target")
+    out_path = single_out_path(out_dir, target, "", suffix)
+    job.progress(0, 1)
+    job.log(f"grafting lower body from {Path(donor).name} onto {Path(target).name} …")
+    m.graft_one(str(target), str(donor), str(out_path), **kw)
+    _match_to_target(job, params, donor, target, out_path)
+    job.progress(1, 1)
+    return f"lower body swapped -> {out_path}"
 
 
 # ---------------------------------------------- iOS/APK selective pair import
@@ -79,8 +243,23 @@ def run_iosapk_import(job, params):
     import assetbundle_IosApk_batch_import_plus as m
 
     import_new = bool(params.get("import_new_objects", True))
-    name_inc = parse_patterns(params.get("name_include"), [])
-    name_exc = parse_patterns(params.get("name_exclude"), [])
+    # The matcher consumers expect (matcher_fn, pattern) tuples from
+    # compile_name_patterns, NOT raw strings — passing strings crashes (unpack
+    # error) or silently no-ops. Compile with the tool's own function so the web
+    # filters behave exactly like the desktop GUI. digit_agnostic defaults on
+    # (GUI default) so ch0001_* patterns match any character id.
+    name_mode = params.get("name_mode") or "glob"
+    digit_agnostic = bool(params.get("digit_agnostic", True))
+
+    def _compile(raw):
+        return m.compile_name_patterns(raw or "", mode=name_mode, digit_agnostic=digit_agnostic)
+
+    name_inc = _compile(params.get("name_include"))
+    name_exc = _compile(params.get("name_exclude"))
+    # protect the wearer's own script components (swing physics) from being
+    # clobbered by a same-path_id donor MonoBehaviour, matching the GUI default.
+    script_exc = _compile(params.get("script_exclude") if params.get("script_exclude") is not None
+                          else "SwingBone, SwingCollider")
     empty = set()
     out_dir = params.get("out_dir")
 
@@ -91,7 +270,7 @@ def run_iosapk_import(job, params):
         job.progress(0, 1)
         m.batch_by_pid(
             Path(params.get("donor_dir")), Path(params.get("target_dir")), Path(out_dir),
-            empty, empty, empty, empty, name_inc, name_exc, [],
+            empty, empty, empty, empty, name_inc, name_exc, script_exc,
             out_prefix=prefix, out_suffix=suffix, import_new_objects=import_new)
         job.progress(1, 1)
         return "batch import complete (see log)"
@@ -103,7 +282,7 @@ def run_iosapk_import(job, params):
     job.progress(0, 1)
     candidates, applied, skipped, injected, failed = m.copy_selective_from_pair(
         Path(donor), Path(target), export,
-        empty, empty, empty, empty, name_inc, name_exc, [], import_new_objects=import_new)
+        empty, empty, empty, empty, name_inc, name_exc, script_exc, import_new_objects=import_new)
     job.log(f"OK -> {export.name}  (candidates={candidates}, applied={applied}, "
             f"injected={injected}, skipped={skipped}, failed={len(failed)})")
     job.progress(1, 1)

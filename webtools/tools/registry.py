@@ -12,15 +12,26 @@ from webtools.tools.skirt import DEFAULT_SKIRT_PATTERNS, run_skirt
 from webtools.tools.texture import TEXTURE_FORMATS, run_texture
 from webtools.tools.bodymod import (
     DEFAULT_HIPS_NAME, DEFAULT_UPLEG_PATTERNS, NODE_SCALING_MODES,
-    run_hips, run_node_scaling, run_upleg,
+    run_accessory_unclip, run_hips, run_node_scaling, run_upleg,
 )
 from webtools.tools.costume import (
-    run_costume_packer, run_costume_transplant, run_iosapk_import,
+    run_costume_packer, run_costume_part_transplant, run_costume_transplant,
+    run_iosapk_import, run_lower_body_swap,
 )
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
+from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
+from webtools.tools.info import run_charinfo
+from webtools.core.charinfo import NAMES as _CHAR_NAMES
+from webtools.core.bodymatch import is_android as _is_android
 
 from webtools import i18n
+
+
+# Character options for the info tool: "all" plus every idol by name.
+_CHAR_INFO_OPTIONS = [{"value": "all", "label": "All characters"}] + [
+    {"value": str(cid), "label": _CHAR_NAMES[cid]} for cid in sorted(_CHAR_NAMES)
+]
 
 
 # ---- reusable field fragments ------------------------------------------------
@@ -32,6 +43,48 @@ def _in_single():
 def _in_batch():
     return {"name": "in_dir", "label": "Input folder", "type": "dir", "required": True,
             "mode": "batch", "root": "extracted", "help": "All bundles under here are processed."}
+
+
+def _in_multi(root="extracted"):
+    return {"name": "in_paths", "label": "Input bundles", "type": "paths", "required": True,
+            "mode": "multi", "root": root,
+            "help": "Pick several bundles; each is processed like Single."}
+
+
+def _match_fields():
+    """Optional 'match the donor's costume to the target character' fields, shared
+    by the costume transplant and lower body swap. 'Recolour skin only' defaults
+    on for the phone app and off on desktop."""
+    return [
+        {"name": "match_thigh", "label": "Match thigh to target character", "type": "checkbox",
+         "default": False,
+         "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
+        {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
+         "default": False,
+         "help": "Recolour the body skin from the donor's official tone to the "
+         "target's (skin tone changer). NOTE: the recolour is not perfect — some "
+         "costume colours may shift too. For an exact result, export the texture "
+         "and edit it yourself with the Skin Tone Changer tool."},
+        {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
+         "options": ["auto", "bright", "default", "slight", "medium_tone"],
+         "default": "auto",
+         "help": "auto = the donor character's official tone (pixel detection only "
+         "when that is unknown). Set explicitly if the donor bundle was already "
+         "recoloured."},
+        {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
+         "default": _is_android(),
+         "help": "Restrict the recolour to the skin region, using the mesh's bone "
+         "weights when available (excludes skirt / sleeves / ribbon / accessories) "
+         "and never dropping real skin. NOTE: torso-tight clothing on body bones "
+         "(a bodice) can't be told from chest skin, so its colour may still shift. "
+         "For an exact result, export the texture and edit it with the Skin Tone "
+         "Changer. On by default on the phone app, off on desktop."},
+        {"name": "skin_colour_guard", "label": "Also restrict by skin colour", "type": "checkbox",
+         "default": False,
+         "help": "Additionally require skin-like colour, so non-skin-coloured "
+         "body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply "
+         "shadowed skin — leave off if any real skin gets missed."},
+    ]
 
 
 def _out_dir():
@@ -51,17 +104,30 @@ def _common_io(suffix_default="_mod"):
 
 
 def _xyz(prefix_label, names, default="", help_first=None):
-    fields = []
-    for axis, name in zip(("X", "Y", "Z"), names):
-        f = {"name": name, "label": f"{prefix_label} {axis}", "type": "number", "default": default}
-        if help_first and axis == "X":
-            f["help"] = help_first
-        fields.append(f)
-    return fields
+    # One compact row of three small X/Y/Z number inputs under a single label,
+    # instead of three full-width fields stacked vertically. Each input keeps its
+    # own name (set_x/set_y/set_z) so the server still receives them separately.
+    f = {"type": "vec3", "label": prefix_label, "default": default,
+         "name_x": names[0], "name_y": names[1], "name_z": names[2]}
+    if help_first:
+        f["help"] = help_first
+    return [f]
 
 
 # ---- the tools ---------------------------------------------------------------
 TOOLS = [
+    {
+        "id": "character_info",
+        "label": "Character Body Info",
+        "description": ("Reference: character ID, skin tone, breast size + jiggle tier, thigh type, "
+                        "and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). "
+                        "Output appears in the log."),
+        "run": run_charinfo,
+        "fields": [
+            {"name": "character", "label": "Character", "type": "select",
+             "options": _CHAR_INFO_OPTIONS, "default": "all"},
+        ],
+    },
     {
         "id": "breast_dyna",
         "label": "Breast Physics (Dyna)",
@@ -69,20 +135,34 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_dyna,
         "fields": [
-            *_common_io(),
+            *_common_io("_jiggle"),
             {"name": "patterns", "label": "Bone name patterns", "type": "text",
              "default": ", ".join(DEFAULT_DYNA_PATTERNS),
              "help": "Comma/space separated SwingBone GameObject name patterns."},
-            {"name": "stiff", "label": "stiffnessForce", "type": "number", "default": "",
-             "help": "Blank = leave unchanged."},
-            {"name": "drag", "label": "dragForce", "type": "number", "default": "",
-             "help": "Blank = leave unchanged."},
-            {"name": "low_dy", "label": "low RotationLimit Δy", "type": "number", "default": "0"},
-            {"name": "low_dz", "label": "low RotationLimit Δz", "type": "number", "default": "0"},
-            {"name": "high_dy", "label": "high RotationLimit Δy", "type": "number", "default": "0"},
-            {"name": "high_dz", "label": "high RotationLimit Δz", "type": "number", "default": "0"},
-            {"name": "use_character_specific", "label": "Auto per-character jiggle", "type": "checkbox",
-             "default": False, "help": "Detect the character and tag the output with its jiggleN tier."},
+            {"name": "_phys_preset", "label": "Physics feel (preset)", "type": "preset",
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Softer (0.01 / 0.2)", "set": {"stiff": "0.01", "drag": "0.2"}},
+                 {"label": "Soft (0.02 / 0.3)", "set": {"stiff": "0.02", "drag": "0.3"}},
+                 {"label": "Firm (0.05 / 0.5)", "set": {"stiff": "0.05", "drag": "0.5"}},
+             ],
+             "help": "Fills stiffnessForce / dragForce below; you can still fine-tune."},
+            {"name": "stiff", "label": "stiffnessForce", "type": "number", "default": "0.02",
+             "help": "Blank = leave unchanged. Desktop default 0.02 (the Soft feel)."},
+            {"name": "drag", "label": "dragForce", "type": "number", "default": "0.3",
+             "help": "Blank = leave unchanged. Desktop default 0.3 (the Soft feel)."},
+            {"name": "low_dy", "label": "low RotationLimit Δy", "type": "number", "default": "-1"},
+            {"name": "low_dz", "label": "low RotationLimit Δz", "type": "number", "default": "-1"},
+            {"name": "high_dy", "label": "high RotationLimit Δy", "type": "number", "default": "1"},
+            {"name": "high_dz", "label": "high RotationLimit Δz", "type": "number", "default": "1"},
+            {"name": "jiggle_auto", "label": "Auto jiggle", "type": "select",
+             "options": [
+                 {"value": "off", "label": "Off"},
+                 {"value": "size", "label": "Match current breast size"},
+                 {"value": "character", "label": "Follow character (stock)"},
+             ], "default": "off",
+             "help": "Match current breast size = follow the size already in the bundle "
+             "(best after resizing). Follow character = the character's stock tier."},
         ],
     },
     {
@@ -92,9 +172,30 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_size,
         "fields": [
-            *_common_io(),
+            *_common_io("_bust"),
             {"name": "breast_name", "label": "Scale node name", "type": "text",
              "default": DEFAULT_BREAST_NAME},
+            {"name": "_size_preset", "label": "Size preset (by character)", "type": "preset",
+             # canonical in-game sizes; see BREAST_*_PRESETS in sifas_breast_tuner.py
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Rina  (0.61, 0.91, 0.85)", "set": {"set_x": "0.61", "set_y": "0.91", "set_z": "0.85"}},
+                 {"label": "Nico  (0.64, 0.94, 0.88)", "set": {"set_x": "0.64", "set_y": "0.94", "set_z": "0.88"}},
+                 {"label": "Rin  (0.72, 0.95, 0.90)", "set": {"set_x": "0.72", "set_y": "0.95", "set_z": "0.90"}},
+                 {"label": "Umi / Ruby / Kasumi  (0.80, 0.96, 0.92)", "set": {"set_x": "0.80", "set_y": "0.96", "set_z": "0.92"}},
+                 {"label": "Honoka / Maki  (0.90, 0.98, 0.96)", "set": {"set_x": "0.90", "set_y": "0.98", "set_z": "0.96"}},
+                 {"label": "Yoshiko / Shioriko  (0.95, 0.99, 0.98)", "set": {"set_x": "0.95", "set_y": "0.99", "set_z": "0.98"}},
+                 {"label": "Chika / You / Ayumu  (1.04, 1.02, 1.04)", "set": {"set_x": "1.04", "set_y": "1.02", "set_z": "1.04"}},
+                 {"label": "Hanayo / Setsuna  (1.08, 1.04, 1.08)", "set": {"set_x": "1.08", "set_y": "1.04", "set_z": "1.08"}},
+                 {"label": "Hanamaru / Ai  (1.12, 1.06, 1.12)", "set": {"set_x": "1.12", "set_y": "1.06", "set_z": "1.12"}},
+                 {"label": "Lanzhu  (1.14, 1.07, 1.14)", "set": {"set_x": "1.14", "set_y": "1.07", "set_z": "1.14"}},
+                 {"label": "Eli / Kanan / Kanata  (1.16, 1.08, 1.16)", "set": {"set_x": "1.16", "set_y": "1.08", "set_z": "1.16"}},
+                 {"label": "Mari  (1.20, 1.10, 1.20)", "set": {"set_x": "1.20", "set_y": "1.10", "set_z": "1.20"}},
+                 {"label": "Karin  (1.22, 1.11, 1.22)", "set": {"set_x": "1.22", "set_y": "1.11", "set_z": "1.22"}},
+                 {"label": "Nozomi  (1.30, 1.15, 1.30)", "set": {"set_x": "1.30", "set_y": "1.15", "set_z": "1.30"}},
+                 {"label": "Emma  (1.30, 1.18, 1.30)", "set": {"set_x": "1.30", "set_y": "1.18", "set_z": "1.30"}},
+             ],
+             "help": "Fills the X/Y/Z scale below with a character's in-game breast size."},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
                   help_first="Absolute scale; blank to skip this axis."),
             *_xyz("add Δ", ("add_x", "add_y", "add_z"), default="0"),
@@ -107,9 +208,17 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_skirt,
         "fields": [
-            *_common_io(),
+            *_common_io("_skirt"),
             {"name": "patterns", "label": "Skirt GO name patterns", "type": "text",
              "default": ", ".join(DEFAULT_SKIRT_PATTERNS)},
+            {"name": "_len_preset", "label": "Length preset", "type": "preset",
+             "options": [
+                 {"label": "(custom)", "set": {}},
+                 {"label": "Shorter (0.85)", "set": {"set_x": "0.85", "set_y": "0.85", "set_z": "0.85"}},
+                 {"label": "Longer (1.15)", "set": {"set_x": "1.15", "set_y": "1.15", "set_z": "1.15"}},
+                 {"label": "Reset (1.0)", "set": {"set_x": "1.0", "set_y": "1.0", "set_z": "1.0"}},
+             ],
+             "help": "Skirts usually scale uniformly; this fills X/Y/Z together."},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
                   help_first="Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer."),
             *_xyz("add Δ", ("add_x", "add_y", "add_z"), default="0"),
@@ -122,11 +231,14 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_texture,
         "fields": [
-            _in_single(), _in_batch(), _out_dir(), *_prefix_suffix(),
+            _in_single(), _in_batch(), _out_dir(), *_prefix_suffix("_tex"),
             {"name": "img_folder", "label": "Image folder", "type": "dir", "required": True, "root": "home",
              "help": "Replacement images named after the texture (e.g. ch0107_co0001_body.png)."},
             {"name": "format", "label": "Texture format", "type": "select",
-             "options": TEXTURE_FORMATS, "default": "Keep Original"},
+             "options": TEXTURE_FORMATS, "default": "Keep Original",
+             "help": "In the phone app pick RGBA32 (uncompressed) or an ASTC format "
+                     "(what SIFAS uses — encoded on-device). ETC/DXT/BC and Keep "
+                     "Original need the desktop tools."},
             {"name": "recursive", "label": "Recurse subfolders", "type": "checkbox",
              "default": True, "mode": "batch"},
         ],
@@ -138,7 +250,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_hips,
         "fields": [
-            *_common_io(),
+            *_common_io("_hips"),
             {"name": "target_go_name", "label": "Scale node name", "type": "text",
              "default": DEFAULT_HIPS_NAME},
             *_xyz("set scale", ("set_x", "set_y", "set_z"),
@@ -157,6 +269,16 @@ TOOLS = [
             {"name": "mode_select", "label": "Repair mode", "type": "select",
              "options": NODE_SCALING_MODES, "default": "rebase",
              "help": "rebase = re-anchor to current local; neutralize = reset; none = scan only."},
+            {"name": "set_entries", "label": "Edit entries (advanced, single-file)", "type": "textarea",
+             "default": "",
+             "help": "One per line, same grammar as the desktop --set: "
+             "'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. Edits existing entries. "
+             "Ignored in batch (auto-repair only)."},
+            {"name": "add_entries", "label": "Add entries (advanced, single-file)", "type": "textarea",
+             "default": "",
+             "help": "One per line, same grammar as the desktop --add: "
+             "'Bone;scaled=x,y,z;kind=scale'. Adds a new entry for another bone "
+             "(kind defaults to scale; origin defaults to the bone's current local)."},
         ],
     },
     {
@@ -166,7 +288,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_upleg,
         "fields": [
-            *_common_io(),
+            *_common_io("_collider"),
             {"name": "patterns", "label": "Bone name patterns", "type": "text",
              "default": ", ".join(DEFAULT_UPLEG_PATTERNS)},
             {"name": "set_radius", "label": "set radius", "type": "number", "default": "",
@@ -174,6 +296,14 @@ TOOLS = [
             {"name": "add_radius", "label": "add radius Δ", "type": "number", "default": "0"},
             *_xyz("set offset", ("set_off_x", "set_off_y", "set_off_z")),
             *_xyz("add offset Δ", ("add_off_x", "add_off_y", "add_off_z"), default="0"),
+            {"name": "radius_min", "label": "clamp radius min", "type": "number", "default": "",
+             "help": "Blank = no lower bound."},
+            {"name": "radius_max", "label": "clamp radius max", "type": "number", "default": "",
+             "help": "Blank = no upper bound."},
+            *_xyz("clamp offset min", ("off_min_x", "off_min_y", "off_min_z"),
+                  help_first="Per-axis lower bound; blank = free."),
+            *_xyz("clamp offset max", ("off_max_x", "off_max_y", "off_max_z"),
+                  help_first="Per-axis upper bound; blank = free."),
         ],
     },
     {
@@ -185,7 +315,8 @@ TOOLS = [
         "fields": [
             _in_single(), _in_batch(),
             {"name": "out_dir", "label": "Output folder (zips)", "type": "dir", "required": True,
-             "root": "modded"},
+             "root": "suit", "help": "Defaults to the installer's suit/ drop folder, so "
+             "Install Costume picks the pack up right away."},
             {"name": "auto_chara_id", "label": "Auto-detect character ID", "type": "checkbox", "default": True},
             {"name": "manual_chara_id", "label": "Manual character ID", "type": "number", "default": "0",
              "help": "Used when auto-detect is off or fails."},
@@ -207,11 +338,41 @@ TOOLS = [
              "root": "extracted"},
             {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True, "root": "modded"},
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_transplant"},
-            {"name": "preserve_physics", "label": "Preserve costume physics", "type": "checkbox", "default": False},
-            {"name": "realign", "label": "Realign bones", "type": "checkbox", "default": True},
-            {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
-            {"name": "worldspace", "label": "World-space normalize", "type": "checkbox", "default": True},
-            {"name": "fix_nodescaling", "label": "Fix node scaling", "type": "checkbox", "default": True},
+            # option surface + defaults mirror the desktop tool's GUI (costume_transplant.py run_gui)
+            {"name": "preserve_physics",
+             "label": "Preserve appendage jiggle physics (collar / tie / wings)",
+             "type": "checkbox", "default": True},
+            {"name": "restore_collision",
+             "label": "Restore body collision for those bones",
+             "type": "checkbox", "default": True,
+             "help": "Only takes effect when appendage jiggle physics is preserved."},
+            {"name": "realign",
+             "label": "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)",
+             "type": "checkbox", "default": True},
+            {"name": "worldspace",
+             "label": "World-space the body mesh (so swinging ribbon/skirt render correctly)",
+             "type": "checkbox", "default": True},
+            {"name": "fix_nodescaling",
+             "label": "Re-anchor NodeScaling to realigned bones (keeps body shaping; "
+                      "stops the in-game ribbon dropping to the chest)",
+             "type": "checkbox", "default": True},
+            {"name": "donor_costume_physics",
+             "label": "Use the donor's swing physics for shared costume parts (skirt / "
+                      "ribbon) — the bust always stays the wearer's",
+             "type": "checkbox", "default": True},
+            {"name": "mask_handling",
+             "label": "Special handling for masked / board-face models (Rina-chan board): "
+                      "auto-detect, protect head + body-shape scaling",
+             "type": "checkbox", "default": True},
+            {"name": "no_textures",
+             "label": "Transplant without the body textures (keep the wearer's own texture; "
+                      "only the costume mesh + bones are grafted)",
+             "type": "checkbox", "default": False},
+            {"name": "scale_swing_physics",
+             "label": "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/"
+                      "tail proportions on the Rina board; no-op on normal targets)",
+             "type": "checkbox", "default": True},
+            *_match_fields(),
         ],
     },
     {
@@ -222,12 +383,36 @@ TOOLS = [
         "run": run_mesh_baker,
         "fields": [
             *_common_io("_baked"),
-            {"name": "target_spec", "label": "Target spec(s)", "type": "text", "default": "",
-             "help": "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
-            {"name": "thigh", "label": "Thigh preset (FROM:TO)", "type": "text", "default": "",
-             "help": "e.g. slim:thick (optional; slim/default/thick)."},
+            {"name": "thigh", "label": "Thigh preset", "type": "select", "default": "",
+             "options": [
+                 {"value": "", "label": "(none)"},
+                 {"value": "slim:default", "label": "slim → default"},
+                 {"value": "slim:thick", "label": "slim → thick"},
+                 {"value": "default:slim", "label": "default → slim"},
+                 {"value": "default:thick", "label": "default → thick"},
+                 {"value": "thick:slim", "label": "thick → slim"},
+                 {"value": "thick:default", "label": "thick → default"},
+             ],
+             "help": "One-click thigh resize: scales both UpLeg bones with child compensation."},
+            {"name": "target_spec", "label": "Target spec(s) — advanced", "type": "text", "default": "",
+             "help": "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
+            {"name": "spine_comp", "label": "Spine compensation target", "type": "select",
+             "default": "spine2",
+             "options": [
+                 {"value": "spine2", "label": "Spine2 (widens Spine+Spine1)"},
+                 {"value": "spine1", "label": "Spine1"},
+                 {"value": "both", "label": "Spine1 + Spine2"},
+                 {"value": "auto", "label": "Auto"},
+             ],
+             "help": "Which child bone absorbs the inverse scale for compensated Spine* "
+             "targets. Only affects Spine* bakes."},
             {"name": "recompute_normals", "label": "Recompute normals", "type": "checkbox", "default": True},
             {"name": "hierarchical", "label": "Hierarchical skinning", "type": "checkbox", "default": True},
+            {"name": "include_hidden", "label": "Include hidden meshes (foot_shadow · Hair · Face)",
+             "type": "checkbox", "default": False},
+            {"name": "mesh_names", "label": "Only these meshes (advanced)", "type": "textarea",
+             "default": "",
+             "help": "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes."},
         ],
     },
     {
@@ -251,7 +436,19 @@ TOOLS = [
             {"name": "import_new_objects", "label": "Import new objects (transplant grafts)",
              "type": "checkbox", "default": True},
             {"name": "name_include", "label": "Name include (optional)", "type": "text", "default": ""},
-            {"name": "name_exclude", "label": "Name exclude (optional)", "type": "text", "default": ""},
+            {"name": "name_exclude", "label": "Name exclude (optional)", "type": "text",
+             "default": "ch*_co*_head, ch*_co*_head_rim, dropshadow, foot_shadow_Plane",
+             "help": "Objects whose m_Name matches are left as the target's (protects the "
+             "wearer's face/head + shadows). Desktop default shown."},
+            {"name": "script_exclude", "label": "Script class exclude (MonoBehaviour)", "type": "text",
+             "default": "SwingBone, SwingCollider",
+             "help": "Donor MonoBehaviours of these script classes are not copied, so the "
+             "wearer keeps its own swing physics. Desktop default shown."},
+            {"name": "digit_agnostic", "label": "Digit-agnostic name matching", "type": "checkbox",
+             "default": True,
+             "help": "Treat digits as wildcards, so ch0001_* matches any character id."},
+            {"name": "name_mode", "label": "Name match mode", "type": "select",
+             "options": ["glob", "regex"], "default": "glob"},
         ],
     },
     {
@@ -267,6 +464,9 @@ TOOLS = [
              "help": "Renamed copies go here."},
             {"name": "include_costume_id", "label": "Include costume ID", "type": "checkbox", "default": False},
             {"name": "remove_special_chars", "label": "Remove special characters", "type": "checkbox", "default": False},
+            {"name": "remove_original_name", "label": "Remove original filename completely",
+             "type": "checkbox", "default": False,
+             "help": "Name purely from the texture; collisions are auto-numbered so nothing is overwritten."},
             {"name": "filename_length_limit", "label": "Filename length limit", "type": "number", "default": "",
              "help": "Blank = no limit."},
         ],
@@ -281,7 +481,119 @@ TOOLS = [
             *_common_io("_fixed"),
         ],
     },
+    {
+        "id": "accessory_unclip",
+        "label": "Accessory Un-clip",
+        "description": "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).",
+        "modes": ["single"],
+        "run": run_accessory_unclip,
+        "fields": [
+            _in_single(), _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_unclip"},
+            {"name": "strength", "label": "Lift strength", "type": "number", "default": "1.0",
+             "help": "1.0 = match the bust exactly."},
+            {"name": "overlap", "label": "Min bust overlap", "type": "number", "default": "0.15",
+             "help": "Only lift parts overlapping the bust by at least this fraction."},
+            {"name": "close_gaps", "label": "Also pull in when shrunk", "type": "checkbox", "default": False},
+            {"name": "anchors", "label": "Force anchors (optional)", "type": "text", "default": "",
+             "help": "Comma-separated bone names to force; blank = auto-detect."},
+        ],
+    },
+    {
+        "id": "skin_tone",
+        "label": "Skin Tone Changer",
+        "description": "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).",
+        "modes": ["single", "batch"],
+        "run": run_skintone,
+        "fields": [
+            {"name": "in_path", "label": "Input image", "type": "path", "required": True,
+             "mode": "single", "root": "modded", "help": "A texture PNG/JPG (not a bundle)."},
+            {"name": "in_dir", "label": "Input folder", "type": "dir", "required": True,
+             "mode": "batch", "root": "modded"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_tone"},
+            {"name": "src", "label": "From tone", "type": "select", "options": SRC_TONES, "default": "auto",
+             "help": "auto = detect from the image."},
+            {"name": "dst", "label": "To tone", "type": "select", "options": TONES, "default": "bright"},
+            {"name": "skin_only", "label": "Skin only (keep costume colours)", "type": "checkbox", "default": False},
+            {"name": "strength", "label": "Strength (0–1)", "type": "number", "default": "1.0"},
+            {"name": "recursive", "label": "Recurse subfolders", "type": "checkbox", "default": True, "mode": "batch"},
+        ],
+    },
+    {
+        "id": "costume_part_transplant",
+        "label": "Costume Part Transplant",
+        "description": "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.",
+        "modes": ["single"],
+        "run": run_costume_part_transplant,
+        "fields": [
+            {"name": "donor", "label": "Donor bundle (has the part)", "type": "path", "required": True,
+             "root": "extracted"},
+            {"name": "target", "label": "Target bundle (wearer)", "type": "path", "required": True,
+             "root": "extracted"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_part"},
+            {"name": "part_root", "label": "Part root bone (optional)", "type": "text", "default": "",
+             "help": "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part."},
+            {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
+            {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
+            {"name": "new_submesh", "label": "Add the part as its own sub-mesh + material (keep its texture)",
+             "type": "checkbox", "default": False},
+            {"name": "worldspace", "label": "World-space the body mesh (so swinging parts render correctly)",
+             "type": "checkbox", "default": True},
+            {"name": "fix_nodescaling", "label": "Re-anchor NodeScaling (keep the wearer's body shaping)",
+             "type": "checkbox", "default": True},
+            {"name": "patch_texture", "label": "Patch part texture onto target atlas", "type": "checkbox", "default": False},
+        ],
+    },
+    {
+        "id": "lower_body_swap",
+        "label": "Lower Body Swap",
+        "description": "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).",
+        "modes": ["single", "batch"],
+        "run": run_lower_body_swap,
+        "fields": [
+            {"name": "donor", "label": "Donor bundle (good lower body)", "type": "path", "required": True,
+             "root": "extracted"},
+            {"name": "target", "label": "Target bundle (to fix)", "type": "path", "required": True,
+             "mode": "single", "root": "extracted"},
+            {"name": "in_dir", "label": "Target folder", "type": "dir", "required": True,
+             "mode": "batch", "root": "extracted"},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_lower"},
+            {"name": "region", "label": "Region", "type": "select",
+             "options": ["lower", "lower_belly", "central"], "default": "lower"},
+            {"name": "cut_low", "label": "Cut low Y (optional)", "type": "number", "default": "",
+             "help": "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
+            {"name": "cut_high", "label": "Cut high Y (optional)", "type": "number", "default": "",
+             "help": "Blank = no upper limit. e.g. 0.96 = just below waist."},
+            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True},
+            {"name": "open_cap", "label": "Open skirt cap lift (0 = off)", "type": "number", "default": "0",
+             "help": "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap."},
+            *_match_fields(),
+        ],
+    },
 ]
+
+
+def _enable_multi(tools):
+    """Give every tool that accepts a single-file input a 'multi' (multi-select)
+    mode as well, without touching each tool: insert 'multi' after 'single' and a
+    matching in_paths picker right after the in_path field. The server runs each
+    selected file through the tool's own single path (see common.run_multi)."""
+    for t in tools:
+        modes = t.get("modes")
+        fields = t.get("fields", [])
+        idx = next((k for k, f in enumerate(fields) if f.get("name") == "in_path"), None)
+        if not modes or "single" not in modes or "multi" in modes or idx is None:
+            continue
+        i = modes.index("single")
+        t["modes"] = modes[:i + 1] + ["multi"] + modes[i + 1:]
+        fields.insert(idx + 1, _in_multi(root=fields[idx].get("root", "extracted")))
+    return tools
+
+
+_enable_multi(TOOLS)
 
 _BY_ID = {t["id"]: t for t in TOOLS}
 
@@ -320,4 +632,13 @@ def _translate_field(field, lang):
         f["label"] = i18n.tr(f["label"], lang=lang)
     if "help" in f:
         f["help"] = i18n.tr(f["help"], lang=lang)
+    # Preset option labels are display-only (the value is the `set` dict), so
+    # they are safe to translate; normal select options are left untranslated
+    # because their values double as dispatch identifiers.
+    if f.get("type") == "preset" and isinstance(f.get("options"), list):
+        f["options"] = [
+            {**o, "label": i18n.tr(o["label"], lang=lang)}
+            if isinstance(o, dict) and "label" in o else o
+            for o in f["options"]
+        ]
     return f

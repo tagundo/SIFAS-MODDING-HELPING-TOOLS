@@ -12,10 +12,13 @@ SUPPORTED_IMG_EXTS = [".png", ".jpg", ".jpeg", ".bmp", ".tga"]
 SUPPORTED_BUNDLE_EXTS = [".bundle", ".unity3d", ".ab", ".assets", ""]
 
 # Common Texture2D formats offered in the UI ("Keep Original" leaves it untouched).
+# ASTC uses the real UnityPy enum names (ASTC_RGBA_*); SIFAS Android textures are
+# ASTC, and the app can encode these via a bundled astcenc CLI (see below).
 TEXTURE_FORMATS = [
     "Keep Original", "RGBA32", "RGB24", "ARGB32", "RGB565",
-    "DXT1", "DXT5", "BC4", "BC5", "BC7",
-    "ETC_RGB4", "ETC2_RGBA8", "ASTC_4x4", "ASTC_6x6", "ASTC_8x8",
+    "ASTC_RGBA_4x4", "ASTC_RGBA_5x5", "ASTC_RGBA_6x6", "ASTC_RGBA_8x8",
+    "ASTC_RGBA_10x10", "ASTC_RGBA_12x12",
+    "DXT1", "DXT5", "BC4", "BC5", "BC7", "ETC_RGB4", "ETC2_RGBA8",
 ]
 
 
@@ -83,6 +86,105 @@ def iter_bundle_files(input_root, recursive):
                     yield fp
 
 
+# Formats encoded with pure PIL (no native codec) — work everywhere incl. the app.
+_UNCOMPRESSED_FORMATS = {"RGBA32", "RGB24", "ARGB32", "RGB565"}
+
+
+def _codec_available():
+    """The full native codec stack (needed for ETC/DXT/BC and for decoding)."""
+    try:
+        import texture2ddecoder  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _astcenc_bin():
+    """Path to a bundled astcenc CLI encoder (the app sets ASTCENC_BIN), or None."""
+    b = os.environ.get("ASTCENC_BIN")
+    return b if (b and os.path.isfile(b)) else None
+
+
+def _astc_header(bx, by, width, height):
+    """16-byte .astc file header: magic + block dims (x,y,z) + image dims (x,y,z)."""
+    return (bytes([0x13, 0xAB, 0xA1, 0x5C, bx, by, 1])
+            + width.to_bytes(3, "little") + height.to_bytes(3, "little")
+            + (1).to_bytes(3, "little"))
+
+
+def ensure_astc_cli():
+    """When UnityPy's native astc_encoder is absent but the app bundles an astcenc
+    CLI (ASTCENC_BIN), wire ASTC *encode* (compress_astc) and *decode* (CONV_TABLE
+    entries) through that CLI so ASTC texture import AND thumbnail decode work
+    on-device. UnityPy stores raw ASTC blocks (== astcenc output minus the 16-byte
+    .astc header), so this is byte-compatible. No-op on desktop / if unavailable.
+    Idempotent. Returns True if the CLI bridge is active (or the native codec is)."""
+    import math
+    import subprocess
+    import tempfile
+    from PIL import Image
+    from UnityPy.export import Texture2DConverter as T
+
+    if getattr(T, "astc_encoder", None) is not None:
+        return True  # native Python encoder present; use it
+    binp = _astcenc_bin()
+    if not binp:
+        return False
+    if getattr(T, "_astc_cli_installed", False):
+        return True
+
+    def compress_astc_cli(data, width, height, target_texture_format):
+        bs = T.TEXTURE_FORMAT_BLOCK_SIZE_TABLE[target_texture_format]
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.png")
+            dst = os.path.join(td, "out.astc")
+            Image.frombytes("RGBA", (width, height), data, "raw", "RGBA").save(src)
+            # astcenc -cl <in> <out> <blocksize> <quality>   (LDR, matches UnityPy)
+            subprocess.run([binp, "-cl", src, dst, f"{bs[0]}x{bs[1]}", "-fast"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            with open(dst, "rb") as f:
+                return f.read()[16:]  # strip the 16-byte header -> raw blocks
+
+    def astc_decode_cli(image_data, width, height, block_size):
+        bx, by = block_size
+        tex_size = math.ceil(width / bx) * math.ceil(height / by) * 16
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.astc")
+            dst = os.path.join(td, "out.png")
+            with open(src, "wb") as f:
+                f.write(_astc_header(bx, by, width, height) + bytes(image_data[:tex_size]))
+            subprocess.run([binp, "-dl", src, dst],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return Image.open(dst).convert("RGBA")
+
+    T.compress_astc = compress_astc_cli
+    # CONV_TABLE holds direct function refs, so patch each ASTC decode entry.
+    for tf, (fn, args) in list(T.CONV_TABLE.items()):
+        if tf.name.startswith("ASTC"):
+            T.CONV_TABLE[tf] = (astc_decode_cli, args)
+    T._astc_cli_installed = True
+    return True
+
+
+def _validate_texture_format(fmt):
+    """Decide whether *fmt* can be encoded on this platform, wiring up the ASTC CLI
+    encoder when needed. Raise an actionable error otherwise."""
+    if fmt in _UNCOMPRESSED_FORMATS:
+        return  # pure PIL, no codec
+    if _codec_available():
+        return  # full native stack present (desktop)
+    if fmt.startswith("ASTC"):
+        if ensure_astc_cli():
+            return
+        raise RuntimeError(
+            f"'{fmt}': no ASTC encoder available. (The app ships astcenc; if you see "
+            "this, ASTCENC_BIN isn't set.)")
+    raise RuntimeError(
+        f"'{fmt}' needs native codecs not available in the phone app. Use an "
+        "uncompressed format (RGBA32) or an ASTC format — both work on-device — "
+        "for texture import; ETC/DXT/BC and 'Keep Original' need the desktop tools.")
+
+
 def run_texture(job, params):
     from pathlib import Path
     from webtools.tools.common import batch_out_path, single_out_path
@@ -95,6 +197,7 @@ def run_texture(job, params):
 
     if not img_folder:
         raise ValueError("Image folder is required for texture import")
+    _validate_texture_format(fmt)
 
     if params.get("mode") == "batch":
         in_dir = params.get("in_dir")

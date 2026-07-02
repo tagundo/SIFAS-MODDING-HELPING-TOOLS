@@ -68,7 +68,8 @@ def test_jobs():
     types = [e["type"] for e in events]
     check("got progress+log+done", types.count("log") == 3 and types.count("progress") == 3 and types[-1] == "done")
     check("terminal status done", events[-1].get("status") == "done")
-    check("summary propagated", events[-1].get("summary") == "summary-xyz")
+    # the manager appends a "(took N.Ns)" timing suffix to the tool's summary
+    check("summary propagated", (events[-1].get("summary") or "").startswith("summary-xyz"))
 
 
 def _get(url):

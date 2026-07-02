@@ -13,6 +13,9 @@ def allowed_roots() -> dict:
     roots = {}
     roots["extracted"] = default_sukusta_dir("extracted")
     roots["modded"] = default_sukusta_dir("modded")
+    # The costume installer's drop folder — the packer writes finished .zip packs
+    # here so Install Costume picks them up without a manual move.
+    roots["suit"] = default_sukusta_dir("suit")
     base = os.environ.get("SUKUSTA_DIR")
     if base:
         roots["sukusta"] = os.path.expanduser(base)

@@ -165,6 +165,11 @@ class Handler(BaseHTTPRequestHandler):
                 val = params.get(field["name"])
                 if val and not filebrowser.is_within_allowed(val):
                     raise PermissionError(f"{field['name']} is outside the allowed roots")
+            elif field["type"] == "paths":
+                for p in str(params.get(field["name"]) or "").split("\n"):
+                    p = p.strip()
+                    if p and not filebrowser.is_within_allowed(p):
+                        raise PermissionError(f"{field['name']} is outside the allowed roots")
 
     def _api_run(self, tool_id):
         tool = registry.get_tool(tool_id)
@@ -178,7 +183,11 @@ class Handler(BaseHTTPRequestHandler):
 
         job = MANAGER.create(tool_id)
         run_fn = tool["run"]
-        MANAGER.run_async(job, lambda j: run_fn(j, params))
+        if params.get("mode") == "multi":
+            from webtools.tools.common import run_multi
+            MANAGER.run_async(job, lambda j: run_multi(run_fn, j, params))
+        else:
+            MANAGER.run_async(job, lambda j: run_fn(j, params))
         return self._send_json({"job_id": job.id})
 
     def _api_events(self, job_id):
@@ -188,17 +197,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")  # disable any proxy buffering
         self.send_header("Connection", "close")
         self.end_headers()
+        # Some Android WebViews buffer a streamed response until a few KB have
+        # arrived, which makes every log line appear at once only when the job
+        # finishes. A padding comment flushed up front primes the pipe so events
+        # are delivered live from the first one.
+        self.wfile.write(b":" + b" " * 2048 + b"\n\n")
+        self.wfile.flush()
 
         index = 0
         try:
             while True:
-                event = job.event_at(index, timeout=10.0)
+                event = job.event_at(index, timeout=2.0)
                 if event is None:
                     if job.is_done and index >= job.event_count:
                         break
                     # heartbeat comment keeps proxies/WebViews from dropping us
+                    # (and keeps their buffer flushing) — kept short for liveness
                     self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
                     continue

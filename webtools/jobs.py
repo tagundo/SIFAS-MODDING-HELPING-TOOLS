@@ -6,6 +6,7 @@ the SSE stream slightly after the job starts still replays every event from the
 beginning - nothing is lost, and the stream can be reopened.
 """
 import threading
+import time
 import traceback
 import uuid
 
@@ -19,6 +20,7 @@ class Job:
         self._events = []                 # list of dicts
         self._cond = threading.Condition()
         self._done = False
+        self._t0 = time.monotonic()       # for the [+s] elapsed stamp on log lines
 
     # ---- producer side (called from the worker thread / tool callbacks) ----
     def emit(self, event: dict):
@@ -28,8 +30,14 @@ class Job:
                 self._done = True
             self._cond.notify_all()
 
+    def elapsed(self):
+        return time.monotonic() - self._t0
+
     def log(self, line):
-        self.emit({"type": "log", "line": str(line)})
+        # stamp each line with the time since the job started, so a slow stage is
+        # obvious from the gap between consecutive lines (the WebUI has no other
+        # way to show where the time goes on a long mobile run).
+        self.emit({"type": "log", "line": f"[+{self.elapsed():5.1f}s] {line}"})
 
     def progress(self, done, total):
         try:
@@ -91,6 +99,8 @@ class JobManager:
             job.status = "running"
             try:
                 summary = fn(job) or ""
+                took = f"(took {job.elapsed():.1f}s)"
+                summary = f"{summary} {took}".strip() if summary else took
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
                     job.emit({"type": "done", "status": "cancelled", "summary": summary})

@@ -60,6 +60,12 @@ _TABLES = {
         "Cancel": "취소",
         "Single file": "단일 파일",
         "Batch folder": "일괄(폴더)",
+        "Selected files": "선택한 파일",
+        "Input bundles": "입력 번들 (여러 개)",
+        "Pick several bundles; each is processed like Single.":
+            "번들 여러 개를 고르세요. 각 파일이 단일과 동일하게 처리됩니다.",
+        "Add file": "파일 추가",
+        "No files selected.": "선택된 파일 없음.",
         "Loading…": "불러오는 중…",
         "Pick a folder first.": "먼저 폴더를 선택하세요.",
         "No bundles here.": "여기에는 번들이 없습니다.",
@@ -104,6 +110,63 @@ _TABLES = {
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID 기준으로 공여 번들의 일치 오브젝트를 대상에 복사합니다(iOS/APK 변형 이전).",
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "번들을 ch####_co#### 텍스처 이름으로 변경해 폴더에 복사합니다(원본 유지).",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "올바른 FBX 익스포트를 위해 스킨드 메시를 월드 공간으로 정규화합니다(게임 내 렌더링은 그대로).",
+        "Character Body Info": "캐릭터 신체 정보",
+        "Reference: character ID, skin tone, breast size + jiggle tier, thigh type, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
+            "참고용: 캐릭터 ID, 스킨톤, 가슴 크기 + jiggle 등급, 허벅지 타입, 신체 스케일링(Summer Splash 2020 코스튬; Mia/Lanzhu는 Fest 3rd UR). 결과는 로그에 표시됩니다.",
+        "Character": "캐릭터",
+        "All characters": "전체 캐릭터",
+        "Accessory Un-clip": "액세서리 클리핑 해제",
+        "Skin Tone Changer": "스킨톤 변경",
+        "Costume Part Transplant": "코스튬 부분 이식",
+        "Lower Body Swap": "하체 교체",
+        "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).":
+            "리사이즈된 바디에 이식한 액세서리가 파묻히는 것을 방지합니다(가슴 장식을 버스트에 맞춰 올림).",
+        "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).":
+            "바디/핸드 텍스처 이미지의 스킨톤을 공식 톤 클래스 간에 변경합니다(번들이 아닌 PNG 이미지 대상).",
+        "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.":
+            "코스튬의 한 부분(날개/꼬리/망토)만 공여 모델에서 대상 착용자에게 옮깁니다.",
+        "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
+            "하체 스킨이 삭제된 대상에 공여의 정상 하체를 이식합니다('허벅지 분리' 수정).",
+        # Accessory Un-clip
+        "Lift strength": "올림 강도",
+        "1.0 = match the bust exactly.": "1.0 = 버스트에 정확히 맞춤.",
+        "Min bust overlap": "최소 버스트 겹침",
+        "Only lift parts overlapping the bust by at least this fraction.":
+            "버스트와 이 비율 이상 겹치는 부분만 올립니다.",
+        "Also pull in when shrunk": "축소 시에도 끌어당기기",
+        "Force anchors (optional)": "앵커 강제 지정 (선택)",
+        "Comma-separated bone names to force; blank = auto-detect.":
+            "강제할 본 이름(쉼표 구분); 비우면 자동 감지.",
+        # Skin Tone Changer
+        "Input image": "입력 이미지",
+        "A texture PNG/JPG (not a bundle).": "텍스처 PNG/JPG (번들 아님).",
+        "From tone": "원본 톤",
+        "To tone": "대상 톤",
+        "auto = detect from the image.": "auto = 이미지에서 자동 감지.",
+        "Skin only (keep costume colours)": "피부만 (의상 색상 유지)",
+        "Strength (0–1)": "강도 (0–1)",
+        # Costume Part Transplant
+        "Donor bundle (has the part)": "공여 번들 (해당 부분 보유)",
+        "Target bundle (wearer)": "대상 번들 (착용자)",
+        "Part root bone (optional)": "부분 루트 본 (선택)",
+        "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
+            "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
+        "Preserve part physics": "부분 물리 유지",
+        "Patch part texture onto target atlas": "부분 텍스처를 대상 아틀라스에 패치",
+        # Lower Body Swap
+        "Donor bundle (good lower body)": "공여 번들 (정상 하체)",
+        "Target bundle (to fix)": "대상 번들 (수정할 대상)",
+        "Region": "영역",
+        "Cut low Y (optional)": "하단 절단 Y (선택)",
+        "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "하단 절단의 월드 공간 Y; 비우면 바닥. 예: 0.50 = 무릎.",
+        "Cut high Y (optional)": "상단 절단 Y (선택)",
+        "Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "비우면 상한 없음. 예: 0.96 = 허리 바로 아래.",
+        "Exclude donor accessories": "공여 액세서리 제외",
+        # Breast physics parameter labels
+        "stiffnessForce": "강성 (stiffnessForce)",
+        "dragForce": "저항 (dragForce)",
         "Input bundle": "입력 번들",
         "Input folder": "입력 폴더",
         "Output folder": "출력 폴더",
@@ -116,6 +179,10 @@ _TABLES = {
         "high RotationLimit Δz": "high RotationLimit Δz",
         "Auto per-character jiggle": "캐릭터별 자동 흔들림",
         "Scale node name": "스케일 노드 이름",
+        "set scale": "스케일 설정",
+        "add Δ": "Δ 추가",
+        "set offset": "오프셋 설정",
+        "add offset Δ": "오프셋 Δ 추가",
         "set scale X": "스케일 설정 X",
         "set scale Y": "스케일 설정 Y",
         "set scale Z": "스케일 설정 Z",
@@ -147,7 +214,115 @@ _TABLES = {
         "Restore collision": "콜리전 복원",
         "World-space normalize": "월드 공간 정규화",
         "Fix node scaling": "노드 스케일링 수정",
+        # costume transplant - desktop GUI parity (translations from costume_transplant.py)
+        "Preserve appendage jiggle physics (collar / tie / wings)":
+            "부속물 흔들림 물리 유지 (옷깃 / 넥타이 / 날개)",
+        "Restore body collision for those bones": "해당 본의 바디 콜리전 복원",
+        "Only takes effect when appendage jiggle physics is preserved.":
+            "부속물 흔들림 물리 유지가 켜져 있을 때만 적용됩니다.",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "바디 본을 코스튬의 기본 포즈에 재정렬 (어긋난 리본/치마 보정)",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "바디 메시를 월드 공간으로 (흔들리는 리본/치마가 올바르게 렌더링되도록)",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "재정렬된 본에 NodeScaling 재고정 (체형 유지; 게임 내 리본이 가슴으로 처지는 현상 방지)",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "공유 코스튬 부위(치마 / 리본)에 공여의 스윙 물리 사용 — 가슴은 항상 착용자 것 유지",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "마스크 / 보드 얼굴 모델(리나쨩 보드) 특수 처리: 자동 감지, 머리 + 체형 스케일링 보호",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "바디 텍스처 없이 이식 (착용자의 텍스처 유지; 코스튬 메시 + 본만 이식)",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "체형 스케일된 대상에 스윙 물리 스케일 (리나 보드에서 치마/리본/날개/꼬리 비율 유지; 일반 대상엔 영향 없음)",
+        "Match thigh to target character": "허벅지를 대상 캐릭터에 맞춤",
+        "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
+            "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
+        "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
+            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경). 주의: 채색이 완벽하지 않아 의상 색 일부도 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경(Skin Tone Changer) 도구로 직접 수정하세요.",
+        "Donor skin tone": "공여 스킨톤",
+        "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
+            "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
+        # --- desktop-parity options added to existing tools ---
+        "Blank = leave unchanged. Desktop default 0.02 (the Soft feel).":
+            "비우면 변경 안 함. 데스크톱 기본값 0.02 (Soft 느낌).",
+        "Blank = leave unchanged. Desktop default 0.3 (the Soft feel).":
+            "비우면 변경 안 함. 데스크톱 기본값 0.3 (Soft 느낌).",
+        "Edit entries (advanced, single-file)": "항목 편집 (고급, 단일 파일)",
+        "One per line, same grammar as the desktop --set: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. Edits existing entries. Ignored in batch (auto-repair only).":
+            "한 줄에 하나, 데스크톱 --set 과 동일한 문법: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. 기존 항목을 편집합니다. 배치에서는 무시(자동 수리만).",
+        "Add entries (advanced, single-file)": "항목 추가 (고급, 단일 파일)",
+        "One per line, same grammar as the desktop --add: 'Bone;scaled=x,y,z;kind=scale'. Adds a new entry for another bone (kind defaults to scale; origin defaults to the bone's current local).":
+            "한 줄에 하나, 데스크톱 --add 와 동일한 문법: 'Bone;scaled=x,y,z;kind=scale'. 다른 본에 새 항목을 추가합니다(kind 기본 scale, origin 기본은 본의 현재 local).",
+        "clamp radius min": "반경 클램프 최소",
+        "Blank = no lower bound.": "비우면 하한 없음.",
+        "clamp radius max": "반경 클램프 최대",
+        "Blank = no upper bound.": "비우면 상한 없음.",
+        "clamp offset min": "오프셋 클램프 최소",
+        "Per-axis lower bound; blank = free.": "축별 하한; 비우면 제한 없음.",
+        "clamp offset max": "오프셋 클램프 최대",
+        "Per-axis upper bound; blank = free.": "축별 상한; 비우면 제한 없음.",
+        "Spine compensation target": "스파인 보정 대상",
+        "Which child bone absorbs the inverse scale for compensated Spine* targets. Only affects Spine* bakes.":
+            "보정된 Spine* 타깃에서 역스케일을 흡수할 자식 본. Spine* 베이크에만 영향.",
+        "Spine2 (widens Spine+Spine1)": "Spine2 (Spine+Spine1 확장)",
+        "Spine1": "Spine1",
+        "Spine1 + Spine2": "Spine1 + Spine2",
+        "Auto": "자동",
+        "Include hidden meshes (foot_shadow · Hair · Face)": "숨은 메시 포함 (foot_shadow · Hair · Face)",
+        "Only these meshes (advanced)": "이 메시만 (고급)",
+        "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes.":
+            "쉼표/줄바꿈으로 구분한 메시 이름; 비우면 숨겨지지 않은 모든 스킨 메시.",
+        "Objects whose m_Name matches are left as the target's (protects the wearer's face/head + shadows). Desktop default shown.":
+            "m_Name 이 일치하는 오브젝트는 대상 것으로 유지(착용자의 얼굴/머리 + 그림자 보호). 데스크톱 기본값 표시.",
+        "Script class exclude (MonoBehaviour)": "스크립트 클래스 제외 (MonoBehaviour)",
+        "Donor MonoBehaviours of these script classes are not copied, so the wearer keeps its own swing physics. Desktop default shown.":
+            "이 스크립트 클래스의 공여 MonoBehaviour 는 복사하지 않아 착용자가 자신의 스윙 물리를 유지합니다. 데스크톱 기본값 표시.",
+        "Digit-agnostic name matching": "숫자 무시 이름 매칭",
+        "Treat digits as wildcards, so ch0001_* matches any character id.":
+            "숫자를 와일드카드로 처리하여 ch0001_* 가 모든 캐릭터 ID 에 일치.",
+        "Name match mode": "이름 매칭 모드",
+        "Remove original filename completely": "원본 파일명 완전 제거",
+        "Name purely from the texture; collisions are auto-numbered so nothing is overwritten.":
+            "텍스처만으로 이름 생성; 충돌 시 자동 번호로 덮어쓰기 방지.",
+        "Add the part as its own sub-mesh + material (keep its texture)":
+            "부위를 자체 서브메시 + 머티리얼로 추가 (텍스처 유지)",
+        "World-space the body mesh (so swinging parts render correctly)":
+            "바디 메시를 월드 공간으로 (흔들리는 부위가 올바르게 렌더링되도록)",
+        "Re-anchor NodeScaling (keep the wearer's body shaping)":
+            "NodeScaling 재고정 (착용자의 체형 유지)",
+        "Open skirt cap lift (0 = off)": "열린 치마 캡 리프트 (0 = 끔)",
+        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
+            "짧은 공여 하체가 구멍을 남기지 않도록 열린 캡을 들어올림; 0 = 평평한 캡.",
+        "Recolour skin only": "피부만 재색상화",
+        "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
+            "재색상화를 피부 영역으로 제한합니다. 가능하면 메시의 본 가중치를 사용해(치마/소매/리본/악세서리 제외) 실제 피부는 절대 빠뜨리지 않습니다. 주의: 몸통 본에 밀착된 옷(보디스)은 가슴 피부와 구분이 안 되어 색이 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경 도구로 직접 수정하세요. 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
+        "Also restrict by skin colour": "스킨색으로도 제한",
+        "Additionally require skin-like colour, so non-skin-coloured body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply shadowed skin — leave off if any real skin gets missed.":
+            "스킨색 조건을 추가로 요구해, 스킨색이 아닌 몸통 본 의상(예: 파란 보디스)은 건드리지 않습니다. 짙게 그늘진 피부는 빠질 수 있으니, 실제 피부가 누락되면 끄세요.",
         "Target spec(s)": "대상 스펙",
+        "Target spec(s) — advanced": "대상 스펙 — 고급",
+        "Thigh preset": "허벅지 프리셋",
+        "Physics feel (preset)": "물리 느낌 (프리셋)",
+        "Size preset (by character)": "크기 프리셋 (캐릭터별)",
+        "Length preset": "길이 프리셋",
+        "One-click thigh resize: scales both UpLeg bones with child compensation.":
+            "원클릭 허벅지 크기조절: 양쪽 UpLeg 본을 자식 보정과 함께 스케일합니다.",
+        "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1":
+            "선택: 수동 본, 한 줄에 하나씩: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
+        "Fills stiffnessForce / dragForce below; you can still fine-tune.":
+            "아래 stiffnessForce / dragForce를 채웁니다. 직접 미세조정도 가능합니다.",
+        "Fills the X/Y/Z scale below with a character's in-game breast size.":
+            "아래 X/Y/Z 스케일을 캐릭터의 인게임 가슴 크기로 채웁니다.",
+        "Skirts usually scale uniformly; this fills X/Y/Z together.":
+            "치마는 보통 균일하게 스케일됩니다. X/Y/Z를 함께 채웁니다.",
+        "(custom)": "(직접 입력)",
+        "Softer (0.01 / 0.2)": "더 부드럽게 (0.01 / 0.2)",
+        "Soft (0.02 / 0.3)": "부드럽게 (0.02 / 0.3)",
+        "Firm (0.05 / 0.5)": "탄탄하게 (0.05 / 0.5)",
+        "Shorter (0.85)": "짧게 (0.85)",
+        "Longer (1.15)": "길게 (1.15)",
+        "Reset (1.0)": "초기화 (1.0)",
         "Thigh preset (FROM:TO)": "허벅지 프리셋 (FROM:TO)",
         "Recompute normals": "노멀 재계산",
         "Hierarchical skinning": "계층적 스키닝",
@@ -167,9 +342,19 @@ _TABLES = {
         "Comma/space separated SwingBone GameObject name patterns.": "쉼표/공백으로 구분한 SwingBone GameObject 이름 패턴.",
         "Blank = leave unchanged.": "비워두면 변경하지 않음.",
         "Detect the character and tag the output with its jiggleN tier.": "캐릭터를 감지해 출력 파일에 jiggleN 등급을 표시합니다.",
+        "Auto jiggle": "자동 jiggle",
+        "Off": "끄기",
+        "Match current breast size": "현재 가슴 크기에 맞춤",
+        "Follow character (stock)": "캐릭터 기본값 따라가기",
+        "Match current breast size = follow the size already in the bundle (best after resizing). Follow character = the character's stock tier.":
+            "현재 가슴 크기에 맞춤 = 번들에 이미 적용된 크기를 따릅니다(리사이즈 후 권장). 캐릭터 기본값 = 캐릭터의 기본 tier.",
+        "Defaults to the installer's suit/ drop folder, so Install Costume picks the pack up right away.":
+            "설치 도구의 suit/ 드롭 폴더가 기본값이라 Install Costume이 바로 팩을 인식합니다.",
         "Absolute scale; blank to skip this axis.": "절대 스케일. 비워두면 이 축은 건너뜀.",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "절대 스케일. 비워두면 건너뜀. 균일 0.85 = 짧게, 1.15 = 길게.",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "텍스처 이름과 동일한 교체 이미지(예: ch0107_co0001_body.png).",
+        "In the phone app pick RGBA32 (uncompressed) or an ASTC format (what SIFAS uses — encoded on-device). ETC/DXT/BC and Keep Original need the desktop tools.":
+            "폰 앱에서는 RGBA32(비압축 — 기기에서 작동)를 고르세요. 압축 포맷(ASTC/ETC/DXT)과 Keep Original은 데스크톱 도구가 필요합니다.",
         "rebase = re-anchor to current local; neutralize = reset; none = scan only.": "rebase = 현재 로컬 기준 재설정, neutralize = 초기화, none = 검사만.",
         "Used when auto-detect is off or fails.": "자동 감지가 꺼져 있거나 실패할 때 사용됩니다.",
         "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1": "한 줄에 하나씩: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
@@ -263,6 +448,12 @@ _TABLES = {
         "Cancel": "キャンセル",
         "Single file": "単一ファイル",
         "Batch folder": "一括（フォルダ）",
+        "Selected files": "選択したファイル",
+        "Input bundles": "入力バンドル（複数）",
+        "Pick several bundles; each is processed like Single.":
+            "バンドルを複数選択してください。各ファイルはSingleと同様に処理されます。",
+        "Add file": "ファイルを追加",
+        "No files selected.": "選択されたファイルはありません。",
         "Loading…": "読み込み中…",
         "Pick a folder first.": "先にフォルダを選んでください。",
         "No bundles here.": "ここにバンドルはありません。",
@@ -307,6 +498,63 @@ _TABLES = {
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID基準で提供元の一致オブジェクトを対象にコピーします（iOS/APK間の移植）。",
         "Copy bundles into a folder, renamed by their ch####_co#### texture name (originals untouched).": "バンドルをch####_co####テクスチャ名に変更してフォルダにコピーします（原本はそのまま）。",
         "Normalize skinned meshes to world space for correct FBX export (in-game rendering unchanged).": "正しいFBXエクスポートのためスキンドメッシュをワールド空間に正規化します（ゲーム内描画は不変）。",
+        "Character Body Info": "キャラ身体情報",
+        "Reference: character ID, skin tone, breast size + jiggle tier, thigh type, and body scaling (Summer Splash 2020 costume; Mia/Lanzhu = Fest 3rd UR). Output appears in the log.":
+            "参考用: キャラID、肌色、胸サイズ + jiggleティア、太ももタイプ、身体スケーリング（Summer Splash 2020 衣装; Mia/Lanzhu は Fest 3rd UR）。結果はログに表示されます。",
+        "Character": "キャラ",
+        "All characters": "全キャラ",
+        "Accessory Un-clip": "アクセサリークリップ解除",
+        "Skin Tone Changer": "肌色チェンジャー",
+        "Costume Part Transplant": "衣装パーツ移植",
+        "Lower Body Swap": "下半身スワップ",
+        "Stop accessories transplanted onto a resized body from sinking in (lifts chest ornaments to match the bust).":
+            "リサイズしたボディに移植したアクセサリーが埋もれるのを防ぎます（胸の装飾をバストに合わせて持ち上げ）。",
+        "Recolour a body/hand texture image from one official skin-tone class to another (works on PNG images, not bundles).":
+            "ボディ/ハンドのテクスチャ画像の肌色を公式トーンクラス間で変更します（バンドルではなくPNG画像が対象）。",
+        "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.":
+            "衣装の1パーツ（羽/尻尾/マント）だけを提供元モデルから対象の着用者へ移します。",
+        "Graft a good lower body from a donor onto a target that has deleted hip/thigh skin (the 'detached thighs' fix).":
+            "下半身の肌が削除された対象に、提供元の正常な下半身を移植します（「太もも分離」修正）。",
+        # Accessory Un-clip
+        "Lift strength": "持ち上げ強度",
+        "1.0 = match the bust exactly.": "1.0 = バストにぴったり合わせる。",
+        "Min bust overlap": "最小バスト重なり",
+        "Only lift parts overlapping the bust by at least this fraction.":
+            "バストとこの割合以上重なるパーツのみ持ち上げます。",
+        "Also pull in when shrunk": "縮小時も引き寄せる",
+        "Force anchors (optional)": "アンカーを強制指定（任意）",
+        "Comma-separated bone names to force; blank = auto-detect.":
+            "強制するボーン名（カンマ区切り）; 空欄で自動検出。",
+        # Skin Tone Changer
+        "Input image": "入力画像",
+        "A texture PNG/JPG (not a bundle).": "テクスチャPNG/JPG（バンドルではない）。",
+        "From tone": "元のトーン",
+        "To tone": "変換先トーン",
+        "auto = detect from the image.": "auto = 画像から自動検出。",
+        "Skin only (keep costume colours)": "肌のみ（衣装の色は保持）",
+        "Strength (0–1)": "強さ (0–1)",
+        # Costume Part Transplant
+        "Donor bundle (has the part)": "提供元バンドル（パーツを持つ）",
+        "Target bundle (wearer)": "対象バンドル（着用者）",
+        "Part root bone (optional)": "パーツのルートボーン（任意）",
+        "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
+            "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
+        "Preserve part physics": "パーツの物理を保持",
+        "Patch part texture onto target atlas": "パーツのテクスチャを対象アトラスにパッチ",
+        # Lower Body Swap
+        "Donor bundle (good lower body)": "提供元バンドル（正常な下半身）",
+        "Target bundle (to fix)": "対象バンドル（修正対象）",
+        "Region": "領域",
+        "Cut low Y (optional)": "下部カットY（任意）",
+        "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "下部カットのワールド空間Y; 空欄で床。例: 0.50 = 膝。",
+        "Cut high Y (optional)": "上部カットY（任意）",
+        "Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "空欄で上限なし。例: 0.96 = 腰のすぐ下。",
+        "Exclude donor accessories": "提供元のアクセサリーを除外",
+        # Breast physics parameter labels
+        "stiffnessForce": "剛性 (stiffnessForce)",
+        "dragForce": "抵抗 (dragForce)",
         "Input bundle": "入力バンドル",
         "Input folder": "入力フォルダ",
         "Output folder": "出力フォルダ",
@@ -319,6 +567,10 @@ _TABLES = {
         "high RotationLimit Δz": "high RotationLimit Δz",
         "Auto per-character jiggle": "キャラ別自動ジグル",
         "Scale node name": "スケールノード名",
+        "set scale": "スケール設定",
+        "add Δ": "Δ加算",
+        "set offset": "オフセット設定",
+        "add offset Δ": "オフセットΔ加算",
         "set scale X": "スケール設定 X",
         "set scale Y": "スケール設定 Y",
         "set scale Z": "スケール設定 Z",
@@ -350,7 +602,115 @@ _TABLES = {
         "Restore collision": "コリジョン復元",
         "World-space normalize": "ワールド空間で正規化",
         "Fix node scaling": "ノードスケーリング修正",
+        # costume transplant - desktop GUI parity (translations from costume_transplant.py)
+        "Preserve appendage jiggle physics (collar / tie / wings)":
+            "付属物のジグル物理を保持（襟 / タイ / 翼）",
+        "Restore body collision for those bones": "該当ボーンのボディコリジョンを復元",
+        "Only takes effect when appendage jiggle physics is preserved.":
+            "付属物のジグル物理を保持が有効なときのみ適用されます。",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "ボディボーンを衣装の基本ポーズに再整列（ずれたリボン/スカートを補正）",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "ボディメッシュをワールド空間に（揺れるリボン/スカートが正しく描画されるよう）",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "再整列したボーンにNodeScalingを再アンカー（体型を維持; ゲーム内でリボンが胸に落ちるのを防止）",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "共有衣装パーツ（スカート / リボン）に提供元のスイング物理を使用 — バストは常に着用者のもの",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "マスク / ボードフェイスモデル（りなちゃんボード）の特別処理: 自動検出、頭部 + 体型スケーリングを保護",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "ボディテクスチャなしで移植（着用者のテクスチャを保持; 衣装メッシュ + ボーンのみ移植）",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "ボディスケールされた対象にスイング物理をスケール（りなボードでスカート/リボン/翼/尻尾の比率を維持; 通常対象では無効）",
+        "Match thigh to target character": "太ももを対象キャラに合わせる",
+        "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
+            "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
+        "Match skin tone to target character": "肌色を対象キャラに合わせる",
+        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
+            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。注意: 着色は完璧ではなく、衣装の色も一部変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャー（Skin Tone Changer）で直接編集してください。",
+        "Donor skin tone": "提供元の肌トーン",
+        "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
+            "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",
+        # --- desktop-parity options added to existing tools ---
+        "Blank = leave unchanged. Desktop default 0.02 (the Soft feel).":
+            "空欄で変更なし。デスクトップ既定値 0.02（Soft の感触）。",
+        "Blank = leave unchanged. Desktop default 0.3 (the Soft feel).":
+            "空欄で変更なし。デスクトップ既定値 0.3（Soft の感触）。",
+        "Edit entries (advanced, single-file)": "エントリ編集（上級・単一ファイル）",
+        "One per line, same grammar as the desktop --set: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'. Edits existing entries. Ignored in batch (auto-repair only).":
+            "1行に1つ、デスクトップの --set と同じ文法: 'Bone;scaled=x,y,z;origin=x,y,z;kind=pos'。既存エントリを編集。バッチでは無視（自動修復のみ）。",
+        "Add entries (advanced, single-file)": "エントリ追加（上級・単一ファイル）",
+        "One per line, same grammar as the desktop --add: 'Bone;scaled=x,y,z;kind=scale'. Adds a new entry for another bone (kind defaults to scale; origin defaults to the bone's current local).":
+            "1行に1つ、デスクトップの --add と同じ文法: 'Bone;scaled=x,y,z;kind=scale'。別のボーンに新エントリを追加（kind 既定 scale、origin 既定はボーンの現在の local）。",
+        "clamp radius min": "半径クランプ 最小",
+        "Blank = no lower bound.": "空欄で下限なし。",
+        "clamp radius max": "半径クランプ 最大",
+        "Blank = no upper bound.": "空欄で上限なし。",
+        "clamp offset min": "オフセットクランプ 最小",
+        "Per-axis lower bound; blank = free.": "軸ごとの下限; 空欄で制限なし。",
+        "clamp offset max": "オフセットクランプ 最大",
+        "Per-axis upper bound; blank = free.": "軸ごとの上限; 空欄で制限なし。",
+        "Spine compensation target": "スパイン補正の対象",
+        "Which child bone absorbs the inverse scale for compensated Spine* targets. Only affects Spine* bakes.":
+            "補正された Spine* ターゲットで逆スケールを吸収する子ボーン。Spine* のベイクのみに影響。",
+        "Spine2 (widens Spine+Spine1)": "Spine2（Spine+Spine1 を広げる）",
+        "Spine1": "Spine1",
+        "Spine1 + Spine2": "Spine1 + Spine2",
+        "Auto": "自動",
+        "Include hidden meshes (foot_shadow · Hair · Face)": "非表示メッシュを含める（foot_shadow · Hair · Face）",
+        "Only these meshes (advanced)": "これらのメッシュのみ（上級）",
+        "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes.":
+            "カンマ/改行区切りのメッシュ名; 空欄で非表示以外の全スキンメッシュ。",
+        "Objects whose m_Name matches are left as the target's (protects the wearer's face/head + shadows). Desktop default shown.":
+            "m_Name が一致するオブジェクトは対象のものを維持（着用者の顔/頭 + 影を保護）。デスクトップ既定値を表示。",
+        "Script class exclude (MonoBehaviour)": "スクリプトクラス除外（MonoBehaviour）",
+        "Donor MonoBehaviours of these script classes are not copied, so the wearer keeps its own swing physics. Desktop default shown.":
+            "これらのスクリプトクラスの提供元 MonoBehaviour はコピーせず、着用者が自身のスイング物理を維持します。デスクトップ既定値を表示。",
+        "Digit-agnostic name matching": "数字を無視した名前マッチング",
+        "Treat digits as wildcards, so ch0001_* matches any character id.":
+            "数字をワイルドカードとして扱い、ch0001_* が任意のキャラ ID に一致。",
+        "Name match mode": "名前マッチモード",
+        "Remove original filename completely": "元のファイル名を完全に削除",
+        "Name purely from the texture; collisions are auto-numbered so nothing is overwritten.":
+            "テクスチャのみから命名; 衝突時は自動採番で上書きを防止。",
+        "Add the part as its own sub-mesh + material (keep its texture)":
+            "パーツを独自のサブメッシュ + マテリアルとして追加（テクスチャを保持）",
+        "World-space the body mesh (so swinging parts render correctly)":
+            "ボディメッシュをワールド空間に（揺れるパーツが正しく描画されるよう）",
+        "Re-anchor NodeScaling (keep the wearer's body shaping)":
+            "NodeScaling を再アンカー（着用者の体型を維持）",
+        "Open skirt cap lift (0 = off)": "開いたスカートキャップのリフト（0 = オフ）",
+        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
+            "短い提供元の下半身が穴を残さないように開いたキャップを持ち上げる; 0 = 平らなキャップ。",
+        "Recolour skin only": "肌のみ再着色",
+        "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
+            "再着色を肌の領域に限定します。可能ならメッシュのボーンウェイトを使い（スカート/袖/リボン/アクセサリを除外）、実際の肌は決して取りこぼしません。注意: ボディボーンに密着した衣装（ボディス）は胸の肌と区別できず、色が変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャーで直接編集してください。スマホアプリでは既定でオン、デスクトップではオフ。",
+        "Also restrict by skin colour": "肌色でも制限",
+        "Additionally require skin-like colour, so non-skin-coloured body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply shadowed skin — leave off if any real skin gets missed.":
+            "肌に近い色であることを追加条件にし、肌色でないボディボーンの衣装（例: 青いボディス）はそのまま残します。濃い影の肌は取りこぼす場合があるため、実際の肌が抜けるならオフにしてください。",
         "Target spec(s)": "対象スペック",
+        "Target spec(s) — advanced": "対象スペック — 上級",
+        "Thigh preset": "太ももプリセット",
+        "Physics feel (preset)": "物理の感触（プリセット）",
+        "Size preset (by character)": "サイズプリセット（キャラ別）",
+        "Length preset": "長さプリセット",
+        "One-click thigh resize: scales both UpLeg bones with child compensation.":
+            "ワンクリック太ももリサイズ: 両方のUpLegボーンを子補正付きでスケールします。",
+        "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1":
+            "任意: 手動ボーン、1行に1つ: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",
+        "Fills stiffnessForce / dragForce below; you can still fine-tune.":
+            "下のstiffnessForce / dragForceを埋めます。手動での微調整も可能です。",
+        "Fills the X/Y/Z scale below with a character's in-game breast size.":
+            "下のX/Y/Zスケールをキャラのゲーム内バストサイズで埋めます。",
+        "Skirts usually scale uniformly; this fills X/Y/Z together.":
+            "スカートは通常均一にスケールします。X/Y/Zをまとめて埋めます。",
+        "(custom)": "(カスタム)",
+        "Softer (0.01 / 0.2)": "より柔らかい (0.01 / 0.2)",
+        "Soft (0.02 / 0.3)": "柔らかい (0.02 / 0.3)",
+        "Firm (0.05 / 0.5)": "しっかり (0.05 / 0.5)",
+        "Shorter (0.85)": "短く (0.85)",
+        "Longer (1.15)": "長く (1.15)",
+        "Reset (1.0)": "リセット (1.0)",
         "Thigh preset (FROM:TO)": "太ももプリセット (FROM:TO)",
         "Recompute normals": "法線を再計算",
         "Hierarchical skinning": "階層スキニング",
@@ -370,9 +730,19 @@ _TABLES = {
         "Comma/space separated SwingBone GameObject name patterns.": "カンマ/空白区切りのSwingBone GameObject名パターン。",
         "Blank = leave unchanged.": "空欄なら変更しません。",
         "Detect the character and tag the output with its jiggleN tier.": "キャラを検出し、出力にjiggleNティアを付与します。",
+        "Auto jiggle": "自動jiggle",
+        "Off": "オフ",
+        "Match current breast size": "現在の胸サイズに合わせる",
+        "Follow character (stock)": "キャラの標準に従う",
+        "Match current breast size = follow the size already in the bundle (best after resizing). Follow character = the character's stock tier.":
+            "現在の胸サイズに合わせる = バンドルに既に適用されたサイズに従います（リサイズ後に推奨）。キャラの標準 = キャラの標準tier。",
+        "Defaults to the installer's suit/ drop folder, so Install Costume picks the pack up right away.":
+            "インストーラーのsuit/ドロップフォルダが既定なので、Install Costumeがすぐにパックを認識します。",
         "Absolute scale; blank to skip this axis.": "絶対スケール。空欄ならこの軸をスキップ。",
         "Absolute scale; blank to skip. Uniform 0.85 = shorter, 1.15 = longer.": "絶対スケール。空欄ならスキップ。均一0.85=短く、1.15=長く。",
         "Replacement images named after the texture (e.g. ch0107_co0001_body.png).": "テクスチャ名と同名の置換画像（例: ch0107_co0001_body.png）。",
+        "In the phone app pick RGBA32 (uncompressed) or an ASTC format (what SIFAS uses — encoded on-device). ETC/DXT/BC and Keep Original need the desktop tools.":
+            "スマホアプリではRGBA32（非圧縮 — 端末で動作）を選んでください。圧縮形式（ASTC/ETC/DXT）とKeep Originalはデスクトップ版が必要です。",
         "rebase = re-anchor to current local; neutralize = reset; none = scan only.": "rebase=現在のローカルに再アンカー、neutralize=リセット、none=スキャンのみ。",
         "Used when auto-detect is off or fails.": "自動検出がオフ、または失敗した場合に使用します。",
         "One per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1": "1行に1つ: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1",

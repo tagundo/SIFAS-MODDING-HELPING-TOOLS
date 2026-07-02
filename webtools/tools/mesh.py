@@ -24,6 +24,9 @@ def _build_targets(m, params):
         targets += m.thigh_targets(src, dst)
     if not targets:
         raise ValueError("Provide at least one target spec line (e.g. 'Spine2;s=1.1') or a thigh preset.")
+    # match the desktop GUI/CLI: pick which child bone absorbs the inverse scale
+    # for compensated Spine* targets (default spine2). No-op on non-Spine targets.
+    m.apply_spine_comp(targets, params.get("spine_comp") or "spine2")
     return targets
 
 
@@ -34,13 +37,19 @@ def run_mesh_baker(job, params):
     targets = _build_targets(m, params)
     recompute = bool(params.get("recompute_normals", True))
     hierarchical = bool(params.get("hierarchical", True))
+    include_hidden = bool(params.get("include_hidden", False))
+    # optional per-mesh restriction (comma/newline separated); blank = all skinned,
+    # non-hidden meshes, matching the desktop default of every mesh checked.
+    names = [n.strip() for n in (params.get("mesh_names") or "").replace(",", "\n").splitlines() if n.strip()]
+    mesh_filter = set(names) or None
     prefix = params.get("prefix") or ""
     suffix = params.get("suffix") or "_baked"
     out_dir = params.get("out_dir")
 
     def edit(src, out_path):
         m.process_bundle(Path(src), out_path, targets,
-                         recompute_normals=recompute, hierarchical=hierarchical, log=job.log)
+                         recompute_normals=recompute, hierarchical=hierarchical,
+                         mesh_filter=mesh_filter, include_hidden=include_hidden, log=job.log)
         return ""
 
     if params.get("mode") == "batch":
@@ -49,6 +58,8 @@ def run_mesh_baker(job, params):
     in_file = params.get("in_path")
     out_path = single_out_path(out_dir, in_file, prefix, suffix)
     job.progress(0, 1)
+    job.log(f"baking {Path(in_file).name} … "
+            "(mesh processing + save can take a while on mobile)")
     edit(in_file, out_path)
     job.progress(1, 1)
     return f"baked -> {out_path}"

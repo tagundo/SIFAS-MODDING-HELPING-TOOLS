@@ -170,11 +170,13 @@ def detect_tone(rgb, alpha=None):
     return min(TONES, key=lambda t: float(np.linalg.norm(mean - np.array(REF_SKIN_MEAN[t]))))
 
 
-def convert_array(rgb, src, dst, skin_only=False, strength=1.0):
+def convert_array(rgb, src, dst, skin_only=False, strength=1.0, mask=None):
     """Apply the src->dst tone map to an HxWx3 float array (0-255).
 
-    skin_only feathers the change onto detected skin only; strength (0-1)
-    scales how far the conversion is taken. Returns a float array (0-255).
+    skin_only feathers the change onto colour-detected skin only; strength (0-1)
+    scales how far the conversion is taken. If `mask` (an HxW array in 0..1, e.g. a
+    UV/bone-derived skin region) is given it is used as the spatial gate instead of
+    the colour detector, feathered the same way. Returns a float array (0-255).
     """
     rgb = rgb.astype(np.float64)
     if src == dst or strength <= 0:
@@ -182,7 +184,10 @@ def convert_array(rgb, src, dst, skin_only=False, strength=1.0):
     a, b = SKIN_TONE_MAPS[(src, dst)]
     conv = np.clip(rgb * np.array(a) + np.array(b), 0, 255)
     alpha = float(np.clip(strength, 0, 1))
-    if skin_only:
+    if mask is not None:
+        soft = _box_blur(np.asarray(mask, dtype=np.float64), 4)
+        amt = np.clip(soft, 0, 1)[..., None] * alpha
+    elif skin_only:
         soft = _box_blur(_skin_mask(rgb).astype(np.float64), 4)
         soft = np.clip(soft, 0, 1)[..., None]
         amt = soft * alpha
