@@ -561,15 +561,42 @@ TOOLS = [
              "mode": "batch", "root": "extracted"},
             _out_dir(),
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_lower"},
-            {"name": "region", "label": "Region", "type": "select",
-             "options": ["lower", "lower_belly", "central"], "default": "lower"},
-            {"name": "cut_low", "label": "Cut low Y (optional)", "type": "number", "default": "",
-             "help": "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
-            {"name": "cut_high", "label": "Cut high Y (optional)", "type": "number", "default": "",
-             "help": "Blank = no upper limit. e.g. 0.96 = just below waist."},
-            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True},
+            {"name": "cut", "label": "Cut preset", "type": "select",
+             "options": [
+                 {"value": "hip_fix", "label": "Fix detached thighs (hip/crotch) — recommended"},
+                 {"value": "above_thigh", "label": "Thigh & up (keep calf/shoes)"},
+                 {"value": "calf_part", "label": "Calf part & up"},
+                 {"value": "from_calf", "label": "From calf & up (keep feet)"},
+                 {"value": "whole", "label": "Whole lower body"},
+                 {"value": "custom", "label": "Custom range (use Cut low/high Y below)"},
+             ], "default": "hip_fix",
+             "help": "Named band presets, like the desktop tool. 'Custom' uses the Cut "
+                     "low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · "
+                     "knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05."},
+            {"name": "region", "label": "Region (custom only)", "type": "select",
+             "options": ["lower", "lower_belly", "central"], "default": "lower",
+             "help": "Which bones may be replaced (used when Cut preset = Custom). 'lower' "
+                     "keeps the target's torso; 'lower_belly'/'central' reach up into the belly."},
+            {"name": "cut_low", "label": "Cut low Y (custom)", "type": "number", "default": "",
+             "help": "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
+            {"name": "cut_high", "label": "Cut high Y (custom)", "type": "number", "default": "",
+             "help": "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist."},
+            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True,
+             "help": "Keep only the donor's main body component (drops a thigh dagger, garter rings). "
+                     "Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out "
+                     "(a cause of 'nothing to graft')."},
             {"name": "open_cap", "label": "Open skirt cap lift (0 = off)", "type": "number", "default": "0",
              "help": "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap."},
+            {"name": "open_cap_edge", "label": "Cap edge lift — all sides", "type": "number", "default": "0",
+             "help": "Raise the cap's rim on every side (used together with the lift above)."},
+            {"name": "cap_edge_front", "label": "Cap edge — front (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_back", "label": "Cap edge — back (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_left", "label": "Cap edge — left (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_right", "label": "Cap edge — right (blank = all)", "type": "number", "default": ""},
+            {"name": "merge_rim", "label": "Merge rim map too", "type": "checkbox", "default": True},
+            {"name": "mipmaps", "label": "Generate mipmaps", "type": "checkbox", "default": True},
+            {"name": "dry_run", "label": "Dry run (no write)", "type": "checkbox", "default": False,
+             "help": "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'."},
             *_match_fields(),
         ],
     },
@@ -632,10 +659,10 @@ def _translate_field(field, lang):
         f["label"] = i18n.tr(f["label"], lang=lang)
     if "help" in f:
         f["help"] = i18n.tr(f["help"], lang=lang)
-    # Preset option labels are display-only (the value is the `set` dict), so
-    # they are safe to translate; normal select options are left untranslated
-    # because their values double as dispatch identifiers.
-    if f.get("type") == "preset" and isinstance(f.get("options"), list):
+    # Options given as {value, label} dicts carry the dispatch identifier in
+    # `value`, so their `label` is display-only and safe to translate. Plain
+    # string options are left as-is (the string IS the dispatch identifier).
+    if isinstance(f.get("options"), list):
         f["options"] = [
             {**o, "label": i18n.tr(o["label"], lang=lang)}
             if isinstance(o, dict) and "label" in o else o

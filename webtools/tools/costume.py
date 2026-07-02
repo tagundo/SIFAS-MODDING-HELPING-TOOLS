@@ -187,18 +187,46 @@ def run_lower_body_swap(job, params):
     donor = params.get("donor")
     out_dir = params.get("out_dir")
     suffix = params.get("suffix") or "_lower"
-    region = params.get("region") or "lower"
     exclude_acc = bool(params.get("exclude_accessories", True))
-    kw = dict(region=region, exclude_accessories=exclude_acc, log=job.log)
-    for k in ("cut_low", "cut_high"):
-        v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
-        if v is not None:
-            kw[k] = v
-    # lift the open skirt cap so a shorter donor lower body doesn't leave a hole
-    # (0 = off = flat cap, the current behaviour). Applies to single and batch.
+    kw = dict(exclude_accessories=exclude_acc, log=job.log)
+
+    # Band: a named preset (like the desktop tool), unless 'custom', in which case
+    # the raw Cut low/high Y + Region fields are used. Presets always graft the
+    # 'lower' region (matches the desktop GUI, which hardcodes region for presets).
+    cut = (params.get("cut") or "hip_fix").strip()
+    if cut and cut != "custom":
+        kw["region"] = "lower"
+        lo, hi = m.CUT_PRESETS.get(cut, (-m.INF, m.INF))
+        kw["cut_low"], kw["cut_high"] = lo, hi
+    else:
+        kw["region"] = params.get("region") or "lower"
+        for k in ("cut_low", "cut_high"):
+            v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
+            if v is not None:
+                kw[k] = v
+
+    # Open skirt cap: overall lift (0 = flat cap = default) + optional rim edge lift
+    # (all sides) with per-side overrides. Applies to single and batch.
     cap = as_float(params.get("open_cap"), 0.0)
     if cap:
         kw["open_cap_lift"] = cap
+    edge = as_float(params.get("open_cap_edge"), 0.0)
+    if edge:
+        kw["open_cap_edge"] = edge
+    for pk, ak in (("cap_edge_front", "open_cap_edge_front"),
+                   ("cap_edge_back", "open_cap_edge_back"),
+                   ("cap_edge_left", "open_cap_edge_left"),
+                   ("cap_edge_right", "open_cap_edge_right")):
+        if params.get(pk) not in (None, ""):
+            v = as_float(params.get(pk), None)
+            if v is not None:
+                kw[ak] = v
+
+    # Texture / output toggles (desktop parity).
+    kw["merge_rim"] = bool(params.get("merge_rim", True))
+    kw["mipmaps"] = bool(params.get("mipmaps", True))
+    if params.get("dry_run"):
+        kw["dry_run"] = True
 
     match = bool(params.get("match_thigh", False)) or bool(params.get("match_skin", False))
 
