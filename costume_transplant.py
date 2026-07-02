@@ -754,6 +754,41 @@ def _local_trs_byname(id2):
     return out
 
 
+def _weightiest_bust(bust_names, smr_tt, mesh_obj, id2):
+    """Of several bust-offset bones, the one the body mesh is actually skinned to —
+    i.e. the real bust (the breast geometry hangs off it), as opposed to an
+    accessory-anchor offset (e.g. a button bone) that carries no vertices and sits
+    at a different spot. Aliasing/realigning must use THIS bone so the grafted
+    mesh's bind poses match. Falls back to the largest local offset (the breast
+    protrudes; accessory anchors sit near the parent origin) if the mesh can't be
+    decoded, then to the first name."""
+    if len(bust_names) <= 1:
+        return bust_names[0] if bust_names else None
+    try:
+        from UnityPy.export.MeshExporter import MeshHandler
+        import numpy as np
+        bnames = [_transform_goname(id2, b["m_PathID"]) for b in smr_tt.get("m_Bones", [])]
+        idx = {n: i for i, n in enumerate(bnames) if n}
+        h = MeshHandler(mesh_obj.read())
+        h.process()
+        bi = np.asarray(h.m_BoneIndices).reshape(-1, 4)
+        bw = np.asarray(h.m_BoneWeights).reshape(-1, 4)
+        mass = {n: float(np.where(bi == idx[n], bw, 0).sum()) for n in bust_names if n in idx}
+        if mass and max(mass.values()) > 0:
+            return max(mass, key=mass.get)
+    except Exception:
+        pass
+    loc = _local_trs_byname(id2)
+
+    def _mag(n):
+        p = loc.get(n)
+        if not p:
+            return 0.0
+        pos = p[0]
+        return (pos["x"] ** 2 + pos["y"] ** 2 + pos["z"] ** 2) ** 0.5
+    return max(bust_names, key=_mag)
+
+
 def apply_bone_edits(donor_id2, target_id2, bone_names, child_adds=None,
                      realign_alias=None, log=lambda *a: None):
     """Apply both kinds of per-bone edit in ONE save_typetree per object.
@@ -1859,19 +1894,20 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     _donor_bust = [n for n in dict.fromkeys(d_bone_names) if n and _BUST_RE.match(n)]
     _target_bust = [n for n in native_target_bones if _BUST_RE.match(n)]
     if _donor_bust and _target_bust and not set(_donor_bust) <= native_target_bones:
-        def _bust_root(names, parent):
-            roots = [n for n in names if not _BUST_RE.match(parent.get(n) or "")]
-            return (roots or names)[0]
-        t_anchor = _bust_root(_target_bust, _transform_parent_byname(tid))
-        d_root = _bust_root(_donor_bust, d_parent)
-        for dn in _donor_bust:
-            if dn not in native_target_bones:
-                bust_alias[dn] = t_anchor
-                name2tf[dn] = name2tf[t_anchor]
-        if bust_alias:
+        # Alias only the REAL bust bone — the one the body mesh is skinned to (BreastA,
+        # carrying the breast + ribbon) — onto the target's bust bone. Other
+        # Breast*_Offset bones are costume-specific accessory anchors (e.g. a button
+        # bone with no vertices, at a different spot); collapsing them onto the bust
+        # would drag their accessory out of place, so they inject normally like any
+        # other new costume bone (unchanged from the tool's prior behaviour).
+        t_anchor = _weightiest_bust(_target_bust, t_smr_tt, t_mesh_obj, tid)
+        d_root = _weightiest_bust(_donor_bust, d_smr_tt, d_mesh_obj, did)
+        if d_root and t_anchor and d_root not in native_target_bones:
+            bust_alias[d_root] = t_anchor
+            name2tf[d_root] = name2tf[t_anchor]
             realign_alias[t_anchor] = d_root
-            log(f"[bust] donor bust bone(s) {sorted(bust_alias)} -> target "
-                f"'{t_anchor}' (reuse the Avatar-known bone; rest pose from '{d_root}')")
+            log(f"[bust] donor bust bone '{d_root}' -> target '{t_anchor}' "
+                f"(reuse the Avatar-known bone; other bust-offset bones inject normally)")
 
     # ---- optionally recreate costume-appendage bones (with their jiggle physics) ----
     # When enabled, the donor's costume-only bones are injected into the target as
