@@ -68,13 +68,19 @@ def run_costume_transplant(job, params):
 
     job.log(f"transplanting {Path(donor).name} (costume) onto {Path(target).name} (wearer)...")
     job.progress(0, 1)
+    # full desktop-GUI option surface; checkbox -> mode mappings mirror run_gui's
+    # go(): mask on->"auto"/off->"off", donor-physics on->"donor"/off->"target".
     m.transplant(
         str(donor), str(target), str(out_path), verbose=False,
-        preserve_physics=bool(params.get("preserve_physics", False)),
+        preserve_physics=bool(params.get("preserve_physics", True)),
         realign=bool(params.get("realign", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)),
+        mask_handling="auto" if bool(params.get("mask_handling", True)) else "off",
+        costume_physics="donor" if bool(params.get("donor_costume_physics", True)) else "target",
+        sync_textures=not bool(params.get("no_textures", False)),
+        scale_swing_physics=bool(params.get("scale_swing_physics", True)),
     )
 
     # Optionally match the transplanted costume to the target character: thigh size

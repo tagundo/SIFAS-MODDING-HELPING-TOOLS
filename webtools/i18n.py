@@ -214,6 +214,26 @@ _TABLES = {
         "Restore collision": "콜리전 복원",
         "World-space normalize": "월드 공간 정규화",
         "Fix node scaling": "노드 스케일링 수정",
+        # costume transplant - desktop GUI parity (translations from costume_transplant.py)
+        "Preserve appendage jiggle physics (collar / tie / wings)":
+            "부속물 흔들림 물리 유지 (옷깃 / 넥타이 / 날개)",
+        "Restore body collision for those bones": "해당 본의 바디 콜리전 복원",
+        "Only takes effect when appendage jiggle physics is preserved.":
+            "부속물 흔들림 물리 유지가 켜져 있을 때만 적용됩니다.",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "바디 본을 코스튬의 기본 포즈에 재정렬 (어긋난 리본/치마 보정)",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "바디 메시를 월드 공간으로 (흔들리는 리본/치마가 올바르게 렌더링되도록)",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "재정렬된 본에 NodeScaling 재고정 (체형 유지; 게임 내 리본이 가슴으로 처지는 현상 방지)",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "공유 코스튬 부위(치마 / 리본)에 공여의 스윙 물리 사용 — 가슴은 항상 착용자 것 유지",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "마스크 / 보드 얼굴 모델(리나쨩 보드) 특수 처리: 자동 감지, 머리 + 체형 스케일링 보호",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "바디 텍스처 없이 이식 (착용자의 텍스처 유지; 코스튬 메시 + 본만 이식)",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "체형 스케일된 대상에 스윙 물리 스케일 (리나 보드에서 치마/리본/날개/꼬리 비율 유지; 일반 대상엔 영향 없음)",
         "Match thigh to target character": "허벅지를 대상 캐릭터에 맞춤",
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
@@ -525,6 +545,26 @@ _TABLES = {
         "Restore collision": "コリジョン復元",
         "World-space normalize": "ワールド空間で正規化",
         "Fix node scaling": "ノードスケーリング修正",
+        # costume transplant - desktop GUI parity (translations from costume_transplant.py)
+        "Preserve appendage jiggle physics (collar / tie / wings)":
+            "付属物のジグル物理を保持（襟 / タイ / 翼）",
+        "Restore body collision for those bones": "該当ボーンのボディコリジョンを復元",
+        "Only takes effect when appendage jiggle physics is preserved.":
+            "付属物のジグル物理を保持が有効なときのみ適用されます。",
+        "Realign body bones to the costume's rest pose (fixes offset ribbon/skirt)":
+            "ボディボーンを衣装の基本ポーズに再整列（ずれたリボン/スカートを補正）",
+        "World-space the body mesh (so swinging ribbon/skirt render correctly)":
+            "ボディメッシュをワールド空間に（揺れるリボン/スカートが正しく描画されるよう）",
+        "Re-anchor NodeScaling to realigned bones (keeps body shaping; stops the in-game ribbon dropping to the chest)":
+            "再整列したボーンにNodeScalingを再アンカー（体型を維持; ゲーム内でリボンが胸に落ちるのを防止）",
+        "Use the donor's swing physics for shared costume parts (skirt / ribbon) — the bust always stays the wearer's":
+            "共有衣装パーツ（スカート / リボン）に提供元のスイング物理を使用 — バストは常に着用者のもの",
+        "Special handling for masked / board-face models (Rina-chan board): auto-detect, protect head + body-shape scaling":
+            "マスク / ボードフェイスモデル（りなちゃんボード）の特別処理: 自動検出、頭部 + 体型スケーリングを保護",
+        "Transplant without the body textures (keep the wearer's own texture; only the costume mesh + bones are grafted)":
+            "ボディテクスチャなしで移植（着用者のテクスチャを保持; 衣装メッシュ + ボーンのみ移植）",
+        "Scale swing physics to a body-scaled target (keeps skirt/ribbon/wing/tail proportions on the Rina board; no-op on normal targets)":
+            "ボディスケールされた対象にスイング物理をスケール（りなボードでスカート/リボン/翼/尻尾の比率を維持; 通常対象では無効）",
         "Match thigh to target character": "太ももを対象キャラに合わせる",
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
