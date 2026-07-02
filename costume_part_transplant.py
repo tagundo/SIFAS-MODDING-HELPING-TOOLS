@@ -144,6 +144,9 @@ _TRANSLATIONS = {
         "\n[success] done — verified ✓\n": "\n[성공] 완료 — 검증됨 ✓\n",
         "\n[error] output has dangling references!\n": "\n[오류] 출력에 끊긴 참조가 있습니다!\n",
         "(load a donor bundle to list its parts)": "(공여 번들을 불러오면 부위가 표시됩니다)",
+        "Triangle selection": "삼각형 선택 (깔끔/넓게)",
+        "Weight threshold": "가중치 임계값",
+        "Sub-mesh handling": "서브메시 처리",
     },
     "ja": {
         "Language": "言語",
@@ -175,6 +178,9 @@ _TRANSLATIONS = {
         "\n[success] done — verified ✓\n": "\n[成功] 完了 — 検証済み ✓\n",
         "\n[error] output has dangling references!\n": "\n[エラー] 出力に未解決の参照があります！\n",
         "(load a donor bundle to list its parts)": "(提供元バンドルを読み込むとパーツが表示されます)",
+        "Triangle selection": "三角形の選択（クリーン/貪欲）",
+        "Weight threshold": "ウェイトしきい値",
+        "Sub-mesh handling": "サブメッシュ処理",
     },
 }
 
@@ -316,6 +322,14 @@ FMT_BYTES = {0: 4, 1: 2, 2: 1, 3: 1, 4: 2, 5: 2, 6: 1, 7: 1, 8: 2, 9: 2, 10: 4, 
 ATTR_POS, ATTR_NORMAL, ATTR_TANGENT, ATTR_COLOR = 0, 1, 2, 3
 ATTR_UV0 = 4
 ATTR_BLENDWEIGHT, ATTR_BLENDINDICES = 12, 13
+
+# Runtime mesh-combine hard limits the engine enforces in MergeAndCombineBodyMesh
+# (SIFAS 3.12.0 decompile). A transplant can load fine in Blender/AssetStudio yet
+# fail CombineBody in-game if it blows past these. A part transplant ADDS bones to
+# the body renderer, so this read-only check matters here. (From costume_transplant.py.)
+COMBINE_BONE_MAX = 256      # bones in one combined SkinnedMeshRenderer
+COMBINE_SKIN_MAX = 8        # bone influences per vertex
+COMBINE_SAFE_SCALE = (0.2, 2.5)  # body-shape scale clamp range
 
 
 def _align16(x):
@@ -592,6 +606,16 @@ def collect_append_attrs(donor_tree, donor_u8, used, new_BI, new_W,
     _, tchans, _, _, _ = stream_layout(target_tree)
     out = {}
     R = mesh_root_delta[:3, :3] if mesh_root_delta is not None else None
+    # normals do NOT transform like positions/tangents under a non-uniform/sheared
+    # delta: a direction uses R, but a normal (a covector) uses the inverse-transpose,
+    # i.e. row-vector N' = N @ inv(R). For a pure rotation inv(R) == R.T so this is
+    # identical to the old behaviour; only non-uniform scale/shear differs.
+    R_inv = None
+    if R is not None:
+        try:
+            R_inv = np.linalg.inv(R)
+        except np.linalg.LinAlgError:
+            R_inv = R.T
     for attr in range(len(tchans)):
         if tchans[attr].get("dimension", 0) == 0:
             continue
@@ -612,7 +636,7 @@ def collect_append_attrs(donor_tree, donor_u8, used, new_BI, new_W,
             vals = (h @ mesh_root_delta.T)[:, :3]
         elif attr in (ATTR_NORMAL, ATTR_TANGENT) and R is not None:
             v = vals.copy()
-            v[:, :3] = vals[:, :3] @ R.T
+            v[:, :3] = vals[:, :3] @ (R_inv if attr == ATTR_NORMAL else R.T)
             n = np.linalg.norm(v[:, :3], axis=1, keepdims=True)
             n[n == 0] = 1.0
             v[:, :3] = v[:, :3] / n
@@ -803,6 +827,41 @@ def _local_trs_byname(id2):
     return out
 
 
+def _accumulated_scale_byname(id2):
+    """GO name -> accumulated WORLD (uniform) scale: the product of the averaged local
+    scale of every Transform from the bone up to the root.
+
+    SIFAS body-shape nodes (Move, Head, *Size) scale ~uniformly, so averaging x/y/z is
+    a faithful scalar. This is what lets the tool tell that a board target scales its
+    whole body (Move ~0.927) while a head-anchored piece nets back to ~1.0 (Head 1.077
+    cancels Move) — the per-bone ratio comes out right for every appendage. (Ported
+    from costume_transplant.py.)"""
+    tf = {}
+    for pid, o in id2.items():
+        if o.type.name != "Transform":
+            continue
+        t = _safe_tt(o)
+        if not t:
+            continue
+        ls = t.get("m_LocalScale", {}) or {}
+        avg = (float(ls.get("x", 1.0)) + float(ls.get("y", 1.0)) + float(ls.get("z", 1.0))) / 3.0
+        father = t.get("m_Father", {}).get("m_PathID", 0)
+        nm = _go_name(id2, t.get("m_GameObject", {}).get("m_PathID"))
+        tf[pid] = (avg, father, nm)
+    out = {}
+    for pid, (avg, father, nm) in tf.items():
+        if nm is None:
+            continue
+        s, cur, guard = 1.0, pid, 0
+        while cur in tf and guard < 512:       # guard against a malformed parent cycle
+            a, f, _ = tf[cur]
+            s *= a
+            cur = f
+            guard += 1
+        out[nm] = s
+    return out
+
+
 def build_bone_name_map(env):
     """Avatar m_TOS: bone-name-hash -> transform path."""
     tos = {}
@@ -893,8 +952,12 @@ def detect_parts(donor_objs, donor_id2, target_bone_names=None):
     if smr is None:
         return [], None
     smr_tt = _safe_tt(smr)
-    mesh = donor_id2.get(smr_tt["m_Mesh"]["m_PathID"])
+    mesh = donor_id2.get(smr_tt["m_Mesh"]["m_PathID"]) if smr_tt else None
     mesh_tt = _safe_tt(mesh)
+    if not mesh_tt or "m_VertexData" not in mesh_tt:
+        # body renderer present but its Mesh object is missing/unreadable in the
+        # bundle — bail cleanly instead of crashing deep in the skin read
+        return [], None
     names = _smr_bone_names(donor_id2, smr_tt)
     parent = _bone_parent_array(donor_id2, smr_tt)
     infl, cnt = _bone_influence(smr_tt, mesh_tt)
@@ -942,6 +1005,11 @@ def _annotate_part_triangles(parts, smr_tt, mesh_tt):
             continue
         bis = bone_membership(nb, part["bone_ids"])
         vmask = part_vertex_mask(W, BI, bis, 0.5)
+        # accurate unique-vertex count at the default 0.5 threshold (matching the
+        # triangle count and what a transplant actually selects). The provisional
+        # `verts` set in detect_parts sums per-bone influence counts, so a vertex
+        # weighted onto several of the part's bones was counted once per bone.
+        part["verts"] = int(vmask.sum())
         part["tris"] = int(len(part_triangles(tris, vmask, "all")))
 
 
@@ -960,6 +1028,83 @@ _BASE_RIG = {
 # common costume-part name stems, used to label auto-detected groups
 _PART_HINTS = ("wing", "tsubasa", "tail", "shippo", "cape", "manto", "ribbon",
                "feather", "horn", "tsuno", "ear", "mimi", "halo", "wear")
+
+
+# --------------------------------------------------------------------------
+# special-case detection: masked / "board-face" models (e.g. Rina-chan board)
+# --------------------------------------------------------------------------
+# A few SIFAS members render the face as a screen of *static* MeshRenderer parts
+# (eye_*/mouth_*/Mask/HeadSet_*) hung off an accessory head hierarchy (Head ->
+# Head_All -> Head_Face) driven by MemberFace / BodyPartManager, and ship the whole
+# model authored in its OWN offset coordinate space. World-spacing the body
+# (forcing its mesh root to identity) desyncs it from the untouched face/expression
+# meshes and HANGS the in-game load. transplant_part must therefore skip the
+# world-space bake on such a target. Ported from costume_transplant.py.
+def detect_board_face_model(objs, id2):
+    """Return None for a standard model, else a dict describing the masked/board model:
+    {"kind", "face_parts": int, "anchor_bones": set[str], "markers": list[str]}."""
+    body = _body_smr(objs)
+    if body is None:
+        return None
+    skeleton, body_bones = set(), set()
+    for o in objs:
+        if o.type.name == "SkinnedMeshRenderer":
+            for b in (_safe_tt(o) or {}).get("m_Bones", []):
+                n = _transform_goname(id2, b["m_PathID"])
+                if n:
+                    skeleton.add(n)
+    for b in (_safe_tt(body) or {}).get("m_Bones", []):
+        n = _transform_goname(id2, b["m_PathID"])
+        if n:
+            body_bones.add(n)
+    go_with_mr = {(_safe_tt(o) or {}).get("m_GameObject", {}).get("m_PathID")
+                  for o in objs if o.type.name == "MeshRenderer"}
+    tf_children, tf_goname, tf_gopid, name2tfpid = {}, {}, {}, {}
+    for o in objs:
+        if o.type.name == "Transform":
+            t = _safe_tt(o) or {}
+            gp = t.get("m_GameObject", {}).get("m_PathID")
+            tf_gopid[o.path_id] = gp
+            nm = _go_name(id2, gp)
+            tf_goname[o.path_id] = nm
+            tf_children[o.path_id] = [c["m_PathID"] for c in t.get("m_Children", [])]
+            if nm and nm not in name2tfpid:
+                name2tfpid[nm] = o.path_id
+
+    def subtree_has_mr(tpid):
+        stack, seen = [tpid], set()
+        while stack:
+            p = stack.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            if tf_gopid.get(p) in go_with_mr:
+                return True
+            stack.extend(tf_children.get(p, []))
+        return False
+
+    # a body bone is an accessory anchor if it has a NON-skeletal child whose subtree
+    # contains static mesh parts (the mask / face board)
+    anchor_bones = set()
+    for bn in body_bones:
+        tpid = name2tfpid.get(bn)
+        if tpid is None:
+            continue
+        for cpid in tf_children.get(tpid, []):
+            if tf_goname.get(cpid) in skeleton:
+                continue
+            if subtree_has_mr(cpid):
+                anchor_bones.add(bn)
+                break
+    have = set(_scriptname_map(objs).values())
+    face_parts = sum(1 for gp in go_with_mr
+                     if not (_go_name(id2, gp) or "").startswith("Shadow"))
+    if not anchor_bones or not ("MemberFace" in have or face_parts >= 4):
+        return None
+    markers = [m for m in ("MemberFace", "BodyPartManager") if m in have]
+    markers.append("anchor:" + ",".join(sorted(anchor_bones)))
+    return {"kind": "board-face", "face_parts": face_parts,
+            "anchor_bones": anchor_bones, "markers": markers}
 
 
 # ==========================================================================
@@ -1042,9 +1187,15 @@ def _swingbone_script_pid(objs, scriptnames):
     return None
 
 
-def _path_of_bone(id2, name2tf, name):
-    """Slash path from a root to `name`, for the CRC32 m_BoneNameHashes entry."""
-    parents = _transform_parent_byname(id2)
+def _path_of_bone(id2, name, parents=None):
+    """Slash path from a root to `name`, for the CRC32 m_BoneNameHashes entry.
+
+    Pass a precomputed `parents` (child GO name -> parent GO name) to avoid
+    rebuilding the whole transform map per call AND to include bones that were just
+    injected (and so are absent from `id2`); without it the path of an injected bone
+    would collapse to its bare leaf name and hash wrong."""
+    if parents is None:
+        parents = _transform_parent_byname(id2)
     chain, cur, seen = [], name, 0
     while cur is not None and seen < 1000:
         chain.append(cur)
@@ -1055,6 +1206,27 @@ def _path_of_bone(id2, name2tf, name):
 
 def _bone_name_hash(path):
     return zlib.crc32(path.encode("utf-8")) & 0xFFFFFFFF
+
+
+# SwingColliderId enum from the SIFAS 3.12.0 decompile: a SwingBone's colliderIds
+# entries are a STABLE body-region identity, not a positional index into the
+# manager's collider list. Mapping the owning body-bone name -> this value is
+# order-independent and matches what the engine actually reads. (Ported from
+# costume_transplant.py — keeping these in sync avoids the collision-region drift.)
+SWING_COLLIDER_ID = {
+    "Hips": 1, "LeftUpLeg": 2, "LeftLeg": 3, "LeftFoot": 4,
+    "RightUpLeg": 5, "RightLeg": 6, "RightFoot": 7, "Spine1": 8, "Spine2": 9,
+    "LeftShoulder": 10, "LeftArm": 11, "LeftForeArm": 12, "LeftHand": 13,
+    "Neck": 14, "RightShoulder": 15, "RightArm": 16, "RightForeArm": 17,
+    "RightHand": 18,
+}
+
+
+def _collider_id_for_bone(bone, fallback_index):
+    """colliderIds value for a collider sitting on `bone`. Uses the engine's
+    SwingColliderId enum when the bone is a known body region, else falls back to
+    the old 1-based manager index (no regression for unrecognised bones)."""
+    return SWING_COLLIDER_ID.get(bone, fallback_index + 1)
 
 
 def inject_bone_chain(donor, target, inject_names, name2tf_target,
@@ -1200,7 +1372,7 @@ def inject_bone_chain(donor, target, inject_names, name2tf_target,
                     bone = d_colpid_to_bone.get(c.get("m_PathID"))
                     if bone in t_bone_to_colpid:
                         new_cols.append({"m_FileID": 0, "m_PathID": t_bone_to_colpid[bone]})
-                        new_ids.append(t_bone_to_colidx[bone] + 1)
+                        new_ids.append(_collider_id_for_bone(bone, t_bone_to_colidx[bone]))
             if "colliders" in sb:
                 sb["colliders"] = new_cols
             if "colliderIds" in sb:
@@ -1293,6 +1465,12 @@ def copy_material_with_textures(donor, target, donor_mat_pid, log=lambda *a: Non
         return npid
 
     mtt = copy.deepcopy(d_mat.read_typetree())
+    # the deep-copied material still points m_Shader at the DONOR bundle; repoint it at
+    # the target's own shader (the template material is a real target Material) so it
+    # never dangles. SIFAS bodies share one body shader.
+    tmpl_tt = _safe_tt(mat_tmpl)
+    if tmpl_tt and tmpl_tt.get("m_Shader") and "m_Shader" in mtt:
+        mtt["m_Shader"] = copy.deepcopy(tmpl_tt["m_Shader"])
     sp = mtt.get("m_SavedProperties", {})
     for entry in sp.get("m_TexEnvs", []):
         env = entry[1] if isinstance(entry, (list, tuple)) else entry.get("second")
@@ -1301,6 +1479,10 @@ def copy_material_with_textures(donor, target, donor_mat_pid, log=lambda *a: Non
             new_pid = inject_tex(tex["m_PathID"])
             if new_pid:
                 tex["m_PathID"] = new_pid
+                tex["m_FileID"] = 0
+            else:
+                # donor texture could not be injected — never leak a donor path id
+                tex["m_PathID"] = 0
                 tex["m_FileID"] = 0
     new_mat_pid = _rand_pids(1, used)[0]
     used.add(new_mat_pid)
@@ -1431,9 +1613,11 @@ def _is_node_scaling(mb):
 
 
 def rebase_node_scaling(path, eps=1e-4, verbose=True):
-    """Re-anchor every LiveCoreMemberNodeScaling entry whose originValue drifted
-    from its bone, preserving the body-shape correction. (Ported verbatim from
-    costume_transplant.py.)"""
+    """Re-anchor every LiveCoreMemberNodeScaling position/scale entry whose originValue
+    drifted from its bone, preserving the body-shape correction. Adapted from
+    costume_transplant.py, including its guard that leaves a bone already at its
+    scaledValue (body-shape baked into the rest pose, e.g. the Rina board) untouched so
+    the shape is not double-applied. rotationValues are not re-anchored (warned below)."""
     def log(*a):
         if verbose:
             print(*a)
@@ -1455,13 +1639,15 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
             n = g.read().m_Name if g else None
             if n:
                 name2local[n] = t
-    changed = 0
+    changed, rot_skipped = 0, 0
     for o in env.objects:
         if o.type.name != "MonoBehaviour":
             continue
         mb = _safe_tt(o)
         if not mb or not _is_node_scaling(mb):
             continue
+        if mb.get("rotationValues"):
+            rot_skipped += 1
         dirty = False
         for arr_key, comp_keys in (("positionValues", ("x", "y", "z")),
                                    ("scaleValues", ("x", "y", "z"))):
@@ -1477,6 +1663,12 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
                     continue
                 drift = max(abs(loc[c] - origin.get(c, loc[c])) for c in comp_keys)
                 if drift <= eps:
+                    continue
+                # bone already AT scaledValue: this model ships with the body shape
+                # baked into the rest pose (e.g. the Rina-chan board), the opposite of
+                # the `bone.local == originValue` invariant. Re-anchoring here would
+                # double-apply the body shape, so leave the entry untouched.
+                if max(abs(loc[c] - scaled.get(c, loc[c])) for c in comp_keys) <= eps:
                     continue
                 if arr_key == "positionValues":
                     for c in comp_keys:
@@ -1498,6 +1690,82 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
         with open(path, "wb") as f:
             f.write(bf.save(packer="lz4"))
         log(f"[ok] re-anchored NodeScaling on {changed} component(s)")
+    if rot_skipped:
+        log(f"[warn] {rot_skipped} NodeScaling component(s) carry rotationValues, which are "
+            f"not re-anchored; if a grafted part looks twisted, check its node rotation manually")
+
+
+# ==========================================================================
+# 6b. swing-physics length rescale for body-scaled targets (e.g. the Rina board)
+# --------------------------------------------------------------------------
+# A SwingBone's radius / knee-space offsets are absolute distances in the rig's
+# units. The donor tuned them at the donor's body scale (normally 1.0). A masked /
+# board-face target (Rina board) shrinks its whole body via the `Move` node (~0.927):
+# a grafted donor part's bones inherit that scale through the hierarchy, but their
+# tuning *fields* do not — so a wing / tail / cape collides and swings as if it were
+# still on a full-size body and splays out.
+#
+# The fix is part-agnostic: multiply each transplanted part bone's length fields by
+# S_bone = target_world_scale / donor_world_scale, from the accumulated hierarchy
+# scale. Body-anchored pieces (under Move) get ~0.927; head-anchored pieces (Head
+# 1.077 cancels Move) net ~1.0 and are left alone automatically. Forces / angles /
+# dot-limits are scale-invariant and kept. Only the SwingBone MonoBehaviours change —
+# no mesh / bind pose is touched, so a board target still loads. No-op on a standard
+# target (donor and target body scales both = 1.0). Ported from costume_transplant.py.
+_SWING_LENGTH_FIELDS = ("radius", "kneeSpaceOffsetFront", "kneeSpaceOffsetOther")
+
+
+def scale_costume_swing_lengths(out_path, donor_path, part_bone_names, verbose=True):
+    """Rescale donor-authored SwingBone length tuning on every transplanted part bone by
+    the target/donor body-scale ratio, so the part keeps its proportions when the target
+    scales the body. Re-opens the written bundle (so it sees the injected part bones) and
+    the donor. Returns the number of bones rescaled (0 = scales matched / no part bones)."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    env = _require_unitypy().load(out_path)
+    objs, id2 = _index(env)
+    scripts = _scriptname_map(objs)
+    donor = _require_unitypy().load(donor_path)
+    do, did = _index(donor)
+
+    t_scale = _accumulated_scale_byname(id2)
+    d_scale = _accumulated_scale_byname(did)
+    names = {n for n in part_bone_names if n}
+
+    n_scaled, ratios = 0, {}
+    for o in objs:
+        if o.type.name != "MonoBehaviour" or \
+                scripts.get(_safe_tt(o).get("m_Script", {}).get("m_PathID")) != "SwingBone":
+            continue
+        tt = _safe_tt(o)
+        name = _go_name(id2, tt.get("m_GameObject", {}).get("m_PathID"))
+        if name not in names:
+            continue
+        ts, ds = t_scale.get(name), d_scale.get(name)
+        if not ts or not ds:
+            continue
+        s = ts / ds
+        if abs(s - 1.0) < 1e-3:               # scales agree -> nothing to do
+            continue
+        for k in _SWING_LENGTH_FIELDS:
+            if isinstance(tt.get(k), (int, float)):
+                tt[k] = tt[k] * s
+        o.save_typetree(tt)
+        n_scaled += 1
+        ratios[name] = s
+    if n_scaled:
+        bf = list(env.files.values())[0]
+        bf.mark_changed()
+        with open(out_path, "wb") as f:
+            f.write(bf.save(packer="lz4"))
+        avg = sum(ratios.values()) / len(ratios)
+        log(f"[scale] body-scaled target: rescaled swing-physics lengths on {n_scaled} "
+            f"part bone(s) by ~{avg:.3f} (target/donor body-scale ratio) so the donor's "
+            f"wing/tail/cape keeps its proportions; mesh untouched (load-safe)")
+    else:
+        log("[scale] target and donor body scales match — swing-physics lengths unchanged")
+    return n_scaled
 
 
 # ==========================================================================
@@ -1588,7 +1856,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
                     part_bones=None, auto=False, weight_threshold=0.5,
                     tri_mode="all", preserve_physics=True, restore_collision=True,
                     new_submesh="auto", patch_texture=False, worldspace=True,
-                    fix_nodescaling=True, dry_run=False, verbose=True):
+                    fix_nodescaling=True, mask_handling="auto", scale_swing_physics=True,
+                    dry_run=False, verbose=True):
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target."""
     def log(*a):
@@ -1599,6 +1868,19 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     target = UP.load(target_path)
     do, did = _index(donor)
     to, tid = _index(target)
+
+    # ---- masked / board-face target (e.g. Rina-chan board): world-spacing its body
+    #      desyncs it from the untouched face/expression meshes and hangs the in-game
+    #      load, so the world-space bake below is skipped for such a target.
+    #      mask_handling: "auto" detect, "on" force, "off" disable. ----
+    board = detect_board_face_model(to, tid) if mask_handling != "off" else None
+    if mask_handling == "on" and board is None:
+        board = {"kind": "board-face(forced)", "face_parts": 0,
+                 "anchor_bones": {"Head"}, "markers": ["forced"]}
+    if board:
+        log(f"[mask] masked / board-face target detected: {board['face_parts']} face "
+            f"part(s); markers: {', '.join(board['markers'])}. Skipping the world-space "
+            f"bake so the board's own offset space is preserved (baking it hangs the load).")
 
     d_smr = _body_smr(do)
     t_smr = _body_smr(to)
@@ -1664,7 +1946,13 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     part_BI = BI[used]
 
     # ---- which donor bones the part vertices reference; remap to target ----
-    ref_ids = referenced_bone_ids(part_W, part_BI)
+    # drop out-of-range / unnamed bone ids up front: a malformed donor could weight a
+    # vertex onto a bone id past the bone list or onto an unnamed bone, which would
+    # otherwise crash (IndexError at inject_names below) or inject a null (m_PathID 0)
+    # bone into the target SMR. Vertices that referenced such a bone keep their other
+    # influences and fall back to bone 0 for the dropped one (remap_skin_indices).
+    ref_ids = [i for i in referenced_bone_ids(part_W, part_BI)
+               if 0 <= i < len(d_names) and d_names[i] is not None]
     remap, injected_ids = build_bone_remap(d_names, t_names, ref_ids)
     inject_names = [d_names[i] for i in injected_ids]
     new_BI = remap_skin_indices(part_BI, remap, default_idx=0)
@@ -1733,14 +2021,24 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         new_bone_pids.append({"m_FileID": 0, "m_PathID": pid or 0})
     t_smr_tt = t_smr.read_typetree()
     t_smr_tt["m_Bones"] = t_smr_tt.get("m_Bones", []) + new_bone_pids
-    # m_BoneNameHashes must stay aligned with m_BindPose if the mesh uses them
+    # m_BoneNameHashes must stay aligned with m_BindPose if the mesh uses them.
+    # tid is the pre-injection snapshot (native bones only), so build a parent-name
+    # map that splices in each injected bone's DONOR parentage; otherwise the injected
+    # bones (absent from tid) would resolve to their bare leaf name and hash wrong.
     bnh = t_mesh_tt.get("m_BoneNameHashes")
     if isinstance(bnh, list) and bnh:
-        name2tf_target = _name2transform(tid)
+        parents = _transform_parent_byname(tid)   # native child name -> parent name
+        d_parent_byname = _transform_parent_byname(did)
+        injected_set = {d_names[di] for di in injected_ids}
+        # an injected bone's real target parent mirrors inject_bone_chain's tf_of():
+        # its donor parent if that parent is itself injected or already native, else
+        # the root (father 0) — so the hash path never invents a missing ancestor.
         for di in injected_ids:
             nm = d_names[di]
-            path = _path_of_bone(tid, name2tf_target, nm)
-            bnh.append(_bone_name_hash(path))
+            p = d_parent_byname.get(nm)
+            parents[nm] = p if (p in injected_set or p in parents) else None
+        for di in injected_ids:
+            bnh.append(_bone_name_hash(_path_of_bone(tid, d_names[di], parents)))
         t_mesh_tt["m_BoneNameHashes"] = bnh
         t_mesh.save_typetree(t_mesh_tt)
 
@@ -1774,10 +2072,25 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         f.write(bf.save(packer="lz4"))
     log(f"[ok] wrote {out_path}")
 
-    if worldspace:
+    if worldspace and not board:
         worldspace_normalize(out_path, verbose=verbose, body_only=True)
+    elif worldspace and board:
+        log("[mask] board-face target: skipped the world-space bake — the board is "
+            "authored in its own offset space; forcing the body to world space "
+            "(meshRoot=I) desyncs it from the untouched face/expression meshes and "
+            "hangs the load.")
+    # rebase_node_scaling is safe on a board too: its scaledValue guard leaves
+    # body-shape-baked bones untouched, so it never double-applies the shape.
     if fix_nodescaling:
         rebase_node_scaling(out_path, verbose=verbose)
+    # if the target scales the whole body (e.g. the Rina board's Move ~0.927), rescale
+    # the injected part's swing-physics lengths so the wing/tail/cape keeps its
+    # proportions instead of splaying. No-op on a standard target (scales match);
+    # mesh untouched -> load-safe even on a board.
+    if scale_swing_physics and preserve_physics and inject_names:
+        scale_costume_swing_lengths(out_path, donor_path, inject_names, verbose=verbose)
+    # read-only: warn if the grown body renderer blew past the runtime combine limits
+    check_combine_limits(out_path, verbose=verbose)
     log(f"[done] {out_path}")
     return out_path
 
@@ -1880,21 +2193,88 @@ def _main_texture(id2, smr_tt):
     return None
 
 
-def validate(out_path, verbose=True):
-    """Quick dangling-reference check on the written bundle."""
-    env = _require_unitypy().load(out_path)
-    objs, id2 = _index(env)
-    dangling = 0
-    for o in objs:
+def check_combine_limits(path, verbose=True):
+    """Warn (never modifies) if the written bundle exceeds the runtime mesh-combine
+    limits. A part transplant grows the body renderer's bone list, so a big donor part
+    on an already bone-heavy body can push past the 256-bone CombineBody cap and fail
+    in-game even though it loads fine in Blender/AssetStudio. Read-only sanity pass."""
+    def log(*a):
+        if verbose:
+            print(*a)
+    try:
+        env = _require_unitypy().load(path)
+    except Exception as e:  # noqa: BLE001
+        log(f"[limits] skipped ({e})")
+        return True
+    ok = True
+    for o in env.objects:
         if o.type.name != "SkinnedMeshRenderer":
             continue
-        tt = _safe_tt(o)
-        for b in tt.get("m_Bones", []):
-            if b.get("m_PathID") and b["m_PathID"] not in id2:
+        nbones = len((_safe_tt(o) or {}).get("m_Bones", []))
+        if nbones > COMBINE_BONE_MAX:
+            ok = False
+            log(f"[limits] WARNING: SkinnedMeshRenderer has {nbones} bones "
+                f"(> {COMBINE_BONE_MAX}); CombineBody may fail in-game. Reduce the merged "
+                f"bone count (e.g. transplant a smaller part or drop unused part bones).")
+    if ok and verbose:
+        log(f"[limits] OK: bone counts within the {COMBINE_BONE_MAX}-bone combine limit "
+            f"(note: per-vertex influences must stay <= {COMBINE_SKIN_MAX} and body scale "
+            f"within {COMBINE_SAFE_SCALE[0]}-{COMBINE_SAFE_SCALE[1]}, which the engine "
+            f"trims/clamps silently).")
+    return ok
+
+
+def validate(out_path, verbose=True):
+    """Dangling-reference check on the written bundle, covering every reference this
+    tool can touch: SkinnedMeshRenderer bones/mesh/materials, the SwingBoneManager
+    bone list, the SwingBone child/sibling pointers of any injected appendage bones,
+    and a clean (single-parent, no-dup) transform hierarchy. A null bone PPtr
+    (m_PathID 0) counts as dangling — earlier this was silently skipped."""
+    env = _require_unitypy().load(out_path)
+    objs, id2 = _index(env)
+    scripts = _scriptname_map(objs)
+    dangling = 0
+    # hierarchy must stay a clean tree: every Transform listed under exactly one
+    # parent, once. Otherwise AssetStudio's export throws a duplicate-key error.
+    child_parents, hier_problems = {}, 0
+    for o in objs:
+        if o.type.name == "Transform":
+            seen = set()
+            for c in (_safe_tt(o) or {}).get("m_Children", []):
+                cp = c["m_PathID"]
+                if cp in seen:
+                    hier_problems += 1
+                seen.add(cp)
+                child_parents[cp] = child_parents.get(cp, 0) + 1
+    hier_problems += sum(1 for n in child_parents.values() if n > 1)
+    for o in objs:
+        if o.type.name == "SkinnedMeshRenderer":
+            tt = _safe_tt(o) or {}
+            for b in tt.get("m_Bones", []):
+                if b.get("m_PathID", 0) not in id2:
+                    dangling += 1
+            if tt.get("m_Mesh", {}).get("m_PathID") not in id2:
                 dangling += 1
-        if tt.get("m_Mesh", {}).get("m_PathID") not in id2:
-            dangling += 1
+            for m in tt.get("m_Materials", []):
+                mp = m.get("m_PathID", 0)
+                if mp and mp not in id2:
+                    dangling += 1
+        elif o.type.name == "MonoBehaviour":
+            tt = _safe_tt(o) or {}
+            cls = scripts.get(tt.get("m_Script", {}).get("m_PathID"))
+            if cls == "SwingBoneManager":
+                for b in tt.get("bones", []):
+                    if b.get("m_PathID", 0) not in id2:
+                        dangling += 1
+            elif cls == "SwingBone":
+                for key in ("child", "sibling"):
+                    pid = tt.get(key, {}).get("m_PathID", 0)
+                    if pid and pid not in id2:
+                        dangling += 1
     if verbose:
+        if hier_problems:
+            print(f"[validate] WARNING: {hier_problems} transform(s) with multiple/duplicate "
+                  f"parents — fix the hierarchy before exporting in AssetStudio")
         print(f"[validate] {'ok — no dangling references' if not dangling else f'{dangling} dangling reference(s)!'}")
     return dangling == 0
 
@@ -2054,6 +2434,12 @@ def build_parser():
                     help="copy the part's UV region onto the target body atlas (needs Pillow)")
     pt.add_argument("--no-worldspace", action="store_true")
     pt.add_argument("--no-nodescaling", action="store_true")
+    pt.add_argument("--mask-handling", choices=("auto", "on", "off"), default="auto",
+                    help="masked/board-face target (Rina board): auto-detect and skip the "
+                         "world-space bake that would hang its load ('on' forces, 'off' disables)")
+    pt.add_argument("--no-swing-scale", action="store_true",
+                    help="don't rescale the part's swing-physics lengths for a body-scaled "
+                         "(board) target (no-op on standard targets anyway)")
     pt.add_argument("--dry-run", action="store_true", help="report only; write nothing")
 
     sub.add_parser("selftest", help="run the pure mesh-surgery checks (no bundle needed)")
@@ -2078,9 +2464,12 @@ def run_cli(args):
             preserve_physics=not args.no_physics, restore_collision=not args.no_collision,
             new_submesh=new_submesh, patch_texture=args.patch_texture,
             worldspace=not args.no_worldspace, fix_nodescaling=not args.no_nodescaling,
+            mask_handling=args.mask_handling, scale_swing_physics=not args.no_swing_scale,
             dry_run=args.dry_run)
         if out and not args.dry_run:
-            validate(out)
+            if not validate(out):
+                print("[error] output has dangling references; aborting", file=sys.stderr)
+                return 2
         return 0
     return None
 
@@ -2089,6 +2478,13 @@ def run_cli(args):
 # 12. GUI
 # ==========================================================================
 def gui_available():
+    # don't try to open a window on Termux or a headless Linux box (no display) —
+    # main() then falls back to the CLI help instead of crashing in Tk().
+    if is_termux():
+        return False
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") \
+            and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
     import importlib.util
     try:
         return importlib.util.find_spec("tkinter") is not None
@@ -2103,11 +2499,34 @@ def run_gui():
     import queue
 
     root = tk.Tk()
-    root.title(_tr("SIFAS Costume Part Transplant"))
-    root.geometry("760x680")
+    root.geometry("800x740")
 
     state = {"parts": []}
     q = queue.Queue()
+
+    # --- live language switching: register translatable widgets, re-apply on change.
+    #     (Same pattern as costume_transplant.py's GUI.) ---
+    _i18n = []   # list of (widget, english_key, kind)
+
+    def _apply_one(widget, key, kind):
+        try:
+            if kind == "title":
+                widget.title(_tr(key))
+            else:
+                widget.config(text=_tr(key))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _reg(widget, key, kind="text"):
+        _i18n.append((widget, key, kind))
+        _apply_one(widget, key, kind)
+        return widget
+
+    def _apply_i18n():
+        for widget, key, kind in _i18n:
+            _apply_one(widget, key, kind)
+
+    _reg(root, "SIFAS Costume Part Transplant", "title")
 
     def browse(var):
         f = filedialog.askopenfilename(title=_tr("Select bundle"))
@@ -2122,21 +2541,37 @@ def run_gui():
     frm = ttk.Frame(root, padding=10)
     frm.pack(fill="both", expand=True)
 
+    # language selector
+    langf = ttk.Frame(frm); langf.pack(fill="x")
+    _reg(ttk.Label(langf, text="", width=10), "Language").pack(side="left")
+    _lang_pairs = _lang_opts()                       # [(code, label), ...]
+    _code_by_label = {label: code for code, label in _lang_pairs}
+    lang_v = tk.StringVar(value=dict(_lang_pairs).get(_get_lang(), "English"))
+    lang_cb = ttk.Combobox(langf, textvariable=lang_v, state="readonly", width=12,
+                           values=[label for _, label in _lang_pairs])
+    lang_cb.pack(side="left")
+
+    def on_lang(*_a):
+        _set_lang(_code_by_label.get(lang_v.get(), "en"))
+        _apply_i18n()
+    lang_cb.bind("<<ComboboxSelected>>", on_lang)
+
     donor_v = tk.StringVar(); target_v = tk.StringVar(); out_v = tk.StringVar()
 
     def row(label, var, save=False):
         f = ttk.Frame(frm); f.pack(fill="x", pady=3)
-        ttk.Label(f, text=_tr(label), width=24).pack(side="left")
+        _reg(ttk.Label(f, text="", width=24), label).pack(side="left")
         ttk.Entry(f, textvariable=var).pack(side="left", fill="x", expand=True)
-        ttk.Button(f, text=_tr("Browse…"),
-                   command=(lambda: browse_save(var)) if save else (lambda: browse(var))).pack(side="left")
+        _reg(ttk.Button(f, text="",
+                        command=(lambda: browse_save(var)) if save else (lambda: browse(var))),
+             "Browse…").pack(side="left")
 
     row("Donor  (part source)", donor_v)
     row("Target (wearer / identity)", target_v)
     row("Output bundle", out_v, save=True)
 
     pf = ttk.Frame(frm); pf.pack(fill="x", pady=6)
-    ttk.Label(pf, text=_tr("Part to move"), width=24).pack(side="left")
+    _reg(ttk.Label(pf, text="", width=24), "Part to move").pack(side="left")
     part_v = tk.StringVar()
     part_cb = ttk.Combobox(pf, textvariable=part_v, state="readonly")
     part_cb.pack(side="left", fill="x", expand=True)
@@ -2153,13 +2588,27 @@ def run_gui():
         part_cb["values"] = labels or [_tr("(load a donor bundle to list its parts)")]
         if labels:
             part_cb.current(0)
-    ttk.Button(pf, text=_tr("Refresh part list"), command=refresh_parts).pack(side="left")
+    _reg(ttk.Button(pf, text="", command=refresh_parts), "Refresh part list").pack(side="left")
 
-    opt = ttk.LabelFrame(frm, text=_tr("Options"), padding=8)
+    # selection tuning: triangle mode, weight threshold, sub-mesh handling
+    self_ = ttk.Frame(frm); self_.pack(fill="x", pady=4)
+    _reg(ttk.Label(self_, text="", width=24), "Triangle selection").pack(side="left")
+    trimode_v = tk.StringVar(value="all")
+    ttk.Combobox(self_, textvariable=trimode_v, state="readonly", width=7,
+                 values=("all", "any")).pack(side="left", padx=(0, 12))
+    _reg(ttk.Label(self_, text=""), "Weight threshold").pack(side="left")
+    thr_v = tk.StringVar(value="0.5")
+    ttk.Spinbox(self_, textvariable=thr_v, from_=0.0, to=1.0, increment=0.05,
+                width=6).pack(side="left", padx=(4, 12))
+    _reg(ttk.Label(self_, text=""), "Sub-mesh handling").pack(side="left")
+    submesh_v = tk.StringVar(value="auto")
+    ttk.Combobox(self_, textvariable=submesh_v, state="readonly", width=7,
+                 values=("auto", "new", "merge")).pack(side="left", padx=(4, 0))
+
+    opt = ttk.LabelFrame(frm, text="", padding=8); _reg(opt, "Options")
     opt.pack(fill="x", pady=8)
     phys_v = tk.BooleanVar(value=True)
     coll_v = tk.BooleanVar(value=True)
-    newsub_v = tk.BooleanVar(value=False)
     patch_v = tk.BooleanVar(value=False)
     ws_v = tk.BooleanVar(value=True)
     ns_v = tk.BooleanVar(value=True)
@@ -2167,15 +2616,14 @@ def run_gui():
     for var, label in (
         (phys_v, "Preserve the part's jiggle physics (SwingBone)"),
         (coll_v, "Restore body collision for the part's bones"),
-        (newsub_v, "Add the part as its own sub-mesh + material (keep its texture)"),
         (patch_v, "Patch the part's texture region onto the target body atlas"),
         (ws_v, "World-space the body mesh (so swinging parts render correctly)"),
         (ns_v, "Re-anchor NodeScaling to keep the wearer's body shape"),
         (dry_v, "Preview only (dry-run) — report what would change, write nothing"),
     ):
-        ttk.Checkbutton(opt, text=_tr(label), variable=var).pack(anchor="w")
+        _reg(ttk.Checkbutton(opt, text="", variable=var), label).pack(anchor="w")
 
-    out_txt = tk.Text(frm, height=14, wrap="word")
+    out_txt = tk.Text(frm, height=12, wrap="word")
     out_txt.pack(fill="both", expand=True, pady=6)
 
     def log_write(s):
@@ -2195,6 +2643,11 @@ def run_gui():
         if not (donor_v.get() and target_v.get() and out_v.get() and parts and 0 <= idx < len(parts)):
             q.put(_tr("[error] choose donor, target, output and a part first.\n"))
             return
+        try:
+            thr = float(thr_v.get())
+        except (TypeError, ValueError):
+            thr = 0.5
+        submesh_choice = {"auto": "auto", "new": True, "merge": False}.get(submesh_v.get(), "auto")
 
         class _W:
             def write(self, s):
@@ -2207,8 +2660,9 @@ def run_gui():
             out = transplant_part(
                 donor_v.get(), target_v.get(), out_v.get(),
                 part_root=parts[idx]["root"],
+                weight_threshold=thr, tri_mode=trimode_v.get(),
                 preserve_physics=phys_v.get(), restore_collision=coll_v.get(),
-                new_submesh=(True if newsub_v.get() else "auto"),
+                new_submesh=submesh_choice,
                 patch_texture=patch_v.get(),
                 worldspace=ws_v.get(), fix_nodescaling=ns_v.get(),
                 dry_run=dry_v.get())
@@ -2226,7 +2680,7 @@ def run_gui():
         threading.Thread(target=worker, daemon=True).start()
 
     bf = ttk.Frame(frm); bf.pack(fill="x")
-    ttk.Button(bf, text=_tr("Transplant part"), command=go).pack(side="right")
+    _reg(ttk.Button(bf, text="", command=go), "Transplant part").pack(side="right")
 
     drain()
     root.mainloop()
