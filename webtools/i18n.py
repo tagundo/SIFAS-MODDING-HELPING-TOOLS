@@ -149,6 +149,9 @@ _TABLES = {
         "Donor bundle (has the part)": "공여 번들 (해당 부분 보유)",
         "Target bundle (wearer)": "대상 번들 (착용자)",
         "Part root bone (optional)": "부분 루트 본 (선택)",
+        "Part root bone": "부분 루트 본",
+        "(auto — biggest part)": "(자동 — 가장 큰 부분)",
+        "loading…": "불러오는 중…",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
@@ -555,6 +558,9 @@ _TABLES = {
         "Donor bundle (has the part)": "提供元バンドル（パーツを持つ）",
         "Target bundle (wearer)": "対象バンドル（着用者）",
         "Part root bone (optional)": "パーツのルートボーン（任意）",
+        "Part root bone": "パーツのルートボーン",
+        "(auto — biggest part)": "(自動 — 最大パーツ)",
+        "loading…": "読み込み中…",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",

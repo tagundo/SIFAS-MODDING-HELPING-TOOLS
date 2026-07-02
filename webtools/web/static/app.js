@@ -178,6 +178,57 @@ function renderForm() {
   }
   form.appendChild(el("button", { class: "run-btn", type: "submit", text: T("Run") }));
   panel.appendChild(form);
+  wireDynamicSelects(tool);
+}
+
+// Fetch a dynamic_select field's options from the server, keyed on its
+// dependency field values (e.g. the donor path), and repopulate the <select>.
+async function loadDynamicOptions(field, sel) {
+  const parts = (field.depends || []).map((d) => {
+    const dep = document.querySelector(`#tool-form [data-name="${d}"]`);
+    return encodeURIComponent(d) + "=" + encodeURIComponent(dep ? dep.value : "");
+  });
+  parts.push("lang=" + encodeURIComponent(state.lang || "en"));
+  const prev = sel.value;
+  sel.innerHTML = "";
+  sel.appendChild(el("option", { value: "", text: T("loading…") }));
+  try {
+    const url = "/api/options/" + encodeURIComponent(state.currentTool.id) +
+      "/" + encodeURIComponent(field.name) + "?" + parts.join("&");
+    const data = await (await fetch(url)).json();
+    sel.innerHTML = "";
+    sel.appendChild(el("option", { value: "", text: T(field.blank_label || "(auto)") }));
+    for (const o of data.options || []) {
+      const value = (o && typeof o === "object") ? o.value : o;
+      const label = (o && typeof o === "object") ? o.label : o;
+      sel.appendChild(el("option", { value: String(value), text: String(label) }));
+    }
+    if (data.error) sel.appendChild(el("option", { value: "", text: "(" + data.error + ")" }));
+    if (prev) sel.value = prev;   // keep the current choice if it's still offered
+  } catch (e) {
+    sel.innerHTML = "";
+    sel.appendChild(el("option", { value: "", text: "(error: " + e + ")" }));
+  }
+}
+
+// After a form is built, wire each dynamic_select: reload when a dependency
+// changes, and auto-load once if every dependency already has a value.
+function wireDynamicSelects(tool) {
+  for (const field of tool.fields) {
+    if (field.type !== "dynamic_select") continue;
+    if (field.mode && field.mode !== state.currentMode) continue;
+    const sel = document.querySelector(`#tool-form [data-name="${field.name}"]`);
+    if (!sel) continue;
+    for (const dep of field.depends || []) {
+      const depEl = document.querySelector(`#tool-form [data-name="${dep}"]`);
+      if (depEl) depEl.addEventListener("input", () => loadDynamicOptions(field, sel));
+    }
+    const ready = (field.depends || []).every((d) => {
+      const e = document.querySelector(`#tool-form [data-name="${d}"]`);
+      return e && e.value;
+    });
+    if (ready) loadDynamicOptions(field, sel);
+  }
 }
 
 function renderField(field) {
@@ -209,6 +260,19 @@ function renderField(field) {
       sel.appendChild(o);
     }
     wrap.appendChild(sel);
+  } else if (field.type === "dynamic_select") {
+    // A select whose options are fetched from the server based on a dependency
+    // field (e.g. the donor path) — press Load, or it auto-loads when the
+    // dependency is set. Collected like a normal select.
+    const sel = el("select", { id });
+    sel.dataset.name = field.name;
+    sel.dataset.ftype = "select";
+    sel.appendChild(el("option", { value: "", text: T(field.blank_label || "(auto)") }));
+    const load = el("button", {
+      type: "button", text: T("Load"),
+      onclick: () => loadDynamicOptions(field, sel),
+    });
+    wrap.appendChild(el("div", { class: "path-row" }, [sel, load]));
   } else if (field.type === "preset") {
     // A convenience picker: choosing a preset fills sibling fields with named
     // values (restores the GUI's preset buttons). UI-only — not submitted.
@@ -251,7 +315,10 @@ function renderField(field) {
     input.dataset.ftype = field.type;
     const browse = el("button", {
       type: "button", text: T("Browse"),
-      onclick: () => openPicker(field.type, (p) => { input.value = p; }, field.root, input.value),
+      onclick: () => openPicker(field.type, (p) => {
+        input.value = p;
+        input.dispatchEvent(new Event("input", { bubbles: true }));  // notify dynamic_select deps
+      }, field.root, input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
   } else if (field.type === "paths") {

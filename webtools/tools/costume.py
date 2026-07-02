@@ -13,6 +13,31 @@ from webtools.core.tkstub import ensure_tk_stub
 from webtools.tools.common import as_float, single_out_path
 
 
+# ---- dynamic dropdown provider: donor -> candidate part-root bones ----------
+def part_root_options(params):
+    """Options for the Costume Part Transplant 'part root bone' dropdown: the
+    donor bundle's candidate part roots, mirroring the desktop GUI's parts
+    combobox (costume_part_transplant.inspect). Returns [{value, label}]; the
+    value is the bone name transplant_part expects, the label adds vert/tri/bone
+    counts. Empty list when no donor is chosen yet."""
+    donor = (params.get("donor") or "").strip()
+    if not donor:
+        return []
+    ensure_repo_on_path()
+    import costume_part_transplant as cpt
+    out = []
+    for p in cpt.inspect(donor, verbose=False):
+        root = p.get("root")
+        if not root:
+            continue
+        out.append({
+            "value": root,
+            "label": "%s  (%d v, %d t, %d bones)" % (
+                root, p.get("verts", 0), p.get("tris", 0), len(p.get("bones", []) or [])),
+        })
+    return out
+
+
 # ---------------------------------------------------------- costume packer
 def run_costume_packer(job, params):
     ensure_repo_on_path()

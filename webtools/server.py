@@ -80,6 +80,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"lang": lang,
                                         "languages": i18n.language_options(),
                                         "strings": i18n.all_strings(lang)})
+            if path.startswith("/api/options/"):
+                return self._api_options(path[len("/api/options/"):])
             if path == "/api/fs/roots":
                 return self._send_json(filebrowser.roots_listing())
             if path == "/api/fs/list":
@@ -157,6 +159,33 @@ class Handler(BaseHTTPRequestHandler):
             data = f.read()
         self._send_bytes(data, "application/octet-stream",
                          extra_headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    def _api_options(self, spec):
+        """Serve a dynamic_select field's options: /api/options/<tool>/<field>.
+        The field's `options_fn` is called with the query params (its `depends`
+        field values, e.g. the donor path). Path dependencies are jailed to the
+        allowed roots, exactly like a run."""
+        tool_id, _, field_name = spec.partition("/")
+        tool = registry.get_tool(tool_id)
+        if not tool:
+            return self._send_json({"error": "unknown tool", "options": []}, status=404)
+        field = next((f for f in tool.get("fields", []) if f.get("name") == field_name), None)
+        fn = field.get("options_fn") if field else None
+        if not callable(fn):
+            return self._send_json({"error": "no options for field", "options": []}, status=404)
+        q = {k: v[0] for k, v in self._query().items()}
+        by_name = {f.get("name"): f for f in tool.get("fields", [])}
+        for dep in field.get("depends", []):
+            val = q.get(dep)
+            depf = by_name.get(dep)
+            if val and depf and depf.get("type") in ("path", "dir") \
+                    and not filebrowser.is_within_allowed(val):
+                return self._send_json({"error": f"{dep} is outside the allowed roots",
+                                        "options": []}, status=403)
+        try:
+            return self._send_json({"options": fn(q) or []})
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json({"error": str(exc), "options": []})
 
     def _validate_run_paths(self, tool, params):
         """Reject any path/dir param that points outside the allowed roots."""

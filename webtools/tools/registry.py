@@ -15,8 +15,8 @@ from webtools.tools.bodymod import (
     run_accessory_unclip, run_hips, run_node_scaling, run_upleg,
 )
 from webtools.tools.costume import (
-    run_costume_packer, run_costume_part_transplant, run_costume_transplant,
-    run_iosapk_import, run_lower_body_swap,
+    part_root_options, run_costume_packer, run_costume_part_transplant,
+    run_costume_transplant, run_iosapk_import, run_lower_body_swap,
 )
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
@@ -533,8 +533,11 @@ TOOLS = [
              "root": "extracted"},
             _out_dir(),
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_part"},
-            {"name": "part_root", "label": "Part root bone (optional)", "type": "text", "default": "",
-             "help": "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part."},
+            {"name": "part_root", "label": "Part root bone", "type": "dynamic_select",
+             "depends": ["donor"], "options_fn": part_root_options,
+             "blank_label": "(auto — biggest part)",
+             "help": "Pick a part from the donor bundle (press Load to read its parts). "
+                     "Blank / auto = the biggest costume-specific part."},
             {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "new_submesh", "label": "Add the part as its own sub-mesh + material (keep its texture)",
@@ -655,6 +658,9 @@ def public_tools(lang=None):
 
 def _translate_field(field, lang):
     f = dict(field)
+    # `options_fn` is a runtime callable (dynamic_select provider); it is served
+    # via /api/options, never serialised into the tool list.
+    f.pop("options_fn", None)
     if "label" in f:
         f["label"] = i18n.tr(f["label"], lang=lang)
     if "help" in f:
