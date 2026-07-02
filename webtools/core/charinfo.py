@@ -110,6 +110,44 @@ def _fmt_vec(v):
     return f"{x:g} / {y:g} / {z:g}"
 
 
+# ---- compact at-a-glance summary (the frequently-used fields) ----------------
+_UNIT = {0: "μ's", 100: "Aqours", 200: "Nijigasaki"}
+_SKIN_SHORT = {"medium_tone": "medium"}
+
+
+def unit_of(cid):
+    return _UNIT.get((cid // 100) * 100, "")
+
+
+def _cv(v):
+    """Compact vec: (0.64,0.94,0.88) -> '.64/.94/.88'; 1.0 -> '1'; None -> '-'."""
+    if v is None:
+        return "-"
+
+    def f(n):
+        s = f"{n:g}"
+        return s[1:] if s.startswith("0.") else s
+    return "/".join(f(n) for n in v)
+
+
+def summary_header():
+    return (f"{'ID':>4}  {'Name':<9} {'Skin':<7} {'Thigh':<7}  "
+            f"{'Bust':<14}  {'Hips':<11}  Jig")
+
+
+def summary_row(cid):
+    """One compact aligned line: ID, name, skin tone, thigh type, bust + hips node
+    scaling (x/y/z), and the breast-physics (dyna) tier — the fields looked up most."""
+    _, breasts, _, hips, _ = BODY.get(cid, (None,) * 5)
+    first = NAMES.get(cid, str(cid)).split()[0]
+    skin = SKIN_TONE.get(cid, "?")
+    skin = _SKIN_SHORT.get(skin, skin)
+    thigh = THIGH.get(cid, "default")
+    jig = JIGGLE.get(cid)
+    return (f"{cid:>4}  {first:<9} {skin:<7} {thigh:<7}  "
+            f"{_cv(breasts):<14}  {_cv(hips):<11}  {'' if jig is None else jig}")
+
+
 def describe(cid):
     """Formatted reference lines for one character id."""
     name = NAMES.get(cid, str(cid))
