@@ -92,16 +92,31 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
     except Exception as exc:
         log(f"[skin] unavailable ({exc}); skipped")
         return False
-    # On the phone, wire ASTC decode/encode through the bundled CLI so SIFAS's
-    # compressed textures round-trip. No-op on desktop / when unavailable.
+    # ASTC decode goes through the bundled CLI on the phone so SIFAS's compressed
+    # textures can be read. Re-ENCODING through that same CLI has proven unreliable
+    # on-device (it silently fails to persist the pixels — the bundle keeps the
+    # original ASTC bytes), so when the native ASTC encoder is absent we write the
+    # recoloured skin as uncompressed RGBA32: no codec, guaranteed to land, and the
+    # game loads it fine. On desktop (native encoder present) the original
+    # compressed format is kept, so output stays small there.
     try:
         from webtools.tools.texture import ensure_astc_cli
         ensure_astc_cli()
     except Exception:
         pass
+    from UnityPy.export import Texture2DConverter as _T
+    native_astc = getattr(_T, "astc_encoder", None) is not None
+    force_rgba32 = None
+    if not native_astc:
+        try:
+            from UnityPy.enums import TextureFormat
+            force_rgba32 = TextureFormat.RGBA32
+        except Exception:
+            force_rgba32 = None
 
     env = UnityPy.load(str(in_path))
     changed = 0
+    originals = {}   # pathID -> (rgb, alpha, intended_shift) for post-save verify
     for obj in env.objects:
         if getattr(obj.type, "name", "") != "Texture2D":
             continue
@@ -131,19 +146,20 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
             out = stc.convert_array(rgb, tone, dst_tone,
                                     skin_only=skin_only, strength=strength)
             u8 = np.clip(out, 0, 255).astype(np.uint8)
-            data.image = Image.fromarray(
-                np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
+            newpil = Image.fromarray(np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
+            if force_rgba32 is not None:
+                # uncompressed write, no astcenc CLI in the path
+                data.set_image(newpil, target_format=force_rgba32)
+            else:
+                data.image = newpil
             data.save()
             changed += 1
-            # quantify the applied change so "nothing happened" is answerable
-            # from the log: SIFAS's official tone classes only differ by a few
-            # /255 on the skin, so a correct match is often nearly invisible.
             m = stc._skin_mask(rgb, alpha)
-            shift = float(np.abs(out - rgb)[m].mean()) if m.any() else 0.0
-            note = (" - official tones differ subtly, a small shift is correct"
-                    if shift < 8 else "")
-            log(f"[skin] recoloured {name}: {tone} -> {dst_tone} "
-                f"(mean skin shift {shift:.1f}/255{note})")
+            intended = float(np.abs(out - rgb)[m].mean()) if m.any() else 0.0
+            originals[obj.path_id] = (rgb, alpha, intended, tone)
+            log(f"[skin] recolouring {name}: {tone} -> {dst_tone} "
+                f"(target shift {intended:.1f}/255"
+                f"{', as RGBA32' if force_rgba32 is not None else ''})")
         except Exception as exc:
             log(f"[skin] recolour failed on {name}: {exc}")
     if not changed:
@@ -151,4 +167,31 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
         return False
     with open(str(out_path), "wb") as f:
         f.write(env.file.save(packer="lz4"))
-    return True
+    # Verify the change actually persisted so the log can never again claim a
+    # recolour that did not land: reload and measure the REAL skin shift against
+    # the pre-edit pixels. If it did not stick, say so and fail (the caller then
+    # keeps the un-recoloured transplant rather than a silently-unchanged file).
+    landed = 0
+    try:
+        v = UnityPy.load(str(out_path))
+        for obj in v.objects:
+            if getattr(obj.type, "name", "") != "Texture2D":
+                continue
+            if obj.path_id not in originals:
+                continue
+            rgb0, alpha0, intended, tone = originals[obj.path_id]
+            a = np.asarray(obj.read().image.convert("RGBA")).astype(np.float64)[..., :3]
+            m = stc._skin_mask(rgb0, alpha0)
+            actual = float(np.abs(a - rgb0)[m].mean()) if m.any() else 0.0
+            nm = getattr(obj.read(), "m_Name", "") or "body"
+            if intended >= 1.0 and actual < 0.5:
+                log(f"[skin] WARNING {nm}: recolour did NOT persist "
+                    f"(actual shift {actual:.1f}/255 vs target {intended:.1f}); "
+                    "the texture was left unchanged on disk")
+            else:
+                landed += 1
+                log(f"[skin] verified {nm}: actual skin shift {actual:.1f}/255")
+    except Exception as exc:
+        log(f"[skin] could not verify output ({exc}); assuming written")
+        return True
+    return landed > 0
