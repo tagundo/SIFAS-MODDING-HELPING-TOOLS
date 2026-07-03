@@ -301,39 +301,55 @@ def run_lower_body_swap(job, params):
 
 
 # ---------------------------------------------- costume recolour (irochi)
-_CN_SUFFIX = re.compile(r"_c\d+$", re.IGNORECASE)
+_CN_SUFFIX = re.compile(r"_c\d+$", re.IGNORECASE)          # ..._body_c1 -> ..._body
+_CHCO_RE = re.compile(r"ch\d+_co\d+", re.IGNORECASE)       # the costume-pair key
 
 
-def run_costume_recolour(job, params):
-    """Apply a colour-variant (irochi) texture bundle onto its base costume model.
+def _classify_bundle(path):
+    """Classify a decrypted bundle purely by its CONTENTS — no DB needed:
+      ('complete', code)  = has a mesh (the full model with base textures)
+      ('variant',  code)  = texture-only bundle carrying _cN recolour textures
+      ('other',    code)  = neither
+    `code` is the chXXXX_coYYYY pair key (or None), `color` is the _cN tag
+    (e.g. 'c1') for a variant. Returns (kind, code, color)."""
+    import UnityPy
+    env = UnityPy.load(str(path))
+    has_mesh = False
+    texnames = []
+    for obj in env.objects:
+        tn = obj.type.name
+        if tn in ("Mesh", "SkinnedMeshRenderer"):
+            has_mesh = True
+        elif tn == "Texture2D":
+            texnames.append(getattr(obj.read(), "m_Name", "") or "")
+    code = None
+    for n in texnames:
+        m = _CHCO_RE.search(n)
+        if m:
+            code = m.group(0).lower()
+            break
+    color = ""
+    for n in texnames:
+        m = _CN_SUFFIX.search(n)
+        if m:
+            color = m.group(0).lstrip("_")     # '_c1' -> 'c1'
+            break
+    if has_mesh:
+        return "complete", code, color
+    if color:
+        return "variant", code, color
+    return "other", code, color
 
-    In SIFAS an alt-colour costume is NOT a separate model: it's a texture-only
-    bundle whose textures carry a `_cN` suffix (e.g. chXXXX_coYYYY_body_c1), meant
-    to override the shared base model's textures (chXXXX_coYYYY_body). Extracting
-    the model alone gives the base colour; extracting the variant gives textures
-    with no mesh. This composites them: it reads the variant's `_cN` textures and
-    imports each onto the base model's matching texture (suffix stripped), keeping
-    the base format, so the output is a self-contained recoloured model bundle."""
-    from webtools.tools.texture import ensure_astc_cli
-    ensure_astc_cli()                        # ASTC decode/encode on-device
-    ensure_repo_on_path()
-    ensure_tk_stub()                         # texture_importer imports tkinter at top
+
+def _recolour_one(job, base_bundle, variant_bundle, out_path):
+    """Composite the variant bundle's _cN textures onto the base model, keeping
+    each base texture's own format, and write out_path. Returns
+    (imported, skipped, errors). Deletes out_path when nothing imported."""
     import tempfile
     import shutil
     import UnityPy
     import texture_importer as ti
-
-    base = (params.get("base") or "").strip()
-    variant = (params.get("variant") or "").strip()
-    if not base or not variant:
-        raise ValueError("Pick both the base model bundle and the colour-variant "
-                         "(irochi) texture bundle.")
-    out_dir = params.get("out_dir")
-    suffix = params.get("suffix") or "_recolour"
-
-    # 1) pull each variant texture to a temp PNG, keyed by its BASE name (strip _cN)
-    job.log(f"reading colour-variant textures from {Path(variant).name} …")
-    env = UnityPy.load(str(variant))
+    env = UnityPy.load(str(variant_bundle))
     tmp = tempfile.mkdtemp(prefix="irochi_")
     mapping = {}
     try:
@@ -347,30 +363,58 @@ def run_costume_recolour(job, params):
             try:
                 data.image.save(png)
                 mapping[base_nm] = png
-                job.log(f"  variant {nm}  ->  base {base_nm}")
             except Exception as exc:             # noqa: BLE001
                 job.log(f"  ! could not read variant texture {nm}: {exc}")
         if not mapping:
-            raise ValueError("The variant bundle has no readable textures to import.")
-
-        # 2) import onto the base model, keeping each base texture's own format
-        out_path = single_out_path(out_dir, base, "", suffix)
-        job.progress(0, 1)
-        job.log(f"importing onto base model {Path(base).name} …")
+            return 0, 0, []
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         imported, skipped, errors = ti.process_bundle(
-            str(base), str(out_path), lambda name: mapping.get(name),
+            str(base_bundle), str(out_path), lambda name: mapping.get(name),
             "Keep Original", job.log)
-        job.progress(1, 1)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
     if imported == 0:
-        # process_bundle still wrote a copy of the base — don't leave a misleading
-        # un-recoloured file behind.
         try:
-            os.remove(out_path)
+            os.remove(out_path)      # process_bundle wrote a plain copy — don't keep it
         except OSError:
             pass
+    return imported, skipped, errors
+
+
+def run_costume_recolour(job, params):
+    """Apply a colour-variant (irochi) texture bundle onto its base costume model.
+
+    In SIFAS an alt-colour costume is NOT a separate model: it's a texture-only
+    bundle whose textures carry a `_cN` suffix (e.g. chXXXX_coYYYY_body_c1), meant
+    to override the shared base model's textures. Extracting the model gives the
+    base colour; extracting the variant gives textures with no mesh. This
+    composites them into a self-contained recoloured model.
+
+    Single mode: pick the base model + the variant texture bundle.
+    Batch mode: point at a FOLDER of decrypted bundles — each texture-only variant
+    is auto-paired with its complete model by the chXXXX_coYYYY code INSIDE the
+    bundles (no DB / no costume list needed) and composited."""
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()                        # ASTC decode/encode on-device
+    ensure_repo_on_path()
+    ensure_tk_stub()                         # texture_importer imports tkinter at top
+
+    out_dir = params.get("out_dir")
+    if params.get("mode") == "batch":
+        return _recolour_batch(job, params, out_dir)
+
+    base = (params.get("base") or "").strip()
+    variant = (params.get("variant") or "").strip()
+    if not base or not variant:
+        raise ValueError("Pick both the base model bundle and the colour-variant "
+                         "(irochi) texture bundle.")
+    suffix = params.get("suffix") or "_recolour"
+    out_path = single_out_path(out_dir, base, "", suffix)
+    job.progress(0, 1)
+    job.log(f"recolouring {Path(base).name} with {Path(variant).name} …")
+    imported, skipped, errors = _recolour_one(job, base, variant, out_path)
+    job.progress(1, 1)
+    if imported == 0:
         if errors:
             raise ValueError(
                 f"Textures matched but all {len(errors)} import(s) failed "
@@ -381,6 +425,52 @@ def run_costume_recolour(job, params):
             "variant must be the same suit.")
     return (f"recoloured -> {out_path}  (imported {imported}, "
             f"skipped {skipped}, errors {len(errors)})")
+
+
+def _recolour_batch(job, params, out_dir):
+    """Scan a folder of decrypted bundles, auto-pair each colour-variant
+    (texture-only _cN) bundle with its complete model by the chXXXX_coYYYY code
+    inside, and composite them all — no DB, no costume list."""
+    folder = params.get("in_dir")
+    if not folder:
+        raise ValueError("Pick a folder of decrypted bundles.")
+    bundles = [str(b) for b in find_bundles(folder)]
+    if not bundles:
+        raise ValueError("No .unity bundles found in that folder.")
+    job.log(f"scanning {len(bundles)} bundles …")
+    complete = {}      # code -> path of a full model
+    variants = []      # (code, color, path)
+    for b in bundles:
+        try:
+            kind, code, color = _classify_bundle(b)
+        except Exception as exc:             # noqa: BLE001
+            job.log(f"  ! skip {os.path.basename(b)}: {exc}")
+            continue
+        if kind == "complete" and code:
+            complete.setdefault(code, b)
+        elif kind == "variant" and code:
+            variants.append((code, color, b))
+    job.log(f"  found {len(complete)} complete models, {len(variants)} colour variants")
+    if not variants:
+        return ("no colour-variant (texture-only _cN) bundles found in the folder — "
+                "nothing to recolour")
+    ok = 0
+    for i, (code, color, vpath) in enumerate(variants):
+        job.progress(i, len(variants))
+        base = complete.get(code)
+        if not base:
+            job.log(f"  ! {code} {color}: no complete model in the folder — skipped")
+            continue
+        out_path = single_out_path(out_dir, base, "", "_" + (color or "recolour"))
+        imported, _skipped, errors = _recolour_one(job, base, vpath, out_path)
+        if imported > 0:
+            ok += 1
+            job.log(f"  ✓ {code} {color} -> {os.path.basename(out_path)}  (imported {imported})")
+        else:
+            why = f"{len(errors)} import error(s)" if errors else "no matching textures"
+            job.log(f"  ! {code} {color}: {why}")
+    job.progress(len(variants), len(variants))
+    return f"batch recolour: {ok}/{len(variants)} colour variants composited to {out_dir}"
 
 
 # ---------------------------------------------- iOS/APK selective pair import

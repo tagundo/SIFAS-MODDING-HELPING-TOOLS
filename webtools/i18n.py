@@ -177,6 +177,9 @@ _TABLES = {
             "풀 모델 번들(메시 + 기본 텍스처 chXXXX_coYYYY_body/head 포함).",
         "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
             "_cN 텍스처가 든 텍스처 전용 번들(chXXXX_coYYYY_body_c1 …). 기본과 반드시 같은 의상이어야 합니다.",
+        "Folder of decrypted bundles": "복호화된 번들 폴더",
+        "Auto-pairs every texture-only colour variant (_cN) with its complete model by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no need to pick pairs. Just decrypt a costume pair (or a whole batch) into a folder and point here.":
+            "각 텍스처 전용 색상 변형(_cN)을, 번들 내부의 chXXXX_coYYYY 코드로 완성 모델과 자동으로 짝지어 전부 합성합니다 — 짝을 직접 고를 필요 없음. 의상 쌍(또는 여러 개)을 폴더에 복호화해 넣고 여기를 지정하세요.",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
@@ -611,6 +614,9 @@ _TABLES = {
             "フルモデルバンドル（メッシュ + ベーステクスチャ chXXXX_coYYYY_body/head を含む）。",
         "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
             "_cNテクスチャを含むテクスチャ専用バンドル（chXXXX_coYYYY_body_c1 …）。ベースと同じ衣装である必要があります。",
+        "Folder of decrypted bundles": "復号済みバンドルのフォルダ",
+        "Auto-pairs every texture-only colour variant (_cN) with its complete model by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no need to pick pairs. Just decrypt a costume pair (or a whole batch) into a folder and point here.":
+            "各テクスチャ専用の色変え（_cN）を、バンドル内部の chXXXX_coYYYY コードで完成モデルと自動でペアリングし、すべて合成します — ペアを選ぶ必要なし。衣装ペア（または複数）をフォルダに復号して入れ、ここを指定してください。",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",

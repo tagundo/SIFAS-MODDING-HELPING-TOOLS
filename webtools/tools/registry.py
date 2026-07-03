@@ -527,18 +527,25 @@ TOOLS = [
         "description": "Apply a colour-variant (irochi) texture bundle onto its base costume "
                        "model, so the model shows the alt colour (the _cN textures are a "
                        "separate texture-only bundle in SIFAS).",
-        "modes": ["single"],
+        "modes": ["single", "batch"],
         "run": run_costume_recolour,
         "fields": [
             {"name": "base", "label": "Base costume model bundle", "type": "path", "required": True,
-             "root": "extracted",
+             "mode": "single", "root": "extracted",
              "help": "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head)."},
             {"name": "variant", "label": "Colour-variant texture bundle (irochi)", "type": "path",
-             "required": True, "root": "extracted",
+             "required": True, "mode": "single", "root": "extracted",
              "help": "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). "
                      "Must be the SAME costume as the base."},
+            {"name": "in_dir", "label": "Folder of decrypted bundles", "type": "dir", "required": True,
+             "mode": "batch", "root": "extracted",
+             "help": "Auto-pairs every texture-only colour variant (_cN) with its complete model "
+                     "by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no "
+                     "need to pick pairs. Just decrypt a costume pair (or a whole batch) into a "
+                     "folder and point here."},
             _out_dir(),
-            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_recolour"},
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_recolour",
+             "mode": "single"},
         ],
     },
     {
