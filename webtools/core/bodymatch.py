@@ -240,11 +240,19 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 continue
             uv = _uv_mask_for(rgb.shape[1], rgb.shape[0])
             if uv is not None:
-                region = uv.astype(np.float64)
+                uv_b = np.asarray(uv).astype(bool)
+                skin_col = stc._skin_mask(rgb, alpha)
                 if colour_guard:
-                    # also require skin colour: removes non-skin-coloured body-bone
-                    # clothing (a blue bodice) but may drop deeply shadowed skin.
-                    region = region * stc._skin_mask(rgb, alpha).astype(np.float64)
+                    # conservative: only where the UV region AND skin colour agree -
+                    # removes non-skin-coloured body-bone clothing (a blue bodice) but
+                    # may drop deeply shadowed skin.
+                    region = (uv_b & skin_col).astype(np.float64)
+                else:
+                    # cover ALL the skin: the UV region PLUS any skin-coloured pixel it
+                    # missed. The UV mask alone catches only ~half of the real skin, so
+                    # the recolour comes out patchy and looks like nothing changed;
+                    # unioning matches the standalone skin-tone changer's full coverage.
+                    region = (uv_b | skin_col).astype(np.float64)
                 out = stc.convert_array(rgb, tone, dst_tone, mask=region, strength=strength)
             else:
                 out = stc.convert_array(rgb, tone, dst_tone,
