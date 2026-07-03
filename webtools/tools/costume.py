@@ -211,7 +211,9 @@ def run_lower_body_swap(job, params):
     import lower_body_swap as m
 
     donor = params.get("donor")
-    out_dir = params.get("out_dir")
+    # Default the output folder like run_batch does, so every path (single, batch,
+    # and the match-batch loop below) behaves the same even without an out_dir.
+    out_dir = params.get("out_dir") or os.path.join(m.sukusta_dir(), "modded")
     suffix = params.get("suffix") or "_lower"
     exclude_acc = bool(params.get("exclude_accessories", True))
     kw = dict(exclude_accessories=exclude_acc, log=job.log)
@@ -227,9 +229,13 @@ def run_lower_body_swap(job, params):
     else:
         kw["region"] = params.get("region") or "lower"
         for k in ("cut_low", "cut_high"):
-            v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
-            if v is not None:
-                kw[k] = v
+            raw = params.get(k)
+            if raw in (None, ""):
+                continue
+            try:
+                kw[k] = float(str(raw).strip())
+            except (TypeError, ValueError):
+                raise ValueError(f"{k.replace('_', ' ')} must be a number (e.g. 0.50).")
 
     # Open skirt cap: overall lift (0 = flat cap = default) + optional rim edge lift
     # (all sides) with per-side overrides. Applies to single and batch.
@@ -273,7 +279,8 @@ def run_lower_body_swap(job, params):
                 os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
                 job.log(f"• {os.path.relpath(tgt, folder)}")
                 m.graft_one(tgt, str(donor), out, **kw)
-                _match_to_target(job, params, donor, tgt, out)
+                if not params.get("dry_run"):   # dry run writes nothing to match against
+                    _match_to_target(job, params, donor, tgt, out)
                 ok += 1
             except Exception as exc:
                 job.log(f"  skip ({exc})")
@@ -285,6 +292,9 @@ def run_lower_body_swap(job, params):
     job.progress(0, 1)
     job.log(f"grafting lower body from {Path(donor).name} onto {Path(target).name} …")
     m.graft_one(str(target), str(donor), str(out_path), **kw)
+    if params.get("dry_run"):
+        job.progress(1, 1)
+        return "dry run — nothing written (see the log for what would be grafted)"
     _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
     return f"lower body swapped -> {out_path}"
@@ -355,6 +365,16 @@ def run_costume_recolour(job, params):
         shutil.rmtree(tmp, ignore_errors=True)
 
     if imported == 0:
+        # process_bundle still wrote a copy of the base — don't leave a misleading
+        # un-recoloured file behind.
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        if errors:
+            raise ValueError(
+                f"Textures matched but all {len(errors)} import(s) failed "
+                f"(first: {errors[0][2]}). Check the texture formats / astcenc.")
         raise ValueError(
             "No textures matched — the variant names didn't line up with the base "
             "model's textures. Are these the same costume (chXXXX_coYYYY)? Base and "

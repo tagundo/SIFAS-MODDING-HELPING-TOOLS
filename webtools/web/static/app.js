@@ -184,6 +184,9 @@ function renderForm() {
 // Fetch a dynamic_select field's options from the server, keyed on its
 // dependency field values (e.g. the donor path), and repopulate the <select>.
 async function loadDynamicOptions(field, sel) {
+  // Guard against out-of-order responses: only the newest request may repopulate
+  // the <select> (a slow reply for an old donor must not clobber a newer one).
+  const gen = (sel._optGen = (sel._optGen || 0) + 1);
   const parts = (field.depends || []).map((d) => {
     const dep = document.querySelector(`#tool-form [data-name="${d}"]`);
     return encodeURIComponent(d) + "=" + encodeURIComponent(dep ? dep.value : "");
@@ -196,6 +199,7 @@ async function loadDynamicOptions(field, sel) {
     const url = "/api/options/" + encodeURIComponent(state.currentTool.id) +
       "/" + encodeURIComponent(field.name) + "?" + parts.join("&");
     const data = await (await fetch(url)).json();
+    if (gen !== sel._optGen) return;   // superseded by a newer request
     sel.innerHTML = "";
     sel.appendChild(el("option", { value: "", text: T(field.blank_label || "(auto)") }));
     for (const o of data.options || []) {
@@ -206,6 +210,7 @@ async function loadDynamicOptions(field, sel) {
     if (data.error) sel.appendChild(el("option", { value: "", text: "(" + data.error + ")" }));
     if (prev) sel.value = prev;   // keep the current choice if it's still offered
   } catch (e) {
+    if (gen !== sel._optGen) return;
     sel.innerHTML = "";
     sel.appendChild(el("option", { value: "", text: "(error: " + e + ")" }));
   }
@@ -221,7 +226,9 @@ function wireDynamicSelects(tool) {
     if (!sel) continue;
     for (const dep of field.depends || []) {
       const depEl = document.querySelector(`#tool-form [data-name="${dep}"]`);
-      if (depEl) depEl.addEventListener("input", () => loadDynamicOptions(field, sel));
+      // 'change' (not 'input') so a path picked via Browse or typed-then-blurred
+      // triggers ONE reload, not one expensive bundle-inspect per keystroke.
+      if (depEl) depEl.addEventListener("change", () => loadDynamicOptions(field, sel));
     }
     const ready = (field.depends || []).every((d) => {
       const e = document.querySelector(`#tool-form [data-name="${d}"]`);
@@ -317,7 +324,7 @@ function renderField(field) {
       type: "button", text: T("Browse"),
       onclick: () => openPicker(field.type, (p) => {
         input.value = p;
-        input.dispatchEvent(new Event("input", { bubbles: true }));  // notify dynamic_select deps
+        input.dispatchEvent(new Event("change", { bubbles: true }));  // notify dynamic_select deps
       }, field.root, input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));

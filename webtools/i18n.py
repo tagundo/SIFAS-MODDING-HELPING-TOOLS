@@ -155,6 +155,28 @@ _TABLES = {
         "Costume Recolour (irochi)": "의상 리컬러(이로치)",
         "Base costume model bundle": "기본 의상 모델 번들",
         "Colour-variant texture bundle (irochi)": "색상 변형 텍스처 번들(이로치)",
+        "Pick a part from the donor bundle (press Load to read its parts). Blank / auto = the biggest costume-specific part.":
+            "도너 번들에서 부분을 선택하세요(불러오기를 누르면 부분 목록을 읽습니다). 비움/자동 = 가장 큰 의상 전용 부분.",
+        "Named band presets, like the desktop tool. 'Custom' uses the Cut low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05.":
+            "데스크톱 도구처럼 이름 붙은 밴드 프리셋. 'Custom'은 아래의 하단/상단 Y + 영역 필드를 사용합니다. Y 가이드: 발목 .11 · 종아리 .30 · 무릎 .50 · 허벅지 .67 · 사타구니 .85 · 아랫배 .92 · 허리 1.05.",
+        "Which bones may be replaced (used when Cut preset = Custom). 'lower' keeps the target's torso; 'lower_belly'/'central' reach up into the belly.":
+            "교체할 수 있는 본(Cut 프리셋 = Custom일 때 사용). 'lower'는 대상 상체를 유지하고, 'lower_belly'/'central'은 아랫배까지 올라갑니다.",
+        "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "Cut 프리셋 = Custom일 때 사용. 하단 절단의 월드 공간 Y; 비우면 바닥. 예: 0.50 = 무릎.",
+        "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "Cut 프리셋 = Custom일 때 사용. 비우면 상한 없음. 예: 0.96 = 허리 바로 아래.",
+        "Keep only the donor's main body component (drops a thigh dagger, garter rings). Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out (a cause of 'nothing to graft').":
+            "도너의 메인 몸통 컴포넌트만 유지(허벅지 단검, 가터 링 등 제거). 도너의 엉덩이/허벅지가 별도 메시 조각이라 빠졌다면 끄세요('이식할 것 없음'의 원인).",
+        "Raise the cap's rim on every side (used together with the lift above).":
+            "캡 가장자리를 모든 방향으로 올림(위의 리프트와 함께 사용).",
+        "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'.":
+            "쓰지 않고 제거/가져올 삼각형 수만 보고 — '이식할 것 없음' 진단에 사용.",
+        "Apply a colour-variant (irochi) texture bundle onto its base costume model, so the model shows the alt colour (the _cN textures are a separate texture-only bundle in SIFAS).":
+            "색상 변형(이로치) 텍스처 번들을 기본 의상 모델에 적용해 모델이 대체 색으로 보이게 합니다(SIFAS에서 _cN 텍스처는 별도의 텍스처 전용 번들입니다).",
+        "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head).":
+            "풀 모델 번들(메시 + 기본 텍스처 chXXXX_coYYYY_body/head 포함).",
+        "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
+            "_cN 텍스처가 든 텍스처 전용 번들(chXXXX_coYYYY_body_c1 …). 기본과 반드시 같은 의상이어야 합니다.",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
@@ -567,6 +589,28 @@ _TABLES = {
         "Costume Recolour (irochi)": "衣装リカラー（色違い）",
         "Base costume model bundle": "ベース衣装モデルバンドル",
         "Colour-variant texture bundle (irochi)": "色変えテクスチャバンドル（色違い）",
+        "Pick a part from the donor bundle (press Load to read its parts). Blank / auto = the biggest costume-specific part.":
+            "提供元バンドルからパーツを選択（読み込みを押すとパーツ一覧を取得）。空欄/自動 = 最大の衣装固有パーツ。",
+        "Named band presets, like the desktop tool. 'Custom' uses the Cut low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05.":
+            "デスクトップ版のような名前付きバンドプリセット。'Custom'は下の下部/上部Y + 領域フィールドを使用。Yガイド: 足首 .11 · ふくらはぎ .30 · 膝 .50 · 太もも .67 · 股 .85 · 下腹 .92 · 腰 1.05。",
+        "Which bones may be replaced (used when Cut preset = Custom). 'lower' keeps the target's torso; 'lower_belly'/'central' reach up into the belly.":
+            "置換できるボーン（Cutプリセット = Customのとき使用）。'lower'は対象の胴を維持し、'lower_belly'/'central'は下腹まで届く。",
+        "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "Cutプリセット = Customのとき使用。下部カットのワールド空間Y; 空欄で床。例: 0.50 = 膝。",
+        "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "Cutプリセット = Customのとき使用。空欄で上限なし。例: 0.96 = 腰のすぐ下。",
+        "Keep only the donor's main body component (drops a thigh dagger, garter rings). Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out (a cause of 'nothing to graft').":
+            "提供元のメイン胴体コンポーネントのみ維持（太ももの短剣やガーターリングを除外）。提供元の尻/太ももが別メッシュで抜け落ちる場合はオフに（'移植対象なし'の原因）。",
+        "Raise the cap's rim on every side (used together with the lift above).":
+            "キャップの縁を全方向に持ち上げる（上のリフトと併用）。",
+        "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'.":
+            "書き込まずに除去/取得する三角形数のみ報告 — '移植対象なし'の診断に使用。",
+        "Apply a colour-variant (irochi) texture bundle onto its base costume model, so the model shows the alt colour (the _cN textures are a separate texture-only bundle in SIFAS).":
+            "色変え（色違い）テクスチャバンドルをベース衣装モデルに適用し、モデルを別色で表示します（SIFASでは_cNテクスチャは別のテクスチャ専用バンドルです）。",
+        "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head).":
+            "フルモデルバンドル（メッシュ + ベーステクスチャ chXXXX_coYYYY_body/head を含む）。",
+        "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
+            "_cNテクスチャを含むテクスチャ専用バンドル（chXXXX_coYYYY_body_c1 …）。ベースと同じ衣装である必要があります。",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",
