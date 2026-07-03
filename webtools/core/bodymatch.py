@@ -188,8 +188,16 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
         pass
     from UnityPy.export import Texture2DConverter as _T
     native_astc = getattr(_T, "astc_encoder", None) is not None
+    # On-device ASTC re-encoding silently fails to persist the recoloured pixels -
+    # the bundle keeps the original compressed bytes, so the output comes back
+    # byte-identical to the input and the skin looks unchanged. The `native_astc`
+    # probe is not reliable on the phone (an encoder attribute can be present yet
+    # not actually usable through the Chaquopy build), so DON'T gate on it there:
+    # on Android always write the skin uncompressed as RGBA32 (no codec, guaranteed
+    # to land, the game loads it fine). On desktop keep the source's compressed
+    # format when a native encoder exists so output stays small.
     force_rgba32 = None
-    if not native_astc:
+    if not native_astc or is_android():
         try:
             from UnityPy.enums import TextureFormat
             force_rgba32 = TextureFormat.RGBA32
