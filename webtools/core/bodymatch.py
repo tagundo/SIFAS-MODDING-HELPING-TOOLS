@@ -63,7 +63,7 @@ def apply_thigh_match(in_path, out_path, src_class, dst_class, log=print):
     import sifas_mesh_baker as mb
     targets = mb.thigh_targets(src_class, dst_class, compensate=True)
     mb.process_bundle(str(in_path), str(out_path), targets,
-                      recompute_normals=True, hierarchical=True, packer="lz4", log=log)
+                      recompute_normals=True, hierarchical=True, packer="original", log=log)
     log(f"[thigh] matched {src_class} -> {dst_class}")
     return True
 
@@ -270,7 +270,7 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
         log("[skin] no body texture recoloured; output left as-is")
         return False
     with open(str(out_path), "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
     # Verify the change actually persisted so the log can never again claim a
     # recolour that did not land: reload and measure the REAL skin shift against
     # the pre-edit pixels. If it did not stick, say so and fail (the caller then

@@ -478,7 +478,7 @@ def process_bundle(bundle_path, out_path, resolver, fmt_name, log):
     # Save the (possibly modified) bundle.
     safe_make_dir(out_path)
     with open(out_path, "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
     log("Saved: {}  (imported {}, skipped {}, errors {})".format(
         out_path, imported, skipped, len(errors)))
 
