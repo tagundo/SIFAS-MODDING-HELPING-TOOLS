@@ -287,8 +287,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
         "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
-            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경). 주의: 채색이 완벽하지 않아 의상 색 일부도 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경(Skin Tone Changer) 도구로 직접 수정하세요.",
+        "Recolour the body skin from the donor's tone to the wearer's, so the transplanted costume shows the target character's skin (skin tone changer). On by default — turn it off to keep the donor's original skin. It covers the whole skin now; the shift lands on the target's official tone class (same as the standalone Skin Tone Changer).":
+            "이식한 의상에 대상 캐릭터의 피부가 나오도록, 바디 스킨을 공여 캐릭터의 톤에서 착용 캐릭터의 톤으로 재색상화합니다(스킨톤 변경). 기본 켜짐 — 끄면 공여자의 원래 피부를 유지합니다. 이제 피부 전체를 덮으며, 변화량은 대상의 공식 톤 클래스까지 이동합니다(스탠드얼론 Skin Tone Changer와 동일).",
         "Donor skin tone": "공여 스킨톤",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
@@ -724,8 +724,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
         "Match skin tone to target character": "肌色を対象キャラに合わせる",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
-            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。注意: 着色は完璧ではなく、衣装の色も一部変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャー（Skin Tone Changer）で直接編集してください。",
+        "Recolour the body skin from the donor's tone to the wearer's, so the transplanted costume shows the target character's skin (skin tone changer). On by default — turn it off to keep the donor's original skin. It covers the whole skin now; the shift lands on the target's official tone class (same as the standalone Skin Tone Changer).":
+            "移植した衣装に対象キャラの肌が出るよう、ボディの肌を提供元のトーンから着用キャラのトーンへ再着色します（肌色チェンジャー）。既定でオン — オフにすると提供元の元の肌を保持します。今は肌全体をカバーし、変化量は対象の公式トーンクラスまで移動します（スタンドアロンのSkin Tone Changerと同じ）。",
         "Donor skin tone": "提供元の肌トーン",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",

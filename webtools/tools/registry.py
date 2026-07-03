@@ -61,11 +61,12 @@ def _match_fields():
          "default": False,
          "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
         {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
-         "default": False,
-         "help": "Recolour the body skin from the donor's official tone to the "
-         "target's (skin tone changer). NOTE: the recolour is not perfect — some "
-         "costume colours may shift too. For an exact result, export the texture "
-         "and edit it yourself with the Skin Tone Changer tool."},
+         "default": True,
+         "help": "Recolour the body skin from the donor's tone to the wearer's, so the "
+         "transplanted costume shows the target character's skin (skin tone changer). "
+         "On by default — turn it off to keep the donor's original skin. It covers the "
+         "whole skin now; the shift lands on the target's official tone class (same as "
+         "the standalone Skin Tone Changer)."},
         {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
          "options": ["auto", "bright", "default", "slight", "medium_tone"],
          "default": "auto",
