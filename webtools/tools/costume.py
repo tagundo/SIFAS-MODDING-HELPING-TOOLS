@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from webtools.core.repo import ensure_repo_on_path
-from webtools.core.sukusta import find_bundles
+from webtools.core.sukusta import find_bundles, default_sukusta_dir
 from webtools.core.tkstub import ensure_tk_stub
 from webtools.tools.common import as_float, single_out_path
 
@@ -399,7 +399,7 @@ def run_costume_recolour(job, params):
     ensure_repo_on_path()
     ensure_tk_stub()                         # texture_importer imports tkinter at top
 
-    out_dir = params.get("out_dir")
+    out_dir = params.get("out_dir") or default_sukusta_dir("modded")
     if params.get("mode") == "batch":
         return _recolour_batch(job, params, out_dir)
 
@@ -462,7 +462,11 @@ def _recolour_batch(job, params, out_dir):
             job.log(f"  ! {code} {color}: no complete model in the folder — skipped")
             continue
         out_path = single_out_path(out_dir, base, "", "_" + (color or "recolour"))
-        imported, _skipped, errors = _recolour_one(job, base, vpath, out_path)
+        try:
+            imported, _skipped, errors = _recolour_one(job, base, vpath, out_path)
+        except Exception as exc:  # noqa: BLE001 - one bad bundle must not kill the batch
+            job.log(f"  ! {code} {color}: failed ({exc}) — skipped")
+            continue
         if imported > 0:
             ok += 1
             job.log(f"  ✓ {code} {color} -> {os.path.basename(out_path)}  (imported {imported})")
