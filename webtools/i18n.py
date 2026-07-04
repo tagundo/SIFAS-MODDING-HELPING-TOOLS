@@ -104,7 +104,8 @@ _TABLES = {
         "Edit LiveCore scaling on the HipsSize node.": "HipsSize 노드의 LiveCore 스케일링을 편집합니다.",
         "Repair LiveCoreMemberNodeScaling entries that don't match the bone's local transform.": "본의 로컬 Transform과 맞지 않는 LiveCoreMemberNodeScaling 항목을 복구합니다.",
         "Edit SwingCollider radius/offset on upper-leg bones.": "허벅지 본의 SwingCollider 반경/오프셋을 편집합니다.",
-        "Package costume bundles into installer .zip packs (with thumbnail).": "코스튬 번들을 설치용 .zip 팩(썸네일 포함)으로 패키징합니다.",
+        "Package costume bundles into installer .zip packs (with thumbnail). Rina (209) needs BOTH versions in one Batch run: name the files '209rinamasked...' and '209rinaunmasked...' (the Renamer does this) and they pair into one pack automatically.":
+            "코스튬 번들을 설치용 .zip 팩(썸네일 포함)으로 패키징합니다. 리나(209)는 배치 모드 한 번에 두 버전이 모두 필요합니다: 파일명을 '209rinamasked...'와 '209rinaunmasked...'로 하면(리네이머가 자동으로 붙임) 자동으로 한 팩으로 묶입니다.",
         "Graft a donor costume's body mesh onto a target wearer model.": "공여 코스튬의 바디 메시를 대상 착용 모델에 이식합니다.",
         "Bake bone scale/rotate/translate into mesh vertices.": "본의 스케일/회전/이동을 메시 정점에 베이크합니다.",
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID 기준으로 공여 번들의 일치 오브젝트를 대상에 복사합니다(iOS/APK 변형 이전).",
@@ -541,7 +542,8 @@ _TABLES = {
         "Edit LiveCore scaling on the HipsSize node.": "HipsSizeノードのLiveCoreスケーリングを編集します。",
         "Repair LiveCoreMemberNodeScaling entries that don't match the bone's local transform.": "ボーンのローカルTransformと一致しないLiveCoreMemberNodeScaling項目を修復します。",
         "Edit SwingCollider radius/offset on upper-leg bones.": "太ももボーンのSwingCollider半径/オフセットを編集します。",
-        "Package costume bundles into installer .zip packs (with thumbnail).": "衣装バンドルをインストーラー用.zipパック（サムネイル付き）にまとめます。",
+        "Package costume bundles into installer .zip packs (with thumbnail). Rina (209) needs BOTH versions in one Batch run: name the files '209rinamasked...' and '209rinaunmasked...' (the Renamer does this) and they pair into one pack automatically.":
+            "衣装バンドルをインストーラー用.zipパック（サムネイル付き）にまとめます。璃奈（209）はバッチ1回で両バージョンが必要です: ファイル名を「209rinamasked...」「209rinaunmasked...」にすると（リネーマーが自動で付与）、自動で1つのパックにまとまります。",
         "Graft a donor costume's body mesh onto a target wearer model.": "提供元衣装のボディメッシュを対象の着用モデルに移植します。",
         "Bake bone scale/rotate/translate into mesh vertices.": "ボーンのスケール/回転/移動をメッシュ頂点にベイクします。",
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID基準で提供元の一致オブジェクトを対象にコピーします（iOS/APK間の移植）。",
