@@ -312,9 +312,10 @@ TOOLS = [
         "id": "costume_packer",
         "label": "Costume Mod Packer",
         "description": ("Package costume bundles into installer .zip packs (with thumbnail). "
-                        "Rina (209) needs BOTH versions in one Batch run: name the files "
-                        "'209rinamasked...' and '209rinaunmasked...' (the Renamer does this) "
-                        "and they pair into one pack automatically."),
+                        "Rina (209) needs BOTH the masked and no-mask bundles in one Batch "
+                        "run: they are detected and paired automatically by content. (If "
+                        "auto-pairing can't decide, name them '209rinamasked...' / "
+                        "'209rinaunmasked...' to pair explicitly.)"),
         "modes": ["single", "batch"],
         "run": run_costume_packer,
         "fields": [

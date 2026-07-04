@@ -1114,11 +1114,64 @@ def normalize_rina_key(filename: str):
     return s
 
 
+_CHCO_RE = re.compile(r"ch(\d{4})_co(\d{4})", re.IGNORECASE)
+
+
+def _bundle_texture_names(path):
+    """All Texture2D names in a bundle (name-only read, no image decode).
+    [] on any failure."""
+    try:
+        env = UnityPy.load(path)
+        names = []
+        for o in env.objects:
+            if o.type.name == "Texture2D":
+                try:
+                    names.append(getattr(o.read(), "m_Name", "") or "")
+                except Exception:
+                    continue
+        return names
+    except Exception:
+        return []
+
+
+def _rina_content_scan(path, log=None):
+    """(costume_code, is_masked) for a Rina (ch0209) bundle judged by CONTENT,
+    so batch packing can pair masked+unmasked without special filenames:
+
+      * the costume code (ch0209_coNNNN) comes from the texture names;
+      * masked vs unmasked comes from the transplant tool's board-face detector
+        (the Rina-chan board is a static mesh subtree hanging off a body bone).
+
+    Returns (None, None) for non-Rina bundles or whenever ANYTHING is uncertain
+    (mixed character codes, detector unavailable, load failure), so the caller
+    falls back to the '209rinamasked/209rinaunmasked' filename convention with
+    zero change in behaviour."""
+    code = None
+    for n in _bundle_texture_names(path):
+        m = _CHCO_RE.search(n or "")
+        if not m:
+            continue
+        if m.group(1) != "0209":
+            return (None, None)          # another character (or a transplant mix)
+        code = m.group(0).lower()
+    if not code:
+        return (None, None)
+    try:
+        import costume_transplant as _ct
+        board = _ct.detect_board_face_model_path(path)
+    except Exception as exc:  # detector unavailable/failed -> stay neutral
+        if log:
+            log(f"  (rina content scan skipped for {os.path.basename(path)}: {exc})")
+        return (None, None)
+    return (code, board is not None)
+
+
 def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                        thumbnail_size=256, append_suffix=True, rina_unmasked_map=None,
-                       platform=None, ask_chara_id=None, log=print):
+                       rina_unmasked_by_path=None, platform=None, ask_chara_id=None, log=print):
     """Package one bundle into a zip in out_dir. Returns the zip path or None."""
     rina_unmasked_map = rina_unmasked_map or {}
+    rina_unmasked_by_path = rina_unmasked_by_path or {}
     bn_with_ext = os.path.basename(bundle_path)
     bn_no_ext = os.path.splitext(bn_with_ext)[0]
 
@@ -1150,18 +1203,26 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
     thumb_name = "im" + pack_safe_stem(bn_no_ext) + ".png"
 
     unmasked_bundle_path = unmasked_filename = None
-    if cid == 209 and bn_no_ext.lower().startswith("209rinamasked"):
-        key = normalize_rina_key(bn_no_ext.lower())
-        if key in rina_unmasked_map:
-            unmasked_bundle_path = rina_unmasked_map[key]
+    if cid == 209:
+        # content-detected pair (batch mode's auto-pairing) takes priority; the
+        # filename convention is the fallback.
+        if bundle_path in rina_unmasked_by_path:
+            unmasked_bundle_path = rina_unmasked_by_path[bundle_path]
             unmasked_filename = os.path.basename(unmasked_bundle_path)
-            log(f"  🎭 Paired with '{unmasked_filename}'")
+            log(f"  🎭 Paired by content with '{unmasked_filename}'")
+        elif bn_no_ext.lower().startswith("209rinamasked"):
+            key = normalize_rina_key(bn_no_ext.lower())
+            if key in rina_unmasked_map:
+                unmasked_bundle_path = rina_unmasked_map[key]
+                unmasked_filename = os.path.basename(unmasked_bundle_path)
+                log(f"  🎭 Paired with '{unmasked_filename}'")
 
     if cid == 209 and not unmasked_bundle_path:
-        log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model "
-            "('209rinaunmasked...') - none was found.")
-        log("     Add the unmasked file next to this one, or set the correct "
-            "character ID. Skipping (the installer would crash otherwise).")
+        log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model - "
+            "none was found.")
+        log("     Batch mode pairs the masked + unmasked bundles automatically when "
+            "both are in the folder; or name them '209rinamasked.../209rinaunmasked...'. "
+            "Skipping (the installer would crash otherwise).")
         return None
 
     safe_costume = safe_arc_name(bn_with_ext)
@@ -1179,9 +1240,10 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
 
 def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_id=True,
                       manual_chara_id=0, thumbnail_size=256, rina_unmasked_map=None,
-                      ask_chara_id=None, log=print):
+                      rina_unmasked_by_path=None, ask_chara_id=None, log=print):
     """Package an Android+iOS pair into one combined zip. Returns True/False."""
     rina_unmasked_map = rina_unmasked_map or {}
+    rina_unmasked_by_path = rina_unmasked_by_path or {}
     and_name = os.path.basename(android_path)
     ios_name = os.path.basename(ios_path)
     and_no_ext = os.path.splitext(and_name)[0]
@@ -1214,10 +1276,17 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
     if cid == 209:
         key_and = normalize_rina_key(and_no_ext.lower())
         key_ios = normalize_rina_key(os.path.splitext(ios_name)[0].lower())
-        if key_and in rina_unmasked_map:
+        # content-detected pairs take priority; the filename convention is the fallback
+        if android_path in rina_unmasked_by_path:
+            unmask_and_path = rina_unmasked_by_path[android_path]; unmask_and_name = os.path.basename(unmask_and_path)
+            log(f"  🎭 Paired android by content with '{unmask_and_name}'")
+        elif key_and in rina_unmasked_map:
             unmask_and_path = rina_unmasked_map[key_and]; unmask_and_name = os.path.basename(unmask_and_path)
             log(f"  🎭 Paired android with '{unmask_and_name}'")
-        if key_ios in rina_unmasked_map:
+        if ios_path in rina_unmasked_by_path:
+            unmask_ios_path = rina_unmasked_by_path[ios_path]; unmask_ios_name = os.path.basename(unmask_ios_path)
+            log(f"  🎭 Paired ios by content with '{unmask_ios_name}'")
+        elif key_ios in rina_unmasked_map:
             unmask_ios_path = rina_unmasked_map[key_ios]; unmask_ios_name = os.path.basename(unmask_ios_path)
             log(f"  🎭 Paired ios with '{unmask_ios_name}'")
 
@@ -1276,6 +1345,40 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
         icon = {'android': '🤖', 'ios': '🍎'}.get(plat, '❓')
         log(f"  {icon} {os.path.basename(p)}: {plat or 'unknown'}")
 
+    # Content-based Rina auto-pairing: no special filenames needed. Among the
+    # remaining files, find ch0209 bundles by their texture names, tell masked from
+    # unmasked with the transplant board-face detector, and pair the two bundles
+    # that share the same costume code + platform. Only an unambiguous group
+    # (exactly one masked + one unmasked) is paired; everything else falls back to
+    # the '209rinamasked/209rinaunmasked' filename convention, which always wins
+    # (files already claimed by it are never re-classified).
+    rina_by_path = {}
+    candidates = {}
+    for p in masked:
+        bn = os.path.splitext(os.path.basename(p))[0].lower()
+        if bn.startswith("209rinamasked"):
+            continue                       # filename convention handles this one
+        code, is_masked = _rina_content_scan(p, log=log)
+        if code is not None:
+            candidates[p] = (code, is_masked)
+    if candidates:
+        groups = {}
+        for p, (code, is_masked) in candidates.items():
+            g = groups.setdefault((code, platforms.get(p)), {"m": [], "u": []})
+            g["m" if is_masked else "u"].append(p)
+        for (code, plat), g in sorted(groups.items()):
+            if len(g["m"]) == 1 and len(g["u"]) == 1:
+                mp, up = g["m"][0], g["u"][0]
+                rina_by_path[mp] = up
+                masked.remove(up)          # the helper is packed inside the pair
+                platforms.pop(up, None)
+                log(f"🎭 Rina auto-pair by content ({code}, {plat or 'unknown'}): "
+                    f"{os.path.basename(mp)} + {os.path.basename(up)}")
+            else:
+                log(f"🟡 Rina bundles for {code} ({plat or 'unknown'}) not auto-paired "
+                    f"(need exactly 1 masked + 1 unmasked; found {len(g['m'])}+{len(g['u'])}). "
+                    "Use the '209rinamasked/209rinaunmasked' names to pair explicitly.")
+
     jobs = build_pack_jobs(masked, platforms, combine_pairs)
     pair_count = sum(1 for j in jobs if j[0] == 'pair')
     if combine_pairs:
@@ -1293,13 +1396,15 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                 log(f"\n📦 [{i}/{total}] pair: {os.path.basename(ap)} + {os.path.basename(ip)}")
                 ok = pack_pair_bundles(key, ap, ip, out_dir, auto_chara_id=auto_chara_id,
                                        manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
-                                       rina_unmasked_map=rina_map, ask_chara_id=ask_chara_id, log=log)
+                                       rina_unmasked_map=rina_map, rina_unmasked_by_path=rina_by_path,
+                                       ask_chara_id=ask_chara_id, log=log)
             else:
                 bp = job[1]
                 log(f"\n📦 [{i}/{total}] {os.path.basename(bp)}")
                 ok = bool(pack_single_bundle(bp, out_dir, auto_chara_id=auto_chara_id,
                                              manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
                                              append_suffix=append_suffix, rina_unmasked_map=rina_map,
+                                             rina_unmasked_by_path=rina_by_path,
                                              ask_chara_id=ask_chara_id,
                                              platform=platforms.get(bp), log=log))
             if ok:
