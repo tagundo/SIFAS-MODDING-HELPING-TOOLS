@@ -63,7 +63,7 @@ def apply_thigh_match(in_path, out_path, src_class, dst_class, log=print):
     import sifas_mesh_baker as mb
     targets = mb.thigh_targets(src_class, dst_class, compensate=True)
     mb.process_bundle(str(in_path), str(out_path), targets,
-                      recompute_normals=True, hierarchical=True, packer="lz4", log=log)
+                      recompute_normals=True, hierarchical=True, packer="original", log=log)
     log(f"[thigh] matched {src_class} -> {dst_class}")
     return True
 
@@ -188,8 +188,16 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
         pass
     from UnityPy.export import Texture2DConverter as _T
     native_astc = getattr(_T, "astc_encoder", None) is not None
+    # On-device ASTC re-encoding silently fails to persist the recoloured pixels -
+    # the bundle keeps the original compressed bytes, so the output comes back
+    # byte-identical to the input and the skin looks unchanged. The `native_astc`
+    # probe is not reliable on the phone (an encoder attribute can be present yet
+    # not actually usable through the Chaquopy build), so DON'T gate on it there:
+    # on Android always write the skin uncompressed as RGBA32 (no codec, guaranteed
+    # to land, the game loads it fine). On desktop keep the source's compressed
+    # format when a native encoder exists so output stays small.
     force_rgba32 = None
-    if not native_astc:
+    if not native_astc or is_android():
         try:
             from UnityPy.enums import TextureFormat
             force_rgba32 = TextureFormat.RGBA32
@@ -240,11 +248,19 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
                 continue
             uv = _uv_mask_for(rgb.shape[1], rgb.shape[0])
             if uv is not None:
-                region = uv.astype(np.float64)
+                uv_b = np.asarray(uv).astype(bool)
+                skin_col = stc._skin_mask(rgb, alpha)
                 if colour_guard:
-                    # also require skin colour: removes non-skin-coloured body-bone
-                    # clothing (a blue bodice) but may drop deeply shadowed skin.
-                    region = region * stc._skin_mask(rgb, alpha).astype(np.float64)
+                    # conservative: only where the UV region AND skin colour agree -
+                    # removes non-skin-coloured body-bone clothing (a blue bodice) but
+                    # may drop deeply shadowed skin.
+                    region = (uv_b & skin_col).astype(np.float64)
+                else:
+                    # cover ALL the skin: the UV region PLUS any skin-coloured pixel it
+                    # missed. The UV mask alone catches only ~half of the real skin, so
+                    # the recolour comes out patchy and looks like nothing changed;
+                    # unioning matches the standalone skin-tone changer's full coverage.
+                    region = (uv_b | skin_col).astype(np.float64)
                 out = stc.convert_array(rgb, tone, dst_tone, mask=region, strength=strength)
             else:
                 out = stc.convert_array(rgb, tone, dst_tone,
@@ -270,7 +286,7 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
         log("[skin] no body texture recoloured; output left as-is")
         return False
     with open(str(out_path), "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
     # Verify the change actually persisted so the log can never again claim a
     # recolour that did not land: reload and measure the REAL skin shift against
     # the pre-edit pixels. If it did not stick, say so and fail (the caller then

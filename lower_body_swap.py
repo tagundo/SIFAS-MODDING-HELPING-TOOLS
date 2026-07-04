@@ -704,7 +704,13 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     takeD = trisD[ttake]
 
     if len(takeD) == 0:
-        raise ValueError("nothing to graft in this range (region/cut too narrow?)")
+        _lo = "floor" if cut_low <= -1e8 else "%.3f" % cut_low
+        _hi = "no-limit" if cut_high >= 1e8 else "%.3f" % cut_high
+        raise ValueError(
+            "nothing to graft in band [%s, %s] with region '%s': the donor has no "
+            "body-skin there. Try a wider preset (e.g. 'whole'), a different region "
+            "(lower_belly / central), or turn OFF 'exclude accessories' if the donor's "
+            "hips/thighs are a separate mesh piece." % (_lo, _hi, region))
 
     log("  target drop: %d tris   donor take: %d tris   (cap verts kept: %d)"
         % (int(tdrop.sum()), len(takeD), len(capset)))

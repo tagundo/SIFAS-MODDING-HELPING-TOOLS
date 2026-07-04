@@ -104,7 +104,8 @@ _TABLES = {
         "Edit LiveCore scaling on the HipsSize node.": "HipsSize 노드의 LiveCore 스케일링을 편집합니다.",
         "Repair LiveCoreMemberNodeScaling entries that don't match the bone's local transform.": "본의 로컬 Transform과 맞지 않는 LiveCoreMemberNodeScaling 항목을 복구합니다.",
         "Edit SwingCollider radius/offset on upper-leg bones.": "허벅지 본의 SwingCollider 반경/오프셋을 편집합니다.",
-        "Package costume bundles into installer .zip packs (with thumbnail).": "코스튬 번들을 설치용 .zip 팩(썸네일 포함)으로 패키징합니다.",
+        "Package costume bundles into installer .zip packs (with thumbnail). Rina (209) needs BOTH the masked and no-mask bundles in one Batch run: they are detected and paired automatically by content. (If auto-pairing can't decide, name them '209rinamasked...' / '209rinaunmasked...' to pair explicitly.)":
+            "코스튬 번들을 설치용 .zip 팩(썸네일 포함)으로 패키징합니다. 리나(209)는 배치 모드 한 번에 가면·노마스크 번들이 둘 다 필요합니다: 내용을 분석해 자동으로 짝지어 한 팩으로 묶습니다. (자동 판별이 안 되면 파일명을 '209rinamasked...' / '209rinaunmasked...'로 지정해 명시적으로 짝지을 수 있습니다.)",
         "Graft a donor costume's body mesh onto a target wearer model.": "공여 코스튬의 바디 메시를 대상 착용 모델에 이식합니다.",
         "Bake bone scale/rotate/translate into mesh vertices.": "본의 스케일/회전/이동을 메시 정점에 베이크합니다.",
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID 기준으로 공여 번들의 일치 오브젝트를 대상에 복사합니다(iOS/APK 변형 이전).",
@@ -149,6 +150,37 @@ _TABLES = {
         "Donor bundle (has the part)": "공여 번들 (해당 부분 보유)",
         "Target bundle (wearer)": "대상 번들 (착용자)",
         "Part root bone (optional)": "부분 루트 본 (선택)",
+        "Part root bone": "부분 루트 본",
+        "(auto — biggest part)": "(자동 — 가장 큰 부분)",
+        "loading…": "불러오는 중…",
+        "Costume Recolour (irochi)": "의상 리컬러(이로치)",
+        "Base costume model bundle": "기본 의상 모델 번들",
+        "Colour-variant texture bundle (irochi)": "색상 변형 텍스처 번들(이로치)",
+        "Pick a part from the donor bundle (press Load to read its parts). Blank / auto = the biggest costume-specific part.":
+            "도너 번들에서 부분을 선택하세요(불러오기를 누르면 부분 목록을 읽습니다). 비움/자동 = 가장 큰 의상 전용 부분.",
+        "Named band presets, like the desktop tool. 'Custom' uses the Cut low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05.":
+            "데스크톱 도구처럼 이름 붙은 밴드 프리셋. 'Custom'은 아래의 하단/상단 Y + 영역 필드를 사용합니다. Y 가이드: 발목 .11 · 종아리 .30 · 무릎 .50 · 허벅지 .67 · 사타구니 .85 · 아랫배 .92 · 허리 1.05.",
+        "Which bones may be replaced (used when Cut preset = Custom). 'lower' keeps the target's torso; 'lower_belly'/'central' reach up into the belly.":
+            "교체할 수 있는 본(Cut 프리셋 = Custom일 때 사용). 'lower'는 대상 상체를 유지하고, 'lower_belly'/'central'은 아랫배까지 올라갑니다.",
+        "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "Cut 프리셋 = Custom일 때 사용. 하단 절단의 월드 공간 Y; 비우면 바닥. 예: 0.50 = 무릎.",
+        "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "Cut 프리셋 = Custom일 때 사용. 비우면 상한 없음. 예: 0.96 = 허리 바로 아래.",
+        "Keep only the donor's main body component (drops a thigh dagger, garter rings). Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out (a cause of 'nothing to graft').":
+            "도너의 메인 몸통 컴포넌트만 유지(허벅지 단검, 가터 링 등 제거). 도너의 엉덩이/허벅지가 별도 메시 조각이라 빠졌다면 끄세요('이식할 것 없음'의 원인).",
+        "Raise the cap's rim on every side (used together with the lift above).":
+            "캡 가장자리를 모든 방향으로 올림(위의 리프트와 함께 사용).",
+        "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'.":
+            "쓰지 않고 제거/가져올 삼각형 수만 보고 — '이식할 것 없음' 진단에 사용.",
+        "Apply a colour-variant (irochi) texture bundle onto its base costume model, so the model shows the alt colour (the _cN textures are a separate texture-only bundle in SIFAS).":
+            "색상 변형(이로치) 텍스처 번들을 기본 의상 모델에 적용해 모델이 대체 색으로 보이게 합니다(SIFAS에서 _cN 텍스처는 별도의 텍스처 전용 번들입니다).",
+        "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head).":
+            "풀 모델 번들(메시 + 기본 텍스처 chXXXX_coYYYY_body/head 포함).",
+        "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
+            "_cN 텍스처가 든 텍스처 전용 번들(chXXXX_coYYYY_body_c1 …). 기본과 반드시 같은 의상이어야 합니다.",
+        "Folder of decrypted bundles": "복호화된 번들 폴더",
+        "Auto-pairs every texture-only colour variant (_cN) with its complete model by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no need to pick pairs. Just decrypt a costume pair (or a whole batch) into a folder and point here.":
+            "각 텍스처 전용 색상 변형(_cN)을, 번들 내부의 chXXXX_coYYYY 코드로 완성 모델과 자동으로 짝지어 전부 합성합니다 — 짝을 직접 고를 필요 없음. 의상 쌍(또는 여러 개)을 폴더에 복호화해 넣고 여기를 지정하세요.",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
@@ -164,6 +196,24 @@ _TABLES = {
         "Blank = no upper limit. e.g. 0.96 = just below waist.":
             "비우면 상한 없음. 예: 0.96 = 허리 바로 아래.",
         "Exclude donor accessories": "공여 액세서리 제외",
+        "Cut preset": "절단 프리셋",
+        "Fix detached thighs (hip/crotch) — recommended": "분리된 허벅지 수정 (엉덩이/사타구니) — 권장",
+        "Thigh & up (keep calf/shoes)": "허벅지 이상 (종아리/신발 유지)",
+        "Calf part & up": "종아리 일부 이상",
+        "From calf & up (keep feet)": "종아리부터 위로 (발 유지)",
+        "Whole lower body": "하체 전체",
+        "Custom range (use Cut low/high Y below)": "사용자 지정 범위 (아래 Y 값 사용)",
+        "Region (custom only)": "영역 (사용자 지정 시)",
+        "Cut low Y (custom)": "하단 절단 Y (사용자 지정)",
+        "Cut high Y (custom)": "상단 절단 Y (사용자 지정)",
+        "Cap edge lift — all sides": "캡 가장자리 리프트 — 전체",
+        "Cap edge — front (blank = all)": "캡 가장자리 — 앞 (비우면 전체)",
+        "Cap edge — back (blank = all)": "캡 가장자리 — 뒤 (비우면 전체)",
+        "Cap edge — left (blank = all)": "캡 가장자리 — 좌 (비우면 전체)",
+        "Cap edge — right (blank = all)": "캡 가장자리 — 우 (비우면 전체)",
+        "Merge rim map too": "림 맵도 병합",
+        "Generate mipmaps": "밉맵 생성",
+        "Dry run (no write)": "드라이 런 (쓰지 않음)",
         # Breast physics parameter labels
         "stiffnessForce": "강성 (stiffnessForce)",
         "dragForce": "저항 (dragForce)",
@@ -238,8 +288,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "의상의 허벅지를 공여 캐릭터 체형에서 대상 체형으로 스케일합니다 (메시 베이커).",
         "Match skin tone to target character": "스킨톤을 대상 캐릭터에 맞춤",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
-            "바디 스킨을 공여 캐릭터의 공식 톤에서 대상 톤으로 재색상화합니다 (스킨톤 변경). 주의: 채색이 완벽하지 않아 의상 색 일부도 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경(Skin Tone Changer) 도구로 직접 수정하세요.",
+        "Recolour the body skin from the donor's tone to the wearer's, so the transplanted costume shows the target character's skin (skin tone changer). On by default — turn it off to keep the donor's original skin. It covers the whole skin now; the shift lands on the target's official tone class (same as the standalone Skin Tone Changer).":
+            "이식한 의상에 대상 캐릭터의 피부가 나오도록, 바디 스킨을 공여 캐릭터의 톤에서 착용 캐릭터의 톤으로 재색상화합니다(스킨톤 변경). 기본 켜짐 — 끄면 공여자의 원래 피부를 유지합니다. 이제 피부 전체를 덮으며, 변화량은 대상의 공식 톤 클래스까지 이동합니다(스탠드얼론 Skin Tone Changer와 동일).",
         "Donor skin tone": "공여 스킨톤",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 공여 캐릭터의 공식 톤 (알 수 없을 때만 픽셀에서 감지). 공여 번들이 이미 재색상화된 경우 직접 지정하세요.",
@@ -492,7 +542,8 @@ _TABLES = {
         "Edit LiveCore scaling on the HipsSize node.": "HipsSizeノードのLiveCoreスケーリングを編集します。",
         "Repair LiveCoreMemberNodeScaling entries that don't match the bone's local transform.": "ボーンのローカルTransformと一致しないLiveCoreMemberNodeScaling項目を修復します。",
         "Edit SwingCollider radius/offset on upper-leg bones.": "太ももボーンのSwingCollider半径/オフセットを編集します。",
-        "Package costume bundles into installer .zip packs (with thumbnail).": "衣装バンドルをインストーラー用.zipパック（サムネイル付き）にまとめます。",
+        "Package costume bundles into installer .zip packs (with thumbnail). Rina (209) needs BOTH the masked and no-mask bundles in one Batch run: they are detected and paired automatically by content. (If auto-pairing can't decide, name them '209rinamasked...' / '209rinaunmasked...' to pair explicitly.)":
+            "衣装バンドルをインストーラー用.zipパック（サムネイル付き）にまとめます。璃奈（209）はバッチ1回でボード版・素顔版の両バンドルが必要です: 内容を解析して自動でペアリングし1つのパックにまとめます。（自動判別できない場合は「209rinamasked...」「209rinaunmasked...」の名前で明示的にペア指定できます。）",
         "Graft a donor costume's body mesh onto a target wearer model.": "提供元衣装のボディメッシュを対象の着用モデルに移植します。",
         "Bake bone scale/rotate/translate into mesh vertices.": "ボーンのスケール/回転/移動をメッシュ頂点にベイクします。",
         "Copy matching objects from a donor into a target by pathID (iOS/APK variant transfer).": "pathID基準で提供元の一致オブジェクトを対象にコピーします（iOS/APK間の移植）。",
@@ -537,6 +588,37 @@ _TABLES = {
         "Donor bundle (has the part)": "提供元バンドル（パーツを持つ）",
         "Target bundle (wearer)": "対象バンドル（着用者）",
         "Part root bone (optional)": "パーツのルートボーン（任意）",
+        "Part root bone": "パーツのルートボーン",
+        "(auto — biggest part)": "(自動 — 最大パーツ)",
+        "loading…": "読み込み中…",
+        "Costume Recolour (irochi)": "衣装リカラー（色違い）",
+        "Base costume model bundle": "ベース衣装モデルバンドル",
+        "Colour-variant texture bundle (irochi)": "色変えテクスチャバンドル（色違い）",
+        "Pick a part from the donor bundle (press Load to read its parts). Blank / auto = the biggest costume-specific part.":
+            "提供元バンドルからパーツを選択（読み込みを押すとパーツ一覧を取得）。空欄/自動 = 最大の衣装固有パーツ。",
+        "Named band presets, like the desktop tool. 'Custom' uses the Cut low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05.":
+            "デスクトップ版のような名前付きバンドプリセット。'Custom'は下の下部/上部Y + 領域フィールドを使用。Yガイド: 足首 .11 · ふくらはぎ .30 · 膝 .50 · 太もも .67 · 股 .85 · 下腹 .92 · 腰 1.05。",
+        "Which bones may be replaced (used when Cut preset = Custom). 'lower' keeps the target's torso; 'lower_belly'/'central' reach up into the belly.":
+            "置換できるボーン（Cutプリセット = Customのとき使用）。'lower'は対象の胴を維持し、'lower_belly'/'central'は下腹まで届く。",
+        "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee.":
+            "Cutプリセット = Customのとき使用。下部カットのワールド空間Y; 空欄で床。例: 0.50 = 膝。",
+        "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist.":
+            "Cutプリセット = Customのとき使用。空欄で上限なし。例: 0.96 = 腰のすぐ下。",
+        "Keep only the donor's main body component (drops a thigh dagger, garter rings). Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out (a cause of 'nothing to graft').":
+            "提供元のメイン胴体コンポーネントのみ維持（太ももの短剣やガーターリングを除外）。提供元の尻/太ももが別メッシュで抜け落ちる場合はオフに（'移植対象なし'の原因）。",
+        "Raise the cap's rim on every side (used together with the lift above).":
+            "キャップの縁を全方向に持ち上げる（上のリフトと併用）。",
+        "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'.":
+            "書き込まずに除去/取得する三角形数のみ報告 — '移植対象なし'の診断に使用。",
+        "Apply a colour-variant (irochi) texture bundle onto its base costume model, so the model shows the alt colour (the _cN textures are a separate texture-only bundle in SIFAS).":
+            "色変え（色違い）テクスチャバンドルをベース衣装モデルに適用し、モデルを別色で表示します（SIFASでは_cNテクスチャは別のテクスチャ専用バンドルです）。",
+        "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head).":
+            "フルモデルバンドル（メッシュ + ベーステクスチャ chXXXX_coYYYY_body/head を含む）。",
+        "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). Must be the SAME costume as the base.":
+            "_cNテクスチャを含むテクスチャ専用バンドル（chXXXX_coYYYY_body_c1 …）。ベースと同じ衣装である必要があります。",
+        "Folder of decrypted bundles": "復号済みバンドルのフォルダ",
+        "Auto-pairs every texture-only colour variant (_cN) with its complete model by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no need to pick pairs. Just decrypt a costume pair (or a whole batch) into a folder and point here.":
+            "各テクスチャ専用の色変え（_cN）を、バンドル内部の chXXXX_coYYYY コードで完成モデルと自動でペアリングし、すべて合成します — ペアを選ぶ必要なし。衣装ペア（または複数）をフォルダに復号して入れ、ここを指定してください。",
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",
@@ -552,6 +634,24 @@ _TABLES = {
         "Blank = no upper limit. e.g. 0.96 = just below waist.":
             "空欄で上限なし。例: 0.96 = 腰のすぐ下。",
         "Exclude donor accessories": "提供元のアクセサリーを除外",
+        "Cut preset": "カットプリセット",
+        "Fix detached thighs (hip/crotch) — recommended": "太もも分離を修正（尻/股） — 推奨",
+        "Thigh & up (keep calf/shoes)": "太もも以上（ふくらはぎ/靴を維持）",
+        "Calf part & up": "ふくらはぎ一部以上",
+        "From calf & up (keep feet)": "ふくらはぎから上（足を維持）",
+        "Whole lower body": "下半身全体",
+        "Custom range (use Cut low/high Y below)": "カスタム範囲（下のY値を使用）",
+        "Region (custom only)": "領域（カスタム時のみ）",
+        "Cut low Y (custom)": "下部カットY（カスタム）",
+        "Cut high Y (custom)": "上部カットY（カスタム）",
+        "Cap edge lift — all sides": "キャップ縁リフト — 全側面",
+        "Cap edge — front (blank = all)": "キャップ縁 — 前（空欄=全体）",
+        "Cap edge — back (blank = all)": "キャップ縁 — 後（空欄=全体）",
+        "Cap edge — left (blank = all)": "キャップ縁 — 左（空欄=全体）",
+        "Cap edge — right (blank = all)": "キャップ縁 — 右（空欄=全体）",
+        "Merge rim map too": "リムマップも統合",
+        "Generate mipmaps": "ミップマップを生成",
+        "Dry run (no write)": "ドライラン（書き込みなし）",
         # Breast physics parameter labels
         "stiffnessForce": "剛性 (stiffnessForce)",
         "dragForce": "抵抗 (dragForce)",
@@ -626,8 +726,8 @@ _TABLES = {
         "Scale the costume's thighs from the donor's body type to the target's (mesh baker).":
             "衣装の太ももを提供元の体型から対象の体型へスケールします（メッシュベイカー）。",
         "Match skin tone to target character": "肌色を対象キャラに合わせる",
-        "Recolour the body skin from the donor's official tone to the target's (skin tone changer). NOTE: the recolour is not perfect — some costume colours may shift too. For an exact result, export the texture and edit it yourself with the Skin Tone Changer tool.":
-            "ボディの肌を提供元キャラの公式トーンから対象のトーンへ再着色します（肌色チェンジャー）。注意: 着色は完璧ではなく、衣装の色も一部変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャー（Skin Tone Changer）で直接編集してください。",
+        "Recolour the body skin from the donor's tone to the wearer's, so the transplanted costume shows the target character's skin (skin tone changer). On by default — turn it off to keep the donor's original skin. It covers the whole skin now; the shift lands on the target's official tone class (same as the standalone Skin Tone Changer).":
+            "移植した衣装に対象キャラの肌が出るよう、ボディの肌を提供元のトーンから着用キャラのトーンへ再着色します（肌色チェンジャー）。既定でオン — オフにすると提供元の元の肌を保持します。今は肌全体をカバーし、変化量は対象の公式トーンクラスまで移動します（スタンドアロンのSkin Tone Changerと同じ）。",
         "Donor skin tone": "提供元の肌トーン",
         "auto = the donor character's official tone (pixel detection only when that is unknown). Set explicitly if the donor bundle was already recoloured.":
             "auto = 提供元キャラの公式トーン（不明な場合のみピクセルから検出）。提供元バンドルが既に再着色済みの場合は明示的に指定してください。",

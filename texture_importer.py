@@ -422,6 +422,13 @@ def iter_bundle_files(input_root, recursive):
                     yield fp
 
 
+def _is_android():
+    """True on the phone app (Chaquopy/Android), False on desktop. Mirrors
+    webtools.core.bodymatch.is_android(): on-device ASTC re-encoding is unreliable,
+    so texture writes fall back to uncompressed RGBA32 there."""
+    return bool(os.environ.get("ASTCENC_BIN")) or hasattr(sys, "getandroidapilevel")
+
+
 def process_bundle(bundle_path, out_path, resolver, fmt_name, log):
     """Replace textures in a bundle and save it.
 
@@ -463,6 +470,13 @@ def process_bundle(bundle_path, out_path, resolver, fmt_name, log):
                 fmt = getattr(TextureFormat, fmt_name, None)
                 if fmt is not None:
                     data.m_TextureFormat = fmt
+            elif _is_android():
+                # "Keep Original" onto a compressed (ASTC) base silently fails to
+                # persist on-device: the on-device re-encode leaves the original bytes,
+                # so the import looks like it did nothing (byte-identical output). Write
+                # uncompressed RGBA32 there so the pixels always land; the game loads it
+                # fine. Desktop (and explicit format choices) keep the original format.
+                data.m_TextureFormat = TextureFormat.RGBA32
             data.image = pil
             data.save()
             imported += 1
@@ -478,7 +492,7 @@ def process_bundle(bundle_path, out_path, resolver, fmt_name, log):
     # Save the (possibly modified) bundle.
     safe_make_dir(out_path)
     with open(out_path, "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
     log("Saved: {}  (imported {}, skipped {}, errors {})".format(
         out_path, imported, skipped, len(errors)))
 

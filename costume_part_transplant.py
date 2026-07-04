@@ -1605,7 +1605,7 @@ def worldspace_normalize(path, verbose=True, body_only=True):
     if n_fixed:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
 
 
 def _is_node_scaling(mb):
@@ -1688,7 +1688,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
     if changed:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         log(f"[ok] re-anchored NodeScaling on {changed} component(s)")
     if rot_skipped:
         log(f"[warn] {rot_skipped} NodeScaling component(s) carry rotationValues, which are "
@@ -1758,7 +1758,7 @@ def scale_costume_swing_lengths(out_path, donor_path, part_bone_names, verbose=T
         bf = list(env.files.values())[0]
         bf.mark_changed()
         with open(out_path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         avg = sum(ratios.values()) / len(ratios)
         log(f"[scale] body-scaled target: rescaled swing-physics lengths on {n_scaled} "
             f"part bone(s) by ~{avg:.3f} (target/donor body-scale ratio) so the donor's "
@@ -2069,7 +2069,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     bf, _ = _serialized_file(target)
     bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="lz4"))
+        f.write(bf.save(packer="original"))
     log(f"[ok] wrote {out_path}")
 
     if worldspace and not board:

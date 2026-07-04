@@ -390,7 +390,7 @@ def neutralize_values(local):
 # 3. 번들 처리
 # ==========================================================================
 def process_bundle(in_path, out_path, mode="rebase", edits=None, height_edits=None,
-                   adds=None, eps=1e-3, packer="lz4", log=print, dry_run=False):
+                   adds=None, eps=1e-3, packer="original", log=print, dry_run=False):
     """mode: 'rebase' | 'neutralize' | 'none'  — 불일치 항목 자동 수리 방식.
     edits: {(target_name, kind, bone): {'origin':(x,y,z)|None, 'scaled':(x,y,z)|None}}
            수동 편집(자동 수리보다 우선).
@@ -521,7 +521,7 @@ def process_bundle(in_path, out_path, mode="rebase", edits=None, height_edits=No
 
 
 def process_folder(in_dir, out_dir, mode="rebase", suffix="_nodescalefix",
-                   prefix="", eps=1e-3, packer="lz4", patterns=("*.unity",),
+                   prefix="", eps=1e-3, packer="original", patterns=("*.unity",),
                    log=print, dry_run=False):
     in_dir, out_dir = Path(in_dir), Path(out_dir)
     files = []

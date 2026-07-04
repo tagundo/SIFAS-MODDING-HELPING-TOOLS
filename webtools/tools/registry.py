@@ -15,8 +15,9 @@ from webtools.tools.bodymod import (
     run_accessory_unclip, run_hips, run_node_scaling, run_upleg,
 )
 from webtools.tools.costume import (
-    run_costume_packer, run_costume_part_transplant, run_costume_transplant,
-    run_iosapk_import, run_lower_body_swap,
+    part_root_options, run_costume_packer, run_costume_part_transplant,
+    run_costume_recolour, run_costume_transplant, run_iosapk_import,
+    run_lower_body_swap,
 )
 from webtools.tools.mesh import run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
@@ -60,11 +61,12 @@ def _match_fields():
          "default": False,
          "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
         {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
-         "default": False,
-         "help": "Recolour the body skin from the donor's official tone to the "
-         "target's (skin tone changer). NOTE: the recolour is not perfect — some "
-         "costume colours may shift too. For an exact result, export the texture "
-         "and edit it yourself with the Skin Tone Changer tool."},
+         "default": True,
+         "help": "Recolour the body skin from the donor's tone to the wearer's, so the "
+         "transplanted costume shows the target character's skin (skin tone changer). "
+         "On by default — turn it off to keep the donor's original skin. It covers the "
+         "whole skin now; the shift lands on the target's official tone class (same as "
+         "the standalone Skin Tone Changer)."},
         {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
          "options": ["auto", "bright", "default", "slight", "medium_tone"],
          "default": "auto",
@@ -309,7 +311,11 @@ TOOLS = [
     {
         "id": "costume_packer",
         "label": "Costume Mod Packer",
-        "description": "Package costume bundles into installer .zip packs (with thumbnail).",
+        "description": ("Package costume bundles into installer .zip packs (with thumbnail). "
+                        "Rina (209) needs BOTH the masked and no-mask bundles in one Batch "
+                        "run: they are detected and paired automatically by content. (If "
+                        "auto-pairing can't decide, name them '209rinamasked...' / "
+                        "'209rinaunmasked...' to pair explicitly.)"),
         "modes": ["single", "batch"],
         "run": run_costume_packer,
         "fields": [
@@ -521,6 +527,33 @@ TOOLS = [
         ],
     },
     {
+        "id": "costume_recolour",
+        "label": "Costume Recolour (irochi)",
+        "description": "Apply a colour-variant (irochi) texture bundle onto its base costume "
+                       "model, so the model shows the alt colour (the _cN textures are a "
+                       "separate texture-only bundle in SIFAS).",
+        "modes": ["single", "batch"],
+        "run": run_costume_recolour,
+        "fields": [
+            {"name": "base", "label": "Base costume model bundle", "type": "path", "required": True,
+             "mode": "single", "root": "extracted",
+             "help": "The full model bundle (has the mesh + base textures chXXXX_coYYYY_body/head)."},
+            {"name": "variant", "label": "Colour-variant texture bundle (irochi)", "type": "path",
+             "required": True, "mode": "single", "root": "extracted",
+             "help": "The texture-only bundle with the _cN textures (chXXXX_coYYYY_body_c1 …). "
+                     "Must be the SAME costume as the base."},
+            {"name": "in_dir", "label": "Folder of decrypted bundles", "type": "dir", "required": True,
+             "mode": "batch", "root": "extracted",
+             "help": "Auto-pairs every texture-only colour variant (_cN) with its complete model "
+                     "by the chXXXX_coYYYY code INSIDE the bundles and composites them all — no "
+                     "need to pick pairs. Just decrypt a costume pair (or a whole batch) into a "
+                     "folder and point here."},
+            _out_dir(),
+            {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_recolour",
+             "mode": "single"},
+        ],
+    },
+    {
         "id": "costume_part_transplant",
         "label": "Costume Part Transplant",
         "description": "Move ONE costume part (wings / tail / cape) from a donor model onto a target wearer.",
@@ -533,8 +566,11 @@ TOOLS = [
              "root": "extracted"},
             _out_dir(),
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_part"},
-            {"name": "part_root", "label": "Part root bone (optional)", "type": "text", "default": "",
-             "help": "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part."},
+            {"name": "part_root", "label": "Part root bone", "type": "dynamic_select",
+             "depends": ["donor"], "options_fn": part_root_options,
+             "blank_label": "(auto — biggest part)",
+             "help": "Pick a part from the donor bundle (press Load to read its parts). "
+                     "Blank / auto = the biggest costume-specific part."},
             {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "new_submesh", "label": "Add the part as its own sub-mesh + material (keep its texture)",
@@ -561,15 +597,42 @@ TOOLS = [
              "mode": "batch", "root": "extracted"},
             _out_dir(),
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_lower"},
-            {"name": "region", "label": "Region", "type": "select",
-             "options": ["lower", "lower_belly", "central"], "default": "lower"},
-            {"name": "cut_low", "label": "Cut low Y (optional)", "type": "number", "default": "",
-             "help": "World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
-            {"name": "cut_high", "label": "Cut high Y (optional)", "type": "number", "default": "",
-             "help": "Blank = no upper limit. e.g. 0.96 = just below waist."},
-            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True},
+            {"name": "cut", "label": "Cut preset", "type": "select",
+             "options": [
+                 {"value": "hip_fix", "label": "Fix detached thighs (hip/crotch) — recommended"},
+                 {"value": "above_thigh", "label": "Thigh & up (keep calf/shoes)"},
+                 {"value": "calf_part", "label": "Calf part & up"},
+                 {"value": "from_calf", "label": "From calf & up (keep feet)"},
+                 {"value": "whole", "label": "Whole lower body"},
+                 {"value": "custom", "label": "Custom range (use Cut low/high Y below)"},
+             ], "default": "hip_fix",
+             "help": "Named band presets, like the desktop tool. 'Custom' uses the Cut "
+                     "low/high Y + Region fields below. Y guide: ankle .11 · calf .30 · "
+                     "knee .50 · thigh .67 · crotch .85 · belly .92 · waist 1.05."},
+            {"name": "region", "label": "Region (custom only)", "type": "select",
+             "options": ["lower", "lower_belly", "central"], "default": "lower",
+             "help": "Which bones may be replaced (used when Cut preset = Custom). 'lower' "
+                     "keeps the target's torso; 'lower_belly'/'central' reach up into the belly."},
+            {"name": "cut_low", "label": "Cut low Y (custom)", "type": "number", "default": "",
+             "help": "Used when Cut preset = Custom. World-space Y of the lower cut; blank = floor. e.g. 0.50 = knee."},
+            {"name": "cut_high", "label": "Cut high Y (custom)", "type": "number", "default": "",
+             "help": "Used when Cut preset = Custom. Blank = no upper limit. e.g. 0.96 = just below waist."},
+            {"name": "exclude_accessories", "label": "Exclude donor accessories", "type": "checkbox", "default": True,
+             "help": "Keep only the donor's main body component (drops a thigh dagger, garter rings). "
+                     "Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out "
+                     "(a cause of 'nothing to graft')."},
             {"name": "open_cap", "label": "Open skirt cap lift (0 = off)", "type": "number", "default": "0",
              "help": "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap."},
+            {"name": "open_cap_edge", "label": "Cap edge lift — all sides", "type": "number", "default": "0",
+             "help": "Raise the cap's rim on every side (used together with the lift above)."},
+            {"name": "cap_edge_front", "label": "Cap edge — front (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_back", "label": "Cap edge — back (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_left", "label": "Cap edge — left (blank = all)", "type": "number", "default": ""},
+            {"name": "cap_edge_right", "label": "Cap edge — right (blank = all)", "type": "number", "default": ""},
+            {"name": "merge_rim", "label": "Merge rim map too", "type": "checkbox", "default": True},
+            {"name": "mipmaps", "label": "Generate mipmaps", "type": "checkbox", "default": True},
+            {"name": "dry_run", "label": "Dry run (no write)", "type": "checkbox", "default": False,
+             "help": "Report the drop/take triangle counts without writing — use to diagnose 'nothing to graft'."},
             *_match_fields(),
         ],
     },
@@ -628,14 +691,17 @@ def public_tools(lang=None):
 
 def _translate_field(field, lang):
     f = dict(field)
+    # `options_fn` is a runtime callable (dynamic_select provider); it is served
+    # via /api/options, never serialised into the tool list.
+    f.pop("options_fn", None)
     if "label" in f:
         f["label"] = i18n.tr(f["label"], lang=lang)
     if "help" in f:
         f["help"] = i18n.tr(f["help"], lang=lang)
-    # Preset option labels are display-only (the value is the `set` dict), so
-    # they are safe to translate; normal select options are left untranslated
-    # because their values double as dispatch identifiers.
-    if f.get("type") == "preset" and isinstance(f.get("options"), list):
+    # Options given as {value, label} dicts carry the dispatch identifier in
+    # `value`, so their `label` is display-only and safe to translate. Plain
+    # string options are left as-is (the string IS the dispatch identifier).
+    if isinstance(f.get("options"), list):
         f["options"] = [
             {**o, "label": i18n.tr(o["label"], lang=lang)}
             if isinstance(o, dict) and "label" in o else o

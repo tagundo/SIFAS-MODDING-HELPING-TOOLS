@@ -545,7 +545,7 @@ def copy_selective_from_pair(
     try:
         export_bundle.parent.mkdir(parents=True, exist_ok=True)
         with open(export_bundle, "wb") as f:
-            f.write(target_env.file.save(packer="lz4"))
+            f.write(target_env.file.save(packer="original"))
     except Exception as e:
         failed.append(("[WRITE_BUNDLE]", "N/A", f"WRITE_FAIL: {e}"))
 

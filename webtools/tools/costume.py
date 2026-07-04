@@ -5,12 +5,38 @@ packer and transplant are import-safe (lazy Tk). The IosApk importer `import`s
 tkinter at top, so the headless stub is installed first.
 """
 import os
+import re
 from pathlib import Path
 
 from webtools.core.repo import ensure_repo_on_path
-from webtools.core.sukusta import find_bundles
+from webtools.core.sukusta import find_bundles, default_sukusta_dir
 from webtools.core.tkstub import ensure_tk_stub
 from webtools.tools.common import as_float, single_out_path
+
+
+# ---- dynamic dropdown provider: donor -> candidate part-root bones ----------
+def part_root_options(params):
+    """Options for the Costume Part Transplant 'part root bone' dropdown: the
+    donor bundle's candidate part roots, mirroring the desktop GUI's parts
+    combobox (costume_part_transplant.inspect). Returns [{value, label}]; the
+    value is the bone name transplant_part expects, the label adds vert/tri/bone
+    counts. Empty list when no donor is chosen yet."""
+    donor = (params.get("donor") or "").strip()
+    if not donor:
+        return []
+    ensure_repo_on_path()
+    import costume_part_transplant as cpt
+    out = []
+    for p in cpt.inspect(donor, verbose=False):
+        root = p.get("root")
+        if not root:
+            continue
+        out.append({
+            "value": root,
+            "label": "%s  (%d v, %d t, %d bones)" % (
+                root, p.get("verts", 0), p.get("tris", 0), len(p.get("bones", []) or [])),
+        })
+    return out
 
 
 # ---------------------------------------------------------- costume packer
@@ -185,20 +211,54 @@ def run_lower_body_swap(job, params):
     import lower_body_swap as m
 
     donor = params.get("donor")
-    out_dir = params.get("out_dir")
+    # Default the output folder like run_batch does, so every path (single, batch,
+    # and the match-batch loop below) behaves the same even without an out_dir.
+    out_dir = params.get("out_dir") or os.path.join(m.sukusta_dir(), "modded")
     suffix = params.get("suffix") or "_lower"
-    region = params.get("region") or "lower"
     exclude_acc = bool(params.get("exclude_accessories", True))
-    kw = dict(region=region, exclude_accessories=exclude_acc, log=job.log)
-    for k in ("cut_low", "cut_high"):
-        v = as_float(params.get(k), None) if params.get(k) not in (None, "") else None
-        if v is not None:
-            kw[k] = v
-    # lift the open skirt cap so a shorter donor lower body doesn't leave a hole
-    # (0 = off = flat cap, the current behaviour). Applies to single and batch.
+    kw = dict(exclude_accessories=exclude_acc, log=job.log)
+
+    # Band: a named preset (like the desktop tool), unless 'custom', in which case
+    # the raw Cut low/high Y + Region fields are used. Presets always graft the
+    # 'lower' region (matches the desktop GUI, which hardcodes region for presets).
+    cut = (params.get("cut") or "hip_fix").strip()
+    if cut and cut != "custom":
+        kw["region"] = "lower"
+        lo, hi = m.CUT_PRESETS.get(cut, (-m.INF, m.INF))
+        kw["cut_low"], kw["cut_high"] = lo, hi
+    else:
+        kw["region"] = params.get("region") or "lower"
+        for k in ("cut_low", "cut_high"):
+            raw = params.get(k)
+            if raw in (None, ""):
+                continue
+            try:
+                kw[k] = float(str(raw).strip())
+            except (TypeError, ValueError):
+                raise ValueError(f"{k.replace('_', ' ')} must be a number (e.g. 0.50).")
+
+    # Open skirt cap: overall lift (0 = flat cap = default) + optional rim edge lift
+    # (all sides) with per-side overrides. Applies to single and batch.
     cap = as_float(params.get("open_cap"), 0.0)
     if cap:
         kw["open_cap_lift"] = cap
+    edge = as_float(params.get("open_cap_edge"), 0.0)
+    if edge:
+        kw["open_cap_edge"] = edge
+    for pk, ak in (("cap_edge_front", "open_cap_edge_front"),
+                   ("cap_edge_back", "open_cap_edge_back"),
+                   ("cap_edge_left", "open_cap_edge_left"),
+                   ("cap_edge_right", "open_cap_edge_right")):
+        if params.get(pk) not in (None, ""):
+            v = as_float(params.get(pk), None)
+            if v is not None:
+                kw[ak] = v
+
+    # Texture / output toggles (desktop parity).
+    kw["merge_rim"] = bool(params.get("merge_rim", True))
+    kw["mipmaps"] = bool(params.get("mipmaps", True))
+    if params.get("dry_run"):
+        kw["dry_run"] = True
 
     match = bool(params.get("match_thigh", False)) or bool(params.get("match_skin", False))
 
@@ -219,7 +279,8 @@ def run_lower_body_swap(job, params):
                 os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
                 job.log(f"• {os.path.relpath(tgt, folder)}")
                 m.graft_one(tgt, str(donor), out, **kw)
-                _match_to_target(job, params, donor, tgt, out)
+                if not params.get("dry_run"):   # dry run writes nothing to match against
+                    _match_to_target(job, params, donor, tgt, out)
                 ok += 1
             except Exception as exc:
                 job.log(f"  skip ({exc})")
@@ -231,9 +292,189 @@ def run_lower_body_swap(job, params):
     job.progress(0, 1)
     job.log(f"grafting lower body from {Path(donor).name} onto {Path(target).name} …")
     m.graft_one(str(target), str(donor), str(out_path), **kw)
+    if params.get("dry_run"):
+        job.progress(1, 1)
+        return "dry run — nothing written (see the log for what would be grafted)"
     _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
     return f"lower body swapped -> {out_path}"
+
+
+# ---------------------------------------------- costume recolour (irochi)
+_CN_SUFFIX = re.compile(r"_c\d+$", re.IGNORECASE)          # ..._body_c1 -> ..._body
+_CHCO_RE = re.compile(r"ch\d+_co\d+", re.IGNORECASE)       # the costume-pair key
+
+
+def _classify_bundle(path):
+    """Classify a decrypted bundle purely by its CONTENTS — no DB needed:
+      ('complete', code)  = has a mesh (the full model with base textures)
+      ('variant',  code)  = texture-only bundle carrying _cN recolour textures
+      ('other',    code)  = neither
+    `code` is the chXXXX_coYYYY pair key (or None), `color` is the _cN tag
+    (e.g. 'c1') for a variant. Returns (kind, code, color)."""
+    import UnityPy
+    env = UnityPy.load(str(path))
+    has_mesh = False
+    texnames = []
+    for obj in env.objects:
+        tn = obj.type.name
+        if tn in ("Mesh", "SkinnedMeshRenderer"):
+            has_mesh = True
+        elif tn == "Texture2D":
+            texnames.append(getattr(obj.read(), "m_Name", "") or "")
+    code = None
+    for n in texnames:
+        m = _CHCO_RE.search(n)
+        if m:
+            code = m.group(0).lower()
+            break
+    color = ""
+    for n in texnames:
+        m = _CN_SUFFIX.search(n)
+        if m:
+            color = m.group(0).lstrip("_")     # '_c1' -> 'c1'
+            break
+    if has_mesh:
+        return "complete", code, color
+    if color:
+        return "variant", code, color
+    return "other", code, color
+
+
+def _recolour_one(job, base_bundle, variant_bundle, out_path):
+    """Composite the variant bundle's _cN textures onto the base model, keeping
+    each base texture's own format, and write out_path. Returns
+    (imported, skipped, errors). Deletes out_path when nothing imported."""
+    import tempfile
+    import shutil
+    import UnityPy
+    import texture_importer as ti
+    env = UnityPy.load(str(variant_bundle))
+    tmp = tempfile.mkdtemp(prefix="irochi_")
+    mapping = {}
+    try:
+        for obj in env.objects:
+            if obj.type.name != "Texture2D":
+                continue
+            data = obj.read()
+            nm = getattr(data, "m_Name", "") or ""
+            base_nm = _CN_SUFFIX.sub("", nm)     # ..._body_c1 -> ..._body
+            png = os.path.join(tmp, base_nm + ".png")
+            try:
+                data.image.save(png)
+                mapping[base_nm] = png
+            except Exception as exc:             # noqa: BLE001
+                job.log(f"  ! could not read variant texture {nm}: {exc}")
+        if not mapping:
+            return 0, 0, []
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        imported, skipped, errors = ti.process_bundle(
+            str(base_bundle), str(out_path), lambda name: mapping.get(name),
+            "Keep Original", job.log)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if imported == 0:
+        try:
+            os.remove(out_path)      # process_bundle wrote a plain copy — don't keep it
+        except OSError:
+            pass
+    return imported, skipped, errors
+
+
+def run_costume_recolour(job, params):
+    """Apply a colour-variant (irochi) texture bundle onto its base costume model.
+
+    In SIFAS an alt-colour costume is NOT a separate model: it's a texture-only
+    bundle whose textures carry a `_cN` suffix (e.g. chXXXX_coYYYY_body_c1), meant
+    to override the shared base model's textures. Extracting the model gives the
+    base colour; extracting the variant gives textures with no mesh. This
+    composites them into a self-contained recoloured model.
+
+    Single mode: pick the base model + the variant texture bundle.
+    Batch mode: point at a FOLDER of decrypted bundles — each texture-only variant
+    is auto-paired with its complete model by the chXXXX_coYYYY code INSIDE the
+    bundles (no DB / no costume list needed) and composited."""
+    from webtools.tools.texture import ensure_astc_cli
+    ensure_astc_cli()                        # ASTC decode/encode on-device
+    ensure_repo_on_path()
+    ensure_tk_stub()                         # texture_importer imports tkinter at top
+
+    out_dir = params.get("out_dir") or default_sukusta_dir("modded")
+    if params.get("mode") == "batch":
+        return _recolour_batch(job, params, out_dir)
+
+    base = (params.get("base") or "").strip()
+    variant = (params.get("variant") or "").strip()
+    if not base or not variant:
+        raise ValueError("Pick both the base model bundle and the colour-variant "
+                         "(irochi) texture bundle.")
+    suffix = params.get("suffix") or "_recolour"
+    out_path = single_out_path(out_dir, base, "", suffix)
+    job.progress(0, 1)
+    job.log(f"recolouring {Path(base).name} with {Path(variant).name} …")
+    imported, skipped, errors = _recolour_one(job, base, variant, out_path)
+    job.progress(1, 1)
+    if imported == 0:
+        if errors:
+            raise ValueError(
+                f"Textures matched but all {len(errors)} import(s) failed "
+                f"(first: {errors[0][2]}). Check the texture formats / astcenc.")
+        raise ValueError(
+            "No textures matched — the variant names didn't line up with the base "
+            "model's textures. Are these the same costume (chXXXX_coYYYY)? Base and "
+            "variant must be the same suit.")
+    return (f"recoloured -> {out_path}  (imported {imported}, "
+            f"skipped {skipped}, errors {len(errors)})")
+
+
+def _recolour_batch(job, params, out_dir):
+    """Scan a folder of decrypted bundles, auto-pair each colour-variant
+    (texture-only _cN) bundle with its complete model by the chXXXX_coYYYY code
+    inside, and composite them all — no DB, no costume list."""
+    folder = params.get("in_dir")
+    if not folder:
+        raise ValueError("Pick a folder of decrypted bundles.")
+    bundles = [str(b) for b in find_bundles(folder)]
+    if not bundles:
+        raise ValueError("No .unity bundles found in that folder.")
+    job.log(f"scanning {len(bundles)} bundles …")
+    complete = {}      # code -> path of a full model
+    variants = []      # (code, color, path)
+    for b in bundles:
+        try:
+            kind, code, color = _classify_bundle(b)
+        except Exception as exc:             # noqa: BLE001
+            job.log(f"  ! skip {os.path.basename(b)}: {exc}")
+            continue
+        if kind == "complete" and code:
+            complete.setdefault(code, b)
+        elif kind == "variant" and code:
+            variants.append((code, color, b))
+    job.log(f"  found {len(complete)} complete models, {len(variants)} colour variants")
+    if not variants:
+        return ("no colour-variant (texture-only _cN) bundles found in the folder — "
+                "nothing to recolour")
+    ok = 0
+    for i, (code, color, vpath) in enumerate(variants):
+        job.progress(i, len(variants))
+        base = complete.get(code)
+        if not base:
+            job.log(f"  ! {code} {color}: no complete model in the folder — skipped")
+            continue
+        out_path = single_out_path(out_dir, base, "", "_" + (color or "recolour"))
+        try:
+            imported, _skipped, errors = _recolour_one(job, base, vpath, out_path)
+        except Exception as exc:  # noqa: BLE001 - one bad bundle must not kill the batch
+            job.log(f"  ! {code} {color}: failed ({exc}) — skipped")
+            continue
+        if imported > 0:
+            ok += 1
+            job.log(f"  ✓ {code} {color} -> {os.path.basename(out_path)}  (imported {imported})")
+        else:
+            why = f"{len(errors)} import error(s)" if errors else "no matching textures"
+            job.log(f"  ! {code} {color}: {why}")
+    job.progress(len(variants), len(variants))
+    return f"batch recolour: {ok}/{len(variants)} colour variants composited to {out_dir}"
 
 
 # ---------------------------------------------- iOS/APK selective pair import

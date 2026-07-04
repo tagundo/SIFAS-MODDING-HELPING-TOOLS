@@ -76,7 +76,9 @@ pickers don't need this layout.
 
 | Tool | What it does | Runs as |
 |------|--------------|---------|
-| `costume_transplant.py` | Puts one character's outfit onto another — keeps the target's face/hair/body, gives them the donor's clothing (including extra costume bones). Needs `numpy`. | window · CLI |
+| `costume_transplant.py` | Puts one character's outfit onto another — keeps the target's face/hair/body, gives them the donor's clothing (including extra costume bones). Can also **match the wearer's thigh shape and skin tone** to the target character (on by default in the web UI). Needs `numpy`. | window · CLI · web |
+| `costume_part_transplant.py` | Transplant just **one part** of a costume instead of the whole outfit; the part's root bone is picked from a list loaded off the donor. | window · CLI · web |
+| `lower_body_swap.py` | Swap only the **lower body** (skirt / legs) between costumes, with the desktop cut presets. | window · CLI · web |
 | `unity_costumemod_packer.py` | Packs finished mods into shareable installer `.zip` packs with auto thumbnails; handles Android+iOS pairs. | window · menu |
 | `assetbundle_IosApk_batch_import_plus.py` | Copies matching pieces from one bundle into another by internal ID — e.g. moving an edit between the iOS and Android versions of a model. | window |
 
@@ -94,7 +96,7 @@ pickers don't need this layout.
 | `texture_batch_importer.py` | Replaces textures inside bundles with your own PNG/JPG files, matched by filename. Needs `Pillow`. | window |
 | `sifas-assetbundle-renamer-by-texture.py` | Copies a folder of bundles, renamed by the character/costume they contain so cryptic names become readable. Originals untouched. | window |
 
-**`webtools/` — run everything from your browser**
+**`webtools/` — run everything from your browser (and in the elichika Android app)**
 
 A small local web app that wraps the tools above. It runs a web server on your
 own device (nothing is uploaded) and opens in your browser:
@@ -103,8 +105,22 @@ own device (nothing is uploaded) and opens in your browser:
 python -m webtools
 ```
 
-Open the printed address (default `http://127.0.0.1:8770/`). See
-[`webtools/README.md`](webtools/README.md) for details.
+Open the printed address (default `http://127.0.0.1:8770/`). This is also the
+**"mod tools" tab of the [elichika](https://github.com/tagundo/elichika) Android
+app**, so the whole workflow runs on a phone with no command line.
+
+Beyond wrapping the tools above it adds:
+
+- **Costume recolour (irochi)** — composite a colour-variant (`_cN`) texture bundle
+  onto its complete base model. Single (pick base + variant), or a **folder batch**
+  that auto-pairs each variant with its model by the `chXXXX_coYYYY` code inside the
+  bundles — no database or costume list needed.
+- **Skin-tone & thigh matching** when transplanting a costume across characters, so
+  the wearer's own skin shows through instead of the donor's.
+
+Notes: on a phone the tools write recoloured/edited textures uncompressed (RGBA32)
+so the change always persists, and all outputs now save in an **AssetStudio-openable**
+format. See [`webtools/README.md`](webtools/README.md) for details.
 
 ### Requirements
 
@@ -203,7 +219,9 @@ Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUS
 
 | 도구 | 하는 일 | 실행 방식 |
 |------|---------|-----------|
-| `costume_transplant.py` | 한 캐릭터의 의상을 다른 캐릭터에게 입힙니다 — 대상의 얼굴·머리·몸은 그대로 두고 제공자의 옷(추가 의상 본 포함)만 가져옵니다. `numpy` 필요. | 창 · 명령어 |
+| `costume_transplant.py` | 한 캐릭터의 의상을 다른 캐릭터에게 입힙니다 — 대상의 얼굴·머리·몸은 그대로 두고 제공자의 옷(추가 의상 본 포함)만 가져옵니다. 착용 캐릭터의 **허벅지 형태와 피부톤을 대상에 맞추는** 기능도 있습니다(웹 UI 기본 켜짐). `numpy` 필요. | 창 · 명령어 · 웹 |
+| `costume_part_transplant.py` | 의상 전체가 아니라 **한 부분만** 이식합니다. 부분의 루트 본은 제공자에서 불러온 목록에서 선택합니다. | 창 · 명령어 · 웹 |
+| `lower_body_swap.py` | 의상의 **하체(치마/다리)만** 교체합니다. 데스크톱 컷 프리셋 포함. | 창 · 명령어 · 웹 |
 | `unity_costumemod_packer.py` | 완성한 모드를 공유용 설치 `.zip` 팩으로 묶고 썸네일을 자동 생성합니다. Android+iOS 쌍도 처리합니다. | 창 · 메뉴 |
 | `assetbundle_IosApk_batch_import_plus.py` | 내부 ID로 한 번들의 맞는 조각을 다른 번들에 복사합니다 — 예: 같은 모델의 iOS·Android 버전 사이에서 편집 옮기기. | 창 |
 
@@ -221,7 +239,7 @@ Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUS
 | `texture_batch_importer.py` | 번들 안 텍스처를 내 PNG/JPG 파일로 교체합니다(파일 이름으로 매칭). `Pillow` 필요. | 창 |
 | `sifas-assetbundle-renamer-by-texture.py` | 번들 폴더를 복사하면서 안에 든 캐릭터/의상에 맞게 이름을 다시 붙여 알아보기 쉽게 만듭니다. 원본은 그대로. | 창 |
 
-**`webtools/` — 브라우저에서 모두 실행**
+**`webtools/` — 브라우저에서 모두 실행 (elichika 안드로이드 앱에서도)**
 
 위 도구들을 감싼 작은 로컬 웹 앱입니다. 내 기기에서 웹 서버를 띄우고(어디에도
 업로드되지 않음) 브라우저로 열립니다:
@@ -230,7 +248,20 @@ Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUS
 python -m webtools
 ```
 
-출력되는 주소(기본값 `http://127.0.0.1:8770/`)를 여세요. 자세한 내용은
+출력되는 주소(기본값 `http://127.0.0.1:8770/`)를 여세요. 이 화면은
+**[elichika](https://github.com/tagundo/elichika) 안드로이드 앱의 "모드 도구" 탭**
+이기도 해서, 명령어 없이 폰에서 전체 작업이 됩니다.
+
+위 도구들에 더해 다음이 추가됩니다:
+
+- **의상 리컬러(이로치)** — 색상 변형(`_cN`) 텍스처 번들을 완성 모델에 합성합니다.
+  단건(베이스+변형 선택) 또는, 번들 안의 `chXXXX_coYYYY` 코드로 변형과 모델을
+  자동 짝지어 처리하는 **폴더 배치** 모드(DB·의상 목록 불필요).
+- 캐릭터 간 의상 이식 시 **피부톤·허벅지 매칭** — 제공자가 아니라 착용 캐릭터
+  본연의 피부가 나오도록.
+
+참고: 폰에서는 리컬러/편집 텍스처를 비압축(RGBA32)으로 저장해 항상 반영되게 하며,
+모든 출력이 이제 **AssetStudio에서 열리는** 형식으로 저장됩니다. 자세한 내용은
 [`webtools/README.md`](webtools/README.md)를 참고하세요.
 
 ### 필요한 것

@@ -895,7 +895,7 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
 # 5. 번들 / 폴더 처리
 # ==========================================================================
 def process_bundle(in_path, out_path, targets, recompute_normals=True,
-                   packer="lz4", mesh_filter=None, hierarchical=True,
+                   packer="original", mesh_filter=None, hierarchical=True,
                    include_hidden=False, log=print, dry_run=False):
     env = UnityPy.load(str(in_path))
     tos = build_bone_name_map(env)
@@ -949,7 +949,7 @@ def process_bundle(in_path, out_path, targets, recompute_normals=True,
 
 
 def process_folder(in_dir, out_dir, targets, prefix="", suffix="_baked",
-                   recompute_normals=True, packer="lz4", mesh_filter=None,
+                   recompute_normals=True, packer="original", mesh_filter=None,
                    hierarchical=True, include_hidden=False,
                    patterns=("*.unity",), log=print, dry_run=False):
     in_dir, out_dir = Path(in_dir), Path(out_dir)

@@ -765,7 +765,7 @@ def _fmt_num(v):
 def _save_env(env, out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
 
 
 def modify_swingbones_in_bundle(

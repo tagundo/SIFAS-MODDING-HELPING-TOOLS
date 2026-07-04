@@ -434,7 +434,7 @@ def modify_swingcolliders(
     # save
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
-        f.write(env.file.save(packer="lz4"))
+        f.write(env.file.save(packer="original"))
 
     # log
     hdr = [

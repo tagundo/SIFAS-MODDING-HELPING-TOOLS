@@ -534,7 +534,7 @@ def worldspace_normalize(path, verbose=True, body_only=False):
     if n_fixed:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
 
 
 
@@ -650,7 +650,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
     if total:
         bf = list(env.files.values())[0]; bf.mark_changed()
         with open(path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         log(f"[ok] re-anchored {total} NodeScaling entr{'y' if total == 1 else 'ies'} to the costume rest pose")
     if skipped_total:
         log(f"[mask] kept {skipped_total} NodeScaling entr{'y' if skipped_total == 1 else 'ies'} "
@@ -1542,7 +1542,7 @@ def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbos
         bf = list(env.files.values())[0]
         bf.mark_changed()
         with open(out_path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         avg = sum(ratios.values()) / len(ratios)
         log(f"[scale] body-scaled target: rescaled swing-physics lengths on {n_scaled} "
             f"costume bone(s) by ~{avg:.3f} (target/donor body-scale ratio) so the donor's "
@@ -1707,7 +1707,7 @@ def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose
         bf = list(env.files.values())[0]
         bf.mark_changed()
         with open(out_path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         if n_fixed:
             log(f"[chain] repaired {n_fixed} costume swing-chain link(s): the donor's deeper "
                 f"skirt/appendage segments now sit IN the chain (parent->child restored) so the "
@@ -1819,7 +1819,7 @@ def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
         bf = list(env.files.values())[0]
         bf.mark_changed()
         with open(out_path, "wb") as f:
-            f.write(bf.save(packer="lz4"))
+            f.write(bf.save(packer="original"))
         log(f"[collider] adopted the donor's body collider geometry + capsule links on "
             f"{n} collider(s) (the grafted body is the donor's) so the transplanted outfit "
             f"collides with the body it was authored for, not the wearer's old shape")
@@ -2029,7 +2029,7 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     bf, _ = _serialized_file(target)
     bf.mark_changed()
     with open(out_path, "wb") as f:
-        f.write(bf.save(packer="lz4"))
+        f.write(bf.save(packer="original"))
 
     # ---- 6) bake the grafted body mesh into world space (re-read so it reflects the
     #         graft; needed so SwingBone-driven pieces like the ribbon render in the
