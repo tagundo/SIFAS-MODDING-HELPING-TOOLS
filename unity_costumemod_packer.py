@@ -871,7 +871,12 @@ def extract_chara_id_from_texture_name(tex_name: str):
         return None
     m = re.search(r"ch(\d{4})_", tex_name)
     if m:
-        return int(m.group(1))
+        cid = int(m.group(1))
+        # ch9999 is the Rina-chan board pseudo-character: the masked version of a
+        # Rina suit names ALL its textures ch9999_coNNNN. Treat it as Rina (209),
+        # so a board bundle is packed for the right character (and a lone one is
+        # refused with the pairing hint instead of producing a chara-9999 pack).
+        return 209 if cid == 9999 else cid
     return None
 
 def extract_chara_id_from_filename(filename: str):
@@ -1135,35 +1140,50 @@ def _bundle_texture_names(path):
 
 
 def _rina_content_scan(path, log=None):
-    """(costume_code, is_masked) for a Rina (ch0209) bundle judged by CONTENT,
-    so batch packing can pair masked+unmasked without special filenames:
+    """(costume_code, is_masked) for a Rina bundle judged by CONTENT, so batch
+    packing can pair masked+unmasked without special filenames. Verified against
+    real game data: the two versions of one Rina suit use DIFFERENT texture
+    prefixes —
 
-      * the costume code (ch0209_coNNNN) comes from the texture names;
-      * masked vs unmasked comes from the transplant tool's board-face detector
-        (the Rina-chan board is a static mesh subtree hanging off a body bone).
+      * masked / board version:  ch9999_coNNNN  (9999 = the Rina-chan board
+        pseudo-character; the bundle carries the board's dozens of static
+        expression meshes)
+      * no-mask version:         ch0209_coNNNN  (a standard model)
 
-    Returns (None, None) for non-Rina bundles or whenever ANYTHING is uncertain
-    (mixed character codes, detector unavailable, load failure), so the caller
-    falls back to the '209rinamasked/209rinaunmasked' filename convention with
-    zero change in behaviour."""
-    code = None
+    The returned costume_code is just the coNNNN part, which is what the two
+    versions share. The prefix verdict is cross-checked with the transplant
+    tool's board-face detector; on ANY disagreement or uncertainty (mixed
+    characters, detector unavailable, load failure) this returns (None, None)
+    and the caller falls back to the '209rinamasked/209rinaunmasked' filename
+    convention with zero change in behaviour."""
+    prefixes, code = set(), None
     for n in _bundle_texture_names(path):
         m = _CHCO_RE.search(n or "")
         if not m:
             continue
-        if m.group(1) != "0209":
-            return (None, None)          # another character (or a transplant mix)
-        code = m.group(0).lower()
+        prefixes.add(m.group(1))
+        code = "co" + m.group(2)
+    if prefixes == {"9999"}:
+        is_masked = True                 # the board version
+    elif prefixes == {"0209"}:
+        is_masked = False                # the plain-face version
+    else:
+        return (None, None)              # another character / a transplant mix
     if not code:
         return (None, None)
     try:
         import costume_transplant as _ct
         board = _ct.detect_board_face_model_path(path)
-    except Exception as exc:  # detector unavailable/failed -> stay neutral
+        if (board is not None) != is_masked:
+            if log:
+                log(f"  (rina content scan: prefix and board detector disagree for "
+                    f"{os.path.basename(path)}; leaving it to the filename convention)")
+            return (None, None)
+    except Exception as exc:  # detector unavailable -> trust the prefix alone
         if log:
-            log(f"  (rina content scan skipped for {os.path.basename(path)}: {exc})")
-        return (None, None)
-    return (code, board is not None)
+            log(f"  (rina board detector unavailable for {os.path.basename(path)}: {exc}; "
+                "using the texture prefix only)")
+    return (code, is_masked)
 
 
 def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara_id=0,
