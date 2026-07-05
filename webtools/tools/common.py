@@ -99,21 +99,39 @@ def triple_add(params, keys):
     return tuple(as_float(params.get(k), 0.0) for k in keys)
 
 
+def unique_path(path):
+    """Never overwrite an existing output: keep the name if it is free,
+    otherwise append a counter before the extension
+    (A_transplant.unity -> A_transplant2.unity -> A_transplant3.unity ...)."""
+    p = Path(path)
+    if not p.exists():
+        return p
+    n = 2
+    while True:
+        candidate = p.with_name(f"{p.stem}{n}{p.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 def batch_out_path(in_dir, src_file, out_dir, prefix, suffix):
     """out_dir/<sub-path of src under in_dir>/<prefix><stem><suffix><ext>,
-    mirroring the layout the tools' own batch runners produce."""
+    mirroring the layout the tools' own batch runners produce. Existing files
+    are never overwritten — see unique_path."""
     src = Path(src_file)
     try:
         rel = src.resolve().relative_to(Path(in_dir).resolve())
     except Exception:
         rel = Path(src.name)
     out_name = f"{prefix}{rel.stem}{suffix}{rel.suffix}"
-    return Path(out_dir) / rel.parent / out_name
+    return unique_path(Path(out_dir) / rel.parent / out_name)
 
 
 def single_out_path(out_dir, src_file, prefix, suffix):
+    """Output path for a single-file run. Existing files are never
+    overwritten — see unique_path."""
     src = Path(src_file)
-    return Path(out_dir) / f"{prefix}{src.stem}{suffix}{src.suffix}"
+    return unique_path(Path(out_dir) / f"{prefix}{src.stem}{suffix}{src.suffix}")
 
 
 def run_batch(job, in_dir, out_dir, prefix, suffix, per_file):
