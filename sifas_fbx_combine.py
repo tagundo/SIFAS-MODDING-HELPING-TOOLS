@@ -121,6 +121,7 @@ _TR = {
   "all meshes": "모든 메시",
   "custom names…": "이름 직접 입력…",
   "Custom names (comma):": "메시 이름 (쉼표 구분):",
+  "Scan meshes": "메시 스캔",
   "Donor name suffix:": "도너 이름 접미사:",
   "Merge rim map too": "Rim맵도 병합",
   "Generate mipmaps": "밉맵 생성",
@@ -150,6 +151,7 @@ _TR = {
   "all meshes": "全メッシュ",
   "custom names…": "名前を直接入力…",
   "Custom names (comma):": "メッシュ名 (カンマ区切り):",
+  "Scan meshes": "メッシュをスキャン",
   "Donor name suffix:": "ドナー名の接尾辞:",
   "Merge rim map too": "リムマップも統合",
   "Generate mipmaps": "ミップマップ生成",
@@ -276,6 +278,23 @@ class _Rec:
         self.mesh = mesh; self.name = name; self.bones = bones
         self.mat_name = mat_name; self.main_pid = main_pid
         self.rim_pid = rim_pid; self.is_body = is_body
+
+def scan_model(path, log=print):
+    """List every skinned mesh in a bundle — name, verts, bones, texture and
+    whether it sits on the BODY material — so the user knows exactly what to
+    type into --base-meshes / --donor-meshes (or the tools' custom-name box)."""
+    F = _load_engine()
+    side = _Side(F, path, "scan")
+    log("[scan] %s" % os.path.basename(path))
+    for r in side.smrs:
+        vc = r.mesh.get("m_VertexData", {}).get("m_VertexCount", 0)
+        body = bool(side.body.main_pid) and r.main_pid == side.body.main_pid
+        log("  %s %-30s %6d verts  %3d bones  tex=%s"
+            % ("[body]" if body else "      ", "'%s'" % r.name, vc, len(r.bones),
+               side.tex_name(r.main_pid) or "-"))
+    log("  -> 'body' = the [body] meshes · 'all' = every mesh · or type "
+        "comma-separated names from the list above")
+    return [r.name for r in side.smrs]
 
 def _select_meshes(arg, side):
     """'body' -> meshes sharing the body material's _MainTex; 'all' -> every
@@ -741,9 +760,13 @@ def main_cli(argv):
                     "an automatic _MainTex + _RimlightTex atlas.",
         epilog="after Blender:  python3 sifas_fbx.py import --fbx edited.fbx "
                "--bundle <out>_atlas.unity --out final.unity")
-    p.add_argument("--base", required=True,
+    p.add_argument("--scan", metavar="BUNDLE",
+                   help="just list a bundle's meshes (names / verts / bones / "
+                        "textures) and exit — use it to fill --base-meshes / "
+                        "--donor-meshes")
+    p.add_argument("--base",
                    help="base model bundle (keeps its skeleton; re-import target)")
-    p.add_argument("--donor", required=True,
+    p.add_argument("--donor",
                    help="donor model bundle (its meshes are added with a suffix)")
     p.add_argument("--out", help="output FBX (default: <base>_combined.fbx)")
     p.add_argument("--texdir", default=None,
@@ -768,6 +791,11 @@ def main_cli(argv):
                         "nearest ancestor bone the base has")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
+    if a.scan:
+        scan_model(a.scan)
+        return
+    if not a.base or not a.donor:
+        p.error("--base and --donor are required (or use --scan BUNDLE)")
     out = a.out or (os.path.splitext(a.base)[0] + "_combined.fbx")
     combine_models(a.base, a.donor, out, texdir=a.texdir,
                    out_bundle=a.out_bundle, skip_bundle=a.skip_bundle,
@@ -795,6 +823,10 @@ def main_menu():
     except Exception:
         key = "body"
     if key == "custom":
+        try:
+            scan_model(donor)
+        except Exception as e:
+            print(_tr("ERROR: %s") % e)
         key = input(_tr("Custom names (comma):") + " ").strip() or "body"
     combine_models(base, donor, out, donor_meshes=key)
 
@@ -844,6 +876,20 @@ def main_gui():
     donor_custom = ttk.Entry(selrow, width=22); donor_custom.pack(side="left", padx=2)
     ttk.Label(selrow, text=_tr("Donor name suffix:")).pack(side="left", padx=(10, 0))
     suffix_e = ttk.Entry(selrow, width=5); suffix_e.insert(0, "_D"); suffix_e.pack(side="left")
+
+    def scan_click():
+        base, donor = base_e.get().strip(), donor_e.get().strip()
+        if not base and not donor:
+            q.put(_tr("Pick a base and a donor first.")); return
+        def sw():
+            try:
+                for pth in (base, donor):
+                    if pth:
+                        scan_model(pth, log=put)
+            except BaseException as e:
+                put(_tr("ERROR: %s") % e)
+        threading.Thread(target=sw, daemon=True).start()
+    ttk.Button(selrow, text=_tr("Scan meshes"), command=scan_click).pack(side="left", padx=(10, 0))
 
     rim_var = tk.BooleanVar(value=True)
     mip_var = tk.BooleanVar(value=True)

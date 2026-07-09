@@ -108,6 +108,7 @@ _TR = {
   "all meshes": "모든 메시",
   "custom names…": "이름 직접 입력…",
   "Custom names (comma):": "메시 이름 (쉼표 구분):",
+  "Scan meshes": "메시 스캔",
   "Generate mipmaps": "밉맵 생성",
   "Dry run (no write)": "미리보기만 (저장 안 함)",
   "Run": "실행",
@@ -130,6 +131,7 @@ _TR = {
   "all meshes": "全メッシュ",
   "custom names…": "名前を直接入力…",
   "Custom names (comma):": "メッシュ名 (カンマ区切り):",
+  "Scan meshes": "メッシュをスキャン",
   "Generate mipmaps": "ミップマップ生成",
   "Dry run (no write)": "ドライラン (保存しない)",
   "Run": "実行",
@@ -257,6 +259,12 @@ def _subset_mesh(F, mesh, keep_tris, uv_fn, log, name):
     mesh["m_SubMeshes"] = [sm]
     return new_vc, len(new_tris) if len(keep_tris) else 0
 
+def scan_model(in_path, log=print):
+    """List the bundle's skinned meshes (name / verts / bones / texture, with
+    the body-material ones marked) — what to type into the custom-names box."""
+    _F, CB = _load_engine()
+    return CB.scan_model(in_path, log)
+
 # --------------------------------------------------------------------------- #
 #  Core split                                                                  #
 # --------------------------------------------------------------------------- #
@@ -316,8 +324,11 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
             "centre's cell; their texture may look stretched there" % crossing)
 
     # ---- resolve the gutter (auto-detect from where the UVs stop) ---------- #
+    # Window note: a 4 px gutter puts the UV edge at 99.61% of the cell; UVs of
+    # an UN-guttered mesh often stop at 99.8-100%. The upper bound 0.997 keeps
+    # those from being mistaken for a tiny gutter (>=3 px is still detected).
     def _detect(max_frac):
-        if 0.985 <= max_frac <= 0.9985:
+        if 0.985 <= max_frac <= 0.997:
             return int(round((1.0 - max_frac) * NOMINAL_W / 2.0))
         return 0
     if gutter_px in (None, "", "auto"):
@@ -328,7 +339,7 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
     else:
         gu_px = gv_px = int(gutter_px)
         log("[info] gutter forced to %d px" % gu_px)
-        if gu_px == 0 and 0.985 <= max(max_frac_u, max_frac_v) <= 0.9985:
+        if gu_px == 0 and 0.985 <= max(max_frac_u, max_frac_v) <= 0.997:
             hint = _detect(max(max_frac_u, max_frac_v))
             log("[hint] the UVs stop at %.2f%% of each cell — this looks like an "
                 "atlas made with a %d px gutter (lower_body_swap / "
@@ -417,7 +428,10 @@ def main_cli(argv):
                "lower_body_swap / sifas_fbx_combine)   ·   --grid 2x2 for a "
                "four-part atlas")
     p.add_argument("--in", dest="infile", required=True, help="merged bundle to split")
-    p.add_argument("--grid", required=True,
+    p.add_argument("--scan", action="store_true",
+                   help="just list the bundle's meshes (names / verts / bones / "
+                        "textures) and exit — use it to fill --meshes")
+    p.add_argument("--grid",
                    help="atlas grid: columns x rows, e.g. 2x1 (left|right), "
                         "1x2 (top/bottom), 2x2")
     p.add_argument("--out", default=None,
@@ -434,6 +448,11 @@ def main_cli(argv):
                    help="no mipmaps in the injected cell textures")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
+    if a.scan:
+        scan_model(a.infile)
+        return
+    if not a.grid:
+        p.error("--grid is required (or use --scan to list the meshes)")
     gut = a.gutter if str(a.gutter).strip().lower() == "auto" else int(a.gutter)
     split_model(a.infile, a.grid, out_dir=a.out, gutter_px=gut,
                 meshes=a.meshes, mipmaps=not a.no_mipmaps, dry_run=a.dry_run)
@@ -490,6 +509,18 @@ def main_gui():
                             values=[_tr(lbl) for _k, lbl in MESH_OPTS])
     mesh_box.current(0); mesh_box.pack(side="left", padx=4)
     mesh_custom = ttk.Entry(mrow, width=22); mesh_custom.pack(side="left", padx=2)
+
+    def scan_click():
+        src = in_e.get().strip()
+        if not src:
+            q.put(_tr("Pick a merged bundle first.")); return
+        def sw():
+            try:
+                scan_model(src, log=put)
+            except BaseException as e:
+                put(_tr("ERROR: %s") % e)
+        threading.Thread(target=sw, daemon=True).start()
+    ttk.Button(mrow, text=_tr("Scan meshes"), command=scan_click).pack(side="left", padx=(10, 0))
 
     mip_var = tk.BooleanVar(value=True)
     dry_var = tk.BooleanVar(value=False)
