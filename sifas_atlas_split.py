@@ -21,14 +21,15 @@ Grid = COLUMNS x ROWS of the texture as you see it in an image editor:
 "2x2" = four quadrants. Cells that contain no triangles are skipped.
 
 Gutter: lower_body_swap.py and sifas_fbx_combine.py leave a small safety gap
-(default 4 px of a nominal 2048-wide atlas) between the halves. Pass the SAME
---gutter value to invert their mapping exactly (UVs come back to a full 0..1
-and the cell texture is the exact content rectangle). The default --gutter 0
-treats the atlas as a plain even grid: that is always safe for any atlas
+(4 px of a nominal 2048-wide atlas) between the halves. By default the tool
+looks at where the UVs stop inside each cell and AUTO-DETECTS that gap, so
+their merges invert exactly (UVs come back to a full 0..1 and the cell
+texture is the exact content rectangle). Pass --gutter N to force a value:
+0 treats the atlas as a plain even grid — always safe for any atlas
 (sampling stays pixel-identical), the recovered UVs just stop ~0.4% short of
-the edge. The tool prints a hint when the UVs look like a gutter atlas.
+the edge.
 
-  python3 sifas_atlas_split.py --in merged.unity --grid 2x1 --gutter 4
+  python3 sifas_atlas_split.py --in merged.unity --grid 2x1
 
 Runs as a window (tkinter), a text menu, or a command line. English / 한국어 /
 日本語 (see SIFAS_LANG). Needs sifas_fbx.py and sifas_fbx_combine.py in the
@@ -36,7 +37,7 @@ same folder. Verified on Unity 2018.4 uncompressed SIFAS bundles.
 
   pip install UnityPy Pillow numpy
 """
-import os, re, sys, json, math, argparse, traceback
+import os, re, sys, json, math, time, argparse, traceback
 
 # --------------------------------------------------------------------------- #
 #  engines: sifas_fbx (vertex codec) + sifas_fbx_combine (model reader)        #
@@ -259,29 +260,29 @@ def _subset_mesh(F, mesh, keep_tris, uv_fn, log, name):
 # --------------------------------------------------------------------------- #
 #  Core split                                                                  #
 # --------------------------------------------------------------------------- #
-def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
+def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
                 mipmaps=True, dry_run=False, log=print):
+    t0 = time.time()
+    log("[info] loading engine (a first run may auto-install numpy/UnityPy)…")
     F, CB = _load_engine()
     np = F.np
     from UnityPy.enums import TextureFormat
 
     C, R = parse_grid(grid) if isinstance(grid, str) else grid
-    g = gutter_px / NOMINAL_W
-    ucw, ustart = _axis(C, g)
-    vcw, vstart = _axis(R, g)
     names = part_names(C, R)
     if out_dir is None:
         out_dir = os.path.splitext(in_path)[0] + "_split"
 
     # ---- pass 1: read the merged model, assign every triangle to a cell ---- #
+    log("[info] reading %s…" % os.path.basename(in_path))
     side = CB._Side(F, in_path, "merged")
     sel = CB._select_meshes(meshes, side)
-    log("[info] %s: splitting %s into a %dx%d grid (gutter %d px)"
-        % (os.path.basename(in_path), ", ".join(r.name for r in sel), C, R, gutter_px))
+    log("[info] splitting %s into a %dx%d grid"
+        % (", ".join(r.name for r in sel), C, R))
 
     keep = {}          # mesh path_id -> {(col, imgrow): tris array}
     counts = {}        # (col, imgrow) -> total tris
-    max_frac = 0.0
+    max_frac_u = max_frac_v = 0.0
     crossing = 0
     for rec in sel:
         uv, tris = _read_mesh_arrays(F, rec.mesh)
@@ -298,7 +299,12 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
             fr = uv[:, 0] * C - np.floor(uv[:, 0] * C)
             fr = fr[(uv[:, 0] > 1e-6) & (uv[:, 0] < 1 - 1e-6)]
             if len(fr):
-                max_frac = max(max_frac, float(fr.max()))
+                max_frac_u = max(max_frac_u, float(fr.max()))
+        if R > 1:
+            fr = uv[:, 1] * R - np.floor(uv[:, 1] * R)
+            fr = fr[(uv[:, 1] > 1e-6) & (uv[:, 1] < 1 - 1e-6)]
+            if len(fr):
+                max_frac_v = max(max_frac_v, float(fr.max()))
         d = keep.setdefault(rec.smr.path_id, {})
         for j in range(R):
             for i in range(C):
@@ -308,11 +314,29 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
     if crossing:
         log("[warn] %d triangle(s) span more than one cell — each goes to its "
             "centre's cell; their texture may look stretched there" % crossing)
-    if gutter_px == 0 and 0.985 <= max_frac <= 0.9985:
-        hint = int(round((1.0 - max_frac) * NOMINAL_W / 2.0))
-        log("[hint] the UVs stop at %.2f%% of each cell — this looks like an atlas "
-            "made with a %d px gutter (lower_body_swap / sifas_fbx_combine). "
-            "Re-run with --gutter %d to recover exact 0..1 UVs." % (max_frac * 100, hint, hint))
+
+    # ---- resolve the gutter (auto-detect from where the UVs stop) ---------- #
+    def _detect(max_frac):
+        if 0.985 <= max_frac <= 0.9985:
+            return int(round((1.0 - max_frac) * NOMINAL_W / 2.0))
+        return 0
+    if gutter_px in (None, "", "auto"):
+        gu_px, gv_px = _detect(max_frac_u), _detect(max_frac_v)
+        log("[auto] gutter detected: %d px%s"
+            % (gu_px, (" (u) / %d px (v)" % gv_px) if R > 1 and C > 1 else
+               ("" if C > 1 else " (v)")))
+    else:
+        gu_px = gv_px = int(gutter_px)
+        log("[info] gutter forced to %d px" % gu_px)
+        if gu_px == 0 and 0.985 <= max(max_frac_u, max_frac_v) <= 0.9985:
+            hint = _detect(max(max_frac_u, max_frac_v))
+            log("[hint] the UVs stop at %.2f%% of each cell — this looks like an "
+                "atlas made with a %d px gutter (lower_body_swap / "
+                "sifas_fbx_combine). Re-run with --gutter %d (or auto) to recover "
+                "exact 0..1 UVs." % (max(max_frac_u, max_frac_v) * 100, hint, hint))
+    gU, gV = gu_px / NOMINAL_W, gv_px / NOMINAL_W
+    ucw, ustart = _axis(C, gU)
+    vcw, vstart = _axis(R, gV)
 
     for (i, j), n in sorted(counts.items(), key=lambda kv_: (kv_[0][1], kv_[0][0])):
         log("  cell %-11s: %d tris" % (names[(i, j)], n))
@@ -330,7 +354,7 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
     # ---- cell texture crops (from pass-1 images) --------------------------- #
     def cell_image(img, i, j):
         W, H = img.width, img.height
-        if g > 0:
+        if gU > 0 or gV > 0:
             u0 = ustart(i); v0 = vstart(R - 1 - j)
             x0 = int(round(u0 * W)); x1 = int(round((u0 + ucw) * W))
             y0 = int(round((1.0 - v0 - vcw) * H)); y1 = int(round((1.0 - v0) * H))
@@ -338,6 +362,7 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
         return img.crop((i * W // C, j * H // R, (i + 1) * W // C, (j + 1) * H // R))
 
     tex_pids = [p for p in (side.body.main_pid, side.body.rim_pid) if p]
+    log("[info] decoding %d texture(s)…" % len(tex_pids))
     tex_imgs = {p: side.tex_image(p) for p in tex_pids}
     tex_names = {p: side.tex_name(p) for p in tex_pids}
 
@@ -351,6 +376,7 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
     outs = []
     for (i, j) in sorted(live, key=lambda c: (c[1], c[0])):
         part = names[(i, j)]
+        log("[info] writing part '%s'…" % part)
         # fresh load per cell: same battle-tested mutate-once-save-once flow
         # as the other tools
         cell = CB._Side(F, in_path, part)
@@ -377,7 +403,7 @@ def split_model(in_path, grid, out_dir=None, gutter_px=0, meshes="body",
             f.write(cell.env.file.save(packer="original"))
         log(_tr("Saved: %s") % out_path)
         outs.append(out_path)
-    log("[done] %d part(s) -> %s" % (len(outs), out_dir))
+    log("[done] %d part(s) in %.1fs -> %s" % (len(outs), time.time() - t0, out_dir))
     return outs
 
 # --------------------------------------------------------------------------- #
@@ -396,10 +422,11 @@ def main_cli(argv):
                         "1x2 (top/bottom), 2x2")
     p.add_argument("--out", default=None,
                    help="output folder (default: <input>_split)")
-    p.add_argument("--gutter", type=int, default=0,
-                   help="gutter px (nominal 2048-wide) the atlas was built with; "
-                        "use 4 to exactly invert lower_body_swap / "
-                        "sifas_fbx_combine, 0 (default) for a plain even grid")
+    p.add_argument("--gutter", default="auto",
+                   help="gutter px (nominal 2048-wide) the atlas was built with. "
+                        "Default 'auto' detects it from the UVs (4 for "
+                        "lower_body_swap / sifas_fbx_combine merges); 0 = plain "
+                        "even grid")
     p.add_argument("--meshes", default="body", metavar="body|all|A,B",
                    help="which meshes to split (default body: every mesh on "
                         "the body material)")
@@ -407,7 +434,8 @@ def main_cli(argv):
                    help="no mipmaps in the injected cell textures")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
-    split_model(a.infile, a.grid, out_dir=a.out, gutter_px=a.gutter,
+    gut = a.gutter if str(a.gutter).strip().lower() == "auto" else int(a.gutter)
+    split_model(a.infile, a.grid, out_dir=a.out, gutter_px=gut,
                 meshes=a.meshes, mipmaps=not a.no_mipmaps, dry_run=a.dry_run)
 
 # --------------------------------------------------------------------------- #
@@ -417,8 +445,8 @@ def main_menu():
     print("=== %s ===" % _tr("SIFAS Atlas Split"))
     src = input(_tr("Merged bundle:") + " ").strip()
     grid = input(_tr("Grid (columns x rows):") + " [2x1] ").strip() or "2x1"
-    gut = input(_tr("Gutter px (0=plain grid):") + " [4] ").strip()
-    gut = int(gut) if gut else 4
+    gut = input(_tr("Gutter px (0=plain grid):") + " [auto] ").strip().lower()
+    gut = "auto" if gut in ("", "auto") else int(gut)
     out = input(_tr("Output folder (blank=auto):") + " ").strip() or None
     split_model(src, grid, out_dir=out, gutter_px=gut)
 
@@ -453,7 +481,7 @@ def main_gui():
     grid_box = ttk.Combobox(grow, width=8, values=["2x1", "1x2", "2x2", "3x1", "2x3"])
     grid_box.set("2x1"); grid_box.pack(side="left", padx=4)
     ttk.Label(grow, text=_tr("Gutter px (0=plain grid):")).pack(side="left", padx=(10, 0))
-    gut_e = ttk.Entry(grow, width=4); gut_e.insert(0, "4"); gut_e.pack(side="left", padx=2)
+    gut_e = ttk.Entry(grow, width=5); gut_e.insert(0, "auto"); gut_e.pack(side="left", padx=2)
 
     mrow = ttk.Frame(root); mrow.grid(row=3, column=1, columnspan=2, sticky="w")
     MESH_OPTS = [("body", "body material only"), ("all", "all meshes"), ("custom", "custom names…")]
@@ -479,16 +507,18 @@ def main_gui():
             key = MESH_OPTS[mesh_box.current()][0]
             if key == "custom":
                 key = mesh_custom.get().strip() or "body"
+            gut = gut_e.get().strip().lower()
+            gut = "auto" if gut in ("", "auto") else int(gut)
             put(_tr("Working…"))
             split_model(src, grid_box.get().strip() or "2x1",
                         out_dir=out_e.get().strip() or None,
-                        gutter_px=int(gut_e.get().strip() or "0"),
+                        gutter_px=gut,
                         meshes=key, mipmaps=mip_var.get(),
                         dry_run=dry_var.get(), log=put)
             put(_tr("Done."))
-        except Exception as e:
-            put(_tr("ERROR: %s") % e)
-            put(traceback.format_exc())
+        except BaseException as e:            # incl. SystemExit from _load_engine —
+            put(_tr("ERROR: %s") % e)         # a silent thread death looked like an
+            put(traceback.format_exc())       # endless "Working…"
 
     def run():
         threading.Thread(target=work, daemon=True).start()

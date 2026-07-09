@@ -49,7 +49,7 @@ verified FBX writer). Verified on Unity 2018.4 uncompressed SIFAS bundles.
 
   pip install UnityPy Pillow numpy
 """
-import os, sys, json, math, argparse, traceback
+import os, sys, json, math, time, argparse, traceback
 
 # --------------------------------------------------------------------------- #
 #  sifas_fbx.py is the FBX engine (writer + vertex codec); require it nearby   #
@@ -407,6 +407,8 @@ def combine_models(base_path, donor_path, out_fbx,
                    base_meshes="all", donor_meshes="body", suffix="_D",
                    gutter_px=4, merge_rim=True, mipmaps=True,
                    reskin_missing=False, dry_run=False, log=print):
+    t0 = time.time()
+    log("[info] loading engine (a first run may auto-install numpy/UnityPy)…")
     F = _load_engine()
     np = F.np
     from PIL import Image
@@ -418,7 +420,9 @@ def combine_models(base_path, donor_path, out_fbx,
     if out_bundle is None and not skip_bundle:
         out_bundle = stem + "_atlas.unity"
 
+    log("[info] reading base %s…" % os.path.basename(base_path))
     base = _Side(F, base_path, "base")
+    log("[info] reading donor %s…" % os.path.basename(donor_path))
     donor = _Side(F, donor_path, "donor")
 
     base_sel = _select_meshes(base_meshes, base)
@@ -439,6 +443,7 @@ def combine_models(base_path, donor_path, out_fbx,
         raise ValueError("base body material has no _MainTex — cannot build an atlas")
     if not donor.body.main_pid:
         raise ValueError("donor body material has no _MainTex — cannot build an atlas")
+    log("[info] decoding textures / building atlases…")
     g, uL, uR = _uv_halves(gutter_px)
     atlas_main = _combine_images(base.tex_image(base.body.main_pid),
                                  donor.tex_image(donor.body.main_pid), g)
@@ -525,6 +530,7 @@ def combine_models(base_path, donor_path, out_fbx,
         return None
 
     # ---- FBX assembly (same document layout as sifas_fbx.export) ----------- #
+    log("[info] writing combined FBX…")
     FNode, C = F.FNode, "C"
     bone_model_id = {n: F._nid() for n in all_bones}
     MIRROR = F.MIRROR
@@ -663,6 +669,7 @@ def combine_models(base_path, donor_path, out_fbx,
 
     # ---- prepared re-import bundle (base + atlas textures + left-half UVs) - #
     if out_bundle:
+        log("[info] writing atlas bundle…")
         for pid, img in ((base.body.main_pid, atlas_main), (base.body.rim_pid, atlas_rim)):
             if not pid or img is None:
                 continue
@@ -677,6 +684,7 @@ def combine_models(base_path, donor_path, out_fbx,
 
     _write_howto(stem, out_fbx, texdir, out_bundle, main_name, rim_name,
                  suffix, all_missing, log)
+    log("[done] in %.1fs" % (time.time() - t0))
     return out_fbx
 
 def _write_howto(stem, out_fbx, texdir, out_bundle, main_name, rim_name,
@@ -872,9 +880,9 @@ def main_gui():
                            reskin_missing=reskin_var.get(),
                            dry_run=dry_var.get(), log=put)
             put(_tr("Done."))
-        except Exception as e:
-            put(_tr("ERROR: %s") % e)
-            put(traceback.format_exc())
+        except BaseException as e:           # incl. SystemExit from _load_engine —
+            put(_tr("ERROR: %s") % e)        # a silent thread death looked like an
+            put(traceback.format_exc())      # endless "Working…"
 
     def run():
         threading.Thread(target=work, daemon=True).start()
