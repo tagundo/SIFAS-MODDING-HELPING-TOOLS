@@ -407,11 +407,17 @@ def _geo_and_skin(mesh, smr_tt, bones, world, bone_model_id, geo_id, name):
             ilist = [int(v) for v in vids]
             cid = _nid(); cl_ids[n] = cid
             TL = MIRROR @ world.get(n, np.eye(4)) @ MIRROR
+            # Cluster "Transform" must be inverse(TransformLink) @ mesh_global_at_bind
+            # (FBX SDK convention). Our vertices are written in scene space, i.e.
+            # mesh_global = identity, so Transform = inverse(TransformLink). Blender
+            # reconstructs the mesh's bind matrix as TransformLink @ Transform; the
+            # identity matrix the old code wrote here made every skinned mesh import
+            # offset by one bone's world matrix (Body floated at the Hips height).
             clusters.append(FNode("Deformer", [('L', cid), ('S', _name_class(n, "SubDeformer")), ('S', "Cluster")]).add(
                 FNode("Version", [('I', 100)]),
                 FNode("Indexes", [('i', ilist)]),
                 FNode("Weights", [('d', wlist)]),
-                FNode("Transform", [('d', np.eye(4).T.reshape(-1))]),
+                FNode("Transform", [('d', np.linalg.inv(TL).T.reshape(-1))]),
                 FNode("TransformLink", [('d', TL.T.reshape(-1))])))
     return geo, skin, clusters, cl_ids, has_skin
 

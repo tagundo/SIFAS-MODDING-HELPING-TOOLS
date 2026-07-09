@@ -86,6 +86,8 @@ pickers don't need this layout.
 
 | Tool | What it does | Runs as |
 |------|--------------|---------|
+| `sifas_fbx.py` | Bundle ↔ FBX round-trip: export a model to FBX (+textures), edit it in Blender keeping the armature, import it back into the bundle. Needs `numpy`. | window · CLI · web |
+| `sifas_fbx_combine.py` | Combines **two models into one Blender-ready FBX** — one shared skeleton (donor meshes get a `_D` suffix) — and auto-builds the merged **texture + rim atlas**. Also writes the atlas bundle you re-import the edited FBX into with `sifas_fbx.py`. Like `lower_body_swap.py`, but you do the cutting/joining in Blender yourself. Needs `numpy`, `Pillow` and `sifas_fbx.py` in the same folder. | window · menu · CLI |
 | `sifas_mesh_baker.py` | Bakes a bone change (scale/rotate/move) permanently into the mesh — like *Apply Armature* in Blender. Includes thigh presets (slim ↔ thick). Needs `numpy`. | window · menu · CLI |
 | `fix_sifas_bundle_export.py` | Fixes the bug where an exported SIFAS body sinks into the floor in Blender, so any exporter produces a correct FBX (in-game look unchanged). Needs `numpy`. | CLI: `python3 fix_sifas_bundle_export.py --in model.unity --out fixed.unity` |
 
@@ -229,6 +231,8 @@ Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUS
 
 | 도구 | 하는 일 | 실행 방식 |
 |------|---------|-----------|
+| `sifas_fbx.py` | 번들 ↔ FBX 왕복: 모델을 FBX(+텍스처)로 내보내고, Blender에서 아마추어를 유지한 채 편집한 뒤 다시 번들로 되돌립니다. `numpy` 필요. | 창 · 명령어 · 웹 |
+| `sifas_fbx_combine.py` | **두 모델을 하나의 Blender용 FBX로 결합** — 스켈레톤 하나를 공유(도너 메시는 `_D` 접미사)하고 **텍스처+Rim 아틀라스**를 자동 생성합니다. 편집한 FBX를 `sifas_fbx.py`로 되넣을 아틀라스 번들도 함께 저장합니다. `lower_body_swap.py`와 비슷하지만, 잘라내기/합치기를 Blender에서 직접 하는 방식입니다. `numpy`, `Pillow`, 같은 폴더의 `sifas_fbx.py` 필요. | 창 · 메뉴 · 명령어 |
 | `sifas_mesh_baker.py` | 본 변형(스케일/회전/이동)을 메시에 영구히 굽습니다 — Blender의 *Apply Armature*와 같은 개념. 허벅지 프리셋(slim ↔ thick) 포함. `numpy` 필요. | 창 · 메뉴 · 명령어 |
 | `fix_sifas_bundle_export.py` | 내보낸 SIFAS 몸이 Blender에서 바닥에 파묻히는 버그를 고쳐, 어떤 도구로도 올바른 FBX가 나오게 합니다(게임 내 모습은 그대로). `numpy` 필요. | 명령어: `python3 fix_sifas_bundle_export.py --in model.unity --out fixed.unity` |
 
