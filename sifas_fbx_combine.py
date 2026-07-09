@@ -109,6 +109,7 @@ _LANG = _LangStore()
 _TR = {
  "ko": {
   "SIFAS FBX Combine": "SIFAS FBX 결합",
+  "Browse…": "찾아보기…",
   "Base model (re-import target):": "베이스 모델 (재임포트 대상):",
   "Donor model (parts to bring):": "도너 모델 (가져올 부분):",
   "Output FBX:": "출력 FBX:",
@@ -137,6 +138,7 @@ _TR = {
  },
  "ja": {
   "SIFAS FBX Combine": "SIFAS FBX 結合",
+  "Browse…": "参照…",
   "Base model (re-import target):": "ベースモデル (再インポート先):",
   "Donor model (parts to bring):": "ドナーモデル (持ち込むパーツ):",
   "Output FBX:": "出力FBX:",
@@ -820,10 +822,10 @@ def main_gui():
             path = filedialog.askopenfilename()
         if path:
             entry.delete(0, "end"); entry.insert(0, path)
-    ttk.Button(root, text="Browse…", command=lambda: browse(base_e)).grid(row=0, column=2, padx=4)
-    ttk.Button(root, text="Browse…", command=lambda: browse(donor_e)).grid(row=1, column=2, padx=4)
-    ttk.Button(root, text="Browse…", command=lambda: browse(out_e, True, True)).grid(row=2, column=2, padx=4)
-    ttk.Button(root, text="Browse…", command=lambda: browse(bnd_e, True)).grid(row=4, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(base_e)).grid(row=0, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(donor_e)).grid(row=1, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(out_e, True, True)).grid(row=2, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(bnd_e, True)).grid(row=4, column=2, padx=4)
 
     MESH_OPTS = [("body", "body material only"), ("all", "all meshes"), ("custom", "custom names…")]
     selrow = ttk.Frame(root); selrow.grid(row=5, column=1, columnspan=2, sticky="w")
@@ -844,10 +846,10 @@ def main_gui():
     ttk.Checkbutton(root, text=_tr("Generate mipmaps"), variable=mip_var).grid(row=7, column=1, sticky="w")
     ttk.Checkbutton(root, text=_tr("Re-skin weights on bones missing from base"),
                     variable=reskin_var).grid(row=8, column=1, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Skip atlas bundle"), variable=skipb_var).grid(row=6, column=2, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Dry run (no write)"), variable=dry_var).grid(row=7, column=2, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Skip atlas bundle"), variable=skipb_var).grid(row=9, column=1, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Dry run (no write)"), variable=dry_var).grid(row=10, column=1, sticky="w")
 
-    log = tk.Text(root, height=14, width=76); log.grid(row=10, column=0, columnspan=3, padx=6, pady=6)
+    log = tk.Text(root, height=14, width=76); log.grid(row=12, column=0, columnspan=3, padx=6, pady=6)
     def put(msg): q.put(str(msg))
 
     def work():
@@ -876,9 +878,9 @@ def main_gui():
 
     def run():
         threading.Thread(target=work, daemon=True).start()
-    ttk.Button(root, text=_tr("Run"), command=run).grid(row=9, column=1, pady=4)
+    ttk.Button(root, text=_tr("Run"), command=run).grid(row=11, column=1, pady=4)
 
-    ttk.Label(root, text=_tr("Language:")).grid(row=11, column=0, sticky="w", padx=6)
+    ttk.Label(root, text=_tr("Language:")).grid(row=13, column=0, sticky="w", padx=6)
     lang_var = tk.StringVar(value=dict(_LANG_NAMES)[_LANG.lang])
     def on_lang(_e=None):
         for code, name in _LANG_NAMES:
@@ -886,7 +888,7 @@ def main_gui():
                 _LANG.set(code)
         root.destroy(); main_gui()
     lb = ttk.Combobox(root, textvariable=lang_var, state="readonly",
-                      values=[n for _c, n in _LANG_NAMES]); lb.grid(row=11, column=1, sticky="w")
+                      values=[n for _c, n in _LANG_NAMES]); lb.grid(row=13, column=1, sticky="w")
     lb.bind("<<ComboboxSelected>>", on_lang)
 
     def pump():

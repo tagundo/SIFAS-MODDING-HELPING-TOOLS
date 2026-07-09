@@ -97,6 +97,7 @@ _LANG = _LangStore()
 _TR = {
  "ko": {
   "SIFAS Atlas Split": "SIFAS 아틀라스 분리",
+  "Browse…": "찾아보기…",
   "Merged bundle:": "병합된 번들:",
   "Grid (columns x rows):": "그리드 (가로 x 세로):",
   "Output folder (blank=auto):": "출력 폴더 (빈칸=자동):",
@@ -118,6 +119,7 @@ _TR = {
  },
  "ja": {
   "SIFAS Atlas Split": "SIFAS アトラス分離",
+  "Browse…": "参照…",
   "Merged bundle:": "結合済みバンドル:",
   "Grid (columns x rows):": "グリッド (横 x 縦):",
   "Output folder (blank=auto):": "出力フォルダ (空欄=自動):",
@@ -443,8 +445,8 @@ def main_gui():
         path = filedialog.askdirectory() if folder else filedialog.askopenfilename()
         if path:
             entry.delete(0, "end"); entry.insert(0, path)
-    ttk.Button(root, text="Browse…", command=lambda: browse(in_e)).grid(row=0, column=2, padx=4)
-    ttk.Button(root, text="Browse…", command=lambda: browse(out_e, True)).grid(row=1, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(in_e)).grid(row=0, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(out_e, True)).grid(row=1, column=2, padx=4)
 
     grow = ttk.Frame(root); grow.grid(row=2, column=1, columnspan=2, sticky="w")
     ttk.Label(grow, text=_tr("Grid (columns x rows):")).pack(side="left")
