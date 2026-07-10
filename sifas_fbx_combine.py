@@ -1,58 +1,51 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sifas_fbx_combine.py — combine TWO SIFAS models into ONE Blender-ready FBX
-(with automatic texture + rim atlas)
+sifas_fbx_combine.py — merge TWO SIFAS models into ONE bundle
+(with automatic texture + rim atlas; optional Blender FBX)
 
 lower_body_swap.py grafts a donor's lower body onto a target automatically,
-inside the bundle. This tool does the SAME preparation — two models, one merged
-texture atlas (left half = base, right half = donor), UVs remapped — but instead
-of cutting the meshes itself it writes ONE COMBINED FBX and lets YOU do the
-cutting/joining in Blender. Use it when the automatic band cut isn't enough
-(kitbashing costume parts, custom seams, sculpt fixes...).
+with a band cut. This tool does the SAME preparation — two models, one merged
+texture atlas (left half = base, right half = donor), UVs remapped — but keeps
+BOTH models whole: the selected donor meshes are appended INTO the base
+bundle's body mesh (weights re-targeted to the base skeleton by bone NAME), so
+one run gives you a single game-ready bundle that contains both models.
 
 What one run produces
-    1. <out>.fbx        — both models in one file, sharing ONE skeleton
-                          (bones matched by name; donor-only bones are added).
-                          Donor meshes/materials are renamed with a suffix
-                          ("Body" -> "Body_D") so nothing collides.
-    2. <out>_tex/       — the merged _MainTex atlas (and _RimlightTex atlas)
-                          as PNG, plus the plain textures of every other
-                          included mesh, so the FBX opens textured in Blender.
-    3. <out>_atlas.unity — the BASE bundle with the atlas textures injected and
-                          its body UVs moved to the left half. This is the
-                          bundle you re-import the edited FBX into. (It is
-                          already valid in-game, it just wastes the right half
-                          until donor parts are imported.)
-
-Workflow
-    python3 sifas_fbx_combine.py --base A.unity --donor B.unity --out comb.fbx
-    -> open comb.fbx in Blender, delete/keep/join parts (donor pieces you keep
-       must end up in a mesh OBJECT whose name matches a base mesh, e.g. join
-       "Body_D" into "Body" with Ctrl+J), export as binary FBX
-    -> python3 sifas_fbx.py import --fbx edited.fbx --bundle comb_atlas.unity \
-                                   --out final.unity
+    1. <out>.unity      — the base bundle with the donor meshes merged into its
+                          body mesh and the _MainTex/_RimlightTex atlases
+                          injected. Valid in-game as-is; edit it further with
+                          the other tools, e.g.
+                            sifas_fbx.py export  -> Blender -> import   (edit)
+                            sifas_atlas_split.py --grid 2x1             (undo)
+    2. <out>_tex/       — the atlas PNGs (and other included meshes' textures).
+    3. <out>.fbx        — OPTIONAL (--fbx): both models as separate objects on
+                          one skeleton (donor meshes suffixed "_D") for manual
+                          kitbashing in Blender; re-import into <out>.unity.
 
 Because every SIFAS model of a character shares one skeleton and rest pose,
 donor meshes bind to the base skeleton by bone NAME. Donor bones that do not
-exist in the base bundle (e.g. another costume's skirt physics) are still put
-in the FBX so Blender shows correct weights — but the base bundle cannot
-receive weights for them at re-import. The tool prints exactly which bones
-those are; use --reskin-missing to re-target such weights onto the nearest
-ancestor bone the base does have (like lower_body_swap does), or keep them and
-re-weight in Blender, or add the bones to the base first with
-costume_transplant.py.
+exist in the base body renderer (e.g. another costume's skirt physics) are
+re-targeted onto their nearest ancestor bone the base does have — the tool
+prints exactly what moved where. (Use costume_transplant.py first if you want
+those bones truly added.)
+
+Crunch/compressed textures are decoded in an isolated child process — they
+crash the native decoder on macOS/Apple Silicon; on such Macs the tool also
+retries through Rosetta (x86_64) before giving up, and a rim that still cannot
+be decoded is replaced by flat black so the atlas stays consistent.
 
 Runs as a window (tkinter), a text menu, or a command line. English / 한국어 /
 日本語 (see SIFAS_LANG). Needs sifas_fbx.py in the same folder (it reuses its
-verified FBX writer). Verified on Unity 2018.4 uncompressed SIFAS bundles.
+verified FBX writer / vertex codec). Verified on Unity 2018.4 uncompressed
+SIFAS bundles.
 
   pip install UnityPy Pillow numpy
 """
 import os, sys, json, math, time, argparse, traceback
 
 # --------------------------------------------------------------------------- #
-#  sifas_fbx.py is the FBX engine (writer + vertex codec); require it nearby   #
+#  sifas_fbx.py is the engine (FBX writer + vertex codec); require it nearby   #
 # --------------------------------------------------------------------------- #
 def _load_engine():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -108,15 +101,13 @@ _LANG = _LangStore()
 
 _TR = {
  "ko": {
-  "SIFAS FBX Combine": "SIFAS FBX 결합",
+  "SIFAS FBX Combine": "SIFAS 모델 병합",
   "Browse…": "찾아보기…",
-  "Base model (re-import target):": "베이스 모델 (재임포트 대상):",
+  "Base model (keeps skeleton):": "베이스 모델 (스켈레톤 유지):",
   "Donor model (parts to bring):": "도너 모델 (가져올 부분):",
-  "Output FBX:": "출력 FBX:",
+  "Output bundle (merged):": "출력 번들 (병합 결과):",
   "Texture folder (blank=auto):": "텍스처 폴더 (빈칸=자동):",
-  "Atlas bundle out (blank=auto):": "아틀라스 번들 출력 (빈칸=자동):",
   "Donor meshes:": "도너 메시:",
-  "Base meshes:": "베이스 메시:",
   "body material only": "바디 재질만",
   "all meshes": "모든 메시",
   "custom names…": "이름 직접 입력…",
@@ -125,8 +116,7 @@ _TR = {
   "Donor name suffix:": "도너 이름 접미사:",
   "Merge rim map too": "Rim맵도 병합",
   "Generate mipmaps": "밉맵 생성",
-  "Re-skin weights on bones missing from base": "베이스에 없는 본의 가중치 재배치",
-  "Skip atlas bundle": "아틀라스 번들 생략",
+  "Also write a Blender FBX": "Blender용 FBX도 저장",
   "Dry run (no write)": "미리보기만 (저장 안 함)",
   "Run": "실행",
   "Language:": "언어:",
@@ -138,15 +128,13 @@ _TR = {
   "no skinned mesh found in %s": "%s 에서 스킨 메시를 찾지 못했습니다",
  },
  "ja": {
-  "SIFAS FBX Combine": "SIFAS FBX 結合",
+  "SIFAS FBX Combine": "SIFAS モデル結合",
   "Browse…": "参照…",
-  "Base model (re-import target):": "ベースモデル (再インポート先):",
+  "Base model (keeps skeleton):": "ベースモデル (スケルトン維持):",
   "Donor model (parts to bring):": "ドナーモデル (持ち込むパーツ):",
-  "Output FBX:": "出力FBX:",
+  "Output bundle (merged):": "出力バンドル (結合結果):",
   "Texture folder (blank=auto):": "テクスチャフォルダ (空欄=自動):",
-  "Atlas bundle out (blank=auto):": "アトラスバンドル出力 (空欄=自動):",
   "Donor meshes:": "ドナーメッシュ:",
-  "Base meshes:": "ベースメッシュ:",
   "body material only": "ボディ材質のみ",
   "all meshes": "全メッシュ",
   "custom names…": "名前を直接入力…",
@@ -155,8 +143,7 @@ _TR = {
   "Donor name suffix:": "ドナー名の接尾辞:",
   "Merge rim map too": "リムマップも統合",
   "Generate mipmaps": "ミップマップ生成",
-  "Re-skin weights on bones missing from base": "ベースに無いボーンのウェイトを再配置",
-  "Skip atlas bundle": "アトラスバンドルを省略",
+  "Also write a Blender FBX": "Blender用FBXも保存",
   "Dry run (no write)": "ドライラン (保存しない)",
   "Run": "実行",
   "Language:": "言語:",
@@ -270,6 +257,14 @@ class _Side:
         o = self.uid.get(pid)
         return o.read().m_Name if o else None
 
+    def tex_size(self, pid):
+        o = self.uid.get(pid)
+        if o is None:
+            return (512, 512)
+        d = o.read()
+        return (int(getattr(d, "m_Width", 512) or 512),
+                int(getattr(d, "m_Height", 512) or 512))
+
     def tex_image(self, pid):
         o = self.uid.get(pid)
         if o is None:
@@ -296,6 +291,16 @@ class _Side:
             # to the normal in-process decode below
         return d.image.convert("RGBA")
 
+class _Rec:
+    __slots__ = ("smr", "smr_tt", "mesh_obj", "mesh", "name", "bones",
+                 "mat_name", "main_pid", "rim_pid", "is_body")
+    def __init__(self, smr, smr_tt, mesh_obj, mesh, name, bones,
+                 mat_name, main_pid, rim_pid, is_body):
+        self.smr = smr; self.smr_tt = smr_tt; self.mesh_obj = mesh_obj
+        self.mesh = mesh; self.name = name; self.bones = bones
+        self.mat_name = mat_name; self.main_pid = main_pid
+        self.rim_pid = rim_pid; self.is_body = is_body
+
 # texture formats whose decode goes through texture2ddecoder's native library
 _NATIVE_DECODED = ("Crunched", "DXT", "BC4", "BC5", "BC6", "BC7",
                    "ETC", "EAC", "ASTC", "PVRTC", "ATC")
@@ -321,15 +326,19 @@ def _texfmt_name(d):
 def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
     """Decode one texture to PNG in a CHILD process so a native decoder crash
     only loses that texture instead of the whole tool. Returns (Image or None,
-    crashed) — crashed=True when the child died decoding (signal / timeout)."""
+    crashed) — crashed=True when the child died decoding (signal / timeout).
+    On macOS, a crashed child is retried once through Rosetta: python.org
+    Pythons are universal2 and the x86_64 texture2ddecoder build does not have
+    the arm64 crunch crash (the x86_64 wheels are installed once into the
+    shared config dir)."""
     import subprocess, tempfile
     from PIL import Image
     F = _load_engine()
+    child = [os.path.abspath(F.__file__), "__decode_tex", bundle_path, tex_name]
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "tex.png")
         try:
-            r = subprocess.run([sys.executable, os.path.abspath(F.__file__),
-                                "__decode_tex", bundle_path, tex_name, out],
+            r = subprocess.run([sys.executable] + child + [out],
                                capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, True
@@ -339,7 +348,48 @@ def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
             img = Image.open(out)
             img.load()
             return img, False
-        return None, r.returncode < 0
+        crashed = r.returncode < 0
+        if crashed and sys.platform == "darwin":
+            img = _decode_texture_rosetta(child, timeout)
+            if img is not None:
+                return img, False
+        return None, crashed
+
+def _decode_texture_rosetta(child_args, timeout):
+    """macOS fallback: run the decode child as x86_64 under Rosetta with an
+    x86_64 copy of the wheels (installed once). Returns Image or None."""
+    import subprocess, tempfile
+    from PIL import Image
+    pkgs = os.path.join(os.path.dirname(_config_path()), "x86_64_packages")
+    marker = os.path.join(pkgs, ".installed")
+    try:
+        if not os.path.exists(marker):
+            print("[info] one-time setup: installing x86_64 decode packages for "
+                  "Rosetta (this can take a minute)…")
+            os.makedirs(pkgs, exist_ok=True)
+            r = subprocess.run(["arch", "-x86_64", sys.executable, "-m", "pip",
+                                "install", "-q", "--target", pkgs,
+                                "UnityPy", "Pillow", "numpy"],
+                               capture_output=True, timeout=900)
+            if r.returncode != 0:
+                return None
+            with open(marker, "w") as f:
+                f.write("ok")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = pkgs + os.pathsep + env.get("PYTHONPATH", "")
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "tex.png")
+            r = subprocess.run(["arch", "-x86_64", sys.executable]
+                               + child_args + [out],
+                               capture_output=True, timeout=timeout, env=env)
+            if r.returncode == 0 and os.path.exists(out):
+                img = Image.open(out)
+                img.load()
+                print("[info] decoded '%s' via Rosetta (x86_64)" % child_args[-1])
+                return img
+    except Exception:
+        pass
+    return None
 
 def _mesh_ok(F, mesh):
     """(True, '') when the mesh's vertex data is plain, in-bundle and non-empty
@@ -357,16 +407,6 @@ def _mesh_ok(F, mesh):
     if len(bytes(mesh["m_VertexData"]["m_DataSize"])) < need:
         return False, "vertex data is external (m_StreamData) or compressed"
     return True, ""
-
-class _Rec:
-    __slots__ = ("smr", "smr_tt", "mesh_obj", "mesh", "name", "bones",
-                 "mat_name", "main_pid", "rim_pid", "is_body")
-    def __init__(self, smr, smr_tt, mesh_obj, mesh, name, bones,
-                 mat_name, main_pid, rim_pid, is_body):
-        self.smr = smr; self.smr_tt = smr_tt; self.mesh_obj = mesh_obj
-        self.mesh = mesh; self.name = name; self.bones = bones
-        self.mat_name = mat_name; self.main_pid = main_pid
-        self.rim_pid = rim_pid; self.is_body = is_body
 
 def scan_model(path, log=print):
     """List every skinned mesh in a bundle — name, verts, bones, texture and
@@ -444,58 +484,6 @@ def _missing_bone_report(F, rec, base_bone_names):
     used = set(F.np.unique(bi[on_missing]).tolist())
     return sorted(rec.bones[i] for i in used), full, part
 
-def _reskin_missing(F, rec, base_bone_names, donor_parent, log):
-    """Re-target every influence on a bone the base lacks onto its nearest
-    ancestor (following the donor hierarchy) that the base DOES have and that
-    is in this renderer's bone list. Weights are merged per vertex."""
-    vc, chans, stride, start, _ = F.stream_layout(rec.mesh)
-    if not chans[F.CH_BLENDWEIGHT].get("dimension", 0):
-        return 0
-    idx_of = {n: i for i, n in enumerate(rec.bones) if n}
-    repl = {}
-    for i, n in enumerate(rec.bones):
-        if n is None or n in base_bone_names:
-            continue
-        cur, hops = n, 0
-        while hops < 64:
-            cur = donor_parent.get(cur); hops += 1
-            if cur is None:
-                break
-            if cur in base_bone_names and cur in idx_of:
-                repl[i] = idx_of[cur]; break
-        if i not in repl:
-            repl[i] = idx_of.get("Hips", 0)
-    if not repl:
-        return 0
-    buf = bytearray(bytes(rec.mesh["m_VertexData"]["m_DataSize"]))
-    u8 = F.np.frombuffer(buf, F.np.uint8)
-    bw = F.read_attr(u8, chans, F.CH_BLENDWEIGHT, stride, start, vc)
-    bi = F.read_attr(u8, chans, F.CH_BLENDINDICES, stride, start, vc)
-    hit_rows = F.np.nonzero((F.np.isin(bi, list(repl)) & (bw > 0)).any(1))[0]
-    for v in hit_rows:
-        acc = {}
-        for k in range(bi.shape[1]):
-            w = float(bw[v, k])
-            if w <= 0:
-                continue
-            b = int(bi[v, k])
-            b = repl.get(b, b)
-            acc[b] = acc.get(b, 0.0) + w
-        items = sorted(acc.items(), key=lambda kv: -kv[1])[:4]
-        s = sum(w for _b, w in items) or 1.0
-        for k in range(4):
-            if k < len(items):
-                bi[v, k] = items[k][0]; bw[v, k] = items[k][1] / s
-            else:
-                bi[v, k] = 0; bw[v, k] = 0.0
-    F.write_attr(u8, bw, chans, F.CH_BLENDWEIGHT, stride, start, vc)
-    F.write_attr(u8, bi.astype(F.np.float64), chans, F.CH_BLENDINDICES, stride, start, vc)
-    rec.mesh["m_VertexData"]["m_DataSize"] = bytes(buf)
-    named = sorted({rec.bones[i] for i in repl if rec.bones[i]})
-    log("  re-skinned %d vert(s) of '%s' off %d missing bone(s): %s"
-        % (len(hit_rows), rec.name, len(named), ", ".join(named)))
-    return len(hit_rows)
-
 def _bone_closure(names, parent):
     out = set(names)
     changed = True
@@ -508,13 +496,149 @@ def _bone_closure(names, parent):
     return out
 
 # --------------------------------------------------------------------------- #
-#  Core: combine two models into one FBX (+ atlases + prepared bundle)         #
+#  Merge the donor meshes INTO the base body mesh (bundle output)              #
 # --------------------------------------------------------------------------- #
-def combine_models(base_path, donor_path, out_fbx,
-                   texdir=None, out_bundle=None, skip_bundle=False,
+def _merge_donor_into_base(F, base, donor, donor_sel, log):
+    """Append the selected donor meshes' geometry into the base bundle's body
+    mesh: verts converted channel-by-channel to the body's vertex layout,
+    weights re-targeted onto the body renderer's bones by NAME (donor-only
+    bones fall back to their nearest ancestor the base has), UVs already sit in
+    the right atlas half. Returns (added_verts, added_tris)."""
+    np = F.np
+    body = base.body
+    mesh = body.mesh
+    vcB, chans, stride, start, _ = F.stream_layout(mesh)
+    u8B = np.frombuffer(bytes(mesh["m_VertexData"]["m_DataSize"]), np.uint8)
+    name2idx = {n: i for i, n in enumerate(body.bones) if n}
+    hips = name2idx.get("Hips", 0)
+
+    active = [ci for ci, c in enumerate(chans) if c.get("dimension", 0)]
+    cols = {ci: [F.read_attr(u8B, chans, ci, stride, start, vcB)] for ci in active}
+    all_tris = [F.read_indices(mesh).reshape(-1, 3)]
+    offset = vcB
+    added_v = added_t = 0
+    retargeted = {}
+    for rec in donor_sel:
+        if not (donor.body.main_pid and rec.main_pid == donor.body.main_pid):
+            log("[warn] donor mesh '%s' is not on the donor body material — it "
+                "cannot share the atlas, so it is not merged" % rec.name)
+            continue
+        vcD, chD, stD, saD, _ = F.stream_layout(rec.mesh)
+        u8D = np.frombuffer(bytes(rec.mesh["m_VertexData"]["m_DataSize"]), np.uint8)
+        trisD = F.read_indices(rec.mesh).reshape(-1, 3)
+        if not len(trisD):
+            continue
+        used = np.unique(trisD)
+        remap = np.zeros(vcD, np.int64)
+        remap[used] = np.arange(len(used))
+        nU = len(used)
+        for ci in active:
+            if ci in (F.CH_BLENDWEIGHT, F.CH_BLENDINDICES):
+                continue
+            dimB = chans[ci]["dimension"]
+            dch = chD[ci] if ci < len(chD) else {"dimension": 0}
+            if dch.get("dimension", 0):
+                v = F.read_attr(u8D, chD, ci, stD, saD, vcD)[used]
+                if v.shape[1] < dimB:
+                    v = np.concatenate([v, np.zeros((nU, dimB - v.shape[1]))], 1)
+                else:
+                    v = v[:, :dimB]
+            else:
+                v = np.zeros((nU, dimB))
+                if ci == F.CH_COLOR:
+                    v[:] = 1.0
+            cols[ci].append(v)
+        if chans[F.CH_BLENDWEIGHT].get("dimension", 0):
+            if chD[F.CH_BLENDWEIGHT].get("dimension", 0):
+                bwD = F.read_attr(u8D, chD, F.CH_BLENDWEIGHT, stD, saD, vcD)[used]
+                biD = F.read_attr(u8D, chD, F.CH_BLENDINDICES, stD, saD, vcD)[used]
+            else:
+                bwD = np.zeros((nU, 4)); bwD[:, 0] = 1.0
+                biD = np.zeros((nU, 4), np.int64)
+            BW = np.zeros((nU, 4)); BI = np.zeros((nU, 4), np.int64)
+            def to_base(di):
+                n = rec.bones[di] if 0 <= di < len(rec.bones) else None
+                if n in name2idx:
+                    return name2idx[n]
+                cur, hops = n, 0
+                while cur is not None and hops < 64:
+                    cur = donor.parent.get(cur); hops += 1
+                    if cur in name2idx:
+                        if n:
+                            retargeted[n] = cur
+                        return name2idx[cur]
+                if n:
+                    retargeted[n] = "Hips"
+                return hips
+            for v in range(nU):
+                acc = {}
+                for k in range(bwD.shape[1]):
+                    w = float(bwD[v, k])
+                    if w <= 0:
+                        continue
+                    b = to_base(int(biD[v, k]))
+                    acc[b] = acc.get(b, 0.0) + w
+                items = sorted(acc.items(), key=lambda kv: -kv[1])[:4] or [(hips, 1.0)]
+                s = sum(w for _b, w in items)
+                for k, (b, w) in enumerate(items):
+                    BI[v, k] = b; BW[v, k] = w / s
+            cols[F.CH_BLENDWEIGHT].append(BW)
+            cols[F.CH_BLENDINDICES].append(BI)
+        all_tris.append(remap[trisD] + offset)
+        offset += nU; added_v += nU; added_t += len(trisD)
+        log("  merged donor '%s' into '%s': +%d verts, +%d tris"
+            % (rec.name, body.name, nU, len(trisD)))
+    if not added_v:
+        raise ValueError("no donor mesh could be merged — none of the selected "
+                         "donor meshes is on the donor body material")
+    if retargeted:
+        log("  donor-only bones re-targeted: %s"
+            % ", ".join("%s->%s" % kv for kv in sorted(retargeted.items())))
+
+    new_vc = offset
+    full = {ci: np.concatenate(cols[ci], 0) for ci in active}
+    mesh["m_VertexData"]["m_VertexCount"] = new_vc
+    vc2, ch2, st2, sa2, total2 = F.stream_layout(mesh)
+    buf = bytearray(total2)
+    u82 = np.frombuffer(buf, np.uint8)
+    for ci in active:
+        arr = full[ci]
+        if ci == F.CH_BLENDINDICES:
+            arr = arr.astype(np.float64)
+        F.write_attr(u82, arr, ch2, ci, st2, sa2, vc2)
+    mesh["m_VertexData"]["m_DataSize"] = bytes(buf)
+    tris = np.concatenate(all_tris, 0)
+    fmt = mesh.get("m_IndexFormat", 0)
+    if new_vc > 65535 and fmt == 0:
+        fmt = 1
+        mesh["m_IndexFormat"] = 1
+    mesh["m_IndexBuffer"] = tris.reshape(-1).astype("<u2" if fmt == 0 else "<u4").tobytes()
+    sm = mesh["m_SubMeshes"][0]
+    sm["firstByte"] = 0; sm["indexCount"] = int(tris.size)
+    sm["firstVertex"] = 0; sm["vertexCount"] = new_vc; sm["baseVertex"] = 0
+    pos = full[F.CH_POS]
+    mn, mx = pos.min(0), pos.max(0)
+    ctr, ext = (mn + mx) / 2, (mx - mn) / 2
+    aabb = {"m_Center": {"x": float(ctr[0]), "y": float(ctr[1]), "z": float(ctr[2])},
+            "m_Extent": {"x": float(ext[0]), "y": float(ext[1]), "z": float(ext[2])}}
+    mesh["m_LocalAABB"] = aabb
+    if isinstance(sm.get("localAABB"), dict):
+        sm["localAABB"] = dict(aabb)
+    mesh["m_SubMeshes"] = [sm]
+    if mesh.get("m_Shapes", {}).get("shapes"):
+        log("[warn] the base body mesh has blend shapes; the vertex count "
+            "changed, so they may misbehave")
+    body.mesh_obj.save_typetree(mesh)
+    return added_v, added_t
+
+# --------------------------------------------------------------------------- #
+#  Core: merge two models into one bundle (+ atlases; optional Blender FBX)    #
+# --------------------------------------------------------------------------- #
+def combine_models(base_path, donor_path, out_bundle,
+                   fbx_out=None, texdir=None,
                    base_meshes="all", donor_meshes="body", suffix="_D",
                    gutter_px=4, merge_rim=True, mipmaps=True,
-                   reskin_missing=False, dry_run=False, log=print):
+                   dry_run=False, log=print):
     t0 = time.time()
     log("[info] loading engine (a first run may auto-install numpy/UnityPy)…")
     F = _load_engine()
@@ -522,11 +646,9 @@ def combine_models(base_path, donor_path, out_fbx,
     from PIL import Image
     from UnityPy.enums import TextureFormat
 
-    stem = os.path.splitext(out_fbx)[0]
+    stem = os.path.splitext(out_bundle)[0]
     if texdir is None:
         texdir = stem + "_tex"
-    if out_bundle is None and not skip_bundle:
-        out_bundle = stem + "_atlas.unity"
 
     log("[info] reading base %s…" % os.path.basename(base_path))
     base = _Side(F, base_path, "base")
@@ -549,7 +671,10 @@ def combine_models(base_path, donor_path, out_fbx,
     if not base_sel or not donor_sel:
         raise ValueError("no usable mesh left on the %s side (see warnings above)"
                          % ("base" if not base_sel else "donor"))
-    if not suffix:
+    ok_body, why_body = _mesh_ok(F, base.body.mesh)
+    if not ok_body:
+        raise ValueError("the base body mesh is not editable: %s" % why_body)
+    if fbx_out and not suffix:
         clash = {r.name for r in base_sel} & {r.name for r in donor_sel}
         if clash:
             raise ValueError("empty --suffix but both models have mesh(es) named: %s"
@@ -558,7 +683,7 @@ def combine_models(base_path, donor_path, out_fbx,
     log("[info] base  %s: %s" % (os.path.basename(base_path),
                                  ", ".join(r.name for r in base_sel)))
     log("[info] donor %s: %s" % (os.path.basename(donor_path),
-                                 ", ".join(r.name + suffix for r in donor_sel)))
+                                 ", ".join(r.name for r in donor_sel)))
 
     # ---- atlas images ----------------------------------------------------- #
     if not base.body.main_pid:
@@ -579,30 +704,31 @@ def combine_models(base_path, donor_path, out_fbx,
             try:
                 bimg = base.tex_image(base.body.rim_pid)
             except RuntimeError as ex:
-                bimg = None
                 log("[warn] %s" % ex)
-                log("[warn] rim atlas skipped (the main atlas is unaffected)")
-            if bimg is not None:
-                dimg = None
-                if donor.body.rim_pid:
-                    try:
-                        dimg = donor.tex_image(donor.body.rim_pid)
-                    except RuntimeError as ex:
-                        log("[warn] %s" % ex)
-                if dimg is None:
-                    dimg = Image.new("RGBA", bimg.size, (0, 0, 0, 255))
-                    log("[warn] donor has no usable _RimlightTex — its atlas half is black (no rim)")
-                atlas_rim = _combine_images(bimg, dimg, g)
-                rim_name = base.tex_name(base.body.rim_pid)
-                log("[ok] _RimlightTex atlas %dx%d" % (atlas_rim.width, atlas_rim.height))
+                log("[warn] base rim replaced by flat black so the atlas stays "
+                    "consistent (rim lighting is lost)")
+                bimg = Image.new("RGBA", base.tex_size(base.body.rim_pid),
+                                 (0, 0, 0, 255))
+            dimg = None
+            if donor.body.rim_pid:
+                try:
+                    dimg = donor.tex_image(donor.body.rim_pid)
+                except RuntimeError as ex:
+                    log("[warn] %s" % ex)
+            if dimg is None:
+                dimg = Image.new("RGBA", bimg.size, (0, 0, 0, 255))
+                log("[warn] donor has no usable _RimlightTex — its atlas half is black (no rim)")
+            atlas_rim = _combine_images(bimg, dimg, g)
+            rim_name = base.tex_name(base.body.rim_pid)
+            log("[ok] _RimlightTex atlas %dx%d" % (atlas_rim.width, atlas_rim.height))
         elif donor.body.rim_pid:
             log("[warn] base has no _RimlightTex slot to hold a rim atlas — rim skipped "
                 "(the donor's rim map cannot be carried into the base bundle)")
 
     # ---- UV remap: every mesh on the body material moves into its half ----- #
-    # Base meshes are remapped in the loaded env (also saved into the atlas
-    # bundle, which therefore stays valid in-game on its own). Donor meshes are
-    # remapped in memory only — the donor bundle is never written.
+    # Base meshes are remapped and saved into the output bundle; donor meshes
+    # are remapped in memory (the donor bundle is never written) so the merge
+    # step below copies right-half UVs.
     def _is_atlased(rec, side):
         return bool(side.body.main_pid) and rec.main_pid == side.body.main_pid
     for side, fn in ((base, uL), (donor, uR)):
@@ -620,7 +746,7 @@ def combine_models(base_path, donor_path, out_fbx,
                 else:
                     log("[warn] %s '%s': no UV0 to remap" % (side.label, rec.name))
 
-    # ---- donor bones the base bundle cannot express ------------------------ #
+    # ---- donor bones the base body renderer cannot express ----------------- #
     base_body_bones = {n for n in base.body.bones if n}
     all_missing = {}
     for rec in donor_sel:
@@ -628,21 +754,65 @@ def combine_models(base_path, donor_path, out_fbx,
         if names:
             all_missing[rec.name] = (names, full, part)
     if all_missing:
-        log("[warn] donor bones MISSING from the base body renderer "
-            "(their weights are dropped at re-import):")
+        log("[info] donor bones the base body renderer lacks (their weights are "
+            "re-targeted to the nearest ancestor bone during the merge):")
         for mn, (names, full, part) in all_missing.items():
-            log("  %s%s: %s  (%d vert(s) fully, %d partly on them)"
-                % (mn, suffix, ", ".join(names), full, part))
-        if reskin_missing:
-            for rec in donor_sel:
-                if rec.name in all_missing:
-                    _reskin_missing(F, rec, base_body_bones, donor.parent, log)
-        else:
-            log("  -> keep them and re-weight in Blender, re-run with "
-                "--reskin-missing, or add the bones to the base with "
-                "costume_transplant.py first")
+            log("  %s: %s  (%d vert(s) fully, %d partly on them)"
+                % (mn, ", ".join(names), full, part))
 
-    # ---- combined skeleton -------------------------------------------------- #
+    shared = [n for n in ({n for r in donor_sel for n in r.bones if n} & base_body_bones)
+              if n in base.world and n in donor.world]
+    if shared:
+        dmax = max(float(np.linalg.norm(base.world[n][:3, 3] - donor.world[n][:3, 3]))
+                   for n in shared)
+        if dmax > 0.02:
+            log("[warn] the two models' rest poses differ by up to %.0f mm — donor "
+                "parts may sit slightly offset (fix in Blender via the FBX)" % (dmax * 1000))
+
+    if dry_run:
+        log("  [dry run] would write %s + %s%s"
+            % (out_bundle, texdir, (" + " + fbx_out) if fbx_out else ""))
+        return None
+
+    os.makedirs(texdir, exist_ok=True)
+    atlas_main.save(os.path.join(texdir, main_name + ".png"))
+    if atlas_rim is not None:
+        atlas_rim.save(os.path.join(texdir, rim_name + ".png"))
+
+    # ---- OPTIONAL Blender FBX (both models as separate objects) ------------ #
+    if fbx_out:
+        _write_combined_fbx(F, base, donor, base_sel, donor_sel, suffix,
+                            main_name, texdir, fbx_out, log)
+
+    # ---- merge donor meshes into the base body mesh ------------------------ #
+    added_v, added_t = _merge_donor_into_base(F, base, donor, donor_sel, log)
+
+    # ---- inject the atlases and write the merged bundle -------------------- #
+    for pid, img in ((base.body.main_pid, atlas_main), (base.body.rim_pid, atlas_rim)):
+        if not pid or img is None:
+            continue
+        tex = base.uid[pid].read()
+        mc = int(math.floor(math.log2(max(img.size)))) + 1 if mipmaps else 1
+        tex.set_image(img, target_format=TextureFormat.RGBA32, mipmap_count=mc)
+        tex.save()
+    os.makedirs(os.path.dirname(os.path.abspath(out_bundle)) or ".", exist_ok=True)
+    with open(out_bundle, "wb") as f:
+        f.write(base.env.file.save(packer="original"))
+    log("[ok] merged bundle: '%s' +%d verts +%d tris -> %s"
+        % (base.body.name, added_v, added_t, out_bundle))
+    log(_tr("Saved: %s") % out_bundle)
+
+    _write_howto(stem, out_bundle, fbx_out, texdir, main_name, rim_name, log)
+    log("[done] in %.1fs" % (time.time() - t0))
+    return out_bundle
+
+def _write_combined_fbx(F, base, donor, base_sel, donor_sel, suffix,
+                        main_name, texdir, fbx_out, log):
+    """Both models as separate objects sharing ONE skeleton, atlas-mapped —
+    for manual kitbashing in Blender; re-import into the merged bundle with
+    sifas_fbx.py. (Same document layout as sifas_fbx.export.)"""
+    np = F.np
+    log("[info] writing Blender FBX…")
     base_bones = _bone_closure({n for r in base.smrs for n in r.bones if n}, base.parent)
     donor_bones = _bone_closure({n for r in donor_sel for n in r.bones if n}, donor.parent)
     donor_only = donor_bones - base_bones
@@ -653,22 +823,7 @@ def combine_models(base_path, donor_path, out_fbx,
     log("[ok] skeleton: %d bones (%d from base, %d donor-only%s)"
         % (len(all_bones), len(base_bones), len(donor_only),
            ": " + ", ".join(sorted(donor_only)) if donor_only else ""))
-    shared = [n for n in donor_bones & base_bones
-              if n in base.world and n in donor.world]
-    if shared:
-        dmax = max(float(np.linalg.norm(base.world[n][:3, 3] - donor.world[n][:3, 3]))
-                   for n in shared)
-        if dmax > 0.02:
-            log("[warn] the two models' rest poses differ by up to %.0f mm — donor "
-                "parts may sit slightly offset in Blender (fix by hand there)" % (dmax * 1000))
 
-    if dry_run:
-        log("  [dry run] would write %s + %s%s"
-            % (out_fbx, texdir, (" + " + out_bundle) if out_bundle else ""))
-        return None
-
-    # ---- FBX assembly (same document layout as sifas_fbx.export) ----------- #
-    log("[info] writing combined FBX…")
     FNode, C = F.FNode, "C"
     bone_model_id = {n: F._nid() for n in all_bones}
     MIRROR = F.MIRROR
@@ -697,11 +852,8 @@ def combine_models(base_path, donor_path, out_fbx,
         pose.add(FNode("PoseNode").add(FNode("Node", [('L', mid)]),
                                        FNode("Matrix", [('d', TL.T.reshape(-1))])))
 
-    os.makedirs(texdir, exist_ok=True)
-    atlas_main.save(os.path.join(texdir, main_name + ".png"))
-    if atlas_rim is not None:
-        atlas_rim.save(os.path.join(texdir, rim_name + ".png"))
-
+    def _is_atlased(rec, side):
+        return bool(side.body.main_pid) and rec.main_pid == side.body.main_pid
     n_models = len(bone_model_id)
     n_def = 0
     n_meshes = 0
@@ -742,8 +894,6 @@ def combine_models(base_path, donor_path, out_fbx,
                     conns.add(FNode(C, [('S', "OO"), ('L', cid), ('L', skin.props[0][1])]))
                     conns.add(FNode(C, [('S', "OO"), ('L', bone_model_id[bn]), ('L', cid)]))
                 n_def += 1 + len(clusters)
-            # material: atlased meshes share the atlas texture; others keep
-            # their own texture (written to texdir so Blender can show it)
             if _is_atlased(rec, side):
                 tex_name = main_name
             else:
@@ -803,67 +953,35 @@ def combine_models(base_path, donor_path, out_fbx,
         FNode("ObjectType", [('S', "Pose")]).add(FNode("Count", [('I', 1)])))
     takes = FNode("Takes").add(FNode("Current", [('S', "")]))
 
-    os.makedirs(os.path.dirname(os.path.abspath(out_fbx)), exist_ok=True)
-    with open(out_fbx, "wb") as f:
+    os.makedirs(os.path.dirname(os.path.abspath(fbx_out)) or ".", exist_ok=True)
+    with open(fbx_out, "wb") as f:
         f.write(F.fbx_serialize([header, gs, documents, definitions, objects, conns, takes]))
-    log("[ok] combined FBX: %d mesh(es), %d verts, %d tris, %d bones -> %s"
-        % (n_meshes, total_v, total_t, len(bone_model_id), out_fbx))
-    log(_tr("Saved: %s") % out_fbx)
+    log("[ok] Blender FBX: %d mesh(es), %d verts, %d tris, %d bones -> %s"
+        % (n_meshes, total_v, total_t, len(bone_model_id), fbx_out))
 
-    # ---- prepared re-import bundle (base + atlas textures + left-half UVs) - #
-    if out_bundle:
-        log("[info] writing atlas bundle…")
-        for pid, img in ((base.body.main_pid, atlas_main), (base.body.rim_pid, atlas_rim)):
-            if not pid or img is None:
-                continue
-            tex = base.uid[pid].read()
-            mc = int(math.floor(math.log2(max(img.size)))) + 1 if mipmaps else 1
-            tex.set_image(img, target_format=TextureFormat.RGBA32, mipmap_count=mc)
-            tex.save()
-        os.makedirs(os.path.dirname(os.path.abspath(out_bundle)) or ".", exist_ok=True)
-        with open(out_bundle, "wb") as f:
-            f.write(base.env.file.save(packer="original"))
-        log("[ok] atlas bundle (re-import target): %s" % out_bundle)
-
-    _write_howto(stem, out_fbx, texdir, out_bundle, main_name, rim_name,
-                 suffix, all_missing, log)
-    log("[done] in %.1fs" % (time.time() - t0))
-    return out_fbx
-
-def _write_howto(stem, out_fbx, texdir, out_bundle, main_name, rim_name,
-                 suffix, all_missing, log):
+def _write_howto(stem, out_bundle, fbx_out, texdir, main_name, rim_name, log):
     lines = [
-        "SIFAS FBX Combine — finishing this mod in Blender",
-        "==================================================",
-        "combined FBX : %s" % out_fbx,
-        "textures     : %s  (atlas: %s.png%s)"
+        "SIFAS model merge — what you got and what to do next",
+        "====================================================",
+        "merged bundle : %s  (game-ready as-is)" % out_bundle,
+        "textures      : %s  (atlas: %s.png%s)"
         % (texdir, main_name, (", %s.png" % rim_name) if rim_name else ""),
-        "atlas bundle : %s" % (out_bundle or "(skipped)"),
-        "",
-        "1) Blender > File > Import > FBX. Both models share one armature;",
-        "   donor meshes end with '%s'." % suffix,
-        "2) Delete the parts you don't want, edit freely. Keep the armature",
-        "   modifier and the vertex groups on everything you keep.",
-        "3) Donor pieces you keep must end up in an object NAMED like a base",
-        "   mesh: select the donor piece, shift-select e.g. 'Body', Ctrl+J",
-        "   (or rename it). Objects whose name matches no base mesh are",
-        "   ignored at re-import.",
-        "4) File > Export > FBX (BINARY, with the armature; default settings",
-        "   are fine — do not retick 'ASCII').",
-        "5) Re-import into the ATLAS bundle (not the original base bundle):",
-        "   python3 sifas_fbx.py import --fbx edited.fbx --bundle %s --out final.unity"
-        % (out_bundle or "<atlas bundle>"),
-        "",
-        "UV note: base UVs live in the LEFT atlas half, donor UVs in the",
-        "RIGHT half. Don't re-unwrap; keep islands inside their half.",
     ]
-    if all_missing:
-        lines.append("")
-        lines.append("Bones the base bundle does NOT have (weights on them are")
-        lines.append("dropped at re-import — re-weight these in Blender, or re-run")
-        lines.append("with --reskin-missing):")
-        for mn, (names, full, part) in all_missing.items():
-            lines.append("  %s%s: %s" % (mn, suffix, ", ".join(names)))
+    if fbx_out:
+        lines += ["Blender FBX   : %s  (donor objects end with the suffix; edit "
+                  "and re-import into the merged bundle with sifas_fbx.py)" % fbx_out]
+    lines += [
+        "",
+        "Edit the merged model:  python3 sifas_fbx.py export --in %s --out m.fbx --texdir m_tex"
+        % os.path.basename(out_bundle),
+        "  -> Blender -> export FBX -> python3 sifas_fbx.py import --fbx m.fbx "
+        "--bundle %s --out final.unity" % os.path.basename(out_bundle),
+        "Split it back apart:    python3 sifas_atlas_split.py --in %s --grid 2x1"
+        % os.path.basename(out_bundle),
+        "",
+        "UV note: base UVs live in the LEFT atlas half, donor UVs in the RIGHT",
+        "half. Don't re-unwrap; keep islands inside their half.",
+    ]
     txt = stem + "_howto.txt"
     try:
         with open(txt, "w", encoding="utf-8") as f:
@@ -871,48 +989,42 @@ def _write_howto(stem, out_fbx, texdir, out_bundle, main_name, rim_name,
         log("[ok] next steps written to %s" % txt)
     except OSError as ex:
         log("[warn] could not write %s (%s)" % (txt, ex))
-    log("")
-    for ln in lines[6:]:
-        log(ln)
 
 # --------------------------------------------------------------------------- #
 #  CLI                                                                         #
 # --------------------------------------------------------------------------- #
 def main_cli(argv):
     p = argparse.ArgumentParser(
-        description="Combine two SIFAS models into one Blender-ready FBX with "
-                    "an automatic _MainTex + _RimlightTex atlas.",
-        epilog="after Blender:  python3 sifas_fbx.py import --fbx edited.fbx "
-               "--bundle <out>_atlas.unity --out final.unity")
+        description="Merge two SIFAS models into one bundle with an automatic "
+                    "_MainTex + _RimlightTex atlas (optionally also write a "
+                    "Blender FBX of both models on one skeleton).",
+        epilog="undo later with:  python3 sifas_atlas_split.py --in merged.unity "
+               "--grid 2x1")
     p.add_argument("--scan", metavar="BUNDLE",
                    help="just list a bundle's meshes (names / verts / bones / "
-                        "textures) and exit — use it to fill --base-meshes / "
-                        "--donor-meshes")
+                        "textures) and exit — use it to fill --donor-meshes")
     p.add_argument("--base",
-                   help="base model bundle (keeps its skeleton; re-import target)")
+                   help="base model bundle (keeps its skeleton and other meshes)")
     p.add_argument("--donor",
-                   help="donor model bundle (its meshes are added with a suffix)")
-    p.add_argument("--out", help="output FBX (default: <base>_combined.fbx)")
+                   help="donor model bundle (its body-material meshes are merged in)")
+    p.add_argument("--out", help="output merged bundle (default: <base>_merged.unity)")
+    p.add_argument("--fbx", metavar="PATH", default=None,
+                   help="ALSO write a Blender FBX with both models as separate "
+                        "objects on one skeleton (for manual kitbashing)")
     p.add_argument("--texdir", default=None,
-                   help="texture folder for the FBX (default: <out>_tex)")
-    p.add_argument("--out-bundle", default=None,
-                   help="atlas bundle to re-import into (default: <out>_atlas.unity)")
-    p.add_argument("--skip-bundle", action="store_true",
-                   help="do not write the atlas bundle")
+                   help="folder for the atlas PNGs (default: <out>_tex)")
     p.add_argument("--base-meshes", default="all", metavar="all|body|A,B",
-                   help="base meshes to put in the FBX (default all)")
+                   help="base meshes to put in the FBX (default all; the bundle "
+                        "always keeps everything)")
     p.add_argument("--donor-meshes", default="body", metavar="body|all|A,B",
-                   help="donor meshes to bring over (default body: every mesh "
-                        "on the donor's body material)")
+                   help="donor meshes to merge (default body: every mesh on "
+                        "the donor's body material)")
     p.add_argument("--suffix", default="_D",
-                   help="suffix on donor mesh/material names in the FBX (default _D)")
+                   help="suffix on donor names in the FBX (default _D)")
     p.add_argument("--gutter", type=int, default=4, help="atlas gutter in px")
     p.add_argument("--no-rim", action="store_true", help="do not merge the rim map")
     p.add_argument("--no-mipmaps", action="store_true",
-                   help="no mipmaps in the atlas bundle textures")
-    p.add_argument("--reskin-missing", action="store_true",
-                   help="re-target donor weights on bones the base lacks onto the "
-                        "nearest ancestor bone the base has")
+                   help="no mipmaps in the injected atlas textures")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
     if a.scan:
@@ -920,23 +1032,21 @@ def main_cli(argv):
         return
     if not a.base or not a.donor:
         p.error("--base and --donor are required (or use --scan BUNDLE)")
-    out = a.out or (os.path.splitext(a.base)[0] + "_combined.fbx")
-    combine_models(a.base, a.donor, out, texdir=a.texdir,
-                   out_bundle=a.out_bundle, skip_bundle=a.skip_bundle,
+    out = a.out or (os.path.splitext(a.base)[0] + "_merged.unity")
+    combine_models(a.base, a.donor, out, fbx_out=a.fbx, texdir=a.texdir,
                    base_meshes=a.base_meshes, donor_meshes=a.donor_meshes,
                    suffix=a.suffix, gutter_px=a.gutter, merge_rim=not a.no_rim,
-                   mipmaps=not a.no_mipmaps, reskin_missing=a.reskin_missing,
-                   dry_run=a.dry_run)
+                   mipmaps=not a.no_mipmaps, dry_run=a.dry_run)
 
 # --------------------------------------------------------------------------- #
 #  Text menu (no display / Termux)                                            #
 # --------------------------------------------------------------------------- #
 def main_menu():
     print("=== %s ===" % _tr("SIFAS FBX Combine"))
-    base = input(_tr("Base model (re-import target):") + " ").strip()
+    base = input(_tr("Base model (keeps skeleton):") + " ").strip()
     donor = input(_tr("Donor model (parts to bring):") + " ").strip()
-    dflt = os.path.splitext(base)[0] + "_combined.fbx"
-    out = input(_tr("Output FBX:") + " [%s] " % dflt).strip() or dflt
+    dflt = os.path.splitext(base)[0] + "_merged.unity"
+    out = input(_tr("Output bundle (merged):") + " [%s] " % dflt).strip() or dflt
     print(_tr("Donor meshes:"))
     opts = [("body", "body material only"), ("all", "all meshes"), ("custom", "custom names…")]
     for i, (_k, lbl) in enumerate(opts):
@@ -952,7 +1062,9 @@ def main_menu():
         except Exception as e:
             print(_tr("ERROR: %s") % e)
         key = input(_tr("Custom names (comma):") + " ").strip() or "body"
-    combine_models(base, donor, out, donor_meshes=key)
+    fbx = input(_tr("Also write a Blender FBX") + "? [y/N] ").strip().lower()
+    combine_models(base, donor, out, donor_meshes=key,
+                   fbx_out=(os.path.splitext(out)[0] + ".fbx") if fbx == "y" else None)
 
 # --------------------------------------------------------------------------- #
 #  GUI (tkinter)                                                               #
@@ -970,36 +1082,31 @@ def main_gui():
         e = ttk.Entry(root, width=52); e.grid(row=r, column=1, padx=4, pady=3)
         return e
 
-    base_e = row(0, "Base model (re-import target):")
+    base_e = row(0, "Base model (keeps skeleton):")
     donor_e = row(1, "Donor model (parts to bring):")
-    out_e = row(2, "Output FBX:")
+    out_e = row(2, "Output bundle (merged):")
     tex_e = row(3, "Texture folder (blank=auto):")
-    bnd_e = row(4, "Atlas bundle out (blank=auto):")
 
-    def browse(entry, save=False, fbx=False):
+    def browse(entry, save=False):
         if save:
             path = filedialog.asksaveasfilename(
-                defaultextension=".fbx" if fbx else ".unity",
-                filetypes=[("FBX", "*.fbx")] if fbx else [("Unity bundle", "*.unity *.unity3d"),
-                                                          ("All files", "*.*")])
+                defaultextension=".unity",
+                filetypes=[("Unity bundle", "*.unity *.unity3d"), ("All files", "*.*")])
         else:
             path = filedialog.askopenfilename()
         if path:
             entry.delete(0, "end"); entry.insert(0, path)
     ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(base_e)).grid(row=0, column=2, padx=4)
     ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(donor_e)).grid(row=1, column=2, padx=4)
-    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(out_e, True, True)).grid(row=2, column=2, padx=4)
-    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(bnd_e, True)).grid(row=4, column=2, padx=4)
+    ttk.Button(root, text=_tr("Browse…"), command=lambda: browse(out_e, True)).grid(row=2, column=2, padx=4)
 
     MESH_OPTS = [("body", "body material only"), ("all", "all meshes"), ("custom", "custom names…")]
-    selrow = ttk.Frame(root); selrow.grid(row=5, column=1, columnspan=2, sticky="w")
+    selrow = ttk.Frame(root); selrow.grid(row=4, column=1, columnspan=2, sticky="w")
     ttk.Label(selrow, text=_tr("Donor meshes:")).pack(side="left")
     donor_box = ttk.Combobox(selrow, state="readonly", width=18,
                              values=[_tr(lbl) for _k, lbl in MESH_OPTS])
     donor_box.current(0); donor_box.pack(side="left", padx=4)
     donor_custom = ttk.Entry(selrow, width=22); donor_custom.pack(side="left", padx=2)
-    ttk.Label(selrow, text=_tr("Donor name suffix:")).pack(side="left", padx=(10, 0))
-    suffix_e = ttk.Entry(selrow, width=5); suffix_e.insert(0, "_D"); suffix_e.pack(side="left")
 
     def scan_click():
         base, donor = base_e.get().strip(), donor_e.get().strip()
@@ -1017,17 +1124,14 @@ def main_gui():
 
     rim_var = tk.BooleanVar(value=True)
     mip_var = tk.BooleanVar(value=True)
-    reskin_var = tk.BooleanVar(value=False)
-    skipb_var = tk.BooleanVar(value=False)
+    fbx_var = tk.BooleanVar(value=False)
     dry_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(root, text=_tr("Merge rim map too"), variable=rim_var).grid(row=6, column=1, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Generate mipmaps"), variable=mip_var).grid(row=7, column=1, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Re-skin weights on bones missing from base"),
-                    variable=reskin_var).grid(row=8, column=1, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Skip atlas bundle"), variable=skipb_var).grid(row=9, column=1, sticky="w")
-    ttk.Checkbutton(root, text=_tr("Dry run (no write)"), variable=dry_var).grid(row=10, column=1, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Merge rim map too"), variable=rim_var).grid(row=5, column=1, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Generate mipmaps"), variable=mip_var).grid(row=6, column=1, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Also write a Blender FBX"), variable=fbx_var).grid(row=7, column=1, sticky="w")
+    ttk.Checkbutton(root, text=_tr("Dry run (no write)"), variable=dry_var).grid(row=8, column=1, sticky="w")
 
-    log = tk.Text(root, height=14, width=76); log.grid(row=12, column=0, columnspan=3, padx=6, pady=6)
+    log = tk.Text(root, height=14, width=76); log.grid(row=10, column=0, columnspan=3, padx=6, pady=6)
     def put(msg): q.put(str(msg))
 
     def work():
@@ -1035,30 +1139,27 @@ def main_gui():
             base = base_e.get().strip(); donor = donor_e.get().strip()
             if not base or not donor:
                 put(_tr("Pick a base and a donor first.")); return
-            out = out_e.get().strip() or (os.path.splitext(base)[0] + "_combined.fbx")
+            out = out_e.get().strip() or (os.path.splitext(base)[0] + "_merged.unity")
             key = MESH_OPTS[donor_box.current()][0]
             if key == "custom":
                 key = donor_custom.get().strip() or "body"
             put(_tr("Working…"))
             combine_models(base, donor, out,
+                           fbx_out=(os.path.splitext(out)[0] + ".fbx") if fbx_var.get() else None,
                            texdir=tex_e.get().strip() or None,
-                           out_bundle=bnd_e.get().strip() or None,
-                           skip_bundle=skipb_var.get(),
                            donor_meshes=key,
-                           suffix=suffix_e.get().strip() or "_D",
                            merge_rim=rim_var.get(), mipmaps=mip_var.get(),
-                           reskin_missing=reskin_var.get(),
                            dry_run=dry_var.get(), log=put)
             put(_tr("Done."))
-        except BaseException as e:           # incl. SystemExit from _load_engine —
-            put(_tr("ERROR: %s") % e)        # a silent thread death looked like an
-            put(traceback.format_exc())      # endless "Working…"
+        except BaseException as e:            # incl. SystemExit from _load_engine —
+            put(_tr("ERROR: %s") % e)         # a silent thread death looked like an
+            put(traceback.format_exc())       # endless "Working…"
 
     def run():
         threading.Thread(target=work, daemon=True).start()
-    ttk.Button(root, text=_tr("Run"), command=run).grid(row=11, column=1, pady=4)
+    ttk.Button(root, text=_tr("Run"), command=run).grid(row=9, column=1, pady=4)
 
-    ttk.Label(root, text=_tr("Language:")).grid(row=13, column=0, sticky="w", padx=6)
+    ttk.Label(root, text=_tr("Language:")).grid(row=11, column=0, sticky="w", padx=6)
     lang_var = tk.StringVar(value=dict(_LANG_NAMES)[_LANG.lang])
     def on_lang(_e=None):
         for code, name in _LANG_NAMES:
@@ -1066,7 +1167,7 @@ def main_gui():
                 _LANG.set(code)
         root.destroy(); main_gui()
     lb = ttk.Combobox(root, textvariable=lang_var, state="readonly",
-                      values=[n for _c, n in _LANG_NAMES]); lb.grid(row=13, column=1, sticky="w")
+                      values=[n for _c, n in _LANG_NAMES]); lb.grid(row=11, column=1, sticky="w")
     lb.bind("<<ComboboxSelected>>", on_lang)
 
     def pump():
