@@ -275,7 +275,7 @@ class _Side:
         if o is None:
             return None
         d = o.read()
-        fmt = str(getattr(d, "m_TextureFormat", "") or "")
+        fmt = _texfmt_name(d)
         if any(k in fmt for k in _NATIVE_DECODED):
             # Compressed formats decode through texture2ddecoder's NATIVE code,
             # which can take the whole process down (Crunch textures are known
@@ -299,6 +299,24 @@ class _Side:
 # texture formats whose decode goes through texture2ddecoder's native library
 _NATIVE_DECODED = ("Crunched", "DXT", "BC4", "BC5", "BC6", "BC7",
                    "ETC", "EAC", "ASTC", "PVRTC", "ATC")
+
+def _texfmt_name(d):
+    """Texture format NAME ('ETC2_RGBA8Crunched', 'ASTC_RGBA_5x5', ...).
+    UnityPy exposes m_TextureFormat as a plain int (and even as an IntEnum its
+    str() is just the number on Python 3.11+), so a substring test against
+    str(m_TextureFormat) silently never matched — the crunch isolation was dead
+    code on real bundles. Resolve the real enum name instead."""
+    f = getattr(d, "m_TextureFormat", None)
+    if f is None:
+        return ""
+    n = getattr(f, "name", None)
+    if n:
+        return n
+    try:
+        from UnityPy.enums import TextureFormat
+        return TextureFormat(int(f)).name
+    except Exception:
+        return str(f)
 
 def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
     """Decode one texture to PNG in a CHILD process so a native decoder crash
