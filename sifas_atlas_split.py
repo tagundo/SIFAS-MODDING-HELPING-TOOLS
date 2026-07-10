@@ -284,7 +284,15 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
     # ---- pass 1: read the merged model, assign every triangle to a cell ---- #
     log("[info] reading %s…" % os.path.basename(in_path))
     side = CB._Side(F, in_path, "merged")
-    sel = CB._select_meshes(meshes, side)
+    sel = []
+    for r in CB._select_meshes(meshes, side):
+        ok, why = CB._mesh_ok(F, r.mesh)
+        if ok:
+            sel.append(r)
+        else:
+            log("[warn] mesh '%s' skipped: %s" % (r.name, why))
+    if not sel:
+        raise ValueError("no usable mesh to split (see warnings above)")
     log("[info] splitting %s into a %dx%d grid"
         % (", ".join(r.name for r in sel), C, R))
 
@@ -293,7 +301,12 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
     max_frac_u = max_frac_v = 0.0
     crossing = 0
     for rec in sel:
-        uv, tris = _read_mesh_arrays(F, rec.mesh)
+        try:
+            uv, tris = _read_mesh_arrays(F, rec.mesh)
+        except NotImplementedError as ex:
+            raise ValueError("mesh '%s': unsupported vertex data (%s) — this "
+                             "tool needs plain uncompressed SIFAS meshes"
+                             % (rec.name, ex))
         if uv is None:
             log("[warn] %s has no UV0 — left untouched" % rec.name)
             continue
@@ -388,6 +401,12 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
                 "rim texture afterwards.")
             tex_pids.remove(p)
     tex_names = {p: side.tex_name(p) for p in tex_pids}
+    for p in tex_pids:
+        W, H = tex_imgs[p].size
+        cw_px, ch_px = max(1, W // C), max(1, H // R)
+        if (cw_px & (cw_px - 1)) or (ch_px & (ch_px - 1)):
+            log("[warn] '%s': cell texture %dx%d is not power-of-two — mipmaps "
+                "may misbehave on mobile GL" % (tex_names[p], cw_px, ch_px))
 
     def uv_fn(i, j):
         u0 = ustart(i); v0 = vstart(R - 1 - j)

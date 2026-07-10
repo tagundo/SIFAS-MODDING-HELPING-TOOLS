@@ -251,7 +251,12 @@ class _Side:
             self.smrs.append(_Rec(o, tt, mesh_obj, mesh, mesh.get("m_Name", "mesh"),
                                   bones, mat_name, main_pid, rim_pid,
                                   o.path_id == body_smr.path_id))
-        self.body = next(r for r in self.smrs if r.is_body)
+        if not self.smrs:
+            raise ValueError(_tr("no skinned mesh found in %s") % os.path.basename(path))
+        # the body renderer's own Mesh may be missing/unreadable — fall back to
+        # the most-bones readable renderer instead of dying with StopIteration
+        self.body = next((r for r in self.smrs if r.is_body), None) \
+            or max(self.smrs, key=lambda r: len(r.bones))
 
     def _bone_name(self, pid):
         o = self.uid.get(pid)
@@ -271,25 +276,34 @@ class _Side:
             return None
         d = o.read()
         fmt = str(getattr(d, "m_TextureFormat", "") or "")
-        if "Crunched" in fmt:
-            # Crunch-compressed textures make texture2ddecoder segfault natively
-            # on some machines (known issue on macOS/Apple Silicon) — a crash
-            # Python cannot catch, so it killed the whole GUI. Decode them in an
-            # isolated child process (sifas_fbx's __decode_tex mode) instead.
-            img = _decode_texture_isolated(self.path, d.m_Name)
-            if img is None:
+        if any(k in fmt for k in _NATIVE_DECODED):
+            # Compressed formats decode through texture2ddecoder's NATIVE code,
+            # which can take the whole process down (Crunch textures are known
+            # to segfault it on macOS/Apple Silicon — a crash Python cannot
+            # catch; it killed the GUI). Decode them in an isolated child
+            # process (sifas_fbx's __decode_tex mode) instead.
+            img, crashed = _decode_texture_isolated(self.path, d.m_Name)
+            if img is not None:
+                return img.convert("RGBA")
+            if crashed or "Crunched" in fmt:
                 raise RuntimeError(
-                    "texture '%s' is Crunch-compressed (%s) and the native "
-                    "decoder crashed on it even in an isolated process — a "
-                    "known texture2ddecoder problem on macOS. Run this step on "
-                    "Windows/Linux, or re-save the texture uncrunched first "
-                    "(import it once with the texture importer)." % (d.m_Name, fmt))
-            return img.convert("RGBA")
+                    "texture '%s' (%s): the native decoder crashed on it even "
+                    "in an isolated process — a known texture2ddecoder problem "
+                    "on macOS. Run this step on Windows/Linux, or re-save the "
+                    "texture uncompressed first (import it once with the "
+                    "texture importer)." % (d.m_Name, fmt))
+            # the child could not run at all (no decoder crash) — fall through
+            # to the normal in-process decode below
         return d.image.convert("RGBA")
+
+# texture formats whose decode goes through texture2ddecoder's native library
+_NATIVE_DECODED = ("Crunched", "DXT", "BC4", "BC5", "BC6", "BC7",
+                   "ETC", "EAC", "ASTC", "PVRTC", "ATC")
 
 def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
     """Decode one texture to PNG in a CHILD process so a native decoder crash
-    only loses that texture instead of the whole tool. Returns Image or None."""
+    only loses that texture instead of the whole tool. Returns (Image or None,
+    crashed) — crashed=True when the child died decoding (signal / timeout)."""
     import subprocess, tempfile
     from PIL import Image
     F = _load_engine()
@@ -299,13 +313,32 @@ def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
             r = subprocess.run([sys.executable, os.path.abspath(F.__file__),
                                 "__decode_tex", bundle_path, tex_name, out],
                                capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None, True
         except Exception:
-            return None
+            return None, False
         if r.returncode == 0 and os.path.exists(out):
             img = Image.open(out)
             img.load()
-            return img
-    return None
+            return img, False
+        return None, r.returncode < 0
+
+def _mesh_ok(F, mesh):
+    """(True, '') when the mesh's vertex data is plain, in-bundle and non-empty
+    — the only kind these tools can edit; else (False, why). Guards against
+    crashes on streamed (m_StreamData), compressed or stripped meshes."""
+    try:
+        vc, chans, stride, start, _ = F.stream_layout(mesh)
+    except Exception as ex:
+        return False, "unreadable vertex layout (%s)" % ex
+    if vc <= 0:
+        return False, "no vertices"
+    if not mesh.get("m_SubMeshes"):
+        return False, "no submeshes"
+    need = max((start[s] + vc * stride[s]) for s in stride) if stride else 0
+    if len(bytes(mesh["m_VertexData"]["m_DataSize"])) < need:
+        return False, "vertex data is external (m_StreamData) or compressed"
+    return True, ""
 
 class _Rec:
     __slots__ = ("smr", "smr_tt", "mesh_obj", "mesh", "name", "bones",
@@ -484,6 +517,20 @@ def combine_models(base_path, donor_path, out_fbx,
 
     base_sel = _select_meshes(base_meshes, base)
     donor_sel = _select_meshes(donor_meshes, donor)
+    def _usable(sel, label):
+        out = []
+        for r in sel:
+            ok, why = _mesh_ok(F, r.mesh)
+            if ok:
+                out.append(r)
+            else:
+                log("[warn] %s mesh '%s' skipped: %s" % (label, r.name, why))
+        return out
+    base_sel = _usable(base_sel, "base")
+    donor_sel = _usable(donor_sel, "donor")
+    if not base_sel or not donor_sel:
+        raise ValueError("no usable mesh left on the %s side (see warnings above)"
+                         % ("base" if not base_sel else "donor"))
     if not suffix:
         clash = {r.name for r in base_sel} & {r.name for r in donor_sel}
         if clash:
@@ -542,8 +589,14 @@ def combine_models(base_path, donor_path, out_fbx,
         return bool(side.body.main_pid) and rec.main_pid == side.body.main_pid
     for side, fn in ((base, uL), (donor, uR)):
         for rec in side.smrs:
-            if _is_atlased(rec, side):
-                if _remap_uv0(F, rec.mesh, fn):
+            if _is_atlased(rec, side) and _mesh_ok(F, rec.mesh)[0]:
+                try:
+                    remapped = _remap_uv0(F, rec.mesh, fn)
+                except NotImplementedError as ex:
+                    raise ValueError(
+                        "mesh '%s': unsupported vertex data (%s) — this tool "
+                        "needs plain uncompressed SIFAS meshes" % (rec.name, ex))
+                if remapped:
                     if side is base:
                         rec.mesh_obj.save_typetree(rec.mesh)
                 else:
@@ -642,9 +695,14 @@ def combine_models(base_path, donor_path, out_fbx,
             if rec.mesh.get("m_Shapes", {}).get("shapes"):
                 log("[warn] %s: blend shapes not round-tripped" % name_out)
             geo_id = F._nid()
-            geo, skin, clusters, cl_ids, has_skin = F._geo_and_skin(
-                rec.mesh, rec.smr_tt, rec.bones, world_u, bone_model_id,
-                geo_id, name_out)
+            try:
+                geo, skin, clusters, cl_ids, has_skin = F._geo_and_skin(
+                    rec.mesh, rec.smr_tt, rec.bones, world_u, bone_model_id,
+                    geo_id, name_out)
+            except NotImplementedError as ex:
+                raise ValueError(
+                    "mesh '%s': unsupported vertex data (%s) — this tool needs "
+                    "plain uncompressed SIFAS meshes" % (name_out, ex))
             mesh_model_id = F._nid()
             objects.add(FNode("Model", [('L', mesh_model_id),
                                         ('S', F._name_class(name_out, "Model")),
