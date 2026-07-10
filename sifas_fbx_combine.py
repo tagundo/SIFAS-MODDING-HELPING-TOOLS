@@ -267,7 +267,45 @@ class _Side:
 
     def tex_image(self, pid):
         o = self.uid.get(pid)
-        return o.read().image.convert("RGBA") if o else None
+        if o is None:
+            return None
+        d = o.read()
+        fmt = str(getattr(d, "m_TextureFormat", "") or "")
+        if "Crunched" in fmt:
+            # Crunch-compressed textures make texture2ddecoder segfault natively
+            # on some machines (known issue on macOS/Apple Silicon) — a crash
+            # Python cannot catch, so it killed the whole GUI. Decode them in an
+            # isolated child process (sifas_fbx's __decode_tex mode) instead.
+            img = _decode_texture_isolated(self.path, d.m_Name)
+            if img is None:
+                raise RuntimeError(
+                    "texture '%s' is Crunch-compressed (%s) and the native "
+                    "decoder crashed on it even in an isolated process — a "
+                    "known texture2ddecoder problem on macOS. Run this step on "
+                    "Windows/Linux, or re-save the texture uncrunched first "
+                    "(import it once with the texture importer)." % (d.m_Name, fmt))
+            return img.convert("RGBA")
+        return d.image.convert("RGBA")
+
+def _decode_texture_isolated(bundle_path, tex_name, timeout=180):
+    """Decode one texture to PNG in a CHILD process so a native decoder crash
+    only loses that texture instead of the whole tool. Returns Image or None."""
+    import subprocess, tempfile
+    from PIL import Image
+    F = _load_engine()
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "tex.png")
+        try:
+            r = subprocess.run([sys.executable, os.path.abspath(F.__file__),
+                                "__decode_tex", bundle_path, tex_name, out],
+                               capture_output=True, timeout=timeout)
+        except Exception:
+            return None
+        if r.returncode == 0 and os.path.exists(out):
+            img = Image.open(out)
+            img.load()
+            return img
+    return None
 
 class _Rec:
     __slots__ = ("smr", "smr_tt", "mesh_obj", "mesh", "name", "bones",
@@ -473,15 +511,25 @@ def combine_models(base_path, donor_path, out_fbx,
     atlas_rim = rim_name = None
     if merge_rim:
         if base.body.rim_pid:
-            bimg = base.tex_image(base.body.rim_pid)
-            if donor.body.rim_pid:
-                dimg = donor.tex_image(donor.body.rim_pid)
-            else:
-                dimg = Image.new("RGBA", bimg.size, (0, 0, 0, 255))
-                log("[warn] donor has no _RimlightTex — its atlas half is black (no rim)")
-            atlas_rim = _combine_images(bimg, dimg, g)
-            rim_name = base.tex_name(base.body.rim_pid)
-            log("[ok] _RimlightTex atlas %dx%d" % (atlas_rim.width, atlas_rim.height))
+            try:
+                bimg = base.tex_image(base.body.rim_pid)
+            except RuntimeError as ex:
+                bimg = None
+                log("[warn] %s" % ex)
+                log("[warn] rim atlas skipped (the main atlas is unaffected)")
+            if bimg is not None:
+                dimg = None
+                if donor.body.rim_pid:
+                    try:
+                        dimg = donor.tex_image(donor.body.rim_pid)
+                    except RuntimeError as ex:
+                        log("[warn] %s" % ex)
+                if dimg is None:
+                    dimg = Image.new("RGBA", bimg.size, (0, 0, 0, 255))
+                    log("[warn] donor has no usable _RimlightTex — its atlas half is black (no rim)")
+                atlas_rim = _combine_images(bimg, dimg, g)
+                rim_name = base.tex_name(base.body.rim_pid)
+                log("[ok] _RimlightTex atlas %dx%d" % (atlas_rim.width, atlas_rim.height))
         elif donor.body.rim_pid:
             log("[warn] base has no _RimlightTex slot to hold a rim atlas — rim skipped "
                 "(the donor's rim map cannot be carried into the base bundle)")

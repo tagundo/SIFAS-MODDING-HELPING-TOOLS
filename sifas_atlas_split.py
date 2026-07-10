@@ -374,7 +374,19 @@ def split_model(in_path, grid, out_dir=None, gutter_px="auto", meshes="body",
 
     tex_pids = [p for p in (side.body.main_pid, side.body.rim_pid) if p]
     log("[info] decoding %d texture(s)…" % len(tex_pids))
-    tex_imgs = {p: side.tex_image(p) for p in tex_pids}
+    tex_imgs = {}
+    for p in list(tex_pids):
+        try:
+            tex_imgs[p] = side.tex_image(p)
+        except RuntimeError as ex:
+            if p == side.body.main_pid:
+                raise           # no main texture -> no atlas to split at all
+            log("[warn] %s" % ex)
+            log("[warn] the rim map is NOT split — the outputs keep the original "
+                "atlas rim texture, which the restored UVs will mis-sample "
+                "in-game. Split on Windows/Linux, or re-import an uncrunched "
+                "rim texture afterwards.")
+            tex_pids.remove(p)
     tex_names = {p: side.tex_name(p) for p in tex_pids}
 
     def uv_fn(i, j):
