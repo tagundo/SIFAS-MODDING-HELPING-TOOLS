@@ -2156,17 +2156,25 @@ def _patch_uv_region(donor, target, d_smr_tt, t_smr_tt, used, d_mesh_tt, log):
     t_img = tid.get(t_tex).read().image.convert("RGBA")
     dw, dh = d_img.size
     tw, th = t_img.size
-    # UV (0,0) is bottom-left; image origin top-left
-    x0 = max(0, int(bbox[0] * dw) - 2); x1 = min(dw, int(bbox[2] * dw) + 2)
-    y0 = max(0, int((1 - bbox[3]) * dh) - 2); y1 = min(dh, int((1 - bbox[1]) * dh) + 2)
+    # UV (0,0) is bottom-left; image origin top-left.  Crop the donor at the
+    # EXACT UV region (no bleed margin) so a shared-resolution atlas stays a
+    # lossless crop — the old ±2px source margin squeezed a W+4 crop into an
+    # unpadded W destination, squishing and blurring the part on every patch
+    # and pulling 2px of neighbouring atlas content across the part's edge.
+    x0 = max(0, int(bbox[0] * dw)); x1 = min(dw, int(bbox[2] * dw))
+    y0 = max(0, int((1 - bbox[3]) * dh)); y1 = min(dh, int((1 - bbox[1]) * dh))
     if x1 <= x0 or y1 <= y0:
         return
     patch = d_img.crop((x0, y0, x1, y1))
-    # paste at the same UV region on the target atlas (scaled to its size)
+    # paste at the SAME UV region on the target atlas
     tx0 = int(bbox[0] * tw); tx1 = int(bbox[2] * tw)
     ty0 = int((1 - bbox[3]) * th); ty1 = int((1 - bbox[1]) * th)
     if tx1 > tx0 and ty1 > ty0:
-        patch = patch.resize((tx1 - tx0, ty1 - ty0))
+        # resize ONLY when the donor/target atlas resolutions differ; when they
+        # match (the common shared-atlas case) the crop already fits the target
+        # region, so paste it pixel-for-pixel with no resample.
+        if patch.size != (tx1 - tx0, ty1 - ty0):
+            patch = patch.resize((tx1 - tx0, ty1 - ty0))
         t_img.alpha_composite(patch, (tx0, ty0))
         t_obj = tid.get(t_tex)
         t_obj_data = t_obj.read()
