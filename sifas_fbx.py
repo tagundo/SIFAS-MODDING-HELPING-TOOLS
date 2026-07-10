@@ -49,6 +49,7 @@ Usage
 import os
 import sys
 import json
+import re
 import struct
 import zlib
 import argparse
@@ -82,6 +83,18 @@ FMT_BYTES = {0: 4, 1: 2, 2: 1, 3: 1, 4: 2, 5: 2, 6: 1, 7: 1, 8: 2, 9: 2, 10: 4, 
 CH_POS, CH_NORMAL, CH_TANGENT, CH_COLOR, CH_UV0 = 0, 1, 2, 3, 4
 CH_BLENDWEIGHT, CH_BLENDINDICES = 12, 13
 MIRROR = np.diag([-1.0, 1.0, 1.0, 1.0])   # Unity <-> FBX (mirror X)
+
+# A vertex skinned to more than this many bones is flagged in red: SIFAS blends
+# only 2 bones per vertex at runtime, so any extra influence is dropped in-game.
+MAX_BONES_PER_VERTEX = 2
+_BONE_WEIGHT_EPS = 1e-6                    # weights below this don't count as a bone
+
+# Wrap a message in ANSI red.  A terminal renders it red directly; the Tk GUI and
+# the web log pane translate these same codes into a red style, so one _red(...)
+# call shows red on every surface (and never leaks raw escape codes).
+_ANSI_RED, _ANSI_RESET = "\033[91m", "\033[0m"
+def _red(text):
+    return f"{_ANSI_RED}{text}{_ANSI_RESET}"
 
 
 # ==========================================================================
@@ -1095,7 +1108,12 @@ def _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, R, t):
             box["m_Extent"] = {"x": float(ext[0]), "y": float(ext[1]), "z": float(ext[2])}
     mesh["m_SubMeshes"] = [sm]
     n_weighted = int((BW.sum(1) > 1e-9).sum())
-    return new_vc, len(new_tris), n_weighted
+    # QA: count vertices influenced by more than MAX_BONES_PER_VERTEX bones.
+    # BW is the final (top-4, normalized) skin, so this is exactly what ships.
+    infl_per_vert = (BW > _BONE_WEIGHT_EPS).sum(1)
+    n_over_bones = int((infl_per_vert > MAX_BONES_PER_VERTEX).sum())
+    max_infl = int(infl_per_vert.max()) if new_vc else 0
+    return new_vc, len(new_tris), n_weighted, n_over_bones, max_infl
 
 
 def inspect_fbx_meshes(fbx_path, bundle_path):
@@ -1238,10 +1256,17 @@ def import_fbx(fbx_path, bundle_path, out_path, texdir=None, verbose=True, only_
             continue
         bones = [bone_name(b["m_PathID"]) for b in smr_tt.get("m_Bones", [])]
         Rm, tm = mesh_RT(geo)
-        nv, nt, nw = _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, Rm, tm)
+        nv, nt, nw, n_over, mx_infl = _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, Rm, tm)
         mesh_obj.save_typetree(mesh)
         matched += 1
         log(f"[ok] rebuilt '{mname}': {nv} verts, {nt} tris")
+        if n_over:
+            log(_red(f"[!! bones] '{mname}': {n_over} vertex(es) skinned to MORE THAN "
+                     f"{MAX_BONES_PER_VERTEX} bones (up to {mx_infl}/vertex). SIFAS blends "
+                     f"only {MAX_BONES_PER_VERTEX} bones per vertex in-game, so the extra "
+                     f"weights are dropped and those verts deform wrong. Fix in Blender: "
+                     f"Weight Paint > Weights > Limit Total = {MAX_BONES_PER_VERTEX}, then "
+                     f"re-export."))
         if bones and nw == 0:
             log(f"[WARN] '{mname}': the FBX carried NO skin weights for this mesh, so it "
                 f"will collapse/be invisible in-game. Re-export from Blender WITH the "
@@ -1254,9 +1279,15 @@ def import_fbx(fbx_path, bundle_path, out_path, texdir=None, verbose=True, only_
         bones = [bone_name(b["m_PathID"]) for b in smr_tt.get("m_Bones", [])]
         geo = max(geos, key=vcount)
         Rm, tm = mesh_RT(geo)
-        nv, nt, nw = _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, Rm, tm)
+        nv, nt, nw, n_over, mx_infl = _rebuild_mesh(geo, oo, id2name, clusters, mesh, bones, Rm, tm)
         mesh_obj.save_typetree(mesh)
         log(f"[warn] no name match; rebuilt body mesh from largest geometry: {nv} verts, {nt} tris")
+        if n_over:
+            log(_red(f"[!! bones] rebuilt mesh: {n_over} vertex(es) skinned to MORE THAN "
+                     f"{MAX_BONES_PER_VERTEX} bones (up to {mx_infl}/vertex). SIFAS blends only "
+                     f"{MAX_BONES_PER_VERTEX} bones per vertex in-game — reduce these verts to "
+                     f"{MAX_BONES_PER_VERTEX} weights (Blender: Weight Paint > Limit Total) and "
+                     f"re-export."))
         if bones and nw == 0:
             log(f"[WARN] this mesh has NO skin weights from the FBX — it will be invisible "
                 f"in-game. Re-export from Blender with the armature + vertex groups.")
@@ -1564,11 +1595,31 @@ def run_gui():
     ttk.Label(root, padding=(10, 0), foreground="#555", text=_hint).pack(anchor="w")
     log_box = scrolledtext.ScrolledText(root, height=18, wrap="word", font=("TkFixedFont", 9))
     log_box.pack(fill="both", expand=True, padx=10, pady=8)
+    log_box.tag_config("red", foreground="#d33")   # _red(...) warnings show red here
+
+    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+    def _insert_ansi(s):
+        # honour ANSI red (91 / 31) as a Tk "red" tag; strip all other escape codes
+        red, pos = False, 0
+        for m in _ansi_re.finditer(s):
+            seg = s[pos:m.start()]
+            if seg:
+                log_box.insert("end", seg, ("red",) if red else ())
+            code = m.group()
+            if "91" in code or "31" in code:
+                red = True
+            elif code in ("\x1b[0m", "\x1b[m"):
+                red = False
+            pos = m.end()
+        seg = s[pos:]
+        if seg:
+            log_box.insert("end", seg, ("red",) if red else ())
 
     def drain():
         try:
             while True:
-                log_box.insert("end", msgq.get_nowait()); log_box.see("end")
+                _insert_ansi(msgq.get_nowait()); log_box.see("end")
         except queue.Empty:
             pass
         root.after(80, drain)
@@ -1703,6 +1754,23 @@ async function handle(files,fld,isdir,d){
   }catch(e){ d.textContent=base; alert('upload failed: '+e); }
 }
 const log=document.getElementById('log'), out=document.getElementById('out');
+// Translate ANSI red (91/31) into a red <span> so _red(...) warnings stand out;
+// everything else is HTML-escaped and other escape codes are stripped.
+function ansiToHtml(s){
+  const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const re=/\x1b\[[0-9;]*m/g; let html='', red=false, last=0, m;
+  while((m=re.exec(s))!==null){
+    const seg=s.slice(last,m.index);
+    if(seg) html+= red?('<span style="color:#d33">'+esc(seg)+'</span>'):esc(seg);
+    const c=m[0];
+    if(c.indexOf('91')>=0||c.indexOf('31')>=0) red=true;
+    else if(c==='\x1b[0m'||c==='\x1b[m') red=false;
+    last=re.lastIndex;
+  }
+  const seg=s.slice(last);
+  if(seg) html+= red?('<span style="color:#d33">'+esc(seg)+'</span>'):esc(seg);
+  return html;
+}
 async function run(cmd,args){
   out.innerHTML=''; log.textContent=''; args.cmd=cmd;
   const r=await fetch('/run',{method:'POST',body:JSON.stringify(args)});
@@ -1711,7 +1779,7 @@ async function run(cmd,args){
 async function poll(id,from){
   const r=await fetch('/status?id='+id+'&from='+from);
   const j=await r.json();
-  if(j.log){log.textContent+=j.log; log.scrollTop=log.scrollHeight;}
+  if(j.log){log.insertAdjacentHTML('beforeend', ansiToHtml(j.log)); log.scrollTop=log.scrollHeight;}
   if(j.done){ out.innerHTML=j.outputs.map(n=>'<a href="/download?id='+id+'&name='+encodeURIComponent(n)+'">&#11015; '+n+'</a>').join(''); return; }
   setTimeout(()=>poll(id,j.len),400);
 }
