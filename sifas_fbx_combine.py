@@ -189,8 +189,8 @@ def _combine_images(base_img, donor_img, g):
     fw = max(1, int(round((0.5 - g) * W)))       # base (left) content width
     ds = int(round((0.5 + g) * W))               # donor-half start x (== uR(0)*W)
     dw = W - ds                                  # donor (right) content width
-    ti = base_img.resize((fw, H))
-    di = donor_img.resize((dw, H))
+    ti = base_img if base_img.size == (fw, H) else base_img.resize((fw, H))
+    di = donor_img if donor_img.size == (dw, H) else donor_img.resize((dw, H))
     c = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     c.paste(ti, (0, 0)); c.paste(di, (ds, 0))
     if ds > fw:
@@ -637,7 +637,7 @@ def _merge_donor_into_base(F, base, donor, donor_sel, log):
 def combine_models(base_path, donor_path, out_bundle,
                    fbx_out=None, texdir=None,
                    base_meshes="all", donor_meshes="body", suffix="_D",
-                   gutter_px=4, merge_rim=True, mipmaps=True,
+                   gutter_px=0, merge_rim=True, mipmaps=True,
                    dry_run=False, log=print):
     t0 = time.time()
     log("[info] loading engine (a first run may auto-install numpy/UnityPy)…")
@@ -1021,7 +1021,11 @@ def main_cli(argv):
                         "the donor's body material)")
     p.add_argument("--suffix", default="_D",
                    help="suffix on donor names in the FBX (default _D)")
-    p.add_argument("--gutter", type=int, default=4, help="atlas gutter in px")
+    p.add_argument("--gutter", type=int, default=0,
+                   help="atlas gutter in px (default 0: bit-exact 1:1 halves — a "
+                        "gutter squeezes the sources by a few pixels, altering "
+                        "most texels, and pow2-aligned mipmaps do not bleed "
+                        "across the centre anyway)")
     p.add_argument("--no-rim", action="store_true", help="do not merge the rim map")
     p.add_argument("--no-mipmaps", action="store_true",
                    help="no mipmaps in the injected atlas textures")
