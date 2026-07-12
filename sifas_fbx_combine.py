@@ -160,17 +160,14 @@ def _tr(text):
     return _TR.get(_LANG.lang, {}).get(text, text)
 
 # --------------------------------------------------------------------------- #
-#  Atlas geometry — identical convention to lower_body_swap.py                 #
-#  (UV fractions use a NOMINAL 2048-wide atlas so both the _MainTex and the    #
-#   smaller _RimlightTex atlas share one UV set; the pixel rects below match)  #
+#  Atlas geometry: exact power-of-two halves, no gutter. A gutter would        #
+#  squeeze each source by a fractional resample (altering most texels), while  #
+#  pow2-aligned mip downscales never mix across the centre line anyway.        #
 # --------------------------------------------------------------------------- #
-NOMINAL_W = 2048
-
-def _uv_halves(gutter_px):
-    g = gutter_px / NOMINAL_W
-    def uL(u): return u * (0.5 - g)
-    def uR(u): return 0.5 + g + u * (0.5 - g)
-    return g, uL, uR
+def _uv_halves():
+    def uL(u): return u * 0.5
+    def uR(u): return 0.5 + u * 0.5
+    return uL, uR
 
 def _pow2(x):
     p = 1
@@ -178,26 +175,18 @@ def _pow2(x):
         p <<= 1
     return p
 
-def _combine_images(base_img, donor_img, g):
-    """Side-by-side atlas: base LEFT, donor RIGHT. Size-adaptive (each half as
-    big as the larger source, snapped to power-of-two), with the centre gutter
-    filled by edge replication so bilinear/mip sampling can't bleed across."""
+def _combine_images(base_img, donor_img):
+    """Side-by-side atlas: base LEFT, donor RIGHT, exact power-of-two halves.
+    An equal-size source is pasted 1:1 (bit-exact); a smaller source gets an
+    exact integer upscale. No gutter, no fractional resample."""
     from PIL import Image
     side = _pow2(max(base_img.width, donor_img.width))
     H = _pow2(max(base_img.height, donor_img.height))
-    W = side * 2
-    fw = max(1, int(round((0.5 - g) * W)))       # base (left) content width
-    ds = int(round((0.5 + g) * W))               # donor-half start x (== uR(0)*W)
-    dw = W - ds                                  # donor (right) content width
-    ti = base_img if base_img.size == (fw, H) else base_img.resize((fw, H))
-    di = donor_img if donor_img.size == (dw, H) else donor_img.resize((dw, H))
-    c = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    c.paste(ti, (0, 0)); c.paste(di, (ds, 0))
-    if ds > fw:
-        right_col = ti.crop((fw - 1, 0, fw, H))
-        left_col = di.crop((0, 0, 1, H))
-        for x in range(fw, ds):
-            c.paste(right_col if (x - fw) < (ds - fw) // 2 else left_col, (x, 0))
+    ti = base_img if base_img.size == (side, H) else base_img.resize((side, H))
+    di = donor_img if donor_img.size == (side, H) else donor_img.resize((side, H))
+    c = Image.new("RGBA", (side * 2, H), (0, 0, 0, 0))
+    c.paste(ti, (0, 0))
+    c.paste(di, (side, 0))
     return c
 
 # --------------------------------------------------------------------------- #
@@ -637,7 +626,7 @@ def _merge_donor_into_base(F, base, donor, donor_sel, log):
 def combine_models(base_path, donor_path, out_bundle,
                    fbx_out=None, texdir=None,
                    base_meshes="all", donor_meshes="body", suffix="_D",
-                   gutter_px=0, merge_rim=True, mipmaps=True,
+                   merge_rim=True, mipmaps=True,
                    dry_run=False, log=print):
     t0 = time.time()
     log("[info] loading engine (a first run may auto-install numpy/UnityPy)…")
@@ -691,9 +680,9 @@ def combine_models(base_path, donor_path, out_bundle,
     if not donor.body.main_pid:
         raise ValueError("donor body material has no _MainTex — cannot build an atlas")
     log("[info] decoding textures / building atlases…")
-    g, uL, uR = _uv_halves(gutter_px)
+    uL, uR = _uv_halves()
     atlas_main = _combine_images(base.tex_image(base.body.main_pid),
-                                 donor.tex_image(donor.body.main_pid), g)
+                                 donor.tex_image(donor.body.main_pid))
     main_name = base.tex_name(base.body.main_pid)
     log("[ok] _MainTex atlas %dx%d  (left=base '%s', right=donor '%s')"
         % (atlas_main.width, atlas_main.height, main_name,
@@ -718,7 +707,7 @@ def combine_models(base_path, donor_path, out_bundle,
             if dimg is None:
                 dimg = Image.new("RGBA", bimg.size, (0, 0, 0, 255))
                 log("[warn] donor has no usable _RimlightTex — its atlas half is black (no rim)")
-            atlas_rim = _combine_images(bimg, dimg, g)
+            atlas_rim = _combine_images(bimg, dimg)
             rim_name = base.tex_name(base.body.rim_pid)
             log("[ok] _RimlightTex atlas %dx%d" % (atlas_rim.width, atlas_rim.height))
         elif donor.body.rim_pid:
@@ -1021,11 +1010,6 @@ def main_cli(argv):
                         "the donor's body material)")
     p.add_argument("--suffix", default="_D",
                    help="suffix on donor names in the FBX (default _D)")
-    p.add_argument("--gutter", type=int, default=0,
-                   help="atlas gutter in px (default 0: bit-exact 1:1 halves — a "
-                        "gutter squeezes the sources by a few pixels, altering "
-                        "most texels, and pow2-aligned mipmaps do not bleed "
-                        "across the centre anyway)")
     p.add_argument("--no-rim", action="store_true", help="do not merge the rim map")
     p.add_argument("--no-mipmaps", action="store_true",
                    help="no mipmaps in the injected atlas textures")
@@ -1039,7 +1023,7 @@ def main_cli(argv):
     out = a.out or (os.path.splitext(a.base)[0] + "_merged.unity")
     combine_models(a.base, a.donor, out, fbx_out=a.fbx, texdir=a.texdir,
                    base_meshes=a.base_meshes, donor_meshes=a.donor_meshes,
-                   suffix=a.suffix, gutter_px=a.gutter, merge_rim=not a.no_rim,
+                   suffix=a.suffix, merge_rim=not a.no_rim,
                    mipmaps=not a.no_mipmaps, dry_run=a.dry_run)
 
 # --------------------------------------------------------------------------- #
