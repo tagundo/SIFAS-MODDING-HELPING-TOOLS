@@ -600,7 +600,7 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               region="lower", weld=True, open_cap_lift=0.0, open_cap_edge=0.0,
               open_cap_edge_front=None, open_cap_edge_back=None,
               open_cap_edge_left=None, open_cap_edge_right=None,
-              exclude_accessories=True, gutter_px=4, merge_rim=True, mipmaps=True,
+              exclude_accessories=True, merge_rim=True, mipmaps=True,
               dry_run=False, log=print):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
     target.  `region` ("lower" / "lower_belly" / "central") bounds which bones
@@ -751,11 +751,10 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
         log("  seam ring: %d coincident verts abutted (normals matched)"
             % len(seam_normal))
 
-    # atlas halves + UV remap (left = target, right = donor)
-    MW = 2048
-    g = gutter_px / MW
-    def uL(u): return u * (0.5 - g)
-    def uR(u): return 0.5 + g + u * (0.5 - g)
+    # atlas halves + UV remap (left = target, right = donor).  Exact halves,
+    # no gutter: the target owns [0, 0.5] and the donor owns [0.5, 1].
+    def uL(u): return u * 0.5
+    def uR(u): return 0.5 + u * 0.5
 
     newrec = {s: [] for s in T.order}
     uv_s, uv_o = T.uv_s, T.uv_o
@@ -843,10 +842,11 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
             % (moved, open_cap_lift, cap_ef, cap_eb, cap_el, cap_er))
 
     # build the combined atlas(es) and inject into the TARGET textures.
-    # CRITICAL: paste each source into the EXACT pixel rectangle that uL()/uR()
-    # map to, so UVs land precisely (the old code pasted full-width and the UVs
-    # were ~gutter px off, shifting patterned regions).  A small gutter band is
-    # filled by replicating the edge columns so bilinear/mip can't bleed across.
+    # Each source is dropped straight into its own half — target on the LEFT
+    # ([0, 0.5]), donor on the RIGHT ([0.5, 1]) — with NO gutter, NO horizontal
+    # squish and NO edge dilation.  The UV halves (uL/uR above) map to exact
+    # halves, so a source that already matches its half size is pasted
+    # pixel-for-pixel and never resampled/blurred.
     def _pow2(x):
         p = 1
         while p < x:
@@ -856,30 +856,21 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
         # SIZE-ADAPTIVE: donor and target may have different texture sizes (e.g.
         # _MainTex 1024 vs 2048, _RimlightTex 512 vs 256).  Size each atlas HALF
         # to the LARGER of the two sources so the bigger texture keeps its
-        # resolution (the old code crammed everything into a fixed 1024/512 half,
-        # downscaling anything larger).  Dimensions are snapped to power-of-two
-        # because every SIFAS texture is pow2 and NPOT + mipmaps misbehaves on
-        # the game's mobile GLES targets.  The UV halves are FRACTIONAL (uL/uR
-        # use g, not pixels), so each source just has to land in the exact pixel
-        # rectangle its UVs map to; the gutter's sub-pixel shave is unchanged.
+        # resolution.  Dimensions are snapped to power-of-two because every SIFAS
+        # texture is pow2 and NPOT + mipmaps misbehaves on the game's mobile GLES
+        # targets.
         ti0 = T.tex[slot].read().image.convert("RGBA")
         di0 = D.tex[slot].read().image.convert("RGBA")
         side = _pow2(max(ti0.width, di0.width))      # per-side width (pow2)
         H = _pow2(max(ti0.height, di0.height))       # atlas height  (pow2)
         W = side * 2                                  # total width   (pow2)
-        fw = max(1, int(round((0.5 - g) * W)))       # target (left) content width
-        ds = int(round((0.5 + g) * W))               # donor-half start x (== uR(0)*W)
-        dw = W - ds                                  # donor (right) content width
-        ti = ti0.resize((fw, H))
-        di = di0.resize((dw, H))
+        # Resize ONLY when a source isn't already exactly its half; an exact-fit
+        # source is copied verbatim so its pixels are never resampled.
+        ti = ti0 if ti0.size == (side, H) else ti0.resize((side, H))
+        di = di0 if di0.size == (side, H) else di0.resize((side, H))
         c = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        c.paste(ti, (0, 0)); c.paste(di, (ds, 0))
-        # dilate into the centre gutter to stop seam bleed
-        if ds > fw:
-            right_col = ti.crop((fw - 1, 0, fw, H))
-            left_col = di.crop((0, 0, 1, H))
-            for x in range(fw, ds):
-                c.paste(right_col if (x - fw) < (ds - fw) // 2 else left_col, (x, 0))
+        c.paste(ti, (0, 0))
+        c.paste(di, (side, 0))
         return c
     slots = ["_MainTex"]
     if merge_rim and "_RimlightTex" in T.tex and "_RimlightTex" in D.tex:
@@ -993,7 +984,9 @@ def main_cli(argv):
                    help="rim lift on the LEFT side (-X, character's left); overrides --open-cap-edge")
     p.add_argument("--open-cap-edge-right", type=float, default=None, metavar="LIFT",
                    help="rim lift on the RIGHT side (+X, character's right); overrides --open-cap-edge")
-    p.add_argument("--gutter", type=int, default=4, help="atlas gutter in px")
+    # deprecated no-op: atlas halves are now exact (no gutter/squish/bleed).
+    # kept so old command lines with --gutter N don't error out.
+    p.add_argument("--gutter", type=int, default=0, help=argparse.SUPPRESS)
     p.add_argument("--no-rim", action="store_true", help="do not merge the rim map")
     p.add_argument("--no-mipmaps", action="store_true", help="do not build mipmaps")
     p.add_argument("--dry-run", action="store_true")
@@ -1009,7 +1002,7 @@ def main_cli(argv):
               open_cap_edge_front=a.open_cap_edge_front, open_cap_edge_back=a.open_cap_edge_back,
               open_cap_edge_left=a.open_cap_edge_left, open_cap_edge_right=a.open_cap_edge_right,
               exclude_accessories=not a.keep_accessories,
-              gutter_px=a.gutter, merge_rim=not a.no_rim, mipmaps=not a.no_mipmaps,
+              merge_rim=not a.no_rim, mipmaps=not a.no_mipmaps,
               dry_run=a.dry_run)
     if a.batch:
         run_batch(a.donor, a.batch, a.out, **kw)
