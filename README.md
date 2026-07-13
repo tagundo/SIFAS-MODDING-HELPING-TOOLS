@@ -86,6 +86,9 @@ pickers don't need this layout.
 
 | Tool | What it does | Runs as |
 |------|--------------|---------|
+| `sifas_fbx.py` | Bundle ↔ FBX round-trip: export a model to FBX (+textures), edit it in Blender keeping the armature, import it back into the bundle. Needs `numpy`. | window · CLI · web |
+| `sifas_fbx_combine.py` | Merges **two models into one game-ready bundle**: the donor's body-material meshes are appended into the base body mesh (weights re-targeted by bone name) and the **texture + rim atlas** is built automatically. `--fbx` also writes both models as separate objects on one skeleton for Blender kitbashing. Undo with `sifas_atlas_split.py`. Needs `numpy`, `Pillow` and `sifas_fbx.py` in the same folder. | window · menu · CLI |
+| `sifas_atlas_split.py` | The reverse: **splits a merged model back into parts** by a texture grid. Type `2x1` / `1x2` / `2x2` and the atlased texture + rim map are cropped per cell, the meshes are cut by UV cell (UVs restored to 0..1), and one bundle per part is written. The merge tools' UV gutter is auto-detected so their merges invert exactly (`--gutter` overrides). Needs `numpy`, `Pillow`, and `sifas_fbx.py` + `sifas_fbx_combine.py` in the same folder. | window · menu · CLI |
 | `sifas_mesh_baker.py` | Bakes a bone change (scale/rotate/move) permanently into the mesh — like *Apply Armature* in Blender. Includes thigh presets (slim ↔ thick). Needs `numpy`. | window · menu · CLI |
 | `fix_sifas_bundle_export.py` | Fixes the bug where an exported SIFAS body sinks into the floor in Blender, so any exporter produces a correct FBX (in-game look unchanged). Needs `numpy`. | CLI: `python3 fix_sifas_bundle_export.py --in model.unity --out fixed.unity` |
 
@@ -229,6 +232,9 @@ Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUS
 
 | 도구 | 하는 일 | 실행 방식 |
 |------|---------|-----------|
+| `sifas_fbx.py` | 번들 ↔ FBX 왕복: 모델을 FBX(+텍스처)로 내보내고, Blender에서 아마추어를 유지한 채 편집한 뒤 다시 번들로 되돌립니다. `numpy` 필요. | 창 · 명령어 · 웹 |
+| `sifas_fbx_combine.py` | **두 모델을 게임에서 바로 쓰는 번들 하나로 병합**: 도너의 바디 재질 메시를 베이스 바디 메시에 붙이고(가중치는 본 이름으로 재대상) **텍스처+Rim 아틀라스**를 자동 생성합니다. `--fbx`를 주면 Blender 편집용으로 두 모델을 별도 오브젝트로 담은 FBX도 저장합니다. 되돌리기는 `sifas_atlas_split.py`. `numpy`, `Pillow`, 같은 폴더의 `sifas_fbx.py` 필요. | 창 · 메뉴 · 명령어 |
+| `sifas_atlas_split.py` | 반대 방향: **병합된 모델을 텍스처 그리드로 다시 분리**합니다. `2x1` / `1x2` / `2x2` 같은 그리드를 입력하면 아틀라스 텍스처·Rim맵을 셀별로 잘라내고, 메시도 UV 셀 기준으로 나눠(UV는 0..1로 복원) 부분마다 번들 하나씩 저장합니다. 병합 도구들의 UV 거터는 자동 감지되어 정확히 원복됩니다(`--gutter`로 강제 지정 가능). `numpy`, `Pillow`, 같은 폴더의 `sifas_fbx.py`+`sifas_fbx_combine.py` 필요. | 창 · 메뉴 · 명령어 |
 | `sifas_mesh_baker.py` | 본 변형(스케일/회전/이동)을 메시에 영구히 굽습니다 — Blender의 *Apply Armature*와 같은 개념. 허벅지 프리셋(slim ↔ thick) 포함. `numpy` 필요. | 창 · 메뉴 · 명령어 |
 | `fix_sifas_bundle_export.py` | 내보낸 SIFAS 몸이 Blender에서 바닥에 파묻히는 버그를 고쳐, 어떤 도구로도 올바른 FBX가 나오게 합니다(게임 내 모습은 그대로). `numpy` 필요. | 명령어: `python3 fix_sifas_bundle_export.py --in model.unity --out fixed.unity` |
 

@@ -47,6 +47,35 @@ def _require_unitypy():
     up = _require("UnityPy")
     return up
 
+def _tex_image_safe(bundle_path, texobj):
+    """Decode a texture to a PIL RGBA image. Compressed formats go through
+    sifas_fbx_combine's isolated child-process decoder when that file sits in
+    the same folder — Crunch-compressed textures segfault texture2ddecoder's
+    NATIVE code on macOS/Apple Silicon, a crash Python cannot catch, which used
+    to kill this whole tool. Standalone copies fall back to the old in-process
+    decode unchanged."""
+    d = texobj.read()
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import sifas_fbx_combine as _cb
+    except Exception:
+        return d.image.convert("RGBA")
+    fmt = _cb._texfmt_name(d)
+    if any(k in fmt for k in _cb._NATIVE_DECODED):
+        img, crashed = _cb._decode_texture_isolated(bundle_path, d.m_Name)
+        if img is not None:
+            return img.convert("RGBA")
+        if crashed or "Crunched" in fmt:
+            raise ValueError(
+                "texture '%s' (%s): the native decoder crashed on it even in an "
+                "isolated process — a known texture2ddecoder problem on macOS. "
+                "Run this step on Windows/Linux, or re-save the texture "
+                "uncompressed first (import it once with the texture importer)."
+                % (d.m_Name, fmt))
+    return d.image.convert("RGBA")
+
 # --------------------------------------------------------------------------- #
 #  i18n  (shared with the other tools via ~/.config/sifas_modding_tools)       #
 # --------------------------------------------------------------------------- #
@@ -858,9 +887,10 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
         # to the LARGER of the two sources so the bigger texture keeps its
         # resolution.  Dimensions are snapped to power-of-two because every SIFAS
         # texture is pow2 and NPOT + mipmaps misbehaves on the game's mobile GLES
-        # targets.
-        ti0 = T.tex[slot].read().image.convert("RGBA")
-        di0 = D.tex[slot].read().image.convert("RGBA")
+        # targets.  Textures are decoded through the crash-isolated helper so a
+        # Crunch-compressed source cannot segfault the whole run on macOS.
+        ti0 = _tex_image_safe(T.path, T.tex[slot])
+        di0 = _tex_image_safe(D.path, D.tex[slot])
         side = _pow2(max(ti0.width, di0.width))      # per-side width (pow2)
         H = _pow2(max(ti0.height, di0.height))       # atlas height  (pow2)
         W = side * 2                                  # total width   (pow2)
