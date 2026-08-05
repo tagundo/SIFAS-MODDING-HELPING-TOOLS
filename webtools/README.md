@@ -14,9 +14,26 @@ anywhere.
 | Skirt Length | `skirt_length_changer.py` |
 | Texture Importer | replace Texture2D images from a folder |
 | Gallery | preview body textures of bundles in a folder |
+| 3D Preview | view a bundle's model in 3D (rotate / zoom) to check an edit |
 
 Each tool runs in **Single file** or **Batch folder** mode, shows a live log and
 progress bar, and can be cancelled mid-run.
+
+## 3D Preview
+
+Pick a bundle in the **3D Preview** tab (or click any card in the **Gallery**) to
+see its model rendered in the browser — orbit with drag, zoom with the wheel /
+pinch. This lets you confirm a mesh edit (breast / hip / skirt size, a costume
+transplant) **without installing it in-game** first.
+
+How it works: the server builds a glTF binary (GLB) from the bundle, reusing the
+existing mesh extraction (`sifas_fbx.py`) and rest-pose world-space skinning
+(`fix_sifas_bundle_export.py`), with the body atlas decoded (crash-isolated, like
+the gallery thumbnail) as the body texture. The viewer is a small vendored copy of
+[three.js](https://threejs.org/) under `web/static/vendor/` — no CDN, works fully
+offline. If the device has no WebGL, or a bundle's mesh can't be built (e.g. an
+unsupported vertex format), the tab falls back to the flat texture thumbnail, so
+it never leaves you with a blank screen.
 
 ## Requirements
 

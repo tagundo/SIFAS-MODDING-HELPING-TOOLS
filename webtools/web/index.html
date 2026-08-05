@@ -12,6 +12,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="tools" data-i18n="Tools">Tools</button>
       <button class="tab" data-tab="gallery" data-i18n="Gallery">Gallery</button>
+      <button class="tab" data-tab="preview" data-i18n="3D Preview">3D Preview</button>
     </nav>
     <label class="lang-pick">
       <span data-i18n="Language">Language</span>
@@ -36,6 +37,18 @@
         <button id="gallery-load" data-i18n="Load">Load</button>
       </div>
       <div id="gallery-grid" class="gallery-grid"></div>
+    </section>
+
+    <!-- 3D PREVIEW TAB -->
+    <section id="tab-preview" class="tab-panel">
+      <div class="gallery-bar">
+        <input id="preview-path" type="text" data-i18n-ph="bundle to preview..." placeholder="bundle to preview..." readonly/>
+        <button id="preview-browse" data-i18n="Browse">Browse</button>
+        <button id="preview-load" data-i18n="Load">Load</button>
+      </div>
+      <div id="preview-stage" class="preview-stage">
+        <p class="hint" data-i18n="Pick a bundle to preview in 3D.">Pick a bundle to preview in 3D.</p>
+      </div>
     </section>
   </main>
 
@@ -67,6 +80,10 @@
     </div>
   </div>
 
+  <!-- vendored three.js (global build; no CDN, works offline) -->
+  <script src="/static/vendor/three.min.js"></script>
+  <script src="/static/vendor/OrbitControls.js"></script>
+  <script src="/static/vendor/GLTFLoader.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -72,6 +72,53 @@ def test_jobs():
     check("summary propagated", (events[-1].get("summary") or "").startswith("summary-xyz"))
 
 
+def test_glb():
+    print("glb builder:")
+    import json
+    import struct
+    try:
+        import numpy as np
+    except Exception:
+        check("numpy available for GLB test", False, "numpy not importable")
+        return
+    from webtools.core import glb
+
+    # a textured body triangle + a neutral (untextured) triangle
+    pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+    nrm = np.array([[0, 0, 1]] * 3, float)
+    uv = np.array([[0, 0], [1, 0], [0, 1]], float)
+    faces = np.array([[0, 1, 2]])
+    try:
+        from PIL import Image
+        import io
+        _b = io.BytesIO()
+        Image.new("RGBA", (2, 2), (200, 100, 50, 255)).save(_b, "PNG")
+        png = _b.getvalue()
+    except Exception:
+        png = None
+    prims = [(pos, nrm, uv, faces, True), (pos + 2, nrm, uv, faces, False)]
+    data = glb._serialize_glb(np, prims, png)
+
+    check("GLB magic 'glTF'", data[:4] == b"glTF")
+    ver, total = struct.unpack("<II", data[4:12])
+    check("GLB version 2 + total length", ver == 2 and total == len(data), f"ver={ver} total={total}/{len(data)}")
+    jlen, jtype = struct.unpack("<II", data[12:20])
+    check("JSON chunk type", jtype == 0x4E4F534A)
+    j = json.loads(data[20:20 + jlen])
+    check("two meshes emitted", len(j.get("meshes", [])) == 2)
+    check("accessors + bufferViews present", len(j.get("accessors", [])) >= 8 and len(j.get("bufferViews", [])) >= 8)
+    # POSITION accessor carries min/max (required by the glTF spec)
+    pa = j["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+    check("POSITION has min/max", "min" in j["accessors"][pa] and "max" in j["accessors"][pa])
+    # every bufferView is 4-byte aligned and inside the BIN chunk
+    binlen = struct.unpack("<I", data[20 + jlen:20 + jlen + 4])[0]
+    aligned = all(bv["byteOffset"] % 4 == 0 for bv in j["bufferViews"])
+    within = all(bv["byteOffset"] + bv["byteLength"] <= binlen for bv in j["bufferViews"])
+    check("bufferViews aligned + within BIN", aligned and within)
+    if png:
+        check("body texture embedded", "images" in j and j["materials"][0]["pbrMetallicRoughness"].get("baseColorTexture"))
+
+
 def _get(url):
     with urllib.request.urlopen(url, timeout=5) as r:
         return r.status, r.read()
@@ -142,6 +189,7 @@ def test_http():
 def main():
     test_imports()
     test_jobs()
+    test_glb()
     test_http()
     print()
     if FAILS:
