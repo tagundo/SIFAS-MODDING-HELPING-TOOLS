@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from webtools import filebrowser
 from webtools import i18n
 from webtools.core import decode
+from webtools.core import glb
 from webtools.jobs import MANAGER
 from webtools.tools import registry
 
@@ -88,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_fs_list()
             if path == "/api/thumb":
                 return self._api_thumb()
+            if path == "/api/preview":
+                return self._api_preview()
             if path == "/api/download":
                 return self._api_download()
             if path.startswith("/api/jobs/") and path.endswith("/events"):
@@ -145,6 +148,16 @@ class Handler(BaseHTTPRequestHandler):
         if not data:
             return self._send_json({"error": "no thumbnail"}, status=404)
         self._send_bytes(data, "image/png",
+                         extra_headers={"Cache-Control": "max-age=600"})
+
+    def _api_preview(self):
+        path = (self._query().get("path") or [""])[0]
+        if not filebrowser.is_within_allowed(path):
+            return self._send_json({"error": "forbidden"}, status=403)
+        data = glb.preview(path)
+        if not data:
+            return self._send_json({"error": "no preview"}, status=404)
+        self._send_bytes(data, "model/gltf-binary",
                          extra_headers={"Cache-Control": "max-age=600"})
 
     def _api_download(self):

@@ -114,6 +114,12 @@ async function init() {
   $("#gallery-browse").addEventListener("click", () =>
     openPicker("dir", (p) => { $("#gallery-path").value = p; }, "modded"));
   $("#gallery-load").addEventListener("click", loadGallery);
+  $("#preview-browse").addEventListener("click", () =>
+    openPicker("path", (p) => { $("#preview-path").value = p; renderBundle(p); }, "modded"));
+  $("#preview-load").addEventListener("click", () => {
+    const p = $("#preview-path").value;
+    if (p) renderBundle(p);
+  });
 
   state.lang = detectLang();
   await loadI18n();
@@ -126,6 +132,18 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
   $("#tab-" + name).classList.add("active");
+  // pause the 3D render loop while the preview tab is hidden; resume on return
+  if (name !== "preview" && viewer.raf) { cancelAnimationFrame(viewer.raf); viewer.raf = 0; }
+  else if (name === "preview" && viewer.renderer && !viewer.raf) resumeViewer();
+}
+
+function resumeViewer() {
+  const tick = () => {
+    viewer.raf = requestAnimationFrame(tick);
+    if (viewer.controls) viewer.controls.update();
+    if (viewer.renderer) viewer.renderer.render(viewer.scene, viewer.camera);
+  };
+  tick();
 }
 
 // ------------------------------------------------------------------- tools
@@ -555,8 +573,125 @@ async function loadGallery() {
       const ph = el("div", { class: "noimg", text: T("no preview") });
       img.replaceWith(ph);
     });
-    grid.appendChild(el("div", { class: "gcard" }, [img, el("div", { class: "cap", text: b.name })]));
+    // click a card to open it in the 3D preview tab
+    const card = el("div", { class: "gcard", title: T("Open in 3D preview"),
+      onclick: () => { $("#preview-path").value = b.path; switchTab("preview"); renderBundle(b.path); } },
+      [img, el("div", { class: "cap", text: b.name })]);
+    grid.appendChild(card);
   }
+}
+
+// ---------------------------------------------------------------- 3D preview
+// Renders the selected bundle as an interactive glTF model (server builds a GLB
+// from the mesh + baked rest pose + body texture). If WebGL is unavailable or the
+// model can't be built/parsed, we fall back to the flat texture thumbnail so the
+// tab always shows something useful (important on older Android WebViews).
+const viewer = { renderer: null, scene: null, camera: null, controls: null, raf: 0, onResize: null };
+
+function preview3DSupported() {
+  if (typeof THREE === "undefined") return false;
+  try {
+    const c = document.createElement("canvas");
+    return !!(window.WebGLRenderingContext &&
+      (c.getContext("webgl") || c.getContext("experimental-webgl")));
+  } catch (e) { return false; }
+}
+
+function previewFallbackThumb(path, msg) {
+  disposeViewer();
+  const stage = $("#preview-stage");
+  stage.innerHTML = "";
+  stage.appendChild(el("div", { class: "hint",
+    text: msg || T("3D preview unavailable — showing the texture instead.") }));
+  const img = el("img", { class: "preview-thumb",
+    src: "/api/thumb?path=" + encodeURIComponent(path), alt: baseName(path) });
+  img.addEventListener("error", () =>
+    img.replaceWith(el("div", { class: "noimg", text: T("no preview") })));
+  stage.appendChild(img);
+}
+
+function disposeViewer() {
+  if (viewer.raf) cancelAnimationFrame(viewer.raf);
+  viewer.raf = 0;
+  if (viewer.onResize) { window.removeEventListener("resize", viewer.onResize); viewer.onResize = null; }
+  if (viewer.controls) { viewer.controls.dispose(); viewer.controls = null; }
+  if (viewer.renderer) {
+    const dom = viewer.renderer.domElement;
+    viewer.renderer.dispose();
+    if (dom && dom.parentNode) dom.parentNode.removeChild(dom);
+    viewer.renderer = null;
+  }
+  viewer.scene = viewer.camera = null;
+}
+
+async function renderBundle(path) {
+  const stage = $("#preview-stage");
+  if (!preview3DSupported()) { previewFallbackThumb(path); return; }
+  disposeViewer();
+  stage.innerHTML = "<p class='hint'>" + T("Loading 3D preview…") + "</p>";
+  let buf;
+  try {
+    const resp = await fetch("/api/preview?path=" + encodeURIComponent(path));
+    if (!resp.ok) { previewFallbackThumb(path); return; }
+    buf = await resp.arrayBuffer();
+  } catch (e) { previewFallbackThumb(path); return; }
+
+  let loader;
+  try { loader = new THREE.GLTFLoader(); }
+  catch (e) { previewFallbackThumb(path); return; }
+  loader.parse(buf, "",
+    (gltf) => {
+      try { setupScene(gltf.scene, path); }
+      catch (e) { previewFallbackThumb(path, T("3D preview failed to render — showing the texture instead.")); }
+    },
+    () => previewFallbackThumb(path, T("3D preview failed to load — showing the texture instead.")));
+}
+
+function setupScene(root, path) {
+  const stage = $("#preview-stage");
+  stage.innerHTML = "";
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); }
+  catch (e) { previewFallbackThumb(path); return; }
+  const w = stage.clientWidth || 640, h = stage.clientHeight || 480;
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(w, h);
+  stage.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1000);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 0.8); key.position.set(1, 2, 3); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.4); fill.position.set(-2, 1, -2); scene.add(fill);
+  scene.add(root);
+
+  // frame the model: aim the camera at its centre, back off by its size
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  camera.near = maxDim / 100; camera.far = maxDim * 100;
+  camera.position.set(center.x, center.y, center.z + maxDim * 2.2);
+  camera.updateProjectionMatrix();
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.copy(center);
+  controls.enableDamping = true;
+  controls.update();
+
+  viewer.renderer = renderer; viewer.scene = scene; viewer.camera = camera; viewer.controls = controls;
+  viewer.onResize = () => {
+    const ww = stage.clientWidth || w, hh = stage.clientHeight || h;
+    renderer.setSize(ww, hh); camera.aspect = ww / hh; camera.updateProjectionMatrix();
+  };
+  window.addEventListener("resize", viewer.onResize);
+
+  const tick = () => {
+    viewer.raf = requestAnimationFrame(tick);
+    controls.update();
+    renderer.render(scene, camera);
+  };
+  tick();
 }
 
 window.addEventListener("DOMContentLoaded", init);
