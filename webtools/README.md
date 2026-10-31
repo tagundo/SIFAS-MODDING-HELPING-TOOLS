@@ -14,6 +14,7 @@ anywhere.
 | Skirt Length | `skirt_length_changer.py` |
 | Texture Importer | replace Texture2D images from a folder |
 | Gallery | preview body textures of bundles in a folder |
+| Mesh Baker | bake scale, rotation and movement into model vertices |
 
 Each tool runs in **Single file** or **Batch folder** mode, shows a live log and
 progress bar, and can be cancelled mid-run.
@@ -64,6 +65,8 @@ browser.
 The file browser is limited to your sukusta library and home folder:
 
 - `extracted` — `~/sukusta/extracted` (Termux: `~/storage/downloads/sukusta/extracted`)
+- `models` — `extracted/3d_model`, the asset extractor's model output; Mesh Baker
+  opens here by default, falling back to `extracted` for older libraries
 - `modded` — `~/sukusta/modded`
 - override the base with the `SUKUSTA_DIR` environment variable
 
@@ -73,3 +76,11 @@ The file browser is limited to your sukusta library and home folder:
   identical to running the scripts directly.
 - If a texture thumbnail can't be decoded (some Termux/ARM codec builds), the
   gallery just shows a "no preview" placeholder — it never crashes the server.
+
+## Mesh Baker
+
+Choose an input model, then load its bone list and add a transform row for each
+bone you want to edit. Each row has X/Y/Z values for scale (1 = unchanged),
+rotation in degrees, and movement in bone-local units, plus child compensation.
+For a batch folder, choose one representative model as the reference bundle.
+The thigh presets and advanced text specifications remain available.
