@@ -19,7 +19,7 @@ from webtools.tools.costume import (
     run_costume_recolour, run_costume_transplant, run_iosapk_import,
     run_lower_body_swap,
 )
-from webtools.tools.mesh import run_fix_export, run_mesh_baker
+from webtools.tools.mesh import inspect_bones, run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
 from webtools.tools.info import run_charinfo
@@ -101,8 +101,10 @@ def _prefix_suffix(suffix_default="_mod"):
     ]
 
 
-def _common_io(suffix_default="_mod"):
-    return [_in_single(), _in_batch(), _out_dir(), *_prefix_suffix(suffix_default)]
+def _common_io(suffix_default="_mod", root="extracted"):
+    single, batch = _in_single(), _in_batch()
+    single["root"] = batch["root"] = root
+    return [single, batch, _out_dir(), *_prefix_suffix(suffix_default)]
 
 
 def _xyz(prefix_label, names, default="", help_first=None):
@@ -388,7 +390,7 @@ TOOLS = [
         "modes": ["single", "batch"],
         "run": run_mesh_baker,
         "fields": [
-            *_common_io("_baked"),
+            *_common_io("_baked", root="models"),
             {"name": "thigh", "label": "Thigh preset", "type": "select", "default": "",
              "options": [
                  {"value": "", "label": "(none)"},
@@ -400,7 +402,13 @@ TOOLS = [
                  {"value": "thick:default", "label": "thick → default"},
              ],
              "help": "One-click thigh resize: scales both UpLeg bones with child compensation."},
-            {"name": "target_spec", "label": "Target spec(s) — advanced", "type": "text", "default": "",
+            {"name": "reference_path", "label": "Reference bundle for bone list", "type": "path",
+             "root": "models",
+             "help": "Uses the input bundle or first selected file automatically. For batch folders, choose one representative bundle."},
+            {"name": "targets", "label": "Bone transforms", "type": "bone_targets",
+             "depends": ["reference_path"], "options_fn": inspect_bones,
+             "help": "Select or type a bone, then add a transform. Scale is a multiplier; rotation is in degrees; movement uses bone-local units."},
+            {"name": "target_spec", "label": "Target spec(s) — advanced", "type": "textarea", "default": "",
              "help": "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
             {"name": "spine_comp", "label": "Spine compensation target", "type": "select",
              "default": "spine2",

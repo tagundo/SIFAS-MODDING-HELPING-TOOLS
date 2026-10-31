@@ -179,6 +179,121 @@ function renderForm() {
   form.appendChild(el("button", { class: "run-btn", type: "submit", text: T("Run") }));
   panel.appendChild(form);
   wireDynamicSelects(tool);
+  wireBoneTargets(tool);
+}
+
+// Keep the reference convenient for Single/Selected files, while allowing a
+// separate reference in Batch mode or a manual override for mixed bundles.
+function wireBoneTargets(tool) {
+  for (const field of tool.fields.filter((f) => f.type === "bone_targets")) {
+    const editor = document.querySelector(`#tool-form [data-name="${field.name}"]`);
+    const ref = document.querySelector('#tool-form [data-name="reference_path"]');
+    if (!editor || !ref) continue;
+    let automatic = ref.value;
+    for (const name of ["in_path", "in_paths"]) {
+      const source = document.querySelector(`#tool-form [data-name="${name}"]`);
+      if (!source) continue;
+      source.addEventListener("change", () => {
+        if (ref.value && ref.value !== automatic) return;
+        const next = source.value.split("\n").find((p) => p.trim()) || "";
+        if (automatic === next && ref.value === next) return;
+        automatic = next;
+        ref.value = automatic;
+        ref.dispatchEvent(new Event("change"));
+      });
+    }
+    ref.addEventListener("change", () => editor._loadBones());
+  }
+}
+
+function renderBoneTargets(field) {
+  const editor = el("div", { class: "bone-editor" });
+  editor.dataset.name = field.name;
+  editor.dataset.ftype = "bone_targets";
+  const listId = "bones_" + field.name;
+  const options = el("datalist", { id: listId });
+  const bone = el("input", { type: "text", list: listId,
+    placeholder: T("Select or type a bone"), "aria-label": T("Bone") });
+  const status = el("div", { class: "help", role: "status", text: T("Load a bundle to see its bones, or type a bone name.") });
+  const rows = el("div", { class: "bone-targets" });
+  editor._collectTargets = () => [...rows.children].map((row) => row._target());
+  let generation = 0;
+  editor._loadBones = async () => {
+    const gen = ++generation;
+    const ref = document.querySelector('#tool-form [data-name="reference_path"]');
+    options.innerHTML = "";
+    if (!ref || !ref.value.trim()) {
+      status.textContent = T("Load a bundle to see its bones, or type a bone name.");
+      return;
+    }
+    status.textContent = T("loading…");
+    try {
+      const url = "/api/options/mesh_baker/" + encodeURIComponent(field.name) +
+        "?reference_path=" + encodeURIComponent(ref.value);
+      const data = await (await fetch(url)).json();
+      if (gen !== generation || !editor.isConnected) return;
+      for (const item of data.options || []) {
+        options.appendChild(el("option", { value: item.value, label: item.label }));
+      }
+      status.textContent = data.error || ((data.options || []).length
+        ? T("Bones loaded. Select or type a name below.") : T("No skinned bones found in this bundle."));
+    } catch (err) {
+      if (gen === generation && editor.isConnected) status.textContent = String(err);
+    }
+  };
+  function addTarget() {
+    const name = bone.value.trim();
+    if (!name) { bone.focus(); return; }
+    const existing = [...rows.children].find((r) => r._target().bone === name);
+    if (existing) { existing.querySelector("input").focus(); return; }
+    const row = el("fieldset", { class: "bone-target" });
+    const nameInput = el("input", { type: "text", value: name, list: listId,
+      required: "required", "aria-label": T("Bone") });
+    const remove = el("button", { type: "button", text: T("Remove"), onclick: () => row.remove() });
+    row.appendChild(el("div", { class: "path-row" }, [nameInput, remove]));
+    const vectors = {};
+    for (const [key, title, initial] of [["scale", "Scale", 1], ["rotate", "Rotation (degrees)", 0], ["translate", "Movement", 0]]) {
+      const group = el("div", { class: "bone-vector" });
+      group.appendChild(el("span", { text: T(title) }));
+      const inputs = [];
+      const axes = el("div", { class: "vec3-row" });
+      for (const axis of ["X", "Y", "Z"]) {
+        const input = el("input", { type: "number", step: "any", value: String(initial),
+          required: "required", "aria-label": T(title) + " " + axis });
+        if (key === "scale") input.min = "0.000000001";
+        inputs.push(input);
+        axes.appendChild(el("label", {}, [el("span", { text: axis }), input]));
+      }
+      vectors[key] = inputs;
+      group.appendChild(axes);
+      row.appendChild(group);
+    }
+    const comp = el("input", { type: "checkbox" });
+    comp.checked = name.startsWith("Spine") || ["LeftUpLeg", "RightUpLeg"].includes(name);
+    row.appendChild(el("label", { class: "bone-comp" }, [comp, T("Compensate child scale")]));
+    const reset = el("button", { type: "button", text: T("Reset transform"), onclick: () => {
+      for (const key of Object.keys(vectors)) vectors[key].forEach((inp) => { inp.value = key === "scale" ? "1" : "0"; });
+    } });
+    row.appendChild(reset);
+    row._target = () => ({ bone: nameInput.value.trim(),
+      scale: vectors.scale.map((inp) => Number(inp.value)),
+      rotate: vectors.rotate.map((inp) => Number(inp.value)),
+      translate: vectors.translate.map((inp) => Number(inp.value)), compensate: comp.checked });
+    rows.appendChild(row);
+    bone.value = "";
+    nameInput.focus();
+  }
+  const load = el("button", { type: "button", text: T("Load bones"), onclick: () => editor._loadBones() });
+  const add = el("button", { type: "button", text: T("Add transform"), onclick: addTarget });
+  bone.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); addTarget(); }
+  });
+  editor.appendChild(el("div", { class: "path-row bone-actions" }, [load]));
+  editor.appendChild(status);
+  editor.appendChild(el("div", { class: "path-row bone-actions" }, [bone, add]));
+  editor.appendChild(options);
+  editor.appendChild(rows);
+  return editor;
 }
 
 // Fetch a dynamic_select field's options from the server, keyed on its
@@ -254,7 +369,9 @@ function renderField(field) {
 
   wrap.appendChild(el("label", { for: id, text: field.label }));
 
-  if (field.type === "select") {
+  if (field.type === "bone_targets") {
+    wrap.appendChild(renderBoneTargets(field));
+  } else if (field.type === "select") {
     const sel = el("select", { id });
     sel.dataset.name = field.name;
     sel.dataset.ftype = "select";
@@ -325,7 +442,8 @@ function renderField(field) {
       onclick: () => openPicker(field.type, (p) => {
         input.value = p;
         input.dispatchEvent(new Event("change", { bubbles: true }));  // notify dynamic_select deps
-      }, field.root, input.value),
+      }, field.root, field.type === "path" && input.value
+        ? input.value.replace(/\/[^/]*$/, "") : input.value),
     });
     wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
   } else if (field.type === "paths") {
@@ -346,7 +464,10 @@ function renderField(field) {
       for (const p of cur) {
         const rm = el("button", {
           type: "button", class: "multi-rm", text: "✕",
-          onclick: () => { hidden.value = items().filter((q) => q !== p).join("\n"); rerender(); },
+          onclick: () => {
+            hidden.value = items().filter((q) => q !== p).join("\n"); rerender();
+            hidden.dispatchEvent(new Event("change", { bubbles: true }));
+          },
         });
         listEl.appendChild(el("li", {}, [el("span", { text: baseName(p) }), rm]));
       }
@@ -355,8 +476,11 @@ function renderField(field) {
       type: "button", text: T("Add file"),
       onclick: () => openPicker("path", (p) => {
         const cur = items();
-        if (!cur.includes(p)) { cur.push(p); hidden.value = cur.join("\n"); rerender(); }
-      }, field.root, ""),
+        if (!cur.includes(p)) {
+          cur.push(p); hidden.value = cur.join("\n"); rerender();
+          hidden.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }, field.root, items().length ? items()[items().length - 1].replace(/\/[^/]*$/, "") : ""),
     });
     wrap.appendChild(hidden);
     wrap.appendChild(el("div", { class: "path-row" }, [add]));
@@ -400,7 +524,8 @@ function collectParams() {
   document.querySelectorAll("#tool-form [data-name]").forEach((inp) => {
     const name = inp.dataset.name;
     if (inp.dataset.ftype === "preset") return; // UI-only; it fills other fields
-    if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
+    if (inp.dataset.ftype === "bone_targets") params[name] = inp._collectTargets();
+    else if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
     else params[name] = inp.value;
   });
   return params;

@@ -12,6 +12,10 @@ def allowed_roots() -> dict:
     """Named starting points the UI may browse from."""
     roots = {}
     roots["extracted"] = default_sukusta_dir("extracted")
+    # The asset extractor groups member models here. Fall back for libraries
+    # made by older extractors, which wrote directly under extracted/.
+    models = os.path.join(roots["extracted"], "3d_model")
+    roots["models"] = models if os.path.isdir(models) else roots["extracted"]
     roots["modded"] = default_sukusta_dir("modded")
     # The costume installer's drop folder — the packer writes finished .zip packs
     # here so Install Costume picks them up without a manual move.
