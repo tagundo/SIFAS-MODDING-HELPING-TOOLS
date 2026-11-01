@@ -737,7 +737,7 @@ async function runTool() {
   const missing = [];
   for (const f of tool.fields) {
     if (f.mode && f.mode !== state.currentMode) continue;
-    if (f.required && !String(params[f.name] ?? "").trim()) missing.push(f.label);
+    if (f.required && !String(params[f.name] == null ? "" : params[f.name]).trim()) missing.push(f.label);
   }
   if (missing.length) return alert(T("Please fill in: ") + missing.join(", "));
   if (tool.id === "mesh_baker" && !Object.values(params.body_parts || {}).some((p) => Number(p) !== 100)
