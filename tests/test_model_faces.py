@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import struct
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -313,6 +314,53 @@ class FaceTests(unittest.TestCase):
             self.plan()._resource(descriptor)
         self.assertFalse((self.root / "cache" / "packs" / descriptor["pack_name"]).exists())
 
+    @EXTRACTOR_REQUIRED
+    def test_timed_out_network_worker_never_publishes_late_cache_files(self):
+        self.context["allow_download"] = True
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        packed = self.encrypted(donor, descriptor)
+        base = viewer.prepare([str(self.body)])
+        base_bytes = viewer.get_model(base["id"])
+        gate, entered = threading.Event(), threading.Event()
+        slot = threading.BoundedSemaphore(1)
+
+        def blocked_download(*args):
+            entered.set()
+            gate.wait(2)
+            # Simulate a resolver returning valid bytes after the deadline;
+            # publication must still stay impossible on the abandoned worker.
+            return packed
+
+        with patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "_download", side_effect=blocked_download), \
+                patch.object(faces, "FACE_SECONDS", .05), patch.object(faces, "_save") as save:
+            try:
+                start = time.monotonic()
+                metadata = viewer.prepare([str(self.body)], face_context=self.context)
+                self.assertLess(time.monotonic() - start, .5)
+                self.assertEqual(viewer.get_model(metadata["id"]), base_bytes)
+                self.assertEqual(metadata["stats"], base["stats"])
+                self.assertEqual(metadata["faces"]["status"], "unavailable")
+                self.assertTrue(entered.is_set())
+                save.assert_not_called()
+            finally:
+                gate.set()
+                self.assertTrue(slot.acquire(timeout=1), "The bounded download worker did not finish")
+                slot.release()
+            save.assert_not_called()
+        self.assertFalse((self.root / "cache" / "packs" / descriptor["pack_name"]).exists())
+        self.assertEqual(list((self.root / "cache" / "models").glob("*.unity")), [])
+
+    def test_local_facial_sources_still_work_while_download_slot_is_busy(self):
+        (self.library / "local_original.unity").write_bytes(self.donor())
+        slot = threading.BoundedSemaphore(1)
+        slot.acquire()
+        with patch.object(faces, "_DOWNLOAD_SLOT", slot), patch.object(faces, "_download") as download:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
+        download.assert_not_called()
+
     def test_failed_optional_face_does_not_fail_body(self):
         with patch.object(faces.FacePlan, "_local", side_effect=OSError("offline")):
             metadata = viewer.prepare([str(self.body)], face_context=self.context)
@@ -430,6 +478,77 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(faces._cached(path, 4), b"1234")
             path.write_bytes(b"4321")
             self.assertIsNone(faces._cached(path, 4))
+
+
+class DownloadWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.slot = threading.BoundedSemaphore(1)
+        self.patch_slot = patch.object(faces, "_DOWNLOAD_SLOT", self.slot)
+        self.patch_slot.start()
+        self.gates = []
+
+    def tearDown(self):
+        for gate in self.gates:
+            gate.set()
+        self.assertTrue(self.slot.acquire(timeout=1), "The test left a network worker running")
+        self.slot.release()
+        self.patch_slot.stop()
+
+    def test_blocked_dns_returns_on_deadline_with_one_daemon_and_no_queue(self):
+        entered, gate = threading.Event(), threading.Event()
+        self.gates.append(gate)
+        calls = []
+
+        class Response(io.BytesIO):
+            headers = {"Content-Length": "4"}
+
+        def open_request(*args, **kwargs):
+            calls.append(kwargs["timeout"])
+            entered.set()
+            gate.wait(2)  # Model an OS getaddrinfo that ignores socket timeout.
+            return Response(b"data")
+
+        opener = type("Opener", (), {"open": staticmethod(open_request)})()
+        with patch.object(faces, "build_opener", return_value=opener):
+            start = time.monotonic()
+            with self.assertRaises(faces.FaceUnavailable):
+                faces._download_with_deadline("https://example.invalid/static/pack", 4, start + .03)
+            self.assertLess(time.monotonic() - start, .5)
+            self.assertTrue(entered.is_set())
+            self.assertEqual(len(calls), 1)
+            workers = [thread for thread in threading.enumerate() if thread.name == "viewer-face-download"]
+            self.assertEqual(len(workers), 1)
+            self.assertTrue(workers[0].daemon)
+            with self.assertRaisesRegex(faces.FaceUnavailable, "still finishing"):
+                faces._download_with_deadline("https://example.invalid/static/another", 4, time.monotonic() + 1)
+            self.assertEqual(len(calls), 1)
+            gate.set()
+            self.assertTrue(self.slot.acquire(timeout=1))
+            self.slot.release()
+            self.assertEqual(faces._download_with_deadline("https://example.invalid/static/recovered", 4, time.monotonic() + 1), b"data")
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(0 < timeout <= 8 for timeout in calls))
+
+    def test_deadline_is_rechecked_even_when_wait_reports_completion(self):
+        with patch.object(faces, "_download", return_value=b"data"), \
+                patch.object(faces.time, "monotonic", side_effect=[0., 0., 2.]):
+            with self.assertRaises(faces.FaceUnavailable):
+                faces._download_with_deadline("https://example.invalid/static/pack", 4, 1.)
+
+    def test_worker_exception_releases_slot_and_normal_success_is_unchanged(self):
+        with patch.object(faces, "_download", side_effect=OSError("network failed")):
+            with self.assertRaisesRegex(OSError, "network failed"):
+                faces._download_with_deadline("https://example.invalid/static/pack", 4, time.monotonic() + 1)
+        with patch.object(faces, "_download", return_value=b"data"):
+            self.assertEqual(faces._download_with_deadline("https://example.invalid/static/pack", 4, time.monotonic() + 1), b"data")
+
+    def test_thread_start_failure_releases_the_reserved_slot(self):
+        with patch.object(faces.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("thread unavailable")
+            with self.assertRaises(faces.FaceUnavailable):
+                faces._download_with_deadline("https://example.invalid/static/pack", 4, time.monotonic() + 1)
+        self.assertTrue(self.slot.acquire(blocking=False))
+        self.slot.release()
 
 
 class OptionalBudgetTests(unittest.TestCase):

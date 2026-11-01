@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -24,6 +25,7 @@ MAX_CANDIDATES = 32
 MAX_LOCAL_FILES = 512
 MAX_AUTO_FILES = 4
 FACE_SECONDS = 40
+_DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 _OWNER = re.compile(r"(?:^|[^a-z0-9])ch(\d{4})(?=[^0-9]|$)", re.I)
 _PACK = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _FACE = re.compile(r"(?:^|[^a-z])face(?:[^a-z]|$)", re.I)
@@ -285,6 +287,7 @@ def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
     _check(deadline)
     request = Request(url, headers={"User-Agent": "Elichika model viewer"})
     with build_opener(_SameOriginRedirect()).open(request, timeout=min(8, max(1, deadline - time.monotonic()))) as response:
+        _check(deadline)
         length = response.headers.get("Content-Length")
         if length is not None and (int(length) > byte_limit or (expected is not None and int(length) != expected)):
             raise FaceUnavailable("The original asset server returned an unexpected file size.")
@@ -301,6 +304,55 @@ def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
     if size == 0 or (expected is not None and size != expected):
         raise FaceUnavailable("The original asset download was incomplete.")
     return b"".join(chunks)
+
+
+def _download_with_deadline(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
+    """Bound the caller's wait even when OS DNS ignores the socket timeout.
+
+    At most one daemon may be inside the original downloader; nothing queues.
+    The worker receives no FacePlan or cache path and only returns bytes. An
+    abandoned result is discarded, so late DNS/HTTP completion cannot decrypt
+    assets or publish cache files after the caller has returned its base model.
+    """
+    _check(deadline)
+    slot = _DOWNLOAD_SLOT
+    if not slot.acquire(blocking=False):
+        raise FaceUnavailable("An original face download is still finishing. Local facial assets can still be used.")
+    completed, lock = threading.Event(), threading.Lock()
+    state = {"abandoned": False}
+    downloader = _download
+
+    def run():
+        try:
+            try:
+                data = downloader(url, expected, deadline, byte_limit)
+                error = None
+            except Exception as exception:
+                data, error = None, exception
+            with lock:
+                if not state["abandoned"]:
+                    state.update(data=data, error=error)
+        finally:
+            slot.release()
+            completed.set()
+
+    try:
+        threading.Thread(target=run, name="viewer-face-download", daemon=True).start()
+    except Exception as error:
+        slot.release()
+        raise FaceUnavailable("The original face download could not be started.") from error
+    finished = completed.wait(max(0., deadline - time.monotonic()))
+    with lock:
+        if not finished or time.monotonic() >= deadline:
+            state.clear()
+            state["abandoned"] = True
+            raise FaceUnavailable("Finding the original face took too long.")
+        error, data = state.pop("error", None), state.pop("data", None)
+    if error is not None:
+        raise error
+    if data is None:
+        raise FaceUnavailable("The original face download did not finish.")
+    return data
 
 
 def _prune_cache(root, protected=(), deadline=None):
@@ -567,7 +619,7 @@ class FacePlan:
                     raise FaceUnavailable("The original face exceeds the download budget.")
                 # Reserve before opening a socket, including failed attempts.
                 self.transferred += reservation
-                packed = _download(base.rstrip("/") + "/" + pack_name, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining))
+                packed = _download_with_deadline(base.rstrip("/") + "/" + pack_name, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining))
                 if not 0 < len(packed) <= MAX_PACK_BYTES or (pack_size is not None and len(packed) != pack_size):
                     raise FaceUnavailable("The original asset download was incomplete.")
             plain = bytearray(packed[head:head + size])
