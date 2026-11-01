@@ -212,6 +212,7 @@ def _environment(paths, deadline):
         # than a filename prevents UnityPy from walking neighbouring directories.
         loaded = env.load_file(data, name=f"preview-{index}-{os.path.basename(path)}")
         loaded.preview_source_name = os.path.basename(path)
+        loaded.preview_source_path = path
         # Raw serialized assets may be linked by their filename rather than an
         # embedded CAB id. Register only explicitly supplied, in-memory content.
         if hasattr(loaded, "objects"):
@@ -265,6 +266,18 @@ def _source_name(obj):
         name = getattr(container, "preview_source_name", None)
         if name:
             return name
+        container = getattr(container, "parent", None)
+        if container is None:
+            break
+    return ""
+
+
+def _source_path(obj):
+    container = obj.assets_file
+    for _ in range(64):
+        path = getattr(container, "preview_source_path", None)
+        if path:
+            return path
         container = getattr(container, "parent", None)
         if container is None:
             break
@@ -369,6 +382,8 @@ class _Scene:
             "linked_texture_missing": "A linked texture is missing. Add its companion model file to the preview.",
             "linked_mesh_missing": "A linked mesh is missing. Add its companion model file to the preview.",
             "facial_assets_missing": "This costume needs its separate facial asset to show eyes and expressions.",
+            "skin_bones_unavailable": "Some bone transforms are unavailable. Those parts use their saved renderer placement.",
+            "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -581,7 +596,7 @@ def _validate_mesh_allocations(mesh):
             raise ModelViewerError("The model has too many triangles for the mobile viewer.")
 
 
-def _geometry(mesh_obj, world):
+def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None):
     import numpy as np
     from UnityPy.helpers.MeshHelper import MeshHandler
 
@@ -624,6 +639,21 @@ def _geometry(mesh_obj, world):
             face_normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
             for corner in range(3):
                 np.add.at(normals, indices[:, corner], face_normals)
+    orientation = -1 if np.linalg.det(world[:3, :3]) < 0 else 1
+    if bone_world_matrices is not None:
+        from .model_skinning import rest_skin_mesh, SkinningError
+        try:
+            rest = rest_skin_mesh(positions, normals, handler.m_BoneIndices, handler.m_BoneWeights,
+                                  bone_world_matrices, mesh.m_BindPose, world, max_vertices=MAX_VERTICES)
+        except SkinningError as error:
+            raise ModelViewerError(str(error)) from error
+        positions, normals = rest["positions"], rest["normals"]
+        orientation = rest["orientation_sign"]
+        if warnings is not None:
+            warnings.extend(rest["warnings"])
+        # Skinning already produces Unity world coordinates. Applying the
+        # renderer transform here again would move the edited body twice.
+        world = np.eye(4)
     transform = np.diag([-1., 1., 1., 1.]) @ world
     positions = positions @ transform[:3, :3].T + transform[:3, 3]
     try:
@@ -635,7 +665,7 @@ def _geometry(mesh_obj, world):
     normals[zero] = [0, 1, 0]
     lengths[zero] = 1
     normals /= lengths[:, None]
-    if np.linalg.det(transform[:3, :3]) < 0:
+    if orientation > 0:
         result = [indices[:, [0, 2, 1]] for indices in result]
     uv = None
     if handler.m_UV0 is not None:
@@ -647,10 +677,30 @@ def _geometry(mesh_obj, world):
     return str(mesh.m_Name), positions, normals, uv, result
 
 
-def _build(paths, deadline):
+def _build(paths, deadline, face_context=None):
     import numpy as np
+    from .model_faces import FacePlan
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
+    try:
+        faces = FacePlan(scene, paths, face_context, deadline)
+    except Exception:
+        faces = FacePlan(scene, paths, None, deadline)
+        faces.enabled = bool(face_context and face_context.get("enabled", True))
+        faces.status = "unavailable"
+        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+    extra = faces.resolve()
+    if extra:
+        try:
+            env = _environment(_paths(paths + extra), deadline)
+            scene = _Scene(env, deadline)
+        except Exception:
+            # The selected costume remains useful when an optional donor fails.
+            env = _environment(paths, deadline)
+            scene = _Scene(env, deadline)
+            faces.auto_paths.clear()
+            faces.status = "unavailable"
+            faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
@@ -679,21 +729,45 @@ def _build(paths, deadline):
         if mesh_obj is None or mesh_obj.type.name != "Mesh":
             scene.warn("linked_mesh_missing", game_name)
             continue
+        if not faces.include(scene, renderer, game_object, mesh_obj):
+            continue
         mesh_name = str(scene.tree(mesh_obj).get("m_Name", ""))
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
             continue
-        name, positions, normals, uv, submeshes = _geometry(
-            mesh_obj, scene.world(scene.transforms.get(_key(game_object))))
+        auto_face = _source_path(renderer) in faces.auto_paths
+        bones, skin_warnings = None, []
+        try:
+            if renderer.type.name == "SkinnedMeshRenderer":
+                refs = tree.get("m_Bones", [])
+                if len(refs) > 1024:
+                    raise ModelViewerError("The model has too many bones for the mobile viewer.")
+                bones = []
+                for ref in refs:
+                    transform = _ref(renderer, ref)
+                    bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
+            name, positions, normals, uv, submeshes = _geometry(
+                mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))),
+                bones, skin_warnings)
+        except Exception:
+            if auto_face:
+                faces.failed()
+                continue
+            raise
+        for warning in skin_warnings:
+            scene.warn(warning, game_name)
         if not any(map(len, submeshes)):
             continue
+        if scene.stats["meshes"] + 1 > MAX_MESHES or scene.stats["vertices"] + len(positions) > MAX_VERTICES \
+                or scene.stats["triangles"] + sum(map(len, submeshes)) > MAX_TRIANGLES:
+            if auto_face:
+                faces.failed()
+                continue
+            raise ModelViewerError("The selected models are too complex. Open fewer model parts.")
         scene.stats["meshes"] += 1
         scene.stats["vertices"] += len(positions)
         scene.stats["triangles"] += sum(map(len, submeshes))
-        if scene.stats["meshes"] > MAX_MESHES or scene.stats["vertices"] > MAX_VERTICES \
-                or scene.stats["triangles"] > MAX_TRIANGLES:
-            raise ModelViewerError("The selected models are too complex. Open fewer model parts.")
         attributes = {"POSITION": glb.attribute(positions, "VEC3", bounds=True),
                       "NORMAL": glb.attribute(normals, "VEC3")}
         if uv is not None:
@@ -703,7 +777,13 @@ def _build(paths, deadline):
             if not len(triangles):
                 continue
             ref = refs[min(index, len(refs) - 1)] if refs else None
-            material = materials.material(_ref(renderer, ref))
+            try:
+                material = materials.material(faces.material(renderer, _ref(renderer, ref)))
+            except Exception:
+                if not auto_face:
+                    raise
+                material = materials.material(None)
+                scene.warn("texture_unavailable", game_name)
             component = 5123 if len(positions) <= 65535 else 5125
             primitives.append({"attributes": attributes,
                                "indices": glb.attribute(triangles.reshape(-1), "SCALAR", component),
@@ -713,11 +793,23 @@ def _build(paths, deadline):
         node_index = len(glb.doc["nodes"])
         glb.doc["nodes"].append({"name": name or game_name, "mesh": mesh_index,
                                  "extras": {"sourceName": _source_name(mesh_obj)}})
+        if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
+            glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
         glb.doc["scenes"][0]["nodes"].append(node_index)
+        if auto_face:
+            faces.added += 1
+            from .model_faces import facial_role
+            faces.rendered_roles.add(facial_role(game_name, mesh_name, _source_path(renderer) in faces.dynamic_sources))
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
-    return bytes(glb.finish()), scene.stats, scene.warnings
+    faces.finish()
+    if faces.enabled and faces.status in ("added", "already_present"):
+        scene.warnings = [warning for warning in scene.warnings if warning["code"] != "facial_assets_missing"]
+    elif faces.auto_paths and not faces.added:
+        faces.status = "unavailable"
+        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+    return bytes(glb.finish()), scene.stats, scene.warnings + faces.warnings, faces.metadata()
 
 
 def _prune(now):
@@ -728,7 +820,7 @@ def _prune(now):
         _SESSIONS.popitem(last=False)
 
 
-def prepare(paths):
+def prepare(paths, *, face_context=None):
     """Convert selected, already-jailed bundle paths and create a short-lived GLB."""
     paths = _paths(paths)
     if not _BUILD_LOCK.acquire(timeout=1):
@@ -736,7 +828,11 @@ def prepare(paths):
     try:
         deadline = time.monotonic() + BUILD_SECONDS
         try:
-            data, stats, warnings = _build(paths, deadline)
+            # Keep the original internal call shape for callers/tests that do
+            # not enable automatic discovery.
+            built = _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline)
+            data, stats, warnings = built[:3]
+            faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
         except ModelViewerError:
             raise
         except Exception as error:
@@ -748,7 +844,7 @@ def prepare(paths):
             _prune(now)
         return {"id": token, "url": f"/api/viewer/model/{token}.glb",
                 "source_names": [os.path.basename(path) for path in paths],
-                "stats": dict(stats), "warnings": warnings}
+                "stats": dict(stats), "warnings": warnings, "faces": faces}
     finally:
         _BUILD_LOCK.release()
 

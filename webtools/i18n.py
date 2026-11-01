@@ -1291,6 +1291,82 @@ _VIEWER_TRANSLATIONS.update({
         "選んだモデルファイルの容量が大きすぎます。ファイル数を減らしてください。"
     ]
 })
+_VIEWER_TRANSLATIONS.update({
+    "Open a costume model or ZIP. Missing facial parts can be added automatically.": [
+        "의상 모델이나 ZIP을 여세요. 빠진 얼굴 파츠는 자동으로 불러올 수 있습니다.",
+        "衣装モデルやZIPを開いてください。足りない顔パーツを自動で追加できます。"
+    ],
+    "Choose costume model or ZIP": [
+        "의상 모델 또는 ZIP 선택",
+        "衣装モデルまたはZIPを選択"
+    ],
+    "Complete face automatically": [
+        "얼굴 자동 완성",
+        "顔を自動で補う"
+    ],
+    "Uses the character's original face for missing parts.": [
+        "빠진 얼굴 파츠만 캐릭터의 원본으로 채웁니다.",
+        "足りない顔パーツだけ元のデータから補います。"
+    ],
+    "Checking model and face…": [
+        "의상과 얼굴을 확인하는 중…",
+        "衣装と顔を確認中…"
+    ],
+    "Face option changed. Press Open model to refresh the preview.": [
+        "얼굴 설정이 바뀌었습니다. 모델 열기를 눌러 갱신하세요.",
+        "顔の設定が変わりました。モデルを開くを押して更新してください。"
+    ],
+    "Missing face parts were added automatically.": [
+        "빠진 얼굴 파츠를 원본에서 자동으로 채웠습니다.",
+        "足りない顔パーツを元のデータから自動で補いました。"
+    ],
+    "The model already includes its face.": [
+        "의상에 포함된 얼굴을 그대로 표시합니다.",
+        "衣装に含まれる顔をそのまま表示しています。"
+    ],
+    "Some face parts were added; other parts are still missing.": [
+        "얼굴 파츠 일부를 채웠지만 아직 빠진 파츠가 있습니다.",
+        "顔パーツの一部を追加しましたが、まだ不足しているパーツがあります。"
+    ],
+    "The original face could not be added. The available costume parts are shown.": [
+        "원본 얼굴을 불러오지 못해 현재 파일에 있는 파츠만 표시합니다.",
+        "元の顔を追加できなかったため、現在のファイルにあるパーツを表示しています。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "The model's character could not be identified safely, so an original face was not added.": [
+        "모델의 캐릭터를 정확히 확인할 수 없어 원본 얼굴을 추가하지 않았습니다.",
+        "モデルのキャラクターを確実に識別できないため、元の顔を追加しませんでした。"
+    ],
+    "The mod's character metadata disagrees with its Unity model. The Unity model's owner is used.": [
+        "모드 설명과 모델의 캐릭터 정보가 다릅니다. 모델에 기록된 캐릭터를 기준으로 표시합니다.",
+        "MODの説明とモデルのキャラクター情報が異なります。モデルに記録されたキャラクターを使用します。"
+    ],
+    "The original face could not be obtained. The costume is still shown; keep a same-character original model locally or check the asset CDN connection.": [
+        "원본 얼굴을 불러오지 못했습니다. 의상은 표시됩니다. 같은 캐릭터의 원본 모델을 기기에 보관하거나 리소스 서버 연결을 확인해주세요.",
+        "元の顔を取得できませんでした。衣装は表示されます。同じキャラクターの元モデルを端末に用意するか、リソース配信サーバーへの接続を確認してください。"
+    ],
+    "The original face could not be opened. The costume is still shown.": [
+        "원본 얼굴을 열지 못했습니다. 불러온 의상은 계속 확인할 수 있습니다.",
+        "元の顔を開けませんでした。読み込んだ衣装は引き続き確認できます。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Some bone transforms are unavailable. Those parts use their saved renderer placement.": [
+        "일부 파츠의 본 정보를 찾지 못해 저장된 위치로 표시합니다.",
+        "一部のボーン情報が見つからないため、該当パーツを保存済みの配置で表示します。"
+    ],
+    "Some vertices have no bone weights and use their saved renderer placement.": [
+        "일부 정점에 본 연결 정보가 없어 저장된 위치로 표시합니다.",
+        "一部の頂点にボーンのウェイト情報がないため、保存済みの配置で表示します。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Fills missing face parts from the originals. Uses the internet if needed.": [
+        "빠진 얼굴 파츠만 원본으로 채웁니다. 필요하면 인터넷에서 불러옵니다.",
+        "不足した顔パーツだけ元データで補います。必要に応じて通信します。"
+    ]
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

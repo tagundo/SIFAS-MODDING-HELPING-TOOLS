@@ -176,6 +176,11 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
+        if set(params) - {"paths", "auto_face"}:
+            return self._send_json({"error": "Unsupported model viewer option."}, status=400)
+        auto_face = params.get("auto_face", True)
+        if not isinstance(auto_face, bool):
+            return self._send_json({"error": "Automatic face loading must be on or off."}, status=400)
         paths = params.get("paths")
         if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or not path.strip() for path in paths)):
@@ -189,9 +194,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "Model file was not found."}, status=404)
             if real not in resolved:
                 resolved.append(real)
-        from webtools.core import model_viewer
+        from webtools.core import model_viewer, viewer_archive
+        from webtools.core.sukusta import default_sukusta_dir
+        # The UI may select inputs and enable the feature; filesystem and CDN
+        # context always come from this application, never from request JSON.
+        cache_dir = os.path.join(os.path.realpath(default_sukusta_dir("")), ".viewer-cache")
+        context = {
+            "enabled": auto_face,
+            "allow_download": auto_face,
+            "repo_root": str(Path.cwd()),
+            "library_roots": list(dict.fromkeys(
+                os.path.realpath(root) for root in filebrowser.allowed_roots().values())),
+            "cache_dir": cache_dir,
+        }
         try:
-            return self._send_json(model_viewer.prepare(resolved))
+            with viewer_archive.expand_inputs(resolved, cache_dir) as expanded:
+                context.update(manifest_paths=expanded.manifest_paths, origins=expanded.origins)
+                result = model_viewer.prepare(expanded.paths, face_context=context)
+                result["source_names"] = expanded.source_names
+            return self._send_json(result)
         except (ValueError, TypeError) as exc:
             return self._send_json({"error": str(exc)}, status=400)
         except FileNotFoundError:

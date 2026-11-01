@@ -1,4 +1,4 @@
-/* Offline costume viewer. Three.js and its loaders are bundled with the app. */
+/* Local costume viewer. Three.js and its loaders are bundled with the app. */
 (function () {
   "use strict";
 
@@ -9,6 +9,7 @@
   var pendingOpen = null;
   var paths = [];
   var loadedPaths = [];
+  var loadedAutoFace = true;
   var metadata = null;
   var generation = 0;
   var controller = null;
@@ -87,7 +88,11 @@
     if (!paths.length) setStatus("Choose a costume file to begin.");
     else if (model && JSON.stringify(paths) !== JSON.stringify(loadedPaths)) {
       setStatus("Files changed. Press Open model to refresh the preview.");
+    } else if (model && node("viewer-auto-face").checked !== loadedAutoFace) {
+      setStatus("Face option changed. Press Open model to refresh the preview.");
     } else if (!model) setStatus("Press Open model to see the costume.");
+    else if (!loading) setStatus("Model ready.");
+    showFaceStatus();
   }
 
   function setLoading(value) {
@@ -95,7 +100,9 @@
     node("viewer-busy").hidden = !value;
     node("viewer-cancel").hidden = !value;
     node("viewer-load").hidden = value;
+    node("viewer-auto-face").disabled = value;
     renderFiles();
+    showFaceStatus();
   }
 
   function cancelLoading() {
@@ -183,6 +190,7 @@
           setLoading(false);
         }
         setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
+        showFaceStatus();
       });
       renderer.domElement.addEventListener("webglcontextrestored", function () {
         lost = false;
@@ -345,6 +353,28 @@
     box.textContent = messages.join("\n");
   }
 
+  function showFaceStatus() {
+    var box = node("viewer-face-status");
+    var faces = metadata && metadata.faces;
+    var hasFaceWarning = metadata && (metadata.warnings || []).some(function (warning) {
+      return warning && typeof warning.code === "string" && /^(face_|facial_)/.test(warning.code);
+    });
+    var message = "";
+    if (!loading && !lost && faces && faces.enabled &&
+        JSON.stringify(paths) === JSON.stringify(loadedPaths) &&
+        node("viewer-auto-face").checked === loadedAutoFace) {
+      if (faces.status === "added" && Number(faces.added) > 0) message = "Missing face parts were added automatically.";
+      else if (faces.status === "already_present") message = "The model already includes its face.";
+      else if (faces.status === "partial" && Number(faces.added) > 0) {
+        message = "Some face parts were added; other parts are still missing.";
+      } else if (!hasFaceWarning && (faces.status === "partial" || faces.status === "unavailable")) {
+        message = "The original face could not be added. The available costume parts are shown.";
+      }
+    }
+    box.hidden = !message;
+    box.textContent = message ? t(message) : "";
+  }
+
   async function loadSelected() {
     if (!paths.length) { setStatus("Choose a costume file to begin.", true); return; }
     if (!ensureRenderer()) return;
@@ -353,16 +383,17 @@
     controller = new window.AbortController();
     var requestController = controller;
     var selected = paths.slice();
+    var selectedAutoFace = node("viewer-auto-face").checked;
     setLoading(true);
-    setStatus("Preparing model…");
+    setStatus(selectedAutoFace ? "Checking model and face…" : "Preparing model…");
     try {
       var response = await window.fetch("/api/viewer/prepare", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: selected }), signal: requestController.signal
+        body: JSON.stringify({ paths: selected, auto_face: selectedAutoFace }), signal: requestController.signal
       });
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
-      if (current !== generation) return;
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
       if (typeof prepared.url !== "string" || !/^\/api\/viewer\/model\/[a-zA-Z0-9_-]+\.glb$/.test(prepared.url)) {
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
@@ -373,11 +404,13 @@
       if (length > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
       var data = await modelResponse.arrayBuffer();
       if (data.byteLength > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
-      if (current !== generation) return;
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
       var gltf = await new Promise(function (resolve, reject) {
         new window.THREE.GLTFLoader().parse(data, "", resolve, reject);
       });
-      if (current !== generation || destroyed) { disposeObject(gltf.scene); return; }
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) {
+        disposeObject(gltf.scene); return;
+      }
       var next = gltf.scene;
       var nextBounds = new window.THREE.Box3().setFromObject(next);
       if (nextBounds.isEmpty() || !isFinite(nextBounds.min.x) || !isFinite(nextBounds.max.x)) {
@@ -389,6 +422,7 @@
       bounds = nextBounds;
       metadata = prepared;
       loadedPaths = selected;
+      loadedAutoFace = selectedAutoFace;
       scene.add(model);
       node("viewer-empty").hidden = true;
       buildParts();
@@ -402,7 +436,11 @@
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
     } finally {
-      if (current === generation) { controller = null; setLoading(false); }
+      if (current === generation) {
+        controller = null;
+        setLoading(false);
+        if (selectedAutoFace !== node("viewer-auto-face").checked) filesChanged();
+      }
     }
   }
 
@@ -428,6 +466,7 @@
     });
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
+    node("viewer-auto-face").addEventListener("change", filesChanged);
     node("viewer-fit").addEventListener("click", function () { fitModel(); });
     node("viewer-expand").addEventListener("click", function () { setExpanded(!expanded); });
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
@@ -460,6 +499,7 @@
     node("viewer-expand").textContent = t(expanded ? "Close expanded view" : "Expand view");
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
     if (metadata) showWarnings(metadata.warnings);
+    showFaceStatus();
   }
 
   function setVisible(value) {
@@ -501,36 +541,54 @@
       var names = [];
       if (model) model.traverse(function (child) { if (child.isMesh) names.push(child.name); });
       return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), loading: loading, loaded: !!model,
+        autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
+        loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
         meshNames: names, trianglesRendered: renderer ? renderer.info.render.triangles : 0,
         renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null };
     },
-    // Read actual WebGL framebuffer samples for device QA. This renders the
-    // existing scene and returns counts only; it never changes model data.
-    renderProbe: function () {
+    // Device QA only: an optional denser grid can inspect small colored details.
+    // Keep the original 11x11 samples by default, and read the framebuffer once
+    // rather than issuing a GPU read for each sample. No model data is changed.
+    renderProbe: function (gridSize) {
       if (!renderer || !model || lost) return { ready: false };
       renderer.render(scene, camera);
       renderedFrames += 1;
       var gl = renderer.getContext();
       var size = renderer.getDrawingBufferSize(new window.THREE.Vector2());
-      var pixel = new Uint8Array(4);
-      var background = new Uint8Array(4);
-      gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, background);
+      var width = Math.floor(size.x);
+      var height = Math.floor(size.y);
+      var bytes = width * height * 4;
+      var maximumBytes = 32 * 1024 * 1024;
+      if (width < 2 || height < 2 || bytes > maximumBytes) {
+        return { ready: false, reason: "Framebuffer exceeds diagnostic read limits",
+          width: width, height: height, maxReadBytes: maximumBytes };
+      }
+      var grid = typeof gridSize === "number" && isFinite(gridSize)
+        ? Math.max(1, Math.min(65, Math.floor(gridSize))) : 11;
+      var pixels = new Uint8Array(bytes);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      var background = (width + 1) * 4;
       var changed = 0;
       var chromatic = 0;
-      for (var row = 1; row <= 11; row += 1) {
-        for (var column = 1; column <= 11; column += 1) {
-          gl.readPixels(Math.floor(size.x * column / 12), Math.floor(size.y * row / 12),
-            1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-          if (Math.abs(pixel[0] - background[0]) + Math.abs(pixel[1] - background[1]) +
-              Math.abs(pixel[2] - background[2]) > 24) changed += 1;
-          if (Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2]) > 64) chromatic += 1;
+      for (var row = 1; row <= grid; row += 1) {
+        var y = Math.floor(height * row / (grid + 1));
+        for (var column = 1; column <= grid; column += 1) {
+          var x = Math.floor(width * column / (grid + 1));
+          var offset = (y * width + x) * 4;
+          var red = pixels[offset];
+          var green = pixels[offset + 1];
+          var blue = pixels[offset + 2];
+          if (Math.abs(red - pixels[background]) + Math.abs(green - pixels[background + 1]) +
+              Math.abs(blue - pixels[background + 2]) > 24) changed += 1;
+          if (Math.max(red, green, blue) - Math.min(red, green, blue) > 64) chromatic += 1;
         }
       }
-      return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: 121,
+      return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: grid * grid,
+        gridSize: grid, readPixelsCalls: 1, bytesRead: bytes,
         triangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
-        width: size.x, height: size.y, glError: gl.getError() };
+        width: width, height: height, glError: gl.getError() };
     }
   };
 }());

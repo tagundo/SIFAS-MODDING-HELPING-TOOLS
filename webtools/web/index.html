@@ -33,12 +33,16 @@
       <div class="viewer-workspace">
         <aside class="viewer-files">
           <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
-          <p class="viewer-intro" data-i18n="Choose a costume model. Add a separate head or hair file if it is missing.">Choose a costume model. Add a separate head or hair file if it is missing.</p>
+          <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Missing facial parts can be added automatically.">Open a costume model or ZIP. Missing facial parts can be added automatically.</p>
           <div class="viewer-file-actions">
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
             <button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
           </div>
+          <div class="viewer-option-row">
+            <label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label>
+          </div>
+          <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Fills missing face parts from the originals. Uses the internet if needed.">Fills missing face parts from the originals. Uses the internet if needed.</p>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
         </aside>
         <div class="viewer-main">
@@ -46,6 +50,7 @@
             <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
             <button id="viewer-expand" type="button" data-i18n="Expand view">Expand view</button>
           </div>
+          <p id="viewer-face-status" class="viewer-status" role="status" aria-live="polite" hidden></p>
           <p id="viewer-warning" class="viewer-warning" role="status" hidden></p>
           <div id="viewer-stage" class="viewer-stage" aria-label="3D model">
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
