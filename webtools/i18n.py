@@ -1048,3 +1048,249 @@ _TABLES = {
         "Language changed. Restart the tool to apply it.": "言語を変更しました。適用するにはツールを再起動してください。"
     },
 }
+
+
+# Shared 3D viewer labels; English remains the source and fallback.
+_VIEWER_TRANSLATIONS = {
+    "3D model": [
+        "3D 모델",
+        "3Dモデル"
+    ],
+    "Choose a costume model. Add a separate head or hair file if it is missing.": [
+        "의상 모델을 선택하세요. 머리나 헤어가 따로 있는 의상은 해당 파일도 추가하세요.",
+        "衣装モデルを選んでください。頭や髪が別ファイルの場合は、そのファイルも追加してください。"
+    ],
+    "Choose costume file": [
+        "의상 파일 선택",
+        "衣装ファイルを選択"
+    ],
+    "Open model": [
+        "모델 열기",
+        "モデルを開く"
+    ],
+    "Choose a costume file to begin.": [
+        "의상 파일을 선택해 시작하세요.",
+        "衣装ファイルを選んでください。"
+    ],
+    "Your model will appear here.": [
+        "선택한 모델이 여기에 표시됩니다.",
+        "選んだモデルがここに表示されます。"
+    ],
+    "Preparing model…": [
+        "모델을 준비하는 중…",
+        "モデルを準備中…"
+    ],
+    "Front": [
+        "정면",
+        "正面"
+    ],
+    "Back": [
+        "뒤",
+        "背面"
+    ],
+    "Left side": [
+        "왼쪽",
+        "左側"
+    ],
+    "Right side": [
+        "오른쪽",
+        "右側"
+    ],
+    "Fit model": [
+        "전체 보기",
+        "全体を表示"
+    ],
+    "Drag to rotate · Pinch or scroll to zoom · Two fingers to move": [
+        "드래그로 회전 · 두 손가락이나 스크롤로 확대 · 두 손가락으로 이동",
+        "ドラッグで回転 · ピンチやスクロールで拡大 · 2本指で移動"
+    ],
+    "Display options": [
+        "보기 설정",
+        "表示設定"
+    ],
+    "Show textures": [
+        "텍스처 표시",
+        "テクスチャを表示"
+    ],
+    "Wireframe": [
+        "메시 선 표시",
+        "ワイヤーフレーム"
+    ],
+    "Background": [
+        "배경",
+        "背景"
+    ],
+    "Light": [
+        "밝게",
+        "明るい"
+    ],
+    "Dark": [
+        "어둡게",
+        "暗い"
+    ],
+    "Perspective": [
+        "원근감",
+        "遠近感"
+    ],
+    "This is a static model preview. Game lighting and motion may look different.": [
+        "정지 상태의 모델 미리보기입니다. 게임의 조명이나 움직임에 따라 다르게 보일 수 있습니다.",
+        "静止したモデルのプレビューです。ゲーム内の照明や動作により見え方が変わります。"
+    ],
+    "Visible parts": [
+        "표시할 파츠",
+        "表示するパーツ"
+    ],
+    "Expand view": [
+        "화면 크게",
+        "大きく表示"
+    ],
+    "Close expanded view": [
+        "크게 보기 닫기",
+        "拡大表示を閉じる"
+    ],
+    "Meshes: {meshes} · Triangles: {triangles}": [
+        "메시 {meshes}개 · 삼각형 {triangles}개",
+        "メッシュ {meshes}個 · 三角形 {triangles}個"
+    ],
+    "Model ready.": [
+        "모델을 불러왔습니다.",
+        "モデルを読み込みました。"
+    ],
+    "Files changed. Press Open model to refresh the preview.": [
+        "파일 선택이 바뀌었습니다. 모델 열기를 눌러 미리보기를 갱신하세요.",
+        "ファイルの選択が変わりました。モデルを開くを押して表示を更新してください。"
+    ],
+    "Press Open model to see the costume.": [
+        "모델 열기를 누르면 의상이 표시됩니다.",
+        "モデルを開くを押すと衣装が表示されます。"
+    ],
+    "Loading cancelled.": [
+        "불러오기를 취소했습니다.",
+        "読み込みを取り消しました。"
+    ],
+    "The 3D viewer files could not be loaded. Reopen the app and try again.": [
+        "3D 뷰어 파일을 불러오지 못했습니다. 앱을 다시 열어주세요.",
+        "3Dビューアを読み込めませんでした。アプリを開き直してください。"
+    ],
+    "3D graphics were interrupted. Wait a moment, then open the model again.": [
+        "3D 표시가 중단되었습니다. 잠시 후 모델을 다시 열어주세요.",
+        "3D表示が中断されました。少し待ってからモデルを開き直してください。"
+    ],
+    "3D graphics are unavailable here. Update Android System WebView or use a current browser.": [
+        "3D 그래픽을 사용할 수 없습니다. Android System WebView를 업데이트하거나 최신 브라우저로 열어주세요.",
+        "3D表示を利用できません。Android System WebViewを更新するか、新しいブラウザで開いてください。"
+    ],
+    "Part": [
+        "파츠",
+        "パーツ"
+    ],
+    "The costume file could not be opened.": [
+        "의상 파일을 열지 못했습니다.",
+        "衣装ファイルを開けませんでした。"
+    ],
+    "The model could not be displayed. Try another costume file.": [
+        "모델을 표시하지 못했습니다. 다른 의상 파일로 시도해보세요.",
+        "モデルを表示できませんでした。別の衣装ファイルを試してください。"
+    ],
+    "Loading 3D model…": [
+        "3D 모델을 불러오는 중…",
+        "3Dモデルを読み込み中…"
+    ],
+    "The preview expired. Open the model again.": [
+        "미리보기 보관 시간이 지났습니다. 모델을 다시 열어주세요.",
+        "プレビューの保存期限が切れました。モデルを開き直してください。"
+    ],
+    "This model is too large to preview on this device.": [
+        "이 기기에서 미리보기에는 너무 큰 모델입니다.",
+        "この端末でプレビューするにはモデルが大きすぎます。"
+    ],
+    "No visible model was found in these files.": [
+        "선택한 파일에서 표시할 모델을 찾지 못했습니다.",
+        "選んだファイルに表示できるモデルが見つかりませんでした。"
+    ],
+    "The model could not be displayed.": [
+        "모델을 표시하지 못했습니다.",
+        "モデルを表示できませんでした。"
+    ],
+    "Choose up to eight costume files at a time.": [
+        "의상 파일은 한 번에 8개까지 선택할 수 있습니다.",
+        "衣装ファイルは一度に8個まで選べます。"
+    ],
+    "View input model": [
+        "입력 모델 보기",
+        "入力モデルを見る"
+    ],
+    "View saved model": [
+        "저장 모델 보기",
+        "保存モデルを見る"
+    ],
+    "View in 3D": [
+        "3D로 보기",
+        "3Dで見る"
+    ],
+    "Clothing attached to a body part can change with it. Save a new model, then choose View saved model to check the result in 3D.": [
+        "해당 부위에 붙어 있는 의상도 함께 변할 수 있습니다. 모델을 저장한 뒤 저장 모델 보기를 눌러 3D로 결과를 확인하세요.",
+        "部位に付いた衣装も一緒に変形する場合があります。モデルを保存し、保存モデルを見るから3Dで結果を確認してください。"
+    ],
+    "View representative textures here, or open the costume in 3D model to inspect its shape.": [
+        "여기서는 대표 텍스처를 확인할 수 있습니다. 형태를 보려면 의상을 3D 모델로 열어보세요.",
+        "ここでは代表テクスチャを確認できます。形を見るには衣装を3Dモデルで開いてください。"
+    ],
+    "Some parts have no preview texture and use a neutral color.": [
+        "미리보기 텍스처가 없는 파츠는 기본 색상으로 표시됩니다.",
+        "プレビュー用テクスチャがないパーツは標準色で表示されます。"
+    ]
+}
+_VIEWER_TRANSLATIONS.update({
+    "Some textures could not be displayed. A neutral surface is shown instead.": [
+        "일부 텍스처를 표시하지 못해 해당 파츠를 기본 색상으로 표시합니다.",
+        "一部のテクスチャを表示できないため、標準色で表示しています。"
+    ],
+    "A linked texture is missing. Add its companion model file to the preview.": [
+        "연결된 텍스처가 없습니다. 해당 텍스처가 들어 있는 모델 파일도 추가해주세요.",
+        "参照先のテクスチャがありません。対応するモデルファイルも追加してください。"
+    ],
+    "A linked mesh is missing. Add its companion model file to the preview.": [
+        "연결된 파츠가 없습니다. 해당 파츠가 들어 있는 모델 파일도 추가해주세요.",
+        "参照先のパーツがありません。対応するモデルファイルも追加してください。"
+    ],
+    "This costume needs its separate facial asset to show eyes and expressions.": [
+        "얼굴 파일을 함께 열면 눈과 표정까지 볼 수 있습니다.",
+        "顔のファイルも一緒に開くと、目や表情を表示できます。"
+    ],
+    "Another model is opening. Wait for it to finish and try again.": [
+        "다른 모델을 여는 중입니다. 완료된 후 다시 시도해주세요.",
+        "別のモデルを開いています。完了後にもう一度試してください。"
+    ],
+    "This model could not be opened. Its format or linked assets may be unsupported.": [
+        "이 모델을 열지 못했습니다. 지원하지 않는 형식이거나 함께 필요한 파일이 빠졌을 수 있습니다.",
+        "このモデルを開けませんでした。非対応の形式か、必要な関連ファイルが不足している可能性があります。"
+    ],
+    "Model preview took too long. Try opening fewer model files.": [
+        "모델을 여는 데 시간이 너무 오래 걸렸습니다. 파일 수를 줄여 다시 시도해주세요.",
+        "モデルの読み込みに時間がかかりすぎました。ファイル数を減らして試してください。"
+    ],
+    "Choose between one and eight extracted Unity model files.": [
+        "추출된 의상 모델 파일을 1~8개 선택해주세요.",
+        "抽出済みの衣装モデルファイルを1～8個選んでください。"
+    ],
+    "Choose an extracted Unity model file.": [
+        "추출된 의상 모델 파일을 선택해주세요.",
+        "抽出済みの衣装モデルファイルを選んでください。"
+    ],
+    "A selected model file no longer exists.": [
+        "선택한 모델 파일을 찾을 수 없습니다. 다시 선택해주세요.",
+        "選んだモデルファイルが見つかりません。選び直してください。"
+    ],
+    "A model file is too large for the mobile viewer.": [
+        "이 모델 파일은 기기에서 열기에 너무 큽니다.",
+        "このモデルファイルは端末で開くには大きすぎます。"
+    ],
+    "The selected model files are too large. Open fewer files.": [
+        "선택한 모델 파일의 용량이 너무 큽니다. 파일 수를 줄여주세요.",
+        "選んだモデルファイルの容量が大きすぎます。ファイル数を減らしてください。"
+    ]
+})
+for _source, _translated in _VIEWER_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _translated[0]
+    _TABLES["ja"][_source] = _translated[1]
