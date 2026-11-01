@@ -10,6 +10,10 @@ const state = {
   lang: "en",
   strings: {},       // { "English source": "translation" } for the active language
   languages: [],     // [["en","English"], ...] from the server
+  formToolId: null,
+  meshDraft: {},
+  meshExpertOpen: false,
+  meshActivePart: "head",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -150,7 +154,15 @@ function selectTool(id) {
 }
 
 function renderForm() {
+  if (state.formToolId === "mesh_baker" && $("#tool-form")) {
+    const values = collectParams();
+    delete values.mode;
+    state.meshDraft = { ...state.meshDraft, ...values };
+    const previousExpert = $("#tool-form .expert-options");
+    if (previousExpert) state.meshExpertOpen = previousExpert.open;
+  }
   const tool = state.currentTool;
+  state.formToolId = tool.id;
   const panel = $("#tool-panel");
   panel.innerHTML = "";
   panel.appendChild(el("h2", { text: tool.label }));
@@ -172,38 +184,210 @@ function renderForm() {
   }
 
   const form = el("form", { id: "tool-form", onsubmit: (e) => { e.preventDefault(); runTool(); } });
+  if (tool.id === "mesh_baker") form.classList.add("mesh-form");
+  const expert = el("details", { class: "expert-options" });
+  expert.appendChild(el("summary", { text: T("Expert options — individual bones and save settings") }));
+  let hasExpert = false;
   for (const field of tool.fields) {
     if (field.mode && field.mode !== state.currentMode) continue;
-    form.appendChild(renderField(field));
+    if (field.expert) { expert.appendChild(renderField(field)); hasExpert = true; }
+    else form.appendChild(renderField(field));
   }
-  form.appendChild(el("button", { class: "run-btn", type: "submit", text: T("Run") }));
+  if (hasExpert) form.appendChild(expert);
+  const run = el("button", { class: "run-btn", type: "submit", text: T(tool.id === "mesh_baker" ? "Save model" : "Run") });
+  form.appendChild(tool.id === "mesh_baker" ? el("div", { class: "mesh-save-bar" }, [run]) : run);
   panel.appendChild(form);
+  if (tool.id === "mesh_baker") {
+    for (const input of form.querySelectorAll("[data-name]")) {
+      const value = state.meshDraft[input.dataset.name];
+      if (value === undefined) continue;
+      if (input.dataset.ftype === "body_parts") input._restoreBodyParts(value);
+      else if (input.dataset.ftype === "bone_targets") input._restoreTargets(value);
+      else if (input.dataset.ftype === "checkbox") input.checked = !!value;
+      else { input.value = value; input.dispatchEvent(new Event("restore")); }
+    }
+    expert.open = state.meshExpertOpen;
+  }
   wireDynamicSelects(tool);
   wireBoneTargets(tool);
 }
 
-// Keep the reference convenient for Single/Selected files, while allowing a
-// separate reference in Batch mode or a manual override for mixed bundles.
-function wireBoneTargets(tool) {
-  for (const field of tool.fields.filter((f) => f.type === "bone_targets")) {
-    const editor = document.querySelector(`#tool-form [data-name="${field.name}"]`);
-    const ref = document.querySelector('#tool-form [data-name="reference_path"]');
-    if (!editor || !ref) continue;
-    let automatic = ref.value;
-    for (const name of ["in_path", "in_paths"]) {
-      const source = document.querySelector(`#tool-form [data-name="${name}"]`);
-      if (!source) continue;
-      source.addEventListener("change", () => {
-        if (ref.value && ref.value !== automatic) return;
-        const next = source.value.split("\n").find((p) => p.trim()) || "";
-        if (automatic === next && ref.value === next) return;
-        automatic = next;
-        ref.value = automatic;
-        ref.dispatchEvent(new Event("change"));
-      });
-    }
-    ref.addEventListener("change", () => editor._loadBones());
+function meshReferencePath() {
+  const ref = document.querySelector('#tool-form [data-name="reference_path"]');
+  if (ref && ref.value.trim()) return ref.value.trim();
+  for (const name of ["in_path", "in_paths"]) {
+    const input = document.querySelector(`#tool-form [data-name="${name}"]`);
+    if (input) return input.value.split("\n").find((p) => p.trim()) || "";
   }
+  return "";
+}
+
+// Ordinary body-part controls follow the chosen input. The more expensive full
+// bone list is only inspected when the expert section is opened.
+function wireBoneTargets(tool) {
+  const parts = document.querySelector('#tool-form [data-ftype="body_parts"]');
+  const bones = document.querySelector('#tool-form [data-ftype="bone_targets"]');
+  if (!parts && !bones) return;
+  const expert = document.querySelector("#tool-form .expert-options");
+  function refresh() {
+    if (parts) parts._loadParts();
+    if (bones && expert && expert.open) bones._loadBones();
+  }
+  for (const name of ["in_path", "in_paths", "reference_path"]) {
+    const source = document.querySelector(`#tool-form [data-name="${name}"]`);
+    if (source) source.addEventListener("change", refresh);
+  }
+  if (expert && bones) expert.addEventListener("toggle", () => {
+    if (expert.open) bones._loadBones();
+  });
+  if (meshReferencePath()) refresh();
+}
+
+const BODY_PART_CONTROLS = [
+  ["head", "Head size", "Changes the head and hair together."],
+  ["torso", "Waist thickness", "Changes the waist and lower torso; keeps the upper chest and shoulders the same size."],
+  ["upper_arms", "Upper arm thickness", "Changes both upper arms; keeps arm length and forearm thickness."],
+  ["forearms", "Forearm thickness", "Changes both forearms; keeps arm length and hand size."],
+  ["hands", "Hand size", "Changes both hands, including fingers."],
+  ["thighs", "Thigh thickness", "Changes both thighs; keeps leg length and calf thickness."],
+  ["calves", "Calf thickness", "Changes both lower legs; keeps leg length and foot size."],
+  ["feet", "Foot size", "Changes both feet, including toes."],
+];
+
+function renderBodyParts(field) {
+  const editor = el("div", { class: "body-editor" });
+  editor.dataset.name = field.name;
+  editor.dataset.ftype = "body_parts";
+  const status = el("p", { class: "body-status", role: "status",
+    text: T("Choose an input model above to enable the body controls.") });
+  const controls = new Map();
+  const selector = el("div", { class: "body-part-selector", role: "tablist", "aria-label": T("Choose a body part") });
+  const grid = el("div", { class: "body-parts-grid" });
+  function selectPart(name) {
+    state.meshActivePart = name;
+    for (const [part, item] of controls) {
+      const active = part === name;
+      item.card.hidden = !active;
+      item.selector.classList.toggle("active", active);
+      item.selector.setAttribute("aria-selected", String(active));
+      item.selector.tabIndex = active ? 0 : -1;
+    }
+  }
+  function revealPart(name) {
+    selectPart(name);
+    const card = controls.get(name).card;
+    const header = document.querySelector("header");
+    const save = document.querySelector(".mesh-save-bar");
+    // Match the actual chrome after window/viewport changes, including short
+    // landscape windows where a fixed 150px top margin hides the reset button.
+    card.style.scrollMarginTop = ((header ? header.getBoundingClientRect().height : 0) + 12) + "px";
+    card.style.scrollMarginBottom = ((save ? save.getBoundingClientRect().height : 0) + 12) + "px";
+    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  for (const [name, title, help] of BODY_PART_CONTROLS) {
+    const badge = el("span", { class: "body-part-badge", text: "100%" });
+    const partButton = el("button", { type: "button", class: "body-part-choice", role: "tab",
+      id: "part-tab-" + name, "aria-controls": "part-card-" + name,
+      onclick: () => revealPart(name) }, [el("span", { text: T(title) }), badge]);
+    selector.appendChild(partButton);
+    const card = el("fieldset", { class: "body-part" });
+    card.dataset.part = name;
+    card.id = "part-card-" + name;
+    card.setAttribute("role", "tabpanel");
+    card.setAttribute("aria-labelledby", partButton.id);
+    card.disabled = true;
+    card.appendChild(el("legend", { text: T(title) }));
+    card.appendChild(el("p", { class: "help", text: T(help) }));
+    const percent = el("input", { type: "number", min: "50", max: "150", step: "1", value: "100",
+      required: "required", "aria-label": T(title) + " (%)" });
+    const range = el("input", { type: "range", min: "50", max: "150", step: "1", value: "100",
+      "aria-label": T(title) });
+    const summary = el("span", { class: "body-part-change", text: T("Original size") });
+    function setValue(value) {
+      const number = Math.max(50, Math.min(150, Number(value) || 100));
+      percent.value = range.value = String(number);
+      summary.textContent = number === 100 ? T("Original size")
+        : (number > 100 ? "+" : "") + (number - 100) + "%";
+      card.classList.toggle("changed", number !== 100);
+      partButton.classList.toggle("changed", number !== 100);
+      badge.textContent = number + "%";
+    }
+    range.addEventListener("input", () => setValue(range.value));
+    percent.addEventListener("change", () => setValue(percent.value));
+    const minus = el("button", { type: "button", text: "−5%", "aria-label": T(title) + " −5%",
+      onclick: () => setValue(Number(percent.value) - 5) });
+    const plus = el("button", { type: "button", text: "+5%", "aria-label": T(title) + " +5%",
+      onclick: () => setValue(Number(percent.value) + 5) });
+    const reset = el("button", { type: "button", text: T("Reset"), onclick: () => setValue(100) });
+    const value = el("label", { class: "body-percent" }, [percent, el("span", { text: "%" })]);
+    card.appendChild(el("div", { class: "body-stepper" }, [minus, value, plus]));
+    card.appendChild(range);
+    card.appendChild(el("div", { class: "body-part-footer" }, [summary, reset]));
+    const availability = el("div", { class: "help body-unavailable" });
+    card.appendChild(availability);
+    controls.set(name, { card, percent, setValue, availability, selector: partButton });
+    grid.appendChild(card);
+  }
+  selectPart(controls.has(state.meshActivePart) ? state.meshActivePart : "head");
+  selector.addEventListener("keydown", (ev) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(ev.key)) return;
+    ev.preventDefault();
+    const names = [...controls.keys()];
+    const current = names.indexOf(state.meshActivePart);
+    const next = names[(current + (ev.key === "ArrowLeft" || ev.key === "ArrowUp" ? -1 : 1) + names.length) % names.length];
+    revealPart(next);
+    controls.get(next).selector.focus({ preventScroll: true });
+  });
+  editor._collectBodyParts = () => Object.fromEntries([...controls].map(([name, item]) =>
+    [name, Number(item.percent.value)]));
+  editor._restoreBodyParts = (values) => {
+    for (const [name, item] of controls) if (values[name] !== undefined) item.setValue(values[name]);
+  };
+  let generation = 0;
+  let loadedPath = "";
+  editor._loadParts = async () => {
+    const reference = meshReferencePath();
+    if (reference && reference === loadedPath) return;
+    const gen = ++generation;
+    for (const item of controls.values()) item.card.disabled = true;
+    if (!reference) {
+      loadedPath = "";
+      status.textContent = T("Choose an input model above to enable the body controls.");
+      return;
+    }
+    status.textContent = T("Checking the model's body parts…");
+    try {
+      const url = "/api/options/mesh_baker/body_parts?reference_path=" + encodeURIComponent(reference);
+      const data = await (await fetch(url)).json();
+      if (gen !== generation || !editor.isConnected) return;
+      if (data.error) throw new Error(data.error);
+      const options = new Map((data.options || []).map((item) => [item.value, item]));
+      for (const [name, item] of controls) {
+        const found = options.get(name);
+        item.card.disabled = !found || !found.available;
+        item.selector.classList.toggle("unavailable", item.card.disabled);
+        item.availability.textContent = item.card.disabled ? T("Not available for this model.") : "";
+        if (item.card.disabled) item.setValue(100);
+      }
+      loadedPath = reference;
+      status.textContent = T("Ready. Adjust a slider, then press Save model.");
+    } catch (err) {
+      loadedPath = "";
+      status.textContent = T("Could not read this model. Choose a different input file.") + " " + err.message;
+    }
+  };
+  const reload = el("button", { type: "button", text: T("Check model again"), onclick: () => {
+    loadedPath = ""; editor._loadParts();
+  } });
+  const resetAll = el("button", { type: "button", text: T("Reset all body parts"), onclick: () => {
+    for (const item of controls.values()) item.setValue(100);
+  } });
+  editor.appendChild(status);
+  editor.appendChild(selector);
+  editor.appendChild(el("div", { class: "body-toolbar" }, [resetAll, reload]));
+  editor.appendChild(grid);
+  editor.appendChild(el("p", { class: "help", text: T("Clothing attached to a body part can change with it. This tool saves a new model; it does not show a live 3D preview.") }));
+  return editor;
 }
 
 function renderBoneTargets(field) {
@@ -220,16 +404,16 @@ function renderBoneTargets(field) {
   let generation = 0;
   editor._loadBones = async () => {
     const gen = ++generation;
-    const ref = document.querySelector('#tool-form [data-name="reference_path"]');
+    const reference = meshReferencePath();
     options.innerHTML = "";
-    if (!ref || !ref.value.trim()) {
+    if (!reference) {
       status.textContent = T("Load a bundle to see its bones, or type a bone name.");
       return;
     }
     status.textContent = T("loading…");
     try {
       const url = "/api/options/mesh_baker/" + encodeURIComponent(field.name) +
-        "?reference_path=" + encodeURIComponent(ref.value);
+        "?reference_path=" + encodeURIComponent(reference);
       const data = await (await fetch(url)).json();
       if (gen !== generation || !editor.isConnected) return;
       for (const item of data.options || []) {
@@ -241,8 +425,9 @@ function renderBoneTargets(field) {
       if (gen === generation && editor.isConnected) status.textContent = String(err);
     }
   };
-  function addTarget() {
-    const name = bone.value.trim();
+  function addTarget(values = null) {
+    const restoring = values && typeof values.bone === "string";
+    const name = restoring ? values.bone : bone.value.trim();
     if (!name) { bone.focus(); return; }
     const existing = [...rows.children].find((r) => r._target().bone === name);
     if (existing) { existing.querySelector("input").focus(); return; }
@@ -258,7 +443,8 @@ function renderBoneTargets(field) {
       const inputs = [];
       const axes = el("div", { class: "vec3-row" });
       for (const axis of ["X", "Y", "Z"]) {
-        const input = el("input", { type: "number", step: "any", value: String(initial),
+        const restoredValue = restoring && Array.isArray(values[key]) ? values[key][inputs.length] : initial;
+        const input = el("input", { type: "number", step: "any", value: String(restoredValue),
           required: "required", "aria-label": T(title) + " " + axis });
         if (key === "scale") input.min = "0.000000001";
         inputs.push(input);
@@ -269,7 +455,8 @@ function renderBoneTargets(field) {
       row.appendChild(group);
     }
     const comp = el("input", { type: "checkbox" });
-    comp.checked = name.startsWith("Spine") || ["LeftUpLeg", "RightUpLeg"].includes(name);
+    comp.checked = restoring ? !!values.compensate
+      : name.startsWith("Spine") || ["LeftUpLeg", "RightUpLeg"].includes(name);
     row.appendChild(el("label", { class: "bone-comp" }, [comp, T("Compensate child scale")]));
     const reset = el("button", { type: "button", text: T("Reset transform"), onclick: () => {
       for (const key of Object.keys(vectors)) vectors[key].forEach((inp) => { inp.value = key === "scale" ? "1" : "0"; });
@@ -281,8 +468,12 @@ function renderBoneTargets(field) {
       translate: vectors.translate.map((inp) => Number(inp.value)), compensate: comp.checked });
     rows.appendChild(row);
     bone.value = "";
-    nameInput.focus();
+    if (!restoring) nameInput.focus();
   }
+  editor._restoreTargets = (targets) => {
+    rows.innerHTML = "";
+    for (const target of targets || []) addTarget(target);
+  };
   const load = el("button", { type: "button", text: T("Load bones"), onclick: () => editor._loadBones() });
   const add = el("button", { type: "button", text: T("Add transform"), onclick: addTarget });
   bone.addEventListener("keydown", (ev) => {
@@ -369,7 +560,11 @@ function renderField(field) {
 
   wrap.appendChild(el("label", { for: id, text: field.label }));
 
-  if (field.type === "bone_targets") {
+  if (field.type === "body_parts") {
+    if (field.help) wrap.appendChild(el("div", { class: "help", text: field.help }));
+    wrap.appendChild(renderBodyParts(field));
+    return wrap;
+  } else if (field.type === "bone_targets") {
     wrap.appendChild(renderBoneTargets(field));
   } else if (field.type === "select") {
     const sel = el("select", { id });
@@ -472,6 +667,7 @@ function renderField(field) {
         listEl.appendChild(el("li", {}, [el("span", { text: baseName(p) }), rm]));
       }
     };
+    hidden.addEventListener("restore", rerender);
     const add = el("button", {
       type: "button", text: T("Add file"),
       onclick: () => openPicker("path", (p) => {
@@ -524,7 +720,8 @@ function collectParams() {
   document.querySelectorAll("#tool-form [data-name]").forEach((inp) => {
     const name = inp.dataset.name;
     if (inp.dataset.ftype === "preset") return; // UI-only; it fills other fields
-    if (inp.dataset.ftype === "bone_targets") params[name] = inp._collectTargets();
+    if (inp.dataset.ftype === "body_parts") params[name] = inp._collectBodyParts();
+    else if (inp.dataset.ftype === "bone_targets") params[name] = inp._collectTargets();
     else if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
     else params[name] = inp.value;
   });
@@ -543,6 +740,10 @@ async function runTool() {
     if (f.required && !String(params[f.name] ?? "").trim()) missing.push(f.label);
   }
   if (missing.length) return alert(T("Please fill in: ") + missing.join(", "));
+  if (tool.id === "mesh_baker" && !Object.values(params.body_parts || {}).some((p) => Number(p) !== 100)
+      && !(params.targets || []).length && !params.thigh) {
+    return alert(T("Choose a body part and move its slider away from 100%, then press Save model."));
+  }
 
   openConsole(tool.label);
   let resp;

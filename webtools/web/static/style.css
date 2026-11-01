@@ -70,6 +70,7 @@ main { padding: 14px; }
 .tool-list button small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
 
 .tool-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.tool-panel { min-width: 0; }
 .tool-panel h2 { margin: 0 0 4px; font-size: 18px; }
 .tool-panel .desc { color: var(--muted); margin: 0 0 14px; }
 .hint { color: var(--muted); }
@@ -100,6 +101,35 @@ main { padding: 14px; }
 .bone-vector .vec3-row label { flex: 1; min-width: 0; color: var(--muted); }
 .bone-vector .vec3-row label > span { display: block; margin-bottom: 3px; }
 .bone-comp { display: flex; align-items: center; gap: 6px; margin: 12px 0; font-size: 13px; }
+.body-status { margin: 0 0 8px; font-size: 14px; }
+.body-toolbar, .body-part-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.body-editor button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 13px; }
+.body-parts-grid { margin: 12px 0; }
+.body-part-selector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 10px 0; }
+.body-editor .body-part-choice { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 4px; text-align: left; padding: 8px; }
+.body-part-choice > span:first-child { min-width: 0; font-size: 12px; }
+.body-part-badge { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+.body-editor .body-part-choice.active { border-color: var(--accent); outline: 1px solid var(--accent); }
+.body-editor .body-part-choice.changed .body-part-badge { color: var(--accent); font-weight: 700; }
+.body-editor .body-part-choice.unavailable { opacity: 0.5; }
+.body-part { border: 1px solid var(--line); border-radius: 10px; min-width: 0; margin: 0; padding: 10px 12px; scroll-margin-top: 150px; scroll-margin-bottom: 90px; }
+.body-part legend { padding: 0 4px; font-size: 15px; font-weight: 600; }
+.body-part p.help { min-height: 36px; margin: 0 0 8px; line-height: 1.5; }
+.body-part:disabled { opacity: 0.55; }
+.body-part:disabled button { cursor: default; }
+.body-part.changed { border-color: var(--accent); background: var(--panel2); }
+.body-stepper { display: flex; align-items: center; gap: 8px; }
+.body-stepper button { flex: 0 0 auto; }
+.body-percent { display: flex; align-items: center; justify-content: center; gap: 3px; min-width: 0; flex: 1; }
+.field .body-percent input { width: 70px; min-width: 0; padding: 7px 4px; text-align: center; }
+.body-part input[type=range] { width: 100%; margin: 12px 0; accent-color: var(--accent); }
+.body-part-change { font-size: 13px; color: var(--muted); }
+.body-unavailable:empty { display: none; }
+.expert-options { border-top: 1px solid var(--line); margin: 18px 0 12px; padding-top: 12px; }
+.expert-options > summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+.mesh-form { padding-bottom: 70px; }
+.mesh-save-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 15; background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -3px 12px #0001; padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom)); display: flex; justify-content: center; }
+.mesh-save-bar .run-btn { margin: 0; max-width: 800px; }
 /* plain number fields don't need the full width of a text field */
 .field input.num { max-width: 160px; }
 .path-row button, .gallery-bar button, .modal-foot button {
@@ -157,6 +187,8 @@ main { padding: 14px; }
   .tool-list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
   /* title-only chips, compact (no long descriptions to wrap/cut) */
   .tool-list button { min-width: max-content; white-space: nowrap; }
+  .mode-toggle { display: flex; flex-wrap: wrap; }
+  .mode-toggle button { flex: 1 1 auto; padding: 8px 10px; }
 }
 
 /* multi-select (Selected files mode): the chosen-bundle list */

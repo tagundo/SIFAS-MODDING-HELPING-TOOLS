@@ -19,7 +19,7 @@ from webtools.tools.costume import (
     run_costume_recolour, run_costume_transplant, run_iosapk_import,
     run_lower_body_swap,
 )
-from webtools.tools.mesh import inspect_bones, run_fix_export, run_mesh_baker
+from webtools.tools.mesh import inspect_body_parts, inspect_bones, run_fix_export, run_mesh_baker
 from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
 from webtools.tools.info import run_charinfo
@@ -105,6 +105,17 @@ def _common_io(suffix_default="_mod", root="extracted"):
     single, batch = _in_single(), _in_batch()
     single["root"] = batch["root"] = root
     return [single, batch, _out_dir(), *_prefix_suffix(suffix_default)]
+
+
+def _mesh_io():
+    fields = _common_io("_baked", root="models")
+    fields[0].update(label="Costume file", help="Choose the costume model file you want to change.")
+    fields[1].update(label="Costume folder")
+    fields[2].update(label="Save folder", help="The changed costume is saved as a new file here.")
+    for field in fields[3:]:
+        field["expert"] = True
+    fields.insert(1, dict(_in_multi("models"), label="Costume files"))
+    return fields
 
 
 def _xyz(prefix_label, names, default="", help_first=None):
@@ -386,12 +397,19 @@ TOOLS = [
     {
         "id": "mesh_baker",
         "label": "Mesh Baker",
-        "description": "Bake bone scale/rotate/translate into mesh vertices.",
-        "modes": ["single", "batch"],
+        "description": "Choose a body part and adjust its size with a percentage. Both sides change together.",
+        "modes": ["single", "multi", "batch"],
         "run": run_mesh_baker,
         "fields": [
-            *_common_io("_baked", root="models"),
+            *_mesh_io(),
+            {"name": "reference_path", "label": "Example model for batch controls", "type": "path",
+             "root": "models", "mode": "batch",
+             "help": "Choose one model from the batch folder to show the available body parts. Each file is checked again when saving."},
+            {"name": "body_parts", "label": "Adjust body parts", "type": "body_parts",
+             "depends": ["reference_path"], "options_fn": inspect_body_parts,
+             "help": "100% keeps the original size. Thickness controls keep the length and nearby body parts unchanged. Press Save model to write a new model file."},
             {"name": "thigh", "label": "Thigh preset", "type": "select", "default": "",
+             "expert": True,
              "options": [
                  {"value": "", "label": "(none)"},
                  {"value": "slim:default", "label": "slim → default"},
@@ -402,15 +420,12 @@ TOOLS = [
                  {"value": "thick:default", "label": "thick → default"},
              ],
              "help": "One-click thigh resize: scales both UpLeg bones with child compensation."},
-            {"name": "reference_path", "label": "Reference bundle for bone list", "type": "path",
-             "root": "models",
-             "help": "Uses the input bundle or first selected file automatically. For batch folders, choose one representative bundle."},
             {"name": "targets", "label": "Bone transforms", "type": "bone_targets",
+             "expert": True,
              "depends": ["reference_path"], "options_fn": inspect_bones,
              "help": "Select or type a bone, then add a transform. Scale is a multiplier; rotation is in degrees; movement uses bone-local units."},
-            {"name": "target_spec", "label": "Target spec(s) — advanced", "type": "textarea", "default": "",
-             "help": "Optional manual bones, one per line: Bone;s=1.1,1.1,1.1;r=0,0,0;t=0,0,0;comp=1"},
             {"name": "spine_comp", "label": "Spine compensation target", "type": "select",
+             "expert": True,
              "default": "spine2",
              "options": [
                  {"value": "spine2", "label": "Spine2 (widens Spine+Spine1)"},
@@ -420,11 +435,12 @@ TOOLS = [
              ],
              "help": "Which child bone absorbs the inverse scale for compensated Spine* "
              "targets. Only affects Spine* bakes."},
-            {"name": "recompute_normals", "label": "Recompute normals", "type": "checkbox", "default": True},
-            {"name": "hierarchical", "label": "Hierarchical skinning", "type": "checkbox", "default": True},
+            {"name": "recompute_normals", "label": "Recompute normals", "type": "checkbox", "default": True, "expert": True},
+            {"name": "hierarchical", "label": "Hierarchical skinning", "type": "checkbox", "default": True, "expert": True},
             {"name": "include_hidden", "label": "Include hidden meshes (foot_shadow · Hair · Face)",
-             "type": "checkbox", "default": False},
+             "type": "checkbox", "default": False, "expert": True},
             {"name": "mesh_names", "label": "Only these meshes (advanced)", "type": "textarea",
+             "expert": True,
              "default": "",
              "help": "Comma/newline separated mesh names; blank = all skinned, non-hidden meshes."},
         ],

@@ -721,9 +721,13 @@ def _is_descendant(parent, node, ancestor):
     return False
 
 
-def expand_targets(targets, parent, name2idx, idx2leaf):
+def expand_targets(targets, parent, name2idx, idx2leaf, rest_world=None):
     """targets → deltas{bone_idx:4x4}. 보정 본은 스케일 역수 추가.
-    comp_bones 지정 시 그 본(자손인 것만)을 보정, 없으면 바로 아래 자식을 자동 보정."""
+    comp_bones 지정 시 그 본(자손인 것만)을 보정, 없으면 바로 아래 자식을 자동 보정.
+    Beginner controls use rest_world to carry the parent's inverse scale into
+    the compensated bone's full rest frame, including its rotation and pivot.
+    Legacy targets keep their original bone-local compensation behavior.
+    """
     explicit, missing = {}, []
     for tg in targets:
         if tg.is_identity():
@@ -745,22 +749,49 @@ def expand_targets(targets, parent, name2idx, idx2leaf):
             continue
         inv = trs(scale=(1.0 / sx, 1.0 / sy, 1.0 / sz))
 
+        def compensation_delta(child):
+            if not getattr(tg, "compensate_explicit", False):
+                return inv
+            if rest_world is None:
+                raise ValueError("Body part compensation requires the mesh's rest-world transforms.")
+            # A parent's scale acts before the child's relative rest matrix L.
+            # L^-1 S^-1 L cancels it at the original child pivot, even when L
+            # rotates its axes or translates its origin. Keep this matrix whole:
+            # decomposition into scale/rotation would discard needed shear.
+            relative = np.linalg.inv(rest_world[i]) @ rest_world[child]
+            return np.linalg.inv(relative) @ inv @ relative
+
         if tg.comp_bones:                       # 명시적 보정 대상(자손인 것만)
             used = False
             for bn in tg.comp_bones:
                 j = name2idx.get(bn)
-                if j is None or j in explicit or j in deltas:
+                if j is None:
                     continue
                 if not _is_descendant(parent, j, i):   # 대상 본 아래에 있어야 의미가 있음
                     continue
-                deltas[j] = inv; comp.append(idx2leaf[j]); used = True
+                if j in explicit:
+                    # Beginner body controls represent independent final
+                    # percentages. Preserve the explicit child's own edit
+                    # while cancelling this parent's inherited scale.
+                    if getattr(tg, "compensate_explicit", False):
+                        deltas[j] = compensation_delta(j) @ deltas[j]
+                        comp.append(idx2leaf[j]); used = True
+                    continue
+                if j in deltas:
+                    continue
+                deltas[j] = compensation_delta(j); comp.append(idx2leaf[j]); used = True
             if used:
                 continue                        # 명시 대상 처리 완료
             # 유효한 명시 대상이 없으면 자동 폴백
 
         for j in range(len(parent)):            # 자동: 바로 아래 자식
-            if parent[j] == i and j not in explicit and j not in deltas:
-                deltas[j] = inv
+            if parent[j] != i:
+                continue
+            if j in explicit and getattr(tg, "compensate_explicit", False):
+                deltas[j] = compensation_delta(j) @ deltas[j]
+                comp.append(idx2leaf[j])
+            elif j not in explicit and j not in deltas:
+                deltas[j] = compensation_delta(j)
                 comp.append(idx2leaf[j])
     return deltas, applied, comp, missing
 
@@ -816,7 +847,12 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
     for i, n in enumerate(idx2leaf):
         name2idx.setdefault(n, i)
 
-    deltas, applied, comp, missing = expand_targets(targets, parent, name2idx, idx2leaf)
+    bps = [mat_from(b) for b in bps_raw]
+    rest_world = [np.linalg.inv(b) for b in bps] if any(
+        getattr(target, "compensate_explicit", False) and target.compensate
+        for target in targets) else None
+    deltas, applied, comp, missing = expand_targets(
+        targets, parent, name2idx, idx2leaf, rest_world=rest_world)
     if not deltas:
         return {"skinned": True, "applied": [], "compensated": [],
                 "influenced": 0, "max_disp": 0.0, "missing": missing}
@@ -825,7 +861,6 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
     buf = bytearray(tree["m_VertexData"]["m_DataSize"])
     u8 = np.frombuffer(buf, dtype=np.uint8)
 
-    bps = [mat_from(b) for b in bps_raw]
     nb = len(bps)
     M = (hierarchical_skin_matrices(bps, parent, deltas) if hierarchical
          else independent_skin_matrices(bps, deltas))

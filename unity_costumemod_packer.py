@@ -651,19 +651,21 @@ def extract_body_texture_with_unitypy(bundle_path: str, log=None):
     return _extract_body_texture_core(bundle_path, log=log, allow_decode=(mode != "off"))
 
 
-def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True):
+def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True, image_decoder=None):
     """Find a body Texture2D and (when allow_decode) return (name, png_bytes).
 
     Tries hard so a real preview is produced when any texture exists:
       1) exact 'chXXXX_coXXXX_body' texture,
       2) any texture whose name contains 'body',
       3) the largest decodable texture.
-    Crunched/compressed formats are decoded (not skipped). A `log` callback, when
-    given, explains exactly why a placeholder ends up being used.
+    The default decoder handles crunched/compressed formats. A `log` callback,
+    when given, explains exactly why a placeholder ends up being used.
+    `image_decoder` optionally supplies a platform-safe Texture2D -> PIL image
+    conversion; ordinary CLI callers retain the existing native decode path.
 
-    WARNING: when allow_decode is True this touches the native texture decoders,
-    which can hard-crash (SIGILL) on some Termux builds - run it in a child
-    process there (see _decode_texture_via_subprocess)."""
+    WARNING: the default decoder touches native texture codecs which can
+    hard-crash (SIGILL) on some Termux builds - run it in a child process there
+    (see _decode_texture_via_subprocess), or supply a safe image_decoder."""
     def _log(msg):
         if log:
             log(msg)
@@ -710,11 +712,12 @@ def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True):
 
     # astc-encoder-py imports archspec on the first decode; make it tolerate
     # Termux's platform.system() == "Android" before we touch any image data.
-    _patch_platform_for_decode()
+    if image_decoder is None:
+        _patch_platform_for_decode()
 
     def decode(name, data):
         try:
-            img = getattr(data, "image", None)
+            img = image_decoder(data) if image_decoder is not None else getattr(data, "image", None)
         except Exception as e:
             _log(f"  ⚠️ thumbnail: texture '{name}' failed to decode ({e})")
             return None

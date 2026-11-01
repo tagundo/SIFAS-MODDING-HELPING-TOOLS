@@ -13,7 +13,7 @@ anywhere.
 | Breast Size (LiveCore) | `sifas_breast_tuner.py` scale editing |
 | Skirt Length | `skirt_length_changer.py` |
 | Texture Importer | replace Texture2D images from a folder |
-| Gallery | preview body textures of bundles in a folder |
+| Texture previews | view one representative texture image per costume file; check shape changes in the game or a 3D viewer |
 | Mesh Baker | bake scale, rotation and movement into model vertices |
 
 Each tool runs in **Single file** or **Batch folder** mode, shows a live log and
@@ -79,8 +79,22 @@ The file browser is limited to your sukusta library and home folder:
 
 ## Mesh Baker
 
-Choose an input model, then load its bone list and add a transform row for each
-bone you want to edit. Each row has X/Y/Z values for scale (1 = unchanged),
-rotation in degrees, and movement in bone-local units, plus child compensation.
-For a batch folder, choose one representative model as the reference bundle.
-The thigh presets and advanced text specifications remain available.
+1. Choose an input model and an output folder.
+2. Choose a body-part button, such as **Waist thickness**, **Upper arm thickness**,
+   or **Head size**, then adjust its slider. Only the chosen part's controls are
+   shown; percentage badges keep the other edits visible. 100% is the original
+   size, and both sides change together. The −5% / +5% buttons and Reset offer
+   simple adjustments.
+3. Press **Save model** in the bottom bar to save a new model. Check the result in
+   the game or a 3D viewer.
+
+The tool reads the chosen model to enable supported body parts and resolves the
+same parts separately for each file in a batch. Thickness keeps limb length and
+neighboring sizes; hands, feet and head use overall size. Clothing attached to
+these parts can also change. For a batch folder, choose one example model to
+enable the controls. Input choices and edits survive mode and language changes.
+
+**Expert options** contains individual bone rows with X/Y/Z scale, rotation and
+movement, thigh body-type presets, mesh filters and filename settings. Raw target
+specifications are supported by the API and CLI; the browser does not require or
+display their syntax. There is no live 3D preview.
