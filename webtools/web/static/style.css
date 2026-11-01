@@ -129,7 +129,7 @@ main { padding: 14px; }
 .expert-options > summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-bottom: 12px; }
 .mesh-form { padding-bottom: 70px; }
 .mesh-save-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 15; background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -3px 12px #0001; padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom)); display: flex; justify-content: center; }
-.mesh-save-bar .run-btn { margin: 0; max-width: 800px; }
+.mesh-save-bar .run-btn { margin: 0; max-width: 800px; min-height: 48px; }
 /* plain number fields don't need the full width of a text field */
 .field input.num { max-width: 160px; }
 .path-row button, .gallery-bar button, .modal-foot button {

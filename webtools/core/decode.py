@@ -14,12 +14,16 @@ import sys
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 
 from .repo import ensure_repo_on_path, repo_root
 
 # (path, mtime) -> PNG bytes; b"" marks a known-failed decode so we don't retry.
 _CACHE: dict = {}
 _ANDROID_LOCK = threading.Lock()
+_ANDROID_CACHE = OrderedDict()
+_ANDROID_CACHE_ENTRIES = 64
+_ANDROID_CACHE_BYTES = 32 * 1024 * 1024
 _MAX_DIMENSION = 8192
 _MAX_PIXELS = 4096 * 4096
 _MAX_SOURCE_BYTES = _MAX_PIXELS * 4 * 2  # base level plus mipmaps, bounded before stream reads
@@ -34,6 +38,18 @@ _RAW_FORMATS = {
 def _embedded_android():
     """Chaquopy initializes this module before application Python code runs."""
     return sys.modules.get("java.android") is not None
+
+
+def _remember_android_thumbnail(key, data):
+    """Called under _ANDROID_LOCK; bound both PNG bytes and failed entries."""
+    data = data or b""
+    if len(data) > _ANDROID_CACHE_BYTES:
+        return  # a single large preview may be served without retaining it
+    _ANDROID_CACHE[key] = data
+    _ANDROID_CACHE.move_to_end(key)
+    while (len(_ANDROID_CACHE) > _ANDROID_CACHE_ENTRIES
+           or sum(map(len, _ANDROID_CACHE.values())) > _ANDROID_CACHE_BYTES):
+        _ANDROID_CACHE.popitem(last=False)
 
 
 def _remaining(deadline):
@@ -144,9 +160,6 @@ def thumbnail(bundle_path, timeout: int = 180):
         return None
 
     key = (bundle_path, mtime)
-    if key in _CACHE:
-        return _CACHE[key] or None
-
     if _embedded_android():
         # Serialize bounded image work to avoid several full-resolution texture
         # allocations at once when the gallery loads many cards in parallel.
@@ -154,16 +167,20 @@ def thumbnail(bundle_path, timeout: int = 180):
         if not _ANDROID_LOCK.acquire(timeout=max(0, float(timeout))):
             return None  # a busy queue is transient; don't cache it as a bad texture
         try:
-            if key in _CACHE:
-                return _CACHE[key] or None
+            if key in _ANDROID_CACHE:
+                _ANDROID_CACHE.move_to_end(key)
+                return _ANDROID_CACHE[key] or None
             data = _android_thumbnail(bundle_path, deadline)
-            _CACHE[key] = data or b""
+            _remember_android_thumbnail(key, data)
             return data or None
         except Exception:
-            _CACHE[key] = b""
+            _remember_android_thumbnail(key, None)
             return None
         finally:
             _ANDROID_LOCK.release()
+
+    if key in _CACHE:
+        return _CACHE[key] or None
 
     packer = _packer_path()
     if not packer:
