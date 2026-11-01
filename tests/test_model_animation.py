@@ -57,6 +57,35 @@ def values(glb, index):
 
 
 class AnimationTests(unittest.TestCase):
+    def test_discovery_deduplicates_real_paths_across_overlapping_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "nested"
+            nested.mkdir()
+            selected, wrong = nested / "model.unity", nested / "unrelated.unity"
+            selected.write_bytes(b"selected")
+            wrong.write_bytes(b"candidate")
+            calls = []
+            def inspect(path, deadline):
+                calls.append(path)
+                return {101}, 0
+            with patch.object(animation, "_animation_source", side_effect=inspect):
+                result = animation.discover_animation_paths([str(selected)], {"library_roots": [str(root), str(nested), str(root)]}, 207, time.monotonic() + 10)
+        self.assertEqual(result, [])
+        self.assertEqual(calls, [str(wrong)])
+
+    def test_discovery_prioritizes_owner_motion_and_stops_after_usable_companion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected, correct, wrong = root / "model.unity", root / "Setsuna_eye_animation.unity", root / "aaa_Chika.unity"
+            for path in (selected, correct, wrong):
+                path.write_bytes(b"candidate")
+            with patch.object(animation, "_animation_source", return_value=({207}, 20)) as inspect:
+                result = animation.discover_animation_paths([str(selected)], {"library_roots": [str(root)]}, 207, time.monotonic() + 10)
+        self.assertEqual(result, [str(correct)])
+        self.assertEqual(inspect.call_count, 1)
+        self.assertEqual(inspect.call_args.args[0], str(correct))
+
     def test_renderer_visibility_has_real_step_metadata_without_skeleton_scale(self):
         data = words([(-3.4e38, [(0, (0, 0, 0, 0))]), (0, [(0, (0, 0, 0, 0))]),
                       (1, [(0, (0, 0, 0, 1))]), (math.inf, [])])

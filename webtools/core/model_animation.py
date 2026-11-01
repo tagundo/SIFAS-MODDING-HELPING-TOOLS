@@ -75,7 +75,18 @@ def discover_animation_paths(paths, context, owner, deadline):
     roots.extend(os.path.dirname(os.path.realpath(origin)) for path, origin in context.get("origins", {}).items() if os.path.realpath(path) in selected)
     roots.extend(os.path.realpath(path) for path in context.get("library_roots", []))
     roots = list(dict.fromkeys(roots))
-    found, inspected = [], 0
+    found, inspected, attempted = [], 0, set(selected)
+    from .charinfo import NAMES
+    owner_name = NAMES.get(int(owner), "").split(" ", 1)[0].lower() if owner is not None else ""
+    families = {Path(path).name.split("_", 1)[0].lower() for path in paths
+                if re.fullmatch(r"[a-z0-9]{6}_\d+\.unity", Path(path).name.lower())}
+
+    def rank(name):
+        lower = name.lower()
+        animation_hint = any(token in lower for token in ("anim", "motion", "clip", "eye_table", "eyetable"))
+        owner_hint = (owner is not None and f"ch{int(owner):04}" in lower) or (owner_name and owner_name in lower)
+        family_hint = lower.split("_", 1)[0] in families
+        return (not (owner_hint and animation_hint), not family_hint, not animation_hint, not owner_hint, name)
 
     def inside(path):
         return any(path == root or path.startswith(root + os.sep) for root in roots)
@@ -84,8 +95,9 @@ def discover_animation_paths(paths, context, owner, deadline):
         nonlocal inspected
         _check(deadline)
         path = os.path.realpath(path)
-        if path in selected or path in found or not inside(path) or not os.path.isfile(path):
+        if path in attempted or not inside(path) or not os.path.isfile(path):
             return
+        attempted.add(path)
         inspected += 1
         owners, count = _animation_source(path, deadline)
         if 0 < count <= MAX_CLIPS and (explicit or (owner is not None and owners == {int(owner)})):
@@ -97,7 +109,7 @@ def discover_animation_paths(paths, context, owner, deadline):
                 inspect(path, explicit=True)
             except (OSError, ValueError):
                 pass
-        if len(found) >= 2 or owner is None:
+        if found or owner is None:
             return found[:2]
         seen = 0
         for root in roots:
@@ -107,7 +119,7 @@ def discover_animation_paths(paths, context, owner, deadline):
                 _check(deadline)
                 depth = os.path.relpath(directory, root).count(os.sep)
                 dirs[:] = sorted(name for name in dirs if not name.startswith(".") and depth < 2)[:32]
-                for name in sorted(files, key=lambda name: (not any(token in name.lower() for token in ("anim", "motion", "eye", f"ch{int(owner):04}")), name)):
+                for name in sorted(files, key=rank):
                     seen += 1
                     if seen > MAX_DISCOVERY_FILES or inspected >= 32:
                         return found[:2]
@@ -117,8 +129,8 @@ def discover_animation_paths(paths, context, owner, deadline):
                         inspect(os.path.join(directory, name))
                     except (OSError, ValueError):
                         continue
-                    if len(found) >= 2:
-                        return found
+                    if found:
+                        return found[:2]
     except AnimationError:
         pass
     return found[:2]

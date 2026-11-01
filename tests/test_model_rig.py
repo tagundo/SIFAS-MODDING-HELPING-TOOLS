@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import struct
 import tempfile
+import shutil
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -87,6 +88,29 @@ class RigTests(unittest.TestCase):
 
     def tearDown(self):
         viewer._SESSIONS.clear()
+
+    def owner_rig_without_clips(self, unbound_clip=False):
+        environment = self.UnityPy.load(FIXTURE.read_bytes())
+        body_object = next(obj.read_typetree()["m_GameObject"]["m_PathID"] for obj in environment.objects if obj.type.name == "SkinnedMeshRenderer")
+        for obj in list(environment.objects):
+            if obj.type.name == "AnimationClip":
+                if unbound_clip:
+                    tree = obj.read_typetree()
+                    for field in ("m_RotationCurves", "m_PositionCurves", "m_ScaleCurves", "m_EulerCurves"):
+                        for curve in tree.get(field, []):
+                            curve["path"] = "Absent/UnboundBone"
+                    obj.save_typetree(tree)
+                else:
+                    del obj.assets_file.objects[obj.path_id]
+            elif obj.type.name == "Material":
+                tree = obj.read_typetree()
+                tree["m_Name"] = "ch0207_neutral_rig"
+                obj.save_typetree(tree)
+            elif obj.type.name == "GameObject" and obj.path_id == body_object:
+                tree = obj.read_typetree()
+                tree["m_Name"] = "Body"
+                obj.save_typetree(tree)
+        return next(iter(environment.files.values())).save()
 
     def test_genuine_skin_preserves_rest_positions_and_standard_binding_graph(self):
         before = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
@@ -198,6 +222,137 @@ class RigTests(unittest.TestCase):
         self.assertTrue(metadata["rig"]["animationWarnings"])
         for name, points in evaluate(document, binary).items():
             self.np.testing.assert_allclose(points, static[name], atol=1e-6)
+
+    def test_disabled_auto_face_static_costume_skips_global_motion_discovery(self):
+        from webtools.core import viewer_archive, model_animation
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "costume.zip"
+            shutil.copyfile(FIXTURE.with_name("viewer_auto_face_costume.zip"), archive)
+            shutil.copyfile(FIXTURE.with_name("viewer_auto_face_donor.unity"), root / "donor.unity")
+            # Stage the actual companion when supplied; the no-playable-rig
+            # guard must run before scanning or attempting any of its 20 clips.
+            actual = os.environ.get("SIFAS_FACE_TEST_EYE_TABLE")
+            if actual:
+                shutil.copyfile(actual, root / "Setsuna_eye_animation.unity")
+            with viewer_archive.expand_inputs([str(archive)], root / "cache") as expanded:
+                context = {"enabled": False, "allow_download": False, "library_roots": [str(root)],
+                           "cache_dir": str(root / "cache"), "origins": expanded.origins,
+                           "manifest_paths": expanded.manifest_paths}
+                with patch.object(model_animation, "discover_animation_paths", side_effect=AssertionError("Static models must not discover clips")) as discovery:
+                    metadata = viewer.prepare(expanded.paths, face_context=context, rigged=True)
+            discovery.assert_not_called()
+        self.assertEqual(metadata["faces"], {"enabled": False, "status": "not_needed", "added": 0, "characters": []})
+        self.assertFalse(metadata["rig"]["available"])
+        self.assertEqual(metadata["stats"]["meshes"], 2)
+        self.assertNotIn("face_source_unavailable", [row["code"] for row in metadata["warnings"]])
+
+    def test_disabled_faces_survive_playable_motion_discovery_failure(self):
+        from webtools.core import model_animation
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            baseline = viewer.prepare([str(path)], rigged=True)
+            original = viewer.get_model(baseline["id"])
+            with patch.object(model_animation, "discover_animation_paths", side_effect=OSError("motion lookup failed")):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False})
+            self.assertEqual(viewer.get_model(metadata["id"]), original)
+        self.assertEqual(metadata["faces"], baseline["faces"])
+        self.assertEqual(metadata["warnings"], baseline["warnings"])
+        self.assertEqual(metadata["rig"]["animationWarnings"][-1]["code"], "animation_unavailable")
+
+    def test_unbound_selected_clip_does_not_suppress_local_companion_search(self):
+        from webtools.core import model_animation
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips(unbound_clip=True))
+            with patch.object(model_animation, "discover_animation_paths", return_value=[]) as discovery:
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False})
+            self.assertTrue(metadata["rig"]["available"])
+            self.assertEqual(metadata["rig"]["clips"], [])
+            discovery.assert_called_once()
+            self.assertEqual(metadata["faces"]["status"], "not_needed")
+
+    def test_disabled_faces_survive_global_expiry_before_optional_constructor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            baseline = viewer.prepare([str(path)], rigged=True)
+            original, clock, finish = viewer.get_model(baseline["id"]), [0.], viewer._to_glb
+
+            def finish_then_expire(*args, **kwargs):
+                result = finish(*args, **kwargs)
+                clock[0] = 120.
+                return result
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_to_glb", side_effect=finish_then_expire):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False})
+                self.assertEqual(viewer.get_model(metadata["id"]), original)
+        self.assertEqual(metadata["faces"], baseline["faces"])
+        self.assertEqual(metadata["warnings"], baseline["warnings"])
+
+    def test_already_present_faces_survive_unrelated_motion_load_failure(self):
+        from webtools.core import model_animation
+        from test_model_faces import FaceTests, bundle
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "complete.unity"
+            path.write_bytes(bundle([("rig.assets", self.owner_rig_without_clips()), ("face.assets", FaceTests.scene(self, "Face")), ("eyes.assets", FaceTests.scene(self, "Eyes"))]))
+            baseline = viewer.prepare([str(path)], rigged=True)
+            environment = viewer._environment
+
+            def fail_motion(paths, deadline, base_env=None):
+                if base_env is not None:
+                    raise viewer.ModelViewerError("motion import took too long")
+                return environment(paths, deadline)
+
+            with patch.object(model_animation, "discover_animation_paths", return_value=[str(path)]), patch.object(viewer, "_environment", side_effect=fail_motion):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True})
+            self.assertEqual(viewer.get_model(metadata["id"]), viewer.get_model(baseline["id"]))
+        self.assertEqual(metadata["faces"]["status"], "already_present")
+        self.assertEqual(metadata["faces"]["added"], 0)
+        self.assertFalse(any(row["code"] == "face_source_unavailable" for row in metadata["warnings"]))
+
+    def test_valid_rigged_face_render_uses_global_time_after_bounded_lookup(self):
+        from test_model_faces import FaceTests, bundle
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, donor = root / "rig.unity", root / "Setsuna_original.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+            geometry, clock = viewer._geometry, [0.]
+
+            # Explicit counter avoids depending on a display mesh's name.
+            calls = [0]
+            def times(mesh, *args, **kwargs):
+                calls[0] += 1
+                clock[0] = 50. if calls[0] == 1 else 95.
+                return geometry(mesh, *args, **kwargs)
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_geometry", side_effect=times):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True, "allow_download": False,
+                    "library_roots": [str(root)], "cache_dir": str(root / "cache")})
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(metadata["faces"]["added"], 2)
+        self.assertEqual(metadata["stats"]["meshes"], 3)
+
+    def test_rigged_face_global_timeout_retains_original_completed_body(self):
+        from test_model_faces import FaceTests, bundle
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, donor = root / "rig.unity", root / "Setsuna_original.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+            baseline = viewer.prepare([str(path)], rigged=True)
+            original, geometry, clock, calls = viewer.get_model(baseline["id"]), viewer._geometry, [0.], [0]
+            def times(mesh, *args, **kwargs):
+                calls[0] += 1
+                clock[0] = 50. if calls[0] == 1 else 121.
+                return geometry(mesh, *args, **kwargs)
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_geometry", side_effect=times):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True, "allow_download": False,
+                    "library_roots": [str(root)], "cache_dir": str(root / "cache")})
+                self.assertEqual(viewer.get_model(metadata["id"]), original)
+        self.assertEqual(metadata["stats"], baseline["stats"])
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
 
 
 class ActualRigTests(unittest.TestCase):

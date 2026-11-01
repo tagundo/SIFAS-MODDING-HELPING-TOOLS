@@ -966,10 +966,11 @@ def _to_glb(scene, glb, faces, deadline, rig=None):
 def _build(paths, deadline, face_context=None, rigged=False):
     """Finish the selected model before spending any time on optional faces.
 
-    Both phases share the unchanged overall deadline. The original conversion
-    gets its entire allowance; discovery, including constructor metadata and
-    optional rendering, gets at most FACE_SECONDS of the time left afterward.
-    A completed base GLB is immutable and survives every optional failure.
+    The original conversion gets its entire allowance. Face lookup/network is
+    capped separately; valid rigged facial geometry uses the global time left.
+    Motion gets a fresh bounded wait only after the face result is complete.
+    The original total deadline and legacy static-face budget are unchanged.
+    Completed GLBs are immutable and survive optional phase failures.
     """
     from .model_faces import FacePlan, FACE_SECONDS
     env = _environment(paths, deadline)
@@ -985,45 +986,75 @@ def _build(paths, deadline, face_context=None, rigged=False):
             scene.warn("rig_unavailable")
     materials = _append_scene(scene, glb, disabled_faces, deadline, rig=rig)
     base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
-    if not face_context or (not face_context.get("enabled", True) and rig is None):
+    face_enabled = bool(face_context and face_context.get("enabled", True))
+    playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
+    if not face_context or (not face_enabled and not playable_rig):
         return base
 
     face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
-    faces = None
+    faces, completed, extra = disabled_faces, base, []
+    if face_enabled:
+        faces = None
+        try:
+            _remaining(face_deadline)
+            scene.deadline = face_deadline
+            faces = FacePlan(scene, paths, face_context, face_deadline)
+            _remaining(face_deadline)
+            extra = faces.resolve()
+            _remaining(face_deadline)
+            if extra:
+                # Lookup/network stays capped at forty seconds. Once a valid
+                # face is local, rigged geometry may use the original global
+                # conversion time left; motion must wait for its completion.
+                render_deadline = deadline if rig is not None else face_deadline
+                _paths(paths + extra)
+                env = _environment(extra, render_deadline, base_env=env)
+                expanded = _Scene(env, render_deadline, trees=scene.trees)
+                expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
+                if rig is not None:
+                    rig.update(expanded, faces, render_deadline)
+                _append_scene(expanded, glb, faces, render_deadline, auto_only=True, materials=materials, rig=rig)
+                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig)
+                scene = expanded
+            else:
+                warnings = list(base[2]) + faces.warnings
+                if faces.status == "already_present":
+                    warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
+                completed = (base[0], base[1], warnings, faces.metadata()) + base[4:]
+        except Exception:
+            if faces is None:
+                faces = FacePlan(scene, paths, None, face_deadline)
+                faces.enabled = True
+            faces.added = 0
+            faces.status = "unavailable"
+            faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+            return (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+
+    # Motion is independent of automatic facial completion. Unsupported/static
+    # rigs cannot use discovered tracks; errors must not rewrite face status.
+    if rig is None or not (rig.skinned > 0 or rig.morphs):
+        return completed
+    if rig.clips:
+        return completed
+    motion_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
     try:
-        _remaining(face_deadline)
-        scene.deadline = face_deadline
-        faces = FacePlan(scene, paths, face_context, face_deadline)
-        _remaining(face_deadline)
-        extra = faces.resolve()
-        _remaining(face_deadline)
-        animation_paths = []
-        if rig is not None:
-            from .model_animation import discover_animation_paths
-            animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, face_deadline)
-        additions = list(dict.fromkeys(extra + animation_paths))
-        if not additions:
-            warnings = list(base[2]) + faces.warnings
-            if faces.status == "already_present":
-                warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
-            return (base[0], base[1], warnings, faces.metadata()) + base[4:]
-        _paths(paths + additions)  # aggregate file-count/byte limits remain in force
-        env = _environment(additions, face_deadline, base_env=env)
-        expanded = _Scene(env, face_deadline, trees=scene.trees)
-        expanded.stats = dict(base[1])
-        expanded.warnings = list(base[2])
-        if rig is not None:
-            rig.update(expanded, faces, face_deadline)
-        _append_scene(expanded, glb, faces, face_deadline, auto_only=True, materials=materials, rig=rig)
-        return _to_glb(expanded, glb, faces, face_deadline, rig=rig)
+        _remaining(motion_deadline)
+        from .model_animation import discover_animation_paths
+        animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, motion_deadline)
+        _remaining(motion_deadline)
+        if not animation_paths:
+            return completed
+        _paths(paths + extra + animation_paths)
+        env = _environment(animation_paths, motion_deadline, base_env=env)
+        expanded = _Scene(env, motion_deadline, trees=scene.trees)
+        expanded.stats, expanded.warnings = dict(completed[1]), list(scene.warnings)
+        rig.update(expanded, faces, motion_deadline)
+        return _to_glb(expanded, glb, faces, motion_deadline, rig=rig)
     except Exception:
-        if faces is None:
-            faces = FacePlan(scene, paths, None, face_deadline)
-            faces.enabled = True
-        faces.added = 0
-        faces.status = "unavailable"
-        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
-        return (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+        metadata = dict(completed[4])
+        metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
+            "code": "animation_unavailable", "message": "A local animation companion could not be imported. The completed model is still shown."}]
+        return completed[:4] + (metadata,)
 
 
 def _prune(now):
