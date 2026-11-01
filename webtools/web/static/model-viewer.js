@@ -1,4 +1,4 @@
-/* Offline costume viewer. Three.js and its loaders are bundled with the app. */
+/* Local costume viewer. Three.js and its loaders are bundled with the app. */
 (function () {
   "use strict";
 
@@ -9,6 +9,7 @@
   var pendingOpen = null;
   var paths = [];
   var loadedPaths = [];
+  var loadedAutoFace = true;
   var metadata = null;
   var generation = 0;
   var controller = null;
@@ -20,6 +21,11 @@
   var camera = null;
   var controls = null;
   var model = null;
+  var rigController = null;
+  var materialController = null;
+  var discardPendingPreview = null;
+  var lastFrameTime = 0;
+  var materialPreference = "sifas";
   var frame = 0;
   var resizeObserver = null;
   var bounds = null;
@@ -80,6 +86,7 @@
     });
     node("viewer-add").textContent = t(paths.length ? "Add file" : "Choose costume file");
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
+    node("viewer-add-motion").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-load").disabled = loading || !paths.length;
   }
 
@@ -87,7 +94,11 @@
     if (!paths.length) setStatus("Choose a costume file to begin.");
     else if (model && JSON.stringify(paths) !== JSON.stringify(loadedPaths)) {
       setStatus("Files changed. Press Open model to refresh the preview.");
+    } else if (model && node("viewer-auto-face").checked !== loadedAutoFace) {
+      setStatus("Face option changed. Press Open model to refresh the preview.");
     } else if (!model) setStatus("Press Open model to see the costume.");
+    else if (!loading) setStatus("Model ready.");
+    showFaceStatus();
   }
 
   function setLoading(value) {
@@ -95,13 +106,17 @@
     node("viewer-busy").hidden = !value;
     node("viewer-cancel").hidden = !value;
     node("viewer-load").hidden = value;
+    node("viewer-auto-face").disabled = value;
+    if (rigController) rigController.setInteractive(!value && !lost);
     renderFiles();
+    showFaceStatus();
   }
 
   function cancelLoading() {
     generation += 1;
     if (controller) controller.abort();
     controller = null;
+    if (discardPendingPreview) discardPendingPreview();
     setLoading(false);
     setStatus("Loading cancelled.");
   }
@@ -111,18 +126,24 @@
     frame = window.requestAnimationFrame(draw);
   }
 
-  function draw() {
+  function draw(time) {
     frame = 0;
     if (!active || document.hidden || !renderer || lost || destroyed) return;
+    var delta = lastFrameTime ? Math.min(.1, Math.max(0, (time - lastFrameTime) / 1000)) : 0;
+    lastFrameTime = time;
+    var moving = rigController ? rigController.update(delta) : false;
+    if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
     renderer.render(scene, camera);
     renderedFrames += 1;
-    if (changed) requestRender();
+    if (changed || moving) requestRender();
+    else lastFrameTime = 0;
   }
 
   function pauseRender() {
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
+    lastFrameTime = 0;
   }
 
   function resize() {
@@ -174,20 +195,30 @@
         event.preventDefault();
         lost = true;
         pauseRender();
+        // r128 replaces its GPU caches on restoration. Detach the old resource
+        // disposal listeners while the context is lost, so a later model reload
+        // cannot delete handles from the old context generation. Keep CPU data
+        // and decoded source images for the restored renderer to upload again.
+        if (materialController && materialController.invalidateGPU) materialController.invalidateGPU();
+        disposeObject(model, true);
+        if (rigController) rigController.setInteractive(false);
         // Abort the client load as well. A late preparation response must not
         // replace this interruption message with a misleading ready state.
         if (loading) {
           generation += 1;
           if (controller) controller.abort();
           controller = null;
+          if (discardPendingPreview) discardPendingPreview();
           setLoading(false);
         }
         setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
+        showFaceStatus();
       });
       renderer.domElement.addEventListener("webglcontextrestored", function () {
         lost = false;
         setStatus(model ? "Model ready." : "Choose a costume file to begin.");
         filesChanged();
+        if (rigController) rigController.setInteractive(!loading);
         resize();
       });
       setBackground();
@@ -213,6 +244,10 @@
 
   function fitModel(direction) {
     if (!model || !bounds || !camera) return;
+    if (rigController && rigController.getBounds) {
+      var posed = rigController.getBounds();
+      if (posed) bounds = posed;
+    }
     // A view preset must also clear the previous drag's damping and pan. If
     // their deltas survive, OrbitControls moves away again after the next frame.
     var damping = controls.enableDamping;
@@ -269,7 +304,30 @@
     });
   }
 
-  function disposeObject(object) {
+  function isViewerHelper(object) {
+    return object.userData && object.userData.viewerHelper === true;
+  }
+
+  function visibleSourceTriangles() {
+    var triangles = 0;
+    if (model) model.traverseVisible(function (child) {
+      if (!child.isMesh || isViewerHelper(child) || !child.geometry) return;
+      var geometry = child.geometry;
+      var count = geometry.index ? geometry.index.count : geometry.attributes.position ? geometry.attributes.position.count : 0;
+      triangles += count / 3;
+    });
+    return triangles;
+  }
+
+  function disposePreviewControllers() {
+    if (rigController) rigController.dispose();
+    if (materialController) materialController.dispose();
+    rigController = null;
+    materialController = null;
+    lastFrameTime = 0;
+  }
+
+  function disposeObject(object, preserveImages) {
     if (!object) return;
     var geometries = new Set();
     var materials = new Set();
@@ -289,7 +347,7 @@
     });
     geometries.forEach(function (geometry) { geometry.dispose(); });
     textures.forEach(function (texture) {
-      if (texture.image && typeof texture.image.close === "function") texture.image.close();
+      if (!preserveImages && texture.image && typeof texture.image.close === "function") texture.image.close();
       texture.dispose();
     });
   }
@@ -298,20 +356,34 @@
     if (!model) return;
     var showTextures = node("viewer-textures").checked;
     var wireframe = node("viewer-wireframe").checked;
+    if (materialController && materialController.setEnabled) {
+      materialController.setEnabled(showTextures && !wireframe && node("viewer-shader").value === "sifas");
+    }
     model.traverse(function (child) {
-      if (!child.isMesh) return;
-      if (!child.userData.viewerOriginalMaterials) child.userData.viewerOriginalMaterials = child.material;
+      if (!child.isMesh || isViewerHelper(child)) return;
+      if (!materialController && !child.userData.viewerOriginalMaterials) child.userData.viewerOriginalMaterials = child.material;
       if (!showTextures && !child.userData.viewerSolidMaterials) {
-        var original = child.userData.viewerOriginalMaterials;
+        var original = materialController && materialController.getMaterial ? materialController.getMaterial(child) : child.userData.viewerOriginalMaterials;
         var create = function () {
-          return new window.THREE.MeshStandardMaterial({ color: 0xadb8c8, roughness: 0.85, metalness: 0, side: window.THREE.DoubleSide });
+          return new window.THREE.MeshStandardMaterial({ color: 0xadb8c8, roughness: 0.85, metalness: 0,
+            side: window.THREE.DoubleSide, skinning: !!child.isSkinnedMesh,
+            morphTargets: !!child.morphTargetInfluences,
+            morphNormals: !!(child.geometry.morphAttributes && child.geometry.morphAttributes.normal) });
         };
         child.userData.viewerSolidMaterials = Array.isArray(original) ? original.map(create) : create();
       }
-      child.material = showTextures ? child.userData.viewerOriginalMaterials : child.userData.viewerSolidMaterials;
+      child.material = showTextures ? (materialController && materialController.getMaterial ? materialController.getMaterial(child) : child.userData.viewerOriginalMaterials) : child.userData.viewerSolidMaterials;
       forEachMaterial(child.material, function (material) { material.wireframe = wireframe; });
     });
     requestRender();
+    refreshMaterialStatus();
+  }
+
+  function refreshMaterialStatus() {
+    var state = materialController && materialController.getState ? materialController.getState() : null;
+    node("viewer-material-status").textContent = !state ? "" : t(!state.recognizedMaterials ?
+      "SIFAS material data is unavailable. Basic textures are shown." : node("viewer-shader").value === "basic" ?
+      "Basic textures are shown." : "Uses the file's SIFAS material settings. In-game appearance may differ.");
   }
 
   function buildParts() {
@@ -319,14 +391,18 @@
     list.textContent = "";
     var count = 0;
     model.traverse(function (child) {
-      if (!child.isMesh) return;
+      if (!child.isMesh || isViewerHelper(child)) return;
       count += 1;
       var label = document.createElement("label");
       var input = document.createElement("input");
       input.type = "checkbox";
       if (child.userData.hidden_default === true || child.userData.hideInPreview === true) child.visible = false;
       input.checked = child.visible;
-      input.addEventListener("change", function () { child.visible = input.checked; requestRender(); });
+      input.addEventListener("change", function () {
+        if (rigController && rigController.setPartVisible) rigController.setPartVisible(child, input.checked);
+        else child.visible = input.checked;
+        requestRender();
+      });
       var title = document.createElement("span");
       title.textContent = child.name || t("Part") + " " + count;
       label.appendChild(input);
@@ -345,24 +421,56 @@
     box.textContent = messages.join("\n");
   }
 
+  function showFaceStatus() {
+    var box = node("viewer-face-status");
+    var faces = metadata && metadata.faces;
+    var hasFaceWarning = metadata && (metadata.warnings || []).some(function (warning) {
+      return warning && typeof warning.code === "string" && /^(face_|facial_)/.test(warning.code);
+    });
+    var message = "";
+    if (!loading && !lost && faces && faces.enabled &&
+        JSON.stringify(paths) === JSON.stringify(loadedPaths) &&
+        node("viewer-auto-face").checked === loadedAutoFace) {
+      if (faces.status === "added" && Number(faces.added) > 0) message = "Missing face parts were added automatically.";
+      else if (faces.status === "already_present") message = "The model already includes its face.";
+      else if (faces.status === "partial" && Number(faces.added) > 0) {
+        message = "Some face parts were added; other parts are still missing.";
+      } else if (!hasFaceWarning && (faces.status === "partial" || faces.status === "unavailable")) {
+        message = "The original face could not be added. The available costume parts are shown.";
+      }
+    }
+    box.hidden = !message;
+    box.textContent = message ? t(message) : "";
+  }
+
   async function loadSelected() {
     if (!paths.length) { setStatus("Choose a costume file to begin.", true); return; }
     if (!ensureRenderer()) return;
     var current = ++generation;
     if (controller) controller.abort();
+    if (discardPendingPreview) discardPendingPreview();
     controller = new window.AbortController();
     var requestController = controller;
     var selected = paths.slice();
+    var selectedAutoFace = node("viewer-auto-face").checked;
+    var pendingModel = null;
+    var pendingMaterials = null;
+    function discard() {
+      if (pendingMaterials) pendingMaterials.dispose();
+      if (pendingModel) disposeObject(pendingModel);
+      pendingMaterials = null; pendingModel = null;
+      if (discardPendingPreview === discard) discardPendingPreview = null;
+    }
     setLoading(true);
-    setStatus("Preparing model…");
+    setStatus(selectedAutoFace ? "Checking model and face…" : "Preparing model…");
     try {
       var response = await window.fetch("/api/viewer/prepare", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: selected }), signal: requestController.signal
+        body: JSON.stringify({ paths: selected, auto_face: selectedAutoFace, rigged: true }), signal: requestController.signal
       });
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
-      if (current !== generation) return;
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
       if (typeof prepared.url !== "string" || !/^\/api\/viewer\/model\/[a-zA-Z0-9_-]+\.glb$/.test(prepared.url)) {
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
@@ -373,23 +481,49 @@
       if (length > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
       var data = await modelResponse.arrayBuffer();
       if (data.byteLength > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
-      if (current !== generation) return;
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
       var gltf = await new Promise(function (resolve, reject) {
         new window.THREE.GLTFLoader().parse(data, "", resolve, reject);
       });
-      if (current !== generation || destroyed) { disposeObject(gltf.scene); return; }
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) {
+        disposeObject(gltf.scene); return;
+      }
       var next = gltf.scene;
+      pendingModel = next;
+      discardPendingPreview = discard;
       var nextBounds = new window.THREE.Box3().setFromObject(next);
+      var restBounds = prepared.rig && prepared.rig.bounds;
+      if (restBounds && Array.isArray(restBounds.min) && Array.isArray(restBounds.max) &&
+          restBounds.min.concat(restBounds.max).length === 6 && restBounds.min.concat(restBounds.max).every(isFinite)) {
+        nextBounds.set(new window.THREE.Vector3().fromArray(restBounds.min), new window.THREE.Vector3().fromArray(restBounds.max));
+      }
       if (nextBounds.isEmpty() || !isFinite(nextBounds.min.x) || !isFinite(nextBounds.max.x)) {
-        disposeObject(next);
         throw new Error(t("No visible model was found in these files."));
       }
+      if (window.SifasMaterial && window.SifasMaterial.apply) {
+        pendingMaterials = window.SifasMaterial.apply(next, renderer, {
+          parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender
+        });
+        if (pendingMaterials.ready) await pendingMaterials.ready;
+      }
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) return;
+      disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
       bounds = nextBounds;
       metadata = prepared;
       loadedPaths = selected;
+      loadedAutoFace = selectedAutoFace;
       scene.add(model);
+      materialController = pendingMaterials;
+      pendingMaterials = null;
+      pendingModel = null;
+      if (window.ViewerRig) {
+        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: requestRender });
+      }
+      var materialState = materialController && materialController.getState ? materialController.getState() : null;
+      node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
+      node("viewer-shader").value = materialState && materialState.recognizedMaterials ? materialPreference : "basic";
       node("viewer-empty").hidden = true;
       buildParts();
       updateAppearance();
@@ -402,7 +536,12 @@
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
     } finally {
-      if (current === generation) { controller = null; setLoading(false); }
+      discard();
+      if (current === generation) {
+        controller = null;
+        setLoading(false);
+        if (selectedAutoFace !== node("viewer-auto-face").checked) filesChanged();
+      }
     }
   }
 
@@ -418,16 +557,19 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
-    node("viewer-add").addEventListener("click", function () {
+    function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
       config.pickFile(function (path) {
         if (paths.indexOf(path) < 0) paths.push(path);
         renderFiles();
         filesChanged();
       });
-    });
+    }
+    node("viewer-add").addEventListener("click", pickCompanion);
+    node("viewer-add-motion").addEventListener("click", pickCompanion);
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
+    node("viewer-auto-face").addEventListener("change", filesChanged);
     node("viewer-fit").addEventListener("click", function () { fitModel(); });
     node("viewer-expand").addEventListener("click", function () { setExpanded(!expanded); });
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
@@ -435,6 +577,7 @@
     });
     node("viewer-textures").addEventListener("change", updateAppearance);
     node("viewer-wireframe").addEventListener("change", updateAppearance);
+    node("viewer-shader").addEventListener("change", function () { materialPreference = this.value; updateAppearance(); });
     node("viewer-background").addEventListener("change", setBackground);
     node("viewer-fov").addEventListener("input", function () {
       node("viewer-fov-value").textContent = this.value + "°";
@@ -460,6 +603,9 @@
     node("viewer-expand").textContent = t(expanded ? "Close expanded view" : "Expand view");
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
     if (metadata) showWarnings(metadata.warnings);
+    showFaceStatus();
+    if (rigController) rigController.updateLanguage();
+    refreshMaterialStatus();
   }
 
   function setVisible(value) {
@@ -487,9 +633,11 @@
     destroyed = true;
     generation += 1;
     if (controller) controller.abort();
+    if (discardPendingPreview) discardPendingPreview();
     pauseRender();
     if (resizeObserver) resizeObserver.disconnect();
     if (controls) controls.dispose();
+    disposePreviewControllers();
     disposeObject(model);
     if (renderer) renderer.dispose();
     model = null;
@@ -499,38 +647,63 @@
     mount: mount, open: open, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
     getState: function () {
       var names = [];
-      if (model) model.traverse(function (child) { if (child.isMesh) names.push(child.name); });
+      if (model) model.traverse(function (child) { if (child.isMesh && !isViewerHelper(child)) names.push(child.name); });
       return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), loading: loading, loaded: !!model,
+        autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
+        loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
         meshNames: names, trianglesRendered: renderer ? renderer.info.render.triangles : 0,
+        sourceTriangles: visibleSourceTriangles(),
         renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
-        modelId: metadata ? metadata.id : null };
+        modelId: metadata ? metadata.id : null,
+        camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
+        rig: rigController ? rigController.getState() : null,
+        materials: materialController && materialController.getState ? materialController.getState() : null };
     },
-    // Read actual WebGL framebuffer samples for device QA. This renders the
-    // existing scene and returns counts only; it never changes model data.
-    renderProbe: function () {
+    // Device QA only: an optional denser grid can inspect small colored details.
+    // Keep the original 11x11 samples by default, and read the framebuffer once
+    // rather than issuing a GPU read for each sample. No model data is changed.
+    // triangles/drawTriangles count actual GPU passes; sourceTriangles excludes
+    // tagged preview helpers such as the separate SIFAS outline pass.
+    renderProbe: function (gridSize) {
       if (!renderer || !model || lost) return { ready: false };
       renderer.render(scene, camera);
       renderedFrames += 1;
       var gl = renderer.getContext();
       var size = renderer.getDrawingBufferSize(new window.THREE.Vector2());
-      var pixel = new Uint8Array(4);
-      var background = new Uint8Array(4);
-      gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, background);
+      var width = Math.floor(size.x);
+      var height = Math.floor(size.y);
+      var bytes = width * height * 4;
+      var maximumBytes = 32 * 1024 * 1024;
+      if (width < 2 || height < 2 || bytes > maximumBytes) {
+        return { ready: false, reason: "Framebuffer exceeds diagnostic read limits",
+          width: width, height: height, maxReadBytes: maximumBytes };
+      }
+      var grid = typeof gridSize === "number" && isFinite(gridSize)
+        ? Math.max(1, Math.min(65, Math.floor(gridSize))) : 11;
+      var pixels = new Uint8Array(bytes);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      var background = (width + 1) * 4;
       var changed = 0;
       var chromatic = 0;
-      for (var row = 1; row <= 11; row += 1) {
-        for (var column = 1; column <= 11; column += 1) {
-          gl.readPixels(Math.floor(size.x * column / 12), Math.floor(size.y * row / 12),
-            1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-          if (Math.abs(pixel[0] - background[0]) + Math.abs(pixel[1] - background[1]) +
-              Math.abs(pixel[2] - background[2]) > 24) changed += 1;
-          if (Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2]) > 64) chromatic += 1;
+      for (var row = 1; row <= grid; row += 1) {
+        var y = Math.floor(height * row / (grid + 1));
+        for (var column = 1; column <= grid; column += 1) {
+          var x = Math.floor(width * column / (grid + 1));
+          var offset = (y * width + x) * 4;
+          var red = pixels[offset];
+          var green = pixels[offset + 1];
+          var blue = pixels[offset + 2];
+          if (Math.abs(red - pixels[background]) + Math.abs(green - pixels[background + 1]) +
+              Math.abs(blue - pixels[background + 2]) > 24) changed += 1;
+          if (Math.max(red, green, blue) - Math.min(red, green, blue) > 64) chromatic += 1;
         }
       }
-      return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: 121,
-        triangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
-        width: size.x, height: size.y, glError: gl.getError() };
+      return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: grid * grid,
+        gridSize: grid, readPixelsCalls: 1, bytesRead: bytes,
+        triangles: renderer.info.render.triangles, sourceTriangles: visibleSourceTriangles(),
+        drawTriangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
+        width: width, height: height, glError: gl.getError() };
     }
   };
 }());

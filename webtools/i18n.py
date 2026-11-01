@@ -1291,6 +1291,131 @@ _VIEWER_TRANSLATIONS.update({
         "選んだモデルファイルの容量が大きすぎます。ファイル数を減らしてください。"
     ]
 })
+_VIEWER_TRANSLATIONS.update({
+    "Open a costume model or ZIP. Missing facial parts can be added automatically.": [
+        "의상 모델이나 ZIP을 여세요. 빠진 얼굴 파츠는 자동으로 불러올 수 있습니다.",
+        "衣装モデルやZIPを開いてください。足りない顔パーツを自動で追加できます。"
+    ],
+    "Choose costume model or ZIP": [
+        "의상 모델 또는 ZIP 선택",
+        "衣装モデルまたはZIPを選択"
+    ],
+    "Complete face automatically": [
+        "얼굴 자동 완성",
+        "顔を自動で補う"
+    ],
+    "Uses the character's original face for missing parts.": [
+        "빠진 얼굴 파츠만 캐릭터의 원본으로 채웁니다.",
+        "足りない顔パーツだけ元のデータから補います。"
+    ],
+    "Checking model and face…": [
+        "의상과 얼굴을 확인하는 중…",
+        "衣装と顔を確認中…"
+    ],
+    "Face option changed. Press Open model to refresh the preview.": [
+        "얼굴 설정이 바뀌었습니다. 모델 열기를 눌러 갱신하세요.",
+        "顔の設定が変わりました。モデルを開くを押して更新してください。"
+    ],
+    "Missing face parts were added automatically.": [
+        "빠진 얼굴 파츠를 원본에서 자동으로 채웠습니다.",
+        "足りない顔パーツを元のデータから自動で補いました。"
+    ],
+    "The model already includes its face.": [
+        "의상에 포함된 얼굴을 그대로 표시합니다.",
+        "衣装に含まれる顔をそのまま表示しています。"
+    ],
+    "Some face parts were added; other parts are still missing.": [
+        "얼굴 파츠 일부를 채웠지만 아직 빠진 파츠가 있습니다.",
+        "顔パーツの一部を追加しましたが、まだ不足しているパーツがあります。"
+    ],
+    "The original face could not be added. The available costume parts are shown.": [
+        "원본 얼굴을 불러오지 못해 현재 파일에 있는 파츠만 표시합니다.",
+        "元の顔を追加できなかったため、現在のファイルにあるパーツを表示しています。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "The model's character could not be identified safely, so an original face was not added.": [
+        "모델의 캐릭터를 정확히 확인할 수 없어 원본 얼굴을 추가하지 않았습니다.",
+        "モデルのキャラクターを確実に識別できないため、元の顔を追加しませんでした。"
+    ],
+    "The mod's character metadata disagrees with its Unity model. The Unity model's owner is used.": [
+        "모드 설명과 모델의 캐릭터 정보가 다릅니다. 모델에 기록된 캐릭터를 기준으로 표시합니다.",
+        "MODの説明とモデルのキャラクター情報が異なります。モデルに記録されたキャラクターを使用します。"
+    ],
+    "The original face could not be obtained. The costume is still shown; keep a same-character original model locally or check the asset CDN connection.": [
+        "원본 얼굴을 불러오지 못했습니다. 의상은 표시됩니다. 같은 캐릭터의 원본 모델을 기기에 보관하거나 리소스 서버 연결을 확인해주세요.",
+        "元の顔を取得できませんでした。衣装は表示されます。同じキャラクターの元モデルを端末に用意するか、リソース配信サーバーへの接続を確認してください。"
+    ],
+    "The original face could not be opened. The costume is still shown.": [
+        "원본 얼굴을 열지 못했습니다. 불러온 의상은 계속 확인할 수 있습니다.",
+        "元の顔を開けませんでした。読み込んだ衣装は引き続き確認できます。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Some bone transforms are unavailable. Those parts use their saved renderer placement.": [
+        "일부 파츠의 본 정보를 찾지 못해 저장된 위치로 표시합니다.",
+        "一部のボーン情報が見つからないため、該当パーツを保存済みの配置で表示します。"
+    ],
+    "Some vertices have no bone weights and use their saved renderer placement.": [
+        "일부 정점에 본 연결 정보가 없어 저장된 위치로 표시합니다.",
+        "一部の頂点にボーンのウェイト情報がないため、保存済みの配置で表示します。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Fills missing face parts from the originals. Uses the internet if needed.": [
+        "빠진 얼굴 파츠만 원본으로 채웁니다. 필요하면 인터넷에서 불러옵니다.",
+        "不足した顔パーツだけ元データで補います。必要に応じて通信します。"
+    ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Pose and body": ["포즈·체형 조절", "ポーズ・体型調整"],
+    "Add animation file": ["모션 파일 추가", "モーションファイルを追加"],
+    "Add a Unity motion or expression bundle, then reopen the model. FBX motion files are not supported.": ["Unity 모션·표정 번들을 추가한 뒤 모델 열기를 누르세요. FBX 모션 파일은 지원하지 않습니다.", "Unityのモーション・表情バンドルを追加し、モデルを開き直してください。FBXモーションには対応していません。"],
+    "Use saved node settings": ["파일의 노드 설정 적용", "ファイルのノード設定を適用"],
+    "Uses verified scale and position values from the file. Game height normalization is not applied.": ["파일에서 확인한 크기·위치 값을 적용합니다. 게임의 키 정규화는 적용하지 않습니다.", "ファイルで確認できたサイズ・位置の値を適用します。ゲームの身長正規化は適用しません。"],
+    "100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.": ["100%는 크기를 추가로 바꾸지 않습니다. 선택한 자세와 노드 설정을 기준으로 조절합니다.", "100%ではサイズを追加変更しません。選択した姿勢とノード設定を基準に調整します。"],
+    "No verified saved node settings are available.": ["적용할 수 있는 노드 설정이 파일에 없습니다.", "適用できるノード設定がファイルにありません。"],
+    "Saved node settings are applied. 100% adds no extra scaling.": ["파일의 노드 설정을 적용했습니다. 100%는 크기를 추가로 바꾸지 않습니다.", "ファイルのノード設定を適用しています。100%ではサイズを追加変更しません。"],
+    "Using the file's authored shape. Saved node settings are off.": ["파일의 원래 체형을 표시합니다. 노드 설정은 적용하지 않았습니다.", "ファイルの元の体型を表示しています。ノード設定は未適用です。"],
+    "Unsupported or conflicting saved settings were skipped.": ["지원하지 않거나 서로 충돌하는 설정은 건너뛰었습니다.", "未対応または競合する設定はスキップしました。"],
+    "Relative to the selected pose and body settings.": ["선택한 자세와 체형 설정을 기준으로 조절합니다.", "選択した姿勢と体型設定を基準に調整します。"],
+    "Saved height setting": ["게임에 저장할 키 설정", "ゲームに保存する身長設定"],
+    "Sets the game's saved heightScale value (0.1–3). Blank keeps it. This is separate from the viewer's height percentage.": ["게임용 heightScale 값(0.1~3)을 저장합니다. 비워 두면 유지합니다. 뷰어의 키 퍼센트와는 별도입니다.", "ゲーム用のheightScale値（0.1～3）を保存します。空欄なら変更しません。ビューアーの身長パーセントとは別の設定です。"],
+    "Saved height setting must be between 0.1 and 3.": ["게임에 저장할 키 설정은 0.1~3 사이여야 합니다.", "ゲームに保存する身長設定は0.1～3の範囲で指定してください。"],
+    "No saved height component was found in this bundle.": ["이 번들에서 게임용 키 설정 항목을 찾지 못했습니다.", "このバンドルにゲーム用の身長設定項目が見つかりません。"],
+    "Preview only. The original files stay unchanged.": ["미리보기에만 적용되며 원본 파일은 바뀌지 않습니다.", "プレビューだけに適用され、元のファイルは変更されません。"],
+    "Pose / motion": ["포즈 / 모션", "ポーズ／モーション"],
+    "Saved pose": ["파일에 저장된 자세", "ファイルに保存された姿勢"],
+    "Play": ["재생", "再生"],
+    "Pause": ["일시 정지", "一時停止"],
+    "Motion time": ["모션 재생 위치", "モーションの再生位置"],
+    "Height": ["키", "身長"],
+    "Breast size": ["가슴 크기", "胸のサイズ"],
+    "100% keeps the model's saved body shape. Adjustments follow the selected pose.": ["100%는 파일에 저장된 체형입니다. 선택한 자세에 크기 조절을 더해 표시합니다.", "100%はファイルに保存された体型です。選択した姿勢にサイズ調整を加えて表示します。"],
+    "Expression channel": ["표정 파츠", "表情パーツ"],
+    "Expression strength": ["표정 강도", "表情の強さ"],
+    "Too many expression channels are active. Some may be omitted by the viewer.": ["동시에 적용한 표정이 많아 일부는 뷰어에서 표시되지 않을 수 있습니다.", "同時に有効な表情が多いため、一部はビューアーで表示されない場合があります。"],
+    "Individual bones (advanced)": ["개별 본 조절 (고급)", "ボーンごとの調整（上級）"],
+    "Changes are relative to the current pose. Movement uses the model's local units.": ["현재 자세를 기준으로 조절합니다. 이동 단위는 모델의 로컬 좌표입니다.", "現在の姿勢を基準に調整します。移動量はモデルのローカル座標単位です。"],
+    "Scale (%)": ["크기 (%)", "サイズ（%）"],
+    "Reset this bone": ["이 본 초기화", "このボーンをリセット"],
+    "Reset preview adjustments": ["포즈·체형 초기화", "ポーズ・体型をリセット"],
+    "No expression channels in this model.": ["이 모델에 표정 채널이 없습니다.", "このモデルに表情チャンネルはありません。"],
+    "No editable bones in this model.": ["조절할 수 있는 본이 없습니다.", "調整できるボーンはありません。"],
+    "Choose a supplied motion to play or inspect a pose.": ["포함된 모션을 골라 재생하거나 원하는 자세에서 멈추세요.", "含まれるモーションを選んで再生するか、好きな姿勢で停止できます。"],
+    "No motion clips were supplied. You can adjust the available bones and expressions.": ["모션 파일이 없습니다. 모델에 있는 본과 표정은 조절할 수 있습니다.", "モーションは含まれていません。モデルにあるボーンや表情は調整できます。"],
+    "This model supports a static preview only.": ["이 모델은 정적인 모습만 표시할 수 있습니다.", "このモデルは静止した状態のプレビューに対応しています。"],
+    "Relative to the model's saved size.": ["파일에 저장된 크기를 기준으로 조절합니다.", "ファイルに保存されたサイズを基準に調整します。"],
+    "This model has no supported height control.": ["이 모델에는 확인된 키 조절 정보가 없습니다.", "このモデルには確認済みの身長調整情報がありません。"],
+    "This model has no verified breast-size node.": ["이 모델에는 확인된 가슴 크기 노드가 없습니다.", "このモデルには確認済みの胸サイズノードがありません。"],
+    "Materials": ["재질", "マテリアル"],
+    "SIFAS material preview": ["SIFAS 재질 미리보기", "SIFASマテリアルプレビュー"],
+    "SIFAS material data is unavailable. Basic textures are shown.": ["SIFAS 재질 정보가 없어 기본 텍스처로 표시합니다.", "SIFASマテリアル情報がないため、基本テクスチャで表示しています。"],
+    "Basic textures are shown.": ["기본 텍스처로 표시합니다.", "基本テクスチャで表示しています。"],
+    "Uses the file's SIFAS material settings. In-game appearance may differ.": ["파일의 SIFAS 재질 설정을 사용합니다. 게임 속 모습과는 차이가 날 수 있습니다.", "ファイルのSIFASマテリアル設定を使います。ゲーム内の見た目とは異なる場合があります。"],
+    "Basic textures": ["기본 텍스처", "基本テクスチャ"],
+    "Game lighting and motion may look different. Available controls depend on the model's data.": ["게임의 조명·모션과 차이가 날 수 있습니다. 모델에 포함된 데이터에 따라 조절 기능이 달라집니다.", "ゲームの照明や動きとは異なる場合があります。調整できる項目はモデル内のデータによって変わります。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

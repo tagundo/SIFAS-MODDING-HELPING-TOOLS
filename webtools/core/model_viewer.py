@@ -108,7 +108,7 @@ def _block_info(data, expected, compression):
     return value
 
 
-def _preflight_bundle(data):
+def _preflight_bundle(data, _with_layout=False):
     """Bound allocations before UnityPy decompresses the mesh/texture payload."""
     if not data.startswith(b"UnityFS\0"):
         # Raw serialized .assets/.unity files are also useful for extracted mesh
@@ -124,7 +124,7 @@ def _preflight_bundle(data):
             if len(data) < header_size or size != len(data) or not 0 < metadata <= 16 * 1024 * 1024 \
                     or not header_size <= offset <= size or data[16] not in (0, 1):
                 raise ValueError("Invalid serialized header")
-            return len(data)
+            return (len(data), None) if _with_layout else len(data)
         except (struct.error, ValueError, IndexError) as error:
             raise ModelViewerError("Choose an extracted Unity model bundle, not an APK or image.") from error
     try:
@@ -133,6 +133,7 @@ def _preflight_bundle(data):
             raise ModelViewerError("This Unity bundle version is unavailable in the viewer.")
         _, position = _cstring(data, 12, 256)  # player version (often "5.x.x")
         engine, position = _cstring(data, position, 256)
+        fields_offset = position
         length, compressed, uncompressed, flags = struct.unpack_from(">QIII", data, position)
         position += 20
         if length > len(data) or not 20 <= uncompressed <= 4 * 1024 * 1024 \
@@ -149,20 +150,21 @@ def _preflight_bundle(data):
         count, = struct.unpack_from(">i", info, 16)
         if not 1 <= count <= 8192:
             raise ModelViewerError("The selected Unity bundle has too many data blocks.")
-        cursor, unpacked, packed = 20, 0, 0
+        cursor, unpacked, packed, blocks = 20, 0, 0, []
         for _ in range(count):
             size, compressed_size, block_flags = struct.unpack_from(">IIH", info, cursor)
             cursor += 10
-            # LZ4 receives its bounded destination length. UnityPy's legacy LZMA
-            # block decoder has no output cap, so do not enter it from a preview.
-            if block_flags & 0x3F not in (0, 2, 3):
-                raise ModelViewerError("Re-extract this model with uncompressed or LZ4 bundle packing.")
+            # LZMA data is normalized with a capped decoder before UnityPy sees
+            # it; its legacy native decompressor must never receive this input.
+            if block_flags & 0x3F not in (0, 1, 2, 3):
+                raise ModelViewerError("This Unity bundle compression is unavailable in the viewer.")
             if size > 64 * 1024 * 1024:
                 raise ModelViewerError("The model exceeds the preview memory limit.")
             if block_flags & 0x3F == 0 and size != compressed_size:
                 raise ModelViewerError("The selected Unity bundle has invalid data blocks.")
             unpacked += size
             packed += compressed_size
+            blocks.append((size, compressed_size, block_flags))
         if unpacked > MAX_UNPACKED_BYTES or packed > len(data):
             raise ModelViewerError("The model exceeds the preview memory limit.")
         nodes, = struct.unpack_from(">i", info, cursor)
@@ -175,14 +177,59 @@ def _preflight_bundle(data):
             _, cursor = _cstring(info, cursor)
             if offset < 0 or size < 0 or offset + size > unpacked:
                 raise ModelViewerError("The selected Unity bundle has invalid embedded files.")
-        return unpacked
+        payload = position if flags & 0x80 else position + compressed
+        modern_padding = engine_version >= (2020, 3, 34) if engine_version[0] == 2020 else (
+            engine_version >= (2021, 3, 2) if engine_version[0] == 2021 else engine_version >= (2022, 1, 1))
+        if modern_padding and flags & 0x200:
+            payload = (payload + 15) & ~15
+        payload_end = len(data) - compressed if flags & 0x80 else len(data)
+        if payload + packed > payload_end:
+            raise ModelViewerError("The selected Unity bundle is truncated.")
+        if not _with_layout:
+            return unpacked
+        return unpacked, {"info": info, "blocks": blocks, "payload": payload,
+                          "prefix": data[:fields_offset], "aligned": position != fields_offset + 20,
+                          "flags": flags}
     except ModelViewerError:
         raise
     except Exception as error:
         raise ModelViewerError("The selected Unity bundle is damaged or unsupported.") from error
 
 
-def _environment(paths, deadline):
+def _bounded_bundle(data, layout, deadline):
+    """Replace only LZMA compression in memory, preserving every asset byte."""
+    if layout is None or (layout["flags"] & 0x3F != 1
+                          and not any(flags & 0x3F == 1 for _, _, flags in layout["blocks"])):
+        return data
+    info, payload = bytearray(layout["info"]), layout["payload"]
+    payload_size = 0
+    for index, (size, compressed, flags) in enumerate(layout["blocks"]):
+        if flags & 0x3F == 1:
+            struct.pack_into(">IIH", info, 20 + index * 10, size, size, flags & ~0x3F)
+        payload_size += size if flags & 0x3F == 1 else compressed
+    prefix = layout["prefix"]
+    padding = bytes(-(len(prefix) + 20) % 16) if layout["aligned"] else b""
+    length = len(prefix) + 20 + len(padding) + len(info) + payload_size
+    # Block-info is also uncompressed, preventing UnityPy's unbounded LZMA
+    # decoder from handling either metadata or data. File offsets stay intact.
+    header = struct.pack(">QIII", length, len(info), len(info), 0x40)
+    output = io.BytesIO()
+    output.write(prefix)
+    output.write(header)
+    output.write(padding)
+    output.write(info)
+    # Keep only one bounded decoded block alive, rather than retaining every
+    # block plus a joined payload plus a concatenated copy on mobile devices.
+    for size, compressed, flags in layout["blocks"]:
+        _remaining(deadline)
+        chunk = data[payload:payload + compressed]
+        payload += compressed
+        output.write(_block_info(chunk, size, 1) if flags & 0x3F == 1 else chunk)
+        _remaining(deadline)
+    return output.getvalue()
+
+
+def _environment(paths, deadline, base_env=None):
     import UnityPy
     from UnityPy.environment import simplify_name
 
@@ -198,24 +245,29 @@ def _environment(paths, deadline):
                 raise FileNotFoundError("A linked asset was not included in the selected files.")
             return found
 
-    env, unpacked_total = PreviewEnvironment(), 0
-    for index, path in enumerate(paths):
+    env = base_env if base_env is not None else PreviewEnvironment()
+    unpacked_total = getattr(env, "preview_unpacked_total", 0)
+    start_index = len(env.files)
+    for index, path in enumerate(paths, start_index):
         _remaining(deadline)
         with open(path, "rb") as file:
             data = file.read(MAX_SOURCE_BYTES + 1)
         if len(data) > MAX_SOURCE_BYTES:
             raise ModelViewerError("The model file grew beyond the preview memory limit.")
-        unpacked_total += _preflight_bundle(data)
+        unpacked, layout = _preflight_bundle(data, _with_layout=True)
+        unpacked_total += unpacked
         if unpacked_total > MAX_UNPACKED_BYTES:
             raise ModelViewerError("The selected models exceed the preview memory limit.")
         # The input has already been jailed by the server. Loading bytes rather
         # than a filename prevents UnityPy from walking neighbouring directories.
-        loaded = env.load_file(data, name=f"preview-{index}-{os.path.basename(path)}")
+        loaded = env.load_file(_bounded_bundle(data, layout, deadline), name=f"preview-{index}-{os.path.basename(path)}")
         loaded.preview_source_name = os.path.basename(path)
+        loaded.preview_source_path = path
         # Raw serialized assets may be linked by their filename rather than an
         # embedded CAB id. Register only explicitly supplied, in-memory content.
         if hasattr(loaded, "objects"):
             env.register_cab(os.path.basename(path), loaded)
+    env.preview_unpacked_total = unpacked_total
     class AssetScope:
         """Prefer this asset's own resources when original/baked CAB ids match."""
         def __init__(self, asset):
@@ -271,6 +323,18 @@ def _source_name(obj):
     return ""
 
 
+def _source_path(obj):
+    container = obj.assets_file
+    for _ in range(64):
+        path = getattr(container, "preview_source_path", None)
+        if path:
+            return path
+        container = getattr(container, "parent", None)
+        if container is None:
+            break
+    return ""
+
+
 def _trs(tree):
     import numpy as np
     rotation = tree.get("m_LocalRotation", {})
@@ -295,9 +359,10 @@ def _trs(tree):
 
 
 class _Scene:
-    def __init__(self, env, deadline):
+    def __init__(self, env, deadline, trees=None):
         self.env, self.deadline = env, deadline
-        self.trees, self.transforms, self.world_cache = {}, {}, {}
+        self.trees, self.transforms, self.world_cache = dict(trees or {}), {}, {}
+        self.names = {}
         self.filters, self.renderers = {}, []
         self.warnings = []
         self.stats = {"meshes": 0, "vertices": 0, "triangles": 0, "materials": 0, "textures": 0}
@@ -324,10 +389,25 @@ class _Scene:
                                   for obj in env.objects if obj.type.name == "Mesh")
 
     def tree(self, obj):
+        _remaining(self.deadline)
         key = _key(obj)
         if key not in self.trees:
             self.trees[key] = obj.read_typetree()
+            _remaining(self.deadline)
         return self.trees[key]
+
+    def name(self, obj):
+        """Read only m_Name instead of expanding mesh/texture pixel payloads."""
+        _remaining(self.deadline)
+        key = _key(obj)
+        if key not in self.names:
+            if key in self.trees:
+                value = self.trees[key].get("m_Name", "")
+            else:
+                value = obj.peek_name()
+            self.names[key] = str(value or "")
+            _remaining(self.deadline)
+        return self.names[key]
 
     def world(self, transform, visiting=None):
         import numpy as np
@@ -369,6 +449,9 @@ class _Scene:
             "linked_texture_missing": "A linked texture is missing. Add its companion model file to the preview.",
             "linked_mesh_missing": "A linked mesh is missing. Add its companion model file to the preview.",
             "facial_assets_missing": "This costume needs its separate facial asset to show eyes and expressions.",
+            "skin_bones_unavailable": "Some bone transforms are unavailable. Those parts use their saved renderer placement.",
+            "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
+            "rig_unavailable": "This model uses a static preview because its rig could not be loaded.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -395,13 +478,14 @@ class _Glb:
         self.doc["bufferViews"].append(view)
         return index
 
-    def attribute(self, values, kind, component=5126, bounds=False):
+    def attribute(self, values, kind, component=5126, bounds=False, target="auto"):
         import numpy as np
         dtype = {5126: "<f4", 5123: "<u2", 5125: "<u4"}[component]
         array = np.ascontiguousarray(values, dtype=dtype)
         if component == 5126 and not np.isfinite(array).all():
             raise ModelViewerError("The model contains invalid geometry values.")
-        item = {"bufferView": self.view(array.tobytes(), 34963 if kind == "SCALAR" else 34962),
+        view_target = (34963 if kind == "SCALAR" else 34962) if target == "auto" else target
+        item = {"bufferView": self.view(array.tobytes(), view_target),
                 "componentType": component, "count": len(array), "type": kind}
         if bounds:
             item["min"], item["max"] = array.min(axis=0).tolist(), array.max(axis=0).tolist()
@@ -412,10 +496,11 @@ class _Glb:
     def finish(self):
         self.data.extend(b"\0" * (-len(self.data) % 4))
         self.doc["buffers"][0]["byteLength"] = len(self.data)
-        for optional in ("images", "textures", "samplers"):
-            if not self.doc[optional]:
-                del self.doc[optional]
-        encoded = json.dumps(self.doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+        doc = dict(self.doc)
+        for optional in ("images", "textures", "samplers", "skins", "animations"):
+            if not doc.get(optional):
+                doc.pop(optional, None)
+        encoded = json.dumps(doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
         encoded += b" " * (-len(encoded) % 4)
         length = 12 + 8 + len(encoded) + 8 + len(self.data)
         if length > MAX_GLB_BYTES:
@@ -429,9 +514,47 @@ def _properties(tree, name):
     return dict(tree.get("m_SavedProperties", {}).get(name, []))
 
 
+def _as_member_material(scene, obj, tree):
+    """Identify the known SIFAS shader before ignoring its unused _Color."""
+    if obj is None:
+        return False
+    pointer = tree.get("m_Shader") or {}
+    shader = _ref(obj, pointer)
+    if shader is not None:
+        if shader.type.name != "Shader":
+            return False
+        shader_tree = scene.tree(shader)
+        name = shader_tree.get("m_Name") or shader_tree.get("m_ParsedForm", {}).get("m_Name")
+        return name in ("AS/Member", "Hidden/AS/Member/Main")
+    # A source bundle may also depend on the transparent ground-shadow shader.
+    # Require the AS/Member property fingerprint as well as its exact dependency;
+    # a dependency alone must not change unrelated or generic materials.
+    if not pointer.get("m_PathID") or int(pointer.get("m_FileID", 0)) <= 0:
+        return False
+    try:
+        external = obj.assets_file.externals[int(pointer["m_FileID"]) - 1]
+        identity = (ntpath.basename(external.name).lower(), int(pointer["m_PathID"]))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+    # This reference is independently verified against the original AS/Member
+    # shader and the actual iOS mod/Android assets. A dependency or stale saved
+    # properties alone cannot establish which shader an external PPtr uses.
+    if identity != ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333):
+        return False
+    if not {"_TintColor", "_AmbientColor", "_RimlightColor"} <= set(_properties(tree, "m_Colors")):
+        return False
+    source = _source_path(obj)
+    for candidate in scene.env.objects:
+        if candidate.type.name == "AssetBundle" and _source_path(candidate) == source:
+            if "asmember.shader.unity3d" in scene.tree(candidate).get("m_Dependencies", []):
+                return True
+    return False
+
+
 class _Materials:
-    def __init__(self, scene, glb):
+    def __init__(self, scene, glb, rigged=False):
         self.scene, self.glb = scene, glb
+        self.rigged = rigged
         self.materials, self.textures = {}, {}
         self.pixels = 0
 
@@ -476,7 +599,11 @@ class _Materials:
             return self.materials[key]
         tree = self.scene.tree(obj) if obj is not None else {}
         colors = _properties(tree, "m_Colors")
-        color = colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1})
+        # AS/Member never consumes _Color; carrying stale Unity generic shader
+        # values into glTF incorrectly darkens real outfit heads. Lighting/tint
+        # shader parity remains outside this unlit texture preview.
+        color = ({"r": 1, "g": 1, "b": 1, "a": 1} if _as_member_material(self.scene, obj, tree)
+                 else colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1}))
         factor = [float(color.get(a, 1)) for a in "rgba"]
         if not all(math.isfinite(v) for v in factor):
             raise ModelViewerError("A model material contains invalid colors.")
@@ -515,6 +642,9 @@ class _Materials:
                 self.scene.warn("texture_unavailable", tree.get("m_Name", ""))
         elif main and main.get("m_Texture", {}).get("m_PathID"):
             self.scene.warn("linked_texture_missing", tree.get("m_Name", ""))
+        if self.rigged and _as_member_material(self.scene, obj, tree):
+            from .model_materials import attach_member_metadata
+            attach_member_metadata(self.scene, obj, tree, material, self.texture)
         index = len(self.glb.doc["materials"])
         self.glb.doc["materials"].append(material)
         self.materials[key] = index
@@ -581,7 +711,7 @@ def _validate_mesh_allocations(mesh):
             raise ModelViewerError("The model has too many triangles for the mobile viewer.")
 
 
-def _geometry(mesh_obj, world):
+def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None):
     import numpy as np
     from UnityPy.helpers.MeshHelper import MeshHandler
 
@@ -624,6 +754,28 @@ def _geometry(mesh_obj, world):
             face_normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
             for corner in range(3):
                 np.add.at(normals, indices[:, corner], face_normals)
+    if rig_data is not None:
+        rig_data.update(mesh=mesh, positions=positions, normals=normals,
+                        indices=handler.m_BoneIndices, weights=handler.m_BoneWeights,
+                        colors=handler.m_Colors)
+    if morph_weights:
+        from .model_rig import apply_default_morphs
+        positions, normals = apply_default_morphs(mesh, positions, normals, morph_weights, deadline=deadline)
+    orientation = -1 if np.linalg.det(world[:3, :3]) < 0 else 1
+    if bone_world_matrices is not None:
+        from .model_skinning import rest_skin_mesh, SkinningError
+        try:
+            rest = rest_skin_mesh(positions, normals, handler.m_BoneIndices, handler.m_BoneWeights,
+                                  bone_world_matrices, mesh.m_BindPose, world, max_vertices=MAX_VERTICES)
+        except SkinningError as error:
+            raise ModelViewerError(str(error)) from error
+        positions, normals = rest["positions"], rest["normals"]
+        orientation = rest["orientation_sign"]
+        if warnings is not None:
+            warnings.extend(rest["warnings"])
+        # Skinning already produces Unity world coordinates. Applying the
+        # renderer transform here again would move the edited body twice.
+        world = np.eye(4)
     transform = np.diag([-1., 1., 1., 1.]) @ world
     positions = positions @ transform[:3, :3].T + transform[:3, 3]
     try:
@@ -635,7 +787,7 @@ def _geometry(mesh_obj, world):
     normals[zero] = [0, 1, 0]
     lengths[zero] = 1
     normals /= lengths[:, None]
-    if np.linalg.det(transform[:3, :3]) < 0:
+    if orientation > 0:
         result = [indices[:, [0, 2, 1]] for indices in result]
     uv = None
     if handler.m_UV0 is not None:
@@ -647,14 +799,13 @@ def _geometry(mesh_obj, world):
     return str(mesh.m_Name), positions, normals, uv, result
 
 
-def _build(paths, deadline):
-    import numpy as np
-    env = _environment(paths, deadline)
-    scene, glb = _Scene(env, deadline), _Glb()
+def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=None, rig=None):
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
-    for obj in env.objects:
+    for obj in scene.env.objects:
+        if auto_only and _source_path(obj) not in faces.auto_paths:
+            continue
         if obj.type.name != "MonoBehaviour":
             continue
         try:
@@ -664,12 +815,15 @@ def _build(paths, deadline):
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
-    materials = _Materials(scene, glb)
+    materials = materials or _Materials(scene, glb, rigged=rig is not None)
+    materials.scene = scene
     for renderer, tree, game_object in scene.renderers:
+        if auto_only and _source_path(renderer) not in faces.auto_paths:
+            continue
         _remaining(deadline)
         if not tree.get("m_Enabled", True) or not scene.active(game_object):
             continue
-        game_name = str(scene.tree(game_object).get("m_Name", ""))
+        game_name = scene.name(game_object)
         if renderer.type.name == "Mesh":
             mesh_obj = renderer
         elif renderer.type.name == "SkinnedMeshRenderer":
@@ -679,23 +833,68 @@ def _build(paths, deadline):
         if mesh_obj is None or mesh_obj.type.name != "Mesh":
             scene.warn("linked_mesh_missing", game_name)
             continue
-        mesh_name = str(scene.tree(mesh_obj).get("m_Name", ""))
+        if not faces.include(scene, renderer, game_object, mesh_obj):
+            continue
+        mesh_name = scene.name(mesh_obj)
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
             continue
-        name, positions, normals, uv, submeshes = _geometry(
-            mesh_obj, scene.world(scene.transforms.get(_key(game_object))))
+        auto_face = _source_path(renderer) in faces.auto_paths
+        raw = {} if rig is not None else None
+        bones, skin_warnings = None, []
+        try:
+            if renderer.type.name == "SkinnedMeshRenderer":
+                refs = tree.get("m_Bones", [])
+                if len(refs) > 1024:
+                    raise ModelViewerError("The model has too many bones for the mobile viewer.")
+                bones = []
+                for ref in refs:
+                    transform = _ref(renderer, ref)
+                    bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
+            arguments = (mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))), bones, skin_warnings)
+            keywords = {"rig_data": raw} if raw is not None else {}
+            if any(tree.get("m_BlendShapeWeights", [])):
+                keywords["morph_weights"] = tree["m_BlendShapeWeights"]
+                keywords["deadline"] = deadline
+            name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
+        except Exception:
+            if auto_face:
+                faces.failed()
+                continue
+            raise
+        for warning in skin_warnings:
+            scene.warn(warning, game_name)
         if not any(map(len, submeshes)):
             continue
+        if scene.stats["meshes"] + 1 > MAX_MESHES or scene.stats["vertices"] + len(positions) > MAX_VERTICES \
+                or scene.stats["triangles"] + sum(map(len, submeshes)) > MAX_TRIANGLES:
+            if auto_face:
+                faces.failed()
+                continue
+            raise ModelViewerError("The selected models are too complex. Open fewer model parts.")
         scene.stats["meshes"] += 1
         scene.stats["vertices"] += len(positions)
         scene.stats["triangles"] += sum(map(len, submeshes))
-        if scene.stats["meshes"] > MAX_MESHES or scene.stats["vertices"] > MAX_VERTICES \
-                or scene.stats["triangles"] > MAX_TRIANGLES:
-            raise ModelViewerError("The selected models are too complex. Open fewer model parts.")
         attributes = {"POSITION": glb.attribute(positions, "VEC3", bounds=True),
                       "NORMAL": glb.attribute(normals, "VEC3")}
+        skin, targets, target_names, target_hashes, target_weights = None, [], [], [], []
+        if rig is not None:
+            rig.record_bounds(positions)
+            static_attributes = dict(attributes)
+            checkpoint = (len(glb.data), {key: len(glb.doc.get(key, [])) for key in ("accessors", "bufferViews", "skins")})
+            try:
+                attributes, skin = rig.attributes(renderer, tree, game_object, raw, positions)
+                targets, target_names, target_hashes, target_weights = rig.morph_targets(raw, renderer, game_object)
+            except ValueError as error:
+                rig.warnings.append(str(error))
+                del glb.data[checkpoint[0]:]
+                for key, length in checkpoint[1].items():
+                    if key in glb.doc:
+                        del glb.doc[key][length:]
+                attributes = static_attributes
+                skin = None
+                targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
         primitives, refs = [], tree.get("m_Materials", [])
@@ -703,21 +902,159 @@ def _build(paths, deadline):
             if not len(triangles):
                 continue
             ref = refs[min(index, len(refs) - 1)] if refs else None
-            material = materials.material(_ref(renderer, ref))
+            try:
+                material = materials.material(faces.material(renderer, _ref(renderer, ref)))
+            except Exception:
+                if not auto_face:
+                    raise
+                material = materials.material(None)
+                scene.warn("texture_unavailable", game_name)
             component = 5123 if len(positions) <= 65535 else 5125
             primitives.append({"attributes": attributes,
                                "indices": glb.attribute(triangles.reshape(-1), "SCALAR", component),
                                "material": material, "mode": 4})
+            if targets:
+                primitives[-1]["targets"] = targets
         mesh_index = len(glb.doc["meshes"])
         glb.doc["meshes"].append({"name": name or game_name, "primitives": primitives})
+        if target_names:
+            glb.doc["meshes"][-1].update(weights=target_weights, extras={"targetNames": target_names})
         node_index = len(glb.doc["nodes"])
         glb.doc["nodes"].append({"name": name or game_name, "mesh": mesh_index,
                                  "extras": {"sourceName": _source_name(mesh_obj)}})
+        if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
+            glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
         glb.doc["scenes"][0]["nodes"].append(node_index)
+        if rig is not None and skin is not None:
+            rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
+        if auto_face:
+            faces.added += 1
+            from .model_faces import facial_role
+            faces.rendered_roles.add(facial_role(game_name, mesh_name, _source_path(renderer) in faces.dynamic_sources))
+    return materials
+
+
+def _to_glb(scene, glb, faces, deadline, rig=None):
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
-    return bytes(glb.finish()), scene.stats, scene.warnings
+    faces.finish()
+    if faces.enabled and faces.status in ("added", "already_present"):
+        scene.warnings = [warning for warning in scene.warnings if warning["code"] != "facial_assets_missing"]
+    elif faces.auto_paths and not faces.added:
+        faces.status = "unavailable"
+        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+    if rig is not None:
+        rig.finalize(animations=False)
+    data = bytes(glb.finish())
+    _remaining(deadline)
+    result = (data, dict(scene.stats), list(scene.warnings) + faces.warnings, faces.metadata())
+    if rig is None:
+        return result
+    base_rig = rig.metadata()
+    if any(obj.type.name == "AnimationClip" for obj in scene.env.objects):
+        try:
+            rig.finalize()
+            animated = bytes(glb.finish())
+            _remaining(deadline)
+            return (animated,) + result[1:] + (rig.metadata(),)
+        except Exception:
+            base_rig["animationWarnings"].append({"code": "animation_unavailable", "message": "Animation loading exceeded its remaining preview budget. The completed model is still shown."})
+    return result + (base_rig,)
+
+
+def _build(paths, deadline, face_context=None, rigged=False):
+    """Finish the selected model before spending any time on optional faces.
+
+    The original conversion gets its entire allowance. Face lookup/network is
+    capped separately; valid rigged facial geometry uses the global time left.
+    Motion gets a fresh bounded wait only after the face result is complete.
+    The original total deadline and legacy static-face budget are unchanged.
+    Completed GLBs are immutable and survive optional phase failures.
+    """
+    from .model_faces import FacePlan, FACE_SECONDS
+    env = _environment(paths, deadline)
+    scene, glb = _Scene(env, deadline), _Glb()
+    disabled_faces = FacePlan(scene, paths, None, deadline)
+    rig = None
+    if rigged:
+        from .model_rig import RigBuilder
+        try:
+            rig = RigBuilder(scene, glb, disabled_faces, paths, deadline)
+        except ValueError:
+            glb = _Glb()
+            scene.warn("rig_unavailable")
+    materials = _append_scene(scene, glb, disabled_faces, deadline, rig=rig)
+    base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
+    face_enabled = bool(face_context and face_context.get("enabled", True))
+    playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
+    if not face_context or (not face_enabled and not playable_rig):
+        return base
+
+    face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    faces, completed, extra = disabled_faces, base, []
+    if face_enabled:
+        faces = None
+        try:
+            _remaining(face_deadline)
+            scene.deadline = face_deadline
+            faces = FacePlan(scene, paths, face_context, face_deadline)
+            _remaining(face_deadline)
+            extra = faces.resolve()
+            _remaining(face_deadline)
+            if extra:
+                # Lookup/network stays capped at forty seconds. Once a valid
+                # face is local, rigged geometry may use the original global
+                # conversion time left; motion must wait for its completion.
+                render_deadline = deadline if rig is not None else face_deadline
+                _paths(paths + extra)
+                env = _environment(extra, render_deadline, base_env=env)
+                expanded = _Scene(env, render_deadline, trees=scene.trees)
+                expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
+                if rig is not None:
+                    rig.update(expanded, faces, render_deadline)
+                _append_scene(expanded, glb, faces, render_deadline, auto_only=True, materials=materials, rig=rig)
+                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig)
+                scene = expanded
+            else:
+                warnings = list(base[2]) + faces.warnings
+                if faces.status == "already_present":
+                    warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
+                completed = (base[0], base[1], warnings, faces.metadata()) + base[4:]
+        except Exception:
+            if faces is None:
+                faces = FacePlan(scene, paths, None, face_deadline)
+                faces.enabled = True
+            faces.added = 0
+            faces.status = "unavailable"
+            faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+            return (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+
+    # Motion is independent of automatic facial completion. Unsupported/static
+    # rigs cannot use discovered tracks; errors must not rewrite face status.
+    if rig is None or not (rig.skinned > 0 or rig.morphs):
+        return completed
+    if rig.clips:
+        return completed
+    motion_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    try:
+        _remaining(motion_deadline)
+        from .model_animation import discover_animation_paths
+        animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, motion_deadline)
+        _remaining(motion_deadline)
+        if not animation_paths:
+            return completed
+        _paths(paths + extra + animation_paths)
+        env = _environment(animation_paths, motion_deadline, base_env=env)
+        expanded = _Scene(env, motion_deadline, trees=scene.trees)
+        expanded.stats, expanded.warnings = dict(completed[1]), list(scene.warnings)
+        rig.update(expanded, faces, motion_deadline)
+        return _to_glb(expanded, glb, faces, motion_deadline, rig=rig)
+    except Exception:
+        metadata = dict(completed[4])
+        metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
+            "code": "animation_unavailable", "message": "A local animation companion could not be imported. The completed model is still shown."}]
+        return completed[:4] + (metadata,)
 
 
 def _prune(now):
@@ -728,15 +1065,23 @@ def _prune(now):
         _SESSIONS.popitem(last=False)
 
 
-def prepare(paths):
+def prepare(paths, *, face_context=None, rigged=False):
     """Convert selected, already-jailed bundle paths and create a short-lived GLB."""
+    if not isinstance(rigged, bool):
+        raise ModelViewerError("The rigged preview setting must be true or false.")
     paths = _paths(paths)
     if not _BUILD_LOCK.acquire(timeout=1):
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
     try:
         deadline = time.monotonic() + BUILD_SECONDS
         try:
-            data, stats, warnings = _build(paths, deadline)
+            # Keep the original internal call shape for callers/tests that do
+            # not enable automatic discovery.
+            built = (_build(paths, deadline, face_context, rigged=True) if rigged
+                     else _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline))
+            data, stats, warnings = built[:3]
+            faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
+            rig = built[4] if len(built) > 4 else {"enabled": bool(rigged), "available": False}
         except ModelViewerError:
             raise
         except Exception as error:
@@ -748,7 +1093,7 @@ def prepare(paths):
             _prune(now)
         return {"id": token, "url": f"/api/viewer/model/{token}.glb",
                 "source_names": [os.path.basename(path) for path in paths],
-                "stats": dict(stats), "warnings": warnings}
+                "stats": dict(stats), "warnings": warnings, "faces": faces, "rig": rig}
     finally:
         _BUILD_LOCK.release()
 

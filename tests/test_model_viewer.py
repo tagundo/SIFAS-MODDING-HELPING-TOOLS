@@ -7,6 +7,7 @@ import copy
 import hashlib
 import io
 import json
+import lzma
 import math
 import os
 from pathlib import Path
@@ -69,6 +70,30 @@ def unity_bundle(entries):
         offset += len(value)
     prefix = b"UnityFS\0" + struct.pack(">I", 6) + b"5.x.x\0" + b"2019.4.0f1\0"
     return prefix + struct.pack(">QIII", len(prefix) + 20 + len(info) + len(payload), len(info), len(info), 64) + info + payload
+
+
+def lzma_bundle(payload, *, declared_size=None, version=6, info_at_end=False, info_lzma=False, mixed=False):
+    """Original test container, including Unity's raw LZMA properties prefix."""
+    def compress(value):
+        return struct.pack("<BI", 0x5D, 1 << 20) + lzma.compress(value, format=lzma.FORMAT_RAW, filters=[{
+            "id": lzma.FILTER_LZMA1, "dict_size": 1 << 20, "lc": 3, "lp": 0, "pb": 2}])
+    size = len(payload) if declared_size is None else declared_size
+    if mixed:
+        split = len(payload) // 2
+        blocks = [(split, compress(payload[:split]), 65), (size - split, payload[split:], 64)]
+    else:
+        blocks = [(size, compress(payload), 65)]
+    info = bytes(16) + struct.pack(">i", len(blocks))
+    info += b"".join(struct.pack(">IIH", count, len(value), flags) for count, value, flags in blocks)
+    info += struct.pack(">iqqI", 1, 0, size, 0) + b"fixture.assets\0"
+    packed_info = compress(info) if info_lzma else info
+    prefix = b"UnityFS\0" + struct.pack(">I", version) + b"5.x.x\0" + b"2018.4.23f1\0"
+    padding = bytes(-(len(prefix) + 20) % 16) if version >= 7 else b""
+    packed_data = b"".join(value for _, value, _ in blocks)
+    flags = 64 | (128 if info_at_end else 0) | (1 if info_lzma else 0)
+    length = len(prefix) + 20 + len(padding) + len(packed_info) + len(packed_data)
+    body = packed_data + packed_info if info_at_end else packed_info + packed_data
+    return prefix + struct.pack(">QIII", length, len(packed_info), len(info), flags) + padding + body
 
 
 class SessionTests(unittest.TestCase):
@@ -143,6 +168,84 @@ class InputTests(unittest.TestCase):
         with self.assertRaisesRegex(viewer.ModelViewerError, "extracted Unity"):
             viewer._preflight_bundle(data)
 
+    def test_lzma_rejects_oversized_dictionary_before_decoder_allocation(self):
+        data = bytearray(lzma_bundle(b"payload"))
+        _, layout = viewer._preflight_bundle(data, _with_layout=True)
+        struct.pack_into("<I", data, layout["payload"] + 1, 64 * 1024 * 1024 + 1)
+        with patch.object(lzma, "LZMADecompressor") as decoder:
+            with self.assertRaisesRegex(viewer.ModelViewerError, "memory limit"):
+                viewer._bounded_bundle(data, layout, time.monotonic() + 10)
+        decoder.assert_not_called()
+
+
+    def test_lzma_output_cannot_expand_beyond_declared_block_size(self):
+        data = lzma_bundle(b"x" * 4096, declared_size=64)
+        _, layout = viewer._preflight_bundle(data, _with_layout=True)
+        decoder = lzma.LZMADecompressor
+        limits = []
+
+        class CappedDecoder:
+            def __init__(self, *args, **kwargs):
+                self.decoder = decoder(*args, **kwargs)
+
+            def decompress(self, data, max_length):
+                limits.append(max_length)
+                return self.decoder.decompress(data, max_length=max_length)
+
+        with patch.object(lzma, "LZMADecompressor", CappedDecoder):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "invalid block information"):
+                viewer._bounded_bundle(data, layout, time.monotonic() + 10)
+        self.assertEqual(limits, [65])
+
+    def test_truncated_lzma_payload_is_rejected_before_data_decode(self):
+        data = lzma_bundle(b"payload")[:-1]
+        with patch.object(lzma, "LZMADecompressor") as decoder:
+            with self.assertRaisesRegex(viewer.ModelViewerError, "truncated"):
+                viewer._preflight_bundle(data)
+        decoder.assert_not_called()
+
+
+class ShaderMaterialTests(unittest.TestCase):
+    def material(self, *, dependency=None, resolved=None, fingerprint=True, external_cab="cab-9382ea964987eceddd567506a3b21312", shader_path_id=8291131735116688333):
+        asset = SimpleNamespace(externals=[SimpleNamespace(name=external_cab)])
+        material = SimpleNamespace(assets_file=asset, path_id=1)
+        shader = SimpleNamespace(assets_file=asset, path_id=2, type=SimpleNamespace(name="Shader")) if resolved is not None else None
+        bundle = SimpleNamespace(assets_file=asset, path_id=3, type=SimpleNamespace(name="AssetBundle"))
+        color = {"r": .5, "g": .4, "b": .3, "a": .8}
+        colors = [("_Color", color)]
+        if fingerprint:
+            colors.extend((name, dict(r=1, g=1, b=1, a=1)) for name in ("_TintColor", "_AmbientColor", "_RimlightColor"))
+        tree = {"m_Name": "Synthetic material", "m_Shader": {"m_FileID": 1, "m_PathID": shader_path_id}, "m_SavedProperties": {"m_Colors": colors}}
+
+        def read(obj):
+            if obj is material:
+                return tree
+            if obj is bundle:
+                return {"m_Dependencies": [dependency] if dependency else []}
+            if obj is shader:
+                return {"m_ParsedForm": {"m_Name": resolved}}
+            raise AssertionError("Unknown source")
+
+        scene = SimpleNamespace(tree=read, env=SimpleNamespace(objects=[bundle]), stats={"materials": 0})
+        glb = viewer._Glb()
+        with patch.object(viewer, "_ref", return_value=shader), patch.object(viewer, "_source_path", return_value="selected.unity"):
+            viewer._Materials(scene, glb).material(material)
+        return glb.doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"]
+
+    def test_known_as_member_ignores_unused_generic_color(self):
+        self.assertEqual(self.material(resolved="AS/Member"), [1, 1, 1, 1])
+        self.assertEqual(self.material(resolved="Hidden/AS/Member/Main"), [1, 1, 1, 1])
+        self.assertEqual(self.material(dependency="asmember.shader.unity3d"), [1, 1, 1, 1])
+
+    def test_unknown_generic_and_other_resolved_shaders_preserve_color(self):
+        expected = [.5, .4, .3, .8]
+        self.assertEqual(self.material(), expected)
+        self.assertEqual(self.material(resolved="Standard", dependency="asmember.shader.unity3d"), expected)
+        self.assertEqual(self.material(dependency="asmember.shader.unity3d", fingerprint=False), expected)
+        self.assertEqual(self.material(dependency="other-asmember.shader.unity3d"), expected)
+        self.assertEqual(self.material(dependency="asmember.shader.unity3d", external_cab="unknown-standard-shader"), expected)
+        self.assertEqual(self.material(dependency="asmember.shader.unity3d", shader_path_id=123), expected)
+
 
 class RealUnityFixtureTests(unittest.TestCase):
     @classmethod
@@ -183,6 +286,25 @@ class RealUnityFixtureTests(unittest.TestCase):
         triangle = points[[0, 2, 1]]
         self.assertGreater(self.np.dot(self.np.cross(triangle[1] - triangle[0], triangle[2] - triangle[0]), normals[0]), 0)
         self.assertNotIn("COLOR_0", primitive["attributes"])
+
+    def test_lzma_original_bytes_are_preserved_and_unbounded_unity_decoder_is_unused(self):
+        from UnityPy.helpers import CompressionHelper
+        original = (FIXTURES / "viewer_textured_triangle.unity").read_bytes()
+        for settings in ({}, {"version": 7, "info_at_end": True, "info_lzma": True}, {"mixed": True}):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "face.unity"
+                data = lzma_bundle(original, **settings)
+                source.write_bytes(data)
+                unpacked, layout = viewer._preflight_bundle(data, _with_layout=True)
+                normalized = viewer._bounded_bundle(data, layout, time.monotonic() + 10)
+                _, decoded = viewer._preflight_bundle(normalized, _with_layout=True)
+                self.assertEqual(unpacked, len(original))
+                self.assertEqual(normalized[decoded["payload"]:], original)
+                with patch.object(CompressionHelper, "decompress_lzma", side_effect=AssertionError("Unbounded UnityPy LZMA is forbidden")):
+                    metadata, doc, binary = self.export(source)
+                self.assertEqual(metadata["stats"]["meshes"], 1)
+                self.assertEqual(metadata["stats"]["textures"], 1)
+                self.assertEqual(source.read_bytes(), data)
 
     def test_parent_rotation_scale_and_translation_are_applied_once(self):
         def change(env):

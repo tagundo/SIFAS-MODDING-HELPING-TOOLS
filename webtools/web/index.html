@@ -33,12 +33,18 @@
       <div class="viewer-workspace">
         <aside class="viewer-files">
           <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
-          <p class="viewer-intro" data-i18n="Choose a costume model. Add a separate head or hair file if it is missing.">Choose a costume model. Add a separate head or hair file if it is missing.</p>
+          <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Missing facial parts can be added automatically.">Open a costume model or ZIP. Missing facial parts can be added automatically.</p>
           <div class="viewer-file-actions">
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
+            <button id="viewer-add-motion" type="button" data-i18n="Add animation file">Add animation file</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
             <button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
           </div>
+          <div class="viewer-option-row">
+            <label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label>
+          </div>
+          <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Fills missing face parts from the originals. Uses the internet if needed.">Fills missing face parts from the originals. Uses the internet if needed.</p>
+          <p class="viewer-render-note" data-i18n="Add a Unity motion or expression bundle, then reopen the model. FBX motion files are not supported.">Add a Unity motion or expression bundle, then reopen the model. FBX motion files are not supported.</p>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
         </aside>
         <div class="viewer-main">
@@ -46,6 +52,7 @@
             <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
             <button id="viewer-expand" type="button" data-i18n="Expand view">Expand view</button>
           </div>
+          <p id="viewer-face-status" class="viewer-status" role="status" aria-live="polite" hidden></p>
           <p id="viewer-warning" class="viewer-warning" role="status" hidden></p>
           <div id="viewer-stage" class="viewer-stage" aria-label="3D model">
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
@@ -59,15 +66,48 @@
             <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
           </div>
           <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
+          <details id="viewer-adjustments" class="viewer-adjustments">
+            <summary data-i18n="Pose and body">Pose and body</summary>
+            <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
+            <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
+            <div class="viewer-motion-row">
+              <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
+              <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
+              <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
+            </div>
+            <div class="viewer-body-controls">
+              <label><span data-i18n="Height">Height</span><input id="viewer-height" type="range" min="80" max="120" step="1" value="100" disabled><output id="viewer-height-value">100%</output><span id="viewer-height-note" class="viewer-control-note"></span></label>
+              <label><span data-i18n="Breast size">Breast size</span><input id="viewer-breast" type="range" min="50" max="150" step="1" value="100" disabled><output id="viewer-breast-value">100%</output><span id="viewer-breast-note" class="viewer-control-note"></span></label>
+            </div>
+            <p class="viewer-render-note" data-i18n="100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.">100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.</p>
+            <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Use saved node settings">Use saved node settings</span></label>
+            <p class="viewer-render-note" data-i18n="Uses verified scale and position values from the file. Game height normalization is not applied.">Uses verified scale and position values from the file. Game height normalization is not applied.</p>
+            <p id="viewer-saved-status" class="viewer-render-note" role="status"></p>
+            <div class="viewer-expression-row">
+              <label><span data-i18n="Expression channel">Expression channel</span><select id="viewer-expression" disabled></select></label>
+              <label><span data-i18n="Expression strength">Expression strength</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><output id="viewer-expression-output">0%</output></label>
+            </div>
+            <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
+            <details class="viewer-node-editor">
+              <summary data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
+              <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
+              <p class="viewer-render-note" data-i18n="Changes are relative to the current pose. Movement uses the model's local units.">Changes are relative to the current pose. Movement uses the model's local units.</p>
+              <div id="viewer-node-fields"></div>
+              <button id="viewer-node-reset" type="button" data-i18n="Reset this bone" disabled>Reset this bone</button>
+            </details>
+            <button id="viewer-preview-reset" type="button" data-i18n="Reset preview adjustments" disabled>Reset preview adjustments</button>
+          </details>
           <details class="viewer-options">
             <summary data-i18n="Display options">Display options</summary>
             <div class="viewer-option-row">
               <label><input id="viewer-textures" type="checkbox" checked><span data-i18n="Show textures">Show textures</span></label>
               <label><input id="viewer-wireframe" type="checkbox"><span data-i18n="Wireframe">Wireframe</span></label>
               <label><span data-i18n="Background">Background</span><select id="viewer-background"><option value="light" data-i18n="Light">Light</option><option value="dark" data-i18n="Dark">Dark</option></select></label>
+              <label><span data-i18n="Materials">Materials</span><select id="viewer-shader" disabled><option value="sifas" data-i18n="SIFAS material preview">SIFAS material preview</option><option value="basic" data-i18n="Basic textures">Basic textures</option></select></label>
               <label class="viewer-fov"><span data-i18n="Perspective">Perspective</span><input id="viewer-fov" type="range" min="10" max="80" step="1" value="35"><output id="viewer-fov-value">35°</output></label>
             </div>
-            <p class="viewer-render-note" data-i18n="This is a static model preview. Game lighting and motion may look different.">This is a static model preview. Game lighting and motion may look different.</p>
+            <p class="viewer-render-note" data-i18n="Game lighting and motion may look different. Available controls depend on the model's data.">Game lighting and motion may look different. Available controls depend on the model's data.</p>
+            <p id="viewer-material-status" class="viewer-render-note" role="status"></p>
             <fieldset class="viewer-parts"><legend data-i18n="Visible parts">Visible parts</legend><div id="viewer-parts"></div></fieldset>
           </details>
         </div>
@@ -118,6 +158,8 @@
   <script src="/static/vendor/three-r128/three.min.js"></script>
   <script src="/static/vendor/three-r128/OrbitControls.js"></script>
   <script src="/static/vendor/three-r128/GLTFLoader.js"></script>
+  <script src="/static/sifas-material.js"></script>
+  <script src="/static/viewer-rig.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
 </body>
