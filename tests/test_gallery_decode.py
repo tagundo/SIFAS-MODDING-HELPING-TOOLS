@@ -48,6 +48,7 @@ class Texture:
 class RuntimeRoutingTests(unittest.TestCase):
     def setUp(self):
         decode._CACHE.clear()
+        decode._ANDROID_CACHE.clear()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.bundle = Path(self.temp.name) / "body.unity"
@@ -80,8 +81,60 @@ class RuntimeRoutingTests(unittest.TestCase):
                 patch.object(decode, "_android_thumbnail") as safe:
             self.assertIsNone(decode.thumbnail(self.bundle, timeout=0))
         self.assertEqual(decode._CACHE, {})
+        self.assertEqual(decode._ANDROID_CACHE, {})
         safe.assert_not_called()
         lock.release.assert_not_called()
+
+    def test_android_cache_evicts_least_recent_including_negative_entries(self):
+        other = self.bundle.with_name("other.unity")
+        third = self.bundle.with_name("third.unity")
+        other.write_bytes(b"UnityFS second fixture")
+        third.write_bytes(b"UnityFS third fixture")
+        with patch.object(decode, "_embedded_android", return_value=True), \
+                patch.object(decode, "_ANDROID_CACHE_ENTRIES", 2), \
+                patch.object(decode, "_android_thumbnail", side_effect=[PNG, None, PNG, None]) as safe:
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+            self.assertIsNone(decode.thumbnail(other))
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)  # refresh the first entry
+            self.assertEqual(decode.thumbnail(third), PNG)
+            self.assertEqual([key[0] for key in decode._ANDROID_CACHE], [str(self.bundle), str(third)])
+            self.assertIsNone(decode.thumbnail(other))  # the negative entry was evicted
+            self.assertIsNone(decode.thumbnail(other))  # then cached again
+        self.assertEqual(safe.call_count, 4)
+        self.assertEqual(len(decode._ANDROID_CACHE), 2)
+        self.assertEqual(decode._CACHE, {})
+
+    def test_android_cache_evicts_for_total_png_bytes(self):
+        other = self.bundle.with_name("other.unity")
+        other.write_bytes(b"UnityFS second fixture")
+        budget = len(PNG) + 1
+        with patch.object(decode, "_embedded_android", return_value=True), \
+                patch.object(decode, "_ANDROID_CACHE_BYTES", budget), \
+                patch.object(decode, "_android_thumbnail", return_value=PNG) as safe:
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+            self.assertEqual(decode.thumbnail(other), PNG)
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+        self.assertEqual(safe.call_count, 3)
+        self.assertLessEqual(sum(map(len, decode._ANDROID_CACHE.values())), budget)
+
+    def test_android_oversized_png_is_returned_without_caching(self):
+        with patch.object(decode, "_embedded_android", return_value=True), \
+                patch.object(decode, "_ANDROID_CACHE_BYTES", len(PNG) - 1), \
+                patch.object(decode, "_android_thumbnail", return_value=PNG) as safe:
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+        self.assertEqual(safe.call_count, 2)
+        self.assertEqual(decode._ANDROID_CACHE, {})
+
+    def test_android_uses_bounded_cache_independently_of_desktop_cache(self):
+        key = (str(self.bundle), self.bundle.stat().st_mtime)
+        decode._CACHE[key] = b"desktop preview"
+        with patch.object(decode, "_embedded_android", return_value=True), \
+                patch.object(decode, "_android_thumbnail", return_value=PNG) as safe:
+            self.assertEqual(decode.thumbnail(self.bundle), PNG)
+        safe.assert_called_once()
+        self.assertEqual(decode._CACHE[key], b"desktop preview")
+        self.assertEqual(decode._ANDROID_CACHE[key], PNG)
 
     def test_desktop_keeps_isolated_python_worker_and_timeout(self):
         def worker(command, **options):
