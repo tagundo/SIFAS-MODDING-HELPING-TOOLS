@@ -120,6 +120,8 @@ Downloads are bounded and cached. If a facial source cannot be obtained, the
 costume remains visible with a warning. Disable this option to inspect the
 selected files alone. Standalone installations can use local originals; online
 lookup also needs Elichika's asset database and bundled asset extractor.
+Original LZMA-compressed facial bundles are decoded with bounded memory; manual
+repacking is unnecessary and the source files remain unchanged.
 
 - Drag to rotate, pinch/scroll to zoom, or use two fingers to pan.
 - **Front**, **Back**, side views and **Fit model** reset the camera.
@@ -129,10 +131,17 @@ lookup also needs Elichika's asset database and bundled asset extractor.
   pauses drawing while it is hidden.
 
 This is a static geometry preview using the saved bone transforms and bind poses,
-including edited models with recentered vertices. Game animations are not
-played, and proprietary lighting/expression shaders can differ. Some SIFAS base
-costumes contain only the face shell; their eyes and
-expressions require a separate facial asset. Missing parts or unsupported
+including edited models with recentered vertices. It has no pose selection,
+animation playback or live height/breast-size node controls. The exported preview
+contains baked mesh vertices, rather than an editable skeleton. Separate LiveCore
+and Mesh Baker tools save their own edits; they do not control this viewer live.
+
+Textured surfaces use an unlit material, not the game's AS/Member shader. The
+game's lighting, rim light, outlines and animated expressions are not reproduced.
+Known AS/Member materials ignore the unused generic `_Color` field, avoiding
+incorrect darkening without changing texture pixels. Some SIFAS base costumes
+contain only the face shell; their eyes and expressions require a separate
+facial asset. Missing parts or unsupported
 textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.
