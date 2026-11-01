@@ -284,6 +284,10 @@ TOOLS = [
             {"name": "mode_select", "label": "Repair mode", "type": "select",
              "options": NODE_SCALING_MODES, "default": "rebase",
              "help": "rebase = re-anchor to current local; neutralize = reset; none = scan only."},
+            {"name": "height_scale", "label": "Saved height setting", "type": "number",
+             "default": "", "min": 0.1, "max": 3, "step": 0.001, "mode": "single",
+             "help": "Sets the game's saved heightScale value (0.1–3). Blank keeps it. "
+             "This is separate from the viewer's height percentage."},
             {"name": "set_entries", "label": "Edit entries (advanced, single-file)", "type": "textarea",
              "default": "",
              "help": "One per line, same grammar as the desktop --set: "

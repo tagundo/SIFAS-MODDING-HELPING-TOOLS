@@ -21,6 +21,11 @@
   var camera = null;
   var controls = null;
   var model = null;
+  var rigController = null;
+  var materialController = null;
+  var discardPendingPreview = null;
+  var lastFrameTime = 0;
+  var materialPreference = "sifas";
   var frame = 0;
   var resizeObserver = null;
   var bounds = null;
@@ -81,6 +86,7 @@
     });
     node("viewer-add").textContent = t(paths.length ? "Add file" : "Choose costume file");
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
+    node("viewer-add-motion").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-load").disabled = loading || !paths.length;
   }
 
@@ -101,6 +107,7 @@
     node("viewer-cancel").hidden = !value;
     node("viewer-load").hidden = value;
     node("viewer-auto-face").disabled = value;
+    if (rigController) rigController.setInteractive(!value && !lost);
     renderFiles();
     showFaceStatus();
   }
@@ -109,6 +116,7 @@
     generation += 1;
     if (controller) controller.abort();
     controller = null;
+    if (discardPendingPreview) discardPendingPreview();
     setLoading(false);
     setStatus("Loading cancelled.");
   }
@@ -118,18 +126,24 @@
     frame = window.requestAnimationFrame(draw);
   }
 
-  function draw() {
+  function draw(time) {
     frame = 0;
     if (!active || document.hidden || !renderer || lost || destroyed) return;
+    var delta = lastFrameTime ? Math.min(.1, Math.max(0, (time - lastFrameTime) / 1000)) : 0;
+    lastFrameTime = time;
+    var moving = rigController ? rigController.update(delta) : false;
+    if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
     renderer.render(scene, camera);
     renderedFrames += 1;
-    if (changed) requestRender();
+    if (changed || moving) requestRender();
+    else lastFrameTime = 0;
   }
 
   function pauseRender() {
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
+    lastFrameTime = 0;
   }
 
   function resize() {
@@ -181,12 +195,20 @@
         event.preventDefault();
         lost = true;
         pauseRender();
+        // r128 replaces its GPU caches on restoration. Detach the old resource
+        // disposal listeners while the context is lost, so a later model reload
+        // cannot delete handles from the old context generation. Keep CPU data
+        // and decoded source images for the restored renderer to upload again.
+        if (materialController && materialController.invalidateGPU) materialController.invalidateGPU();
+        disposeObject(model, true);
+        if (rigController) rigController.setInteractive(false);
         // Abort the client load as well. A late preparation response must not
         // replace this interruption message with a misleading ready state.
         if (loading) {
           generation += 1;
           if (controller) controller.abort();
           controller = null;
+          if (discardPendingPreview) discardPendingPreview();
           setLoading(false);
         }
         setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
@@ -196,6 +218,7 @@
         lost = false;
         setStatus(model ? "Model ready." : "Choose a costume file to begin.");
         filesChanged();
+        if (rigController) rigController.setInteractive(!loading);
         resize();
       });
       setBackground();
@@ -221,6 +244,10 @@
 
   function fitModel(direction) {
     if (!model || !bounds || !camera) return;
+    if (rigController && rigController.getBounds) {
+      var posed = rigController.getBounds();
+      if (posed) bounds = posed;
+    }
     // A view preset must also clear the previous drag's damping and pan. If
     // their deltas survive, OrbitControls moves away again after the next frame.
     var damping = controls.enableDamping;
@@ -277,7 +304,30 @@
     });
   }
 
-  function disposeObject(object) {
+  function isViewerHelper(object) {
+    return object.userData && object.userData.viewerHelper === true;
+  }
+
+  function visibleSourceTriangles() {
+    var triangles = 0;
+    if (model) model.traverseVisible(function (child) {
+      if (!child.isMesh || isViewerHelper(child) || !child.geometry) return;
+      var geometry = child.geometry;
+      var count = geometry.index ? geometry.index.count : geometry.attributes.position ? geometry.attributes.position.count : 0;
+      triangles += count / 3;
+    });
+    return triangles;
+  }
+
+  function disposePreviewControllers() {
+    if (rigController) rigController.dispose();
+    if (materialController) materialController.dispose();
+    rigController = null;
+    materialController = null;
+    lastFrameTime = 0;
+  }
+
+  function disposeObject(object, preserveImages) {
     if (!object) return;
     var geometries = new Set();
     var materials = new Set();
@@ -297,7 +347,7 @@
     });
     geometries.forEach(function (geometry) { geometry.dispose(); });
     textures.forEach(function (texture) {
-      if (texture.image && typeof texture.image.close === "function") texture.image.close();
+      if (!preserveImages && texture.image && typeof texture.image.close === "function") texture.image.close();
       texture.dispose();
     });
   }
@@ -306,20 +356,34 @@
     if (!model) return;
     var showTextures = node("viewer-textures").checked;
     var wireframe = node("viewer-wireframe").checked;
+    if (materialController && materialController.setEnabled) {
+      materialController.setEnabled(showTextures && !wireframe && node("viewer-shader").value === "sifas");
+    }
     model.traverse(function (child) {
-      if (!child.isMesh) return;
-      if (!child.userData.viewerOriginalMaterials) child.userData.viewerOriginalMaterials = child.material;
+      if (!child.isMesh || isViewerHelper(child)) return;
+      if (!materialController && !child.userData.viewerOriginalMaterials) child.userData.viewerOriginalMaterials = child.material;
       if (!showTextures && !child.userData.viewerSolidMaterials) {
-        var original = child.userData.viewerOriginalMaterials;
+        var original = materialController && materialController.getMaterial ? materialController.getMaterial(child) : child.userData.viewerOriginalMaterials;
         var create = function () {
-          return new window.THREE.MeshStandardMaterial({ color: 0xadb8c8, roughness: 0.85, metalness: 0, side: window.THREE.DoubleSide });
+          return new window.THREE.MeshStandardMaterial({ color: 0xadb8c8, roughness: 0.85, metalness: 0,
+            side: window.THREE.DoubleSide, skinning: !!child.isSkinnedMesh,
+            morphTargets: !!child.morphTargetInfluences,
+            morphNormals: !!(child.geometry.morphAttributes && child.geometry.morphAttributes.normal) });
         };
         child.userData.viewerSolidMaterials = Array.isArray(original) ? original.map(create) : create();
       }
-      child.material = showTextures ? child.userData.viewerOriginalMaterials : child.userData.viewerSolidMaterials;
+      child.material = showTextures ? (materialController && materialController.getMaterial ? materialController.getMaterial(child) : child.userData.viewerOriginalMaterials) : child.userData.viewerSolidMaterials;
       forEachMaterial(child.material, function (material) { material.wireframe = wireframe; });
     });
     requestRender();
+    refreshMaterialStatus();
+  }
+
+  function refreshMaterialStatus() {
+    var state = materialController && materialController.getState ? materialController.getState() : null;
+    node("viewer-material-status").textContent = !state ? "" : t(!state.recognizedMaterials ?
+      "SIFAS material data is unavailable. Basic textures are shown." : node("viewer-shader").value === "basic" ?
+      "Basic textures are shown." : "Uses the file's SIFAS material settings. In-game appearance may differ.");
   }
 
   function buildParts() {
@@ -327,14 +391,18 @@
     list.textContent = "";
     var count = 0;
     model.traverse(function (child) {
-      if (!child.isMesh) return;
+      if (!child.isMesh || isViewerHelper(child)) return;
       count += 1;
       var label = document.createElement("label");
       var input = document.createElement("input");
       input.type = "checkbox";
       if (child.userData.hidden_default === true || child.userData.hideInPreview === true) child.visible = false;
       input.checked = child.visible;
-      input.addEventListener("change", function () { child.visible = input.checked; requestRender(); });
+      input.addEventListener("change", function () {
+        if (rigController && rigController.setPartVisible) rigController.setPartVisible(child, input.checked);
+        else child.visible = input.checked;
+        requestRender();
+      });
       var title = document.createElement("span");
       title.textContent = child.name || t("Part") + " " + count;
       label.appendChild(input);
@@ -380,16 +448,25 @@
     if (!ensureRenderer()) return;
     var current = ++generation;
     if (controller) controller.abort();
+    if (discardPendingPreview) discardPendingPreview();
     controller = new window.AbortController();
     var requestController = controller;
     var selected = paths.slice();
     var selectedAutoFace = node("viewer-auto-face").checked;
+    var pendingModel = null;
+    var pendingMaterials = null;
+    function discard() {
+      if (pendingMaterials) pendingMaterials.dispose();
+      if (pendingModel) disposeObject(pendingModel);
+      pendingMaterials = null; pendingModel = null;
+      if (discardPendingPreview === discard) discardPendingPreview = null;
+    }
     setLoading(true);
     setStatus(selectedAutoFace ? "Checking model and face…" : "Preparing model…");
     try {
       var response = await window.fetch("/api/viewer/prepare", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: selected, auto_face: selectedAutoFace }), signal: requestController.signal
+        body: JSON.stringify({ paths: selected, auto_face: selectedAutoFace, rigged: true }), signal: requestController.signal
       });
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
@@ -412,11 +489,25 @@
         disposeObject(gltf.scene); return;
       }
       var next = gltf.scene;
+      pendingModel = next;
+      discardPendingPreview = discard;
       var nextBounds = new window.THREE.Box3().setFromObject(next);
+      var restBounds = prepared.rig && prepared.rig.bounds;
+      if (restBounds && Array.isArray(restBounds.min) && Array.isArray(restBounds.max) &&
+          restBounds.min.concat(restBounds.max).length === 6 && restBounds.min.concat(restBounds.max).every(isFinite)) {
+        nextBounds.set(new window.THREE.Vector3().fromArray(restBounds.min), new window.THREE.Vector3().fromArray(restBounds.max));
+      }
       if (nextBounds.isEmpty() || !isFinite(nextBounds.min.x) || !isFinite(nextBounds.max.x)) {
-        disposeObject(next);
         throw new Error(t("No visible model was found in these files."));
       }
+      if (window.SifasMaterial && window.SifasMaterial.apply) {
+        pendingMaterials = window.SifasMaterial.apply(next, renderer, {
+          parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender
+        });
+        if (pendingMaterials.ready) await pendingMaterials.ready;
+      }
+      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) return;
+      disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
       bounds = nextBounds;
@@ -424,6 +515,15 @@
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
       scene.add(model);
+      materialController = pendingMaterials;
+      pendingMaterials = null;
+      pendingModel = null;
+      if (window.ViewerRig) {
+        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: requestRender });
+      }
+      var materialState = materialController && materialController.getState ? materialController.getState() : null;
+      node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
+      node("viewer-shader").value = materialState && materialState.recognizedMaterials ? materialPreference : "basic";
       node("viewer-empty").hidden = true;
       buildParts();
       updateAppearance();
@@ -436,6 +536,7 @@
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
     } finally {
+      discard();
       if (current === generation) {
         controller = null;
         setLoading(false);
@@ -456,14 +557,16 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
-    node("viewer-add").addEventListener("click", function () {
+    function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
       config.pickFile(function (path) {
         if (paths.indexOf(path) < 0) paths.push(path);
         renderFiles();
         filesChanged();
       });
-    });
+    }
+    node("viewer-add").addEventListener("click", pickCompanion);
+    node("viewer-add-motion").addEventListener("click", pickCompanion);
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
     node("viewer-auto-face").addEventListener("change", filesChanged);
@@ -474,6 +577,7 @@
     });
     node("viewer-textures").addEventListener("change", updateAppearance);
     node("viewer-wireframe").addEventListener("change", updateAppearance);
+    node("viewer-shader").addEventListener("change", function () { materialPreference = this.value; updateAppearance(); });
     node("viewer-background").addEventListener("change", setBackground);
     node("viewer-fov").addEventListener("input", function () {
       node("viewer-fov-value").textContent = this.value + "°";
@@ -500,6 +604,8 @@
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
     if (metadata) showWarnings(metadata.warnings);
     showFaceStatus();
+    if (rigController) rigController.updateLanguage();
+    refreshMaterialStatus();
   }
 
   function setVisible(value) {
@@ -527,9 +633,11 @@
     destroyed = true;
     generation += 1;
     if (controller) controller.abort();
+    if (discardPendingPreview) discardPendingPreview();
     pauseRender();
     if (resizeObserver) resizeObserver.disconnect();
     if (controls) controls.dispose();
+    disposePreviewControllers();
     disposeObject(model);
     if (renderer) renderer.dispose();
     model = null;
@@ -539,18 +647,24 @@
     mount: mount, open: open, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
     getState: function () {
       var names = [];
-      if (model) model.traverse(function (child) { if (child.isMesh) names.push(child.name); });
+      if (model) model.traverse(function (child) { if (child.isMesh && !isViewerHelper(child)) names.push(child.name); });
       return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), loading: loading, loaded: !!model,
         autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
         loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
         meshNames: names, trianglesRendered: renderer ? renderer.info.render.triangles : 0,
+        sourceTriangles: visibleSourceTriangles(),
         renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
-        modelId: metadata ? metadata.id : null };
+        modelId: metadata ? metadata.id : null,
+        camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
+        rig: rigController ? rigController.getState() : null,
+        materials: materialController && materialController.getState ? materialController.getState() : null };
     },
     // Device QA only: an optional denser grid can inspect small colored details.
     // Keep the original 11x11 samples by default, and read the framebuffer once
     // rather than issuing a GPU read for each sample. No model data is changed.
+    // triangles/drawTriangles count actual GPU passes; sourceTriangles excludes
+    // tagged preview helpers such as the separate SIFAS outline pass.
     renderProbe: function (gridSize) {
       if (!renderer || !model || lost) return { ready: false };
       renderer.render(scene, camera);
@@ -587,7 +701,8 @@
       }
       return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: grid * grid,
         gridSize: grid, readPixelsCalls: 1, bytesRead: bytes,
-        triangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
+        triangles: renderer.info.render.triangles, sourceTriangles: visibleSourceTriangles(),
+        drawTriangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
         width: width, height: height, glError: gl.getError() };
     }
   };

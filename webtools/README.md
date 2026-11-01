@@ -126,22 +126,42 @@ repacking is unnecessary and the source files remain unchanged.
 - Drag to rotate, pinch/scroll to zoom, or use two fingers to pan.
 - **Front**, **Back**, side views and **Fit model** reset the camera.
 - **Expand view** gives the model more room on a phone.
+- **Pose and body** selects available motion clips, plays/pauses or seeks them,
+  and adjusts expression channels. **Add animation file** selects another Unity
+  animation bundle. Same-character local eye-animation companions can also be
+  discovered within the bounded trusted library search.
+- **Height** and **Breast size** adjust the model's verified `Move` and
+  `BreastSize` nodes. `100%` adds no extra change to the current pose/baseline.
+  **Use saved node settings** explicitly applies supported absolute LiveCore
+  scale/position endpoints; conflicting entries are skipped and reported.
+  **Individual bones** provides additional relative transform controls.
+- **Reset preview adjustments** restores the saved pose and controls. These
+  preview changes do not write to the source bundle. The separate LiveCore and
+  Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
+  optional raw game `heightScale` setting for single-file runs.
 - **Display options** contains perspective, background, wireframe, textures and
-  individual part visibility. Switching tabs preserves the loaded model and
-  pauses drawing while it is hidden.
+  individual part visibility. **SIFAS material preview** reconstructs supported
+  AS/Member equations; **Basic textures** retains the simpler texture view.
+  Switching tabs pauses drawing and motion without discarding the current pose.
 
-This is a static geometry preview using the saved bone transforms and bind poses,
-including edited models with recentered vertices. It has no pose selection,
-animation playback or live height/breast-size node controls. The exported preview
-contains baked mesh vertices, rather than an editable skeleton. Separate LiveCore
-and Mesh Baker tools save their own edits; they do not control this viewer live.
+Interactive previews retain named skeletons, bind poses, skin weights and
+supported morph/animation data, including edited models with recentered vertices.
+Meshes without valid rig data remain viewable with their saved placement;
+unsupported controls stay disabled. Loading an arbitrary model does not provide
+the game's dedicated suit-preview clip, and no neutral expression is guessed.
+The separate game `heightScale` normalization formula is not inferred by the
+preview. Saved Euler-rotation records are not currently applied; individual
+bone rotation controls remain available.
 
-Textured surfaces use an unlit material, not the game's AS/Member shader. The
-game's lighting, rim light, outlines and animated expressions are not reproduced.
-Known AS/Member materials ignore the unused generic `_Color` field, avoiding
-incorrect darkening without changing texture pixels. Some SIFAS base costumes
-contain only the face shell; their eyes and expressions require a separate
-facial asset. Missing parts or unsupported
+Supported AS/Member materials use the APK's gamma-space mask, ambient/tint,
+rim-light, matcap, cheek, emissive and outline equations with the source material
+flags and available textures. Supported authored mip levels are decoded without
+generating or resampling pixels. Known member materials ignore the unused generic
+`_Color` field. Unknown materials keep their normal texture fallback. This is not
+a claim of pixel-identical game rendering: runtime lighting/controller values,
+camera, shadows and postprocessing have not all been captured from the game.
+Some SIFAS base costumes contain only the face shell; their eyes and expressions
+require a separate facial asset. Missing parts or unsupported
 textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.

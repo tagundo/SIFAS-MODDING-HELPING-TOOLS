@@ -4,6 +4,7 @@ hips and upleg `import tkinter` at module top, so we install the headless tk
 stub before importing them; their core functions never touch tkinter.
 node_scaling is import-safe.
 """
+import math
 from pathlib import Path
 
 from webtools.core.repo import ensure_repo_on_path
@@ -136,33 +137,47 @@ def run_node_scaling(job, params):
     # optional manual add/edit specs, same grammar as the desktop CLI (--add/--set),
     # parsed with the tool's own parsers so the web can't drift from it. Like the
     # desktop, these apply to single-file runs only (auto-repair still runs in batch).
-    add_specs = _node_lines(params.get("add_entries"))
-    set_specs = _node_lines(params.get("set_entries"))
+    batch = params.get("mode") == "batch"
+    requested_adds = _node_lines(params.get("add_entries"))
+    requested_sets = _node_lines(params.get("set_entries"))
+    requested_height = params.get("height_scale")
+    height_scale = None if batch else as_float_or_none(requested_height)
+    if height_scale is not None and (not math.isfinite(height_scale)
+                                     or not .1 <= height_scale <= 3):
+        raise ValueError("Saved height setting must be between 0.1 and 3.")
+    add_specs = [] if batch else requested_adds
+    set_specs = [] if batch else requested_sets
     adds = [m._parse_add(s) for s in add_specs] or None
 
     def edit(src, out_path):
         # expand wildcard --set keys to real (target,kind,bone) tuples per bundle,
         # mirroring sifas_node_scaling.run_cli's expand() step.
-        edits = None
-        if set_specs:
+        edits, height_edits = None, None
+        if set_specs or height_scale is not None:
             import UnityPy
+            components, entries = m.scan_components(UnityPy.load(str(src)))
+            if height_scale is not None:
+                height_edits = {target_name: height_scale for _, _, target_name, _ in components}
+                if not height_edits:
+                    raise ValueError("No saved height component was found in this bundle.")
+        if set_specs:
             wild = {}
             for s in set_specs:
                 (kind, bone), vals = m._parse_set(s)
                 wild[("*", kind, bone)] = vals
-            _, entries = m.scan_components(UnityPy.load(str(src)))
             edits = {}
             for e in entries:
                 k = ("*", e.kind, e.bone)
                 if k in wild:
                     edits[(e.target_name, e.kind, e.bone)] = wild[k]
         n = m.process_bundle(Path(src), out_path, mode=mode,
-                             adds=adds, edits=edits or None, log=job.log)
+                             adds=adds, edits=edits or None,
+                             height_edits=height_edits, log=job.log)
         return f"changed={n}"
 
-    if params.get("mode") == "batch":
-        if adds or set_specs:
-            job.log("[note] add/edit entries apply to single-file runs only; "
+    if batch:
+        if requested_adds or requested_sets or (requested_height is not None and str(requested_height).strip()):
+            job.log("[note] add/edit entries and height settings apply to single-file runs only; "
                     "batch performs auto-repair (rebase/neutralize/none) only.")
         return run_batch(job, params.get("in_dir"), out_dir, prefix, suffix, edit)
 

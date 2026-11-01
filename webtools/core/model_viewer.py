@@ -451,6 +451,7 @@ class _Scene:
             "facial_assets_missing": "This costume needs its separate facial asset to show eyes and expressions.",
             "skin_bones_unavailable": "Some bone transforms are unavailable. Those parts use their saved renderer placement.",
             "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
+            "rig_unavailable": "This model uses a static preview because its rig could not be loaded.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -477,13 +478,14 @@ class _Glb:
         self.doc["bufferViews"].append(view)
         return index
 
-    def attribute(self, values, kind, component=5126, bounds=False):
+    def attribute(self, values, kind, component=5126, bounds=False, target="auto"):
         import numpy as np
         dtype = {5126: "<f4", 5123: "<u2", 5125: "<u4"}[component]
         array = np.ascontiguousarray(values, dtype=dtype)
         if component == 5126 and not np.isfinite(array).all():
             raise ModelViewerError("The model contains invalid geometry values.")
-        item = {"bufferView": self.view(array.tobytes(), 34963 if kind == "SCALAR" else 34962),
+        view_target = (34963 if kind == "SCALAR" else 34962) if target == "auto" else target
+        item = {"bufferView": self.view(array.tobytes(), view_target),
                 "componentType": component, "count": len(array), "type": kind}
         if bounds:
             item["min"], item["max"] = array.min(axis=0).tolist(), array.max(axis=0).tolist()
@@ -495,7 +497,7 @@ class _Glb:
         self.data.extend(b"\0" * (-len(self.data) % 4))
         self.doc["buffers"][0]["byteLength"] = len(self.data)
         doc = dict(self.doc)
-        for optional in ("images", "textures", "samplers"):
+        for optional in ("images", "textures", "samplers", "skins", "animations"):
             if not doc.get(optional):
                 doc.pop(optional, None)
         encoded = json.dumps(doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
@@ -550,8 +552,9 @@ def _as_member_material(scene, obj, tree):
 
 
 class _Materials:
-    def __init__(self, scene, glb):
+    def __init__(self, scene, glb, rigged=False):
         self.scene, self.glb = scene, glb
+        self.rigged = rigged
         self.materials, self.textures = {}, {}
         self.pixels = 0
 
@@ -639,6 +642,9 @@ class _Materials:
                 self.scene.warn("texture_unavailable", tree.get("m_Name", ""))
         elif main and main.get("m_Texture", {}).get("m_PathID"):
             self.scene.warn("linked_texture_missing", tree.get("m_Name", ""))
+        if self.rigged and _as_member_material(self.scene, obj, tree):
+            from .model_materials import attach_member_metadata
+            attach_member_metadata(self.scene, obj, tree, material, self.texture)
         index = len(self.glb.doc["materials"])
         self.glb.doc["materials"].append(material)
         self.materials[key] = index
@@ -705,7 +711,7 @@ def _validate_mesh_allocations(mesh):
             raise ModelViewerError("The model has too many triangles for the mobile viewer.")
 
 
-def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None):
+def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None):
     import numpy as np
     from UnityPy.helpers.MeshHelper import MeshHandler
 
@@ -748,6 +754,13 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None):
             face_normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
             for corner in range(3):
                 np.add.at(normals, indices[:, corner], face_normals)
+    if rig_data is not None:
+        rig_data.update(mesh=mesh, positions=positions, normals=normals,
+                        indices=handler.m_BoneIndices, weights=handler.m_BoneWeights,
+                        colors=handler.m_Colors)
+    if morph_weights:
+        from .model_rig import apply_default_morphs
+        positions, normals = apply_default_morphs(mesh, positions, normals, morph_weights, deadline=deadline)
     orientation = -1 if np.linalg.det(world[:3, :3]) < 0 else 1
     if bone_world_matrices is not None:
         from .model_skinning import rest_skin_mesh, SkinningError
@@ -786,7 +799,7 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None):
     return str(mesh.m_Name), positions, normals, uv, result
 
 
-def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=None):
+def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=None, rig=None):
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
@@ -802,7 +815,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
-    materials = materials or _Materials(scene, glb)
+    materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
     for renderer, tree, game_object in scene.renderers:
         if auto_only and _source_path(renderer) not in faces.auto_paths:
@@ -828,6 +841,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
             continue
         auto_face = _source_path(renderer) in faces.auto_paths
+        raw = {} if rig is not None else None
         bones, skin_warnings = None, []
         try:
             if renderer.type.name == "SkinnedMeshRenderer":
@@ -838,9 +852,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 for ref in refs:
                     transform = _ref(renderer, ref)
                     bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
-            name, positions, normals, uv, submeshes = _geometry(
-                mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))),
-                bones, skin_warnings)
+            arguments = (mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))), bones, skin_warnings)
+            keywords = {"rig_data": raw} if raw is not None else {}
+            if any(tree.get("m_BlendShapeWeights", [])):
+                keywords["morph_weights"] = tree["m_BlendShapeWeights"]
+                keywords["deadline"] = deadline
+            name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
         except Exception:
             if auto_face:
                 faces.failed()
@@ -861,6 +878,23 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         scene.stats["triangles"] += sum(map(len, submeshes))
         attributes = {"POSITION": glb.attribute(positions, "VEC3", bounds=True),
                       "NORMAL": glb.attribute(normals, "VEC3")}
+        skin, targets, target_names, target_hashes, target_weights = None, [], [], [], []
+        if rig is not None:
+            rig.record_bounds(positions)
+            static_attributes = dict(attributes)
+            checkpoint = (len(glb.data), {key: len(glb.doc.get(key, [])) for key in ("accessors", "bufferViews", "skins")})
+            try:
+                attributes, skin = rig.attributes(renderer, tree, game_object, raw, positions)
+                targets, target_names, target_hashes, target_weights = rig.morph_targets(raw, renderer, game_object)
+            except ValueError as error:
+                rig.warnings.append(str(error))
+                del glb.data[checkpoint[0]:]
+                for key, length in checkpoint[1].items():
+                    if key in glb.doc:
+                        del glb.doc[key][length:]
+                attributes = static_attributes
+                skin = None
+                targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
         primitives, refs = [], tree.get("m_Materials", [])
@@ -879,14 +913,20 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             primitives.append({"attributes": attributes,
                                "indices": glb.attribute(triangles.reshape(-1), "SCALAR", component),
                                "material": material, "mode": 4})
+            if targets:
+                primitives[-1]["targets"] = targets
         mesh_index = len(glb.doc["meshes"])
         glb.doc["meshes"].append({"name": name or game_name, "primitives": primitives})
+        if target_names:
+            glb.doc["meshes"][-1].update(weights=target_weights, extras={"targetNames": target_names})
         node_index = len(glb.doc["nodes"])
         glb.doc["nodes"].append({"name": name or game_name, "mesh": mesh_index,
                                  "extras": {"sourceName": _source_name(mesh_obj)}})
         if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
             glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
         glb.doc["scenes"][0]["nodes"].append(node_index)
+        if rig is not None and skin is not None:
+            rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
         if auto_face:
             faces.added += 1
             from .model_faces import facial_role
@@ -894,7 +934,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     return materials
 
 
-def _to_glb(scene, glb, faces, deadline):
+def _to_glb(scene, glb, faces, deadline, rig=None):
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
@@ -904,12 +944,26 @@ def _to_glb(scene, glb, faces, deadline):
     elif faces.auto_paths and not faces.added:
         faces.status = "unavailable"
         faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+    if rig is not None:
+        rig.finalize(animations=False)
     data = bytes(glb.finish())
     _remaining(deadline)
-    return data, dict(scene.stats), list(scene.warnings) + faces.warnings, faces.metadata()
+    result = (data, dict(scene.stats), list(scene.warnings) + faces.warnings, faces.metadata())
+    if rig is None:
+        return result
+    base_rig = rig.metadata()
+    if any(obj.type.name == "AnimationClip" for obj in scene.env.objects):
+        try:
+            rig.finalize()
+            animated = bytes(glb.finish())
+            _remaining(deadline)
+            return (animated,) + result[1:] + (rig.metadata(),)
+        except Exception:
+            base_rig["animationWarnings"].append({"code": "animation_unavailable", "message": "Animation loading exceeded its remaining preview budget. The completed model is still shown."})
+    return result + (base_rig,)
 
 
-def _build(paths, deadline, face_context=None):
+def _build(paths, deadline, face_context=None, rigged=False):
     """Finish the selected model before spending any time on optional faces.
 
     Both phases share the unchanged overall deadline. The original conversion
@@ -921,9 +975,17 @@ def _build(paths, deadline, face_context=None):
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
     disabled_faces = FacePlan(scene, paths, None, deadline)
-    materials = _append_scene(scene, glb, disabled_faces, deadline)
-    base = _to_glb(scene, glb, disabled_faces, deadline)
-    if not face_context or not face_context.get("enabled", True):
+    rig = None
+    if rigged:
+        from .model_rig import RigBuilder
+        try:
+            rig = RigBuilder(scene, glb, disabled_faces, paths, deadline)
+        except ValueError:
+            glb = _Glb()
+            scene.warn("rig_unavailable")
+    materials = _append_scene(scene, glb, disabled_faces, deadline, rig=rig)
+    base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
+    if not face_context or (not face_context.get("enabled", True) and rig is None):
         return base
 
     face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
@@ -935,18 +997,25 @@ def _build(paths, deadline, face_context=None):
         _remaining(face_deadline)
         extra = faces.resolve()
         _remaining(face_deadline)
-        if not extra:
+        animation_paths = []
+        if rig is not None:
+            from .model_animation import discover_animation_paths
+            animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, face_deadline)
+        additions = list(dict.fromkeys(extra + animation_paths))
+        if not additions:
             warnings = list(base[2]) + faces.warnings
             if faces.status == "already_present":
                 warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
-            return base[0], base[1], warnings, faces.metadata()
-        _paths(paths + extra)  # aggregate file-count/byte limits remain in force
-        env = _environment(extra, face_deadline, base_env=env)
+            return (base[0], base[1], warnings, faces.metadata()) + base[4:]
+        _paths(paths + additions)  # aggregate file-count/byte limits remain in force
+        env = _environment(additions, face_deadline, base_env=env)
         expanded = _Scene(env, face_deadline, trees=scene.trees)
         expanded.stats = dict(base[1])
         expanded.warnings = list(base[2])
-        _append_scene(expanded, glb, faces, face_deadline, auto_only=True, materials=materials)
-        return _to_glb(expanded, glb, faces, face_deadline)
+        if rig is not None:
+            rig.update(expanded, faces, face_deadline)
+        _append_scene(expanded, glb, faces, face_deadline, auto_only=True, materials=materials, rig=rig)
+        return _to_glb(expanded, glb, faces, face_deadline, rig=rig)
     except Exception:
         if faces is None:
             faces = FacePlan(scene, paths, None, face_deadline)
@@ -954,7 +1023,7 @@ def _build(paths, deadline, face_context=None):
         faces.added = 0
         faces.status = "unavailable"
         faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
-        return base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()
+        return (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
 
 
 def _prune(now):
@@ -965,8 +1034,10 @@ def _prune(now):
         _SESSIONS.popitem(last=False)
 
 
-def prepare(paths, *, face_context=None):
+def prepare(paths, *, face_context=None, rigged=False):
     """Convert selected, already-jailed bundle paths and create a short-lived GLB."""
+    if not isinstance(rigged, bool):
+        raise ModelViewerError("The rigged preview setting must be true or false.")
     paths = _paths(paths)
     if not _BUILD_LOCK.acquire(timeout=1):
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
@@ -975,9 +1046,11 @@ def prepare(paths, *, face_context=None):
         try:
             # Keep the original internal call shape for callers/tests that do
             # not enable automatic discovery.
-            built = _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline)
+            built = (_build(paths, deadline, face_context, rigged=True) if rigged
+                     else _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline))
             data, stats, warnings = built[:3]
             faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
+            rig = built[4] if len(built) > 4 else {"enabled": bool(rigged), "available": False}
         except ModelViewerError:
             raise
         except Exception as error:
@@ -989,7 +1062,7 @@ def prepare(paths, *, face_context=None):
             _prune(now)
         return {"id": token, "url": f"/api/viewer/model/{token}.glb",
                 "source_names": [os.path.basename(path) for path in paths],
-                "stats": dict(stats), "warnings": warnings, "faces": faces}
+                "stats": dict(stats), "warnings": warnings, "faces": faces, "rig": rig}
     finally:
         _BUILD_LOCK.release()
 

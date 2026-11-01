@@ -98,6 +98,27 @@ class ViewerRouteTests(unittest.TestCase):
         self.assertFalse(context["enabled"])
         self.assertFalse(context["allow_download"])
 
+    def test_interactive_rig_flag_is_strict_and_does_not_accept_runtime_transforms(self):
+        for extra in ({"rigged": 1}, {"rigged": "true"}, {"rigged": None},
+                      {"bone_scales": {"BreastSize": [2, 2, 2]}}):
+            with self.subTest(extra=extra):
+                status, _, _ = self.request("/api/viewer/prepare", {"paths": [str(self.model)], **extra})
+                self.assertEqual(status, 400)
+        self.backend.prepare.assert_not_called()
+        status, _, body = self.request("/api/viewer/prepare", {"paths": [str(self.model)], "rigged": True})
+        self.assertEqual(status, 200, body)
+        self.backend.prepare.assert_called_once()
+        self.assertIs(self.backend.prepare.call_args.kwargs["rigged"], True)
+        self.assertNotIn("bone_scales", self.backend.prepare.call_args.kwargs)
+
+    def test_legacy_prepare_remains_static_unless_interactive_loading_is_requested(self):
+        for extra in ({}, {"rigged": False}):
+            with self.subTest(extra=extra):
+                self.backend.prepare.reset_mock()
+                status, _, body = self.request("/api/viewer/prepare", {"paths": [str(self.model)], **extra})
+                self.assertEqual(status, 200, body)
+                self.assertNotIn("rigged", self.backend.prepare.call_args.kwargs)
+
     def test_costume_zip_passes_only_temporary_model_and_manifest_data(self):
         source = self.models / "costume.zip"
         fixture = (Path(__file__).parent / "fixtures/viewer_triangle.unity").read_bytes()
