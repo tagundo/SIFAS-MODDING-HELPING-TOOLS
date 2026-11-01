@@ -13,7 +13,8 @@ anywhere.
 | Breast Size (LiveCore) | `sifas_breast_tuner.py` scale editing |
 | Skirt Length | `skirt_length_changer.py` |
 | Texture Importer | replace Texture2D images from a folder |
-| Texture previews | view one representative texture image per costume file; check shape changes in the game or a 3D viewer |
+| 3D model | inspect costume geometry and textures with touch rotation, zoom and camera presets |
+| Texture previews | view one representative texture image per costume file |
 | Mesh Baker | bake scale, rotation and movement into model vertices |
 
 Each tool runs in **Single file** or **Batch folder** mode, shows a live log and
@@ -23,7 +24,8 @@ progress bar, and can be cancelled mid-run.
 
 - Python 3.8+
 - `UnityPy` (the tools install this on first run)
-- `Pillow` — only needed for **Texture Importer** and **Gallery** thumbnails
+- `numpy` — needed for the **3D model** viewer and mesh editing
+- `Pillow` — needed for model textures, **Texture Importer** and thumbnails
   - Termux: `pkg install python-pillow`
   - Desktop: `pip install Pillow`
 
@@ -85,8 +87,8 @@ The file browser is limited to your sukusta library and home folder:
    shown; percentage badges keep the other edits visible. 100% is the original
    size, and both sides change together. The −5% / +5% buttons and Reset offer
    simple adjustments.
-3. Press **Save model** in the bottom bar to save a new model. Check the result in
-   the game or a 3D viewer.
+3. Press **Save model** in the bottom bar to save a new model. Press **View saved
+   model** in the result panel to inspect that exact output in the 3D viewer.
 
 The tool reads the chosen model to enable supported body parts and resolves the
 same parts separately for each file in a batch. Thickness keeps limb length and
@@ -97,4 +99,38 @@ enable the controls. Input choices and edits survive mode and language changes.
 **Expert options** contains individual bone rows with X/Y/Z scale, rotation and
 movement, thigh body-type presets, mesh filters and filename settings. Raw target
 specifications are supported by the API and CLI; the browser does not require or
-display their syntax. There is no live 3D preview.
+display their syntax. The preview opens an input or saved file; save new edits
+before viewing their result.
+
+## 3D model
+
+Open the **3D model** tab, choose a Unity costume file from `models` or `modded`,
+and press **Open model**. Add separate face or hair files when they are available.
+The viewer keeps the original files unchanged. On Android the editing tabs
+prepare their local tools automatically; the game server can remain stopped.
+
+- Drag to rotate, pinch/scroll to zoom, or use two fingers to pan.
+- **Front**, **Back**, side views and **Fit model** reset the camera.
+- **Expand view** gives the model more room on a phone.
+- **Display options** contains perspective, background, wireframe, textures and
+  individual part visibility. Switching tabs preserves the loaded model and
+  pauses drawing while it is hidden.
+
+This is a static geometry preview. Game lighting, facial expressions and motion
+can differ. Some SIFAS base costumes contain only the face shell; their eyes and
+expressions require a separate facial asset. Missing parts or unsupported
+textures are reported above the model. Supported raw and ASTC texture images
+retain their original dimensions and pixels. Android includes the ASTC decoder;
+desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.
+
+Three.js r128 and its matching controls/loader are bundled under `static/vendor`
+with their MIT license, so viewing uses no external CDN. The local server converts
+selected Unity data to a self-contained GLB in a bounded, temporary memory cache.
+Generated previews expire; opening a file again rebuilds them. The converter
+does not follow filesystem dependencies outside the explicitly chosen files.
+
+The supplied GL client APK and these projects informed camera/material handling:
+[SIFAS-Model-Viewer](https://github.com/a2561024/SIFAS-Model-Viewer) and
+[SIFAS-Model-Viewer-Server](https://github.com/a2561024/SIFAS-Model-Viewer-Server).
+Those projects serve pre-exported FBX/PNG data. Their application code and game
+assets are not included in this implementation.

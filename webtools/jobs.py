@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from pathlib import Path
 
 
 class Job:
@@ -20,6 +21,7 @@ class Job:
         self._events = []                 # list of dicts
         self._cond = threading.Condition()
         self._done = False
+        self._output_paths = []
         self._t0 = time.monotonic()       # for the [+s] elapsed stamp on log lines
 
     # ---- producer side (called from the worker thread / tool callbacks) ----
@@ -47,6 +49,20 @@ class Job:
 
     def should_stop(self) -> bool:
         return self.cancel_event.is_set()
+
+    def add_output(self, path):
+        """Publish only a completed file, so previews never point at stale names."""
+        path = Path(path).resolve()
+        if not path.is_file() or path.stat().st_size == 0:
+            return
+        with self._cond:
+            value = str(path)
+            if value not in self._output_paths:
+                self._output_paths.append(value)
+
+    def output_paths(self):
+        with self._cond:
+            return list(self._output_paths)
 
     # ---- consumer side (called from the SSE handler) ----
     def event_at(self, index: int, timeout: float):
@@ -103,15 +119,18 @@ class JobManager:
                 summary = f"{summary} {took}".strip() if summary else took
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
-                    job.emit({"type": "done", "status": "cancelled", "summary": summary})
+                    job.emit({"type": "done", "status": "cancelled", "summary": summary,
+                              "output_paths": job.output_paths()})
                 else:
                     job.status = "done"
-                    job.emit({"type": "done", "status": "done", "summary": summary})
+                    job.emit({"type": "done", "status": "done", "summary": summary,
+                              "output_paths": job.output_paths()})
             except Exception as exc:  # noqa: BLE001 - surface any tool error to the UI
                 job.status = "error"
                 job.emit({"type": "log", "line": f"ERROR: {exc}"})
                 job.emit({"type": "log", "line": traceback.format_exc()})
-                job.emit({"type": "done", "status": "error", "summary": str(exc)})
+                job.emit({"type": "done", "status": "error", "summary": str(exc),
+                          "output_paths": job.output_paths()})
 
         thread = threading.Thread(target=runner, name=f"job-{job.id}", daemon=True)
         thread.start()

@@ -90,6 +90,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_thumb()
             if path == "/api/download":
                 return self._api_download()
+            if path.startswith("/api/viewer/model/"):
+                return self._api_viewer_model(path[len("/api/viewer/model/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
                 job_id = path[len("/api/jobs/"):-len("/events")]
                 return self._api_events(job_id)
@@ -103,6 +105,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         path = urlsplit(self.path).path
         try:
+            if path == "/api/viewer/prepare":
+                return self._api_viewer_prepare()
             if path.startswith("/api/run/"):
                 return self._api_run(path[len("/api/run/"):])
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
@@ -159,6 +163,53 @@ class Handler(BaseHTTPRequestHandler):
             data = f.read()
         self._send_bytes(data, "application/octet-stream",
                          extra_headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    def _api_viewer_prepare(self):
+        # Paths are the only client input; keep their request bounded before
+        # parsing or loading any Unity assets in the worker request thread.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send_json({"error": "Invalid request size."}, status=400)
+        if length <= 0 or length > 16384:
+            return self._send_json({"error": "Model request is too large or empty."}, status=400)
+        params = self._read_json_body()
+        if not isinstance(params, dict):
+            return self._send_json({"error": "Choose at least one model file."}, status=400)
+        paths = params.get("paths")
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
+                or any(not isinstance(path, str) or not path.strip() for path in paths)):
+            return self._send_json({"error": "Choose between one and eight model files."}, status=400)
+        resolved = []
+        for path in paths:
+            real = os.path.realpath(os.path.expanduser(path))
+            if not filebrowser.is_within_allowed(real):
+                return self._send_json({"error": "Model file is outside the allowed folders."}, status=403)
+            if not os.path.isfile(real):
+                return self._send_json({"error": "Model file was not found."}, status=404)
+            if real not in resolved:
+                resolved.append(real)
+        from webtools.core import model_viewer
+        try:
+            return self._send_json(model_viewer.prepare(resolved))
+        except (ValueError, TypeError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except FileNotFoundError:
+            return self._send_json({"error": "Model file was not found."}, status=404)
+        except TimeoutError:
+            return self._send_json({"error": "Model preparation timed out. Try fewer files."}, status=503)
+
+    def _api_viewer_model(self, name):
+        import re
+        match = re.fullmatch(r"([a-f0-9]{32})\.glb", name)
+        if not match:
+            return self._send_json({"error": "Model preview was not found."}, status=404)
+        from webtools.core import model_viewer
+        data = model_viewer.get_model(match.group(1))
+        if data is None:
+            return self._send_json({"error": "Model preview expired. Load the model again."}, status=404)
+        return self._send_bytes(data, "model/gltf-binary",
+                                extra_headers={"Cache-Control": "no-store"})
 
     def _api_options(self, spec):
         """Serve a dynamic_select field's options: /api/options/<tool>/<field>.

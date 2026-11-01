@@ -287,6 +287,9 @@ def run_mesh_baker(job, params):
                 "select the mesh explicitly in 'Only these meshes'.")
         if not Path(out_path).is_file() or Path(out_path).stat().st_size == 0:
             raise RuntimeError(f"Baking did not create an output bundle: {out_path}")
+        publish = getattr(job, "add_output", None)
+        if callable(publish):
+            publish(out_path)
         return ""
 
     if params.get("mode") == "batch":

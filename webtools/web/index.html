@@ -11,6 +11,7 @@
     <h1 data-i18n="SIFAS Modding Tools">SIFAS Modding Tools</h1>
     <nav class="tabs">
       <button class="tab active" data-tab="tools" data-i18n="Tools">Tools</button>
+      <button class="tab" data-tab="viewer" data-i18n="3D model">3D model</button>
       <button class="tab" data-tab="gallery" data-i18n="Texture previews">Texture previews</button>
     </nav>
     <label class="lang-pick">
@@ -28,9 +29,54 @@
       </div>
     </section>
 
+    <section id="tab-viewer" class="tab-panel" aria-labelledby="viewer-title">
+      <div class="viewer-workspace">
+        <aside class="viewer-files">
+          <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
+          <p class="viewer-intro" data-i18n="Choose a costume model. Add a separate head or hair file if it is missing.">Choose a costume model. Add a separate head or hair file if it is missing.</p>
+          <div class="viewer-file-actions">
+            <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
+            <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
+            <button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
+          </div>
+          <ul id="viewer-file-list" class="viewer-file-list"></ul>
+        </aside>
+        <div class="viewer-main">
+          <div class="viewer-heading">
+            <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
+            <button id="viewer-expand" type="button" data-i18n="Expand view">Expand view</button>
+          </div>
+          <p id="viewer-warning" class="viewer-warning" role="status" hidden></p>
+          <div id="viewer-stage" class="viewer-stage" aria-label="3D model">
+            <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
+            <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span></div>
+          </div>
+          <div class="viewer-camera-actions" role="group" aria-label="Camera">
+            <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
+            <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
+            <button type="button" data-viewer-view="left" data-i18n="Left side">Left side</button>
+            <button type="button" data-viewer-view="right" data-i18n="Right side">Right side</button>
+            <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
+          </div>
+          <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
+          <details class="viewer-options">
+            <summary data-i18n="Display options">Display options</summary>
+            <div class="viewer-option-row">
+              <label><input id="viewer-textures" type="checkbox" checked><span data-i18n="Show textures">Show textures</span></label>
+              <label><input id="viewer-wireframe" type="checkbox"><span data-i18n="Wireframe">Wireframe</span></label>
+              <label><span data-i18n="Background">Background</span><select id="viewer-background"><option value="light" data-i18n="Light">Light</option><option value="dark" data-i18n="Dark">Dark</option></select></label>
+              <label class="viewer-fov"><span data-i18n="Perspective">Perspective</span><input id="viewer-fov" type="range" min="10" max="80" step="1" value="35"><output id="viewer-fov-value">35°</output></label>
+            </div>
+            <p class="viewer-render-note" data-i18n="This is a static model preview. Game lighting and motion may look different.">This is a static model preview. Game lighting and motion may look different.</p>
+            <fieldset class="viewer-parts"><legend data-i18n="Visible parts">Visible parts</legend><div id="viewer-parts"></div></fieldset>
+          </details>
+        </div>
+      </div>
+    </section>
+
     <!-- GALLERY TAB -->
     <section id="tab-gallery" class="tab-panel">
-      <p class="hint" data-i18n="View one representative texture image per costume file. Shape and mesh changes need to be checked in the game or a 3D viewer.">View one representative texture image per costume file. Shape and mesh changes need to be checked in the game or a 3D viewer.</p>
+      <p class="hint" data-i18n="View representative textures here, or open the costume in 3D model to inspect its shape.">View representative textures here, or open the costume in 3D model to inspect its shape.</p>
       <div class="gallery-bar">
         <input id="gallery-path" type="text" data-i18n-ph="folder of bundles..." placeholder="folder of bundles..." readonly/>
         <button id="gallery-browse" data-i18n="Browse">Browse</button>
@@ -47,6 +93,7 @@
       <progress id="progress" max="1" value="0"></progress>
       <span id="progress-text"></span>
       <button id="cancel-btn" data-i18n="Cancel">Cancel</button>
+      <button id="console-view-model" type="button" data-i18n="View saved model" hidden>View saved model</button>
       <button id="console-close" class="ghost">✕</button>
     </div>
     <pre id="log"></pre>
@@ -68,6 +115,10 @@
     </div>
   </div>
 
+  <script src="/static/vendor/three-r128/three.min.js"></script>
+  <script src="/static/vendor/three-r128/OrbitControls.js"></script>
+  <script src="/static/vendor/three-r128/GLTFLoader.js"></script>
+  <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -14,6 +14,9 @@ const state = {
   meshDraft: {},
   meshExpertOpen: false,
   meshActivePart: "head",
+  jobToolId: null,
+  jobLabel: "",
+  savedModelPaths: [],
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -81,6 +84,7 @@ async function reloadForLang() {
     const again = state.tools.find((t) => t.id === keep);
     if (again) { state.currentTool = again; renderForm(); }
   }
+  if (window.ModelViewer) window.ModelViewer.updateLanguage();
 }
 
 async function loadTools() {
@@ -111,6 +115,7 @@ async function init() {
     t.addEventListener("click", () => switchTab(t.dataset.tab)));
   $("#cancel-btn").addEventListener("click", cancelRun);
   $("#console-close").addEventListener("click", () => $("#console").classList.add("hidden"));
+  $("#console-view-model").addEventListener("click", () => openModelViewer(state.savedModelPaths.slice(0, 1)));
   $("#picker-cancel").addEventListener("click", closePicker);
   $("#picker-use-folder").addEventListener("click", () => {
     if (state.picker) { state.picker.onPick(state.picker.cwd); closePicker(); }
@@ -124,12 +129,23 @@ async function init() {
   applyStaticI18n();
   buildLangSelect();
   await loadTools();
+  if (window.ModelViewer) window.ModelViewer.mount({
+    translate: T,
+    pickFile: (onPick) => openPicker("path", onPick, "models"),
+  });
 }
 
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
   $("#tab-" + name).classList.add("active");
+  if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+}
+
+function openModelViewer(paths) {
+  switchTab("viewer");
+  $("#console").classList.add("hidden");
+  return window.ModelViewer ? window.ModelViewer.open(paths) : Promise.resolve();
 }
 
 // ------------------------------------------------------------------- tools
@@ -195,7 +211,15 @@ function renderForm() {
   }
   if (hasExpert) form.appendChild(expert);
   const run = el("button", { class: "run-btn", type: "submit", text: T(tool.id === "mesh_baker" ? "Save model" : "Run") });
-  form.appendChild(tool.id === "mesh_baker" ? el("div", { class: "mesh-save-bar" }, [run]) : run);
+  if (tool.id === "mesh_baker") {
+    const preview = el("button", { type: "button", id: "mesh-view-input", class: "mesh-preview-btn",
+      text: T("View input model"), onclick: () => {
+        const path = meshReferencePath();
+        if (path) openModelViewer([path]);
+      } });
+    preview.disabled = true;
+    form.appendChild(el("div", { class: "mesh-save-bar" }, [preview, run]));
+  } else form.appendChild(run);
   panel.appendChild(form);
   if (tool.id === "mesh_baker") {
     for (const input of form.querySelectorAll("[data-name]")) {
@@ -230,6 +254,8 @@ function wireBoneTargets(tool) {
   if (!parts && !bones) return;
   const expert = document.querySelector("#tool-form .expert-options");
   function refresh() {
+    const preview = $("#mesh-view-input");
+    if (preview) preview.disabled = !meshReferencePath();
     if (parts) parts._loadParts();
     if (bones && expert && expert.open) bones._loadBones();
   }
@@ -386,7 +412,7 @@ function renderBodyParts(field) {
   editor.appendChild(selector);
   editor.appendChild(el("div", { class: "body-toolbar" }, [resetAll, reload]));
   editor.appendChild(grid);
-  editor.appendChild(el("p", { class: "help", text: T("Clothing attached to a body part can change with it. This tool saves a new model; it does not show a live 3D preview.") }));
+  editor.appendChild(el("p", { class: "help", text: T("Clothing attached to a body part can change with it. Save a new model, then choose View saved model to check the result in 3D.") }));
   return editor;
 }
 
@@ -745,6 +771,8 @@ async function runTool() {
     return alert(T("Choose a body part and move its slider away from 100%, then press Save model."));
   }
 
+  state.jobToolId = tool.id;
+  state.jobLabel = tool.label;
   openConsole(tool.label);
   let resp;
   try {
@@ -771,6 +799,10 @@ function streamJob(jobId) {
     else if (msg.type === "error") appendLog("ERROR: " + msg.message);
     else if (msg.type === "done") {
       if (msg.summary) appendLog("\n" + msg.summary);
+      if (state.jobToolId === "mesh_baker" && msg.status === "done" && Array.isArray(msg.output_paths)) {
+        state.savedModelPaths = msg.output_paths.filter((p) => typeof p === "string" && p);
+        $("#console-view-model").hidden = !state.savedModelPaths.length;
+      }
       finishConsole(msg.status);
       es.close(); state.es = null;
     }
@@ -789,11 +821,13 @@ function openConsole(title) {
   $("#console-title").textContent = title + " — " + T("running…");
   $("#log").textContent = "";
   $("#cancel-btn").disabled = false;
+  state.savedModelPaths = [];
+  $("#console-view-model").hidden = true;
   setProgress(0, 1);
 }
 function finishConsole(status) {
   const label = status === "done" ? T("done ✓") : status === "cancelled" ? T("cancelled") : T("error ✗");
-  $("#console-title").textContent = (state.currentTool ? state.currentTool.label : T("Job")) + " — " + label;
+  $("#console-title").textContent = (state.jobLabel || T("Job")) + " — " + label;
   $("#cancel-btn").disabled = true;
 }
 function appendLog(line) {
@@ -881,7 +915,9 @@ async function loadGallery() {
       const ph = el("div", { class: "noimg", text: T("no preview") });
       img.replaceWith(ph);
     });
-    grid.appendChild(el("div", { class: "gcard" }, [img, el("div", { class: "cap", text: b.name })]));
+    const view = el("button", { type: "button", class: "gallery-view-model", text: T("View in 3D"),
+      onclick: () => openModelViewer([b.path]) });
+    grid.appendChild(el("div", { class: "gcard" }, [img, el("div", { class: "cap", text: b.name }), view]));
   }
 }
 
