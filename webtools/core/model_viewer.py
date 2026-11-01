@@ -182,7 +182,7 @@ def _preflight_bundle(data):
         raise ModelViewerError("The selected Unity bundle is damaged or unsupported.") from error
 
 
-def _environment(paths, deadline):
+def _environment(paths, deadline, base_env=None):
     import UnityPy
     from UnityPy.environment import simplify_name
 
@@ -198,8 +198,10 @@ def _environment(paths, deadline):
                 raise FileNotFoundError("A linked asset was not included in the selected files.")
             return found
 
-    env, unpacked_total = PreviewEnvironment(), 0
-    for index, path in enumerate(paths):
+    env = base_env if base_env is not None else PreviewEnvironment()
+    unpacked_total = getattr(env, "preview_unpacked_total", 0)
+    start_index = len(env.files)
+    for index, path in enumerate(paths, start_index):
         _remaining(deadline)
         with open(path, "rb") as file:
             data = file.read(MAX_SOURCE_BYTES + 1)
@@ -217,6 +219,7 @@ def _environment(paths, deadline):
         # embedded CAB id. Register only explicitly supplied, in-memory content.
         if hasattr(loaded, "objects"):
             env.register_cab(os.path.basename(path), loaded)
+    env.preview_unpacked_total = unpacked_total
     class AssetScope:
         """Prefer this asset's own resources when original/baked CAB ids match."""
         def __init__(self, asset):
@@ -308,9 +311,10 @@ def _trs(tree):
 
 
 class _Scene:
-    def __init__(self, env, deadline):
+    def __init__(self, env, deadline, trees=None):
         self.env, self.deadline = env, deadline
-        self.trees, self.transforms, self.world_cache = {}, {}, {}
+        self.trees, self.transforms, self.world_cache = dict(trees or {}), {}, {}
+        self.names = {}
         self.filters, self.renderers = {}, []
         self.warnings = []
         self.stats = {"meshes": 0, "vertices": 0, "triangles": 0, "materials": 0, "textures": 0}
@@ -337,10 +341,25 @@ class _Scene:
                                   for obj in env.objects if obj.type.name == "Mesh")
 
     def tree(self, obj):
+        _remaining(self.deadline)
         key = _key(obj)
         if key not in self.trees:
             self.trees[key] = obj.read_typetree()
+            _remaining(self.deadline)
         return self.trees[key]
+
+    def name(self, obj):
+        """Read only m_Name instead of expanding mesh/texture pixel payloads."""
+        _remaining(self.deadline)
+        key = _key(obj)
+        if key not in self.names:
+            if key in self.trees:
+                value = self.trees[key].get("m_Name", "")
+            else:
+                value = obj.peek_name()
+            self.names[key] = str(value or "")
+            _remaining(self.deadline)
+        return self.names[key]
 
     def world(self, transform, visiting=None):
         import numpy as np
@@ -427,10 +446,11 @@ class _Glb:
     def finish(self):
         self.data.extend(b"\0" * (-len(self.data) % 4))
         self.doc["buffers"][0]["byteLength"] = len(self.data)
+        doc = dict(self.doc)
         for optional in ("images", "textures", "samplers"):
-            if not self.doc[optional]:
-                del self.doc[optional]
-        encoded = json.dumps(self.doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+            if not doc.get(optional):
+                doc.pop(optional, None)
+        encoded = json.dumps(doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
         encoded += b" " * (-len(encoded) % 4)
         length = 12 + 8 + len(encoded) + 8 + len(self.data)
         if length > MAX_GLB_BYTES:
@@ -677,34 +697,13 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None):
     return str(mesh.m_Name), positions, normals, uv, result
 
 
-def _build(paths, deadline, face_context=None):
-    import numpy as np
-    from .model_faces import FacePlan
-    env = _environment(paths, deadline)
-    scene, glb = _Scene(env, deadline), _Glb()
-    try:
-        faces = FacePlan(scene, paths, face_context, deadline)
-    except Exception:
-        faces = FacePlan(scene, paths, None, deadline)
-        faces.enabled = bool(face_context and face_context.get("enabled", True))
-        faces.status = "unavailable"
-        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
-    extra = faces.resolve()
-    if extra:
-        try:
-            env = _environment(_paths(paths + extra), deadline)
-            scene = _Scene(env, deadline)
-        except Exception:
-            # The selected costume remains useful when an optional donor fails.
-            env = _environment(paths, deadline)
-            scene = _Scene(env, deadline)
-            faces.auto_paths.clear()
-            faces.status = "unavailable"
-            faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=None):
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
-    for obj in env.objects:
+    for obj in scene.env.objects:
+        if auto_only and _source_path(obj) not in faces.auto_paths:
+            continue
         if obj.type.name != "MonoBehaviour":
             continue
         try:
@@ -714,12 +713,15 @@ def _build(paths, deadline, face_context=None):
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
-    materials = _Materials(scene, glb)
+    materials = materials or _Materials(scene, glb)
+    materials.scene = scene
     for renderer, tree, game_object in scene.renderers:
+        if auto_only and _source_path(renderer) not in faces.auto_paths:
+            continue
         _remaining(deadline)
         if not tree.get("m_Enabled", True) or not scene.active(game_object):
             continue
-        game_name = str(scene.tree(game_object).get("m_Name", ""))
+        game_name = scene.name(game_object)
         if renderer.type.name == "Mesh":
             mesh_obj = renderer
         elif renderer.type.name == "SkinnedMeshRenderer":
@@ -731,7 +733,7 @@ def _build(paths, deadline, face_context=None):
             continue
         if not faces.include(scene, renderer, game_object, mesh_obj):
             continue
-        mesh_name = str(scene.tree(mesh_obj).get("m_Name", ""))
+        mesh_name = scene.name(mesh_obj)
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
@@ -800,6 +802,10 @@ def _build(paths, deadline, face_context=None):
             faces.added += 1
             from .model_faces import facial_role
             faces.rendered_roles.add(facial_role(game_name, mesh_name, _source_path(renderer) in faces.dynamic_sources))
+    return materials
+
+
+def _to_glb(scene, glb, faces, deadline):
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
@@ -809,7 +815,57 @@ def _build(paths, deadline, face_context=None):
     elif faces.auto_paths and not faces.added:
         faces.status = "unavailable"
         faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
-    return bytes(glb.finish()), scene.stats, scene.warnings + faces.warnings, faces.metadata()
+    data = bytes(glb.finish())
+    _remaining(deadline)
+    return data, dict(scene.stats), list(scene.warnings) + faces.warnings, faces.metadata()
+
+
+def _build(paths, deadline, face_context=None):
+    """Finish the selected model before spending any time on optional faces.
+
+    Both phases share the unchanged overall deadline. The original conversion
+    gets its entire allowance; discovery, including constructor metadata and
+    optional rendering, gets at most FACE_SECONDS of the time left afterward.
+    A completed base GLB is immutable and survives every optional failure.
+    """
+    from .model_faces import FacePlan, FACE_SECONDS
+    env = _environment(paths, deadline)
+    scene, glb = _Scene(env, deadline), _Glb()
+    disabled_faces = FacePlan(scene, paths, None, deadline)
+    materials = _append_scene(scene, glb, disabled_faces, deadline)
+    base = _to_glb(scene, glb, disabled_faces, deadline)
+    if not face_context or not face_context.get("enabled", True):
+        return base
+
+    face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    faces = None
+    try:
+        _remaining(face_deadline)
+        scene.deadline = face_deadline
+        faces = FacePlan(scene, paths, face_context, face_deadline)
+        _remaining(face_deadline)
+        extra = faces.resolve()
+        _remaining(face_deadline)
+        if not extra:
+            warnings = list(base[2]) + faces.warnings
+            if faces.status == "already_present":
+                warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
+            return base[0], base[1], warnings, faces.metadata()
+        _paths(paths + extra)  # aggregate file-count/byte limits remain in force
+        env = _environment(extra, face_deadline, base_env=env)
+        expanded = _Scene(env, face_deadline, trees=scene.trees)
+        expanded.stats = dict(base[1])
+        expanded.warnings = list(base[2])
+        _append_scene(expanded, glb, faces, face_deadline, auto_only=True, materials=materials)
+        return _to_glb(expanded, glb, faces, face_deadline)
+    except Exception:
+        if faces is None:
+            faces = FacePlan(scene, paths, None, face_deadline)
+            faces.enabled = True
+        faces.added = 0
+        faces.status = "unavailable"
+        faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
+        return base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()
 
 
 def _prune(now):

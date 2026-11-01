@@ -142,6 +142,20 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
         self.assertEqual(metadata["faces"]["status"], "added")
 
+    def test_optional_textures_can_append_after_untextured_base_is_finished(self):
+        env = self.UnityPy.load(FIXTURE.with_name("viewer_triangle.unity").read_bytes())
+        for obj in env.objects:
+            if obj.type.name in ("GameObject", "Mesh"):
+                tree = obj.read_typetree()
+                tree["m_Name"] = "ch0207_co0000_member" if obj.type.name == "GameObject" else "Body"
+                obj.save_typetree(tree)
+        self.body.write_bytes(next(iter(env.files.values())).save())
+        (self.library / "donor.unity").write_bytes(self.donor())
+        metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
+        self.assertGreater(metadata["stats"]["textures"], 0)
+
     def test_literal_manifest_cannot_override_internal_owner_or_execute(self):
         marker = self.root / "executed"
         manifest = self.selected / "modinstall.txt"
@@ -416,6 +430,131 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(faces._cached(path, 4), b"1234")
             path.write_bytes(b"4321")
             self.assertIsNone(faces._cached(path, 4))
+
+
+class OptionalBudgetTests(unittest.TestCase):
+    """Clock-driven integration checks: optional work cannot erase a valid GLB."""
+
+    setUpClass = classmethod(FaceTests.setUpClass.__func__)
+    setUp = FaceTests.setUp
+    tearDown = FaceTests.tearDown
+    scene = FaceTests.scene
+    donor = FaceTests.donor
+    plan = FaceTests.plan
+
+    def baseline(self):
+        metadata = viewer.prepare([str(self.body)])
+        return viewer.get_model(metadata["id"]), dict(metadata["stats"])
+
+    def test_constructor_uses_optional_deadline_after_body_finishes(self):
+        base_bytes, base_stats = self.baseline()
+        clock = [0.]
+        geometry, initialize = viewer._geometry, faces.FacePlan.__init__
+        calls = []
+
+        def body_geometry(*args, **kwargs):
+            calls.append(clock[0])
+            clock[0] += 70
+            return geometry(*args, **kwargs)
+
+        def costly_metadata(plan, scene, paths, context, deadline):
+            if context:
+                self.assertEqual(deadline, 110.)
+                self.assertEqual(scene.deadline, deadline)
+                clock[0] = deadline + 1
+            initialize(plan, scene, paths, context, deadline)
+
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(viewer, "_geometry", side_effect=body_geometry), \
+                patch.object(faces.FacePlan, "__init__", costly_metadata):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+            result = viewer.get_model(metadata["id"])
+        self.assertEqual(calls, [0.])
+        self.assertEqual(result, base_bytes)
+        self.assertEqual(metadata["stats"], base_stats)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+
+    def test_body_retains_original_allowance_when_optional_resolution_expires(self):
+        base_bytes, _ = self.baseline()
+        clock, order = [0.], []
+        geometry = viewer._geometry
+
+        def slow_body(*args, **kwargs):
+            order.append("body")
+            clock[0] = 119
+            return geometry(*args, **kwargs)
+
+        def expired_resolution(plan):
+            order.append("faces")
+            self.assertEqual(plan.deadline, 120.)
+            clock[0] = 120
+            return []
+
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(viewer, "_geometry", side_effect=slow_body), \
+                patch.object(faces.FacePlan, "resolve", expired_resolution):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+            result = viewer.get_model(metadata["id"])
+        self.assertEqual(order, ["body", "faces"])
+        self.assertEqual(result, base_bytes)
+        self.assertEqual(metadata["faces"]["added"], 0)
+
+    def test_partial_optional_append_timeout_returns_immutable_base(self):
+        base_bytes, base_stats = self.baseline()
+        (self.library / "donor.unity").write_bytes(self.donor())
+        clock, converted = [0.], []
+        geometry = viewer._geometry
+
+        def timed_geometry(mesh, *args, **kwargs):
+            name = mesh.peek_name()
+            converted.append(name)
+            clock[0] = {"Body": 50., "Face": 60., "Eyes": 91.}[name]
+            return geometry(mesh, *args, **kwargs)
+
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(viewer, "_geometry", side_effect=timed_geometry):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+            result = viewer.get_model(metadata["id"])
+        self.assertEqual(converted, ["Body", "Face", "Eyes"])
+        self.assertEqual(result, base_bytes)
+        self.assertEqual(metadata["stats"], base_stats)
+        self.assertEqual(metadata["faces"]["added"], 0)
+
+    def test_failed_optional_load_does_not_reload_selected_body(self):
+        base_bytes, _ = self.baseline()
+        donor = self.library / "donor.unity"
+        donor.write_bytes(self.donor())
+        environment = viewer._environment
+        selected_loads = []
+
+        def fail_additional(paths, deadline, base_env=None):
+            if base_env is not None:
+                self.assertEqual(paths, [str(donor)])
+                raise viewer.ModelViewerError("optional file failed")
+            selected_loads.append(list(paths))
+            return environment(paths, deadline)
+
+        with patch.object(viewer, "_environment", side_effect=fail_additional):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(selected_loads.count([str(self.body)]), 1)
+        self.assertEqual(viewer.get_model(metadata["id"]), base_bytes)
+
+    def test_name_discovery_never_reads_full_mesh_or_texture_typetree(self):
+        from UnityPy.files.ObjectReader import ObjectReader
+        original = ObjectReader.read_typetree
+        reads = []
+
+        def guarded(obj, *args, **kwargs):
+            if obj.type.name in ("Mesh", "Texture2D") and kwargs.get("nodes") is None:
+                reads.append(obj.type.name)
+                raise AssertionError("Metadata must peek names, not expand vertex/pixel payloads")
+            return original(obj, *args, **kwargs)
+
+        with patch.object(ObjectReader, "read_typetree", guarded):
+            plan = self.plan()
+        self.assertEqual(plan.owner, 207)
+        self.assertEqual(plan.needed, {"face", "eyes"})
+        self.assertEqual(reads, [])
 
 
 if __name__ == "__main__":

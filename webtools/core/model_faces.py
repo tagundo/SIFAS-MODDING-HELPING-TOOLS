@@ -61,12 +61,12 @@ def _names(scene, source=None):
             continue
         _check(scene.deadline)
         try:
-            tree = scene.tree(obj)
+            name = scene.name(obj)
         except Exception:
             continue
-        name = str(tree.get("m_Name", ""))
         values = [name]
         if obj.type.name == "AssetBundle":
+            tree = scene.tree(obj)
             values.extend(str(row[0]) for row in tree.get("m_Container", [])[:64])
             if "facedynamic" in name.lower():
                 dynamic.add(_source_path(obj))
@@ -160,7 +160,7 @@ def roles(scene, sources=None):
             continue
         mesh = _mesh(scene, renderer, tree, game_object)
         if mesh is not None:
-            role = facial_role(scene.tree(game_object).get("m_Name"), scene.tree(mesh).get("m_Name"), source in dynamic)
+            role = facial_role(scene.name(game_object), scene.name(mesh), source in dynamic)
             if role:
                 found.add(role)
     return found
@@ -189,7 +189,7 @@ def _body_sources(scene):
         mesh = _mesh(scene, renderer, tree, game_object)
         if mesh is None:
             continue
-        names = str(scene.tree(game_object).get("m_Name", "")) + " " + str(scene.tree(mesh).get("m_Name", ""))
+        names = scene.name(game_object) + " " + scene.name(mesh)
         if re.search(r"(?:^|[^a-z])(?:mesh[_ ]?)?body(?:[^a-z]|$)", names, re.I):
             sources.add(_source_path(renderer))
     return sources
@@ -303,16 +303,20 @@ def _download(url, expected, deadline, byte_limit=MAX_PACK_BYTES):
     return b"".join(chunks)
 
 
-def _prune_cache(root, protected=()):
+def _prune_cache(root, protected=(), deadline=None):
     # Only this module's private files are eligible; never remove library files.
     files = []
     root = _cache_root(root)
     for name in ("packs", "models"):
+        if deadline is not None:
+            _check(deadline)
         directory = root / name
         if directory.is_symlink() or directory.resolve() != directory:
             continue
         if directory.is_dir():
             for entry in directory.iterdir():
+                if deadline is not None:
+                    _check(deadline)
                 owned = bool(_PACK.fullmatch(entry.name)) if name == "packs" else bool(re.fullmatch(r"ch\d{4}_[0-9a-f]{24}\.unity", entry.name))
                 if owned and entry.is_file() and not entry.is_symlink() and _cached(entry) is not None:
                     stat = entry.stat()
@@ -332,7 +336,7 @@ class FacePlan:
     def __init__(self, scene, paths, context, deadline):
         self.context = context or {}
         self.enabled = bool(context and self.context.get("enabled", True))
-        self.deadline = min(deadline - 5, time.monotonic() + FACE_SECONDS)
+        self.deadline = min(deadline, time.monotonic() + FACE_SECONDS)
         self.paths, self.auto_paths, self.warnings = list(paths), [], []
         self.owner, self.added, self.transferred = None, 0, 0
         self.status, self.needed, self.dynamic_sources = "not_needed", set(), set()
@@ -391,7 +395,7 @@ class FacePlan:
                 except Exception:
                     pass
             if obj.type.name == "GameObject":
-                name = str(scene.tree(obj).get("m_Name", "")).lower()
+                name = scene.name(obj).lower()
                 if name in ("head_face", "head"):
                     transform = scene.transforms.get(_key(obj))
                     rank = 2 if name == "head_face" else 1
@@ -613,7 +617,7 @@ class FacePlan:
             self.status = "added"
         try:
             if self.context.get("cache_dir"):
-                _prune_cache(self.context["cache_dir"], self.auto_paths)
+                _prune_cache(self.context["cache_dir"], self.auto_paths, self.deadline)
         except (OSError, FaceUnavailable):
             pass
         return list(self.auto_paths)
@@ -644,7 +648,7 @@ class FacePlan:
         source = _source_path(renderer)
         if source not in self.auto_paths:
             return True
-        role = facial_role(scene.tree(game_object).get("m_Name"), scene.tree(mesh).get("m_Name"), source in self.dynamic_sources)
+        role = facial_role(scene.name(game_object), scene.name(mesh), source in self.dynamic_sources)
         return role in self.source_roles.get(source, set())
 
     def world(self, scene, renderer, world):
