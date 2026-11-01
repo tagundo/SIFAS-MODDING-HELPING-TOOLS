@@ -676,5 +676,53 @@ class OptionalBudgetTests(unittest.TestCase):
         self.assertEqual(reads, [])
 
 
+class ActualFacialSourceTests(unittest.TestCase):
+    """Optional local user-source proof; proprietary assets are never committed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.costume = os.environ.get("SIFAS_FACE_TEST_COSTUME")
+        cls.facial = os.environ.get("SIFAS_FACE_TEST_BUNDLE")
+        cls.eye_table = os.environ.get("SIFAS_FACE_TEST_EYE_TABLE")
+        if not cls.costume or not cls.facial:
+            raise unittest.SkipTest("Set SIFAS_FACE_TEST_COSTUME and SIFAS_FACE_TEST_BUNDLE for actual facial-source checks")
+
+    def test_actual_local_facial_meshes_align_and_reuse_unchanged_costume_material(self):
+        paths = [Path(self.costume), Path(self.facial)]
+        if self.eye_table:
+            paths.append(Path(self.eye_table))
+        before = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+        baseline = viewer.prepare([self.costume])
+        base_bytes = viewer.get_model(baseline["id"])
+
+        def unpack(data):
+            length, = struct.unpack_from("<I", data, 12)
+            return json.loads(data[20:20 + length]), data[28 + length:]
+
+        base_doc, base_binary = unpack(base_bytes)
+        with tempfile.TemporaryDirectory() as directory, patch.object(faces, "_download_with_deadline") as download:
+            metadata = viewer.prepare([self.costume], face_context={
+                "enabled": True, "allow_download": False, "cache_dir": directory,
+                "library_roots": [str(path.parent) for path in paths[1:]]})
+        download.assert_not_called()
+        doc, binary = unpack(viewer.get_model(metadata["id"]))
+        self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 5, "characters": [207]})
+        self.assertEqual(metadata["stats"], {"meshes": 8, "vertices": 10525, "triangles": 13173, "materials": 2, "textures": 2})
+        self.assertEqual(metadata["warnings"], [])
+        self.assertEqual(binary[:len(base_binary)], base_binary)  # exact geometry/UV/PNG bytes of the selected costume
+        self.assertEqual(doc["meshes"][:3], base_doc["meshes"])
+        head_material = next(mesh["primitives"][0]["material"] for mesh in base_doc["meshes"] if mesh["name"] == "Face")
+        self.assertEqual(doc["materials"][head_material]["pbrMetallicRoughness"]["baseColorFactor"], [1, 1, 1, 1])
+        added = doc["meshes"][3:]
+        self.assertEqual({mesh["name"] for mesh in added}, {"Eye", "Eye_Around", "Mouth", "LeftEyeWhiteLine", "RightEyeWhiteLine"})
+        self.assertTrue(all(primitive["material"] == head_material for mesh in added for primitive in mesh["primitives"]))
+        eye = next(mesh for mesh in added if mesh["name"] == "Eye")
+        bounds = doc["accessors"][eye["primitives"][0]["attributes"]["POSITION"]]
+        self.assertEqual(bounds["count"], 98)
+        self.assertTrue(1.45 < bounds["min"][1] < bounds["max"][1] < 1.49)
+        self.assertTrue(0.07 < bounds["min"][2] < bounds["max"][2] < .08)
+        self.assertEqual({str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}, before)
+
+
 if __name__ == "__main__":
     unittest.main()

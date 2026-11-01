@@ -108,7 +108,7 @@ def _block_info(data, expected, compression):
     return value
 
 
-def _preflight_bundle(data):
+def _preflight_bundle(data, _with_layout=False):
     """Bound allocations before UnityPy decompresses the mesh/texture payload."""
     if not data.startswith(b"UnityFS\0"):
         # Raw serialized .assets/.unity files are also useful for extracted mesh
@@ -124,7 +124,7 @@ def _preflight_bundle(data):
             if len(data) < header_size or size != len(data) or not 0 < metadata <= 16 * 1024 * 1024 \
                     or not header_size <= offset <= size or data[16] not in (0, 1):
                 raise ValueError("Invalid serialized header")
-            return len(data)
+            return (len(data), None) if _with_layout else len(data)
         except (struct.error, ValueError, IndexError) as error:
             raise ModelViewerError("Choose an extracted Unity model bundle, not an APK or image.") from error
     try:
@@ -133,6 +133,7 @@ def _preflight_bundle(data):
             raise ModelViewerError("This Unity bundle version is unavailable in the viewer.")
         _, position = _cstring(data, 12, 256)  # player version (often "5.x.x")
         engine, position = _cstring(data, position, 256)
+        fields_offset = position
         length, compressed, uncompressed, flags = struct.unpack_from(">QIII", data, position)
         position += 20
         if length > len(data) or not 20 <= uncompressed <= 4 * 1024 * 1024 \
@@ -149,20 +150,21 @@ def _preflight_bundle(data):
         count, = struct.unpack_from(">i", info, 16)
         if not 1 <= count <= 8192:
             raise ModelViewerError("The selected Unity bundle has too many data blocks.")
-        cursor, unpacked, packed = 20, 0, 0
+        cursor, unpacked, packed, blocks = 20, 0, 0, []
         for _ in range(count):
             size, compressed_size, block_flags = struct.unpack_from(">IIH", info, cursor)
             cursor += 10
-            # LZ4 receives its bounded destination length. UnityPy's legacy LZMA
-            # block decoder has no output cap, so do not enter it from a preview.
-            if block_flags & 0x3F not in (0, 2, 3):
-                raise ModelViewerError("Re-extract this model with uncompressed or LZ4 bundle packing.")
+            # LZMA data is normalized with a capped decoder before UnityPy sees
+            # it; its legacy native decompressor must never receive this input.
+            if block_flags & 0x3F not in (0, 1, 2, 3):
+                raise ModelViewerError("This Unity bundle compression is unavailable in the viewer.")
             if size > 64 * 1024 * 1024:
                 raise ModelViewerError("The model exceeds the preview memory limit.")
             if block_flags & 0x3F == 0 and size != compressed_size:
                 raise ModelViewerError("The selected Unity bundle has invalid data blocks.")
             unpacked += size
             packed += compressed_size
+            blocks.append((size, compressed_size, block_flags))
         if unpacked > MAX_UNPACKED_BYTES or packed > len(data):
             raise ModelViewerError("The model exceeds the preview memory limit.")
         nodes, = struct.unpack_from(">i", info, cursor)
@@ -175,11 +177,56 @@ def _preflight_bundle(data):
             _, cursor = _cstring(info, cursor)
             if offset < 0 or size < 0 or offset + size > unpacked:
                 raise ModelViewerError("The selected Unity bundle has invalid embedded files.")
-        return unpacked
+        payload = position if flags & 0x80 else position + compressed
+        modern_padding = engine_version >= (2020, 3, 34) if engine_version[0] == 2020 else (
+            engine_version >= (2021, 3, 2) if engine_version[0] == 2021 else engine_version >= (2022, 1, 1))
+        if modern_padding and flags & 0x200:
+            payload = (payload + 15) & ~15
+        payload_end = len(data) - compressed if flags & 0x80 else len(data)
+        if payload + packed > payload_end:
+            raise ModelViewerError("The selected Unity bundle is truncated.")
+        if not _with_layout:
+            return unpacked
+        return unpacked, {"info": info, "blocks": blocks, "payload": payload,
+                          "prefix": data[:fields_offset], "aligned": position != fields_offset + 20,
+                          "flags": flags}
     except ModelViewerError:
         raise
     except Exception as error:
         raise ModelViewerError("The selected Unity bundle is damaged or unsupported.") from error
+
+
+def _bounded_bundle(data, layout, deadline):
+    """Replace only LZMA compression in memory, preserving every asset byte."""
+    if layout is None or (layout["flags"] & 0x3F != 1
+                          and not any(flags & 0x3F == 1 for _, _, flags in layout["blocks"])):
+        return data
+    info, payload = bytearray(layout["info"]), layout["payload"]
+    payload_size = 0
+    for index, (size, compressed, flags) in enumerate(layout["blocks"]):
+        if flags & 0x3F == 1:
+            struct.pack_into(">IIH", info, 20 + index * 10, size, size, flags & ~0x3F)
+        payload_size += size if flags & 0x3F == 1 else compressed
+    prefix = layout["prefix"]
+    padding = bytes(-(len(prefix) + 20) % 16) if layout["aligned"] else b""
+    length = len(prefix) + 20 + len(padding) + len(info) + payload_size
+    # Block-info is also uncompressed, preventing UnityPy's unbounded LZMA
+    # decoder from handling either metadata or data. File offsets stay intact.
+    header = struct.pack(">QIII", length, len(info), len(info), 0x40)
+    output = io.BytesIO()
+    output.write(prefix)
+    output.write(header)
+    output.write(padding)
+    output.write(info)
+    # Keep only one bounded decoded block alive, rather than retaining every
+    # block plus a joined payload plus a concatenated copy on mobile devices.
+    for size, compressed, flags in layout["blocks"]:
+        _remaining(deadline)
+        chunk = data[payload:payload + compressed]
+        payload += compressed
+        output.write(_block_info(chunk, size, 1) if flags & 0x3F == 1 else chunk)
+        _remaining(deadline)
+    return output.getvalue()
 
 
 def _environment(paths, deadline, base_env=None):
@@ -207,12 +254,13 @@ def _environment(paths, deadline, base_env=None):
             data = file.read(MAX_SOURCE_BYTES + 1)
         if len(data) > MAX_SOURCE_BYTES:
             raise ModelViewerError("The model file grew beyond the preview memory limit.")
-        unpacked_total += _preflight_bundle(data)
+        unpacked, layout = _preflight_bundle(data, _with_layout=True)
+        unpacked_total += unpacked
         if unpacked_total > MAX_UNPACKED_BYTES:
             raise ModelViewerError("The selected models exceed the preview memory limit.")
         # The input has already been jailed by the server. Loading bytes rather
         # than a filename prevents UnityPy from walking neighbouring directories.
-        loaded = env.load_file(data, name=f"preview-{index}-{os.path.basename(path)}")
+        loaded = env.load_file(_bounded_bundle(data, layout, deadline), name=f"preview-{index}-{os.path.basename(path)}")
         loaded.preview_source_name = os.path.basename(path)
         loaded.preview_source_path = path
         # Raw serialized assets may be linked by their filename rather than an
@@ -464,6 +512,43 @@ def _properties(tree, name):
     return dict(tree.get("m_SavedProperties", {}).get(name, []))
 
 
+def _as_member_material(scene, obj, tree):
+    """Identify the known SIFAS shader before ignoring its unused _Color."""
+    if obj is None:
+        return False
+    pointer = tree.get("m_Shader") or {}
+    shader = _ref(obj, pointer)
+    if shader is not None:
+        if shader.type.name != "Shader":
+            return False
+        shader_tree = scene.tree(shader)
+        name = shader_tree.get("m_Name") or shader_tree.get("m_ParsedForm", {}).get("m_Name")
+        return name in ("AS/Member", "Hidden/AS/Member/Main")
+    # A source bundle may also depend on the transparent ground-shadow shader.
+    # Require the AS/Member property fingerprint as well as its exact dependency;
+    # a dependency alone must not change unrelated or generic materials.
+    if not pointer.get("m_PathID") or int(pointer.get("m_FileID", 0)) <= 0:
+        return False
+    try:
+        external = obj.assets_file.externals[int(pointer["m_FileID"]) - 1]
+        identity = (ntpath.basename(external.name).lower(), int(pointer["m_PathID"]))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+    # This reference is independently verified against the original AS/Member
+    # shader and the actual iOS mod/Android assets. A dependency or stale saved
+    # properties alone cannot establish which shader an external PPtr uses.
+    if identity != ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333):
+        return False
+    if not {"_TintColor", "_AmbientColor", "_RimlightColor"} <= set(_properties(tree, "m_Colors")):
+        return False
+    source = _source_path(obj)
+    for candidate in scene.env.objects:
+        if candidate.type.name == "AssetBundle" and _source_path(candidate) == source:
+            if "asmember.shader.unity3d" in scene.tree(candidate).get("m_Dependencies", []):
+                return True
+    return False
+
+
 class _Materials:
     def __init__(self, scene, glb):
         self.scene, self.glb = scene, glb
@@ -511,7 +596,11 @@ class _Materials:
             return self.materials[key]
         tree = self.scene.tree(obj) if obj is not None else {}
         colors = _properties(tree, "m_Colors")
-        color = colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1})
+        # AS/Member never consumes _Color; carrying stale Unity generic shader
+        # values into glTF incorrectly darkens real outfit heads. Lighting/tint
+        # shader parity remains outside this unlit texture preview.
+        color = ({"r": 1, "g": 1, "b": 1, "a": 1} if _as_member_material(self.scene, obj, tree)
+                 else colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1}))
         factor = [float(color.get(a, 1)) for a in "rgba"]
         if not all(math.isfinite(v) for v in factor):
             raise ModelViewerError("A model material contains invalid colors.")
