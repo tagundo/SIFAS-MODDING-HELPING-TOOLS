@@ -337,7 +337,7 @@ class FaceTests(unittest.TestCase):
                 plan = self.plan()
                 self.assertEqual(plan.owner, owner)
                 self.context["allow_download"] = True
-                with patch.object(faces.FacePlan, "_descriptors", return_value=[descriptor]), \
+                with patch.object(faces.FacePlan, "_descriptor_iter", return_value=[descriptor]), \
                         patch.object(faces, "_download", return_value=self.encrypted(data, descriptor)) as fetch:
                     metadata = viewer.prepare([str(self.body)], face_context=self.context)
                 self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 2, "characters": [owner]})
@@ -387,9 +387,33 @@ class FaceTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertEqual(pack.read_bytes(), packed)
 
+    @EXTRACTOR_REQUIRED
+    def test_cached_face_is_used_before_opening_later_catalogs(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        (self.library / descriptor["pack_name"]).write_bytes(self.encrypted(donor, descriptor))
+        gl = Path(self.context["repo_root"]) / "assets/db/gl"
+        jp = gl.parent / "jp"
+        jp.mkdir()
+        (jp / "masterdata.db").write_bytes((gl / "masterdata.db").read_bytes())
+        (jp / "asset_a_ja.db").write_bytes((gl / "asset_a_en.db").read_bytes())
+        connect, opened = sqlite3.connect, []
+
+        def guarded_connect(path, *args, **kwargs):
+            opened.append(str(path))
+            if "/jp/" in str(path):
+                raise AssertionError("An available GL face must not wait for the later JP catalog")
+            return connect(path, *args, **kwargs)
+
+        with patch.object(faces.sqlite3, "connect", side_effect=guarded_connect):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertFalse(any("/jp/" in path for path in opened))
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+
     def test_broken_catalog_lookup_still_uses_existing_local_unity_face(self):
         (self.library / "original.unity").write_bytes(self.donor())
-        with patch.object(faces.FacePlan, "_descriptors", side_effect=OSError("Optional catalog unavailable")), \
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=OSError("Optional catalog unavailable")), \
                 patch.object(faces, "_download") as fetch:
             metadata = viewer.prepare([str(self.body)], face_context=self.context)
         self.assertEqual(metadata["faces"]["status"], "added")

@@ -626,13 +626,17 @@ class FacePlan:
 
     def _descriptors(self):
         """Keep original view/region/platform alternatives before trying HTTP."""
+        return list(self._descriptor_iter())
+
+    def _descriptor_iter(self):
+        """Yield a usable recipe before reading later region/platform catalogs."""
         root = self.context.get("repo_root")
         if not root:
-            return []
+            return
         import llas_asset_extractor as extractor
         dbs = extractor.list_asset_dbs(root)
         dbs.sort(key=lambda path: ("asset_a" not in os.path.basename(path), "/gl/" not in path.replace("\\", "/"), "_en" not in path))
-        result, seen = [], set()
+        seen = set()
         for catalog in dbs[:16]:
             _check(self.deadline)
             master = Path(catalog).parent / "masterdata.db"
@@ -652,30 +656,41 @@ class FacePlan:
                     except sqlite3.Error:
                         variants = []
                     models = ([row[1]] + variants) if self.face_mode == "board" else (variants + [row[1]])
-                with sqlite3.connect(Path(catalog).resolve().as_uri() + "?mode=ro", uri=True) as db:
-                    for model in dict.fromkeys(models):
-                        _check(self.deadline)
+                for model in dict.fromkeys(models):
+                    _check(self.deadline)
+                    with sqlite3.connect(Path(catalog).resolve().as_uri() + "?mode=ro", uri=True) as db:
                         dependencies = [r[0] for r in db.execute("SELECT dependency FROM member_model_dependency WHERE asset_path=? LIMIT 64", (model,))]
+                        keys = list(dict.fromkeys(dependencies + [model]))
+                        parameters = ",".join("?" for _ in keys)
+                        records = {}
+                        for record in db.execute(f"SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path IN ({parameters})", keys):
+                            records.setdefault(record[0], record)
+                        names = list(dict.fromkeys(record[1] for record in records.values()))
+                        sizes = {}
+                        if names:
+                            parameters = ",".join("?" for _ in names)
+                            for name, size in db.execute(f"SELECT pack_name,file_size FROM m_asset_package_mapping WHERE pack_name IN ({parameters})", names):
+                                sizes.setdefault(name, size)
                         resources = []
-                        for key in dependencies + [model]:
-                            record = db.execute("SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path=? LIMIT 1", (key,)).fetchone()
+                        for key in keys:
+                            record = records.get(key)
                             if not record:
                                 continue
-                            pack = db.execute("SELECT file_size FROM m_asset_package_mapping WHERE pack_name=? LIMIT 1", (record[1],)).fetchone()
-                            resources.append(dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), record), pack_size=pack[0] if pack else None))
-                        # Reserve the final slot for the own original body:
-                        # board faces have no separate FaceDynamic dependency.
-                        resources.sort(key=lambda resource: -resource["size"])
-                        body = [resource for resource in resources if resource["asset_path"] == model][:1]
-                        shared = [resource for resource in resources if resource["asset_path"] != model]
-                        for resource in shared[:MAX_AUTO_FILES - len(body)] + body:
-                            identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
-                            if identity not in seen:
-                                seen.add(identity)
-                                result.append(resource)
+                            resources.append(dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), record), pack_size=sizes.get(record[1])))
+                    # Close SQLite before yielding: cache conversion must not
+                    # retain an open catalog while it parses a facial bundle.
+                    resources.sort(key=lambda resource: -resource["size"])
+                    body = [resource for resource in resources if resource["asset_path"] == model][:1]
+                    shared = [resource for resource in resources if resource["asset_path"] != model]
+                    for resource in shared[:MAX_AUTO_FILES - len(body)] + body:
+                        identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
+                        if identity not in seen:
+                            seen.add(identity)
+                            yield resource
+                            if len(seen) >= MAX_DESCRIPTOR_CANDIDATES:
+                                return
             except (OSError, sqlite3.Error, TypeError, ValueError):
                 continue
-        return result[:MAX_DESCRIPTOR_CANDIDATES]
 
     def _resource(self, descriptor, *, download=True):
         _check(self.deadline)
@@ -781,22 +796,21 @@ class FacePlan:
         if not self.enabled or self.owner is None or not self.needed:
             return []
         try:
-            try:
-                descriptors = self._descriptors()
-            except Exception:
-                # Standalone/local-only viewers do not need an asset catalog.
-                descriptors = []
             pending = []
             # Exact original/cache identities come before the broad Unity-file
             # search. A populated library must not consume the entire facial
             # budget before we can reuse its already-downloaded original pack.
-            for descriptor in descriptors:
-                _check(self.deadline)
-                try:
-                    if self._accept(self._resource(descriptor, download=False)):
-                        break
-                except Exception:
-                    pending.append(descriptor)
+            try:
+                for descriptor in self._descriptor_iter():
+                    _check(self.deadline)
+                    try:
+                        if self._accept(self._resource(descriptor, download=False)):
+                            break
+                    except Exception:
+                        pending.append(descriptor)
+            except Exception:
+                # Standalone/local-only viewers do not need an asset catalog.
+                pass
             if self.needed:
                 original_deadline = self.deadline
                 if pending and self.context.get("allow_download", True):
