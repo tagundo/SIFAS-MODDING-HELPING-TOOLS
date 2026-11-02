@@ -23,22 +23,34 @@ class ScalingTests(unittest.TestCase):
             self.objects[index] = obj
             return obj
 
+        self.make = make
+
         self.move_go = make(1, "GameObject", {"m_Name": "Move"})
         self.move = make(2, "Transform", {"m_GameObject": {"m_PathID": 1}})
         self.breast_go = make(3, "GameObject", {"m_Name": "BreastSize"})
         self.breast = make(4, "Transform", {"m_GameObject": {"m_PathID": 3}})
+        self.head_go = make(6, "GameObject", {"m_Name": "Head"})
+        self.head = make(7, "Transform", {"m_GameObject": {"m_PathID": 6}})
+        self.hair_go = make(8, "GameObject", {"m_Name": "Neck_Hair"})
+        self.hair = make(9, "Transform", {"m_GameObject": {"m_PathID": 8}})
+        self.neck_go = make(10, "GameObject", {"m_Name": "Neck"})
+        self.neck = make(11, "Transform", {"m_GameObject": {"m_PathID": 10}})
         self.tree = {"targetName": "ch0207_body", "heightScale": .960872829,
                      "scaleValues": [self.record(2, [1, 1, 1], [.963] * 3),
                                      self.record(4, [1, 1, 1], [1.08, 1.04, 1.08])],
                      "positionValues": [], "rotationValues": []}
         self.component = make(5, "MonoBehaviour", self.tree)
         self.glb = SimpleNamespace(doc={"nodes": [
-            {"name": "Move__0", "translation": [-1, 2, 3], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
-            {"name": "BreastSize__1", "translation": [0, .3, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}]})
+            {"name": "Move__0", "translation": [-1, 2, 3], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1], "children": [1, 4]},
+            {"name": "BreastSize__1", "translation": [0, .3, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "Head__2", "translation": [0, .2, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "Neck_Hair__3", "translation": [0, .1, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "Neck__4", "translation": [0, .6, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1], "children": [2, 3]}]})
         self.scene = SimpleNamespace(env=SimpleNamespace(objects=list(self.objects.values())),
-                                     transforms={1: self.move, 3: self.breast},
+                                     transforms={1: self.move, 3: self.breast, 6: self.head, 8: self.hair, 10: self.neck},
                                      tree=lambda obj: obj.tree, name=lambda obj: obj.tree.get("m_Name", ""))
-        self.mapping = {(id(self.asset), 2): 0, (id(self.asset), 4): 1}
+        self.mapping = {(id(self.asset), 2): 0, (id(self.asset), 4): 1,
+                        (id(self.asset), 7): 2, (id(self.asset), 9): 3, (id(self.asset), 11): 4}
 
     @staticmethod
     def record(target, origin, scaled):
@@ -61,10 +73,10 @@ class ScalingTests(unittest.TestCase):
         self.assertFalse(result["gameHeightFormulaVerified"])
         self.assertEqual(result["components"][0]["heightScale"], .960872829)
         self.assertEqual([entry["state"] for entry in result["components"][0]["entries"]], ["pending", "pending"])
-        height, breast = result["controls"]
+        height, breast = result["controls"][:2]
         self.assertEqual(height["nodes"][0]["baseScale"], [1, 1, 1])
         self.assertEqual(breast["nodes"][0]["baseScale"], [1, 1, 1])
-        self.assertEqual(height["mode"], "multiply_authored_local_scale")
+        self.assertEqual(height["mode"], "height_vertical_preserve_head")
         self.assertEqual(height["limitsSource"], "viewer_preview_bounds")
 
     def test_already_scaled_transform_is_preserved_and_not_squared(self):
@@ -74,6 +86,109 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(entry["state"], "already_applied")
         self.assertEqual(scaling.evaluate_saved_entry(entry), {"scale": [1.08, 1.04, 1.08]})
         self.assertEqual(result["controls"][1]["nodes"][0]["baseScale"], [1.08, 1.04, 1.08])
+
+    def test_height_moves_only_vertical_axis_and_describes_independent_head_roots(self):
+        before = copy.deepcopy(self.glb.doc)
+        result = self.describe(sources=["costume.unity"])
+        control = result["controls"][0]
+        self.assertTrue(control["available"])
+        self.assertEqual(control["mode"], "height_vertical_preserve_head")
+        self.assertFalse(control["gameHeightFormulaVerified"])
+        self.assertEqual(control["compensation"], "preserve_world_linear_basis_at_shifted_anchor")
+        self.assertEqual(control["nodes"][0]["axes"], [0, 1, 0])
+        roots = control["nodes"][0]["compensationRoots"]
+        self.assertEqual({root["name"] for root in roots}, {"Head", "Neck_Hair"})
+        self.assertTrue(all(root["parent"] == 4 for root in roots))
+        self.assertEqual(self.glb.doc, before)
+
+    def test_head_compensation_never_crosses_a_source_or_ambiguous_parent_chain(self):
+        self.neck.source = "another_model.unity"
+        result = self.describe(sources=["costume.unity"])
+        self.assertFalse(result["controls"][0]["available"])
+        self.assertEqual(result["controls"][0]["unavailableReason"], "missing_height_head")
+        self.neck.source = "costume.unity"
+        self.glb.doc["nodes"][1]["children"] = [2]
+        result = self.describe()
+        self.assertFalse(result["controls"][0]["available"], "A two-parent Head cannot be compensated safely")
+
+    def test_nested_head_roots_are_compensated_once_and_duplicate_heads_fail_closed(self):
+        self.glb.doc["nodes"][4]["children"] = [3]
+        self.glb.doc["nodes"][3]["children"] = [2]
+        control = self.describe()["controls"][0]
+        self.assertEqual([root["name"] for root in control["nodes"][0]["compensationRoots"]], ["Neck_Hair"])
+        extra_go = self.make(12, "GameObject", {"m_Name": "Head"})
+        extra = self.make(13, "Transform", {"m_GameObject": {"m_PathID": 12}})
+        self.scene.transforms[12] = extra
+        self.mapping[(id(self.asset), 13)] = 5
+        self.glb.doc["nodes"].append({"name": "Head__5"})
+        self.glb.doc["nodes"][4]["children"].append(5)
+        control = self.describe()["controls"][0]
+        self.assertFalse(control["available"])
+        self.assertEqual(control["unavailableReason"], "ambiguous_height_head")
+
+    def test_nested_move_targets_never_apply_height_twice(self):
+        self.breast_go.tree["m_Name"] = "Move"
+        self.glb.doc["nodes"][0]["children"] = [1]
+        self.glb.doc["nodes"][1]["children"] = [4]
+        control = self.describe()["controls"][0]
+        self.assertTrue(control["available"])
+        self.assertEqual([node["node"] for node in control["nodes"]], [0])
+
+    def test_breast_profiles_match_existing_dedicated_tool_including_emma_exception(self):
+        import sifas_breast_tuner as tool
+        control = self.describe()["controls"][1]
+        self.assertEqual(control["mode"], "breast_tool_curve")
+        actual = {preset["label"]: tuple(preset["scale"]) for preset in control["presets"]}
+        expected = {name: tuple(xyz) for name, xyz, _ in tool.BREAST_REDUCE_PRESETS + tool.BREAST_ENLARGE_PRESETS}
+        expected["Stock"] = (1., 1., 1.)
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["Emma"], (1.30, 1.18, 1.30))
+        self.assertEqual(actual["Nozomi"], (1.30, 1.15, 1.30))
+        self.assertEqual(control["presetApplication"], "absolute_local_scale")
+        self.assertEqual(control["relativeFormula"], "F(x*p/100)/F(x)")
+        self.assertEqual(control["curveDomain"], {"minX": .61, "maxX": 3., "maxExclusive": True})
+
+        def interpolate(x):
+            for left, right in zip(control["curve"], control["curve"][1:]):
+                if left[0] <= x <= right[0]:
+                    t = (x - left[0]) / (right[0] - left[0])
+                    return [a + (b - a) * t for a, b in zip(left, right)]
+            raise AssertionError("Outside the verified source range")
+
+        for _, xyz, _ in tool.BREAST_REDUCE_PRESETS:
+            self.assertEqual(interpolate(xyz[0]), list(xyz))
+        for offset in (.02, .04, .06, .08, .11, .15, .49, .99):
+            for actual_value, expected_value in zip(interpolate(1 + 2 * offset), tool.breast_enlarge_xyz(offset)):
+                self.assertAlmostEqual(actual_value, expected_value, places=6)
+
+    def test_skirt_uses_only_tool_root_bones_without_descendant_double_scaling(self):
+        self.breast_go.tree["m_Name"] = "LeftSkirtB1_Dyna"
+        self.head_go.tree["m_Name"] = "LeftSkirtB2_Dyna"
+        self.hair_go.tree["m_Name"] = "RightSkirtB1_Dyna"
+        # A custom edited hierarchy puts one named root under the other. The
+        # preview must not multiply the same branch twice.
+        self.glb.doc["nodes"][4]["children"] = [2]
+        self.glb.doc["nodes"][1]["children"] = [3]
+        control = self.describe()["controls"][2]
+        self.assertTrue(control["available"])
+        self.assertEqual([node["name"] for node in control["nodes"]], ["LeftSkirtB1_Dyna"])
+        self.assertEqual(control["nodes"][0]["axes"], [1, 1, 1])
+        self.assertEqual(control["axesMeaning"], "length_and_volume")
+        from webtools.tools.skirt import DEFAULT_SKIRT_PATTERNS
+        self.assertEqual(control["exactRootNames"], DEFAULT_SKIRT_PATTERNS)
+
+    def test_authored_node_catalogue_and_frequent_targets_are_source_bound(self):
+        self.hair.source = "another_model.unity"
+        result = self.describe(sources=["costume.unity"])
+        by_node = {node["node"]: node for node in result["nodes"]}
+        self.assertEqual(set(by_node), {0, 1, 2, 4})
+        self.assertEqual(by_node[2]["parent"], 4)
+        self.assertEqual(by_node[2]["basePosition"], [0, .2, 0])
+        self.assertFalse(by_node[2]["hasSavedSettings"])
+        self.assertTrue(by_node[1]["hasSavedSettings"])
+        self.assertEqual(by_node[1]["savedKinds"], ["scale"])
+        self.assertEqual(by_node[1]["savedEntries"], ["0:1"])
+        self.assertNotIn("Neck_Hair", {node["name"] for node in result["recommendedTargets"]})
 
     def test_nonunit_authored_and_mismatched_origins_remain_authored(self):
         self.glb.doc["nodes"][1]["scale"] = [2, 3, 4]

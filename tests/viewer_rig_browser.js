@@ -26,11 +26,14 @@ function fixture(options = {}) {
   const weights = attribute([1,0,0,0,1,0,0,0,1,0,0,0], Float32Array, 'VEC4', 5126, 3);
   const indices = attribute([0,1,2], Uint16Array, 'SCALAR', 5123, 3);
   const morph = attribute([0,0,0,0,0,0,.2,0,0], Float32Array, 'VEC3', 5126, 3);
+  const mouthMorph=options.semanticExpressions?attribute([0,0,0,0,0,0,0,-.25,0],Float32Array,'VEC3',5126,3):null;
   const identity = [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
   const breastBind = identity.slice(); breastBind[13] = -.5;
   const tipBind = identity.slice(); tipBind[13] = -1.5;
   const childBind=identity.slice();childBind[13]=-2;
-  const binds = attribute(identity.concat(breastBind,tipBind,options.allSaved?childBind:[]), Float32Array, 'MAT4', 5126, options.allSaved?4:3);
+  const headBind=identity.slice();headBind[13]=-1.5;
+  const hairBind=identity.slice();hairBind[13]=-1.1;hairBind[14]=-.1;
+  const binds = attribute(identity.concat(breastBind,tipBind,options.allSaved?childBind:[],headBind,hairBind), Float32Array, 'MAT4', 5126, (options.allSaved?4:3)+2);
   const times = attribute([0,1], Float32Array, 'SCALAR', 5126, 2, {min:[0],max:[1]});
   const rotationStart=options.rotationStart||0,clipName=options.previewName||'Synthetic test motion';
   const rotations = attribute([0,0,rotationStart,Math.sqrt(1-rotationStart*rotationStart),0,0,.5,Math.sqrt(.75)], Float32Array, 'VEC4', 5126, 2);
@@ -47,11 +50,21 @@ function fixture(options = {}) {
     extensionsUsed:['KHR_materials_unlit'],buffers:[{byteLength:length}],bufferViews:views,accessors};
   doc.animations.push(Object.assign({},doc.animations[0],{name:'Synthetic motion visibility'}));
   if(options.allSaved){
-    doc.nodes[3].name='LeftSkirtA_Dyna';doc.nodes[3].children=[5];
+    doc.nodes[3].name='SkirtA1_Dyna';doc.nodes[3].children=[5];
     doc.nodes.push({name:'LeftSkirtChild_Dyna',translation:[0,.5,0],extras:{elichika_node:5,role:'bone'}});
     doc.skins[0].joints.push(5);
-  }
+  }else doc.nodes.push({name:'ReservedAuxiliary',extras:{elichika_node:5,role:'bone'}});
+  // Unweighted source joints retain the original visible triangle while
+  // exercising actual world-space head/hair compensation, including rotation.
+  doc.nodes.push({name:'Head',translation:[0,1.5,0],extras:{elichika_node:6,role:'bone'}},
+    {name:'Neck_Hair',translation:[0,1.1,.1],extras:{elichika_node:7,role:'bone'}});
+  doc.nodes[1].children.push(6,7);doc.skins[0].joints.push(6,7);
   if(options.shader)doc.materials[0].extras={sifas:{version:1,shader:'AS/Member',colors:{_TintColor:[.2,.5,.8,1],_AmbientColor:[1,1,1,0]},floats:{_CullMode:0},features:{},textures:{}}};
+  if(options.semanticExpressions){
+    doc.meshes[0].weights=[0,0];
+    doc.meshes[0].extras.targetNames=['EyeBlendShape.eye_facial_001','MouthBlendShape.mouth_facial_007'];
+    doc.meshes[0].primitives[0].targets.push({POSITION:mouthMorph});
+  }
   if(options.textureData){
     doc.images=[{uri:options.textureData}];doc.textures=[{source:0,sampler:0}];
     doc.samplers=[{magFilter:9728,minFilter:9728,wrapS:33071,wrapT:33071}];
@@ -62,32 +75,60 @@ function fixture(options = {}) {
   const header = Buffer.alloc(12), jh = Buffer.alloc(8), bh = Buffer.alloc(8);
   header.writeUInt32LE(0x46546c67,0);header.writeUInt32LE(2,4);header.writeUInt32LE(12+8+jsonPadded.length+8+binPadded.length,8);
   jh.writeUInt32LE(jsonPadded.length);jh.writeUInt32LE(0x4e4f534a,4);bh.writeUInt32LE(binPadded.length);bh.writeUInt32LE(0x004e4942,4);
-  const controls = [{id:'height',node:1,min:50,max:150},{id:'breast',node:2,min:25,max:200}].map(c=>({id:c.id,available:true,default:100,min:c.min,max:c.max,unit:'percent',mode:'multiply_authored_local_scale',nodes:[{node:c.node,axes:[1,1,1]}]}));
+  const authored=node=>({node,name:doc.nodes[node].name,parent:node===1?0:node===2?1:node===3?2:node===5?3:1,
+    basePosition:doc.nodes[node].translation||[0,0,0],baseQuaternion:doc.nodes[node].rotation||[0,0,0,1],baseScale:doc.nodes[node].scale||[1,1,1]});
+  const breastCurve=[[.61,.91,.85],[.64,.94,.88],[.72,.95,.90],[.80,.96,.92],[.90,.98,.96],[.95,.99,.98],[1,1,1],[3,2,3]];
+  const controls=[{id:'height',label:'Height',available:true,default:100,min:50,max:150,unit:'percent',
+    mode:'height_vertical_preserve_head',nodes:[Object.assign(authored(1),{axes:[0,1,0],compensationRoots:[authored(6),authored(7)]})]},
+    {id:'breast',label:'Breast size',available:true,default:100,min:25,max:200,unit:'percent',mode:'breast_tool_curve',
+      curve:breastCurve,curveDomain:{minX:.61,maxX:3,maxExclusive:true},relativeFormula:'F(x*p/100)/F(x)',
+      presets:[{id:'stock',label:'Stock',scale:[1,1,1],group:'stock'},
+        {id:'rin',label:'Rin',scale:[.72,.95,.90],group:'smaller'},{id:'emma',label:'Emma',scale:[1.3,1.18,1.3],group:'larger'}],
+      presetApplication:'absolute_local_scale',nodes:[Object.assign(authored(2),{axes:[1,1,1]})]},
+    {id:'skirt',label:'Skirt length and volume',available:!!options.allSaved,default:100,min:50,max:150,unit:'percent',
+      mode:'multiply_authored_local_scale',nodes:options.allSaved?[Object.assign(authored(3),{axes:[1,1,1]})]:[]}];
   const components=[{targetName:'SyntheticFixture',heightScale:.97,entries:[
-    {node:2,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:[1.3,.9,1],state:'pending'},
+    {node:2,name:'BreastSize',kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:options.breastSavedScale||[1.3,.9,1],state:'pending'},
     {node:3,kind:'rotation',supported:false,application:null,scaled:[20,0,0]},
     {node:3,kind:'position',supported:true,application:'absolute_local_position',scaled:[0,1,0]},
     {node:3,kind:'position',supported:true,application:'absolute_local_position',scaled:[0,2,0]}
   ]}];
   if(options.allSaved){
-    const quaternion=[Math.sin(Math.PI/12),0,0,Math.cos(Math.PI/12)];
-    const rotation=value=>({node:3,name:'LeftSkirtA_Dyna',kind:'rotation',supported:true,application:'absolute_local_quaternion',scaledQuaternion:value,scaled:value,origin:[0,0,0,1]});
+    const sourceEuler=options.allSavedEuler||[30,0,0],half=sourceEuler.map(value=>value*Math.PI/360);
+    const [sx,sy,sz]=half.map(Math.sin),[cx,cy,cz]=half.map(Math.cos);
+    const quaternion=[cy*sx*cz+sy*cx*sz,-(sy*cx*cz-cy*sx*sz),-(cy*cx*sz-sy*sx*cz),cy*cx*cz+sy*sx*sz];
+    const rotation=value=>({node:3,name:'SkirtA1_Dyna',kind:'rotation',supported:true,application:'absolute_local_quaternion',scaledQuaternion:value,scaled:value,origin:[0,0,0,1],unityEulerOrigin:[0,0,0],unityEulerScaled:sourceEuler,rotationOrder:'ZXY'});
     components[0].entries=[
       {node:2,name:'BreastSize',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[1.3,.9,1]},
-      {node:3,name:'LeftSkirtA_Dyna',kind:'position',supported:true,application:'absolute_local_position',scaled:[-.1,.9,0]},
-      {node:3,name:'LeftSkirtA_Dyna',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[.7,.7,.7]},
+      {node:3,name:'SkirtA1_Dyna',kind:'position',supported:true,application:'absolute_local_position',origin:[0,1,0],scaled:[-.1,.9,0]},
+      {node:3,name:'SkirtA1_Dyna',kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:[.7,.7,.7]},
       {node:5,name:'LeftSkirtChild_Dyna',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[.6,.6,.6]},
       rotation(quaternion),rotation(quaternion.map(value=>-value))
     ];
     if(options.rotationConflict)components[0].entries.push(rotation([0,0,0,1]));
   }
   const visibility=(times,values)=>[{node:4,times,values,interpolation:'STEP',sourceProperty:'Renderer.m_Enabled'}];
-  const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:1,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
+  const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'},{node:6,name:'Head'},{node:7,name:'Neck_Hair'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:2,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
     {name:clipName,duration:1,loop:true},
     {name:'Synthetic motion visibility',duration:1,loop:false,visibility:visibility([0,.6],[false,true])},
     {name:'Synthetic visibility only',duration:1,loop:false,channels:0,index:null,visibility:visibility([0,.25,.75],[true,false,true])}
   ]};
-  if(options.allSaved){rig.bones[2].name='LeftSkirtA_Dyna';rig.bones.push({node:5,name:'LeftSkirtChild_Dyna'});}
+  if(options.allSaved){rig.bones[2].name='SkirtA1_Dyna';rig.bones.push({node:5,name:'LeftSkirtChild_Dyna'});}
+  rig.scaling.nodes=rig.bones.map(bone=>Object.assign(authored(bone.node),{label:bone.name,category:bone.node===2?'breast':bone.node===6?'head':bone.node===7?'hair':bone.node===1?'height':'skirt',
+    hasSavedSettings:components.some(c=>c.entries.some(e=>e.node===bone.node)),savedKinds:[...new Set(components.flatMap(c=>c.entries.filter(e=>e.node===bone.node).map(e=>e.kind)))]}));
+  rig.scaling.recommendedTargets=rig.scaling.nodes.filter(node=>[1,2,3,6,7].includes(node.node)).map(node=>({node:node.node,name:node.name,label:node.label,category:node.category}));
+  if(options.semanticExpressions){
+    const eye={node:4,index:0,name:doc.meshes[0].extras.targetNames[0]},mouth={node:4,index:1,name:doc.meshes[0].extras.targetNames[1]};
+    rig.expressionCatalog={version:1,groups:[{id:'eyes',label:'Eyes'},{id:'mouth',label:'Mouth'}],
+      controls:[{id:'fixture-eyes-closed',group:'eyes',label:'Closed eyelids',semanticId:1,targets:[eye],resetTargets:[eye],complete:false,scope:'shape'},
+        {id:'fixture-mouth-smile',group:'mouth',label:'Smiling mouth',semanticId:10007,targets:[mouth],resetTargets:[mouth],complete:false,scope:'shape'}],
+      rawChannels:[Object.assign({part:'SyntheticTriangle',group:'eyes',label:'Closed eyelids',known:true},eye),
+        Object.assign({part:'SyntheticTriangle',group:'mouth',label:'Smiling mouth',known:true},mouth)],
+      presets:[{id:'fixture-eyes-closed',group:'eyes',label:'Closed eyelids',targets:[Object.assign({value:1},eye)],source:'verified_morph_shape',complete:false,scope:'shape'},
+        {id:'fixture-mouth-smile',group:'mouth',label:'Smiling mouth',targets:[Object.assign({value:1},mouth)],source:'verified_morph_shape',complete:false,scope:'shape'},
+        {id:'fixture-smile',group:'all',label:'Smile',targets:[Object.assign({value:1},eye),Object.assign({value:1},mouth)],components:['fixture-eyes-closed','fixture-mouth-smile'],source:'viewer_combination',complete:false},
+        {id:'fixture-invalid-channel',group:'eyes',label:'Invalid preset',targets:[{node:4,index:99,name:'not-a-target',value:1}],source:'verified_morph_shape',complete:false}]};
+  }
   if(options.metadataWarning)rig.scaling.warnings=['scaling_invalid_entry'];
   if(Object.prototype.hasOwnProperty.call(options,'previewVerified'))rig.previewMotion={name:options.previewReference||clipName,kind:options.previewKind||'sifas_suit_preview',verified:options.previewVerified};
   return {glb:Buffer.concat([header,jh,jsonPadded,bh,binPadded]),rig};
@@ -110,6 +151,23 @@ if(require.main===module)(async()=>{
     await page.route('**/api/viewer/model/*.glb',route=>route.fulfill({status:200,contentType:'model/gltf-binary',body:generated.glb}));
     await page.goto(process.env.VIEWER_URL||'http://127.0.0.1:8898');
     await page.waitForFunction(()=>typeof openModelViewer==='function'&&!!window.ViewerRig);
+    await page.evaluate(()=>{
+      const original=THREE.GLTFLoader.prototype.parse;
+      THREE.GLTFLoader.prototype.parse=function(data,path,onLoad,onError){
+        return original.call(this,data,path,function(gltf){window.__actualBodyControlScene=gltf.scene;return onLoad.apply(this,arguments);},onError);
+      };
+      window.__bodyControlWorld=function(name){
+        const source=window.__actualBodyControlScene;
+        if(!source)throw new Error('The actual product GLTF scene was not observed');
+        source.updateMatrixWorld(true);
+        const bones=ModelViewer.getState().rig.bones.filter(b=>b.name===name||b.name.endsWith('/'+name));
+        if(bones.length!==1)throw new Error('Expected one actual '+name+' joint');
+        const targets=[];source.traverse(o=>{if(o.userData&&!o.userData.viewerHelper&&String(o.userData.elichika_node)===String(bones[0].node))targets.push(o);});
+        if(targets.length!==1)throw new Error('Expected one source object for '+name);
+        const values=targets[0].matrixWorld.toArray();
+        return{position:values.slice(12,15),linear:[values[0],values[1],values[2],values[4],values[5],values[6],values[8],values[9],values[10]],matrix:values};
+      };
+    });
     await page.evaluate(()=>openModelViewer(['/synthetic/rig.unity']));
     await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
     const state=()=>page.evaluate(()=>ModelViewer.getState());
@@ -121,20 +179,65 @@ if(require.main===module)(async()=>{
       if(save)frames[save]=pixels;return{probe,glError:error,changedPixels,width,height};
     },[save,compare]);
     const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
-    const slider=async(id,value)=>page.locator('#'+id).evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
+    const slider=async(id,value)=>{
+      if(id==='viewer-expression-value'){
+        await page.locator('#viewer-expression-advanced').evaluate(e=>e.open=true);
+        if(!await page.locator('#viewer-expression').inputValue()){
+          const first=await page.locator('#viewer-expression option').evaluateAll(options=>options.find(option=>option.value).value);
+          await page.locator('#viewer-expression').selectOption(first);
+        }
+      }
+      return page.locator('#'+id).evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
+    };
+    const inputNode=async(node,kind,axis,value)=>{
+      await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);
+      await page.locator('#viewer-node-filter').selectOption('all');await page.locator('#viewer-node-search').fill('');
+      await page.locator('#viewer-node').selectOption(String(node));
+      await page.locator('[data-viewer-node-kind="'+kind+'"][data-axis="'+axis+'"]').fill(String(value));
+    };
+    const world=async name=>page.evaluate(name=>window.__bodyControlWorld(name),name);
+    const nearVector=(actual,expected,message,tolerance=1e-6)=>{
+      assert.equal(actual.length,expected.length,message);
+      actual.forEach((value,axis)=>assert(Math.abs(value-expected[axis])<=tolerance,message+' axis'+axis+': '+value+' vs '+expected[axis]));
+    };
+    const expectedUnityMatrix=degrees=>{
+      const [x,y,z]=degrees.map(value=>value*Math.PI/180),sx=Math.sin(x),sy=Math.sin(y),sz=Math.sin(z),cx=Math.cos(x),cy=Math.cos(y),cz=Math.cos(z);
+      // Independent column-vector Ry*Rx*Rz followed by Unity-to-glTF X reflection.
+      return[cy*cz+sy*sx*sz,cy*sz-sy*sx*cz,-sy*cx,-cx*sz,cx*cz,-sx,sy*cz-cy*sx*sz,sy*sz+cy*sx*cz,cy*cx];
+    };
+    const quaternionMatrix=([x,y,z,w])=>[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w),2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w),2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)];
     assert.equal(requests[0].rigged,true);
     const initial=await state();assert(initial.rig.available);assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
     assert.equal(initial.rig.savedNodes.enabled,true);assert.equal(initial.rig.savedNodes.applied,1);assert.equal(initial.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.3);
+    await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('2');
+    const importedFields=await page.locator('[data-viewer-node-kind="scale"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value)));
+    nearVector(importedFields,[130,90,100],'Advanced fields must display actual saved NodeScaling values');
+    assert.deepEqual((await state()).rig.nodeAdjustments,{},'Selecting a source bone must not create an edit');
+    await page.locator('[data-viewer-node-kind="scale"][data-axis="X"]').fill('140');
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.4,.9,1],'Editing X must retain the other imported axes');
+    assert((await page.locator('#viewer-node-change-list').innerText()).includes('BreastSize'),'Changed source/user bones need a visible list');
+    await page.locator('#viewer-node-reset').click();nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.3,.9,1],'Selected reset restores the loaded saved baseline');
+    assert.deepEqual((await state()).rig.nodeAdjustments,{});
     assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());assert(await page.locator('#viewer-pose-help').isVisible());
     const probe=await page.evaluate(()=>ModelViewer.renderProbe());assert(probe.ready&&probe.nonBackgroundSamples>0&&probe.glError===0);
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
-    await slider('viewer-height',120);assert.equal((await state()).rig.bones.find(b=>b.name==='Move').scale[1],1.2);
-    await slider('viewer-breast',150);assert.equal((await state()).rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
+    await inputNode(6,'rotation','Z',45);await inputNode(7,'rotation','X',30);
+    const headBeforeHeight=await world('Head'),hairBeforeHeight=await world('Neck_Hair');
+    assert(Math.abs(headBeforeHeight.linear[1])>.5,'The head must actually be rotated before height compensation');
+    assert(Math.abs(hairBeforeHeight.linear[5])>.4,'The back-hair source joint must actually be rotated');
+    await slider('viewer-height',120);nearVector((await state()).rig.bones.find(b=>b.name==='Move').scale,[1,1.2,1],'Height changes vertical scale without zooming X/Z');
+    const headAfterHeight=await world('Head'),hairAfterHeight=await world('Neck_Hair');
+    nearVector(headAfterHeight.linear,headBeforeHeight.linear,'Height preserves rotated head world shape and orientation');
+    nearVector(hairAfterHeight.linear,hairBeforeHeight.linear,'Height preserves rotated hair world shape and orientation');
+    assert(headAfterHeight.position[1]>headBeforeHeight.position[1],'Height must move the actual head anchor upwards');
+    await page.locator('#viewer-node-reset').click();await page.locator('#viewer-node').selectOption('6');await page.locator('#viewer-node-reset').click();
+    await slider('viewer-breast',150);nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.5,1.25,1.5],'Stock enlargement follows source breast tool proportions');
     assert.equal((await state()).rig.savedNodes.enabled,false);
     await page.locator('#viewer-saved-nodes').check();
     const saved=await state();assert.equal(saved.rig.savedNodes.applied,1);assert.equal(saved.rig.savedNodes.skipped,3);assert.equal(saved.rig.savedNodes.conflicts,1);
     assert(Math.abs(saved.rig.bones.find(b=>b.name==='BreastSize').scale[0]-1.95)<1e-6);
+    nearVector(saved.rig.bones.find(b=>b.name==='BreastSize').scale,[1.95,.9*(1.475/1.15),1.5],'Nonuniform saved proportions follow the source reference curve');
     assert.deepEqual(saved.rig.bones.find(b=>b.name==='Tip').position,[0,1,0],'Conflicting positions must stay untouched');
     await page.locator('#viewer-saved-nodes').uncheck();assert.equal((await state()).rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
     await slider('viewer-height',120);assert.equal((await state()).rig.bones.find(b=>b.name==='Move').scale[1],1.2,'Repeated input must not compound');
@@ -244,6 +347,15 @@ if(require.main===module)(async()=>{
     assert(Math.abs(bone(allSavedInitial,3).quaternion[0]-Math.sin(Math.PI/12))<1e-7,'Verified saved quaternion must apply at load');
     assert.deepEqual(allSavedInitial.rig.savedNodes.groups.find(part=>part.id==='skirt').nodes,['3','5']);
     const allSavedFrame=await capture('all-saved-default');assert.equal(allSavedFrame.glError,0);assert(allSavedFrame.probe.nonBackgroundSamples>0);
+    await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('3');
+    nearVector(await page.locator('[data-viewer-node-kind="scale"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[70,70,70],'Imported skirt scale is shown in the editor');
+    nearVector(await page.locator('[data-viewer-node-kind="position"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[.1,.9,0],'Imported position uses source Unity X direction');
+    nearVector(await page.locator('[data-viewer-node-kind="rotation"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[30,0,0],'Imported rotation shows source Unity Euler values');
+    assert.deepEqual((await state()).rig.nodeAdjustments,{},'Inspecting saved scale, position and rotation must not create overrides');
+    await slider('viewer-skirt',120);nearVector(bone(await state(),3).scale,[.84,.84,.84],'Skirt control scales the verified root');
+    nearVector(bone(await state(),5).scale,[.6,.6,.6],'A skirt child must not get the root multiplier a second time');
+    await page.locator('#viewer-skirt-reset').click();assert.equal((await state()).rig.body.skirt,100);
+    assert.equal((await capture(null,'all-saved-default')).changedPixels,0,'Skirt reset restores the complete imported file defaults');
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-parts').evaluate(e=>e.open=true);
     assert((await page.locator('#viewer-saved-status').innerText()).includes('5 / 5'));
     await page.locator('[data-viewer-saved-part="skirt"]').uncheck();const partial=await state();assert.equal(partial.rig.savedNodes.applied,1);assert((await page.locator('#viewer-saved-status').innerText()).includes('1 / 5'));
@@ -271,7 +383,9 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-pose-basic').focus();await page.locator('#viewer-pose-basic').press('Enter');assert.equal((await state()).rig.playing,false);assert.equal((await state()).rig.time,0);assert.deepEqual(await pressed(),['true','false']);
     await page.locator('#viewer-motion').selectOption('Synthetic motion visibility');assert.deepEqual(await pressed(),['false','false']);
     await page.locator('#viewer-pose-preview').click();assert.deepEqual(await pressed(),['false','true']);
-    await page.locator('#viewer-preview-reset').click();const buttonReset=await state();assert.equal(buttonReset.rig.savedNodes.enabled,true);assert.equal(buttonReset.rig.savedNodes.applied,5);assert(buttonReset.rig.savedNodes.groups.every(part=>part.enabled));assert.deepEqual(buttonReset.rig.body,{height:100,breast:100});assert.deepEqual(buttonReset.rig.nodeAdjustments,{});assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'all-saved-default')).changedPixels,0);
+    await page.locator('#viewer-preview-reset').click();const buttonReset=await state();assert.equal(buttonReset.rig.savedNodes.enabled,true);assert.equal(buttonReset.rig.savedNodes.applied,5);assert(buttonReset.rig.savedNodes.groups.every(part=>part.enabled));
+    for(const kind of ['height','breast','skirt'])assert.equal(buttonReset.rig.body[kind],100,'Reset restores imported '+kind+' baseline');
+    assert.equal(buttonReset.rig.body.breastPreset,'');assert.deepEqual(buttonReset.rig.nodeAdjustments,{});assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'all-saved-default')).changedPixels,0);
     const responsiveButtons=[];
     for(const [lang,basicLabel,posedLabel] of [['ko','기본 자세','포즈 자세'],['ja','基本姿勢','プレビュー姿勢'],['en','Basic pose','Posed view']]){
       await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.getElementById('viewer-pose-basic').textContent===label,basicLabel);assert.equal(await page.locator('#viewer-pose-preview').innerText(),posedLabel);
@@ -284,6 +398,95 @@ if(require.main===module)(async()=>{
       }
     }
     await page.screenshot({path:path.join(evidence,'synthetic-pose-buttons-ui.png'),fullPage:true});
+    const inspectorLayouts=[];
+    const twoFrames=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    for(const viewport of [{width:320,height:900},{width:1024,height:768},{width:1280,height:800},{width:1440,height:900}]){
+      await page.setViewportSize(viewport);
+      if(await page.locator('#tab-viewer').evaluate(element=>element.classList.contains('viewer-expanded')))await page.locator('#viewer-expand').click();
+      await page.evaluate(()=>{window.scrollTo(0,0);document.querySelector('.viewer-control-panel').scrollTop=0;});await twoFrames();
+      const normal=await page.evaluate(()=>{
+        const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+        return{stage:rect('#viewer-stage'),controls:rect('.viewer-control-panel'),cameraActions:rect('.viewer-camera-actions'),camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
+      });
+      assert.equal(normal.overflow,false,'The normal inspector must fit the viewport');
+      if(viewport.width>=900){
+        assert(normal.stage.right<=normal.controls.x+.5,'Wide normal mode places the model to the LEFT of adjustments');
+        assert(normal.cameraActions.x>=normal.stage.x-.5&&normal.cameraActions.right<=normal.stage.right+.5,'View/camera controls remain with the left model');
+        assert(normal.stage.width>=240&&normal.controls.width>=300,'Wide tablet columns must remain usable');
+      }
+      await page.locator('#viewer-expand').click();await twoFrames();
+      const expanded=await page.evaluate(()=>{
+        const stage=document.getElementById('viewer-stage').getBoundingClientRect(),controls=document.querySelector('.viewer-control-panel').getBoundingClientRect();
+        return{stage:{width:stage.width,height:stage.height,bottom:stage.bottom},controls:{y:controls.y},camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
+      });
+      assert.equal(expanded.overflow,false);assert(expanded.controls.y>=expanded.stage.bottom-.5,'Expanded mode remains an unsplit vertical inspector');
+      assert(expanded.stage.width>=normal.stage.width-.5&&expanded.stage.height>=normal.stage.height-.5,'Expanded mode increases the model viewport');
+      assert.deepEqual(expanded.camera,normal.camera,'Changing the layout must not reset the model camera');
+      await page.locator('#viewer-expand').click();await twoFrames();
+      assert.deepEqual((await state()).camera,normal.camera,'Closing expanded mode preserves the source camera');
+      inspectorLayouts.push({viewport,normal,expanded});
+    }
+    await page.setViewportSize({width:1024,height:768});await twoFrames();
+    assert.equal(await page.locator('#viewer-node-shortcuts [data-viewer-bone="6"]').count(),1,'Opening successive models must not retain stale frequent-bone buttons');
+    await page.locator('#viewer-node-shortcuts [data-viewer-bone="6"]').click();
+    assert.equal(await page.locator('#viewer-node').inputValue(),'6','A frequent-bone shortcut selects its real node');
+    assert(await page.locator('#viewer-node-editor').evaluate(details=>details.open));
+    const beforeBoneSearch=(await state()).rig.nodeAdjustments;
+    await page.locator('#viewer-node-search').fill('Head');
+    assert.equal(await page.locator('#viewer-node option').count(),1);assert.equal(await page.locator('#viewer-node').inputValue(),'6');
+    assert.deepEqual((await state()).rig.nodeAdjustments,beforeBoneSearch,'Searching and selecting must not create edits');
+    await page.locator('#viewer-node-search').fill('');await page.locator('#viewer-node-filter').selectOption('saved');
+    assert(await page.locator('#viewer-node option[value="2"]').count(),'The imported BreastSize setting is discoverable by the saved filter');
+    await page.locator('#viewer-node-filter').selectOption('all');
+    generated=fixture();await page.evaluate(()=>openModelViewer(['/synthetic/tool-breast-presets.unity']));
+    await page.locator('#viewer-breast-preset').selectOption('rin');
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'An explicit source preset must set its exact absolute XYZ endpoint');
+    assert.equal((await state()).rig.body.breast,100);assert.equal(Number(await page.locator('#viewer-breast').getAttribute('min')),85,'A source reduction preset must expose only the verified smaller domain');
+    await slider('viewer-breast-number',125);
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.90,.98,.96],'Rin to 125% reaches the exact source Honoka/Maki profile without uniform scaling');
+    await slider('viewer-breast-number',125);
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.90,.98,.96],'Repeating a numeric body entry must not compound');
+    await page.locator('#viewer-breast-preset').selectOption('emma');
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.3,1.18,1.3],'Emma is the intentional source preset exception, not the ordinary enlargement line');
+    await page.locator('#viewer-breast-reset').click();
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.3,.9,1],'Reset returns to this file rather than forcing a generic stock shape');
+    const toolPresetState=await state();
+    generated=fixture({allSaved:true,allSavedEuler:[35,45,60]});await page.evaluate(()=>openModelViewer(['/synthetic/multi-axis-unity-saved-rotation.unity']));
+    await page.locator('.viewer-node-editor').evaluate(details=>details.open=true);await page.locator('#viewer-node').selectOption('3');
+    nearVector(await page.locator('[data-viewer-node-kind="rotation"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[35,45,60],'Multi-axis saved Unity Euler values are imported without an order swap');
+    const loadedMultiAxis=await state();nearVector(quaternionMatrix(loadedMultiAxis.rig.bones.find(bone=>bone.node==='3').quaternion),expectedUnityMatrix([35,45,60]),'Imported quaternion follows the source native RyRxRz convention');
+    await page.locator('[data-viewer-node-kind="rotation"][data-axis="Y"]').fill('55');
+    const editedMultiAxis=await state();nearVector(quaternionMatrix(editedMultiAxis.rig.bones.find(bone=>bone.node==='3').quaternion),expectedUnityMatrix([35,55,60]),'Editing one Euler component preserves the other source components and native order');
+    await page.locator('#viewer-node-reset').click();
+    nearVector(quaternionMatrix((await state()).rig.bones.find(bone=>bone.node==='3').quaternion),expectedUnityMatrix([35,45,60]),'Reset restores the original multi-axis saved quaternion');
+    const multiAxisState=await state();
+    generated=fixture({breastSavedScale:[2.999999,2,3]});await page.evaluate(()=>openModelViewer(['/synthetic/valid-upper-breast-boundary.unity']));
+    assert.equal(await page.locator('#viewer-breast').isDisabled(),false,'A valid value just below the open source bound must retain its 100% identity');
+    assert.equal(Number(await page.locator('#viewer-breast').getAttribute('max')),100);
+    await slider('viewer-breast-number',150);assert.equal((await state()).rig.body.breast,100,'The numeric input cannot cross the verified open upper source bound');
+    const upperBoundaryState=await state();
+    generated=fixture({breastSavedScale:[.5,.8,.9]});await page.evaluate(()=>openModelViewer(['/synthetic/manual-only-custom-breast.unity']));
+    assert(await page.locator('#viewer-breast').isDisabled(),'No unsupported below-domain proportion curve may be invented');
+    assert((await page.locator('#viewer-breast-note').innerText()).includes('individual bone editing'));
+    await inputNode(2,'scale','X',55);nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.55,.8,.9],'Advanced editing remains available for custom out-of-curve source shapes');
+    const manualOnlyState=await state();
+    generated=fixture({semanticExpressions:true});await page.evaluate(()=>openModelViewer(['/synthetic/named-expression-controls.unity']));
+    await slider('viewer-height',110);const beforeExpressionBody=(await state()).rig.body;
+    const namedExpressionBase=await capture('named-expression-base');
+    assert.equal(await page.locator('[data-viewer-expression-preset="fixture-smile"]').innerText(),'Smile','Normal expression selection has a meaningful label');
+    assert.equal(await page.locator('[data-viewer-expression-preset="fixture-invalid-channel"]').count(),0,'An invalid morph recipe must never appear as a usable expression');
+    await page.locator('[data-viewer-expression-preset="fixture-smile"]').click();
+    nearVector((await state()).rig.expressions.map(value=>value.weight),[1,1],'A full-face preview preset drives the declared eye and mouth channels together');
+    assert((await capture(null,'named-expression-base')).changedPixels>32,'Named expression presets must change actual morph geometry');
+    await page.locator('[data-viewer-expression-group="mouth"]').click();
+    await page.locator('#viewer-expression-shapes').evaluate(details=>details.open=true);
+    await page.locator('[data-viewer-expression-control="fixture-mouth-smile"]').evaluate(input=>{input.value='45';input.dispatchEvent(new Event('input',{bubbles:true}));});
+    nearVector((await state()).rig.expressions.map(value=>value.weight),[1,.45],'Mouth fine-tuning preserves the separately selected eyes');
+    await page.locator('#viewer-expression-reset').click();
+    nearVector((await state()).rig.expressions.map(value=>value.weight),[0,0],'Expression reset restores the original morph state');
+    assert.deepEqual((await state()).rig.body,beforeExpressionBody,'Expression reset must not remove body adjustments');
+    assert.equal((await capture(null,'named-expression-base')).changedPixels,0,'Expression reset restores the source framebuffer');
+    const namedExpressionState=await state();
     generated=fixture({previewName,rotationStart:.25,previewVerified:true,allSaved:true,rotationConflict:true});await page.evaluate(()=>openModelViewer(['/synthetic/conflicting-rotation.unity']));
     const rotationConflict=await state();assert.equal(rotationConflict.rig.savedNodes.conflicts,1);assert.equal(rotationConflict.rig.savedNodes.skipped,3);assert.equal(rotationConflict.rig.savedNodes.applied,4);assert.deepEqual(bone(rotationConflict,3).quaternion,[0,0,0,1]);
     generated=fixture({allSaved:true,metadataWarning:true});await page.evaluate(()=>openModelViewer(['/synthetic/omitted-invalid-setting.unity']));
@@ -293,7 +496,11 @@ if(require.main===module)(async()=>{
     assert.deepEqual(errors,[]);
     await page.screenshot({path:path.join(evidence,'synthetic-rig-ui.png'),fullPage:true});
     await page.evaluate(()=>ModelViewer.dispose());assert(await page.locator('#viewer-pose-basic').isDisabled());assert(await page.locator('#viewer-pose-preview').isDisabled());assert.deepEqual(await pressed(),['false','false']);
-    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
+    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,
+      bodyTools:{headBeforeHeight,headAfterHeight,hairBeforeHeight,hairAfterHeight,toolPresetState:toolPresetState.rig.body,upperBoundaryState:upperBoundaryState.rig.body,manualOnlyState:manualOnlyState.rig},inspectorLayouts,
+      multiAxisUnity:{loaded:loadedMultiAxis.rig.bones.find(bone=>bone.node==='3'),edited:editedMultiAxis.rig.bones.find(bone=>bone.node==='3'),reset:multiAxisState.rig.bones.find(bone=>bone.node==='3')},
+      namedExpressions:{base:namedExpressionBase,final:namedExpressionState.rig},
+      previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));
     console.log(JSON.stringify(report));
   } finally {await browser.close();}
