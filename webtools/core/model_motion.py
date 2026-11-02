@@ -3,8 +3,9 @@
 Only the game's UiNaviMotionKey.SuitPreview (=1) recipe is supported. Encrypted
 inputs are decrypted into a private temporary directory, never over user files.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
+from importlib import resources
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,7 @@ import tempfile
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_UNPACKED = 32 * 1024 * 1024
+BUNDLED_PREVIEW = resources.files(__package__).joinpath("resources", "sifas_suit_preview.unity")
 KNOWN_PREVIEWS = {
     "96ada81d0b8f35573fa81e0a3830b018a1d46ff26fff778f3be0a0deed618ebe": {
         "size": 8826, "assetName": "motion/ch0301_gen_preview1_l.unity3d",
@@ -35,10 +37,14 @@ class MotionInputs:
     def __init__(self, paths, context, deadline):
         self.paths, self.context, self.deadline = list(paths), dict(context or {}), deadline
         self.origins, self.verified, self._temporary, self._catalog = {}, [], None, None
+        self._resources = ExitStack()
 
     def close(self):
-        if self._temporary is not None:
-            self._temporary.cleanup()
+        try:
+            if self._temporary is not None:
+                self._temporary.cleanup()
+        finally:
+            self._resources.close()
 
     def descriptors(self, deadline=None):
         deadline = self.deadline if deadline is None else deadline
@@ -93,7 +99,8 @@ class MotionInputs:
         names = [obj.peek_name() for obj in env.objects if obj.type.name == "AssetBundle"]
         if len(clips) != 1 or clips[0].peek_name() != recipe["clipName"] or (recipe["assetName"] and recipe["assetName"] not in names):
             raise ValueError("The suit-preview resource does not match its verified contents.")
-        record = dict(recipe, path=path, sourceId=source_id(path), sourceHash=hashlib.sha256(data).hexdigest(), sourceName=os.path.basename(original))
+        record = dict(recipe, path=path, sourceId=source_id(path), sourceHash=hashlib.sha256(data).hexdigest(),
+                      sourceName=os.path.basename(original), origin="selected")
         if not any(item["sourceId"] == record["sourceId"] for item in self.verified):
             self.verified.append(record)
         return True
@@ -172,8 +179,38 @@ class MotionInputs:
                 and all(track["kind"] in ("translation", "rotation", "euler", "scale")
                         and len(set(_nodes(rig.node_bindings, track["path"]))) == 1 for track in decoded["tracks"]))
 
+    def _bundled(self, rig, deadline):
+        """Use package data offline, independently of game DB/cache availability.
+
+        The resource is the user-authorized original common preview. Exact
+        content identity and every target binding are still checked at runtime;
+        a missing/corrupt resource or incompatible rig cannot become a default.
+        """
+        try:
+            _check(deadline)
+            with BUNDLED_PREVIEW.open("rb") as handle:
+                data = handle.read(MAX_BYTES + 1)
+            if not data or len(data) > MAX_BYTES or hashlib.sha256(data).hexdigest() not in KNOWN_PREVIEWS:
+                return []
+            # Chaquopy may keep package resources behind its importer. Retain
+            # as_file's materialization until the final GLB has consumed it.
+            path = os.fspath(self._resources.enter_context(resources.as_file(BUNDLED_PREVIEW)))
+            if not self._register(path, BUNDLED_PREVIEW.name, data, deadline):
+                return []
+            if self._fully_bound(path, rig, deadline):
+                next(record for record in self.verified if record["path"] == path)["origin"] = "bundled"
+                return [path]
+        except (ValueError, OSError):
+            pass
+        return []
+
     def automatic(self, rig, loaded, deadline):
-        if self.verified or len(loaded) >= 8 or not self.context.get("repo_root"):
+        if self.verified or len(loaded) >= 8:
+            return []
+        bundled = self._bundled(rig, deadline)
+        if bundled:
+            return bundled
+        if not self.context.get("repo_root"):
             return []
         import llas_asset_extractor as extractor
         roots = list(self.context.get("pack_roots", [])) + list(self.context.get("library_roots", []))
@@ -200,6 +237,7 @@ class MotionInputs:
                     try:
                         staged = self._decrypt(path, descriptor, deadline)
                         if self._fully_bound(staged, rig, deadline):
+                            next(record for record in self.verified if record["path"] == staged)["origin"] = "local_cache"
                             return [staged]
                     except (ValueError, OSError):
                         continue
@@ -213,7 +251,8 @@ class MotionInputs:
                         and clip.get("bindingComplete") is True and clip.get("channels") == record["channels"] \
                         and clip.get("sourceTracks") == record["channels"]:
                     metadata["previewMotion"] = {"kind": "sifas_suit_preview", "verified": True, "name": clip["name"],
-                                                 "sourceName": record["sourceName"], "assetName": record["assetName"]}
+                                                 "sourceName": record["sourceName"], "assetName": record["assetName"],
+                                                 "origin": record["origin"]}
                     return
 
 

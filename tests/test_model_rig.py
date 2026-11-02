@@ -261,6 +261,112 @@ class RigTests(unittest.TestCase):
         self.assertEqual(metadata["warnings"], baseline["warnings"])
         self.assertEqual(metadata["rig"]["animationWarnings"][-1]["code"], "animation_unavailable")
 
+    def test_automatic_motion_survives_face_lookup_failure(self):
+        from webtools.core import model_faces, model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            with patch.object(model_faces.FacePlan, "resolve", side_effect=OSError("face CDN unavailable")), \
+                    patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]) as automatic:
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True})
+            automatic.assert_called_once()
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertTrue(metadata["rig"]["available"])
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+
+    def test_rina_board_placeholder_uses_validated_costume_metadata_for_motion_owner(self):
+        from webtools.core import model_motion
+        environment = self.UnityPy.load(self.owner_rig_without_clips())
+        for obj in environment.objects:
+            if obj.type.name == "Material":
+                tree = obj.read_typetree()
+                tree["m_Name"] = "ch9999_co0035_body"
+                obj.save_typetree(tree)
+        owners = []
+        with tempfile.TemporaryDirectory() as directory:
+            path, manifest = Path(directory) / "costume.unity", Path(directory) / "modinstall.txt"
+            path.write_bytes(next(iter(environment.files.values())).save())
+            manifest.write_text("chara_id = 209\ncostume_file = 'costume.unity'\n")
+            def capture_owner(stage, rig, loaded, deadline):
+                owners.append(rig.owner)
+                return []
+            with patch.object(model_motion.MotionInputs, "automatic", capture_owner):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False,
+                    "manifest_paths": [str(manifest)], "allow_download": False})
+        self.assertTrue(metadata["rig"]["available"])
+        self.assertEqual(owners, [209])
+
+    def test_completed_automatic_pose_survives_optional_expression_lookup_failure(self):
+        from webtools.core import model_animation, model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            with patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]), \
+                    patch.object(model_animation, "discover_animation_paths", side_effect=OSError("optional expression lookup")):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False})
+            document, _ = unpack(metadata)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertEqual(len(document["animations"]), 1)
+        self.assertEqual(metadata["rig"]["animationWarnings"][-1]["code"], "animation_unavailable")
+
+    def test_automatic_motion_survives_partially_appended_face_failure(self):
+        from webtools.core import model_motion
+        from test_model_faces import FaceTests, bundle
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, donor = root / "rig.unity", root / "original.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+            append = viewer._append_scene
+
+            def fail_after_append(*args, **kwargs):
+                result = append(*args, **kwargs)
+                if kwargs.get("auto_only"):
+                    raise OSError("optional facial geometry failed after appending")
+                return result
+
+            with patch.object(viewer, "_append_scene", side_effect=fail_after_append), \
+                    patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]) as automatic:
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True,
+                    "allow_download": False, "library_roots": [str(root)], "cache_dir": str(root / "cache")})
+            automatic.assert_called_once()
+            document, _ = unpack(metadata)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["faces"]["added"], 0)
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual(len(document["meshes"]), 1)
+        self.assertEqual(len(document["skins"]), 1)
+        self.assertTrue(all(joint < len(document["nodes"]) for skin in document["skins"] for joint in skin["joints"]))
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+
+    def test_automatic_motion_recovers_from_partially_loaded_face_environment(self):
+        from webtools.core import model_faces, model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rig.unity"
+            path.write_bytes(self.owner_rig_without_clips())
+            environment = viewer._environment
+            attempts = [0]
+
+            def fail_optional_load(paths, deadline, base_env=None):
+                if paths == ["broken-face.unity"]:
+                    # Simulate an optional import corrupting its shared state
+                    # before it can return. Recovery must load a fresh body.
+                    base_env.files["half-loaded-face"] = object()
+                    attempts[0] += 1
+                    raise OSError("partial optional asset import")
+                return environment(paths, deadline, base_env=base_env)
+
+            with patch.object(model_faces.FacePlan, "resolve", return_value=["broken-face.unity"]), \
+                    patch.object(viewer, "_paths", side_effect=lambda paths: paths), \
+                    patch.object(viewer, "_environment", side_effect=fail_optional_load), \
+                    patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True})
+        self.assertEqual(attempts[0], 1)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+
     def test_unbound_selected_clip_does_not_suppress_local_companion_search(self):
         from webtools.core import model_animation
         with tempfile.TemporaryDirectory() as directory:
@@ -386,7 +492,12 @@ class ActualRigTests(unittest.TestCase):
                         "012": {"RightEyeWhiteLine"}, "013": {"LeftEyeWhiteLine"},
                         "018": {"LeftEyeWhiteLine", "RightEyeWhiteLine"}, "019": {"LeftEyeWhiteLine", "RightEyeWhiteLine"}}
             clips = metadata["rig"]["clips"]
-            self.assertEqual(len(clips), 20)
+            self.assertEqual(len(clips), 21)
+            preview = metadata["rig"]["previewMotion"]
+            self.assertTrue(preview["verified"])
+            self.assertEqual(preview["origin"], "bundled")
+            self.assertEqual(len([clip for clip in clips if clip["name"] == preview["name"]]), 1)
+            self.assertEqual(len([clip for clip in clips if clip["sourceName"].startswith("ch0207_")]), 20)
             for suffix, mesh_names in expected.items():
                 clip = next(row for row in clips if row["sourceName"].endswith("_" + suffix))
                 self.assertEqual({document["meshes"][document["nodes"][track["node"]]["mesh"]]["name"] for track in clip["visibility"]}, mesh_names)

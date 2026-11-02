@@ -33,18 +33,18 @@
       <div class="viewer-workspace">
         <aside class="viewer-files">
           <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
-          <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Missing facial parts can be added automatically.">Open a costume model or ZIP. Missing facial parts can be added automatically.</p>
+          <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Its preview pose and missing face parts load automatically.">Open a costume model or ZIP. Its preview pose and missing face parts load automatically.</p>
           <div class="viewer-file-actions">
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
-            <button id="viewer-add-motion" type="button" data-i18n="Add animation file">Add animation file</button>
+            <button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
             <button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
           </div>
           <div class="viewer-option-row">
             <label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label>
           </div>
-          <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Fills missing face parts from the originals. Uses the internet if needed.">Fills missing face parts from the originals. Uses the internet if needed.</p>
-          <p class="viewer-render-note" data-i18n="Add a Unity motion/expression bundle or an original SIFAS preview pack, then reopen the model. FBX motion files are not supported.">Add a Unity motion/expression bundle or an original SIFAS preview pack, then reopen the model. FBX motion files are not supported.</p>
+          <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Missing face parts are found locally or downloaded automatically.">Missing face parts are found locally or downloaded automatically.</p>
+          <p class="viewer-render-note" data-i18n="The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.">The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.</p>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
         </aside>
         <div class="viewer-main">

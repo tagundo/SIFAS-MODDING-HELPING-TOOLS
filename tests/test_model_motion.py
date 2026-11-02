@@ -8,11 +8,19 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from webtools.core import model_motion as motion
 from webtools.core import model_viewer as viewer
 
 FIXTURE = Path(__file__).parent / "fixtures" / "viewer_rig.unity"
+_IMPORT = __import__
+
+
+def without_extractor(name, *args, **kwargs):
+    if name == "llas_asset_extractor":
+        raise AssertionError("Packaged preview must not need the extractor")
+    return _IMPORT(name, *args, **kwargs)
 
 
 class MotionTests(unittest.TestCase):
@@ -182,6 +190,70 @@ class MotionTests(unittest.TestCase):
             metadata = self.prepare([FIXTURE])
         self.assertNotIn("previewMotion", metadata["rig"])
 
+    def test_bundled_preview_needs_no_selected_motion_database_cache_or_extractor(self):
+        bundled = self.root / "bundled.unity"
+        bundled.write_bytes(self.plain)
+        with patch.object(motion, "BUNDLED_PREVIEW", bundled), \
+                patch.object(motion.MotionInputs, "descriptors", side_effect=AssertionError("DB must not be used")), \
+                patch("builtins.__import__", side_effect=without_extractor):
+            metadata = viewer.prepare([str(FIXTURE)], rigged=True)
+        self.assertEqual(metadata["source_names"], [FIXTURE.name])
+        self.assertEqual(metadata["rig"]["previewMotion"]["origin"], "bundled")
+        self.assertEqual(metadata["rig"]["previewMotion"]["name"], "Neutral swing__2")
+        self.assertEqual(metadata["rig"]["previewMotion"]["sourceName"], bundled.name)
+        self.assertEqual(metadata["faces"]["status"], "not_needed")
+        self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_zip_backed_package_resource_lifetime_and_loaded_provenance(self):
+        archive_path = self.root / "package.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("sifas_suit_preview.unity", self.plain)
+        materialized = []
+        original = motion.MotionInputs._fully_bound
+        def inspect(stage, path, rig, deadline):
+            materialized.append(Path(path))
+            self.assertEqual(Path(path).read_bytes(), self.plain)
+            return original(stage, path, rig, deadline)
+        with zipfile.ZipFile(archive_path) as archive, \
+                patch.object(motion, "BUNDLED_PREVIEW", zipfile.Path(archive, "sifas_suit_preview.unity")), \
+                patch.object(motion.MotionInputs, "_fully_bound", inspect):
+            metadata = viewer.prepare([str(FIXTURE)], rigged=True)
+        self.assertEqual(metadata["rig"]["previewMotion"]["origin"], "bundled")
+        self.assertTrue(materialized)
+        self.assertTrue(all(not path.exists() for path in materialized))
+        selected = next(clip for clip in metadata["rig"]["clips"] if clip["name"] == metadata["rig"]["previewMotion"]["name"])
+        self.assertEqual(selected["sourceHash"], self.digest)
+        self.assertTrue(selected["bindingComplete"])
+
+    def test_corrupt_bundled_preview_is_ignored_without_replacing_valid_body(self):
+        bundled = self.root / "corrupt.unity"
+        bundled.write_bytes(self.plain[:-1] + bytes([self.plain[-1] ^ 1]))
+        with patch.object(motion, "BUNDLED_PREVIEW", bundled):
+            metadata = viewer.prepare([str(FIXTURE)], rigged=True)
+        self.assertNotIn("previewMotion", metadata["rig"])
+        self.assertEqual(len(metadata["rig"]["clips"]), 1)
+        self.assertEqual(metadata["stats"]["vertices"], 6)
+
+    def test_bundled_preview_requires_complete_unique_bindings(self):
+        from webtools.core.model_rig import RigBuilder
+        bundled = self.root / "bundled.unity"
+        bundled.write_bytes(self.plain)
+        original = RigBuilder.__init__
+        def ambiguous(rig, *args, **kwargs):
+            original(rig, *args, **kwargs)
+            rig.node_bindings["Move/BreastSize"] = [0, 1]
+        with patch.object(motion, "BUNDLED_PREVIEW", bundled), patch.object(RigBuilder, "__init__", ambiguous):
+            metadata = viewer.prepare([str(FIXTURE)], rigged=True)
+        self.assertNotIn("previewMotion", metadata["rig"])
+
+    def test_explicit_verified_motion_takes_priority_over_bundled_copy(self):
+        bundled = self.root / "bundled.unity"
+        bundled.write_bytes(self.plain)
+        with patch.object(motion, "BUNDLED_PREVIEW", bundled):
+            metadata = self.prepare([FIXTURE, self.raw])
+        self.assertEqual(len(metadata["rig"]["clips"]), 2)
+        self.assertEqual(metadata["rig"]["previewMotion"]["origin"], "selected")
+
     def test_hair_only_or_renamed_body_owner_excludes_motion_only_identity(self):
         environment = self.UnityPy.load(FIXTURE.read_bytes())
         renderer = next(obj for obj in environment.objects if obj.type.name == "SkinnedMeshRenderer")
@@ -219,6 +291,24 @@ class MotionTests(unittest.TestCase):
 
 
 class ActualPreviewTests(unittest.TestCase):
+    def test_clean_clothed_model_gets_packaged_preview_without_db_or_extra_inputs(self):
+        costume = os.environ.get("SIFAS_FACE_TEST_COSTUME")
+        if not costume:
+            self.skipTest("Set actual clothed costume for automatic packaged preview")
+        before = hashlib.sha256(Path(costume).read_bytes()).hexdigest()
+        with patch.object(motion.MotionInputs, "descriptors", side_effect=AssertionError("No database allowed")), \
+                patch("builtins.__import__", side_effect=without_extractor):
+            metadata = viewer.prepare([costume], rigged=True)
+        preview = metadata["rig"]["previewMotion"]
+        self.assertEqual(preview["origin"], "bundled")
+        self.assertEqual(preview["name"], "ch0301_GEN_preview1_L")
+        self.assertEqual(metadata["source_names"], [Path(costume).name])
+        clip = next(clip for clip in metadata["rig"]["clips"] if clip["name"] == preview["name"])
+        self.assertTrue(clip["bindingComplete"])
+        self.assertEqual(clip["channels"], 58)
+        self.assertEqual(clip["sourceHash"], "96ada81d0b8f35573fa81e0a3830b018a1d46ff26fff778f3be0a0deed618ebe")
+        self.assertEqual(hashlib.sha256(Path(costume).read_bytes()).hexdigest(), before)
+
     def test_clothed_costume_raw_preview_and_explicit_eye_clips(self):
         names = ("SIFAS_FACE_TEST_COSTUME", "SIFAS_FACE_TEST_BUNDLE", "SIFAS_FACE_TEST_EYE_TABLE", "SIFAS_PREVIEW_TEST_PACK")
         if not all(os.environ.get(name) for name in names):

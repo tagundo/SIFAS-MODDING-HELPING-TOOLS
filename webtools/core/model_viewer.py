@@ -943,8 +943,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
         if auto_face:
             faces.added += 1
-            from .model_faces import facial_role
-            faces.rendered_roles.add(facial_role(game_name, mesh_name, _source_path(renderer) in faces.dynamic_sources))
+            from .model_faces import renderer_role
+            faces.rendered_roles.add(renderer_role(scene, renderer, game_object, mesh_obj,
+                                                   _source_path(renderer) in faces.dynamic_sources))
     return materials
 
 
@@ -989,7 +990,7 @@ def _build(paths, deadline, face_context=None, rigged=False):
     from .model_faces import FacePlan, FACE_SECONDS
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
-    disabled_faces = FacePlan(scene, paths, None, deadline)
+    disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:
         from .model_rig import RigBuilder
@@ -1007,6 +1008,7 @@ def _build(paths, deadline, face_context=None, rigged=False):
 
     face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
+    face_append_started = False
     if face_enabled:
         faces = None
         try:
@@ -1022,6 +1024,7 @@ def _build(paths, deadline, face_context=None, rigged=False):
                 # conversion time left; motion must wait for its completion.
                 render_deadline = deadline if rig is not None else face_deadline
                 _paths(paths + extra)
+                face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
                 expanded = _Scene(env, render_deadline, trees=scene.trees)
                 expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
@@ -1042,7 +1045,23 @@ def _build(paths, deadline, face_context=None, rigged=False):
             faces.added = 0
             faces.status = "unavailable"
             faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
-            return (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+            completed = (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+            if face_append_started:
+                # Optional import/rendering may already have changed the shared
+                # environment, GLB and rig. Rebuild only this failed rigged
+                # attempt, with faces disabled, so its independent automatic
+                # motion cannot inherit partially appended facial geometry.
+                if playable_rig and time.monotonic() < deadline:
+                    try:
+                        recovered = _build(paths, deadline, dict(face_context, enabled=False), rigged=True)
+                        return recovered[:2] + (list(recovered[2]) + faces.warnings, faces.metadata()) + recovered[4:]
+                    except Exception:
+                        pass
+                return completed
+            extra = []
+            scene.deadline = deadline
+            if rig is not None:
+                rig.update(scene, faces, deadline)
 
     # Motion is independent of automatic facial completion. Unsupported/static
     # rigs cannot use discovered tracks; errors must not rewrite face status.
@@ -1056,17 +1075,31 @@ def _build(paths, deadline, face_context=None, rigged=False):
         animation_paths = stage.automatic(rig, paths + extra, motion_deadline) if stage is not None else []
         if not animation_paths and rig.clips and not face_context.get("animation_paths"):
             return completed
-        if not animation_paths:
-            animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, motion_deadline)
-        _remaining(motion_deadline)
-        if not animation_paths:
+        loaded = paths + extra
+
+        def append_motion(additions):
+            nonlocal env, scene
+            _remaining(motion_deadline)
+            _paths(loaded + additions)
+            env = _environment(additions, motion_deadline, base_env=env)
+            expanded = _Scene(env, motion_deadline, trees=scene.trees)
+            expanded.stats, expanded.warnings = dict(completed[1]), list(scene.warnings)
+            rig.update(expanded, faces, motion_deadline)
+            result = _to_glb(expanded, glb, faces, motion_deadline, rig=rig)
+            scene = expanded
+            return result
+
+        if animation_paths:
+            # Commit the bundled/known preview before optional local expression
+            # discovery. A missing or broken companion cannot remove this pose.
+            completed = append_motion(animation_paths)
+            loaded += animation_paths
+        if len(loaded) >= 8:
             return completed
-        _paths(paths + extra + animation_paths)
-        env = _environment(animation_paths, motion_deadline, base_env=env)
-        expanded = _Scene(env, motion_deadline, trees=scene.trees)
-        expanded.stats, expanded.warnings = dict(completed[1]), list(scene.warnings)
-        rig.update(expanded, faces, motion_deadline)
-        return _to_glb(expanded, glb, faces, motion_deadline, rig=rig)
+        companions = discover_animation_paths(loaded, face_context, faces.owner or rig.owner, motion_deadline)
+        if not companions:
+            return completed
+        return append_motion(companions[:8 - len(loaded)])
     except Exception:
         metadata = dict(completed[4])
         metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{

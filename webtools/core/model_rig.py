@@ -107,7 +107,7 @@ def _authored_trs(tree):
 class RigBuilder:
     def __init__(self, scene, glb, faces, selected_paths, deadline):
         from .model_viewer import _source_path
-        from .model_faces import _names, _body_sources
+        from .model_faces import _names, _body_sources, _manifest_owners, source_owner
         self.glb, self.scene, self.faces, self.deadline = glb, scene, faces, deadline
         self.selected = set(selected_paths)
         _, self.facial_sources = _names(scene)
@@ -119,8 +119,9 @@ class RigBuilder:
             _source_path(renderer) for renderer, tree, game_object in scene.renderers
             if tree.get("m_Enabled", True) and scene.active(game_object)
         }
+        manifests = _manifest_owners(selected_paths, faces.context.get("manifest_paths"), faces.context.get("origins"))
         for source in geometry_sources:
-            owners.update(_names(scene, source)[0])
+            owners.update(source_owner(scene, source, manifests.get(source)))
         self.owner = next(iter(owners)) if len(owners) == 1 else None
         self.nodes, self.worlds, self.names = {}, {}, defaultdict(list)
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}
