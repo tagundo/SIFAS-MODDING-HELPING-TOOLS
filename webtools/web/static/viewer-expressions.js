@@ -7,17 +7,19 @@
     var nodes = options.nodes || {}, channels = options.channels || [], catalog = options.catalog || {};
     var change = options.change || function () {}, disposed = false, interactive = false;
     var overrides = {}, boneOperations = {}, visibilityOperations = {}, selectedPresets = {};
-    var channelByKey = {}, channelsByTarget = {}, metadataByTarget = {}, targetFamilies = {};
+    var channelByKey = {}, channelsByTarget = {}, metadataByTarget = {}, targetFamilies = {}, authoredWeights = {};
     var boneFamilies = {}, visibilityFamilies = {}, controls = [], presets = [], currentGroup = "";
     var selectedRaw = "", lastSelection = null, unavailable = 0, events = [], controlElements = [], partSelections = [];
-    var presetButtons = [], groupButtons = [];
+    var presetButtons = [], groupButtons = [], rawError = "", rawInputValues = {};
     function element(id) { return document.getElementById(id); }
     var ui = { panel: element("viewer-expression-panel"), groups: element("viewer-expression-groups"),
       presets: element("viewer-expression-presets"), raw: element("viewer-expression"),
-      strength: element("viewer-expression-value"), output: element("viewer-expression-output"),
+      strength: element("viewer-expression-value"), number: element("viewer-expression-number"),
+      output: element("viewer-expression-output"), source: element("viewer-expression-source"),
       status: element("viewer-expression-status"), reset: element("viewer-expression-reset"),
       selection: element("viewer-expression-selection"), advanced: element("viewer-expression-advanced") };
     function finite(value) { return typeof value === "number" && isFinite(value); }
+    function percent(value) { return finite(value) ? String(value * 100) + "%" : "—"; }
     function own(object, key) { return Object.prototype.hasOwnProperty.call(object, key); }
     function family(group) {
       if (group === "all") return "all";
@@ -33,11 +35,15 @@
       if (!channel || !channel.object || !channel.object.morphTargetInfluences ||
           !Number.isInteger(channel.index) || channel.index < 0 || channel.index >= channel.object.morphTargetInfluences.length) return;
       channelByKey[String(channel.key)] = channel;
+      // This is the file's actual glTF weight before motion or viewer overrides.
+      // Keep it separate from the live influences that change during playback.
+      authoredWeights[String(channel.key)] = channel.object.morphTargetInfluences[channel.index];
       var key = token(channel.node, channel.index);
       if (!channelsByTarget[key]) channelsByTarget[key] = [];
       channelsByTarget[key].push(channel);
     });
     channels = channels.filter(function (channel) { return channel && channelByKey[String(channel.key)] === channel; });
+    Object.freeze(authoredWeights);
     function targetValid(target) {
       if (!target || !Number.isInteger(target.node) || !Number.isInteger(target.index)) return false;
       var matches = channelsByTarget[token(target.node, target.index)];
@@ -119,8 +125,21 @@
       if (disposed) return;
       change(); refresh();
     }
+    function rawRange(channel) {
+      var source = authoredWeights[String(channel.key)], current = channel.object.morphTargetInfluences[channel.index];
+      return { min: Math.min(0, finite(source) ? source * 100 : 0, finite(current) ? current * 100 : 0),
+        max: Math.max(100, finite(source) ? source * 100 : 100, finite(current) ? current * 100 : 100) };
+    }
+    function inputError(value) {
+      rawError = value ? "Expression weight must be a finite number between -10000% and 10000%." : "";
+      if (ui.number) {
+        ui.number.setCustomValidity(rawError ? translate(rawError) : "");
+        ui.number.setAttribute("aria-invalid", String(!!rawError));
+      }
+    }
     function selectPreset(preset) {
       if (!interactive || disposed) return;
+      inputError(false);
       var group = family(preset.group);
       clearFamily(group);
       (preset.resetBones || []).forEach(function (id) {
@@ -146,16 +165,23 @@
     }
     function selectControl(control, value) {
       if (!interactive || disposed || !finite(value)) return;
+      inputError(false);
       clearFamily(family(control.group));
       (control.resetTargets || []).forEach(function (target) { assignTarget(target, 0); });
       control.targets.forEach(function (target) { assignTarget(target, Math.max(0, Math.min(1, value))); });
       lastSelection = { label: control.label, note: control.note || "Shape control only.", kind: "shape", id: control.id, group: family(control.group) };
       changed();
     }
-    function setRaw(value) {
+    function setRaw(value, typedPercent) {
       var channel = channelByKey[selectedRaw];
-      if (!interactive || disposed || !channel || !finite(value)) return;
-      overrides[selectedRaw] = Math.max(0, Math.min(1, value));
+      if (!interactive || disposed || !channel) return;
+      // Match the exporter's preview bound, without turning a rejected edit
+      // into a different weight. Named game presets retain their 0..1 endpoints.
+      if (!finite(value) || Math.abs(value) > 100) { inputError(true); refresh(); return; }
+      inputError(false);
+      overrides[selectedRaw] = value;
+      if (typeof typedPercent === "string") rawInputValues[selectedRaw] = { weight: value, text: typedPercent };
+      else delete rawInputValues[selectedRaw];
       delete selectedPresets[channelFamily(channel)]; delete selectedPresets.all;
       var meta = metadataByTarget[token(channel.node, channel.index)];
       lastSelection = { label: meta ? meta.label : "Original channel", note: "Original expression channel name is available in advanced controls.",
@@ -216,12 +242,17 @@
         controls.filter(function (control) { return family(control.group) === currentGroup; }).forEach(function (control) {
           var label = document.createElement("label"), title = document.createElement("span"), input = document.createElement("input"), output = document.createElement("output");
           label.className = "viewer-expression-control"; title.textContent = translate(control.label);
-          input.type = "range"; input.min = "0"; input.max = "100"; input.step = "1";
+          input.type = "range"; input.min = "0"; input.max = "100"; input.step = "any";
           input.dataset.viewerExpressionControl = control.id; input.setAttribute("aria-label", translate(control.label));
           input.oninput = function () { selectControl(control, Number(input.value) / 100); };
+          var mixedButton = document.createElement("button"); mixedButton.type = "button";
+          mixedButton.textContent = translate("Set shape to 100%"); mixedButton.dataset.viewerExpressionMixed = control.id;
+          mixedButton.title = translate("Editing this shape replaces mixed values.");
+          mixedButton.onclick = function () { selectControl(control, 1); };
           label.appendChild(title); label.appendChild(input); label.appendChild(output);
+          label.appendChild(mixedButton);
           if (control.note) { var note = document.createElement("small"); note.textContent = translate(control.note); label.appendChild(note); }
-          controlHolder.appendChild(label); controlElements.push({ control: control, input: input, output: output });
+          controlHolder.appendChild(label); controlElements.push({ control: control, input: input, output: output, mixedButton: mixedButton });
         });
       }
       if (shapes) {
@@ -258,13 +289,42 @@
       controlElements.forEach(function (entry) {
         var values = weightsFor(entry.control), value = values.length ? values[0] : 0;
         var mixed = values.some(function (item) { return Math.abs(item - value) > 1e-6; });
-        entry.input.disabled = !enabled; entry.input.value = String(value * 100);
-        entry.output.textContent = mixed ? translate("Mixed values") : Math.round(value * 100) + "%";
+        var outside = !finite(value) || value < 0 || value > 1;
+        // A range has no indeterminate state. Do not give its first target a
+        // precise-looking thumb when the grouped renderer weights differ.
+        entry.input.hidden = mixed || outside;
+        entry.input.disabled = !enabled || mixed || outside;
+        if (!mixed && !outside) entry.input.value = String(value * 100);
+        entry.input.setAttribute("aria-valuetext", mixed ? translate("Mixed values") : percent(value));
+        entry.output.textContent = mixed ? translate("Mixed values") : percent(value);
+        entry.output.title = translate("Current weight") + ": " + values.map(percent).join(", ");
+        entry.mixedButton.hidden = !mixed && !outside;
+        entry.mixedButton.disabled = !enabled;
       });
       if (ui.raw) ui.raw.disabled = !enabled;
-      var channel = channelByKey[selectedRaw], value = channel ? channel.object.morphTargetInfluences[channel.index] * 100 : 0;
-      if (ui.strength) { ui.strength.disabled = !enabled || !channel; ui.strength.value = String(value); }
-      if (ui.output) ui.output.textContent = Math.round(value) + "%";
+      var channel = channelByKey[selectedRaw], value = channel ? channel.object.morphTargetInfluences[channel.index] : null;
+      if (ui.strength) {
+        ui.strength.disabled = !enabled || !channel || !finite(value);
+        if (channel) {
+          var range = rawRange(channel); ui.strength.min = String(range.min); ui.strength.max = String(range.max); ui.strength.step = "any";
+          if (finite(value)) ui.strength.value = String(value * 100);
+          ui.strength.setAttribute("aria-valuetext", percent(value));
+        }
+      }
+      if (ui.number) {
+        ui.number.min = "-10000"; ui.number.max = "10000"; ui.number.step = "any";
+        ui.number.disabled = !enabled || !channel;
+        var typed = rawInputValues[selectedRaw];
+        if (document.activeElement !== ui.number && !rawError) ui.number.value = channel && finite(value) ?
+          typed && typed.weight === value ? typed.text : String(value * 100) : "";
+        ui.number.setCustomValidity(rawError ? translate(rawError) : "");
+      }
+      if (ui.output) ui.output.textContent = percent(value);
+      if (ui.source) {
+        ui.source.hidden = !channel;
+        ui.source.textContent = channel ? translate("File weight") + ": " + percent(authoredWeights[selectedRaw]) +
+          " · " + translate("Current weight") + ": " + percent(value) : "";
+      }
       if (ui.reset) ui.reset.disabled = !enabled || !(Object.keys(overrides).length || Object.keys(boneOperations).length || Object.keys(visibilityOperations).length);
       if (ui.selection) {
         ui.selection.textContent = lastSelection ? translate(lastSelection.label) + (lastSelection.note ? " — " + translate(lastSelection.note) : "") :
@@ -277,9 +337,11 @@
           var normals = item.object.geometry && item.object.geometry.morphAttributes && item.object.geometry.morphAttributes.normal;
           return active > (normals && normals.length ? 4 : 8);
         });
-        ui.status.hidden = !exceeded && !unavailable;
-        ui.status.textContent = exceeded ? translate("Too many expression channels are active. Some may be omitted by the viewer.") :
-          unavailable ? translate("Some expression presets are unavailable for this model.") : "";
+        var notices = [];
+        if (rawError) notices.push(translate(rawError));
+        if (exceeded) notices.push(translate("Too many expression channels are active. Some may be omitted by the viewer."));
+        if (unavailable) notices.push(translate("Some expression presets are unavailable for this model."));
+        ui.status.hidden = !notices.length; ui.status.textContent = notices.join(" ");
       }
     }
     function getBoneOperations() {
@@ -305,8 +367,12 @@
         record.last = part.visible;
         // An authored-hidden part can be revealed by an original eye recipe.
         // Only an explicit user's hidden choice must veto that recipe.
-        var choice = typeof part.userVisible === "boolean" ? part.userVisible :
-          part.userChanged === true || record.touched ? part.visible : undefined;
+        var choice;
+        if (typeof part.userChanged === "boolean") {
+          // The rig explicitly clears this flag on global reset. Old selection
+          // history must not turn an authored-hidden part into a manual veto.
+          if (part.userChanged) choice = typeof part.userVisible === "boolean" ? part.userVisible : part.visible;
+        } else choice = typeof part.userVisible === "boolean" ? part.userVisible : record.touched ? part.visible : undefined;
         if (choice === false) hidden.push(part.object);
       });
       Object.keys(visibilityOperations).forEach(function (key) { nodes[key].visible = visibilityOperations[key].visible; });
@@ -314,11 +380,16 @@
     }
     function reset(silent) {
       overrides = {}; boneOperations = {}; visibilityOperations = {}; selectedPresets = {}; lastSelection = null; selectedRaw = "";
+      rawInputValues = {}; partSelections = [];
+      inputError(false);
       if (ui.raw) ui.raw.value = "";
       if (!silent) changed(); else refresh();
     }
-    listen(ui.raw, "change", function () { selectedRaw = ui.raw.value; refresh(); });
+    listen(ui.raw, "change", function () { selectedRaw = ui.raw.value; inputError(false); refresh(); });
     listen(ui.strength, "input", function () { setRaw(Number(ui.strength.value) / 100); });
+    listen(ui.number, "input", function () { setRaw(ui.number.value.trim() ? Number(ui.number.value) / 100 : NaN, ui.number.value); });
+    listen(ui.number, "change", function () { if (rawError) ui.number.reportValidity(); else refresh(); });
+    listen(ui.number, "blur", function () { if (!rawError) refresh(); });
     listen(ui.reset, "click", function () { if (!ui.reset.disabled) reset(false); });
     renderPanel(); refresh();
     return {
@@ -327,6 +398,9 @@
       setInteractive: function (value) { interactive = !!value; refresh(); },
       updateLanguage: function () { renderPanel(); refresh(); },
       getState: function () { return { group: currentGroup, selectedRaw: selectedRaw, selectedPresets: Object.assign({}, selectedPresets),
+        rawWeights: channels.map(function (channel) { return { key: String(channel.key), sourceWeight: authoredWeights[String(channel.key)],
+          currentWeight: channel.object.morphTargetInfluences[channel.index] }; }),
+        rawRange: channelByKey[selectedRaw] ? rawRange(channelByKey[selectedRaw]) : null, rawInputError: rawError,
         overrides: Object.assign({}, overrides), boneOperations: getBoneOperations(),
         visibility: Object.keys(visibilityOperations).map(function (key) { var value = visibilityOperations[key]; return {node: value.node, visible: value.visible}; }),
         controls: controls.map(function (control) { return { id: control.id, group: control.group, label: control.label, values: weightsFor(control) }; }),

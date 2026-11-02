@@ -145,9 +145,10 @@ repacking is unnecessary and the source files remain unchanged.
   placement. The shared preview motion does not change the costume's character.
 - **Breast size** selects the breast tool's exact reference profiles, including
   its irregular smaller profiles. Each choice sets all three local scale axes;
-  it does not interpolate a percentage or infer a physical cup size. **Use file
-  settings** restores the authored shape plus whichever saved corrections are
-  enabled. Choosing a profile clears earlier manual scale edits to `BreastSize`,
+  it does not interpolate a percentage or infer a physical cup size. **No extra
+  edits** uses the authored shape plus whichever saved corrections are enabled.
+  Undo clears this section's scale edits while respecting the saved-setting
+  toggles. Choosing a profile clears earlier manual scale edits to `BreastSize`,
   while keeping its placement and rotation. Custom XYZ editing remains available
   under **Individual bones**.
 - **Height** shows the file's original settings for reference. A natural stature
@@ -155,19 +156,40 @@ repacking is unnecessary and the source files remain unchanged.
   stretching. The original model and head corrections remain intact. `Move` is
   labelled **Whole model** in advanced editing, rather than presented as a human
   height parameter.
+- **Skirt scale** shows the actual local factor stored in the file and the
+  current editing value. A file with `0.85` corrections starts at `0.85`.
+  **Apply** assigns the entered absolute XYZ factor to each identified skirt
+  root, matching the skirt tool; it does not multiply the existing corrections.
+  Different per-bone or per-axis values remain distinct in the expanded table.
+  Undo clears skirt scale edits, including manual root-scale overrides, without
+  changing saved-setting toggles or manual position/rotation edits.
+- **File values** are immutable stored NodeScaling endpoints, or explicitly
+  labelled authored fallbacks when no saved entry exists. Switching a correction
+  off changes **Current editing values**, not the file readout. Conflicting and
+  unsupported records are labelled rather than replaced by an apparent file value.
 - Saved body and outfit settings are applied by default:
   supported LiveCore scale, position and rotation records cover every exported
   target, including skirt bones. Part groups let you include or exclude settings
   without editing raw bone data; the global checkbox shows the authored shape.
   Saved values are absolute local endpoints, so repeated pose changes do not
   multiply them again. Conflicting or unsupported entries are reported.
-  **Individual bones** provides additional relative transform controls.
+  **Individual bones** uses absolute local factors, positions and Unity Euler
+  angles. Only explicitly edited axes are pinned; untouched axes inherit the
+  active settings and pose. Entering an axis value pins it even when it equals
+  the file value. Reset clears those pins. Static editing fields do not animate;
+  separate read-only rows show the current pose when it differs. Local X/Y/Z
+  do not necessarily correspond to model width, height and depth.
 - **Reset preview adjustments** restores the verified suit-preview first frame
   when compatible, or otherwise the saved pose, and resets the controls and saved
-  settings to their enabled defaults. These
+  settings and part visibility to their loaded defaults. These
   preview changes do not write to the source bundle. The separate LiveCore and
   Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
   optional raw game `heightScale` setting for single-file runs.
+- Expression controls show immutable file and current morph weights. A stored
+  negative or over-100% weight is preserved and represented by the raw controls;
+  weights are absolute blend weights, not extra bone multipliers. Motion choices
+  identify partially supported bindings, and part visibility follows the pose
+  until an explicit user visibility choice overrides it.
 - **Display options** contains perspective, background, wireframe, textures and
   individual part visibility. **SIFAS material preview** reconstructs supported
   AS/Member equations; **Basic textures** retains the simpler texture view.

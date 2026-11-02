@@ -92,30 +92,44 @@
               <div class="viewer-body-controls">
                 <div class="viewer-body-card viewer-profile-card" aria-labelledby="viewer-breast-title">
                   <h4 id="viewer-breast-title" data-i18n="Breast size">Breast size</h4>
+                  <p class="viewer-control-note" data-i18n="XYZ scale factors">XYZ scale factors</p>
+                  <dl class="viewer-profile-values viewer-actual-values">
+                    <div><dt data-i18n="File values">File values</dt><dd id="viewer-breast-file-values" class="viewer-factor-values">—</dd></div>
+                    <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-breast-current-values" class="viewer-factor-values">—</dd></div>
+                  </dl>
                   <label for="viewer-breast-preset" data-i18n="Reference body profile">Reference body profile</label>
-                  <select id="viewer-breast-preset" aria-describedby="viewer-breast-note" disabled><option value="loaded" data-i18n="Loaded shape">Loaded shape</option></select>
-                  <dl class="viewer-profile-values">
-                    <div><dt data-i18n="Loaded profile">Loaded profile</dt><dd id="viewer-breast-loaded">—</dd></div>
+                  <select id="viewer-breast-preset" aria-describedby="viewer-breast-note" disabled><option value="loaded" data-i18n="No extra edits">No extra edits</option></select>
+                  <dl class="viewer-profile-values viewer-secondary-values">
+                    <div><dt data-i18n="File profile">File profile</dt><dd id="viewer-breast-loaded">—</dd></div>
                     <div><dt data-i18n="Current profile">Current profile</dt><dd><output id="viewer-breast-value">—</output></dd></div>
                   </dl>
-                  <button id="viewer-breast-reset" type="button" data-i18n="Restore loaded shape" disabled>Restore loaded shape</button>
+                  <button id="viewer-breast-reset" type="button" data-i18n="Undo breast scale edits" disabled>Undo breast scale edits</button>
                   <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
                 </div>
-                <div class="viewer-body-card">
-                  <label for="viewer-skirt" data-i18n="Skirt length and flare">Skirt length and flare</label><output id="viewer-skirt-value" for="viewer-skirt viewer-skirt-number">100%</output>
-                  <input id="viewer-skirt" type="range" min="50" max="150" step="1" value="100" aria-describedby="viewer-skirt-note" disabled>
-                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-skirt-number" data-i18n="Skirt length and flare (%)">Skirt length and flare (%)</label><input id="viewer-skirt-number" type="number" min="50" max="150" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-skirt-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
-                  <p id="viewer-skirt-note" class="viewer-control-note" data-i18n="Adjusts the skirt sections together using the skirt tool's settings.">Adjusts the skirt sections together using the skirt tool's settings.</p>
+                <div class="viewer-body-card viewer-scale-card" aria-labelledby="viewer-skirt-title">
+                  <h4 id="viewer-skirt-title" data-i18n="Skirt length and flare">Skirt length and flare</h4>
+                  <dl class="viewer-profile-values viewer-actual-values">
+                    <div><dt data-i18n="File values">File values</dt><dd id="viewer-skirt-file" class="viewer-factor-values">—</dd></div>
+                    <div><dt data-i18n="Current values">Current values</dt><dd><output id="viewer-skirt-value" class="viewer-factor-values">—</output></dd></div>
+                  </dl>
+                  <label for="viewer-skirt-number" data-i18n="Scale factor">Scale factor</label>
+                  <div class="viewer-absolute-entry"><input id="viewer-skirt-number" type="number" min="0.01" max="10" step="0.01" inputmode="decimal" aria-describedby="viewer-skirt-note" disabled><button id="viewer-skirt-apply" type="button" data-i18n="Apply this value to every skirt root" disabled>Apply this value to every skirt root</button></div>
+                  <button id="viewer-skirt-reset" type="button" data-i18n="Undo skirt edits" disabled>Undo skirt edits</button>
+                  <p id="viewer-skirt-note" class="viewer-control-note" data-i18n="The entered value sets X, Y and Z of every skirt root to the same scale.">The entered value sets X, Y and Z of every skirt root to the same scale.</p>
+                  <details id="viewer-skirt-details" class="viewer-scale-details">
+                    <summary data-i18n="Per-bone values">Per-bone values</summary>
+                    <table class="viewer-value-table"><caption data-i18n="XYZ scale factors">XYZ scale factors</caption><thead><tr><th scope="col" data-i18n="Bone">Bone</th><th scope="col" data-i18n="File values">File values</th><th scope="col" data-i18n="Current values">Current values</th></tr></thead><tbody id="viewer-skirt-nodes"></tbody></table>
+                  </details>
                 </div>
                 <details id="viewer-height-card" class="viewer-body-card viewer-source-card">
-                  <summary><span id="viewer-height-title" data-i18n="Height settings in the file">Height settings in the file</span><output id="viewer-height-value" data-i18n="Read-only">Read-only</output></summary>
+                  <summary><span id="viewer-height-title" data-i18n="Saved heightScale (reference only)">Saved heightScale (reference only)</span><output id="viewer-height-value" data-i18n="Read-only">Read-only</output></summary>
                   <p id="viewer-height-source" class="viewer-source-value" hidden></p>
-                  <p id="viewer-height-note" class="viewer-control-note" data-i18n="Height adjustment is unavailable. Saved values are shown for reference.">Height adjustment is unavailable. Saved values are shown for reference.</p>
+                  <p id="viewer-height-note" class="viewer-control-note" data-i18n="This saved parameter is not a measurement in centimetres or the current model height.">This saved parameter is not a measurement in centimetres or the current model height.</p>
                 </details>
               </div>
               <div id="viewer-body-presets" class="viewer-preset-list" role="group" aria-labelledby="viewer-body-title"></div>
               <div id="viewer-body-extra" class="viewer-body-controls" hidden></div>
-              <p class="viewer-render-note" data-i18n="Skirt 100% keeps the loaded skirt settings. Reset restores the loaded skirt shape.">Skirt 100% keeps the loaded skirt settings. Reset restores the loaded skirt shape.</p>
+              <p class="viewer-render-note"><span data-i18n="File values stay unchanged when you edit the preview or turn saved settings off.">File values stay unchanged when you edit the preview or turn saved settings off.</span> <span data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</span></p>
             </section>
             <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
             <p class="viewer-render-note" data-i18n="Loads the file's size, position and rotation corrections.">Loads the file's size, position and rotation corrections.</p>
@@ -129,11 +143,12 @@
               <div id="viewer-expression-groups" class="viewer-chip-list" role="group" aria-labelledby="viewer-expression-title"></div>
               <div id="viewer-expression-presets" class="viewer-expression-presets" role="group" aria-labelledby="viewer-expression-title"></div>
               <p id="viewer-expression-selection" class="viewer-render-note" role="status" aria-live="polite"></p>
+              <div id="viewer-expression-source" class="viewer-expression-source" role="status" aria-live="polite"></div>
               <details id="viewer-expression-advanced" class="viewer-expression-advanced">
                 <summary data-i18n="Fine-tune expression parts">Fine-tune expression parts</summary>
                 <div class="viewer-expression-row">
                   <label><span data-i18n="Expression part">Expression part</span><select id="viewer-expression" disabled></select></label>
-                  <label><span data-i18n="Expression strength">Expression strength</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><output id="viewer-expression-output">0%</output></label>
+                  <label><span id="viewer-expression-weight-label" data-i18n="Current expression weight (%)">Current expression weight (%)</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><span class="viewer-expression-weight-entry"><input id="viewer-expression-number" type="number" step="0.1" inputmode="decimal" aria-labelledby="viewer-expression-weight-label" disabled><output id="viewer-expression-output">—</output></span></label>
                 </div>
               </details>
             </section>
@@ -152,10 +167,10 @@
               <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
               <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
               <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
-              <p class="viewer-render-note" data-i18n="Fields show the loaded corrections and your changes. Animation does not overwrite these values.">Fields show the loaded corrections and your changes. Animation does not overwrite these values.</p>
-              <p class="viewer-render-note" data-i18n="Local axes: X width, Y height, Z depth. Rotation follows Unity's bone coordinates.">Local axes: X width, Y height, Z depth. Rotation follows Unity's bone coordinates.</p>
+              <p class="viewer-render-note" data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</p>
+              <p class="viewer-render-note" data-i18n="Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.">Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.</p>
               <div id="viewer-node-fields"></div>
-              <button id="viewer-node-reset" type="button" data-i18n="Reset this bone" disabled>Reset this bone</button>
+              <button id="viewer-node-reset" type="button" data-i18n="Undo manual bone edits" disabled>Undo manual bone edits</button>
             </details>
             <button id="viewer-preview-reset" type="button" data-i18n="Reset preview adjustments" disabled>Reset preview adjustments</button>
           </details>

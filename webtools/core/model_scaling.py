@@ -38,7 +38,7 @@ _BREAST_ENLARGE_PRESETS = (
 )
 _CONTROLS = (
     ("breast", "Breast size", ("BreastSize",), "breast_tool_presets"),
-    ("skirt", "Skirt length and volume", _SKIRT_ROOTS, "multiply_authored_local_scale"),
+    ("skirt", "Skirt length and volume", _SKIRT_ROOTS, "absolute_skirt_root_scale"),
 )
 _RECOMMENDED = {
     "Head": ("Head", "head"), "Head_Hair": ("Hair", "hair"),
@@ -167,7 +167,7 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
 
     selected = None if sources is None else set(sources)
     nodes = glb.doc["nodes"]
-    result = {"version": 3, "baseline": "authored", "savedOverridesApplied": False,
+    result = {"version": 4, "baseline": "authored", "savedOverridesApplied": False,
               "savedInterpolation": "unity_vector3_lerp_clamp01", "rotationOrder": "ZXY",
               "gameHeightFormulaVerified": False, "components": [], "controls": [], "targets": [],
               "nodes": [], "recommendedTargets": [], "warnings": []}
@@ -331,25 +331,6 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             result["recommendedTargets"].append({key: target[key] for key in
                 ("node", "name", "label", "category", "hasSavedSettings")})
 
-    def descends(child, ancestor):
-        """Require one exported parent chain entirely inside the same source."""
-        source = source_by_node.get(ancestor)
-        seen = set()
-        while child not in seen and child in authored_nodes and source_by_node.get(child) == source:
-            if child == ancestor:
-                return True
-            seen.add(child)
-            chain = parents.get(child, [])
-            if len(chain) != 1:
-                return False
-            child = chain[0]
-        return False
-
-    def outermost(targets):
-        return [target for target in targets if not any(
-            target["node"] != other["node"] and descends(target["node"], other["node"])
-            for other in targets)]
-
     # The native heightScale initialization is distinct from the verified saved
     # TRS endpoints above. A Move-only Y stretch is not a height editor. Keep
     # those authored records visible without inventing a stature/cm mapping.
@@ -362,23 +343,36 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
     })
     for identity, label, names, mode in _CONTROLS:
         targets = [dict(target) for name in names for target in catalogue[name].values()]
+        ambiguous = False
         if identity == "skirt":
-            targets = outermost(targets)
+            # The absolute tool assigns every named root exactly once, even if
+            # one named root is nested under another. Do not silently drop one
+            # as the former relative-multiplier control did. Duplicate names
+            # in one source remain visible, but need per-node advanced edits.
+            seen_names = set()
             for target in targets:
-                target["axes"] = [1, 1, 1]
+                key = (source_by_node[target["node"]], target["name"])
+                if key in seen_names:
+                    ambiguous = True
+                seen_names.add(key)
         if len(targets) > MAX_CONTROL_NODES:
             targets = []
             warn("scaling_metadata_limit")
-        control = {"id": identity, "label": label, "available": bool(targets),
+        control = {"id": identity, "label": label, "available": bool(targets) and not ambiguous,
                    "mode": mode, "nodes": targets}
         if identity == "breast":
             control.update(default="loaded", unit="profile", baseline="loaded_saved_settings")
             control.update(_breast_profile())
         else:
-            control.update(default=100, min=50, max=150, unit="percent",
-                           baseline="active_pose_and_saved_settings", limitsSource="viewer_preview_bounds",
+            control.update(unit="local_scale_factor", supportsAbsoluteUniform=control["available"],
+                           application="absolute_local_scale", uniformTolerance=1e-7,
+                           editBounds={"min": .01, "max": 10., "source": "viewer_preview_bounds",
+                                       "appliesTo": "explicit_uniform_edits_only"},
                            source="skirt_length_changer.py:DEFAULT_SKIRT_PATTERNS",
-                           exactRootNames=list(_SKIRT_ROOTS), axesMeaning="length_and_volume")
+                           exactRootNames=list(_SKIRT_ROOTS), axesMeaning="length_and_volume",
+                           targetSelection="exact_named_roots")
+            if ambiguous:
+                control["unavailableReason"] = "ambiguous_skirt_roots"
         result["controls"].append(control)
     return result
 
