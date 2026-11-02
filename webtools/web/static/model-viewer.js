@@ -136,6 +136,7 @@
     var delta = lastFrameTime ? Math.min(.1, Math.max(0, (time - lastFrameTime) / 1000)) : 0;
     lastFrameTime = time;
     var moving = rigController ? rigController.update(delta) : false;
+    syncPartVisibility();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
     renderScene();
@@ -430,24 +431,60 @@
       var label = document.createElement("label");
       var input = document.createElement("input");
       input.type = "checkbox";
-      if (child.userData.hidden_default === true || child.userData.hideInPreview === true) child.visible = false;
+      if (!rigController && (child.userData.hidden_default === true || child.userData.hideInPreview === true)) child.visible = false;
       input.checked = child.visible;
-      partInputs.push({ object: child, input: input });
+      var initial = rigController && rigController.getPartVisibility ? rigController.getPartVisibility(child) : null;
+      var status = document.createElement("small"); status.className = "viewer-part-state";
+      status.id = "viewer-part-state-" + count;
+      input.setAttribute("aria-describedby", status.id);
+      var entry = { object: child, input: input, status: status,
+        fileVisible: initial && typeof initial.fileVisible === "boolean" ? initial.fileVisible :
+          initial && typeof initial.selected === "boolean" ? initial.selected : undefined,
+        userChanged: false, userVisible: undefined };
+      partInputs.push(entry);
       input.addEventListener("change", function () {
+        entry.userChanged = true; entry.userVisible = input.checked;
         if (rigController && rigController.setPartVisible) rigController.setPartVisible(child, input.checked);
         else child.visible = input.checked;
+        syncPartVisibility();
         requestRender();
       });
       var title = document.createElement("span");
       title.textContent = child.name || t("Part") + " " + count;
       label.appendChild(input);
       label.appendChild(title);
+      label.appendChild(status);
       list.appendChild(label);
+    });
+    syncPartVisibility();
+  }
+
+  function syncPartVisibility() {
+    // Synchronize the effective result, including STEP animation changes, without
+    // sending another rig change or requesting a new animation frame.
+    partInputs.forEach(function (entry) {
+      var state = rigController && rigController.getPartVisibility ? rigController.getPartVisibility(entry.object) : null;
+      var visible = state && typeof state.visible === "boolean" ? state.visible : !!entry.object.visible;
+      if (entry.input.checked !== visible) entry.input.checked = visible;
+      var current = String(visible);
+      if (entry.input.dataset.viewerEffectiveVisible !== current) entry.input.dataset.viewerEffectiveVisible = current;
+      var messages = [];
+      if (typeof entry.fileVisible === "boolean") messages.push(t("File visibility") + ": " + t(entry.fileVisible ? "Visible" : "Hidden"));
+      messages.push(t("Current visibility") + ": " + t(visible ? "Visible" : "Hidden"));
+      var changed = state ? state.userChanged : entry.userChanged;
+      var choice = state ? state.userVisible : entry.userVisible;
+      if (changed && typeof choice === "boolean") messages.push(t("Your visibility choice") + ": " + t(choice ? "Visible" : "Hidden"));
+      var text = messages.join(" · ");
+      if (entry.status) {
+        var hideStatus = !changed && (typeof entry.fileVisible !== "boolean" || entry.fileVisible === visible);
+        if (entry.status.hidden !== hideStatus) entry.status.hidden = hideStatus;
+        if (entry.status.textContent !== text) entry.status.textContent = text;
+      }
     });
   }
 
   function rigChanged() {
-    partInputs.forEach(function (entry) { entry.input.checked = entry.object.visible; });
+    syncPartVisibility();
     requestRender();
   }
 
@@ -654,6 +691,7 @@
     if (metadata) showWarnings(metadata.warnings);
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
+    syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
   }

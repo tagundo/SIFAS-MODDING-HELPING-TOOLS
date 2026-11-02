@@ -74,7 +74,7 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(result["components"][0]["heightScale"], .960872829)
         self.assertEqual([entry["state"] for entry in result["components"][0]["entries"]], ["pending", "pending"])
         height, breast = result["controls"][:2]
-        self.assertEqual(result["version"], 3)
+        self.assertEqual(result["version"], 4)
         self.assertFalse(height["available"])
         self.assertEqual(height["nodes"], [])
         self.assertEqual(breast["nodes"][0]["baseScale"], [1, 1, 1])
@@ -164,21 +164,101 @@ class ScalingTests(unittest.TestCase):
         self.assertNotEqual(stock["scale"], custom)
         self.assertEqual((self.glb.doc, self.tree), before)
 
-    def test_skirt_uses_only_tool_root_bones_without_descendant_double_scaling(self):
+    def test_absolute_skirt_edit_keeps_named_nested_roots_but_excludes_other_descendants(self):
         self.breast_go.tree["m_Name"] = "LeftSkirtB1_Dyna"
         self.head_go.tree["m_Name"] = "LeftSkirtB2_Dyna"
         self.hair_go.tree["m_Name"] = "RightSkirtB1_Dyna"
-        # A custom edited hierarchy puts one named root under the other. The
-        # preview must not multiply the same branch twice.
+        # Absolute local assignment must retain BOTH named roots. The former
+        # relative control silently dropped the nested one.
         self.glb.doc["nodes"][4]["children"] = [2]
         self.glb.doc["nodes"][1]["children"] = [3]
         control = self.describe()["controls"][2]
         self.assertTrue(control["available"])
-        self.assertEqual([node["name"] for node in control["nodes"]], ["LeftSkirtB1_Dyna"])
-        self.assertEqual(control["nodes"][0]["axes"], [1, 1, 1])
+        self.assertEqual([node["name"] for node in control["nodes"]], ["LeftSkirtB1_Dyna", "RightSkirtB1_Dyna"])
+        self.assertEqual(len({node["node"] for node in control["nodes"]}), 2)
+        self.assertNotIn("LeftSkirtB2_Dyna", [node["name"] for node in control["nodes"]])
+        self.assertEqual(control["mode"], "absolute_skirt_root_scale")
+        self.assertEqual(control["unit"], "local_scale_factor")
+        self.assertEqual(control["application"], "absolute_local_scale")
+        self.assertTrue(control["supportsAbsoluteUniform"])
+        self.assertEqual(control["uniformTolerance"], 1e-7)
+        self.assertEqual(control["editBounds"], {"min": .01, "max": 10., "source": "viewer_preview_bounds",
+                                                "appliesTo": "explicit_uniform_edits_only"})
+        for key in ("default", "min", "max", "limitsSource", "baseline"):
+            self.assertNotIn(key, control)
+        self.assertTrue(all("axes" not in target for target in control["nodes"]))
         self.assertEqual(control["axesMeaning"], "length_and_volume")
         from webtools.tools.skirt import DEFAULT_SKIRT_PATTERNS
         self.assertEqual(control["exactRootNames"], DEFAULT_SKIRT_PATTERNS)
+
+    def add_skirt_branch(self, name, serial, saved_scale):
+        root_parent = len(self.glb.doc["nodes"])
+        names = [name.replace("1_Dyna", "_Root_Dyna"), name, name.replace("1_Dyna", "2_Dyna")]
+        transforms = []
+        for offset, bone_name in enumerate(names):
+            go_id = 100 + serial * 10 + offset * 2
+            go = self.make(go_id, "GameObject", {"m_Name": bone_name})
+            transform = self.make(go_id + 1, "Transform", {"m_GameObject": {"m_PathID": go_id}})
+            node_index = len(self.glb.doc["nodes"])
+            node = {"name": bone_name, "scale": [1., 1., 1.]}
+            if offset < 2:
+                node["children"] = [node_index + 1]
+            self.glb.doc["nodes"].append(node)
+            self.scene.transforms[go.path_id] = transform
+            self.mapping[(id(self.asset), transform.path_id)] = node_index
+            transforms.append(transform)
+        self.glb.doc["nodes"][0]["children"].append(root_parent)
+        self.tree["scaleValues"].append(self.record(transforms[1].path_id, [1., 1., 1.], saved_scale))
+        self.scene.env.objects = list(self.objects.values())
+
+    def test_eight_skirt085_records_and_sixteen_other_nodes_survive_without_a_hidden_multiplier(self):
+        # Matches the actual uploaded skirt085 source's eight local endpoints.
+        # IEEE float32 decoding is deliberately retained as source precision.
+        import struct
+        value = struct.unpack("<f", struct.pack("<f", .85))[0]
+        for serial, name in enumerate(scaling._SKIRT_ROOTS):
+            self.add_skirt_branch(name, serial, [value] * 3)
+        before = copy.deepcopy((self.glb.doc, self.tree))
+        result = self.describe()
+        control = result["controls"][2]
+        self.assertTrue(control["available"])
+        self.assertEqual({node["name"] for node in control["nodes"]}, set(scaling._SKIRT_ROOTS))
+        self.assertEqual(len(control["nodes"]), 8)
+        self.assertTrue(all(node["sourceName"] == "costume.unity" for node in control["nodes"]))
+        entries = [entry for component in result["components"] for entry in component["entries"] if "Skirt" in entry["name"]]
+        self.assertEqual(len(entries), 8)
+        self.assertTrue(all(entry["scaled"] == [value] * 3 for entry in entries))
+        roots = {node["node"] for node in control["nodes"]}
+        other_nodes = [node for node in result["nodes"] if "Skirt" in node["name"] and node["node"] not in roots]
+        self.assertEqual(len(other_nodes), 16)
+        self.assertTrue(all(node["baseScale"] == [1.] * 3 and not node["hasSavedSettings"] for node in other_nodes))
+        self.assertEqual((self.glb.doc, self.tree), before)
+
+    def test_asymmetric_skirt_endpoints_and_values_outside_new_edit_bounds_are_preserved(self):
+        values = ([.85, .9, .87], [.85, .850001, .85], [.001] * 3, [12.] * 3)
+        for serial, (name, scale) in enumerate(zip(scaling._SKIRT_ROOTS, values)):
+            self.add_skirt_branch(name, serial, scale)
+        before = copy.deepcopy((self.glb.doc, self.tree))
+        result = self.describe()
+        entries = [entry for component in result["components"] for entry in component["entries"] if "Skirt" in entry["name"]]
+        self.assertEqual([entry["scaled"] for entry in entries], [list(value) for value in values])
+        self.assertTrue(all(entry["supported"] for entry in entries))
+        self.assertNotIn("default", result["controls"][2])
+        self.assertEqual((self.glb.doc, self.tree), before)
+
+    def test_ambiguous_same_source_skirt_names_disable_simple_edit_without_losing_raw_nodes(self):
+        for serial in range(2):
+            self.add_skirt_branch("SkirtA1_Dyna", serial, [.8 + .1 * serial] * 3)
+        result = self.describe()
+        control = result["controls"][2]
+        self.assertFalse(control["available"])
+        self.assertFalse(control["supportsAbsoluteUniform"])
+        self.assertEqual(control["unavailableReason"], "ambiguous_skirt_roots")
+        self.assertEqual(len(control["nodes"]), 2)
+        self.assertEqual(len({node["node"] for node in control["nodes"]}), 2)
+        raw = [node for node in result["nodes"] if node["name"] == "SkirtA1_Dyna"]
+        self.assertEqual(len(raw), 2)
+        self.assertTrue(all(node["hasSavedSettings"] for node in raw))
 
     def test_authored_node_catalogue_and_frequent_targets_are_source_bound(self):
         self.hair.source = "another_model.unity"

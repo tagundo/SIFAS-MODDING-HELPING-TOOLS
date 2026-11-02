@@ -3,11 +3,10 @@
   "use strict";
   var AXES = ["x", "y", "z"];
   function finite(value, fallback) { value = Number(value); return isFinite(value) ? value : fallback; }
-  function near(a, b) { return Math.abs(a - b) < 1e-7; }
+  function near(a, b) { return Math.abs(a - b) <= 1e-7; }
   // Unity TRS uses float32. Keep runtime precision, but hide binary rounding
-  // noise in the editor (for example, 1.3f must read as 130%, not 129.999995%).
+  // noise in the editor (for example, 1.3f should read as the local factor 1.3).
   function format(value, kind) {
-    if (kind === "rotation" && Math.abs(value) < 1e-7) value = 0;
     return String(Number(value.toPrecision(7)));
   }
   function clone(value) { return { position: value.position.clone(), quaternion: value.quaternion.clone(), scale: value.scale.clone() }; }
@@ -28,15 +27,14 @@
     return [angle.x, angle.y, angle.z].map(function (part) { return part * 180 / Math.PI; });
   }
   function toUI(THREE, value, savedEuler) {
-    return { scale: value.scale.toArray().map(function (part) { return part * 100; }),
+    return { scale: value.scale.toArray(),
       position: [-value.position.x, value.position.y, value.position.z],
       rotation: quaternionUI(THREE, value.quaternion, savedEuler) };
   }
   function adjustmentEmpty(value) {
-    return !value || value.scale.every(function (part) { return near(part, 1); }) &&
-      value.position.every(function (part) { return near(part, 0); }) &&
-      (value.quaternion ? Math.abs(value.quaternion[3]) > 1 - 1e-10 :
-        value.rotation.every(function (part) { return near(part, 0); }));
+    return !value || ["scale", "position", "rotation"].every(function (kind) {
+      return Array.isArray(value[kind]) && value[kind].length === 3 && value[kind].every(function (part) { return part === null; });
+    });
   }
 
   function createNodeEditor(options) {
@@ -44,6 +42,7 @@
     var selected = "", enabled = true, disposed = false, events = [], fields = {}, list = document.getElementById("viewer-node");
     var search = document.getElementById("viewer-node-search"), filter = document.getElementById("viewer-node-filter");
     var shortcutButtons = {}, changeButtons = {};
+    var poseCache = null;
     var ownedLists = [document.getElementById("viewer-node-shortcuts"), document.getElementById("viewer-node-change-list")];
     ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
     if (search) search.value = "";
@@ -109,7 +108,7 @@
       var visible = bones.filter(function (bone) {
         var state = flags(bone.id);
         var category = mode === "all" || mode === "saved" && state.saved ||
-          mode === "changed" && (state.modified || state.body || state.fileChanged || state.expression) ||
+          mode === "changed" && (state.modified || state.body || state.expression) ||
           mode === "frequent" && isFrequent(bone);
         return category && (!term || (friendly(bone) + " " + bone.name).toLowerCase().indexOf(term) >= 0);
       });
@@ -133,41 +132,74 @@
       var shortcuts = document.getElementById("viewer-node-shortcuts"), changes = document.getElementById("viewer-node-change-list");
       updateButtons(shortcuts, shortcutButtons, bones.filter(isFrequent), "No recommended bones in this model.");
       updateButtons(changes, changeButtons, bones.filter(function (bone) {
-        var value = flags(bone.id); return value.modified || value.body || value.fileChanged || value.expression;
+        var value = flags(bone.id); return value.modified || value.body || value.expression;
       }), "No changed bones.");
     }
     function read(kind, axis, input) {
       if (!selected || !enabled || !input.value.trim() || !isFinite(Number(input.value))) return;
-      var value = Number(input.value), baseline = options.value(selected, false), current = options.value(selected, true);
-      if (kind === "scale" && Math.abs(baseline.scale.getComponent(axis)) < 1e-8) return;
-      var desired = toUI(THREE, current, options.savedEuler(selected));
-      if (kind === "scale" && Math.abs(value) < .001) return;
-      desired[kind][axis] = Math.max(Number(input.min), Math.min(Number(input.max), value));
-      var delta = options.adjustment(selected) || { scale: [1, 1, 1], position: [0, 0, 0], rotation: [0, 0, 0] };
-      delta = JSON.parse(JSON.stringify(delta));
-      if (kind === "scale") delta.scale = desired.scale.map(function (part, index) {
-        var base = baseline.scale.getComponent(index);
-        return Math.abs(base) < 1e-8 ? 1 : part / 100 / base;
+      var value = Number(input.value), baseline = options.value(selected, false);
+      if (!baseline || value < Number(input.min) || value > Number(input.max)) return;
+      if (kind === "scale" && Math.abs(value) < 1e-8) return;
+      var previous = options.adjustment(selected);
+      var absolute = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
+      ["scale", "position", "rotation"].forEach(function (name) {
+        if (!previous || previous.mode !== "absolute_axes" || !Array.isArray(previous[name])) return;
+        for (var index = 0; index < 3; index += 1) {
+          if (typeof previous[name][index] === "number" && isFinite(previous[name][index])) absolute[name][index] = previous[name][index];
+        }
       });
-      if (kind === "position") delta.position = desired.position.map(function (part, index) {
-        return (index === 0 ? -part : part) - baseline.position.getComponent(index);
-      });
-      if (kind === "rotation") {
-        var quaternion = baseline.quaternion.clone().invert().multiply(uiQuaternion(THREE, desired.rotation)).normalize();
-        delta.quaternion = quaternion.toArray(); delta.rotation = quaternionUI(THREE, quaternion);
-      }
-      if (!delta.scale.concat(delta.position, delta.rotation, delta.quaternion || []).every(function (part) { return isFinite(part); })) return;
-      options.change(selected, adjustmentEmpty(delta) ? null : delta);
+      // Only the edited axis becomes explicit. Every other null axis inherits
+      // its current animation/profile baseline; typed endpoints never become
+      // ratios, offsets, or a quaternion delta when that baseline changes.
+      // Re-entering the displayed baseline is still an explicit endpoint. Only
+      // reset clears the null mask; a later Saved/profile switch must not move it.
+      absolute[kind][axis] = kind === "position" && axis === 0 ? -value : value;
+      options.change(selected, adjustmentEmpty(absolute) ? null : absolute);
       refresh(false);
+    }
+    function refreshPose() {
+      if (disposed || !poseCache || poseCache.selected !== selected) return;
+      var poseValue = options.poseValue ? options.poseValue(selected) : null;
+      var pose = poseValue ? toUI(THREE, poseValue, poseCache.savedEuler) : null;
+      var poseQuaternion = poseValue ? poseValue.quaternion.toArray() : null;
+      ["scale", "rotation", "position"].forEach(function (kind) {
+        var row = poseCache.rows[kind], differs = false;
+        if (pose && kind === "rotation") {
+          differs = !poseCache.quaternion.every(function (part, axis) { return near(part, poseQuaternion[axis]); }) &&
+            !poseCache.quaternion.every(function (part, axis) { return near(part, -poseQuaternion[axis]); });
+        } else if (pose) differs = pose[kind].some(function (part, axis) { return !near(part, poseCache.values[kind][axis]); });
+        if (!differs) {
+          if (row.parentNode) row.parentNode.removeChild(row);
+          return;
+        }
+        var label = kind === "scale" ? "Scale (local factor)" : kind === "position" ? "Position (model units)" : "Rotation (degrees)";
+        var text = translate("Current pose value") + " · " + translate(label) + ": " +
+          pose[kind].map(function (part) { return format(part, kind); }).join(" / ");
+        if (row.textContent !== text) row.textContent = text;
+        if (!row.parentNode) poseCache.parent.insertBefore(row, poseCache.anchors[kind].nextSibling);
+      });
     }
     function refresh(force) {
       if (disposed) return;
+      poseCache = null;
       refreshLists();
       var exists = !!selected, baselineValue = exists ? options.value(selected, false) : null;
-      var value = exists ? toUI(THREE, options.value(selected, true), options.savedEuler(selected)) : null;
+      var currentValue = exists ? options.value(selected, true) : null;
+      var savedEuler = exists && options.savedEuler ? options.savedEuler(selected) : null;
+      var value = exists ? toUI(THREE, currentValue, savedEuler) : null;
+      var absolute = exists ? options.adjustment(selected) : null;
+      if (value && absolute && absolute.mode === "absolute_axes") {
+        // Preserve the typed Unity Euler representation (350 must not become
+        // -10 after a quaternion round-trip). Untouched axes still come from
+        // the static active baseline, rather than a moving animation frame.
+        var baselineEuler = quaternionUI(THREE, baselineValue.quaternion, savedEuler);
+        value.rotation = baselineEuler.map(function (part, axis) {
+          return absolute.rotation[axis] === null ? part : absolute.rotation[axis];
+        });
+      }
       Object.keys(fields).forEach(function (kind) {
         fields[kind].forEach(function (input, axis) {
-          input.disabled = !enabled || !exists || kind === "scale" && Math.abs(baselineValue.scale.getComponent(axis)) < 1e-8;
+          input.disabled = !enabled || !exists;
           if (!exists) { input.value = ""; return; }
           if (force || document.activeElement !== input) input.value = format(value[kind][axis], kind);
         });
@@ -175,33 +207,42 @@
       document.getElementById("viewer-node-reset").disabled = !enabled || !exists || !flags(selected).modified;
       var status = document.getElementById("viewer-node-status"), baseline = document.getElementById("viewer-node-baseline");
       if (status) status.textContent = exists ? optionLabel(bones.filter(function (bone) { return bone.id === selected; })[0]) : translate("Choose a bone to edit.");
-      if (status && exists && baselineValue.scale.toArray().some(function (part) { return Math.abs(part) < 1e-8; }))
-        status.textContent += " · " + translate("Zero-scale axes cannot be edited safely.");
       if (baseline) {
         baseline.textContent = "";
         if (exists) {
-          var source = toUI(THREE, options.value(selected, false), options.savedEuler(selected));
-          (options.savedEntries ? options.savedEntries(selected) : []).forEach(function (entry) {
-            var values = entry.kind === "scale" ? entry.value.map(function (value) { return value * 100; }) :
-              entry.kind === "position" ? [-entry.value[0], entry.value[1], entry.value[2]] :
-              entry.sourceEuler || quaternionUI(THREE, new THREE.Quaternion().fromArray(entry.value));
+          var file = options.fileValues ? options.fileValues(selected) || {} : {};
+          poseCache = { selected: selected, parent: baseline, rows: {}, anchors: {},
+            values: { scale: value.scale.slice(), rotation: value.rotation.slice(), position: value.position.slice() },
+            quaternion: currentValue.quaternion.toArray(), savedEuler: savedEuler ? savedEuler.slice() : null };
+          function appendLine(category, kind, title, text, fileStatus) {
             var line = document.createElement("div");
-            var label = entry.kind === "scale" ? "Scale (%)" : entry.kind === "position" ? "Position (model units)" : "Rotation (degrees)";
-            line.textContent = translate("File saved value") + " · " + translate(label) + ": " + values.map(function (value) { return format(value, entry.kind); }).join(" / ") +
-              (entry.applied ? "" : " · " + translate("Not applied"));
+            line.dataset.viewerValueSource = category; line.dataset.viewerValueKind = kind;
+            if (fileStatus) line.dataset.viewerFileStatus = fileStatus;
+            line.textContent = translate(title) + " · " + translate(kind === "scale" ? "Scale (local factor)" : kind === "position" ? "Position (model units)" : "Rotation (degrees)") + ": " + text;
             baseline.appendChild(line);
+            return line;
+          }
+          function tripleText(parts, kind) {
+            return parts.map(function (part, axis) { return format(kind === "position" && axis === 0 ? -part : part, kind); }).join(" / ");
+          }
+          ["scale", "rotation", "position"].forEach(function (kind) {
+            var entry = file[kind] || {}, fileStatus = entry.status || "unavailable";
+            var title = { saved: "File saved value", authored: "File authored value", conflict: "Conflicting file values", unsupported: "Unsupported file value" }[fileStatus] || "File value unavailable";
+            var triples = fileStatus === "conflict" || fileStatus === "unsupported" ? entry.values || [] : [];
+            if (!triples.length && Array.isArray(entry.value)) triples = [entry.value];
+            appendLine("file", kind, title, triples.length ? triples.map(function (parts) { return tripleText(parts, kind); }).join(" | ") : "—", fileStatus);
+            poseCache.anchors[kind] = appendLine("editing", kind, "Current editing value", value[kind].map(function (part) { return format(part, kind); }).join(" / "));
+            var row = document.createElement("div");
+            row.dataset.viewerValueSource = "pose"; row.dataset.viewerValueKind = kind;
+            poseCache.rows[kind] = row;
           });
-          [["scale", "Scale (%)"], ["rotation", "Rotation (degrees)"], ["position", "Position (model units)"]].forEach(function (item) {
-            var line = document.createElement("div");
-            line.textContent = translate("File and body baseline") + " · " + translate(item[1]) + ": " + source[item[0]].map(function (value) { return format(value, item[0]); }).join(" / ");
-            baseline.appendChild(line);
-          });
+          refreshPose();
         }
       }
     }
     var holder = document.getElementById("viewer-node-fields"); holder.textContent = "";
-    [["scale", "Scale (%)", -1000, 1000, .1], ["rotation", "Rotation (degrees)", -720, 720, 1],
-      ["position", "Position (model units)", -10, 10, .001]].forEach(function (definition) {
+    [["scale", "Scale (local factor)", -1000000, 1000000, .001], ["rotation", "Rotation (degrees)", -1000000, 1000000, 1],
+      ["position", "Position (model units)", -1000000, 1000000, .001]].forEach(function (definition) {
       var kind = definition[0], row = document.createElement("div"); row.className = "viewer-node-vector";
       var title = document.createElement("span"); title.dataset.label = definition[1]; row.appendChild(title); fields[kind] = [];
       AXES.forEach(function (axis, index) {
@@ -221,7 +262,7 @@
     selected = bones.some(function (bone) { return plainName(bone) === "Head"; }) ?
       bones.filter(function (bone) { return plainName(bone) === "Head"; })[0].id : bones.length ? bones[0].id : "";
     options.onSelect(selected);
-    return { refresh: refresh, select: select, getSelected: function () { return selected; },
+    return { refresh: refresh, refreshPose: refreshPose, select: select, getSelected: function () { return selected; },
       setInteractive: function (value) { if (!disposed) { enabled = !!value; refresh(false); } },
       updateLanguage: function () {
         Array.prototype.forEach.call(holder.children, function (row) {
@@ -233,7 +274,7 @@
       },
       dispose: function () {
         if (disposed) return;
-        disposed = true; enabled = false;
+        disposed = true; enabled = false; poseCache = null;
         events.forEach(function (remove) { remove(); }); holder.textContent = "";
         ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
         shortcutButtons = {}; changeButtons = {};
