@@ -464,7 +464,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
         checkpoint = (len(glb.data), len(glb.doc["accessors"]), len(glb.doc["bufferViews"]))
         try:
             clip = decode_clip(scene.tree(obj), deadline)
-            times, outputs, morph_outputs, rebound, unbound = clip["times"], [], {}, False, 0
+            times, outputs, morph_outputs, rebound, unbound, ambiguous = clip["times"], [], {}, False, 0, False
             visibility_tracks = []
             planned_frames, planned_values = 0, 0
             for track in clip["tracks"]:
@@ -517,6 +517,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                             row[index] = _evaluate(track["curves"][0], stamp) / 100.
                     continue
                 targets = _nodes(node_bindings, track["path"])
+                ambiguous |= len(set(targets)) > 1
                 if not targets:
                     unbound += 1
                     continue
@@ -576,8 +577,15 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             if outputs:
                 glb.doc["animations"].append(animation)
             used_names.add(exported_name)
+            source_identifier, source_hash = "", ""
+            if hasattr(obj, "assets_file"):
+                from .model_viewer import _source_path, _source_hash
+                from .model_motion import source_id
+                source_identifier, source_hash = source_id(_source_path(obj)), _source_hash(obj)
             metadata.append({"index": index, "name": exported_name, "sourceName": clip["name"], "duration": clip["duration"],
-                             "channels": len(outputs), "loop": clip["loop"], "visibility": visibility_tracks})
+                             "channels": len(outputs), "loop": clip["loop"], "visibility": visibility_tracks,
+                             "sourceId": source_identifier, "sourceHash": source_hash, "sourceTracks": len(clip["tracks"]),
+                             "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})
             used_frames += frames
             used_values += values
             if clip["unsupported"] or unbound:

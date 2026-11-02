@@ -7,6 +7,7 @@ meshes, skin weights, texture pixels and bundle files are never written.
 """
 from collections import OrderedDict
 import io
+import hashlib
 import json
 import math
 import ntpath
@@ -263,6 +264,7 @@ def _environment(paths, deadline, base_env=None):
         loaded = env.load_file(_bounded_bundle(data, layout, deadline), name=f"preview-{index}-{os.path.basename(path)}")
         loaded.preview_source_name = os.path.basename(path)
         loaded.preview_source_path = path
+        loaded.preview_source_hash = hashlib.sha256(data).hexdigest()
         # Raw serialized assets may be linked by their filename rather than an
         # embedded CAB id. Register only explicitly supplied, in-memory content.
         if hasattr(loaded, "objects"):
@@ -329,6 +331,18 @@ def _source_path(obj):
         path = getattr(container, "preview_source_path", None)
         if path:
             return path
+        container = getattr(container, "parent", None)
+        if container is None:
+            break
+    return ""
+
+
+def _source_hash(obj):
+    container = obj.assets_file
+    for _ in range(64):
+        value = getattr(container, "preview_source_hash", None)
+        if value:
+            return value
         container = getattr(container, "parent", None)
         if container is None:
             break
@@ -1034,13 +1048,16 @@ def _build(paths, deadline, face_context=None, rigged=False):
     # rigs cannot use discovered tracks; errors must not rewrite face status.
     if rig is None or not (rig.skinned > 0 or rig.morphs):
         return completed
-    if rig.clips:
-        return completed
     motion_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
     try:
         _remaining(motion_deadline)
         from .model_animation import discover_animation_paths
-        animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, motion_deadline)
+        stage = face_context.get("_motion_stage")
+        animation_paths = stage.automatic(rig, paths + extra, motion_deadline) if stage is not None else []
+        if not animation_paths and rig.clips and not face_context.get("animation_paths"):
+            return completed
+        if not animation_paths:
+            animation_paths = discover_animation_paths(paths + extra, face_context, faces.owner or rig.owner, motion_deadline)
         _remaining(motion_deadline)
         if not animation_paths:
             return completed
@@ -1077,8 +1094,17 @@ def prepare(paths, *, face_context=None, rigged=False):
         try:
             # Keep the original internal call shape for callers/tests that do
             # not enable automatic discovery.
-            built = (_build(paths, deadline, face_context, rigged=True) if rigged
-                     else _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline))
+            if rigged:
+                from .model_motion import prepare_motion_inputs
+                with prepare_motion_inputs(paths, face_context, deadline) as motion:
+                    context = dict(face_context or {"enabled": False, "allow_download": False})
+                    context["_motion_stage"] = motion
+                    context["origins"] = {**context.get("origins", {}), **motion.origins}
+                    built = _build(motion.paths, deadline, context, rigged=True)
+                    if len(built) > 4:
+                        motion.promote(built[4])
+            else:
+                built = _build(paths, deadline, face_context) if face_context is not None else _build(paths, deadline)
             data, stats, warnings = built[:3]
             faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
             rig = built[4] if len(built) > 4 else {"enabled": bool(rigged), "available": False}

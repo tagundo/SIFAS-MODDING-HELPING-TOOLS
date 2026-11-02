@@ -107,10 +107,20 @@ def _authored_trs(tree):
 class RigBuilder:
     def __init__(self, scene, glb, faces, selected_paths, deadline):
         from .model_viewer import _source_path
-        from .model_faces import _names
+        from .model_faces import _names, _body_sources
         self.glb, self.scene, self.faces, self.deadline = glb, scene, faces, deadline
         self.selected = set(selected_paths)
-        owners, self.facial_sources = _names(scene)
+        _, self.facial_sources = _names(scene)
+        owners = set()
+        # Body identity wins when present. Hair/accessory and renamed-body
+        # inputs retain their geometry identity without consulting motion-only
+        # bundles (shared preview clips deliberately contain another chXXXX).
+        geometry_sources = _body_sources(scene) or {
+            _source_path(renderer) for renderer, tree, game_object in scene.renderers
+            if tree.get("m_Enabled", True) and scene.active(game_object)
+        }
+        for source in geometry_sources:
+            owners.update(_names(scene, source)[0])
         self.owner = next(iter(owners)) if len(owners) == 1 else None
         self.nodes, self.worlds, self.names = {}, {}, defaultdict(list)
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}

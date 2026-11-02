@@ -100,7 +100,10 @@ class ViewerRouteTests(unittest.TestCase):
 
     def test_interactive_rig_flag_is_strict_and_does_not_accept_runtime_transforms(self):
         for extra in ({"rigged": 1}, {"rigged": "true"}, {"rigged": None},
-                      {"bone_scales": {"BreastSize": [2, 2, 2]}}):
+                      {"bone_scales": {"BreastSize": [2, 2, 2]}},
+                      {"previewMotion": {"kind": "sifas_suit_preview", "verified": True,
+                                         "name": "untrusted_clip"}},
+                      {"verified_resources": ["/private/motion.unity"]}):
             with self.subTest(extra=extra):
                 status, _, _ = self.request("/api/viewer/prepare", {"paths": [str(self.model)], **extra})
                 self.assertEqual(status, 400)
