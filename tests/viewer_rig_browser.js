@@ -52,6 +52,11 @@ function fixture(options = {}) {
     doc.skins[0].joints.push(5);
   }
   if(options.shader)doc.materials[0].extras={sifas:{version:1,shader:'AS/Member',colors:{_TintColor:[.2,.5,.8,1],_AmbientColor:[1,1,1,0]},floats:{_CullMode:0},features:{},textures:{}}};
+  if(options.textureData){
+    doc.images=[{uri:options.textureData}];doc.textures=[{source:0,sampler:0}];
+    doc.samplers=[{magFilter:9728,minFilter:9728,wrapS:33071,wrapT:33071}];
+    doc.materials[0].pbrMetallicRoughness.baseColorTexture={index:0};
+  }
   const json = Buffer.from(JSON.stringify(doc)), jsonPadded = Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
   const bin = Buffer.concat(chunks), binPadded = Buffer.concat([bin,Buffer.alloc((4-bin.length%4)%4)]);
   const header = Buffer.alloc(12), jh = Buffer.alloc(8), bh = Buffer.alloc(8);
@@ -88,7 +93,8 @@ function fixture(options = {}) {
   return {glb:Buffer.concat([header,jh,jsonPadded,bh,binPadded]),rig};
 }
 
-(async()=>{
+module.exports={fixture};
+if(require.main===module)(async()=>{
   let generated=fixture();
   const launch={headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']};
   if(process.env.CHROMIUM_EXECUTABLE)launch.executablePath=process.env.CHROMIUM_EXECUTABLE;
