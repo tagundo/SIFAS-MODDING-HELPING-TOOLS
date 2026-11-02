@@ -55,6 +55,141 @@ class ViewerArchiveTests(unittest.TestCase):
             self.assertEqual(Path(expanded.paths[0]).read_bytes(), self.fixture)
             self.assertEqual(expanded.paths[1], str(plain))
 
+    def test_declared_platform_pairs_choose_android_and_keep_same_platform_parts(self):
+        # Identical bytes are intentional: deduplicating by hash would also
+        # remove the separate accessory which the manifest does not pair.
+        manifest = ("costume_file='models/primary'\n"
+                    "costume_file_ios='models/alternative'\n"
+                    "rina_unmask_costume_file='models/unmasked'\n"
+                    "rina_unmask_costume_file_ios='models/unmasked-other'\n").encode()
+        self.write_zip([("nested/models/alternative", self.fixture),
+                        ("nested/models/unmasked-other", self.fixture),
+                        ("nested/models/accessory", self.fixture),
+                        ("nested/modinstall.txt", manifest),
+                        ("nested/models/primary", self.fixture),
+                        ("nested/models/unmasked", self.fixture)])
+        original = self.archive.read_bytes()
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths],
+                             ["accessory", "primary", "unmasked"])
+            self.assertEqual(len(expanded.manifest_paths), 1)
+            self.assertEqual(Path(expanded.manifest_paths[0]).read_bytes(), manifest)
+            for path in expanded.paths:
+                self.assertEqual(Path(path).read_bytes(), self.fixture)
+                self.assertEqual(expanded.origins[path], str(self.archive))
+        self.assertEqual(self.archive.read_bytes(), original)
+        self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_unpaired_platform_names_and_identical_models_remain_separate(self):
+        self.write_zip([("costume_apk.unity", self.fixture),
+                        ("costume_ios.unity", self.fixture),
+                        ("modinstall.txt", b"costume_file='costume_apk.unity'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths],
+                             ["costume_apk.unity", "costume_ios.unity"])
+
+    def test_ios_only_and_missing_or_non_model_android_are_preserved(self):
+        for primary in (None, b"this file is not a Unity model"):
+            with self.subTest(primary_is_non_model=primary is not None):
+                files = [("portable", self.fixture),
+                         ("modinstall.txt", b"costume_file='absent'\ncostume_file_ios='portable'\n")]
+                if primary is not None:
+                    files.append(("absent", primary))
+                self.write_zip(files)
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], ["portable"])
+        self.write_zip([("portable", self.fixture),
+                        ("modinstall.txt", b"costume_file_ios='portable'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["portable"])
+
+    def test_ios_pair_must_resolve_to_an_actual_model_in_the_same_directory_namespace(self):
+        # A manifest inside one costume cannot suppress another costume's
+        # equally named sibling. Its references are relative to that manifest.
+        self.write_zip([("a/android", self.fixture), ("b/portable", self.fixture),
+                        ("a/modinstall.txt", b"costume_file='android'\ncostume_file_ios='portable'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).parent.name+"/"+Path(path).name for path in expanded.paths],
+                             ["a/android", "b/portable"])
+
+    def test_manifests_in_two_nested_costumes_select_only_their_own_variants(self):
+        manifest = b"costume_file='device'\ncostume_file_ios='other-device'\n"
+        self.write_zip([("a/device", self.fixture), ("b/other-device", self.fixture),
+                        ("a/other-device", self.fixture), ("b/device", self.fixture),
+                        ("a/modinstall.txt", manifest), ("b/modinstall.txt", manifest)])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).parent.name+"/"+Path(path).name for path in expanded.paths],
+                             ["a/device", "b/device"])
+            self.assertEqual(len(expanded.manifest_paths), 2)
+
+    def test_platform_declaration_cannot_select_or_suppress_files_from_another_archive(self):
+        second = self.root / "other.zip"
+        self.write_zip([("android", self.fixture),
+                        ("modinstall.txt", b"costume_file='android'\ncostume_file_ios='portable'\n")])
+        with zipfile.ZipFile(second, "w") as archive:
+            archive.writestr("portable", self.fixture)
+        with viewer_archive.expand_inputs([str(self.archive), str(second)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["android", "portable"])
+            self.assertEqual(expanded.origins[expanded.paths[1]], str(second))
+
+    def test_a_variant_explicitly_needed_as_another_primary_is_not_removed(self):
+        self.write_zip([("device", self.fixture), ("shared", self.fixture),
+                        ("modinstall.txt", b"costume_file='device'\ncostume_file_ios='shared'\n"
+                                           b"rina_unmask_costume_file='shared'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["device", "shared"])
+
+    def test_nested_manifest_primary_survives_a_parent_manifest_alternative(self):
+        self.write_zip([("models/device", self.fixture), ("models/shared", self.fixture),
+                        ("modinstall.txt", b"costume_file='models/device'\ncostume_file_ios='models/shared'\n"),
+                        ("models/modinstall.txt", b"costume_file='shared'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["device", "shared"])
+            self.assertEqual(len(expanded.manifest_paths), 2)
+
+    def test_same_model_referenced_for_both_platforms_is_retained(self):
+        self.write_zip([("shared", self.fixture), ("accessory", self.fixture),
+                        ("modinstall.txt", b"costume_file='shared'\ncostume_file_ios='shared'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["shared", "accessory"])
+
+    def test_literal_windows_separators_resolve_within_the_manifest_directory(self):
+        self.write_zip([("nested/models/device", self.fixture), ("nested/models/other", self.fixture),
+                        ("nested/modinstall.txt", b"costume_file=r'models\\device'\ncostume_file_ios=r'models\\other'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["device"])
+
+    def test_nonliteral_or_malformed_platform_declarations_do_not_hide_models(self):
+        for manifest in (b"costume_file='device' + ''\ncostume_file_ios='other'\n",
+                         b"costume_file=get_name()\ncostume_file_ios='other'\n",
+                         b"costume_file='device'\ncostume_file_ios=('other',)\n",
+                         b"costume_file='device'\ncostume_file_ios='other'\ninvalid (\n"):
+            with self.subTest(manifest=manifest):
+                self.write_zip([("device", self.fixture), ("other", self.fixture),
+                                ("modinstall.txt", manifest)])
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], ["device", "other"])
+
+    def test_literal_platform_declarations_are_data_even_when_manifest_contains_code(self):
+        marker = self.root / "never-execute-manifest"
+        manifest = ("costume_file='device'\ncostume_file_ios='other'\n"
+                    "open(%r, 'w').write('executed')\n" % str(marker)).encode()
+        self.write_zip([("device", self.fixture), ("other", self.fixture),
+                        ("modinstall.txt", manifest)])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["device"])
+            self.assertEqual(Path(expanded.manifest_paths[0]).read_bytes(), manifest)
+            self.assertFalse(marker.exists())
+
+    def test_unsafe_manifest_references_cannot_hide_other_model_members(self):
+        for reference in ("../other", "/other", "C:/other", "..\\other"):
+            with self.subTest(reference=reference):
+                manifest = ("costume_file='device'\ncostume_file_ios=%r\n" % reference).encode()
+                self.write_zip([("nested/device", self.fixture), ("other", self.fixture),
+                                ("nested/modinstall.txt", manifest)])
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], ["device", "other"])
+
     def test_plain_input_needs_no_cache_or_file_copy(self):
         plain = self.root / "body.unity"
         plain.write_bytes(self.fixture)

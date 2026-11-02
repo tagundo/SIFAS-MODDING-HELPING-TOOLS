@@ -1,6 +1,7 @@
 """Bounded, temporary model inputs from costume ZIPs; never execute manifests."""
 from contextlib import contextmanager
 from dataclasses import dataclass
+import ast
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -66,6 +67,55 @@ def _copy_member(archive, info, destination):
             remaining -= len(chunk)
         if source.read(1):
             raise ValueError("The costume ZIP exceeds its declared file size.")
+
+
+def _platform_models(models, manifests):
+    """Prefer declared Android variants, preserving unrelated model parts.
+
+    A dual-platform installer names two alternative copies of each costume.
+    Loading both duplicates the skeleton and prevents automatic facial bones
+    from joining it. Only exclude an iOS member when its declared Android
+    counterpart is also a real model in this ZIP. Names alone are not evidence
+    of a platform, and iOS-only packages remain usable by the viewer.
+    """
+    pairs = (("costume_file", "costume_file_ios"),
+             ("rina_unmask_costume_file", "rina_unmask_costume_file_ios"))
+    keys = {key for pair in pairs for key in pair}
+    available = {str(relative).casefold() for _, relative in models}
+    preferred, alternatives = set(), set()
+    for path, relative in manifests:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            values = {}
+            for item in tree.body:
+                if (isinstance(item, ast.Assign) and len(item.targets) == 1
+                        and isinstance(item.targets[0], ast.Name)
+                        and item.targets[0].id in keys):
+                    values[item.targets[0].id] = ast.literal_eval(item.value)
+        except (OSError, UnicodeError, SyntaxError, ValueError, TypeError, RecursionError):
+            continue
+
+        def member(key):
+            value = values.get(key)
+            if not isinstance(value, str) or not value or len(value) > 512:
+                return None
+            target = PurePosixPath(value.replace("\\", "/"))
+            if (target.is_absolute() or ".." in target.parts or "\0" in value
+                    or any(":" in part for part in target.parts)):
+                return None
+            target = str(relative.parent / target).casefold()
+            return target if target in available else None
+
+        for android, ios in pairs:
+            primary, alternate = member(android), member(ios)
+            if primary is not None:
+                preferred.add(primary)
+                if alternate is not None and alternate != primary:
+                    alternatives.add(alternate)
+    # A model explicitly selected as primary by another installer must survive.
+    excluded = alternatives - preferred
+    return [(info, relative) for info, relative in models
+            if str(relative).casefold() not in excluded]
 
 
 def _preflight_zip(path):
@@ -150,6 +200,7 @@ def expand_inputs(paths, cache_root):
                         if total > MAX_UNPACKED_BYTES:
                             raise ValueError("The costume ZIP expands beyond the mobile preview limit.")
                         checked.append((info, relative))
+                    models, archive_manifests = [], []
                     for info, relative in checked:
                         if info.is_dir():
                             continue
@@ -160,11 +211,15 @@ def expand_inputs(paths, cache_root):
                             _copy_member(archive, info, destination)
                             manifests.append(str(destination))
                             origins[str(destination)] = path
+                            archive_manifests.append((destination, relative))
                             continue
                         with archive.open(info) as member:
                             header = member.read(48)
                         if not _model_header(header, info.file_size):
                             continue
+                        models.append((info, relative))
+                    for info, relative in _platform_models(models, archive_manifests):
+                        destination = Path(temporary) / str(index) / Path(*relative.parts)
                         _copy_member(archive, info, destination)
                         result.append(str(destination))
                         origins[str(destination)] = path
