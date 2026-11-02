@@ -4,7 +4,9 @@
   var AXES = ["x", "y", "z"];
   function finite(value, fallback) { value = Number(value); return isFinite(value) ? value : fallback; }
   function near(a, b) { return Math.abs(a - b) < 1e-7; }
-  function format(value) { return String(Math.round(value * 1000000) / 1000000); }
+  // Unity TRS uses float32. Keep runtime precision, but hide binary rounding
+  // noise in the editor (for example, 1.3f must read as 130%, not 129.999995%).
+  function format(value) { return String(Number(value.toPrecision(7))); }
   function clone(value) { return { position: value.position.clone(), quaternion: value.quaternion.clone(), scale: value.scale.clone() }; }
   function curveValue(control, x) {
     var knots = control.curve || [], domain = control.curveDomain || {};
