@@ -170,12 +170,23 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
     assert.equal(initial.quality.effectivePixelRatio, 1.75);
     assert.equal(initial.rig.savedNodes.applied, 5);
     await page.locator('#viewer-adjustments').evaluate(element => { element.open = true; });
-    await slider('viewer-height', 110); await slider('viewer-breast', 120);
-    await slider('viewer-time', .37); await slider('viewer-expression-value', 65);
+    assert.equal(await page.locator('#viewer-height,#viewer-height-number,#viewer-breast,#viewer-breast-number').count(), 0,
+      'Quality tests use discrete source profiles, without arbitrary height or breast percentages');
+    await page.locator('#viewer-breast-preset').selectOption('emma');
+    await slider('viewer-time', .37);
+    await page.locator('#viewer-expression-advanced').evaluate(element => { element.open = true; });
+    const firstExpression = await page.locator('#viewer-expression option').evaluateAll(options => options.find(option => option.value).value);
+    await page.locator('#viewer-expression').selectOption(firstExpression);
+    await slider('viewer-expression-value', 65);
     await page.locator('.viewer-node-editor').evaluate(element => { element.open = true; });
     await page.locator('#viewer-node').selectOption('3');
+    await page.locator('[data-viewer-node-kind="position"][data-axis="Y"]').fill('.95');
     await page.locator('[data-viewer-node-kind="rotation"][data-axis="X"]').fill('12');
     const before = await state(), standard = await capture(page, 'standard');
+    assert.equal(before.rig.body.breastPreset, 'emma');
+    assert.deepEqual(before.rig.bones.find(bone => bone.node === '2').scale, [1.3, 1.18, 1.3]);
+    assert.deepEqual(before.rig.bones.find(bone => bone.node === '3').position, [-.1, .95, 0]);
+    assert.equal(before.rig.expressions[0].weight, .65, 'Quality round trips retain an actual selected expression');
     assert(standard.probe.ready && standard.objectSamples > 20 && standard.glError === 0);
     assert.equal(standard.probe.triangles, 1); assert.equal(standard.probe.sourceTriangles, 1);
     const requestCount = requests.length;

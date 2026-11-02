@@ -37,13 +37,12 @@ _BREAST_ENLARGE_PRESETS = (
     ("Emma", (1.30, 1.18, 1.30)),
 )
 _CONTROLS = (
-    ("height", "Height", ("Move",), 50, 150, "height_vertical_preserve_head", [0, 1, 0]),
-    ("breast", "Breast size", ("BreastSize",), 25, 200, "breast_tool_curve", [1, 1, 1]),
-    ("skirt", "Skirt length and volume", _SKIRT_ROOTS, 50, 150, "multiply_authored_local_scale", [1, 1, 1]),
+    ("breast", "Breast size", ("BreastSize",), "breast_tool_presets"),
+    ("skirt", "Skirt length and volume", _SKIRT_ROOTS, "multiply_authored_local_scale"),
 )
 _RECOMMENDED = {
     "Head": ("Head", "head"), "Head_Hair": ("Hair", "hair"),
-    "Neck_Hair": ("Back hair", "hair"), "Move": ("Height", "height"),
+    "Neck_Hair": ("Back hair", "hair"), "Move": ("Whole model", "model"),
     "BreastSize": ("Breast size", "breast"), "Breast_Offset": ("Breast placement", "breast"),
     "HipsSize": ("Hip size", "hips"),
     "Spine": ("Lower torso", "waist"), "Spine1": ("Middle torso", "waist"),
@@ -60,24 +59,23 @@ _RECOMMENDED = {
 
 
 def _breast_profile():
-    """Describe the existing editor's exact XYZ profiles and enlargement line.
+    """Expose the tool's discrete reference shapes as absolute XYZ profiles.
 
-    The relative control uses F(x * p/100) / F(x), component by component,
-    where F linearly interpolates the stored reduction triples and follows
-    x=z=1+2Y, y=1+Y above stock. This preserves custom file XYZ at p=100.
-    Emma remains an explicit preset because its Y is an intentional exception.
+    Its below-stock triples are irregular character data, not samples of a
+    continuous size curve. Do not interpolate them, infer a percentage from X,
+    or multiply a custom file's XYZ by a profile-derived relative ratio.
+    The loaded shape is a separate runtime baseline; Stock is an explicit
+    [1, 1, 1] selection and must never stand in for that loaded baseline.
     """
-    curve = sorted([list(value) for _, value in _BREAST_REDUCE_PRESETS] + [[1., 1., 1.]])
-    curve.append([3., 2., 3.])  # open upper endpoint: editor supports 0 < Y < 1
     presets = [{"id": "stock", "label": "Stock", "scale": [1., 1., 1.], "group": "stock"}]
     for group, entries in (("smaller", _BREAST_REDUCE_PRESETS), ("larger", _BREAST_ENLARGE_PRESETS)):
         for label, value in entries:
             presets.append({"id": re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
                             "label": label, "scale": list(value), "group": group})
-    return {"curve": curve, "curveDomain": {"minX": .61, "maxX": 3., "maxExclusive": True},
-            "curveParameter": "local_scale_x", "relativeFormula": "F(x*p/100)/F(x)",
-            "presets": presets, "presetApplication": "absolute_local_scale",
-            "source": "sifas_breast_tuner.py:breast_enlarge_xyz/BREAST_REDUCE_PRESETS/BREAST_ENLARGE_PRESETS"}
+    return {"presets": presets, "presetApplication": "absolute_local_scale",
+            "interpolation": "none", "continuousAdjustmentSupported": False,
+            "profileMeaning": "reference_shape_not_body_measurement",
+            "source": "sifas_breast_tuner.py:BREAST_REDUCE_PRESETS/BREAST_ENLARGE_PRESETS"}
 
 
 def _number(value):
@@ -169,7 +167,7 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
 
     selected = None if sources is None else set(sources)
     nodes = glb.doc["nodes"]
-    result = {"version": 2, "baseline": "authored", "savedOverridesApplied": False,
+    result = {"version": 3, "baseline": "authored", "savedOverridesApplied": False,
               "savedInterpolation": "unity_vector3_lerp_clamp01", "rotationOrder": "ZXY",
               "gameHeightFormulaVerified": False, "components": [], "controls": [], "targets": [],
               "nodes": [], "recommendedTargets": [], "warnings": []}
@@ -189,7 +187,7 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
                 "baseQuaternion": _quaternion(node.get("rotation", [0, 0, 0, 1])),
                 "baseScale": _vector(node.get("scale", [1, 1, 1]))}
 
-    catalogue = {name: {} for _, _, names, *_ in _CONTROLS for name in names}
+    catalogue = {name: {} for _, _, names, _ in _CONTROLS for name in names}
     authored_nodes, source_by_node = {}, {}
     parents = {}
     for parent, node in enumerate(nodes):
@@ -352,47 +350,34 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             target["node"] != other["node"] and descends(target["node"], other["node"])
             for other in targets)]
 
-    for identity, label, names, minimum, maximum, mode, axes in _CONTROLS:
+    # The native heightScale initialization is distinct from the verified saved
+    # TRS endpoints above. A Move-only Y stretch is not a height editor. Keep
+    # those authored records visible without inventing a stature/cm mapping.
+    result["controls"].append({
+        "id": "height", "label": "Height", "available": False,
+        "mode": "saved_height_metadata_only", "nodes": [],
+        "source": "LiveCoreMemberNodeScaling.heightScale",
+        "unavailableReason": "unverified_height_formula",
+        "gameHeightFormulaVerified": False,
+    })
+    for identity, label, names, mode in _CONTROLS:
         targets = [dict(target) for name in names for target in catalogue[name].values()]
-        reason = None
-        if identity == "height":
-            verified = []
-            for target in targets:
-                roots = []
-                for name in ("Head", "Neck_Hair"):
-                    matches = [node for node in authored_nodes.values()
-                               if node["name"] == name and descends(node["node"], target["node"])]
-                    if len(matches) > 1 or (name == "Head" and not matches):
-                        reason = "ambiguous_height_head" if matches else "missing_height_head"
-                        roots = None
-                        break
-                    roots.extend(matches)
-                if roots is None:
-                    continue
-                target["compensationRoots"] = [dict(root) for root in outermost(roots)]
-                verified.append(target)
-            targets = outermost(verified)
-        elif identity == "skirt":
+        if identity == "skirt":
             targets = outermost(targets)
-        for target in targets:
-            target["axes"] = list(axes)
+            for target in targets:
+                target["axes"] = [1, 1, 1]
         if len(targets) > MAX_CONTROL_NODES:
             targets = []
             warn("scaling_metadata_limit")
         control = {"id": identity, "label": label, "available": bool(targets),
-                   "default": 100, "min": minimum, "max": maximum,
-                   "unit": "percent", "mode": mode, "baseline": "active_pose_and_saved_settings",
-                   "limitsSource": "viewer_preview_bounds", "nodes": targets}
-        if not targets and reason:
-            control["unavailableReason"] = reason
-        if identity == "height":
-            control.update(source="viewer_vertical_height_policy", axesMeaning="vertical_only",
-                           compensation="preserve_world_linear_basis_at_shifted_anchor",
-                           gameHeightFormulaVerified=False)
-        elif identity == "breast":
+                   "mode": mode, "nodes": targets}
+        if identity == "breast":
+            control.update(default="loaded", unit="profile", baseline="loaded_saved_settings")
             control.update(_breast_profile())
         else:
-            control.update(source="skirt_length_changer.py:DEFAULT_SKIRT_PATTERNS",
+            control.update(default=100, min=50, max=150, unit="percent",
+                           baseline="active_pose_and_saved_settings", limitsSource="viewer_preview_bounds",
+                           source="skirt_length_changer.py:DEFAULT_SKIRT_PATTERNS",
                            exactRootNames=list(_SKIRT_ROOTS), axesMeaning="length_and_volume")
         result["controls"].append(control)
     return result

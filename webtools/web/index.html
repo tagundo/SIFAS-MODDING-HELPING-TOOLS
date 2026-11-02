@@ -90,17 +90,16 @@
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
               <div class="viewer-body-controls">
-                <div class="viewer-body-card">
-                  <label for="viewer-height" data-i18n="Height">Height</label><output id="viewer-height-value" for="viewer-height viewer-height-number">100%</output>
-                  <input id="viewer-height" type="range" min="80" max="120" step="1" value="100" aria-describedby="viewer-height-note" disabled>
-                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-height-number" data-i18n="Height (%)">Height (%)</label><input id="viewer-height-number" type="number" min="80" max="120" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-height-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
-                  <p id="viewer-height-note" class="viewer-control-note" data-i18n="Adjust height vertically while keeping head proportions.">Adjust height vertically while keeping head proportions.</p>
-                </div>
-                <div class="viewer-body-card">
-                  <label for="viewer-breast" data-i18n="Breast size">Breast size</label><output id="viewer-breast-value" for="viewer-breast viewer-breast-number">100%</output>
-                  <input id="viewer-breast" type="range" min="50" max="150" step="1" value="100" aria-describedby="viewer-breast-note" disabled>
-                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-breast-number" data-i18n="Breast size (%)">Breast size (%)</label><input id="viewer-breast-number" type="number" min="50" max="150" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-breast-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
-                  <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Uses the breast tool's proportions for width, height and depth.">Uses the breast tool's proportions for width, height and depth.</p>
+                <div class="viewer-body-card viewer-profile-card" aria-labelledby="viewer-breast-title">
+                  <h4 id="viewer-breast-title" data-i18n="Breast size">Breast size</h4>
+                  <label for="viewer-breast-preset" data-i18n="Reference body profile">Reference body profile</label>
+                  <select id="viewer-breast-preset" aria-describedby="viewer-breast-note" disabled><option value="loaded" data-i18n="Loaded shape">Loaded shape</option></select>
+                  <dl class="viewer-profile-values">
+                    <div><dt data-i18n="Loaded profile">Loaded profile</dt><dd id="viewer-breast-loaded">—</dd></div>
+                    <div><dt data-i18n="Current profile">Current profile</dt><dd><output id="viewer-breast-value">—</output></dd></div>
+                  </dl>
+                  <button id="viewer-breast-reset" type="button" data-i18n="Restore loaded shape" disabled>Restore loaded shape</button>
+                  <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
                 </div>
                 <div class="viewer-body-card">
                   <label for="viewer-skirt" data-i18n="Skirt length and flare">Skirt length and flare</label><output id="viewer-skirt-value" for="viewer-skirt viewer-skirt-number">100%</output>
@@ -108,10 +107,15 @@
                   <div class="viewer-body-entry"><label class="sr-only" for="viewer-skirt-number" data-i18n="Skirt length and flare (%)">Skirt length and flare (%)</label><input id="viewer-skirt-number" type="number" min="50" max="150" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-skirt-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
                   <p id="viewer-skirt-note" class="viewer-control-note" data-i18n="Adjusts the skirt sections together using the skirt tool's settings.">Adjusts the skirt sections together using the skirt tool's settings.</p>
                 </div>
+                <details id="viewer-height-card" class="viewer-body-card viewer-source-card">
+                  <summary><span id="viewer-height-title" data-i18n="Height settings in the file">Height settings in the file</span><output id="viewer-height-value" data-i18n="Read-only">Read-only</output></summary>
+                  <p id="viewer-height-source" class="viewer-source-value" hidden></p>
+                  <p id="viewer-height-note" class="viewer-control-note" data-i18n="Height adjustment is unavailable. Saved values are shown for reference.">Height adjustment is unavailable. Saved values are shown for reference.</p>
+                </details>
               </div>
               <div id="viewer-body-presets" class="viewer-preset-list" role="group" aria-labelledby="viewer-body-title"></div>
               <div id="viewer-body-extra" class="viewer-body-controls" hidden></div>
-              <p class="viewer-render-note" data-i18n="100% keeps the loaded settings. Each reset restores that part's loaded value.">100% keeps the loaded settings. Each reset restores that part's loaded value.</p>
+              <p class="viewer-render-note" data-i18n="Skirt 100% keeps the loaded skirt settings. Reset restores the loaded skirt shape.">Skirt 100% keeps the loaded skirt settings. Reset restores the loaded skirt shape.</p>
             </section>
             <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
             <p class="viewer-render-note" data-i18n="Loads the file's size, position and rotation corrections.">Loads the file's size, position and rotation corrections.</p>

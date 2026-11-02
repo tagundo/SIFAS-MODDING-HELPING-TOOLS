@@ -143,9 +143,19 @@ repacking is unnecessary and the source files remain unchanged.
 - The verified **SIFAS costume preview** starts at its first frame, paused; press
   Play for the original motion. **Saved pose** selects the model's authored
   placement. The shared preview motion does not change the costume's character.
-- **Height** and **Breast size** adjust the model's verified `Move` and
-  `BreastSize` nodes. `100%` adds no extra change to the current pose and the
-  enabled file settings. Saved body and outfit settings are applied by default:
+- **Breast size** selects the breast tool's exact reference profiles, including
+  its irregular smaller profiles. Each choice sets all three local scale axes;
+  it does not interpolate a percentage or infer a physical cup size. **Use file
+  settings** restores the authored shape plus whichever saved corrections are
+  enabled. Choosing a profile clears earlier manual scale edits to `BreastSize`,
+  while keeping its placement and rotation. Custom XYZ editing remains available
+  under **Individual bones**.
+- **Height** shows the file's original settings for reference. A natural stature
+  formula has not been verified, so there is no extra height slider or vertical
+  stretching. The original model and head corrections remain intact. `Move` is
+  labelled **Whole model** in advanced editing, rather than presented as a human
+  height parameter.
+- Saved body and outfit settings are applied by default:
   supported LiveCore scale, position and rotation records cover every exported
   target, including skirt bones. Part groups let you include or exclude settings
   without editing raw bone data; the global checkbox shows the authored shape.

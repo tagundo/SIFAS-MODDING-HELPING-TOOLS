@@ -74,10 +74,12 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(result["components"][0]["heightScale"], .960872829)
         self.assertEqual([entry["state"] for entry in result["components"][0]["entries"]], ["pending", "pending"])
         height, breast = result["controls"][:2]
-        self.assertEqual(height["nodes"][0]["baseScale"], [1, 1, 1])
+        self.assertEqual(result["version"], 3)
+        self.assertFalse(height["available"])
+        self.assertEqual(height["nodes"], [])
         self.assertEqual(breast["nodes"][0]["baseScale"], [1, 1, 1])
-        self.assertEqual(height["mode"], "height_vertical_preserve_head")
-        self.assertEqual(height["limitsSource"], "viewer_preview_bounds")
+        self.assertEqual(height["mode"], "saved_height_metadata_only")
+        self.assertEqual(height["unavailableReason"], "unverified_height_formula")
 
     def test_already_scaled_transform_is_preserved_and_not_squared(self):
         self.glb.doc["nodes"][1]["scale"] = [1.08, 1.04, 1.08]
@@ -87,57 +89,44 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(scaling.evaluate_saved_entry(entry), {"scale": [1.08, 1.04, 1.08]})
         self.assertEqual(result["controls"][1]["nodes"][0]["baseScale"], [1.08, 1.04, 1.08])
 
-    def test_height_moves_only_vertical_axis_and_describes_independent_head_roots(self):
-        before = copy.deepcopy(self.glb.doc)
+    def test_height_is_read_only_without_an_invented_axis_or_measurement_mapping(self):
+        before = copy.deepcopy((self.glb.doc, self.tree))
         result = self.describe(sources=["costume.unity"])
         control = result["controls"][0]
-        self.assertTrue(control["available"])
-        self.assertEqual(control["mode"], "height_vertical_preserve_head")
+        self.assertFalse(control["available"])
+        self.assertEqual(control["mode"], "saved_height_metadata_only")
+        self.assertEqual(control["unavailableReason"], "unverified_height_formula")
+        self.assertEqual(control["nodes"], [])
         self.assertFalse(control["gameHeightFormulaVerified"])
-        self.assertEqual(control["compensation"], "preserve_world_linear_basis_at_shifted_anchor")
-        self.assertEqual(control["nodes"][0]["axes"], [0, 1, 0])
-        roots = control["nodes"][0]["compensationRoots"]
-        self.assertEqual({root["name"] for root in roots}, {"Head", "Neck_Hair"})
-        self.assertTrue(all(root["parent"] == 4 for root in roots))
-        self.assertEqual(self.glb.doc, before)
+        for field in ("axes", "min", "max", "default", "unit", "compensation", "axesMeaning"):
+            self.assertNotIn(field, control)
+        # Existing saved endpoints and the distinct native header survive.
+        component = result["components"][0]
+        self.assertEqual(component["heightScale"], .960872829)
+        self.assertEqual(component["entries"][0]["scaled"], [.963] * 3)
+        self.assertEqual((self.glb.doc, self.tree), before)
 
-    def test_head_compensation_never_crosses_a_source_or_ambiguous_parent_chain(self):
-        self.neck.source = "another_model.unity"
-        result = self.describe(sources=["costume.unity"])
-        self.assertFalse(result["controls"][0]["available"])
-        self.assertEqual(result["controls"][0]["unavailableReason"], "missing_height_head")
-        self.neck.source = "costume.unity"
-        self.glb.doc["nodes"][1]["children"] = [2]
-        result = self.describe()
-        self.assertFalse(result["controls"][0]["available"], "A two-parent Head cannot be compensated safely")
-
-    def test_nested_head_roots_are_compensated_once_and_duplicate_heads_fail_closed(self):
+    def test_height_does_not_become_editable_from_a_convenient_head_hierarchy(self):
         self.glb.doc["nodes"][4]["children"] = [3]
         self.glb.doc["nodes"][3]["children"] = [2]
-        control = self.describe()["controls"][0]
-        self.assertEqual([root["name"] for root in control["nodes"][0]["compensationRoots"]], ["Neck_Hair"])
-        extra_go = self.make(12, "GameObject", {"m_Name": "Head"})
-        extra = self.make(13, "Transform", {"m_GameObject": {"m_PathID": 12}})
-        self.scene.transforms[12] = extra
-        self.mapping[(id(self.asset), 13)] = 5
-        self.glb.doc["nodes"].append({"name": "Head__5"})
-        self.glb.doc["nodes"][4]["children"].append(5)
+        self.neck.source = "another_model.unity"
         control = self.describe()["controls"][0]
         self.assertFalse(control["available"])
-        self.assertEqual(control["unavailableReason"], "ambiguous_height_head")
+        self.assertEqual(control["nodes"], [])
+        self.assertEqual(control["unavailableReason"], "unverified_height_formula")
 
-    def test_nested_move_targets_never_apply_height_twice(self):
-        self.breast_go.tree["m_Name"] = "Move"
-        self.glb.doc["nodes"][0]["children"] = [1]
-        self.glb.doc["nodes"][1]["children"] = [4]
-        control = self.describe()["controls"][0]
-        self.assertTrue(control["available"])
-        self.assertEqual([node["node"] for node in control["nodes"]], [0])
+    def test_move_is_a_whole_model_bone_not_a_height_measurement(self):
+        result = self.describe()
+        move = next(node for node in result["recommendedTargets"] if node["name"] == "Move")
+        self.assertEqual((move["label"], move["category"]), ("Whole model", "model"))
+        target = next(node for node in result["targets"] if node["name"] == "Move")
+        self.assertEqual(target["label"], "Whole model")
+        self.assertEqual(target["baseScale"], [1, 1, 1])
 
-    def test_breast_profiles_match_existing_dedicated_tool_including_emma_exception(self):
+    def test_breast_profiles_are_exact_discrete_tool_references_including_emma(self):
         import sifas_breast_tuner as tool
         control = self.describe()["controls"][1]
-        self.assertEqual(control["mode"], "breast_tool_curve")
+        self.assertEqual(control["mode"], "breast_tool_presets")
         actual = {preset["label"]: tuple(preset["scale"]) for preset in control["presets"]}
         expected = {name: tuple(xyz) for name, xyz, _ in tool.BREAST_REDUCE_PRESETS + tool.BREAST_ENLARGE_PRESETS}
         expected["Stock"] = (1., 1., 1.)
@@ -145,21 +134,35 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(actual["Emma"], (1.30, 1.18, 1.30))
         self.assertEqual(actual["Nozomi"], (1.30, 1.15, 1.30))
         self.assertEqual(control["presetApplication"], "absolute_local_scale")
-        self.assertEqual(control["relativeFormula"], "F(x*p/100)/F(x)")
-        self.assertEqual(control["curveDomain"], {"minX": .61, "maxX": 3., "maxExclusive": True})
+        self.assertEqual(control["profileMeaning"], "reference_shape_not_body_measurement")
+        self.assertEqual(control["unit"], "profile")
+        self.assertEqual(len(control["presets"]), 16)
+        self.assertEqual({preset["label"] for preset in control["presets"] if preset["group"] == "smaller"},
+                         {name for name, _, _ in tool.BREAST_REDUCE_PRESETS})
 
-        def interpolate(x):
-            for left, right in zip(control["curve"], control["curve"][1:]):
-                if left[0] <= x <= right[0]:
-                    t = (x - left[0]) / (right[0] - left[0])
-                    return [a + (b - a) * t for a, b in zip(left, right)]
-            raise AssertionError("Outside the verified source range")
+    def test_irregular_reduction_profiles_never_offer_an_invented_continuous_curve(self):
+        control = self.describe()["controls"][1]
+        self.assertFalse(control["continuousAdjustmentSupported"])
+        self.assertEqual(control["interpolation"], "none")
+        for field in ("curve", "curveDomain", "curveParameter", "relativeFormula", "min", "max", "axes"):
+            self.assertNotIn(field, control)
+        self.assertTrue(all("axes" not in node for node in control["nodes"]))
 
-        for _, xyz, _ in tool.BREAST_REDUCE_PRESETS:
-            self.assertEqual(interpolate(xyz[0]), list(xyz))
-        for offset in (.02, .04, .06, .08, .11, .15, .49, .99):
-            for actual_value, expected_value in zip(interpolate(1 + 2 * offset), tool.breast_enlarge_xyz(offset)):
-                self.assertAlmostEqual(actual_value, expected_value, places=6)
+    def test_loaded_custom_breast_shape_is_distinct_from_explicit_stock_profile(self):
+        custom = [.77, 1.2345678, .91]
+        self.tree["scaleValues"][1] = self.record(4, [1, 1, 1], custom)
+        self.glb.doc["nodes"][1]["scale"] = [2., 3., 4.]
+        before = copy.deepcopy((self.glb.doc, self.tree))
+        result = self.describe()
+        control = result["controls"][1]
+        self.assertEqual(control["default"], "loaded")
+        self.assertEqual(control["baseline"], "loaded_saved_settings")
+        self.assertEqual(control["nodes"][0]["baseScale"], [2., 3., 4.])
+        self.assertEqual(result["components"][0]["entries"][1]["scaled"], custom)
+        stock = next(preset for preset in control["presets"] if preset["id"] == "stock")
+        self.assertEqual(stock["scale"], [1., 1., 1.])
+        self.assertNotEqual(stock["scale"], custom)
+        self.assertEqual((self.glb.doc, self.tree), before)
 
     def test_skirt_uses_only_tool_root_bones_without_descendant_double_scaling(self):
         self.breast_go.tree["m_Name"] = "LeftSkirtB1_Dyna"
