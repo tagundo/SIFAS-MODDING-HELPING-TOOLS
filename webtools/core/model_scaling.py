@@ -1,14 +1,14 @@
 """Read-only scaling metadata for a rigged preview's authored rest shape.
 
-SIFAS node records store absolute local endpoints, not multipliers. This module
-never applies them on load: doing so would hide authored edits or apply shape
-changes again to baked meshes. Relative preview controls always start from the
-exported glTF node's saved TRS. The game's separate heightScale initialization
-formula is not inferred from metadata. Native call-target evidence identifies
-rotation records as Vector3.Lerp endpoints for localEulerAngles; converting and
-applying those saved Euler records is not implemented in this exporter.
+SIFAS node records store absolute local endpoints, not multipliers. Metadata
+does not modify the exported authored TRS. Native ApplyScale uses clamped
+Vector3.Lerp for localScale/localPosition/localEulerAngles. Rotation endpoints
+therefore retain their source Euler values: interpolate them before Unity ZXY
+conversion, rather than interpolating quaternions. The separate heightScale
+initialization formula is not inferred from these records.
 """
 import math
+import re
 
 
 MAX_COMPONENTS = 32
@@ -48,6 +48,21 @@ def _quaternion(value):
     return [part / length for part in result]
 
 
+def unity_euler_to_gltf(value):
+    """Unity localEulerAngles (degrees, Z then X then Y), reflected in X.
+
+    Column-vector rotation is Ry @ Rx @ Rz, or Hamilton qY*qX*qZ. Reflection
+    conjugates the matrix by diag(-1,1,1), giving [qx,-qy,-qz,qw].
+    """
+    x, y, z = [math.radians(part) * .5 for part in _vector(value)]
+    sx, sy, sz = math.sin(x), math.sin(y), math.sin(z)
+    cx, cy, cz = math.cos(x), math.cos(y), math.cos(z)
+    return _quaternion([cy * sx * cz + sy * cx * sz,
+                        -(sy * cx * cz - cy * sx * sz),
+                        -(cy * cx * sz - sy * sx * cz),
+                        cy * cx * cz + sy * sx * sz])
+
+
 def _close(left, right, quaternion=False):
     direct = max(abs(a - b) for a, b in zip(left, right))
     if quaternion:
@@ -64,19 +79,21 @@ def _state(authored, origin, scaled, quaternion=False):
 def evaluate_saved_entry(entry, weight=1.0):
     """Return an absolute glTF local endpoint without changing any input.
 
-    Intermediate values are an explicit viewer interpolation, not a claim to
-    reproduce all native controller behavior. Applying the returned property
-    repeatedly is idempotent. Saved Vector3 Euler records remain inspection-only
-    because their conversion is not implemented, despite the encoding proof.
+    Match the verified ApplyScale operation: clamp finite t to [0,1], linearly
+    interpolate stored vectors, then assign the absolute local property. Euler
+    angles are not wrapped or interpolated on the shortest quaternion arc.
     """
     if not entry.get("supported"):
         raise ValueError("This saved scaling entry cannot be applied safely.")
-    weight = _number(weight)
-    if not 0 <= weight <= 1:
-        raise ValueError("Saved scaling interpolation must be between zero and one.")
+    weight = min(1., max(0., _number(weight)))
     kind = entry.get("kind")
+    if kind == "rotation":
+        if entry.get("interpolation") != "unity_euler_lerp" or entry.get("rotationOrder") != "ZXY":
+            raise ValueError("The saved rotation interpolation is unsupported.")
+        origin, scaled = _vector(entry["unityEulerOrigin"]), _vector(entry["unityEulerScaled"])
+        return {"rotation": unity_euler_to_gltf([a + (b - a) * weight for a, b in zip(origin, scaled)])}
     if kind not in ("scale", "position"):
-        raise ValueError("Saved rotation interpolation is not verified.")
+        raise ValueError("The saved node property is unsupported.")
     origin, scaled = _vector(entry["origin"]), _vector(entry["scaled"])
     result = [a + (b - a) * weight for a, b in zip(origin, scaled)]
     if kind == "scale" and any(abs(value) < 1e-8 for value in result):
@@ -96,7 +113,8 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
     selected = None if sources is None else set(sources)
     nodes = glb.doc["nodes"]
     result = {"version": 1, "baseline": "authored", "savedOverridesApplied": False,
-              "gameHeightFormulaVerified": False, "components": [], "controls": [], "warnings": []}
+              "savedInterpolation": "unity_vector3_lerp_clamp01", "rotationOrder": "ZXY",
+              "gameHeightFormulaVerified": False, "components": [], "controls": [], "targets": [], "warnings": []}
 
     def warn(code):
         if code not in result["warnings"]:
@@ -142,7 +160,7 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             tree = scene.tree(obj)
         except Exception:
             continue
-        if not all(key in tree for key in ("targetName", "scaleValues", "positionValues")):
+        if "targetName" not in tree or not any(key in tree for key in ("scaleValues", "positionValues", "rotationValues")):
             continue
         if len(result["components"]) >= MAX_COMPONENTS:
             warn("scaling_metadata_limit")
@@ -177,21 +195,63 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
                         origin[0], scaled[0] = -origin[0], -scaled[0]
                     entry = {"node": target["node"], "name": name, "kind": kind,
                              "origin": origin, "scaled": scaled, "authored": list(authored),
-                             "supported": kind != "rotation", "application": "absolute_local_" + kind,
-                             "space": "gltf_local", "state": "unverified"}
+                             "supported": True, "application": "absolute_local_" + kind,
+                             "space": "gltf_local", "state": "unverified",
+                             "interpolation": "unity_vector3_lerp"}
                     if kind == "rotation":
-                        entry.update(authored=target["baseQuaternion"], space="unity_unverified_vector3",
-                                     application=None, reason="rotation_encoding_unverified")
+                        original_euler, scaled_euler = origin, scaled
+                        origin, scaled = unity_euler_to_gltf(origin), unity_euler_to_gltf(scaled)
+                        authored = target["baseQuaternion"]
+                        entry.update(authored=authored, origin=origin, scaled=scaled,
+                                     originQuaternion=list(origin), scaledQuaternion=list(scaled),
+                                     unityEulerOrigin=original_euler, unityEulerScaled=scaled_euler,
+                                     rotationOrder="ZXY", interpolation="unity_euler_lerp",
+                                     quaternionConvention="unity_zxy_mirror_x",
+                                     application="absolute_local_quaternion")
+                        entry["state"] = _state(authored, origin, scaled, quaternion=True)
                     else:
                         entry["state"] = _state(authored, origin, scaled)
-                        if kind == "scale" and any(abs(value) < 1e-8 for value in scaled):
+                        if kind == "scale" and any(abs(value) < 1e-8 for value in origin + scaled):
                             entry.update(supported=False, reason="zero_scale")
+                    entry["id"] = str(len(result["components"])) + ":" + str(len(component["entries"]))
                     component["entries"].append(entry)
                 except (ValueError, KeyError, AttributeError, TypeError, OverflowError):
                     warn("scaling_invalid_entry")
         result["components"].append(component)
         if total_entries > MAX_ENTRIES:
             break
+
+    # Every exported saved target participates, including skirt/accessory nodes.
+    # Ambiguous absolute operations must not depend on component/file order.
+    operations, groups = {}, {}
+    for component_index, component in enumerate(result["components"]):
+        for entry_index, entry in enumerate(component["entries"]):
+            operations.setdefault((entry["node"], entry["kind"]), []).append(entry)
+            if entry["node"] not in groups:
+                node = nodes[entry["node"]]
+                name = entry["name"]
+                label = {"Move": "Whole model", "BreastSize": "Breast size"}.get(name)
+                if label is None:
+                    label = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", re.sub(r"_Dyna$", "", name)).replace("_", " ")
+                groups[entry["node"]] = {"node": entry["node"], "name": name, "label": label,
+                    "category": "skirt" if "skirt" in name.lower() else "other", "kinds": [], "entries": [],
+                    "basePosition": _vector(node.get("translation", [0, 0, 0])),
+                    "baseQuaternion": _quaternion(node.get("rotation", [0, 0, 0, 1])),
+                    "baseScale": _vector(node.get("scale", [1, 1, 1]))}
+            group = groups[entry["node"]]
+            if entry["kind"] not in group["kinds"]:
+                group["kinds"].append(entry["kind"])
+            group["entries"].append({"component": component_index, "entry": entry_index, "id": entry["id"]})
+    for entries in operations.values():
+        first = entries[0]
+        # Source Euler endpoints matter even when 360-degree offsets yield the
+        # same final quaternion: native intermediate angles can still differ.
+        fields = ("unityEulerOrigin", "unityEulerScaled") if first["kind"] == "rotation" else ("origin", "scaled")
+        if any(any(max(abs(a - b) for a, b in zip(entry[field], first[field])) > 1e-6 for field in fields) for entry in entries[1:]):
+            for entry in entries:
+                entry.update(supported=False, reason="conflicting_saved_entries")
+            warn("scaling_conflicting_entries")
+    result["targets"] = list(groups.values())
 
     for identity, label, name, minimum, maximum in _CONTROLS:
         targets = list(catalogue[name].values())

@@ -22,14 +22,15 @@ function fixture(options = {}) {
   const positions = attribute([offset-.3,0,0,offset+.3,0,0,offset,1.2,0], Float32Array, 'VEC3', 5126, 3, {min:[offset-.3,0,0],max:[offset+.3,1.2,0]});
   const normals = attribute([0,0,1,0,0,1,0,0,1], Float32Array, 'VEC3', 5126, 3);
   const uv = attribute([0,0,1,0,.5,1], Float32Array, 'VEC2', 5126, 3);
-  const joints = attribute([0,0,0,0,0,0,0,0,1,0,0,0], Uint16Array, 'VEC4', 5123, 3);
+  const joints = attribute(options.allSaved?[2,0,0,0,3,0,0,0,1,0,0,0]:[0,0,0,0,0,0,0,0,1,0,0,0], Uint16Array, 'VEC4', 5123, 3);
   const weights = attribute([1,0,0,0,1,0,0,0,1,0,0,0], Float32Array, 'VEC4', 5126, 3);
   const indices = attribute([0,1,2], Uint16Array, 'SCALAR', 5123, 3);
   const morph = attribute([0,0,0,0,0,0,.2,0,0], Float32Array, 'VEC3', 5126, 3);
   const identity = [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
   const breastBind = identity.slice(); breastBind[13] = -.5;
   const tipBind = identity.slice(); tipBind[13] = -1.5;
-  const binds = attribute(identity.concat(breastBind, tipBind), Float32Array, 'MAT4', 5126, 3);
+  const childBind=identity.slice();childBind[13]=-2;
+  const binds = attribute(identity.concat(breastBind,tipBind,options.allSaved?childBind:[]), Float32Array, 'MAT4', 5126, options.allSaved?4:3);
   const times = attribute([0,1], Float32Array, 'SCALAR', 5126, 2, {min:[0],max:[1]});
   const rotationStart=options.rotationStart||0,clipName=options.previewName||'Synthetic test motion';
   const rotations = attribute([0,0,rotationStart,Math.sqrt(1-rotationStart*rotationStart),0,0,.5,Math.sqrt(.75)], Float32Array, 'VEC4', 5126, 2);
@@ -45,6 +46,11 @@ function fixture(options = {}) {
     materials:[{name:'Synthetic neutral material',pbrMetallicRoughness:{baseColorFactor:[.8,.15,.1,1],metallicFactor:0,roughnessFactor:1},extensions:{KHR_materials_unlit:{}}}],
     extensionsUsed:['KHR_materials_unlit'],buffers:[{byteLength:length}],bufferViews:views,accessors};
   doc.animations.push(Object.assign({},doc.animations[0],{name:'Synthetic motion visibility'}));
+  if(options.allSaved){
+    doc.nodes[3].name='LeftSkirtA_Dyna';doc.nodes[3].children=[5];
+    doc.nodes.push({name:'LeftSkirtChild_Dyna',translation:[0,.5,0],extras:{elichika_node:5,role:'bone'}});
+    doc.skins[0].joints.push(5);
+  }
   if(options.shader)doc.materials[0].extras={sifas:{version:1,shader:'AS/Member',colors:{_TintColor:[.2,.5,.8,1],_AmbientColor:[1,1,1,0]},floats:{_CullMode:0},features:{},textures:{}}};
   const json = Buffer.from(JSON.stringify(doc)), jsonPadded = Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
   const bin = Buffer.concat(chunks), binPadded = Buffer.concat([bin,Buffer.alloc((4-bin.length%4)%4)]);
@@ -58,12 +64,26 @@ function fixture(options = {}) {
     {node:3,kind:'position',supported:true,application:'absolute_local_position',scaled:[0,1,0]},
     {node:3,kind:'position',supported:true,application:'absolute_local_position',scaled:[0,2,0]}
   ]}];
+  if(options.allSaved){
+    const quaternion=[Math.sin(Math.PI/12),0,0,Math.cos(Math.PI/12)];
+    const rotation=value=>({node:3,name:'LeftSkirtA_Dyna',kind:'rotation',supported:true,application:'absolute_local_quaternion',scaledQuaternion:value,scaled:value,origin:[0,0,0,1]});
+    components[0].entries=[
+      {node:2,name:'BreastSize',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[1.3,.9,1]},
+      {node:3,name:'LeftSkirtA_Dyna',kind:'position',supported:true,application:'absolute_local_position',scaled:[-.1,.9,0]},
+      {node:3,name:'LeftSkirtA_Dyna',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[.7,.7,.7]},
+      {node:5,name:'LeftSkirtChild_Dyna',kind:'scale',supported:true,application:'absolute_local_scale',scaled:[.6,.6,.6]},
+      rotation(quaternion),rotation(quaternion.map(value=>-value))
+    ];
+    if(options.rotationConflict)components[0].entries.push(rotation([0,0,0,1]));
+  }
   const visibility=(times,values)=>[{node:4,times,values,interpolation:'STEP',sourceProperty:'Renderer.m_Enabled'}];
   const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:1,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
     {name:clipName,duration:1,loop:true},
     {name:'Synthetic motion visibility',duration:1,loop:false,visibility:visibility([0,.6],[false,true])},
     {name:'Synthetic visibility only',duration:1,loop:false,channels:0,index:null,visibility:visibility([0,.25,.75],[true,false,true])}
   ]};
+  if(options.allSaved){rig.bones[2].name='LeftSkirtA_Dyna';rig.bones.push({node:5,name:'LeftSkirtChild_Dyna'});}
+  if(options.metadataWarning)rig.scaling.warnings=['scaling_invalid_entry'];
   if(Object.prototype.hasOwnProperty.call(options,'previewVerified'))rig.previewMotion={name:options.previewReference||clipName,kind:options.previewKind||'sifas_suit_preview',verified:options.previewVerified};
   return {glb:Buffer.concat([header,jh,jsonPadded,bh,binPadded]),rig};
 }
@@ -87,11 +107,22 @@ function fixture(options = {}) {
     await page.evaluate(()=>openModelViewer(['/synthetic/rig.unity']));
     await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
     const state=()=>page.evaluate(()=>ModelViewer.getState());
+    const capture=(save,compare)=>page.evaluate(([save,compare])=>{
+      const probe=ModelViewer.renderProbe(33),canvas=document.getElementById('viewer-canvas'),gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
+      const width=gl.drawingBufferWidth,height=gl.drawingBufferHeight,pixels=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);const error=gl.getError();
+      const frames=window.__poseButtonFrames||(window.__poseButtonFrames={});let changedPixels=null;
+      if(compare){const previous=frames[compare];if(!previous||previous.length!==pixels.length)throw new Error('Pose comparison viewport changed');changedPixels=0;for(let offset=0;offset<pixels.length;offset+=4)if(Math.abs(pixels[offset]-previous[offset])+Math.abs(pixels[offset+1]-previous[offset+1])+Math.abs(pixels[offset+2]-previous[offset+2])>24)changedPixels++;}
+      if(save)frames[save]=pixels;return{probe,glError:error,changedPixels,width,height};
+    },[save,compare]);
+    const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
     const slider=async(id,value)=>page.locator('#'+id).evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
     assert.equal(requests[0].rigged,true);
     const initial=await state();assert(initial.rig.available);assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
+    assert.equal(initial.rig.savedNodes.enabled,true);assert.equal(initial.rig.savedNodes.applied,1);assert.equal(initial.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.3);
+    assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());assert(await page.locator('#viewer-pose-help').isVisible());
     const probe=await page.evaluate(()=>ModelViewer.renderProbe());assert(probe.ready&&probe.nonBackgroundSamples>0&&probe.glError===0);
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
+    await page.locator('#viewer-saved-nodes').uncheck();
     await slider('viewer-height',120);assert.equal((await state()).rig.bones.find(b=>b.name==='Move').scale[1],1.2);
     await slider('viewer-breast',150);assert.equal((await state()).rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
     assert.equal((await state()).rig.savedNodes.enabled,false);
@@ -118,7 +149,7 @@ function fixture(options = {}) {
     assert(Math.abs((await state()).rig.bones.find(b=>b.name==='Tip').quaternion[0])>.2);
     await page.locator('#viewer-node-reset').click();assert.deepEqual((await state()).rig.bones.find(b=>b.name==='Tip').quaternion,[0,0,0,1]);
     await page.locator('#viewer-preview-reset').click();const reset=await state();assert.equal(reset.rig.selectedClip,'');assert.equal(reset.rig.body.height,100);assert.equal(reset.rig.body.breast,100);assert.equal(reset.rig.expressions[0].weight,0);assert.deepEqual(reset.rig.nodeAdjustments,{});
-    assert.equal(reset.rig.savedNodes.enabled,false);
+    assert.equal(reset.rig.savedNodes.enabled,true);await page.locator('#viewer-saved-nodes').uncheck();
     await page.locator('.viewer-options').evaluate(e=>e.open=true);
     await page.locator('#viewer-textures').uncheck();const solidProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
     await page.locator('#viewer-textures').check();const restoredTextureProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
@@ -143,6 +174,7 @@ function fixture(options = {}) {
     for(const id of ['viewer-node','viewer-height','viewer-breast','viewer-saved-nodes'])assert(await page.locator('#'+id).isDisabled(),'Unsupported rig control must be disabled: '+id);
     assert.equal(await page.locator('#viewer-expression').isDisabled(),false,'Independent expression channels remain available');
     unsupported=false;generated=fixture({shifted:true,shader:true});await page.evaluate(()=>openModelViewer(['/synthetic/shifted-skin.unity']));
+    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-nodes').uncheck();await page.locator('#viewer-fit').click();
     assert.equal((await state()).rig.bones.find(b=>b.name==='Move').position[0],-50,'Skin must actually move geometry far from its raw bounds');
     const shiftedInitial=await page.evaluate(()=>ModelViewer.renderProbe(33));
     assert.equal(shiftedInitial.glError,0,JSON.stringify({shiftedInitial,gpuMessages}));
@@ -168,6 +200,7 @@ function fixture(options = {}) {
     ]){
       generated=fixture(options);await page.evaluate(()=>openModelViewer(['/synthetic/unverified-preview.unity']));
       const current=await state();assert.equal(current.rig.defaultClip,'');assert.equal(current.rig.selectedClip,'');
+      assert(await page.locator('#viewer-pose-preview').isDisabled());assert.deepEqual(await pressed(),['true','false']);
       assert.deepEqual(current.rig.bones.find(b=>b.name==='BreastSize').quaternion,[0,0,0,1],'Unverified motion must retain the authored pose');
       previewCases.push({options,selectedClip:current.rig.selectedClip,defaultClip:current.rig.defaultClip});
     }
@@ -175,11 +208,13 @@ function fixture(options = {}) {
     unsupported=true;await page.evaluate(()=>openModelViewer(['/synthetic/unsupported-preview.unity']));assert.equal((await state()).rig.defaultClip,'');
     unsupported=false;await page.evaluate(()=>openModelViewer(['/synthetic/verified-preview.unity']));
     const previewInitial=await state();assert.equal(previewInitial.rig.selectedClip,previewName);assert.equal(previewInitial.rig.defaultClip,previewName);assert.equal(previewInitial.rig.playing,false);assert.equal(previewInitial.rig.time,0);
+    assert.deepEqual(await pressed(),['false','true']);assert.equal(await page.locator('#viewer-pose-help').isVisible(),false);
     assert(Math.abs(previewInitial.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Verified preview must apply its first authored keyframe at load');
     assert.equal(await page.locator('#viewer-motion option:checked').innerText(),'SIFAS costume preview');
     const previewProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));assert.equal(previewProbe.glError,0);assert(previewProbe.nonBackgroundSamples>0);
     await page.waitForTimeout(150);assert.equal((await state()).rig.time,0,'Default preview remains paused until Play');
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
+    await page.locator('#viewer-saved-nodes').uncheck();
     for(let n=0;n<2;n++){await slider('viewer-height',120);await slider('viewer-breast',150);}
     const previewScaled=await state();assert.equal(previewScaled.rig.bones.find(b=>b.name==='Move').scale[1],1.2);assert.equal(previewScaled.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
     assert(Math.abs(previewScaled.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Repeated body edits preserve the selected preview pose');
@@ -188,15 +223,72 @@ function fixture(options = {}) {
     await slider('viewer-time',.5);assert((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.25);
     await page.locator('#viewer-motion').selectOption('');assert.deepEqual((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion,[0,0,0,1],'Saved pose stays independently selectable');
     await slider('viewer-expression-value',75);await page.locator('#viewer-preview-reset').click();
-    const previewReset=await state();assert.equal(previewReset.rig.selectedClip,previewName);assert.equal(previewReset.rig.defaultClip,previewName);assert.equal(previewReset.rig.playing,false);assert.equal(previewReset.rig.time,0);assert.equal(previewReset.rig.body.height,100);assert.equal(previewReset.rig.body.breast,100);assert.equal(previewReset.rig.expressions[0].weight,0);assert.equal(previewReset.rig.savedNodes.enabled,false);
+    const previewReset=await state();assert.equal(previewReset.rig.selectedClip,previewName);assert.equal(previewReset.rig.defaultClip,previewName);assert.equal(previewReset.rig.playing,false);assert.equal(previewReset.rig.time,0);assert.equal(previewReset.rig.body.height,100);assert.equal(previewReset.rig.body.breast,100);assert.equal(previewReset.rig.expressions[0].weight,0);assert.equal(previewReset.rig.savedNodes.enabled,true);
     assert(Math.abs(previewReset.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Reset returns to the verified preview first frame');
     for(const [lang,label] of [['ko','SIFAS 의상 미리보기'],['ja','SIFAS衣装プレビュー'],['en','SIFAS costume preview']]){
       await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.querySelector('#viewer-motion option:checked').textContent===label,label);assert.equal((await state()).rig.selectedClip,previewName);
     }
+    // Real button events retain all saved/relative settings. The parent and
+    // child skirt joints have distinct absolute endpoints and real vertex weights.
+    generated=fixture({previewName,rotationStart:.25,previewVerified:true,allSaved:true});
+    await page.evaluate(()=>openModelViewer(['/synthetic/all-saved-settings.unity']));
+    const allSavedInitial=await state();assert.equal(allSavedInitial.rig.savedNodes.enabled,true);assert.equal(allSavedInitial.rig.savedNodes.applied,5);assert.equal(allSavedInitial.rig.savedNodes.conflicts,0);assert.equal(allSavedInitial.rig.savedNodes.skipped,0);
+    const bone=(current,id)=>current.rig.bones.find(value=>value.node===String(id));
+    assert.deepEqual(bone(allSavedInitial,3).position,[-.1,.9,0]);assert.deepEqual(bone(allSavedInitial,3).scale,[.7,.7,.7]);assert.deepEqual(bone(allSavedInitial,5).scale,[.6,.6,.6]);
+    assert(Math.abs(bone(allSavedInitial,3).quaternion[0]-Math.sin(Math.PI/12))<1e-7,'Verified saved quaternion must apply at load');
+    assert.deepEqual(allSavedInitial.rig.savedNodes.groups.find(part=>part.id==='skirt').nodes,['3','5']);
+    const allSavedFrame=await capture('all-saved-default');assert.equal(allSavedFrame.glError,0);assert(allSavedFrame.probe.nonBackgroundSamples>0);
+    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-parts').evaluate(e=>e.open=true);
+    assert((await page.locator('#viewer-saved-status').innerText()).includes('5 / 5'));
+    await page.locator('[data-viewer-saved-part="skirt"]').uncheck();const partial=await state();assert.equal(partial.rig.savedNodes.applied,1);assert((await page.locator('#viewer-saved-status').innerText()).includes('1 / 5'));
+    assert.deepEqual(bone(partial,3).scale,[1,1,1]);assert.deepEqual(bone(partial,5).scale,[1,1,1]);assert.deepEqual(bone(partial,3).quaternion,[0,0,0,1]);
+    await slider('viewer-height',110);await slider('viewer-breast',120);await slider('viewer-expression-value',75);
+    await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('3');await page.locator('[data-viewer-node-kind="rotation"][data-axis="X"]').fill('5');
+    const retained=await state(),retainedFrame=await capture('button-retained');
+    await page.locator('#viewer-pose-basic').click();assert.deepEqual(await pressed(),['true','false']);const basicRetained=await state(),basicFrame=await capture('button-basic','button-retained');
+    assert(basicFrame.changedPixels>100);assert.equal(basicRetained.rig.playing,false);assert.equal(basicRetained.rig.time,0);assert.deepEqual(basicRetained.rig.savedNodes,retained.rig.savedNodes);assert.deepEqual(basicRetained.rig.body,retained.rig.body);assert.deepEqual(basicRetained.rig.nodeAdjustments,retained.rig.nodeAdjustments);assert.deepEqual(basicRetained.rig.expressions,retained.rig.expressions);assert.deepEqual(basicRetained.camera,retained.camera);
+    await page.locator('#viewer-pose-preview').focus();await page.locator('#viewer-pose-preview').press('Space');assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'button-retained')).changedPixels,0);
+    const repeated=[];
+    for(let cycle=0;cycle<5;cycle++){
+      await page.locator('[data-viewer-saved-part="skirt"]').check();
+      const enabled=await state();assert.deepEqual(bone(enabled,3).scale,[.7,.7,.7]);assert.deepEqual(bone(enabled,5).scale,[.6,.6,.6]);assert.equal(enabled.rig.savedNodes.applied,5);
+      if(!cycle)await capture('skirt-enabled');else assert.equal((await capture(null,'skirt-enabled')).changedPixels,0,'Repeated parent/child skirt enable must not compound');
+      await page.locator('[data-viewer-saved-part="skirt"]').uncheck();assert.equal((await capture(null,'button-retained')).changedPixels,0);
+      await page.locator('#viewer-saved-nodes').uncheck();assert.equal((await state()).rig.savedNodes.applied,0);assert(await page.locator('[data-viewer-saved-part="skirt"]').isDisabled());
+      await page.locator('#viewer-pose-basic').click();await page.locator('#viewer-pose-preview').click();assert.equal((await state()).rig.savedNodes.enabled,false);
+      await page.locator('#viewer-saved-nodes').check();
+      await page.locator('#viewer-pose-basic').click();assert.equal((await capture(null,'button-basic')).changedPixels,0);
+      await page.locator('#viewer-pose-preview').click();const current=await state();assert.deepEqual(current.rig.savedNodes,retained.rig.savedNodes);assert.deepEqual(current.rig.nodeAdjustments,retained.rig.nodeAdjustments);assert.equal(current.rig.playing,false);assert.equal(current.rig.time,0);
+      const frame=await capture(null,'button-retained');assert.equal(frame.changedPixels,0);repeated.push(frame);
+    }
+    await page.locator('#viewer-play').click();await page.waitForTimeout(120);assert((await state()).rig.playing);assert.deepEqual(await pressed(),['false','true']);
+    await page.locator('#viewer-pose-basic').focus();await page.locator('#viewer-pose-basic').press('Enter');assert.equal((await state()).rig.playing,false);assert.equal((await state()).rig.time,0);assert.deepEqual(await pressed(),['true','false']);
+    await page.locator('#viewer-motion').selectOption('Synthetic motion visibility');assert.deepEqual(await pressed(),['false','false']);
+    await page.locator('#viewer-pose-preview').click();assert.deepEqual(await pressed(),['false','true']);
+    await page.locator('#viewer-preview-reset').click();const buttonReset=await state();assert.equal(buttonReset.rig.savedNodes.enabled,true);assert.equal(buttonReset.rig.savedNodes.applied,5);assert(buttonReset.rig.savedNodes.groups.every(part=>part.enabled));assert.deepEqual(buttonReset.rig.body,{height:100,breast:100});assert.deepEqual(buttonReset.rig.nodeAdjustments,{});assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'all-saved-default')).changedPixels,0);
+    const responsiveButtons=[];
+    for(const [lang,basicLabel,posedLabel] of [['ko','기본 자세','포즈 자세'],['ja','基本姿勢','プレビュー姿勢'],['en','Basic pose','Posed view']]){
+      await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.getElementById('viewer-pose-basic').textContent===label,basicLabel);assert.equal(await page.locator('#viewer-pose-preview').innerText(),posedLabel);
+      for(const viewport of [{width:320,height:900},{width:720,height:400},{width:1366,height:900}]){
+        await page.setViewportSize(viewport);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+        for(const id of ['viewer-pose-basic','viewer-pose-preview']){
+          await page.locator('#'+id).scrollIntoViewIfNeeded();const button=await page.locator('#'+id).evaluate(element=>{const r=element.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return{width:r.width,height:r.height,left:r.x,right:r.right,viewport:innerWidth,hit:hit===element||element.contains(hit),insideDetails:!!element.closest('details'),pressed:element.getAttribute('aria-pressed')};});
+          assert(button.width>=44&&button.height>=44&&button.left>=0&&button.right<=button.viewport);assert(button.hit&&!button.insideDetails);responsiveButtons.push({lang,viewport,id,...button});
+        }
+      }
+    }
+    await page.screenshot({path:path.join(evidence,'synthetic-pose-buttons-ui.png'),fullPage:true});
+    generated=fixture({previewName,rotationStart:.25,previewVerified:true,allSaved:true,rotationConflict:true});await page.evaluate(()=>openModelViewer(['/synthetic/conflicting-rotation.unity']));
+    const rotationConflict=await state();assert.equal(rotationConflict.rig.savedNodes.conflicts,1);assert.equal(rotationConflict.rig.savedNodes.skipped,3);assert.equal(rotationConflict.rig.savedNodes.applied,4);assert.deepEqual(bone(rotationConflict,3).quaternion,[0,0,0,1]);
+    generated=fixture({allSaved:true,metadataWarning:true});await page.evaluate(()=>openModelViewer(['/synthetic/omitted-invalid-setting.unity']));
+    const invalidMetadata=await state();assert.equal(invalidMetadata.rig.savedNodes.skipped,0);assert.deepEqual(invalidMetadata.rig.savedNodes.metadataWarnings,['scaling_invalid_entry']);assert((await page.locator('#viewer-saved-status').innerText()).includes('Unsupported or conflicting saved settings were skipped.'));assert(!(await page.locator('#viewer-saved-status').innerText()).includes('(0)'),'Omitted invalid metadata has no invented skip count');
+    assert(await page.locator('#viewer-pose-preview').isDisabled());const beforeDisabled=await state();await page.locator('#viewer-pose-preview').evaluate(element=>element.click());assert.deepEqual((await state()).rig,beforeDisabled.rig);assert.deepEqual(await pressed(),['true','false']);
     assert(!gpuMessages.some(message=>/INVALID_OPERATION|GL_INVALID|THREE.WebGLProgram/.test(message)),JSON.stringify(gpuMessages));
     assert.deepEqual(errors,[]);
-    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},errors,gpuMessages};
+    await page.screenshot({path:path.join(evidence,'synthetic-rig-ui.png'),fullPage:true});
+    await page.evaluate(()=>ModelViewer.dispose());assert(await page.locator('#viewer-pose-basic').isDisabled());assert(await page.locator('#viewer-pose-preview').isDisabled());assert.deepEqual(await pressed(),['false','false']);
+    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));
-    await page.screenshot({path:path.join(evidence,'synthetic-rig-ui.png'),fullPage:true});console.log(JSON.stringify(report));
+    console.log(JSON.stringify(report));
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

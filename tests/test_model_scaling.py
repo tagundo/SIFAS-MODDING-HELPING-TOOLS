@@ -1,5 +1,9 @@
 """Scaling contracts preserve authored rigs and use absolute saved endpoints."""
 import copy
+import math
+import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -86,13 +90,19 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(scaling.evaluate_saved_entry(entry), {"translation": [-2, 3, 4]})
         self.assertEqual(scaling.evaluate_saved_entry(entry, .5), {"translation": [-1.5, 2.5, 3.5]})
 
-    def test_unknown_rotation_encoding_stays_inspection_only(self):
+    def test_verified_rotation_is_absolute_and_preserves_source_euler(self):
         self.tree["rotationValues"] = [self.record(4, [0, 0, 0], [0, 45, 0])]
+        before = copy.deepcopy((self.tree, self.glb.doc))
         entry = self.describe()["components"][0]["entries"][-1]
-        self.assertFalse(entry["supported"])
-        self.assertEqual(entry["reason"], "rotation_encoding_unverified")
-        with self.assertRaises(ValueError):
-            scaling.evaluate_saved_entry(entry)
+        self.assertTrue(entry["supported"])
+        self.assertEqual(entry["application"], "absolute_local_quaternion")
+        self.assertEqual(entry["state"], "pending")
+        self.assertEqual(entry["unityEulerOrigin"], [0, 0, 0])
+        self.assertEqual(entry["unityEulerScaled"], [0, 45, 0])
+        self.assertEqual(scaling.evaluate_saved_entry(entry), {"rotation": entry["scaledQuaternion"]})
+        self.assertEqual((self.tree, self.glb.doc), before)
+        self.glb.doc["nodes"][1]["rotation"] = [-x for x in entry["scaledQuaternion"]]
+        self.assertEqual(self.describe()["components"][0]["entries"][-1]["state"], "already_applied")
 
     def test_wrapped_records_and_entry_cap(self):
         self.tree["scaleValues"] = [{"data": self.record(4, [1] * 3, [2] * 3)}] * 10
@@ -118,9 +128,172 @@ class ScalingTests(unittest.TestCase):
         self.assertFalse(result["controls"][1]["available"])
         with self.assertRaises(ValueError):
             scaling.evaluate_saved_entry({"supported": True, "kind": "scale", "origin": [1] * 3, "scaled": [0] * 3})
-        for weight in (-1, 2, float("inf"), True):
+        for weight in (float("inf"), float("nan"), True):
             with self.assertRaises(ValueError):
                 scaling.evaluate_saved_entry({"supported": True, "kind": "scale", "origin": [1] * 3, "scaled": [2] * 3}, weight)
+
+    def test_native_lerp_clamps_weight_and_rejects_zero_crossing(self):
+        entry = {"supported": True, "kind": "scale", "origin": [1] * 3, "scaled": [2] * 3}
+        self.assertEqual(scaling.evaluate_saved_entry(entry, -5), {"scale": [1.] * 3})
+        self.assertEqual(scaling.evaluate_saved_entry(entry, 5), {"scale": [2.] * 3})
+        entry["scaled"] = [-1, 2, 2]
+        with self.assertRaisesRegex(ValueError, "collapse"):
+            scaling.evaluate_saved_entry(entry, .5)
+        self.tree["scaleValues"][0]["originValue"]["x"] = 0
+        entry = self.describe()["components"][0]["entries"][0]
+        self.assertFalse(entry["supported"])
+        self.assertEqual(entry["reason"], "zero_scale")
+
+    def test_all_saved_targets_are_catalogued_without_height_breast_whitelist(self):
+        self.breast_go.tree["m_Name"] = "LeftSkirtB1_Dyna"
+        self.tree["positionValues"] = [self.record(4, [0, .3, 0], [0, .2, .1])]
+        self.tree["rotationValues"] = [self.record(4, [0, 0, 0], [30, 45, 60])]
+        result = self.describe()
+        skirt = next(target for target in result["targets"] if target["node"] == 1)
+        self.assertEqual(skirt["kinds"], ["scale", "position", "rotation"])
+        self.assertEqual(skirt["name"], "LeftSkirtB1_Dyna")
+        self.assertEqual(skirt["label"], "Left Skirt B1")
+        self.assertEqual(skirt["category"], "skirt")
+        self.assertEqual(len(skirt["entries"]), 3)
+        self.assertTrue(all(entry["supported"] for entry in result["components"][0]["entries"]))
+        self.assertFalse(result["controls"][1]["available"])
+
+    def test_conflicting_duplicate_absolute_targets_are_disabled_together(self):
+        self.tree["scaleValues"].append(self.record(4, [1] * 3, [1.0801, 1.04, 1.08]))
+        result = self.describe()
+        breast = [entry for entry in result["components"][0]["entries"] if entry["node"] == 1]
+        self.assertFalse(any(entry["supported"] for entry in breast))
+        self.assertTrue(all(entry["reason"] == "conflicting_saved_entries" for entry in breast))
+        self.assertIn("scaling_conflicting_entries", result["warnings"])
+        self.tree["scaleValues"][-1] = copy.deepcopy(self.tree["scaleValues"][1])
+        self.assertTrue(all(entry["supported"] for entry in self.describe()["components"][0]["entries"]))
+
+    def test_euler_wrapped_duplicate_paths_are_conflicts_despite_equal_end_quats(self):
+        self.tree["rotationValues"] = [self.record(4, [0, 0, 0], [0, 0, 10]),
+                                        self.record(4, [0, 0, 360], [0, 0, 10])]
+        entries = self.describe()["components"][0]["entries"][-2:]
+        self.assertFalse(any(entry["supported"] for entry in entries))
+
+    def test_rotation_only_component_is_recognized_and_invalid_euler_fails_closed(self):
+        del self.tree["scaleValues"], self.tree["positionValues"]
+        self.tree["rotationValues"] = [self.record(4, [0] * 3, [30, 45, 60])]
+        self.assertTrue(self.describe()["components"][0]["entries"][0]["supported"])
+        self.tree["rotationValues"][0]["scaledValue"]["x"] = float("nan")
+        result = self.describe()
+        self.assertEqual(result["components"][0]["entries"], [])
+        self.assertIn("scaling_invalid_entry", result["warnings"])
+
+    def test_parent_and_skirt_saved_trs_stay_absolute_across_repeated_updates(self):
+        import numpy as np
+        self.breast_go.tree["m_Name"] = "LeftSkirtB1_Dyna"
+        self.tree["scaleValues"][1] = self.record(4, [1,1,1], [.7,.7,.7])
+        self.tree["positionValues"] = [self.record(4, [0,.3,0], [0,.6,0])]
+        self.tree["rotationValues"] = [self.record(4, [0,0,0], [30,45,60])]
+        entries = self.describe()["components"][0]["entries"]
+        nodes = copy.deepcopy(self.glb.doc["nodes"])
+
+        def apply():
+            for entry in entries:
+                nodes[entry["node"]].update(scaling.evaluate_saved_entry(entry))
+
+        def matrix(node):
+            return viewer._trs({"m_LocalPosition": dict(zip("xyz",node["translation"])),
+                                "m_LocalRotation": dict(zip("xyzw",node["rotation"])),
+                                "m_LocalScale": dict(zip("xyz",node["scale"]))})
+
+        apply()
+        # Child local settings compose under parent scaling exactly once, then
+        # propagate to any unchanged grandchild's local offset.
+        grandchild = np.array([0.,.5,0.,1.])
+        expected = matrix(nodes[0]) @ matrix(nodes[1]) @ grandchild
+        self.assertAlmostEqual(nodes[1]["scale"][1], .7)
+        self.assertAlmostEqual(nodes[1]["translation"][1], .6)
+        for _ in range(10):
+            apply()
+            np.testing.assert_array_equal(matrix(nodes[0]) @ matrix(nodes[1]) @ grandchild, expected)
+        # Native ApplyScale(0) restores serialized origin endpoints, rather
+        # than dividing the current parent/child values by their saved ratios.
+        for entry in entries:
+            nodes[entry["node"]].update(scaling.evaluate_saved_entry(entry, 0))
+        self.assertEqual(nodes[0]["scale"], [1,1,1])
+        self.assertEqual(nodes[1]["scale"], [1,1,1])
+        self.assertEqual(nodes[1]["translation"], [0,.3,0])
+
+
+class EulerMathTests(unittest.TestCase):
+    @staticmethod
+    def matrix(quaternion):
+        import numpy as np
+        x, y, z, w = quaternion
+        return np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                         [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                         [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+
+    def test_compound_euler_matches_independent_unity_matrix_and_mirror(self):
+        import numpy as np
+        for values in ([30, 45, 60], [-120, 89, 205], [90, 0, 90], [350, -720, 10]):
+            x, y, z = [math.radians(value) for value in values]
+            rx = np.array([[1,0,0],[0,math.cos(x),-math.sin(x)],[0,math.sin(x),math.cos(x)]])
+            ry = np.array([[math.cos(y),0,math.sin(y)],[0,1,0],[-math.sin(y),0,math.cos(y)]])
+            rz = np.array([[math.cos(z),-math.sin(z),0],[math.sin(z),math.cos(z),0],[0,0,1]])
+            mirror = np.diag([-1, 1, 1])
+            expected = mirror @ ry @ rx @ rz @ mirror
+            actual = scaling.unity_euler_to_gltf(values)
+            np.testing.assert_allclose(self.matrix(actual), expected, atol=1e-12)
+            unity = [actual[0], -actual[1], -actual[2], actual[3]]
+            np.testing.assert_allclose(self.matrix(unity), ry @ rx @ rz, atol=1e-12)
+        np.testing.assert_allclose(scaling.unity_euler_to_gltf([30,45,60]),
+            [.3919038373291199,-.20056212114657512,-.3604234056503559,.8223631719059994], atol=1e-12)
+
+    def test_halfway_lerps_source_euler_instead_of_quaternion_slerp(self):
+        import numpy as np
+        entry = {"kind": "rotation", "supported": True, "interpolation": "unity_euler_lerp", "rotationOrder": "ZXY",
+                 "unityEulerOrigin": [0,0,0], "unityEulerScaled": [60,90,120]}
+        result = scaling.evaluate_saved_entry(entry, .5)["rotation"]
+        np.testing.assert_allclose(result, scaling.unity_euler_to_gltf([30,45,60]), atol=1e-12)
+        end = np.array(scaling.unity_euler_to_gltf([60,90,120]))
+        if end[3] < 0:
+            end *= -1
+        halfway_slerp = end + [0,0,0,1]
+        halfway_slerp /= np.linalg.norm(halfway_slerp)
+        self.assertGreater(np.max(abs(self.matrix(result) - self.matrix(halfway_slerp))), .25)
+        entry.update(unityEulerOrigin=[0,0,350], unityEulerScaled=[0,0,10])
+        np.testing.assert_allclose(self.matrix(scaling.evaluate_saved_entry(entry,.5)["rotation"]),
+                                   np.diag([-1,-1,1]), atol=1e-12)
+
+
+class ActualSavedNodeTests(unittest.TestCase):
+    def test_clothed_skirt_saved_values_propagate_without_compounding(self):
+        path = os.environ.get("SIFAS_FACE_TEST_COSTUME")
+        if not path:
+            self.skipTest("Set actual clothed costume for saved skirt propagation")
+        import hashlib
+        import numpy as np
+        from tests.test_model_rig import unpack, evaluate, node_worlds
+        original = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as cache:
+            metadata = viewer.prepare([path], rigged=True, face_context={"enabled": False, "cache_dir": cache})
+        document, binary = unpack(metadata)
+        entries = [entry for component in metadata["rig"]["scaling"]["components"] for entry in component["entries"]]
+        self.assertEqual(len(entries), 11)
+        skirt = [entry for entry in entries if "Skirt" in entry["name"]]
+        self.assertEqual(len(skirt), 8)
+        self.assertTrue(all(entry["supported"] for entry in entries))
+        overrides = {entry["node"]: scaling.evaluate_saved_entry(entry) for entry in skirt}
+        before, after = evaluate(document,binary), evaluate(document,binary,overrides)
+        body_name = max(before, key=lambda name: len(before[name]))
+        self.assertGreater(np.max(abs(before[body_name] - after[body_name])), .001)
+        worlds, changed = node_worlds(document), node_worlds(document,overrides)
+        source = skirt[0]["node"]
+        descendant = document["nodes"][source]["children"][0]
+        self.assertGreater(np.max(abs(worlds[descendant] - changed[descendant])), .001)
+        for _ in range(5):
+            for entry in skirt:
+                overrides[entry["node"]].update(scaling.evaluate_saved_entry(entry))
+        repeated = evaluate(document,binary,overrides)
+        for name in after:
+            np.testing.assert_allclose(repeated[name], after[name], atol=0)
+        self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), original)
 
 
 if __name__ == "__main__":

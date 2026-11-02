@@ -126,6 +126,10 @@ repacking is unnecessary and the source files remain unchanged.
 - Drag to rotate, pinch/scroll to zoom, or use two fingers to pan.
 - **Front**, **Back**, side views and **Fit model** reset the camera.
 - **Expand view** gives the model more room on a phone.
+- **Basic pose** shows the model's authored pose; **Posed view** switches to the
+  verified original suit-preview pose. Both buttons pause at the first frame
+  and preserve body adjustments, saved-setting choices and individual edits.
+  Posed view is disabled when the original preview motion is unavailable.
 - **Pose and body** selects available motion clips, plays/pauses or seeks them,
   and adjusts expression channels. **Add animation file** selects another Unity
   animation bundle. Same-character local eye-animation companions can also be
@@ -137,12 +141,17 @@ repacking is unnecessary and the source files remain unchanged.
   Play for the original motion. **Saved pose** selects the model's authored
   placement. The shared preview motion does not change the costume's character.
 - **Height** and **Breast size** adjust the model's verified `Move` and
-  `BreastSize` nodes. `100%` adds no extra change to the current pose/baseline.
-  **Use saved node settings** explicitly applies supported absolute LiveCore
-  scale/position endpoints; conflicting entries are skipped and reported.
+  `BreastSize` nodes. `100%` adds no extra change to the current pose and the
+  enabled file settings. Saved body and outfit settings are applied by default:
+  supported LiveCore scale, position and rotation records cover every exported
+  target, including skirt bones. Part groups let you include or exclude settings
+  without editing raw bone data; the global checkbox shows the authored shape.
+  Saved values are absolute local endpoints, so repeated pose changes do not
+  multiply them again. Conflicting or unsupported entries are reported.
   **Individual bones** provides additional relative transform controls.
 - **Reset preview adjustments** restores the verified suit-preview first frame
-  when supplied, or otherwise the saved pose, and resets the controls. These
+  when supplied, or otherwise the saved pose, and resets the controls and saved
+  settings to their enabled defaults. These
   preview changes do not write to the source bundle. The separate LiveCore and
   Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
   optional raw game `heightScale` setting for single-file runs.
@@ -158,8 +167,10 @@ unsupported controls stay disabled. The game's dedicated suit-preview clip must
 be supplied separately; game assets are not bundled. A clip name alone cannot
 select the default pose, and no neutral expression is guessed.
 The separate game `heightScale` normalization formula is not inferred by the
-preview. Saved Euler-rotation records are not currently applied; individual
-bone rotation controls remain available.
+preview. Saved Euler rotations use Unity's Z-X-Y rotation order and the exported
+coordinate reflection. The reference evaluator interpolates the original Euler
+vectors before conversion, matching the verified native operation; the viewer
+applies the file's endpoint values. Individual bone controls remain available.
 
 Supported AS/Member materials use the APK's gamma-space mask, ambient/tint,
 rim-light, matcap, cheek, emissive and outline equations with the source material
