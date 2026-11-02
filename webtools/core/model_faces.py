@@ -780,33 +780,36 @@ class FacePlan:
     def resolve(self):
         if not self.enabled or self.owner is None or not self.needed:
             return []
-        candidates = []
         try:
-            candidates.extend(self._local())
-            for path in candidates:
-                if self._accept(path):
-                    break
+            try:
+                descriptors = self._descriptors()
+            except Exception:
+                # Standalone/local-only viewers do not need an asset catalog.
+                descriptors = []
+            pending = []
+            # Exact original/cache identities come before the broad Unity-file
+            # search. A populated library must not consume the entire facial
+            # budget before we can reuse its already-downloaded original pack.
+            for descriptor in descriptors:
+                _check(self.deadline)
+                try:
+                    if self._accept(self._resource(descriptor, download=False)):
+                        break
+                except Exception:
+                    pending.append(descriptor)
             if self.needed:
-                pending = []
-                # Search every region/platform cache before opening a socket.
-                # This matters when the preferred catalog is GL Android but
-                # the user has already downloaded a JP or iOS pack.
-                for descriptor in self._descriptors():
+                for path in self._local():
+                    if self._accept(path):
+                        break
+            if self.needed:
+                for descriptor in pending:
                     _check(self.deadline)
                     try:
-                        if self._accept(self._resource(descriptor, download=False)):
+                        if self._accept(self._resource(descriptor)):
                             break
                     except Exception:
-                        pending.append(descriptor)
-                if self.needed:
-                    for descriptor in pending:
-                        _check(self.deadline)
-                        try:
-                            if self._accept(self._resource(descriptor)):
-                                break
-                        except Exception:
-                            # One missing optional pack cannot hide a costume.
-                            continue
+                        # One missing optional pack cannot hide a costume.
+                        continue
         except Exception:
             pass
         if self.needed:

@@ -372,6 +372,31 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(pack.read_bytes(), packed)
 
     @EXTRACTOR_REQUIRED
+    def test_exact_cached_pack_completes_before_a_large_library_scan(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        pack = self.library / descriptor["pack_name"]
+        packed = self.encrypted(donor, descriptor)
+        pack.write_bytes(packed)
+        with patch.object(faces.FacePlan, "_local", side_effect=AssertionError("Unrelated models must not consume the face budget")) as local, \
+                patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        local.assert_not_called()
+        fetch.assert_not_called()
+        self.assertEqual(pack.read_bytes(), packed)
+
+    def test_broken_catalog_lookup_still_uses_existing_local_unity_face(self):
+        (self.library / "original.unity").write_bytes(self.donor())
+        with patch.object(faces.FacePlan, "_descriptors", side_effect=OSError("Optional catalog unavailable")), \
+                patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        fetch.assert_not_called()
+
+    @EXTRACTOR_REQUIRED
     def test_incomplete_gl_catalog_does_not_hide_valid_jp_catalog(self):
         donor = self.donor()
         self.databases(donor)
