@@ -31,7 +31,8 @@ function fixture(options = {}) {
   const tipBind = identity.slice(); tipBind[13] = -1.5;
   const binds = attribute(identity.concat(breastBind, tipBind), Float32Array, 'MAT4', 5126, 3);
   const times = attribute([0,1], Float32Array, 'SCALAR', 5126, 2, {min:[0],max:[1]});
-  const rotations = attribute([0,0,0,1,0,0,.5,Math.sqrt(.75)], Float32Array, 'VEC4', 5126, 2);
+  const rotationStart=options.rotationStart||0,clipName=options.previewName||'Synthetic test motion';
+  const rotations = attribute([0,0,rotationStart,Math.sqrt(1-rotationStart*rotationStart),0,0,.5,Math.sqrt(.75)], Float32Array, 'VEC4', 5126, 2);
   const doc = {asset:{version:'2.0',generator:'Original synthetic rig regression'},scene:0,scenes:[{nodes:[0]}],
     nodes:[{name:'SyntheticRoot',children:[1,4],extras:{elichika_node:0,role:'root'}},
       {name:'Move',translation:[-offset,0,0],children:[2],extras:{elichika_node:1,role:'bone'}},
@@ -40,7 +41,7 @@ function fixture(options = {}) {
       {name:'SyntheticTriangle',mesh:0,skin:0,extras:{elichika_node:4,role:'mesh'}}],
     skins:[{joints:[1,2,3],inverseBindMatrices:binds,skeleton:1}],
     meshes:[{name:'SyntheticTriangle',weights:[0],extras:{targetNames:['SyntheticExpression']},primitives:[{attributes:{POSITION:positions,NORMAL:normals,TEXCOORD_0:uv,JOINTS_0:joints,WEIGHTS_0:weights},indices,material:0,targets:[{POSITION:morph}]}]}],
-    animations:[{name:'Synthetic test motion',samplers:[{input:times,output:rotations,interpolation:'LINEAR'}],channels:[{sampler:0,target:{node:2,path:'rotation'}}]}],
+    animations:[{name:clipName,samplers:[{input:times,output:rotations,interpolation:'LINEAR'}],channels:[{sampler:0,target:{node:2,path:'rotation'}}]}],
     materials:[{name:'Synthetic neutral material',pbrMetallicRoughness:{baseColorFactor:[.8,.15,.1,1],metallicFactor:0,roughnessFactor:1},extensions:{KHR_materials_unlit:{}}}],
     extensionsUsed:['KHR_materials_unlit'],buffers:[{byteLength:length}],bufferViews:views,accessors};
   doc.animations.push(Object.assign({},doc.animations[0],{name:'Synthetic motion visibility'}));
@@ -59,10 +60,11 @@ function fixture(options = {}) {
   ]}];
   const visibility=(times,values)=>[{node:4,times,values,interpolation:'STEP',sourceProperty:'Renderer.m_Enabled'}];
   const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:1,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
-    {name:'Synthetic test motion',duration:1,loop:true},
+    {name:clipName,duration:1,loop:true},
     {name:'Synthetic motion visibility',duration:1,loop:false,visibility:visibility([0,.6],[false,true])},
     {name:'Synthetic visibility only',duration:1,loop:false,channels:0,index:null,visibility:visibility([0,.25,.75],[true,false,true])}
   ]};
+  if(Object.prototype.hasOwnProperty.call(options,'previewVerified'))rig.previewMotion={name:options.previewReference||clipName,kind:options.previewKind||'sifas_suit_preview',verified:options.previewVerified};
   return {glb:Buffer.concat([header,jh,jsonPadded,bh,binPadded]),rig};
 }
 
@@ -153,9 +155,47 @@ function fixture(options = {}) {
     const memberRecovered=await page.evaluate(()=>ModelViewer.renderProbe(33));assert.equal(memberRecovered.glError,0,JSON.stringify({memberRecovered,gpuMessages}));assert.equal(memberRecovered.triangles,2);
     generated=fixture();await page.evaluate(()=>openModelViewer(['/synthetic/after-shader-context.unity']));const afterContextReload=await page.evaluate(()=>ModelViewer.renderProbe(33));
     assert.equal(afterContextReload.glError,0,JSON.stringify({afterContextReload,gpuMessages}));assert(afterContextReload.nonBackgroundSamples>10);
+    // Shared game-motion names and eye_900 are insufficient evidence of a
+    // default pose. The test geometry and keys remain wholly synthetic.
+    const previewName='ch0301_GEN_preview1_L',previewCases=[];
+    for(const options of [
+      {previewName,rotationStart:.25},
+      {previewName,rotationStart:.25,previewVerified:false},
+      {previewName,rotationStart:.25,previewVerified:'true'},
+      {previewName,rotationStart:.25,previewVerified:true,previewKind:'unverified_motion'},
+      {previewName,rotationStart:.25,previewVerified:true,previewReference:'Missing clip'},
+      {previewName:'eye_900',rotationStart:.25}
+    ]){
+      generated=fixture(options);await page.evaluate(()=>openModelViewer(['/synthetic/unverified-preview.unity']));
+      const current=await state();assert.equal(current.rig.defaultClip,'');assert.equal(current.rig.selectedClip,'');
+      assert.deepEqual(current.rig.bones.find(b=>b.name==='BreastSize').quaternion,[0,0,0,1],'Unverified motion must retain the authored pose');
+      previewCases.push({options,selectedClip:current.rig.selectedClip,defaultClip:current.rig.defaultClip});
+    }
+    generated=fixture({previewName,rotationStart:.25,previewVerified:true});
+    unsupported=true;await page.evaluate(()=>openModelViewer(['/synthetic/unsupported-preview.unity']));assert.equal((await state()).rig.defaultClip,'');
+    unsupported=false;await page.evaluate(()=>openModelViewer(['/synthetic/verified-preview.unity']));
+    const previewInitial=await state();assert.equal(previewInitial.rig.selectedClip,previewName);assert.equal(previewInitial.rig.defaultClip,previewName);assert.equal(previewInitial.rig.playing,false);assert.equal(previewInitial.rig.time,0);
+    assert(Math.abs(previewInitial.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Verified preview must apply its first authored keyframe at load');
+    assert.equal(await page.locator('#viewer-motion option:checked').innerText(),'SIFAS costume preview');
+    const previewProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));assert.equal(previewProbe.glError,0);assert(previewProbe.nonBackgroundSamples>0);
+    await page.waitForTimeout(150);assert.equal((await state()).rig.time,0,'Default preview remains paused until Play');
+    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
+    for(let n=0;n<2;n++){await slider('viewer-height',120);await slider('viewer-breast',150);}
+    const previewScaled=await state();assert.equal(previewScaled.rig.bones.find(b=>b.name==='Move').scale[1],1.2);assert.equal(previewScaled.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
+    assert(Math.abs(previewScaled.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Repeated body edits preserve the selected preview pose');
+    await page.locator('#viewer-play').click();await page.waitForTimeout(150);assert((await state()).rig.time>0);await page.locator('#viewer-play').click();
+    const previewPaused=await state();await page.waitForTimeout(150);assert.equal((await state()).rig.time,previewPaused.rig.time);
+    await slider('viewer-time',.5);assert((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.25);
+    await page.locator('#viewer-motion').selectOption('');assert.deepEqual((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion,[0,0,0,1],'Saved pose stays independently selectable');
+    await slider('viewer-expression-value',75);await page.locator('#viewer-preview-reset').click();
+    const previewReset=await state();assert.equal(previewReset.rig.selectedClip,previewName);assert.equal(previewReset.rig.defaultClip,previewName);assert.equal(previewReset.rig.playing,false);assert.equal(previewReset.rig.time,0);assert.equal(previewReset.rig.body.height,100);assert.equal(previewReset.rig.body.breast,100);assert.equal(previewReset.rig.expressions[0].weight,0);assert.equal(previewReset.rig.savedNodes.enabled,false);
+    assert(Math.abs(previewReset.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Reset returns to the verified preview first frame');
+    for(const [lang,label] of [['ko','SIFAS 의상 미리보기'],['ja','SIFAS衣装プレビュー'],['en','SIFAS costume preview']]){
+      await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.querySelector('#viewer-motion option:checked').textContent===label,label);assert.equal((await state()).rig.selectedClip,previewName);
+    }
     assert(!gpuMessages.some(message=>/INVALID_OPERATION|GL_INVALID|THREE.WebGLProgram/.test(message)),JSON.stringify(gpuMessages));
     assert.deepEqual(errors,[]);
-    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,errors,gpuMessages};
+    const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));
     await page.screenshot({path:path.join(evidence,'synthetic-rig-ui.png'),fullPage:true});console.log(JSON.stringify(report));
   } finally {await browser.close();}
