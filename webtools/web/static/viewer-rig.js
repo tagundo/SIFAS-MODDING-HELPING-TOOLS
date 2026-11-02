@@ -100,6 +100,13 @@
       var tracks = visibilityTracks(entry.visibility);
       if (tracks.length) clipEntries.push({ name: entry.name, animation: null, duration: Math.max(0, finite(entry.duration, 0)), loop: entry.loop === true, visibility: tracks });
     });
+    // A clip's internal name (including ch0301 or eye_900) never establishes a
+    // default pose. Only the backend's verified game-resource mapping may do so.
+    var previewMotion = info && info.previewMotion;
+    var previewMatches = previewMotion && previewMotion.verified === true &&
+      previewMotion.kind === "sifas_suit_preview" && typeof previewMotion.name === "string" ?
+      clipEntries.filter(function (clip) { return clip.name === previewMotion.name && clip.animation && isFinite(clip.duration) && clip.duration > 0; }) : [];
+    var defaultClip = rigEditable && previewMatches.length === 1 ? previewMatches[0].name : "";
     (rigEditable && info.bones || []).forEach(function (bone) {
       var object = nodes[String(bone.node)];
       if (object) bones.push({ id: String(bone.node), name: bone.path || bone.name || object.name, object: object });
@@ -285,7 +292,7 @@
       adjustments = {}; expressionOverrides = {}; body = { height: 100, breast: 100 };
       useSavedNodes = false; element("viewer-saved-nodes").checked = false;
       ["height", "breast"].forEach(function (kind) { element("viewer-" + kind).value = "100"; element("viewer-" + kind + "-value").textContent = "100%"; });
-      setClip(""); refreshNode(); refreshExpression(); refreshSavedStatus();
+      setClip(defaultClip); refreshNode(); refreshExpression(); refreshSavedStatus();
     }
     function refreshSavedStatus() {
       var message = !savedOperations.length ? translate("No verified saved node settings are available.") :
@@ -297,7 +304,7 @@
     function updateLanguage() {
       var motion = element("viewer-motion"); motion.textContent = "";
       appendOption(motion, "", translate("Saved pose"));
-      clipEntries.forEach(function (clip) { appendOption(motion, clip.name, clip.name); }); motion.value = selectedClip;
+      clipEntries.forEach(function (clip) { appendOption(motion, clip.name, clip.name === defaultClip ? translate("SIFAS costume preview") : clip.name); }); motion.value = selectedClip;
       var expressionSelect = element("viewer-expression"); expressionSelect.textContent = "";
       if (!expressions.length) appendOption(expressionSelect, "", translate("No expression channels in this model."));
       expressions.forEach(function (value) { appendOption(expressionSelect, value.key, value.name); });
@@ -408,7 +415,7 @@
     listen("viewer-node", "change", function () { selectedNode = this.value; refreshNode(); });
     listen("viewer-node-reset", "click", function () { delete adjustments[selectedNode]; evaluate(0); refreshNode(); changed(); });
     listen("viewer-preview-reset", "click", reset);
-    updateLanguage(); evaluate(0); refreshNode(); refreshExpression();
+    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
 
     return {
       update: function (delta) {
@@ -433,7 +440,7 @@
       dispose: function () { disposed = true; playing = false; events.forEach(function (remove) { remove(); }); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
-        return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip,
+        return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
           playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, selected: part.visible, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),

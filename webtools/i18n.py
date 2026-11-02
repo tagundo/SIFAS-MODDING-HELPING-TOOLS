@@ -1370,7 +1370,7 @@ _VIEWER_TRANSLATIONS.update({
 _VIEWER_TRANSLATIONS.update({
     "Pose and body": ["포즈·체형 조절", "ポーズ・体型調整"],
     "Add animation file": ["모션 파일 추가", "モーションファイルを追加"],
-    "Add a Unity motion or expression bundle, then reopen the model. FBX motion files are not supported.": ["Unity 모션·표정 번들을 추가한 뒤 모델 열기를 누르세요. FBX 모션 파일은 지원하지 않습니다.", "Unityのモーション・表情バンドルを追加し、モデルを開き直してください。FBXモーションには対応していません。"],
+    "Add a Unity motion/expression bundle or an original SIFAS preview pack, then reopen the model. FBX motion files are not supported.": ["Unity 모션·표정 번들이나 SIFAS 원본 미리보기 팩을 추가한 뒤 모델 열기를 누르세요. FBX 모션 파일은 지원하지 않습니다.", "Unityのモーション・表情バンドルまたはSIFASの元のプレビューパックを追加し、モデルを開き直してください。FBXモーションには対応していません。"],
     "Use saved node settings": ["파일의 노드 설정 적용", "ファイルのノード設定を適用"],
     "Uses verified scale and position values from the file. Game height normalization is not applied.": ["파일에서 확인한 크기·위치 값을 적용합니다. 게임의 키 정규화는 적용하지 않습니다.", "ファイルで確認できたサイズ・位置の値を適用します。ゲームの身長正規化は適用しません。"],
     "100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.": ["100%는 크기를 추가로 바꾸지 않습니다. 선택한 자세와 노드 설정을 기준으로 조절합니다.", "100%ではサイズを追加変更しません。選択した姿勢とノード設定を基準に調整します。"],
@@ -1385,6 +1385,7 @@ _VIEWER_TRANSLATIONS.update({
     "No saved height component was found in this bundle.": ["이 번들에서 게임용 키 설정 항목을 찾지 못했습니다.", "このバンドルにゲーム用の身長設定項目が見つかりません。"],
     "Preview only. The original files stay unchanged.": ["미리보기에만 적용되며 원본 파일은 바뀌지 않습니다.", "プレビューだけに適用され、元のファイルは変更されません。"],
     "Pose / motion": ["포즈 / 모션", "ポーズ／モーション"],
+    "SIFAS costume preview": ["SIFAS 의상 미리보기", "SIFAS衣装プレビュー"],
     "Saved pose": ["파일에 저장된 자세", "ファイルに保存された姿勢"],
     "Play": ["재생", "再生"],
     "Pause": ["일시 정지", "一時停止"],

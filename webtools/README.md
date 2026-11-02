@@ -130,12 +130,19 @@ repacking is unnecessary and the source files remain unchanged.
   and adjusts expression channels. **Add animation file** selects another Unity
   animation bundle. Same-character local eye-animation companions can also be
   discovered within the bounded trusted library search.
+- **Add animation file** also accepts the original encrypted suit-preview pack
+  (for example, `me7wze`) when Elichika's asset database identifies it. The pack
+  is decrypted in a temporary folder and its source bytes are preserved. A
+  verified **SIFAS costume preview** starts at its first frame, paused; press
+  Play for the original motion. **Saved pose** selects the model's authored
+  placement. The shared preview motion does not change the costume's character.
 - **Height** and **Breast size** adjust the model's verified `Move` and
   `BreastSize` nodes. `100%` adds no extra change to the current pose/baseline.
   **Use saved node settings** explicitly applies supported absolute LiveCore
   scale/position endpoints; conflicting entries are skipped and reported.
   **Individual bones** provides additional relative transform controls.
-- **Reset preview adjustments** restores the saved pose and controls. These
+- **Reset preview adjustments** restores the verified suit-preview first frame
+  when supplied, or otherwise the saved pose, and resets the controls. These
   preview changes do not write to the source bundle. The separate LiveCore and
   Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
   optional raw game `heightScale` setting for single-file runs.
@@ -147,8 +154,9 @@ repacking is unnecessary and the source files remain unchanged.
 Interactive previews retain named skeletons, bind poses, skin weights and
 supported morph/animation data, including edited models with recentered vertices.
 Meshes without valid rig data remain viewable with their saved placement;
-unsupported controls stay disabled. Loading an arbitrary model does not provide
-the game's dedicated suit-preview clip, and no neutral expression is guessed.
+unsupported controls stay disabled. The game's dedicated suit-preview clip must
+be supplied separately; game assets are not bundled. A clip name alone cannot
+select the default pose, and no neutral expression is guessed.
 The separate game `heightScale` normalization formula is not inferred by the
 preview. Saved Euler-rotation records are not currently applied; individual
 bone rotation controls remain available.
