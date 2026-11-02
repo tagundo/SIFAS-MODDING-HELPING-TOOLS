@@ -14,13 +14,70 @@ import re
 MAX_COMPONENTS = 32
 MAX_ENTRIES = 1024
 MAX_CONTROL_NODES = 32
+MAX_CATALOGUE_NODES = 1024
 MAX_ABSOLUTE_VALUE = 1_000_000
 EPSILON = 1e-3
 
-_CONTROLS = (
-    ("height", "Height", "Move", 50, 150),
-    ("breast", "Breast size", "BreastSize", 25, 200),
+_SKIRT_ROOTS = ("SkirtA1_Dyna", "SkirtE1_Dyna", "LeftSkirtB1_Dyna", "RightSkirtB1_Dyna",
+                "LeftSkirtC1_Dyna", "RightSkirtC1_Dyna", "LeftSkirtD1_Dyna", "RightSkirtD1_Dyna")
+
+# Keep these exact profiles in sync with sifas_breast_tuner.py. That editor is
+# also distributed as a standalone script, so the viewer must not import its
+# desktop/UI implementation during a bounded model conversion.
+_BREAST_REDUCE_PRESETS = (
+    ("Yoshiko/Shioriko", (.95, .99, .98)), ("Honoka/Maki", (.90, .98, .96)),
+    ("Umi/Ruby/Kasumi", (.80, .96, .92)), ("Rin", (.72, .95, .90)),
+    ("Nico", (.64, .94, .88)), ("Rina", (.61, .91, .85)),
 )
+_BREAST_ENLARGE_PRESETS = (
+    ("Chika/You/Ayumu", (1.04, 1.02, 1.04)), ("Hanayo/Setsuna", (1.08, 1.04, 1.08)),
+    ("Hanamaru/Ai", (1.12, 1.06, 1.12)), ("Lanzhu", (1.14, 1.07, 1.14)),
+    ("Eli/Kanan/Kanata", (1.16, 1.08, 1.16)), ("Mari", (1.20, 1.10, 1.20)),
+    ("Karin", (1.22, 1.11, 1.22)), ("Nozomi", (1.30, 1.15, 1.30)),
+    ("Emma", (1.30, 1.18, 1.30)),
+)
+_CONTROLS = (
+    ("height", "Height", ("Move",), 50, 150, "height_vertical_preserve_head", [0, 1, 0]),
+    ("breast", "Breast size", ("BreastSize",), 25, 200, "breast_tool_curve", [1, 1, 1]),
+    ("skirt", "Skirt length and volume", _SKIRT_ROOTS, 50, 150, "multiply_authored_local_scale", [1, 1, 1]),
+)
+_RECOMMENDED = {
+    "Head": ("Head", "head"), "Head_Hair": ("Hair", "hair"),
+    "Neck_Hair": ("Back hair", "hair"), "Move": ("Height", "height"),
+    "BreastSize": ("Breast size", "breast"), "Breast_Offset": ("Breast placement", "breast"),
+    "HipsSize": ("Hip size", "hips"),
+    "Spine": ("Lower torso", "waist"), "Spine1": ("Middle torso", "waist"),
+    "Spine2": ("Upper torso", "waist"),
+    "LeftShoulder": ("Left shoulder", "shoulders"), "RightShoulder": ("Right shoulder", "shoulders"),
+    "LeftArm": ("Left upper arm", "arms"), "RightArm": ("Right upper arm", "arms"),
+    "LeftForeArm": ("Left forearm", "arms"), "RightForeArm": ("Right forearm", "arms"),
+    "LeftHand": ("Left hand", "hands"), "RightHand": ("Right hand", "hands"),
+    "LeftUpLeg": ("Left thigh", "legs"), "RightUpLeg": ("Right thigh", "legs"),
+    "LeftLeg": ("Left calf", "legs"), "RightLeg": ("Right calf", "legs"),
+    "LeftFoot": ("Left foot", "feet"), "RightFoot": ("Right foot", "feet"),
+    **{name: ("Skirt", "skirt") for name in _SKIRT_ROOTS},
+}
+
+
+def _breast_profile():
+    """Describe the existing editor's exact XYZ profiles and enlargement line.
+
+    The relative control uses F(x * p/100) / F(x), component by component,
+    where F linearly interpolates the stored reduction triples and follows
+    x=z=1+2Y, y=1+Y above stock. This preserves custom file XYZ at p=100.
+    Emma remains an explicit preset because its Y is an intentional exception.
+    """
+    curve = sorted([list(value) for _, value in _BREAST_REDUCE_PRESETS] + [[1., 1., 1.]])
+    curve.append([3., 2., 3.])  # open upper endpoint: editor supports 0 < Y < 1
+    presets = [{"id": "stock", "label": "Stock", "scale": [1., 1., 1.], "group": "stock"}]
+    for group, entries in (("smaller", _BREAST_REDUCE_PRESETS), ("larger", _BREAST_ENLARGE_PRESETS)):
+        for label, value in entries:
+            presets.append({"id": re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
+                            "label": label, "scale": list(value), "group": group})
+    return {"curve": curve, "curveDomain": {"minX": .61, "maxX": 3., "maxExclusive": True},
+            "curveParameter": "local_scale_x", "relativeFormula": "F(x*p/100)/F(x)",
+            "presets": presets, "presetApplication": "absolute_local_scale",
+            "source": "sifas_breast_tuner.py:breast_enlarge_xyz/BREAST_REDUCE_PRESETS/BREAST_ENLARGE_PRESETS"}
 
 
 def _number(value):
@@ -112,9 +169,10 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
 
     selected = None if sources is None else set(sources)
     nodes = glb.doc["nodes"]
-    result = {"version": 1, "baseline": "authored", "savedOverridesApplied": False,
+    result = {"version": 2, "baseline": "authored", "savedOverridesApplied": False,
               "savedInterpolation": "unity_vector3_lerp_clamp01", "rotationOrder": "ZXY",
-              "gameHeightFormulaVerified": False, "components": [], "controls": [], "targets": [], "warnings": []}
+              "gameHeightFormulaVerified": False, "components": [], "controls": [], "targets": [],
+              "nodes": [], "recommendedTargets": [], "warnings": []}
 
     def warn(code):
         if code not in result["warnings"]:
@@ -131,7 +189,13 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
                 "baseQuaternion": _quaternion(node.get("rotation", [0, 0, 0, 1])),
                 "baseScale": _vector(node.get("scale", [1, 1, 1]))}
 
-    catalogue = {name: {} for _, _, name, _, _ in _CONTROLS}
+    catalogue = {name: {} for _, _, names, *_ in _CONTROLS for name in names}
+    authored_nodes, source_by_node = {}, {}
+    parents = {}
+    for parent, node in enumerate(nodes):
+        for child in node.get("children", []):
+            if isinstance(child, int) and not isinstance(child, bool) and 0 <= child < len(nodes):
+                parents.setdefault(child, []).append(parent)
     seen = set()
     for transform in scene.transforms.values():
         key = _key(transform)
@@ -142,13 +206,19 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             tree = scene.tree(transform)
             game_object = _ref(transform, tree.get("m_GameObject"))
             name = scene.name(game_object) if game_object is not None else ""
-            if name not in catalogue:
-                continue
             target = rest(transform)
-            if any(abs(value) < 1e-8 for value in target["baseScale"]):
+            if len(authored_nodes) >= MAX_CATALOGUE_NODES and target["node"] not in authored_nodes:
+                warn("scaling_metadata_limit")
                 continue
-            target.update(name=name, axes=[1, 1, 1])
-            catalogue[name][target["node"]] = target
+            parent = parents.get(target["node"], [])
+            label, category = _RECOMMENDED.get(name, (name, "other"))
+            target.update(name=name, label=label, category=category,
+                          parent=parent[0] if len(parent) == 1 else None,
+                          sourceName=_source_name(transform))
+            authored_nodes[target["node"]] = target
+            source_by_node[target["node"]] = _source_path(transform)
+            if name in catalogue and all(abs(value) >= 1e-8 for value in target["baseScale"]):
+                catalogue[name][target["node"]] = dict(target)
         except (ValueError, KeyError, TypeError, OverflowError):
             warn("scaling_target_unavailable")
 
@@ -253,15 +323,78 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             warn("scaling_conflicting_entries")
     result["targets"] = list(groups.values())
 
-    for identity, label, name, minimum, maximum in _CONTROLS:
-        targets = list(catalogue[name].values())
+    for node, target in authored_nodes.items():
+        group = groups.get(node)
+        target["hasSavedSettings"] = group is not None
+        target["savedKinds"] = list(group["kinds"]) if group else []
+        target["savedEntries"] = [entry["id"] for entry in group["entries"]] if group else []
+        result["nodes"].append(target)
+        if target["name"] in _RECOMMENDED:
+            result["recommendedTargets"].append({key: target[key] for key in
+                ("node", "name", "label", "category", "hasSavedSettings")})
+
+    def descends(child, ancestor):
+        """Require one exported parent chain entirely inside the same source."""
+        source = source_by_node.get(ancestor)
+        seen = set()
+        while child not in seen and child in authored_nodes and source_by_node.get(child) == source:
+            if child == ancestor:
+                return True
+            seen.add(child)
+            chain = parents.get(child, [])
+            if len(chain) != 1:
+                return False
+            child = chain[0]
+        return False
+
+    def outermost(targets):
+        return [target for target in targets if not any(
+            target["node"] != other["node"] and descends(target["node"], other["node"])
+            for other in targets)]
+
+    for identity, label, names, minimum, maximum, mode, axes in _CONTROLS:
+        targets = [dict(target) for name in names for target in catalogue[name].values()]
+        reason = None
+        if identity == "height":
+            verified = []
+            for target in targets:
+                roots = []
+                for name in ("Head", "Neck_Hair"):
+                    matches = [node for node in authored_nodes.values()
+                               if node["name"] == name and descends(node["node"], target["node"])]
+                    if len(matches) > 1 or (name == "Head" and not matches):
+                        reason = "ambiguous_height_head" if matches else "missing_height_head"
+                        roots = None
+                        break
+                    roots.extend(matches)
+                if roots is None:
+                    continue
+                target["compensationRoots"] = [dict(root) for root in outermost(roots)]
+                verified.append(target)
+            targets = outermost(verified)
+        elif identity == "skirt":
+            targets = outermost(targets)
+        for target in targets:
+            target["axes"] = list(axes)
         if len(targets) > MAX_CONTROL_NODES:
             targets = []
             warn("scaling_metadata_limit")
-        result["controls"].append({"id": identity, "label": label, "available": bool(targets),
-                                   "default": 100, "min": minimum, "max": maximum,
-                                   "unit": "percent", "mode": "multiply_authored_local_scale",
-                                   "limitsSource": "viewer_preview_bounds", "nodes": targets})
+        control = {"id": identity, "label": label, "available": bool(targets),
+                   "default": 100, "min": minimum, "max": maximum,
+                   "unit": "percent", "mode": mode, "baseline": "active_pose_and_saved_settings",
+                   "limitsSource": "viewer_preview_bounds", "nodes": targets}
+        if not targets and reason:
+            control["unavailableReason"] = reason
+        if identity == "height":
+            control.update(source="viewer_vertical_height_policy", axesMeaning="vertical_only",
+                           compensation="preserve_world_linear_basis_at_shifted_anchor",
+                           gameHeightFormulaVerified=False)
+        elif identity == "breast":
+            control.update(_breast_profile())
+        else:
+            control.update(source="skirt_length_changer.py:DEFAULT_SKIRT_PATTERNS",
+                           exactRootNames=list(_SKIRT_ROOTS), axesMeaning="length_and_volume")
+        result["controls"].append(control)
     return result
 
 

@@ -1,0 +1,813 @@
+{
+  "version": 1,
+  "owner": 207,
+  "faceSourceHash": "97e79b210e61c6d4b1f8cbee68d903e8c6e4fb6e070bb84a9d2b6fd37fad2bd4",
+  "eyeClipSourceHash": "d357e9a2477ff693bf98a9aa659d00278f79090c0376d1c7aefed2f47fd55efd",
+  "provenance": "Original SIFAS FacialAnimationId enum plus matching MemberEyeAnimationData.summary and decoded clip endpoint; Unity X-reflection and Z-X-Y Euler order preserved.",
+  "space": "gltf_local",
+  "recipes": [
+    {
+      "id": "eyes-closed",
+      "label": "Eyes closed",
+      "semanticId": 1,
+      "clipName": "ch0207_LiveFacial_eye_001",
+      "weights": [
+        {
+          "name": "LeftEyeWhiteLineBlendShape.LeftEye_LineWhite_001",
+          "value": 1.0
+        },
+        {
+          "name": "RightEyeWhiteLineBlendShape.RightEye_LineWhite_001",
+          "value": 1.0
+        },
+        {
+          "name": "EyeBlendShape.eye_facial_001",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            3.873699824907817e-06,
+            1.1800000265793642e-06,
+            -2.6899999738816405e-07
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            9.999999717180685e-10
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": [
+        {
+          "part": "LeftEyeWhiteLine",
+          "visible": true
+        },
+        {
+          "part": "RightEyeWhiteLine",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "id": "eyes-narrow",
+      "label": "Narrow eyes",
+      "semanticId": 2,
+      "clipName": "ch0207_LiveFacial_eye_002",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_002",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            3.873699824907817e-06,
+            1.1800000265793642e-06,
+            -2.6899999738816405e-07
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            9.999999717180685e-10
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0199999809265137,
+            0.949999988079071,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0199999809265137,
+            0.949999988079071,
+            1.0
+          ]
+        }
+      ],
+      "visibility": []
+    },
+    {
+      "id": "eyes-open",
+      "label": "Eyes open",
+      "semanticId": 3,
+      "clipName": "ch0207_LiveFacial_eye_003",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_003_006_011",
+          "value": 1.0
+        }
+      ],
+      "bones": [],
+      "visibility": []
+    },
+    {
+      "id": "eyes-wide",
+      "label": "Eyes wide open",
+      "semanticId": 4,
+      "clipName": "ch0207_LiveFacial_eye_004",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_004",
+          "value": 1.0
+        }
+      ],
+      "bones": [],
+      "visibility": []
+    },
+    {
+      "id": "eyes-smile",
+      "label": "Smiling eyes",
+      "semanticId": 5,
+      "clipName": "ch0207_LiveFacial_eye_005",
+      "weights": [
+        {
+          "name": "LeftEyeWhiteLineBlendShape.LeftEye_LineWhite_002",
+          "value": 1.0
+        },
+        {
+          "name": "RightEyeWhiteLineBlendShape.RightEye_LineWhite_002",
+          "value": 1.0
+        },
+        {
+          "name": "EyeBlendShape.eye_facial_005",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1",
+          "kind": "position",
+          "value": [
+            -0.006666126195341349,
+            0.002951115369796753,
+            0.029069731011986732
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            3.873699824907817e-06,
+            1.1800000265793642e-06,
+            -0.0011523979483172297
+          ]
+        },
+        {
+          "name": "RightEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1",
+          "kind": "position",
+          "value": [
+            0.006670000031590462,
+            0.0029499998781830072,
+            0.029069999232888222
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            -0.0011500000255182385
+          ]
+        },
+        {
+          "name": "LeftEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye1",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": [
+        {
+          "part": "LeftEyeWhiteLine",
+          "visible": true
+        },
+        {
+          "part": "RightEyeWhiteLine",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "id": "eyes-wink-right",
+      "label": "Right wink",
+      "semanticId": 12,
+      "clipName": "ch0207_LiveFacial_eye_012",
+      "weights": [
+        {
+          "name": "RightEyeWhiteLineBlendShape.RightEye_LineWhite_002",
+          "value": 1.0
+        },
+        {
+          "name": "EyeBlendShape.eye_facial_012",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            3.873699824907817e-06,
+            1.1153999821544858e-06,
+            -2.6899999738816405e-07
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            -0.0011500000255182385
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": [
+        {
+          "part": "RightEyeWhiteLine",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "id": "eyes-wink-left",
+      "label": "Left wink",
+      "semanticId": 13,
+      "clipName": "ch0207_LiveFacial_eye_013",
+      "weights": [
+        {
+          "name": "LeftEyeWhiteLineBlendShape.LeftEye_LineWhite_002",
+          "value": 1.0
+        },
+        {
+          "name": "EyeBlendShape.eye_facial_013",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            3.873699824907817e-06,
+            1.1800000265793642e-06,
+            -0.0011523979483172297
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            9.999999717180685e-10
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": [
+        {
+          "part": "LeftEyeWhiteLine",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "id": "eyes-troubled",
+      "label": "Troubled eyes",
+      "semanticId": 14,
+      "clipName": "ch0207_LiveFacial_eye_014",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_014",
+          "value": 1.0
+        }
+      ],
+      "bones": [],
+      "visibility": []
+    },
+    {
+      "id": "eyes-sad",
+      "label": "Sad eyes",
+      "semanticId": 15,
+      "clipName": "ch0207_LiveFacial_eye_015",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_015",
+          "value": 1.0
+        }
+      ],
+      "bones": [],
+      "visibility": []
+    },
+    {
+      "id": "eyes-angry",
+      "label": "Angry eyes",
+      "semanticId": 16,
+      "clipName": "ch0207_LiveFacial_eye_016",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_016",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            0.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            -9.999999439624929e-11,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            0.008414896761533962,
+            0.9999645941294586
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            7.081048750727475e-05,
+            0.008414598824788603,
+            0.008414598824788603,
+            0.9999291895124928
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            0.964287519454956,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": []
+    },
+    {
+      "id": "eyes-shy",
+      "label": "Shy eyes",
+      "semanticId": 17,
+      "clipName": "ch0207_LiveFacial_eye_017",
+      "weights": [
+        {
+          "name": "EyeBlendShape.eye_facial_017",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            0.0011121254647150636,
+            0.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            0.0011121254647150636,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            0.008726535498373935,
+            0.9999619230641713
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            7.615242180438042e-05,
+            0.008726203218641756,
+            0.008726203218641756,
+            0.9999238475781956
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": []
+    },
+    {
+      "id": "eyes-tight",
+      "label": "Eyes tightly closed",
+      "semanticId": 19,
+      "clipName": "ch0207_LiveFacial_eye_019",
+      "weights": [
+        {
+          "name": "LeftEyeWhiteLineBlendShape.LeftEye_LineWhite_003",
+          "value": 1.0
+        },
+        {
+          "name": "RightEyeWhiteLineBlendShape.RightEye_LineWhite_003",
+          "value": 1.0
+        },
+        {
+          "name": "EyeBlendShape.eye_facial_019",
+          "value": 1.0
+        }
+      ],
+      "bones": [
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "position",
+          "value": [
+            0.0,
+            -9.999999439624929e-11,
+            0.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "position",
+          "value": [
+            -9.999999439624929e-11,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "quaternion",
+          "value": [
+            0.0,
+            -0.0,
+            0.008726535498373935,
+            0.9999619230641713
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "quaternion",
+          "value": [
+            7.615242180438042e-05,
+            0.008726203218641756,
+            0.008726203218641756,
+            0.9999238475781956
+          ]
+        },
+        {
+          "name": "LeftEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/LeftEye_Root/LeftEye1/LeftEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "RightEye2",
+          "path": "Head_Face/Face_Root/Eye_Root/RightEye_Root/RightEye1/RightEye2",
+          "kind": "scale",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "visibility": [
+        {
+          "part": "LeftEyeWhiteLine",
+          "visible": true
+        },
+        {
+          "part": "RightEyeWhiteLine",
+          "visible": true
+        }
+      ]
+    }
+  ]
+}

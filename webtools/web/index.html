@@ -48,6 +48,8 @@
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
         </aside>
         <div class="viewer-main">
+          <div class="viewer-inspect-layout">
+          <div class="viewer-model-panel">
           <div class="viewer-heading">
             <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
             <button id="viewer-expand" type="button" data-i18n="Expand view">Expand view</button>
@@ -74,7 +76,9 @@
             <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
           </div>
           <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
-          <details id="viewer-adjustments" class="viewer-adjustments">
+          </div>
+          <div class="viewer-control-panel">
+          <details id="viewer-adjustments" class="viewer-adjustments" open>
             <summary data-i18n="Pose and body">Pose and body</summary>
             <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
             <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
@@ -83,27 +87,69 @@
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
-            <div class="viewer-body-controls">
-              <label><span data-i18n="Height">Height</span><input id="viewer-height" type="range" min="80" max="120" step="1" value="100" disabled><output id="viewer-height-value">100%</output><span id="viewer-height-note" class="viewer-control-note"></span></label>
-              <label><span data-i18n="Breast size">Breast size</span><input id="viewer-breast" type="range" min="50" max="150" step="1" value="100" disabled><output id="viewer-breast-value">100%</output><span id="viewer-breast-note" class="viewer-control-note"></span></label>
-            </div>
-            <p class="viewer-render-note" data-i18n="100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.">100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.</p>
-            <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply saved body and outfit settings">Apply saved body and outfit settings</span></label>
-            <p class="viewer-render-note" data-i18n="Uses verified size, position and rotation settings from the file. Game height normalization is not applied.">Uses verified size, position and rotation settings from the file. Game height normalization is not applied.</p>
+            <section class="viewer-control-section" aria-labelledby="viewer-body-title">
+              <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
+              <div class="viewer-body-controls">
+                <div class="viewer-body-card">
+                  <label for="viewer-height" data-i18n="Height">Height</label><output id="viewer-height-value" for="viewer-height viewer-height-number">100%</output>
+                  <input id="viewer-height" type="range" min="80" max="120" step="1" value="100" aria-describedby="viewer-height-note" disabled>
+                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-height-number" data-i18n="Height (%)">Height (%)</label><input id="viewer-height-number" type="number" min="80" max="120" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-height-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
+                  <p id="viewer-height-note" class="viewer-control-note" data-i18n="Adjust height vertically while keeping head proportions.">Adjust height vertically while keeping head proportions.</p>
+                </div>
+                <div class="viewer-body-card">
+                  <label for="viewer-breast" data-i18n="Breast size">Breast size</label><output id="viewer-breast-value" for="viewer-breast viewer-breast-number">100%</output>
+                  <input id="viewer-breast" type="range" min="50" max="150" step="1" value="100" aria-describedby="viewer-breast-note" disabled>
+                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-breast-number" data-i18n="Breast size (%)">Breast size (%)</label><input id="viewer-breast-number" type="number" min="50" max="150" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-breast-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
+                  <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Uses the breast tool's proportions for width, height and depth.">Uses the breast tool's proportions for width, height and depth.</p>
+                </div>
+                <div class="viewer-body-card">
+                  <label for="viewer-skirt" data-i18n="Skirt length and flare">Skirt length and flare</label><output id="viewer-skirt-value" for="viewer-skirt viewer-skirt-number">100%</output>
+                  <input id="viewer-skirt" type="range" min="50" max="150" step="1" value="100" aria-describedby="viewer-skirt-note" disabled>
+                  <div class="viewer-body-entry"><label class="sr-only" for="viewer-skirt-number" data-i18n="Skirt length and flare (%)">Skirt length and flare (%)</label><input id="viewer-skirt-number" type="number" min="50" max="150" step="1" value="100" inputmode="decimal" disabled><span aria-hidden="true">%</span><button id="viewer-skirt-reset" type="button" data-i18n="Reset" disabled>Reset</button></div>
+                  <p id="viewer-skirt-note" class="viewer-control-note" data-i18n="Adjusts the skirt sections together using the skirt tool's settings.">Adjusts the skirt sections together using the skirt tool's settings.</p>
+                </div>
+              </div>
+              <div id="viewer-body-presets" class="viewer-preset-list" role="group" aria-labelledby="viewer-body-title"></div>
+              <div id="viewer-body-extra" class="viewer-body-controls" hidden></div>
+              <p class="viewer-render-note" data-i18n="100% keeps the loaded settings. Each reset restores that part's loaded value.">100% keeps the loaded settings. Each reset restores that part's loaded value.</p>
+            </section>
+            <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
+            <p class="viewer-render-note" data-i18n="Loads the file's size, position and rotation corrections.">Loads the file's size, position and rotation corrections.</p>
             <p id="viewer-saved-status" class="viewer-render-note" role="status"></p>
             <details id="viewer-saved-parts" class="viewer-saved-parts" hidden>
               <summary data-i18n="Parts in saved settings">Parts in saved settings</summary>
               <div id="viewer-saved-part-list"></div>
             </details>
-            <div class="viewer-expression-row">
-              <label><span data-i18n="Expression channel">Expression channel</span><select id="viewer-expression" disabled></select></label>
-              <label><span data-i18n="Expression strength">Expression strength</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><output id="viewer-expression-output">0%</output></label>
-            </div>
+            <section id="viewer-expression-panel" class="viewer-control-section" aria-labelledby="viewer-expression-title">
+              <div class="viewer-section-heading"><h3 id="viewer-expression-title" data-i18n="Facial expression">Facial expression</h3><button id="viewer-expression-reset" type="button" data-i18n="Reset expression" disabled>Reset expression</button></div>
+              <div id="viewer-expression-groups" class="viewer-chip-list" role="group" aria-labelledby="viewer-expression-title"></div>
+              <div id="viewer-expression-presets" class="viewer-expression-presets" role="group" aria-labelledby="viewer-expression-title"></div>
+              <p id="viewer-expression-selection" class="viewer-render-note" role="status" aria-live="polite"></p>
+              <details id="viewer-expression-advanced" class="viewer-expression-advanced">
+                <summary data-i18n="Fine-tune expression parts">Fine-tune expression parts</summary>
+                <div class="viewer-expression-row">
+                  <label><span data-i18n="Expression part">Expression part</span><select id="viewer-expression" disabled></select></label>
+                  <label><span data-i18n="Expression strength">Expression strength</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><output id="viewer-expression-output">0%</output></label>
+                </div>
+              </details>
+            </section>
             <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
-            <details class="viewer-node-editor">
-              <summary data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
+            <section class="viewer-control-section viewer-node-quick" aria-labelledby="viewer-node-quick-title">
+              <h3 id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</h3>
+              <div id="viewer-node-shortcuts" class="viewer-chip-list" role="group" aria-labelledby="viewer-node-quick-title"></div>
+            </section>
+            <details id="viewer-node-editor" class="viewer-node-editor">
+              <summary id="viewer-node-editor-title" data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
+              <div class="viewer-node-browser">
+                <label><span data-i18n="Find a bone">Find a bone</span><input id="viewer-node-search" type="search" data-i18n-ph="Search by body part or bone name" placeholder="Search by body part or bone name" autocomplete="off" disabled></label>
+                <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option><option value="frequent" data-i18n="Frequently adjusted">Frequently adjusted</option></select></label>
+              </div>
+              <div id="viewer-node-change-list" class="viewer-node-change-list" role="group" aria-labelledby="viewer-node-editor-title"></div>
               <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
-              <p class="viewer-render-note" data-i18n="Changes are relative to the current pose. Movement uses the model's local units.">Changes are relative to the current pose. Movement uses the model's local units.</p>
+              <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
+              <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
+              <p class="viewer-render-note" data-i18n="Fields show the loaded corrections and your changes. Animation does not overwrite these values.">Fields show the loaded corrections and your changes. Animation does not overwrite these values.</p>
+              <p class="viewer-render-note" data-i18n="Local axes: X width, Y height, Z depth. Rotation follows Unity's bone coordinates.">Local axes: X width, Y height, Z depth. Rotation follows Unity's bone coordinates.</p>
               <div id="viewer-node-fields"></div>
               <button id="viewer-node-reset" type="button" data-i18n="Reset this bone" disabled>Reset this bone</button>
             </details>
@@ -122,6 +168,8 @@
             <p id="viewer-material-status" class="viewer-render-note" role="status"></p>
             <fieldset class="viewer-parts"><legend data-i18n="Visible parts">Visible parts</legend><div id="viewer-parts"></div></fieldset>
           </details>
+          </div>
+          </div>
         </div>
       </div>
     </section>
@@ -171,6 +219,8 @@
   <script src="/static/vendor/three-r128/OrbitControls.js"></script>
   <script src="/static/vendor/three-r128/GLTFLoader.js"></script>
   <script src="/static/sifas-material.js"></script>
+  <script src="/static/viewer-editing.js"></script>
+  <script src="/static/viewer-expressions.js"></script>
   <script src="/static/viewer-rig.js"></script>
   <script src="/static/viewer-quality.js"></script>
   <script src="/static/model-viewer.js"></script>

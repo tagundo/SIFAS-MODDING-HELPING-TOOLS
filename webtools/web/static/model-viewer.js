@@ -24,6 +24,7 @@
   var controls = null;
   var model = null;
   var rigController = null;
+  var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
   var lastFrameTime = 0;
@@ -165,6 +166,12 @@
 
   function resize() {
     if (!renderer || !active || destroyed) return;
+    var header = document.querySelector("body > header");
+    var headerStyle = header ? window.getComputedStyle(header) : null;
+    var pinnedHeader = headerStyle && headerStyle.display !== "none" &&
+      (headerStyle.position === "sticky" || headerStyle.position === "fixed");
+    document.documentElement.style.setProperty("--viewer-sticky-top",
+      (pinnedHeader ? Math.max(0, header.getBoundingClientRect().bottom) : 0) + "px");
     var stage = node("viewer-stage");
     var width = stage.clientWidth;
     var height = stage.clientHeight;
@@ -345,6 +352,7 @@
   }
 
   function disposePreviewControllers() {
+    partInputs = [];
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
@@ -414,6 +422,7 @@
   function buildParts() {
     var list = node("viewer-parts");
     list.textContent = "";
+    partInputs = [];
     var count = 0;
     model.traverse(function (child) {
       if (!child.isMesh || isViewerHelper(child)) return;
@@ -423,6 +432,7 @@
       input.type = "checkbox";
       if (child.userData.hidden_default === true || child.userData.hideInPreview === true) child.visible = false;
       input.checked = child.visible;
+      partInputs.push({ object: child, input: input });
       input.addEventListener("change", function () {
         if (rigController && rigController.setPartVisible) rigController.setPartVisible(child, input.checked);
         else child.visible = input.checked;
@@ -434,6 +444,11 @@
       label.appendChild(title);
       list.appendChild(label);
     });
+  }
+
+  function rigChanged() {
+    partInputs.forEach(function (entry) { entry.input.checked = entry.object.visible; });
+    requestRender();
   }
 
   function showWarnings(warnings) {
@@ -544,7 +559,7 @@
       pendingMaterials = null;
       pendingModel = null;
       if (window.ViewerRig) {
-        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: requestRender });
+        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged });
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -615,7 +630,12 @@
     window.addEventListener("resize", resize);
     document.addEventListener("visibilitychange", function () { if (document.hidden) pauseRender(); else requestRender(); });
     document.addEventListener("keydown", function (event) { if (event.key === "Escape" && expanded) setExpanded(false); });
-    if (window.ResizeObserver) { resizeObserver = new window.ResizeObserver(resize); resizeObserver.observe(node("viewer-stage")); }
+    if (window.ResizeObserver) {
+      resizeObserver = new window.ResizeObserver(resize);
+      resizeObserver.observe(node("viewer-stage"));
+      var header = document.querySelector("body > header");
+      if (header) resizeObserver.observe(header);
+    }
     window.addEventListener("pagehide", function (event) { if (!event.persisted) dispose(); });
     updateLanguage();
     if (pendingOpen) {
