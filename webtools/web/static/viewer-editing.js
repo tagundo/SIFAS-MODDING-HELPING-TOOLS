@@ -6,7 +6,10 @@
   function near(a, b) { return Math.abs(a - b) < 1e-7; }
   // Unity TRS uses float32. Keep runtime precision, but hide binary rounding
   // noise in the editor (for example, 1.3f must read as 130%, not 129.999995%).
-  function format(value) { return String(Number(value.toPrecision(7))); }
+  function format(value, kind) {
+    if (kind === "rotation" && Math.abs(value) < 1e-7) value = 0;
+    return String(Number(value.toPrecision(7)));
+  }
   function clone(value) { return { position: value.position.clone(), quaternion: value.quaternion.clone(), scale: value.scale.clone() }; }
   function curveValue(control, x) {
     var knots = control.curve || [], domain = control.curveDomain || {};
@@ -193,7 +196,7 @@
         fields[kind].forEach(function (input, axis) {
           input.disabled = !enabled || !exists || kind === "scale" && Math.abs(baselineValue.scale.getComponent(axis)) < 1e-8;
           if (!exists) { input.value = ""; return; }
-          if (force || document.activeElement !== input) input.value = format(value[kind][axis]);
+          if (force || document.activeElement !== input) input.value = format(value[kind][axis], kind);
         });
       });
       document.getElementById("viewer-node-reset").disabled = !enabled || !exists || !flags(selected).modified;
@@ -211,13 +214,13 @@
               entry.sourceEuler || quaternionUI(THREE, new THREE.Quaternion().fromArray(entry.value));
             var line = document.createElement("div");
             var label = entry.kind === "scale" ? "Scale (%)" : entry.kind === "position" ? "Position (model units)" : "Rotation (degrees)";
-            line.textContent = translate("File saved value") + " · " + translate(label) + ": " + values.map(format).join(" / ") +
+            line.textContent = translate("File saved value") + " · " + translate(label) + ": " + values.map(function (value) { return format(value, entry.kind); }).join(" / ") +
               (entry.applied ? "" : " · " + translate("Not applied"));
             baseline.appendChild(line);
           });
           [["scale", "Scale (%)"], ["rotation", "Rotation (degrees)"], ["position", "Position (model units)"]].forEach(function (item) {
             var line = document.createElement("div");
-            line.textContent = translate("File and body baseline") + " · " + translate(item[1]) + ": " + source[item[0]].map(format).join(" / ");
+            line.textContent = translate("File and body baseline") + " · " + translate(item[1]) + ": " + source[item[0]].map(function (value) { return format(value, item[0]); }).join(" / ");
             baseline.appendChild(line);
           });
         }
