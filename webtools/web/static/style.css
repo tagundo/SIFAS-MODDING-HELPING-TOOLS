@@ -264,6 +264,17 @@ main { padding: 14px; }
 .viewer-body-card > label { grid-column: 1 / -1; align-self: start; font-weight: 600; line-height: 1.5; overflow-wrap: break-word; }
 .viewer-body-card > input[type=range] { grid-row: 2; }
 .viewer-body-card > output { grid-row: 2; font-size: 12px; font-variant-numeric: tabular-nums; }
+.viewer-body-card > h4 { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; }
+.viewer-source-card > summary { grid-column: 1 / -1; min-height: 44px; padding: 10px 0; font-weight: 600; line-height: 1.5; cursor: pointer; }
+.viewer-source-card > summary output { display: inline; margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.viewer-source-value { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.viewer-profile-card > label { font-weight: 400; font-size: 12px; }
+.viewer-profile-card > select, .viewer-profile-card > button { grid-column: 1 / -1; width: 100%; min-width: 0; }
+.viewer-profile-values { grid-column: 1 / -1; margin: 2px 0; font-size: 12px; line-height: 1.5; }
+.viewer-profile-values > div { display: grid; grid-template-columns: minmax(64px, .8fr) minmax(0, 1.2fr); gap: 5px 8px; padding: 3px 0; }
+.viewer-profile-values dt { color: var(--muted); }
+.viewer-profile-values dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
+.viewer-profile-values output { display: inline; font-size: inherit; }
 .viewer-body-entry { display: grid; grid-template-columns: minmax(40px, 1fr) auto; align-items: center; gap: 4px; grid-column: 1 / -1; }
 .viewer-body-entry input[type=number] { min-width: 0; width: 100%; text-align: right; font-variant-numeric: tabular-nums; }
 .viewer-body-entry > span { color: var(--muted); font-size: 12px; }

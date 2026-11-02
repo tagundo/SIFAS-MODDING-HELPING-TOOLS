@@ -55,7 +55,7 @@ function fixture(options = {}) {
     doc.skins[0].joints.push(5);
   }else doc.nodes.push({name:'ReservedAuxiliary',extras:{elichika_node:5,role:'bone'}});
   // Unweighted source joints retain the original visible triangle while
-  // exercising actual world-space head/hair compensation, including rotation.
+  // checking profiles leave authored world-space head/hair transforms untouched.
   doc.nodes.push({name:'Head',translation:[0,1.5,0],extras:{elichika_node:6,role:'bone'}},
     {name:'Neck_Hair',translation:[0,1.1,.1],extras:{elichika_node:7,role:'bone'}});
   doc.nodes[1].children.push(6,7);doc.skins[0].joints.push(6,7);
@@ -77,14 +77,30 @@ function fixture(options = {}) {
   jh.writeUInt32LE(jsonPadded.length);jh.writeUInt32LE(0x4e4f534a,4);bh.writeUInt32LE(binPadded.length);bh.writeUInt32LE(0x004e4942,4);
   const authored=node=>({node,name:doc.nodes[node].name,parent:node===1?0:node===2?1:node===3?2:node===5?3:1,
     basePosition:doc.nodes[node].translation||[0,0,0],baseQuaternion:doc.nodes[node].rotation||[0,0,0,1],baseScale:doc.nodes[node].scale||[1,1,1]});
-  const breastCurve=[[.61,.91,.85],[.64,.94,.88],[.72,.95,.90],[.80,.96,.92],[.90,.98,.96],[.95,.99,.98],[1,1,1],[3,2,3]];
-  const controls=[{id:'height',label:'Height',available:true,default:100,min:50,max:150,unit:'percent',
-    mode:'height_vertical_preserve_head',nodes:[Object.assign(authored(1),{axes:[0,1,0],compensationRoots:[authored(6),authored(7)]})]},
-    {id:'breast',label:'Breast size',available:true,default:100,min:25,max:200,unit:'percent',mode:'breast_tool_curve',
-      curve:breastCurve,curveDomain:{minX:.61,maxX:3,maxExclusive:true},relativeFormula:'F(x*p/100)/F(x)',
-      presets:[{id:'stock',label:'Stock',scale:[1,1,1],group:'stock'},
-        {id:'rin',label:'Rin',scale:[.72,.95,.90],group:'smaller'},{id:'emma',label:'Emma',scale:[1.3,1.18,1.3],group:'larger'}],
-      presetApplication:'absolute_local_scale',nodes:[Object.assign(authored(2),{axes:[1,1,1]})]},
+  // Literal independent source-tool profiles: these irregular triples are not curve samples.
+  const breastProfiles=[
+    {id:'stock',label:'Stock',scale:[1,1,1],group:'stock'},
+    {id:'yoshiko_shioriko',label:'Yoshiko/Shioriko',scale:[.95,.99,.98],group:'smaller'},
+    {id:'honoka_maki',label:'Honoka/Maki',scale:[.90,.98,.96],group:'smaller'},
+    {id:'umi_ruby_kasumi',label:'Umi/Ruby/Kasumi',scale:[.80,.96,.92],group:'smaller'},
+    {id:'rin',label:'Rin',scale:[.72,.95,.90],group:'smaller'},
+    {id:'nico',label:'Nico',scale:[.64,.94,.88],group:'smaller'},
+    {id:'rina',label:'Rina',scale:[.61,.91,.85],group:'smaller'},
+    {id:'chika_you_ayumu',label:'Chika/You/Ayumu',scale:[1.04,1.02,1.04],group:'larger'},
+    {id:'hanayo_setsuna',label:'Hanayo/Setsuna',scale:[1.08,1.04,1.08],group:'larger'},
+    {id:'hanamaru_ai',label:'Hanamaru/Ai',scale:[1.12,1.06,1.12],group:'larger'},
+    {id:'lanzhu',label:'Lanzhu',scale:[1.14,1.07,1.14],group:'larger'},
+    {id:'eli_kanan_kanata',label:'Eli/Kanan/Kanata',scale:[1.16,1.08,1.16],group:'larger'},
+    {id:'mari',label:'Mari',scale:[1.20,1.10,1.20],group:'larger'},
+    {id:'karin',label:'Karin',scale:[1.22,1.11,1.22],group:'larger'},
+    {id:'nozomi',label:'Nozomi',scale:[1.30,1.15,1.30],group:'larger'},
+    {id:'emma',label:'Emma',scale:[1.30,1.18,1.30],group:'larger'}
+  ];
+  const controls=[{id:'height',label:'Height',available:false,mode:'saved_height_metadata_only',nodes:[],
+      source:'LiveCoreMemberNodeScaling.heightScale',unavailableReason:'unverified_height_formula',gameHeightFormulaVerified:false},
+    {id:'breast',label:'Breast reference shape',available:true,default:'loaded',unit:'profile',mode:'breast_tool_presets',
+      baseline:'loaded_saved_settings',presets:breastProfiles,presetApplication:'absolute_local_scale',interpolation:'none',
+      continuousAdjustmentSupported:false,nodes:[authored(2)]},
     {id:'skirt',label:'Skirt length and volume',available:!!options.allSaved,default:100,min:50,max:150,unit:'percent',
       mode:'multiply_authored_local_scale',nodes:options.allSaved?[Object.assign(authored(3),{axes:[1,1,1]})]:[]}];
   const components=[{targetName:'SyntheticFixture',heightScale:.97,entries:[
@@ -108,13 +124,13 @@ function fixture(options = {}) {
     if(options.rotationConflict)components[0].entries.push(rotation([0,0,0,1]));
   }
   const visibility=(times,values)=>[{node:4,times,values,interpolation:'STEP',sourceProperty:'Renderer.m_Enabled'}];
-  const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'},{node:6,name:'Head'},{node:7,name:'Neck_Hair'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:2,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
+  const rig = {enabled:true,available:true,root:0,bones:[{node:1,name:'Move'},{node:2,name:'BreastSize'},{node:3,name:'Tip'},{node:6,name:'Head'},{node:7,name:'Neck_Hair'}],bounds:{min:[-.3,0,0],max:[.3,1.2,0]},scaling:{version:3,baseline:'authored',savedOverridesApplied:false,controls,components},clips:[
     {name:clipName,duration:1,loop:true},
     {name:'Synthetic motion visibility',duration:1,loop:false,visibility:visibility([0,.6],[false,true])},
     {name:'Synthetic visibility only',duration:1,loop:false,channels:0,index:null,visibility:visibility([0,.25,.75],[true,false,true])}
   ]};
   if(options.allSaved){rig.bones[2].name='SkirtA1_Dyna';rig.bones.push({node:5,name:'LeftSkirtChild_Dyna'});}
-  rig.scaling.nodes=rig.bones.map(bone=>Object.assign(authored(bone.node),{label:bone.name,category:bone.node===2?'breast':bone.node===6?'head':bone.node===7?'hair':bone.node===1?'height':'skirt',
+  rig.scaling.nodes=rig.bones.map(bone=>Object.assign(authored(bone.node),{label:bone.name,category:bone.node===2?'breast':bone.node===6?'head':bone.node===7?'hair':bone.node===1?'model':'skirt',
     hasSavedSettings:components.some(c=>c.entries.some(e=>e.node===bone.node)),savedKinds:[...new Set(components.flatMap(c=>c.entries.filter(e=>e.node===bone.node).map(e=>e.kind)))]}));
   rig.scaling.recommendedTargets=rig.scaling.nodes.filter(node=>[1,2,3,6,7].includes(node.node)).map(node=>({node:node.node,name:node.name,label:node.label,category:node.category}));
   if(options.semanticExpressions){
@@ -165,7 +181,7 @@ if(require.main===module)(async()=>{
         const targets=[];source.traverse(o=>{if(o.userData&&!o.userData.viewerHelper&&String(o.userData.elichika_node)===String(bones[0].node))targets.push(o);});
         if(targets.length!==1)throw new Error('Expected one source object for '+name);
         const values=targets[0].matrixWorld.toArray();
-        return{position:values.slice(12,15),linear:[values[0],values[1],values[2],values[4],values[5],values[6],values[8],values[9],values[10]],matrix:values};
+        return{matrixAutoUpdate:targets[0].matrixAutoUpdate,position:values.slice(12,15),linear:[values[0],values[1],values[2],values[4],values[5],values[6],values[8],values[9],values[10]],matrix:values};
       };
     });
     await page.evaluate(()=>openModelViewer(['/synthetic/rig.unity']));
@@ -189,6 +205,8 @@ if(require.main===module)(async()=>{
       }
       return page.locator('#'+id).evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
     };
+    const profile=id=>page.locator('#viewer-breast-preset').selectOption(id);
+    const noContinuousControls=async()=>{for(const id of ['viewer-height','viewer-height-number','viewer-breast','viewer-breast-number'])assert.equal(await page.locator('#'+id).count(),0,'Unsupported continuous control must not exist: '+id);};
     const inputNode=async(node,kind,axis,value)=>{
       await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);
       await page.locator('#viewer-node-filter').selectOption('all');await page.locator('#viewer-node-search').fill('');
@@ -207,7 +225,7 @@ if(require.main===module)(async()=>{
     };
     const quaternionMatrix=([x,y,z,w])=>[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w),2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w),2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)];
     assert.equal(requests[0].rigged,true);
-    const initial=await state();assert(initial.rig.available);assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
+    const initial=await state();assert(initial.rig.available);await noContinuousControls();assert.equal(initial.rig.heightMode,'saved_settings_only');assert(!('heightCompensation' in initial.rig));assert.deepEqual(initial.rig.body,{skirt:100,breastPreset:'loaded'});assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
     assert.equal(initial.rig.savedNodes.enabled,true);assert.equal(initial.rig.savedNodes.applied,1);assert.equal(initial.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.3);
     await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('2');
     const importedFields=await page.locator('[data-viewer-node-kind="scale"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value)));
@@ -223,30 +241,27 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
     await inputNode(6,'rotation','Z',45);await inputNode(7,'rotation','X',30);
-    const headBeforeHeight=await world('Head'),hairBeforeHeight=await world('Neck_Hair');
-    assert(Math.abs(headBeforeHeight.linear[1])>.5,'The head must actually be rotated before height compensation');
-    assert(Math.abs(hairBeforeHeight.linear[5])>.4,'The back-hair source joint must actually be rotated');
-    await slider('viewer-height',120);nearVector((await state()).rig.bones.find(b=>b.name==='Move').scale,[1,1.2,1],'Height changes vertical scale without zooming X/Z');
-    const headAfterHeight=await world('Head'),hairAfterHeight=await world('Neck_Hair');
-    nearVector(headAfterHeight.linear,headBeforeHeight.linear,'Height preserves rotated head world shape and orientation');
-    nearVector(hairAfterHeight.linear,hairBeforeHeight.linear,'Height preserves rotated hair world shape and orientation');
-    assert(headAfterHeight.position[1]>headBeforeHeight.position[1],'Height must move the actual head anchor upwards');
-    await page.locator('#viewer-node-reset').click();await page.locator('#viewer-node').selectOption('6');await page.locator('#viewer-node-reset').click();
-    await slider('viewer-breast',150);nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.5,1.25,1.5],'Stock enlargement follows source breast tool proportions');
+    const headBeforeProfile=await world('Head'),hairBeforeProfile=await world('Neck_Hair'),moveBeforeProfile=await world('Move');
+    assert(Math.abs(headBeforeProfile.linear[1])>.5,'The authored head is genuinely rotated during profile isolation checks');
+    await profile('rin');await profile('rin');
+    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'A breast profile applies its absolute source XYZ, with no percent or custom-baseline ratio');
+    nearVector((await world('Head')).matrix,headBeforeProfile.matrix,'A breast profile must not reshape or reorient the head');
+    nearVector((await world('Neck_Hair')).matrix,hairBeforeProfile.matrix,'A breast profile must not reshape or reorient back hair');
+    nearVector((await world('Move')).matrix,moveBeforeProfile.matrix,'A breast profile must not stretch whole-model height');
+    assert.equal((await world('Head')).matrixAutoUpdate,headBeforeProfile.matrixAutoUpdate,'No hidden head matrix compensation is introduced');
     assert.equal((await state()).rig.savedNodes.enabled,false);
     await page.locator('#viewer-saved-nodes').check();
     const saved=await state();assert.equal(saved.rig.savedNodes.applied,1);assert.equal(saved.rig.savedNodes.skipped,3);assert.equal(saved.rig.savedNodes.conflicts,1);
-    assert(Math.abs(saved.rig.bones.find(b=>b.name==='BreastSize').scale[0]-1.95)<1e-6);
-    nearVector(saved.rig.bones.find(b=>b.name==='BreastSize').scale,[1.95,.9*(1.475/1.15),1.5],'Nonuniform saved proportions follow the source reference curve');
+    nearVector(saved.rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'An absolute profile is retained when saved file settings are enabled');
     assert.deepEqual(saved.rig.bones.find(b=>b.name==='Tip').position,[0,1,0],'Conflicting positions must stay untouched');
-    await page.locator('#viewer-saved-nodes').uncheck();assert.equal((await state()).rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
-    await slider('viewer-height',120);assert.equal((await state()).rig.bones.find(b=>b.name==='Move').scale[1],1.2,'Repeated input must not compound');
-    assert.deepEqual((await state()).camera,initial.camera,'Changing body size must preserve the camera');
+    await page.locator('#viewer-saved-nodes').uncheck();nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'An absolute profile is retained when saved file settings are disabled');
+    await page.locator('#viewer-node-reset').click();await page.locator('#viewer-node').selectOption('6');await page.locator('#viewer-node-reset').click();
+    assert.deepEqual((await state()).camera,initial.camera,'Changing a reference shape must preserve the camera');
     const scaledProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
     await page.locator('#viewer-fit').click();
     assert.notDeepEqual((await state()).camera.position,initial.camera.position,'Fit should account for posed/skinned body bounds');
     await page.locator('#viewer-motion').selectOption('Synthetic test motion');await slider('viewer-time',.5);
-    const posed=await state();assert(posed.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.2);assert.equal(posed.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
+    const posed=await state();assert(posed.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.2);assert.equal(posed.rig.bones.find(b=>b.name==='BreastSize').scale[0],.72);
     await slider('viewer-time',1);assert((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.49,'Scrub end must inspect last frame, not wrap to first');await slider('viewer-time',.5);
     await page.locator('#viewer-play').click();await page.waitForTimeout(150);const playing=await state();assert(playing.rig.playing);assert.notEqual(playing.rig.time,posed.rig.time);
     await page.locator('[data-tab="tools"]').click();await page.waitForTimeout(80);const hidden=await state();await page.waitForTimeout(150);assert.equal((await state()).rig.time,hidden.rig.time,'Hidden viewer must not advance animation');
@@ -257,16 +272,16 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-node').selectOption('3');await page.locator('[data-viewer-node-kind="rotation"][data-axis="X"]').fill('30');
     assert(Math.abs((await state()).rig.bones.find(b=>b.name==='Tip').quaternion[0])>.2);
     await page.locator('#viewer-node-reset').click();assert.deepEqual((await state()).rig.bones.find(b=>b.name==='Tip').quaternion,[0,0,0,1]);
-    await page.locator('#viewer-preview-reset').click();const reset=await state();assert.equal(reset.rig.selectedClip,'');assert.equal(reset.rig.body.height,100);assert.equal(reset.rig.body.breast,100);assert.equal(reset.rig.expressions[0].weight,0);assert.deepEqual(reset.rig.nodeAdjustments,{});
+    await page.locator('#viewer-preview-reset').click();const reset=await state();assert.equal(reset.rig.selectedClip,'');assert.deepEqual(reset.rig.body,{skirt:100,breastPreset:'loaded'});assert.equal(reset.rig.expressions[0].weight,0);assert.deepEqual(reset.rig.nodeAdjustments,{});
     assert.equal(reset.rig.savedNodes.enabled,true);await page.locator('#viewer-saved-nodes').uncheck();
     await page.locator('.viewer-options').evaluate(e=>e.open=true);
     await page.locator('#viewer-textures').uncheck();const solidProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
     await page.locator('#viewer-textures').check();const restoredTextureProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
     assert(restoredTextureProbe.chromaticSamples>solidProbe.chromaticSamples,'Restoring textures must restore unknown source materials');
     await page.evaluate(()=>{var c=document.getElementById('viewer-canvas');var gl=c.getContext('webgl2')||c.getContext('webgl');window.__testLostContext=gl.getExtension('WEBGL_lose_context');window.__testLostContext.loseContext();});
-    await page.waitForFunction(()=>ModelViewer.getState().contextLost);assert(await page.locator('#viewer-height').isDisabled());
+    await page.waitForFunction(()=>ModelViewer.getState().contextLost);assert(await page.locator('#viewer-breast-preset').isDisabled());
     await page.waitForTimeout(250);await page.evaluate(()=>window.__testLostContext.restoreContext());
-    await page.waitForFunction(()=>!ModelViewer.getState().contextLost);assert.equal(await page.locator('#viewer-height').isDisabled(),false);assert((await page.evaluate(()=>ModelViewer.renderProbe())).glError===0);
+    await page.waitForFunction(()=>!ModelViewer.getState().contextLost);assert.equal(await page.locator('#viewer-breast-preset').isDisabled(),false);assert((await page.evaluate(()=>ModelViewer.renderProbe())).glError===0);
     for(const lang of ['ko','ja','en']){await page.locator('#lang-select').selectOption(lang);assert((await page.locator('#viewer-adjustments > summary').innerText()).length>0);}
     for(const viewport of [{width:320,height:900},{width:720,height:400},{width:1366,height:900}]){await page.setViewportSize(viewport);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
     await page.locator('#viewer-motion').selectOption('Synthetic motion visibility');
@@ -280,7 +295,7 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-preview-reset').click();assert.equal((await page.evaluate(()=>ModelViewer.renderProbe())).sourceTriangles,1);
     unsupported=true;await page.evaluate(()=>openModelViewer(['/synthetic/fallback.unity']));
     const fallback=await state();assert.equal(fallback.rig.available,false);assert.equal(fallback.rig.bones.length,0);
-    for(const id of ['viewer-node','viewer-height','viewer-breast','viewer-saved-nodes'])assert(await page.locator('#'+id).isDisabled(),'Unsupported rig control must be disabled: '+id);
+    for(const id of ['viewer-node','viewer-breast-preset','viewer-saved-nodes'])assert(await page.locator('#'+id).isDisabled(),'Unsupported rig control must be disabled: '+id);
     assert.equal(await page.locator('#viewer-expression').isDisabled(),false,'Independent expression channels remain available');
     unsupported=false;generated=fixture({shifted:true,shader:true});await page.evaluate(()=>openModelViewer(['/synthetic/shifted-skin.unity']));
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-nodes').uncheck();await page.locator('#viewer-fit').click();
@@ -324,15 +339,15 @@ if(require.main===module)(async()=>{
     await page.waitForTimeout(150);assert.equal((await state()).rig.time,0,'Default preview remains paused until Play');
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
-    for(let n=0;n<2;n++){await slider('viewer-height',120);await slider('viewer-breast',150);}
-    const previewScaled=await state();assert.equal(previewScaled.rig.bones.find(b=>b.name==='Move').scale[1],1.2);assert.equal(previewScaled.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.5);
+    for(let n=0;n<2;n++)await profile('rin');
+    const previewScaled=await state();assert.deepEqual(previewScaled.rig.bones.find(b=>b.name==='Move').scale,[1,1,1]);nearVector(previewScaled.rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'A repeated profile retains absolute source values');
     assert(Math.abs(previewScaled.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Repeated body edits preserve the selected preview pose');
     await page.locator('#viewer-play').click();await page.waitForTimeout(150);assert((await state()).rig.time>0);await page.locator('#viewer-play').click();
     const previewPaused=await state();await page.waitForTimeout(150);assert.equal((await state()).rig.time,previewPaused.rig.time);
     await slider('viewer-time',.5);assert((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.25);
     await page.locator('#viewer-motion').selectOption('');assert.deepEqual((await state()).rig.bones.find(b=>b.name==='BreastSize').quaternion,[0,0,0,1],'Saved pose stays independently selectable');
     await slider('viewer-expression-value',75);await page.locator('#viewer-preview-reset').click();
-    const previewReset=await state();assert.equal(previewReset.rig.selectedClip,previewName);assert.equal(previewReset.rig.defaultClip,previewName);assert.equal(previewReset.rig.playing,false);assert.equal(previewReset.rig.time,0);assert.equal(previewReset.rig.body.height,100);assert.equal(previewReset.rig.body.breast,100);assert.equal(previewReset.rig.expressions[0].weight,0);assert.equal(previewReset.rig.savedNodes.enabled,true);
+    const previewReset=await state();assert.equal(previewReset.rig.selectedClip,previewName);assert.equal(previewReset.rig.defaultClip,previewName);assert.equal(previewReset.rig.playing,false);assert.equal(previewReset.rig.time,0);assert.deepEqual(previewReset.rig.body,{skirt:100,breastPreset:'loaded'});assert.equal(previewReset.rig.expressions[0].weight,0);assert.equal(previewReset.rig.savedNodes.enabled,true);
     assert(Math.abs(previewReset.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]-.25)<1e-6,'Reset returns to the verified preview first frame');
     for(const [lang,label] of [['ko','SIFAS 의상 미리보기'],['ja','SIFAS衣装プレビュー'],['en','SIFAS costume preview']]){
       await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.querySelector('#viewer-motion option:checked').textContent===label,label);assert.equal((await state()).rig.selectedClip,previewName);
@@ -360,7 +375,7 @@ if(require.main===module)(async()=>{
     assert((await page.locator('#viewer-saved-status').innerText()).includes('5 / 5'));
     await page.locator('[data-viewer-saved-part="skirt"]').uncheck();const partial=await state();assert.equal(partial.rig.savedNodes.applied,1);assert((await page.locator('#viewer-saved-status').innerText()).includes('1 / 5'));
     assert.deepEqual(bone(partial,3).scale,[1,1,1]);assert.deepEqual(bone(partial,5).scale,[1,1,1]);assert.deepEqual(bone(partial,3).quaternion,[0,0,0,1]);
-    await slider('viewer-height',110);await slider('viewer-breast',120);await slider('viewer-expression-value',75);
+    await profile('emma');await slider('viewer-expression-value',75);
     await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('3');await page.locator('[data-viewer-node-kind="rotation"][data-axis="X"]').fill('5');
     const retained=await state(),retainedFrame=await capture('button-retained');
     await page.locator('#viewer-pose-basic').click();assert.deepEqual(await pressed(),['true','false']);const basicRetained=await state(),basicFrame=await capture('button-basic','button-retained');
@@ -384,8 +399,7 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-motion').selectOption('Synthetic motion visibility');assert.deepEqual(await pressed(),['false','false']);
     await page.locator('#viewer-pose-preview').click();assert.deepEqual(await pressed(),['false','true']);
     await page.locator('#viewer-preview-reset').click();const buttonReset=await state();assert.equal(buttonReset.rig.savedNodes.enabled,true);assert.equal(buttonReset.rig.savedNodes.applied,5);assert(buttonReset.rig.savedNodes.groups.every(part=>part.enabled));
-    for(const kind of ['height','breast','skirt'])assert.equal(buttonReset.rig.body[kind],100,'Reset restores imported '+kind+' baseline');
-    assert.equal(buttonReset.rig.body.breastPreset,'');assert.deepEqual(buttonReset.rig.nodeAdjustments,{});assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'all-saved-default')).changedPixels,0);
+    assert.deepEqual(buttonReset.rig.body,{skirt:100,breastPreset:'loaded'},'Reset restores active loaded settings and clears only the chosen reference profile');assert.deepEqual(buttonReset.rig.nodeAdjustments,{});assert.deepEqual(await pressed(),['false','true']);assert.equal((await capture(null,'all-saved-default')).changedPixels,0);
     const responsiveButtons=[];
     for(const [lang,basicLabel,posedLabel] of [['ko','기본 자세','포즈 자세'],['ja','基本姿勢','プレビュー姿勢'],['en','Basic pose','Posed view']]){
       await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.getElementById('viewer-pose-basic').textContent===label,basicLabel);assert.equal(await page.locator('#viewer-pose-preview').innerText(),posedLabel);
@@ -438,19 +452,47 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-node-search').fill('');await page.locator('#viewer-node-filter').selectOption('saved');
     assert(await page.locator('#viewer-node option[value="2"]').count(),'The imported BreastSize setting is discoverable by the saved filter');
     await page.locator('#viewer-node-filter').selectOption('all');
-    generated=fixture();await page.evaluate(()=>openModelViewer(['/synthetic/tool-breast-presets.unity']));
-    await page.locator('#viewer-breast-preset').selectOption('rin');
-    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'An explicit source preset must set its exact absolute XYZ endpoint');
-    assert.equal((await state()).rig.body.breast,100);assert.equal(Number(await page.locator('#viewer-breast').getAttribute('min')),85,'A source reduction preset must expose only the verified smaller domain');
-    await slider('viewer-breast-number',125);
-    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.90,.98,.96],'Rin to 125% reaches the exact source Honoka/Maki profile without uniform scaling');
-    await slider('viewer-breast-number',125);
-    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.90,.98,.96],'Repeating a numeric body entry must not compound');
-    await page.locator('#viewer-breast-preset').selectOption('emma');
-    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.3,1.18,1.3],'Emma is the intentional source preset exception, not the ordinary enlargement line');
-    await page.locator('#viewer-breast-reset').click();
-    nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[1.3,.9,1],'Reset returns to this file rather than forcing a generic stock shape');
-    const toolPresetState=await state();
+    generated=fixture({allSaved:true});await page.evaluate(()=>openModelViewer(['/synthetic/tool-breast-presets.unity']));
+    await noContinuousControls();
+    const sourceProfiles=generated.rig.scaling.controls.find(value=>value.id==='breast').presets;
+    assert.equal(sourceProfiles.length,16);assert.equal(sourceProfiles.filter(value=>value.group==='smaller').length,6);
+    const profileOptionIds=await page.locator('#viewer-breast-preset option').evaluateAll(options=>options.map(option=>option.value));assert.equal(profileOptionIds[0],'loaded');assert.deepEqual(profileOptionIds.slice().sort(),['loaded',...sourceProfiles.map(value=>value.id)].sort(),'Loaded file shape is independent from all16 unique source-tool profiles');
+    const loadedProfileState=await state();assert.equal(loadedProfileState.rig.breastProfile.selected,'loaded');assert.equal(loadedProfileState.rig.breastProfile.loadedProfile,null);
+    nearVector(loadedProfileState.rig.breastProfile.targets[0].loadedScale,[1.3,.9,1],'Loaded profile preserves custom saved XYZ');
+    assert((await page.locator('#viewer-height-source').innerText()).includes('0.97'),'Saved heightScale remains read-only source metadata');
+    await inputNode(6,'rotation','Z',45);await inputNode(7,'rotation','X',30);await slider('viewer-skirt',120);
+    const profileInvariant={Move:await world('Move'),Head:await world('Head'),Neck_Hair:await world('Neck_Hair')},profileResults=[];
+    for(const expected of sourceProfiles){
+      await profile(expected.id);await profile(expected.id);
+      const current=await state();nearVector(bone(current,2).scale,expected.scale,'Exact absolute tool profile '+expected.id,1e-12);
+      assert.equal(current.rig.breastProfile.selected,expected.id);assert.equal(current.rig.breastProfile.custom,false);
+      assert.equal(current.rig.body.skirt,120,'Choosing a breast reference retains the skirt setting');
+      for(const name of Object.keys(profileInvariant))nearVector((await world(name)).matrix,profileInvariant[name].matrix,'Profile '+expected.id+' leaves '+name+' world TRS intact',1e-12);
+      profileResults.push({id:expected.id,scale:bone(current,2).scale});
+    }
+    // Manual changes remain exact; choosing a reference clears only breast SCALE.
+    await inputNode(2,'position','X',.02);await inputNode(2,'rotation','Z',15);await inputNode(2,'scale','X',140);
+    const manualProfile=await state();assert.equal(manualProfile.rig.breastProfile.custom,true);assert((await page.locator('#viewer-breast-value').innerText()).includes('Custom shape'));
+    await profile('rina');const replacedProfile=await state();nearVector(bone(replacedProfile,2).scale,[.61,.91,.85],'A new reference clears the previous manual breast scale');
+    nearVector(bone(replacedProfile,2).position,bone(manualProfile,2).position,'Reference selection retains breast placement',1e-12);
+    nearVector(bone(replacedProfile,2).quaternion,bone(manualProfile,2).quaternion,'Reference selection retains breast rotation',1e-12);
+    for(const id of ['6','7'])assert.deepEqual(replacedProfile.rig.nodeAdjustments[id],manualProfile.rig.nodeAdjustments[id],'Reference selection retains other bones');
+    await page.locator('#viewer-breast-reset').click();const restoredProfile=await state();nearVector(bone(restoredProfile,2).scale,[1.3,.9,1],'Reset restores this custom file shape, not Stock');
+    nearVector(bone(restoredProfile,2).position,bone(manualProfile,2).position,'Profile reset retains manual placement',1e-12);
+    nearVector(bone(restoredProfile,2).quaternion,bone(manualProfile,2).quaternion,'Profile reset retains manual rotation',1e-12);
+    await page.locator('#viewer-node-reset').click();
+    await profile('stock');nearVector(bone(await state(),2).scale,[1,1,1],'Stock is an explicit absolute reference distinct from the custom file');
+    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[1.3,.9,1],'Loaded shape is recoverable independently from Stock');
+    await page.locator('#viewer-saved-parts').evaluate(details=>details.open=true);
+    await page.locator('[data-viewer-saved-part="breast"]').uncheck();nearVector(bone(await state(),2).scale,[1,1,1],'Loaded follows the active authored baseline when its saved part is off');
+    await profile('emma');await page.locator('[data-viewer-saved-part="breast"]').check();nearVector(bone(await state(),2).scale,[1.3,1.18,1.3],'An explicit source profile survives saved-part changes');
+    await page.locator('#viewer-saved-nodes').uncheck();nearVector(bone(await state(),2).scale,[1.3,1.18,1.3],'An explicit source profile survives global saved-settings opt-out');
+    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[1,1,1],'Loaded reset respects the active authored baseline');
+    await page.locator('#viewer-saved-nodes').check();nearVector(bone(await state(),2).scale,[1.3,.9,1],'Re-enabling saved settings recovers the exact custom file shape');
+    await page.locator('#viewer-motion').selectOption('Synthetic test motion');await slider('viewer-time',.5);await slider('viewer-expression-value',75);
+    const beforeProfileSwitch=await state();await profile('rin');const afterProfileSwitch=await state();
+    assert.equal(afterProfileSwitch.rig.selectedClip,beforeProfileSwitch.rig.selectedClip);assert.equal(afterProfileSwitch.rig.time,beforeProfileSwitch.rig.time);assert.deepEqual(afterProfileSwitch.rig.expressions,beforeProfileSwitch.rig.expressions);assert.equal(afterProfileSwitch.rig.body.skirt,120);
+    const toolPresetState=afterProfileSwitch;
     generated=fixture({allSaved:true,allSavedEuler:[35,45,60]});await page.evaluate(()=>openModelViewer(['/synthetic/multi-axis-unity-saved-rotation.unity']));
     await page.locator('.viewer-node-editor').evaluate(details=>details.open=true);await page.locator('#viewer-node').selectOption('3');
     nearVector(await page.locator('[data-viewer-node-kind="rotation"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[35,45,60],'Multi-axis saved Unity Euler values are imported without an order swap');
@@ -460,18 +502,15 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-node-reset').click();
     nearVector(quaternionMatrix((await state()).rig.bones.find(bone=>bone.node==='3').quaternion),expectedUnityMatrix([35,45,60]),'Reset restores the original multi-axis saved quaternion');
     const multiAxisState=await state();
-    generated=fixture({breastSavedScale:[2.999999,2,3]});await page.evaluate(()=>openModelViewer(['/synthetic/valid-upper-breast-boundary.unity']));
-    assert.equal(await page.locator('#viewer-breast').isDisabled(),false,'A valid value just below the open source bound must retain its 100% identity');
-    assert.equal(Number(await page.locator('#viewer-breast').getAttribute('max')),100);
-    await slider('viewer-breast-number',150);assert.equal((await state()).rig.body.breast,100,'The numeric input cannot cross the verified open upper source bound');
-    const upperBoundaryState=await state();
-    generated=fixture({breastSavedScale:[.5,.8,.9]});await page.evaluate(()=>openModelViewer(['/synthetic/manual-only-custom-breast.unity']));
-    assert(await page.locator('#viewer-breast').isDisabled(),'No unsupported below-domain proportion curve may be invented');
-    assert((await page.locator('#viewer-breast-note').innerText()).includes('individual bone editing'));
-    await inputNode(2,'scale','X',55);nearVector((await state()).rig.bones.find(b=>b.name==='BreastSize').scale,[.55,.8,.9],'Advanced editing remains available for custom out-of-curve source shapes');
-    const manualOnlyState=await state();
+    generated=fixture({breastSavedScale:[.5,.8,.9]});await page.evaluate(()=>openModelViewer(['/synthetic/custom-file-breast-profile.unity']));
+    await noContinuousControls();assert.equal(await page.locator('#viewer-breast-preset').isDisabled(),false,'Custom files can select discrete references without a fabricated curve domain');
+    await inputNode(2,'scale','X',55);nearVector(bone(await state(),2).scale,[.55,.8,.9],'Advanced editing retains custom source axes');
+    assert.equal((await state()).rig.breastProfile.custom,true);
+    await profile('rina');nearVector(bone(await state(),2).scale,[.61,.91,.85],'A small custom file still receives the exact selected reference');
+    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[.5,.8,.9],'Reset never replaces a custom loaded file with a reference');
+    const customProfileState=await state();
     generated=fixture({semanticExpressions:true});await page.evaluate(()=>openModelViewer(['/synthetic/named-expression-controls.unity']));
-    await slider('viewer-height',110);const beforeExpressionBody=(await state()).rig.body;
+    await profile('rin');const beforeExpressionBody=(await state()).rig.body;
     const namedExpressionBase=await capture('named-expression-base');
     assert.equal(await page.locator('[data-viewer-expression-preset="fixture-smile"]').innerText(),'Smile','Normal expression selection has a meaningful label');
     assert.equal(await page.locator('[data-viewer-expression-preset="fixture-invalid-channel"]').count(),0,'An invalid morph recipe must never appear as a usable expression');
@@ -497,7 +536,7 @@ if(require.main===module)(async()=>{
     await page.screenshot({path:path.join(evidence,'synthetic-rig-ui.png'),fullPage:true});
     await page.evaluate(()=>ModelViewer.dispose());assert(await page.locator('#viewer-pose-basic').isDisabled());assert(await page.locator('#viewer-pose-preview').isDisabled());assert.deepEqual(await pressed(),['false','false']);
     const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,
-      bodyTools:{headBeforeHeight,headAfterHeight,hairBeforeHeight,hairAfterHeight,toolPresetState:toolPresetState.rig.body,upperBoundaryState:upperBoundaryState.rig.body,manualOnlyState:manualOnlyState.rig},inspectorLayouts,
+      bodyTools:{headBeforeProfile,hairBeforeProfile,moveBeforeProfile,profileInvariant,profileResults,loadedProfile:loadedProfileState.rig.breastProfile,manualProfile:manualProfile.rig.breastProfile,restoredProfile:restoredProfile.rig.breastProfile,toolPresetState:toolPresetState.rig.body,customProfile:customProfileState.rig.breastProfile},inspectorLayouts,
       multiAxisUnity:{loaded:loadedMultiAxis.rig.bones.find(bone=>bone.node==='3'),edited:editedMultiAxis.rig.bones.find(bone=>bone.node==='3'),reset:multiAxisState.rig.bones.find(bone=>bone.node==='3')},
       namedExpressions:{base:namedExpressionBase,final:namedExpressionState.rig},
       previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};

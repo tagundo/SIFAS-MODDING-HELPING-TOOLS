@@ -11,33 +11,6 @@
     return String(Number(value.toPrecision(7)));
   }
   function clone(value) { return { position: value.position.clone(), quaternion: value.quaternion.clone(), scale: value.scale.clone() }; }
-  function curveValue(control, x) {
-    var knots = control.curve || [], domain = control.curveDomain || {};
-    if (!isFinite(x) || x < domain.minX - 1e-8 || x >= domain.maxX || knots.length < 2) return null;
-    for (var index = 1; index < knots.length; index += 1) {
-      var left = knots[index - 1], right = knots[index];
-      if (x <= right[0]) {
-        var t = (x - left[0]) / (right[0] - left[0]);
-        return left.map(function (value, axis) { return value + (right[axis] - value) * t; });
-      }
-    }
-    return null;
-  }
-  function breastFactors(control, x, percent) {
-    if (near(percent, 100)) return [1, 1, 1];
-    var before = curveValue(control, x), after = curveValue(control, x * percent / 100);
-    return before && after ? after.map(function (value, axis) { return value / before[axis]; }) : null;
-  }
-  function breastRange(control, targets) {
-    var domain = control.curveDomain || {}, low = finite(control.min, 25), high = finite(control.max, 200);
-    for (var index = 0; index < targets.length; index += 1) {
-      var x = targets[index].scale.x;
-      if (!curveValue(control, x)) return null;
-      low = Math.max(low, Math.ceil(domain.minX / x * 100 - 1e-7));
-      high = Math.min(high, Math.ceil(domain.maxX / x * 100) - 1);
-    }
-    return low <= 100 && high >= 100 ? { min: low, max: high } : null;
-  }
   function uiQuaternion(THREE, degrees) {
     // Unity applies extrinsic Z, then X, then Y (Ry * Rx * Rz).
     // Three names the equivalent intrinsic decomposition YXZ.
@@ -76,7 +49,7 @@
     if (search) search.value = "";
     if (filter) filter.value = "all";
     var labels = { Head: "Head", Head_Hair: "Hair", Neck_Hair: "Back hair", Spine: "Waist and torso",
-      Spine2: "Upper body", HipsSize: "Hip size", BreastSize: "Breast size", Move: "Height",
+      Spine2: "Upper body", HipsSize: "Hip size", BreastSize: "Breast size", Move: "Whole model",
       LeftThigh: "Left thigh", RightThigh: "Right thigh", LeftArm: "Left arm", RightArm: "Right arm" };
     function plainName(bone) { return (bone.object.name || bone.name).replace(/__\d+$/, ""); }
     function friendly(bone) {
@@ -267,7 +240,6 @@
       }
     };
   }
-  window.ViewerEditing = { clone: clone, curveValue: curveValue, breastFactors: breastFactors, breastRange: breastRange,
-    uiQuaternion: uiQuaternion, quaternionUI: quaternionUI, toUI: toUI, adjustmentEmpty: adjustmentEmpty,
+  window.ViewerEditing = { clone: clone, uiQuaternion: uiQuaternion, quaternionUI: quaternionUI, toUI: toUI, adjustmentEmpty: adjustmentEmpty,
     createNodeEditor: createNodeEditor };
 }());

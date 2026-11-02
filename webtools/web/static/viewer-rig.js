@@ -17,11 +17,10 @@
     var bones = [];
     var expressions = [];
     var adjustments = {};
-    var body = { height: 100, breast: 100, skirt: 100, breastPreset: "" };
-    var bodyKinds = ["height", "breast", "skirt"];
+    var body = { skirt: 100, breastPreset: "loaded" };
+    var bodyKinds = ["skirt"];
     var authoredNodes = {};
     var nodeEditor = null, expressionPanel = null;
-    var compensated = [];
     var selectedNode = "";
     var selectedClip = "";
     var playing = false;
@@ -161,7 +160,7 @@
       // Names group labels for people; every actual target/value comes from the
       // verified metadata above, including each separate parent/child skirt bone.
       var name = String(operation.name || "").split("/").pop();
-      var groups = [[/^Move$/, "height", "Height"], [/Breast/i, "breast", "Breast size"], [/Skirt/i, "skirt", "Skirt"],
+      var groups = [[/^Move$/, "model", "Whole model"], [/Breast/i, "breast", "Breast size"], [/Skirt/i, "skirt", "Skirt"],
         [/^Head(?:_|$)/, "head", "Head"], [/Hair/i, "hair", "Hair"], [/Eye/i, "eyes", "Eyes"],
         [/Spine|Hips|Waist/i, "torso", "Torso"], [/Arm|Shoulder/i, "arms", "Arms"], [/Hand|Finger/i, "hands", "Hands"],
         [/Thigh|Calf|Leg/i, "legs", "Legs"], [/Foot|Toe/i, "feet", "Feet"]];
@@ -183,56 +182,39 @@
     function bodyControl(kind) {
       if (!rigEditable) return null;
       var control = (scaling.controls || []).filter(function (value) { return value.id === kind; })[0];
-      var mode = { height: "height_vertical_preserve_head", breast: "breast_tool_curve", skirt: "multiply_authored_local_scale" }[kind];
+      var mode = { breast: "breast_tool_presets", skirt: "multiply_authored_local_scale" }[kind];
       return control && control.available === true && control.mode === mode &&
         control.nodes && control.nodes.length && control.nodes.every(function (target) { return !!nodes[String(target.node)]; }) ? control : null;
     }
+    function breastPresets() {
+      var control = bodyControl("breast"), seen = {};
+      return (control && control.presets || []).filter(function (preset) {
+        if (!preset || typeof preset.id !== "string" || preset.id === "loaded" || seen[preset.id] ||
+            !Array.isArray(preset.scale) || preset.scale.length !== 3 ||
+            !preset.scale.every(function (value) { return typeof value === "number" && isFinite(value) && value > 0; })) return false;
+        seen[preset.id] = true; return true;
+      });
+    }
     function applyBodyPreset(get) {
       var control = bodyControl("breast");
-      var preset = control && (control.presets || []).filter(function (value) { return value.id === body.breastPreset; })[0];
+      var preset = breastPresets().filter(function (value) { return value.id === body.breastPreset; })[0];
       if (preset) control.nodes.forEach(function (operation) { get(String(operation.node)).scale.fromArray(preset.scale); });
     }
-    function applyBody(get, skipHeight) {
-      bodyKinds.forEach(function (kind) {
-        var control = bodyControl(kind);
-        if (!control || body[kind] === 100 || kind === "height" && skipHeight) return;
-        var ratio = body[kind] / 100;
-        control.nodes.forEach(function (operation) {
-          var target = get(String(operation.node));
-          if (!target) return;
-          var factors = kind === "breast" && control.mode === "breast_tool_curve" ?
-            editing.breastFactors(control, target.scale.x, body.breast) : (operation.axes || []).map(function (axis) { return axis === 1 ? ratio : 1; });
-          if (factors) target.scale.multiply(new THREE.Vector3().fromArray(factors));
-        });
-      });
-    }
-    function clearHeightCompensation() {
-      compensated.forEach(function (record) { record.object.matrixAutoUpdate = record.auto; record.object.matrix.copy(record.local); record.object.matrixWorldNeedsUpdate = true; });
-      compensated = [];
-    }
-    function applyHeight() {
-      var control = bodyControl("height"), ratio = body.height / 100;
-      if (!control || ratio === 1) return;
-      root.updateMatrixWorld(true);
-      var roots = [];
+    function applyBody(get) {
+      var control = bodyControl("skirt");
+      if (!control || body.skirt === 100) return;
       control.nodes.forEach(function (operation) {
-        (operation.compensationRoots || []).forEach(function (value) {
-          var object = nodes[String(value.node)];
-          if (object && roots.every(function (record) { return record.object !== object; })) roots.push({ object: object, before: object.matrixWorld.clone(), local: object.matrix.clone(), auto: object.matrixAutoUpdate });
-        });
+        var target = get(String(operation.node));
+        if (target) target.scale.multiplyScalar(body.skirt / 100);
       });
-      control.nodes.forEach(function (operation) { nodes[String(operation.node)].scale.y *= ratio; });
-      root.updateMatrixWorld(true);
-      roots.forEach(function (record) {
-        var object = record.object;
-        // Preserve the complete world basis, not a local inverse-Y scale:
-        // the latter shears a tilted head under a nonuniformly scaled parent.
-        var desired = record.before.clone().setPosition(new THREE.Vector3().setFromMatrixPosition(object.matrixWorld));
-        var parent = object.parent ? object.parent.matrixWorld : new THREE.Matrix4();
-        object.matrix.copy(parent.clone().invert().multiply(desired));
-        object.matrixAutoUpdate = false; object.matrixWorldNeedsUpdate = true;
+    }
+    function fileMap() {
+      var values = {};
+      Object.keys(authoredNodes).forEach(function (id) { values[id] = editing.clone(authoredNodes[id].authored); });
+      activeSavedOperations().forEach(function (operation) {
+        values[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
       });
-      compensated = roots;
+      return values;
     }
     function applyUser(target, values) {
       target.scale.multiply(new THREE.Vector3().fromArray(values.scale));
@@ -240,31 +222,23 @@
       target.quaternion.multiply(values.quaternion ? new THREE.Quaternion().fromArray(values.quaternion) : editing.uiQuaternion(THREE, values.rotation));
     }
     function staticMap(adjusted) {
-      var values = {};
-      Object.keys(authoredNodes).forEach(function (id) { values[id] = editing.clone(authoredNodes[id].authored); });
-      activeSavedOperations().forEach(function (operation) {
-        values[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
-      });
+      var values = fileMap();
       applyBodyPreset(function (id) { return values[id]; });
-      applyBody(function (id) { return values[id]; }, true);
+      applyBody(function (id) { return values[id]; });
       if (expressionPanel) expressionPanel.getBoneOperations().forEach(function (operation) {
         var target = values[String(operation.node)];
         if (target && ["position", "scale", "quaternion"].indexOf(operation.kind) >= 0) target[operation.kind].fromArray(operation.value);
       });
       if (adjusted) Object.keys(adjustments).forEach(function (id) { if (values[id]) applyUser(values[id], adjustments[id]); });
-      var height = bodyControl("height");
-      if (height) height.nodes.forEach(function (target) { values[String(target.node)].scale.y *= body.height / 100; });
       return values;
     }
     function nodeFlags(id) {
       var operations = savedOperations.filter(function (operation) { return operation.node === id; });
       var active = activeSavedOperations();
-      var bodyChanged = bodyKinds.some(function (kind) {
+      var bodyChanged = ["skirt", "breast"].some(function (kind) {
         var control = bodyControl(kind);
-        if (!control || body[kind] === 100 && !(kind === "breast" && body.breastPreset)) return false;
-        return control.nodes.some(function (target) {
-          return String(target.node) === id || kind === "height" && (target.compensationRoots || []).some(function (value) { return String(value.node) === id; });
-        });
+        if (!control || (kind === "skirt" ? body.skirt === 100 : body.breastPreset === "loaded")) return false;
+        return control.nodes.some(function (target) { return String(target.node) === id; });
       });
       return { saved: operations.length > 0, fileChanged: operations.some(function (operation) { return operation.changed && active.indexOf(operation) >= 0; }),
         modified: !editing.adjustmentEmpty(adjustments[id]), body: bodyChanged,
@@ -279,7 +253,7 @@
         nodes[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
       });
       applyBodyPreset(function (id) { return nodes[id]; });
-      applyBody(function (id) { return nodes[id]; }, true);
+      applyBody(function (id) { return nodes[id]; });
       if (expressionPanel) expressionPanel.applyBonesAndMorphs();
       Object.keys(adjustments).forEach(function (id) {
         var target = nodes[id], values = adjustments[id];
@@ -293,13 +267,11 @@
         track.targets.forEach(function (target) { target.visible = target.visible && value; });
       });
       if (expressionPanel) expressionPanel.applyVisibility(parts);
-      applyHeight();
       root.updateMatrixWorld(true);
       root.traverse(function (object) { if (object.isSkinnedMesh) object.skeleton.update(); });
     }
     function evaluate(delta) {
       if (disposed) return;
-      clearHeightCompensation();
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.update(delta || 0);
       all.forEach(function (record) { capture(record.object, record.base); });
@@ -350,46 +322,67 @@
     function refreshNode() {
       if (nodeEditor) nodeEditor.refresh(false);
     }
-    function breastBaseTargets() {
-      var values = {};
-      Object.keys(authoredNodes).forEach(function (id) { values[id] = editing.clone(authoredNodes[id].authored); });
-      activeSavedOperations().forEach(function (operation) {
-        values[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
+    function breastProfile() {
+      var control = bodyControl("breast"), baseline = fileMap(), current = staticMap(true);
+      var targets = control ? control.nodes.map(function (target) {
+        var id = String(target.node);
+        return { node: id, loadedScale: baseline[id].scale.toArray(), currentScale: current[id].scale.toArray() };
+      }) : [];
+      function matches(values, preset) {
+        return values.length > 0 && values.every(function (value) { return value.every(function (part, axis) { return Math.abs(part - preset.scale[axis]) < 1e-6; }); });
+      }
+      var loadedMatch = breastPresets().filter(function (preset) { return matches(targets.map(function (target) { return target.loadedScale; }), preset); })[0];
+      var selected = breastPresets().filter(function (preset) { return preset.id === body.breastPreset; })[0];
+      var manual = targets.some(function (target) {
+        var value = adjustments[target.node];
+        return value && value.scale.some(function (part) { return Math.abs(part - 1) > 1e-7; });
       });
-      applyBodyPreset(function (id) { return values[id]; });
-      var control = bodyControl("breast");
-      return control ? control.nodes.map(function (target) { return values[String(target.node)]; }) : [];
+      return { available: !!control, selected: body.breastPreset, loadedProfile: loadedMatch ? loadedMatch.id : null,
+        custom: manual || targets.some(function (target) {
+          var expected = selected ? selected.scale : target.loadedScale;
+          return target.currentScale.some(function (part, axis) { return Math.abs(part - expected[axis]) > 1e-6; });
+        }),
+        savedSettingsEnabled: useSavedNodes, targets: targets };
+    }
+    function chooseBreastProfile(id) {
+      if (!bodyControl("breast") || id !== "loaded" && !breastPresets().some(function (preset) { return preset.id === id; })) return;
+      body.breastPreset = id;
+      // An explicit profile replaces earlier manual breast-scale edits. Placement,
+      // rotation, other bones and source records remain independent.
+      bodyControl("breast").nodes.forEach(function (target) {
+        var key = String(target.node), value = adjustments[key];
+        if (value) { value.scale = [1, 1, 1]; if (editing.adjustmentEmpty(value)) delete adjustments[key]; }
+      });
+      evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
     function bodyRange(kind) {
       var control = bodyControl(kind);
-      if (!control) return null;
-      return kind === "breast" && control.mode === "breast_tool_curve" ?
-        editing.breastRange(control, breastBaseTargets()) :
-        { min: finite(control.min, 80), max: finite(control.max, 120) };
+      return control ? { min: finite(control.min, 50), max: finite(control.max, 150) } : null;
     }
     function refreshBodyControls() {
-      bodyKinds.forEach(function (kind) {
-        var control = bodyControl(kind), range = bodyRange(kind), enabled = interactive && !disposed && !!range;
-        ["viewer-" + kind, "viewer-" + kind + "-number"].forEach(function (id) {
-          var input = element(id);
-          if (!input) return;
-          input.disabled = !enabled;
-          if (range) { input.min = String(range.min); input.max = String(range.max); }
-          if (document.activeElement !== input) input.value = String(body[kind]);
-        });
-        element("viewer-" + kind + "-value").textContent = body[kind] + "%";
-        var resetButton = element("viewer-" + kind + "-reset");
-        if (resetButton) resetButton.disabled = !interactive || disposed || !control || body[kind] === 100 && !(kind === "breast" && body.breastPreset);
-        var note = !control ? (kind === "height" ? "This model has no supported height control." :
-          kind === "breast" ? "This model has no verified breast-size node." : "This model has no supported skirt roots.") :
-          !range ? "This custom breast size is outside the tool curve. Use individual bone editing." :
-          kind === "height" ? "Changes vertical body height while keeping the head and hair proportions." :
-          kind === "breast" ? "Width follows the breast tool curve; height and depth adjust proportionally." :
-          "Uses the skirt tool's root bones. Length and flare change together.";
-        element("viewer-" + kind + "-note").textContent = translate(note);
+      var range = bodyRange("skirt"), enabled = interactive && !disposed && !!range;
+      ["viewer-skirt", "viewer-skirt-number"].forEach(function (id) {
+        var input = element(id); input.disabled = !enabled;
+        if (range) { input.min = String(range.min); input.max = String(range.max); }
+        if (document.activeElement !== input) input.value = String(body.skirt);
       });
-      var select = element("viewer-breast-preset");
-      if (select) select.disabled = !interactive || disposed || !bodyControl("breast");
+      element("viewer-skirt-value").textContent = body.skirt + "%";
+      element("viewer-skirt-reset").disabled = !enabled || body.skirt === 100;
+      element("viewer-skirt-note").textContent = translate(range ? "Uses the skirt tool's root bones. Length and flare change together." : "This model has no supported skirt roots.");
+      var state = breastProfile(), preset = breastPresets().filter(function (value) { return value.id === state.selected; })[0];
+      var loaded = breastPresets().filter(function (value) { return value.id === state.loadedProfile; })[0];
+      function label(value) { return translate(value.id === "stock" ? "Reference baseline" : value.label); }
+      element("viewer-breast-loaded").textContent = (loaded ? label(loaded) : translate("Custom shape")) +
+        (!useSavedNodes && savedOperations.length ? " · " + translate("File settings are off") : "");
+      element("viewer-breast-value").textContent = !state.available ? translate("This model has no verified breast-size node.") :
+        (state.custom ? translate("Custom shape") : preset ? label(preset) : translate("Uses file settings"));
+      var select = element("viewer-breast-preset"); select.disabled = !interactive || disposed || !state.available;
+      select.value = body.breastPreset;
+      element("viewer-breast-reset").disabled = !interactive || disposed || !state.available || state.selected === "loaded" && !state.custom;
+      element("viewer-height-value").textContent = translate("Height correction unavailable");
+      var metadata = (scaling.components || []).filter(function (part) { return typeof part.heightScale === "number" && isFinite(part.heightScale); });
+      var source = element("viewer-height-source"); source.hidden = !metadata.length;
+      source.textContent = translate("Saved height metadata") + ": " + metadata.map(function (part) { return part.targetName + " = " + Number(part.heightScale.toPrecision(7)); }).join("; ");
     }
     function setBody(kind, input) {
       var range = bodyRange(kind);
@@ -399,7 +392,6 @@
     }
     function setClip(name) {
       playing = false;
-      clearHeightCompensation();
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.stopAllAction();
       all.forEach(function (record) { restore(record.object, record.authored); capture(record.object, record.base); });
@@ -418,7 +410,7 @@
       refreshAvailability(); updateTime(); refreshExpression(); refreshNode(); changed();
     }
     function reset() {
-      adjustments = {}; body = { height: 100, breast: 100, skirt: 100, breastPreset: "" };
+      adjustments = {}; body = { skirt: 100, breastPreset: "loaded" };
       if (expressionPanel) expressionPanel.reset(true);
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
@@ -426,7 +418,7 @@
     }
     function refreshSavedStatus() {
       var message = !savedOperations.length ? translate("No verified saved node settings are available.") :
-        translate(useSavedNodes ? "Saved node settings are applied. 100% adds no extra scaling." : "Using the file's authored shape. Saved node settings are off.");
+        translate(useSavedNodes ? "Saved node settings are applied." : "Using the file's authored shape. Saved node settings are off.");
       if (savedOperations.length) message += " " + translate("Applied settings") + ": " + activeSavedOperations().length + " / " + savedOperations.length + ".";
       if (savedSkipped || savedMetadataWarnings.length) message += " " + translate("Unsupported or conflicting saved settings were skipped.") + (savedSkipped ? " (" + savedSkipped + ")" : "");
       element("viewer-saved-status").textContent = message;
@@ -449,9 +441,15 @@
       if (expressionPanel) expressionPanel.updateLanguage();
       var preset = element("viewer-breast-preset");
       if (preset) {
-        preset.textContent = ""; appendOption(preset, "", translate("Loaded shape"));
+        preset.textContent = ""; appendOption(preset, "loaded", translate("Uses file settings"));
         var control = bodyControl("breast");
-        (control && control.presets || []).forEach(function (value) { appendOption(preset, value.id, translate(value.label)); });
+        ["smaller", "stock", "larger"].forEach(function (group) {
+          var entries = breastPresets().filter(function (value) { return value.group === group; });
+          if (!entries.length) return;
+          var holder = document.createElement("optgroup"); holder.label = translate(group === "smaller" ? "Below reference baseline" : group === "larger" ? "Above reference baseline" : "Reference baseline");
+          entries.forEach(function (value) { appendOption(holder, value.id, translate(value.id === "stock" ? "Reference baseline" : value.label)); });
+          preset.appendChild(holder);
+        });
         preset.value = body.breastPreset;
       }
       element("viewer-rig-status").textContent = translate(clipEntries.length ? "Play or pause a motion to inspect the model's pose." :
@@ -507,7 +505,7 @@
     buildSavedParts();
     expressionPanel = window.ViewerExpressions.create({ THREE: THREE, translate: translate, nodes: nodes,
       channels: expressions, catalog: info && info.expressionCatalog || {},
-      change: function () { evaluate(0); refreshNode(); changed(); } });
+      change: function () { evaluate(0); refreshBodyControls(); refreshNode(); changed(); } });
     nodeEditor = editing.createNodeEditor({ THREE: THREE, translate: translate, nodes: nodes, bones: bones, scaling: scaling,
       value: function (id, adjusted) { return staticMap(adjusted)[id]; }, flags: nodeFlags, savedEuler: savedEuler,
       savedEntries: function (id) {
@@ -517,15 +515,9 @@
         });
       },
       adjustment: function (id) { return adjustments[id]; }, onSelect: function (id) { selectedNode = id; },
-      change: function (id, value) { if (value) adjustments[id] = value; else delete adjustments[id]; evaluate(0); changed(); } });
-    var presetHolder = element("viewer-body-presets");
-    if (presetHolder) {
-      presetHolder.textContent = "";
-      var presetLabel = document.createElement("label"), presetTitle = document.createElement("span"), presetSelect = document.createElement("select");
-      presetTitle.textContent = translate("Breast tool presets"); presetTitle.setAttribute("data-i18n", "Breast tool presets");
-      presetSelect.id = "viewer-breast-preset"; presetLabel.appendChild(presetTitle); presetLabel.appendChild(presetSelect); presetHolder.appendChild(presetLabel);
-      listen("viewer-breast-preset", "change", function () { body.breastPreset = this.value; body.breast = 100; evaluate(0); refreshBodyControls(); refreshNode(); changed(); });
-    }
+      change: function (id, value) { if (value) adjustments[id] = value; else delete adjustments[id]; evaluate(0); refreshBodyControls(); changed(); } });
+    listen("viewer-breast-preset", "change", function () { chooseBreastProfile(this.value); });
+    listen("viewer-breast-reset", "click", function () { if (!this.disabled) chooseBreastProfile("loaded"); });
     listen("viewer-pose-basic", "click", function () { if (!this.disabled) setClip(""); });
     listen("viewer-pose-preview", "click", function () { if (!this.disabled && defaultClip) setClip(defaultClip); });
     listen("viewer-motion", "change", function () { setClip(this.value); });
@@ -552,7 +544,6 @@
       listen("viewer-" + kind + "-number", "change", refreshBodyControls);
       listen("viewer-" + kind + "-reset", "click", function () {
         body[kind] = 100;
-        if (kind === "breast") { body.breastPreset = ""; element("viewer-breast-preset").value = ""; }
         evaluate(0); refreshBodyControls(); refreshNode(); changed();
       });
     });
@@ -582,7 +573,7 @@
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
       reset: reset,
-      dispose: function () { disposed = true; playing = false; clearHeightCompensation(); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
+      dispose: function () { disposed = true; playing = false; refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
@@ -590,11 +581,10 @@
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
-          body: { height: body.height, breast: body.breast, skirt: body.skirt, breastPreset: body.breastPreset }, scaling: scaling,
+          body: { skirt: body.skirt, breastPreset: body.breastPreset }, breastProfile: breastProfile(), heightMode: "saved_settings_only", scaling: scaling,
           nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), selectedNode: selectedNode,
           nodeValues: selectedNode ? editing.toUI(THREE, staticMap(true)[selectedNode], savedEuler(selectedNode)) : null,
           expressionPanel: expressionPanel ? expressionPanel.getState() : null, expressionLimits: expressionLimits(),
-          heightCompensation: compensated.map(function (record) { return { node: String(record.object.userData.elichika_node), name: record.object.name, worldBasisPreserved: true }; }),
           savedNodes: { available: savedOperations.length > 0, enabled: useSavedNodes, applied: activeSavedOperations().length,
             skipped: savedSkipped, conflicts: savedConflicts, metadataWarnings: savedMetadataWarnings.slice(), operations: savedOperations,
             groups: savedParts.map(function (part) { return { id: part.id, label: translate(part.label), enabled: part.enabled, nodes: part.nodes.slice(), settings: part.operations.length }; }) } };

@@ -1609,6 +1609,30 @@ _VIEWER_TRANSLATIONS.update({
     "File and body baseline": ["파일·체형 기준값", "ファイル・体型の基準値"],
     "Zero-scale axes cannot be edited safely.": ["배율이 0인 축은 안전하게 조절할 수 없습니다.", "倍率が 0 の軸は安全に調整できません。"],
 })
+_VIEWER_TRANSLATIONS.update({
+    "Height settings in the file": ["파일의 키 설정", "ファイルの身長設定"],
+    "Read-only": ["보기만 가능", "表示のみ"],
+    "Height adjustment is unavailable. Saved values are shown for reference.": ["키를 직접 조절하는 기능은 지원하지 않습니다. 파일에 저장된 값만 참고용으로 표시합니다.", "身長の直接調整には対応していません。ファイルに保存された値を参考情報として表示します。"],
+    "Reference body profile": ["기준 체형 선택", "基準体型を選択"],
+    "Loaded profile": ["파일의 체형", "ファイルの体型"],
+    "Current profile": ["현재 체형", "現在の体型"],
+    "Restore loaded shape": ["파일의 체형으로 복원", "ファイルの体型に戻す"],
+    "Smaller profiles": ["표준보다 작은 체형", "標準より小さめの体型"],
+    "Larger profiles": ["표준보다 큰 체형", "標準より大きめの体型"],
+    "Custom shape": ["사용자 설정", "カスタム設定"],
+    "Character names identify the breast tool's reference settings. They do not change the character.": ["이름은 가슴 도구의 기준 체형을 뜻합니다. 캐릭터는 바뀌지 않습니다.", "名前は胸サイズ変更ツールの基準体型を表します。キャラクターは変わりません。"],
+    "Skirt 100% keeps the loaded skirt settings. Reset restores the loaded skirt shape.": ["치마 100%는 파일의 치마 설정을 유지합니다. 초기화하면 파일의 치마 모양으로 돌아갑니다.", "スカートの100%はファイルの設定を維持します。リセットするとファイルのスカート形状に戻ります。"],
+    "Whole model": ["모델 전체", "モデル全体"],
+    "Reference baseline": ["도구 기준형", "ツールの基準体型"],
+    "Uses file settings": ["파일 설정 유지", "ファイルの設定を使用"],
+    "Current shape": ["현재 체형", "現在の体型"],
+    "File settings are off": ["파일 보정 적용 안 함", "ファイルの補正は未適用"],
+    "Saved height metadata": ["파일의 키 설정", "ファイルの身長設定"],
+    "Height correction unavailable": ["키 보정 조절 미지원", "身長補正の調整は未対応"],
+    "Below reference baseline": ["기준 형태보다 작음", "基準形状より小さい"],
+    "Above reference baseline": ["기준 형태보다 큼", "基準形状より大きい"],
+    "Saved node settings are applied.": ["파일에 저장된 본 보정을 적용했습니다.", "ファイルに保存されたボーン補正を適用しました。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
