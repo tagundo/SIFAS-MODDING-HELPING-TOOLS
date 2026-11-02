@@ -162,6 +162,13 @@ repacking is unnecessary and the source files remain unchanged.
   individual part visibility. **SIFAS material preview** reconstructs supported
   AS/Member equations; **Basic textures** retains the simpler texture view.
   Switching tabs pauses drawing and motion without discarding the current pose.
+- **High-quality 3D** uses the device's native display density and requests the
+  game's two-sample edge smoothing, retaining stronger existing antialiasing
+  where available. It changes rendering only; original mesh and texture pixels
+  remain unchanged. The default keeps the existing display-density limit.
+  Unsupported devices use their available antialiasing at native density;
+  graphics hardware limits still apply. Changing quality preserves the camera,
+  pose, motion playback and body/outfit adjustments.
 
 Interactive previews retain named skeletons, bind poses, skin weights and
 supported morph/animation data, including edited models with recentered vertices.

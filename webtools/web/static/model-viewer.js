@@ -17,6 +17,8 @@
   var active = false;
   var lost = false;
   var renderer = null;
+  var qualityController = null;
+  var modelRenderInfo = { triangles: 0, calls: 0, lines: 0, points: 0 };
   var scene = null;
   var camera = null;
   var controls = null;
@@ -107,6 +109,7 @@
     node("viewer-cancel").hidden = !value;
     node("viewer-load").hidden = value;
     node("viewer-auto-face").disabled = value;
+    node("viewer-high-quality").disabled = value || lost;
     if (rigController) rigController.setInteractive(!value && !lost);
     renderFiles();
     showFaceStatus();
@@ -134,7 +137,7 @@
     var moving = rigController ? rigController.update(delta) : false;
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
-    renderer.render(scene, camera);
+    renderScene();
     renderedFrames += 1;
     if (changed || moving) requestRender();
     else lastFrameTime = 0;
@@ -146,13 +149,27 @@
     lastFrameTime = 0;
   }
 
+  function refreshQualityStatus() {
+    var status = node("viewer-quality-status");
+    var quality = qualityController ? qualityController.getState() : null;
+    var limited = !!(quality && quality.enabled && quality.ready && quality.effectiveSamples < 2);
+    status.hidden = !limited;
+    var text = limited ? t("Device-resolution rendering is enabled; edge smoothing is unavailable on this device.") : "";
+    if (status.textContent !== text) status.textContent = text;
+  }
+
+  function renderScene() {
+    modelRenderInfo = qualityController.render(scene, camera);
+    refreshQualityStatus();
+  }
+
   function resize() {
     if (!renderer || !active || destroyed) return;
     var stage = node("viewer-stage");
     var width = stage.clientWidth;
     var height = stage.clientHeight;
     if (!width || !height) return;
-    renderer.setSize(width, height, false);
+    qualityController.resize(width, height);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     requestRender();
@@ -163,7 +180,7 @@
       if (lost) setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
       return !lost;
     }
-    if (!window.THREE || !window.THREE.OrbitControls || !window.THREE.GLTFLoader) {
+    if (!window.THREE || !window.THREE.OrbitControls || !window.THREE.GLTFLoader || !window.ViewerQuality) {
       setStatus("The 3D viewer files could not be loaded. Reopen the app and try again.", true);
       return false;
     }
@@ -172,6 +189,8 @@
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
       renderer.outputEncoding = window.THREE.sRGBEncoding;
       renderer.toneMapping = window.THREE.NoToneMapping;
+      qualityController = window.ViewerQuality.create(renderer);
+      qualityController.setEnabled(node("viewer-high-quality").checked);
       renderer.domElement.setAttribute("aria-label", t("3D model"));
       renderer.domElement.id = "viewer-canvas";
       renderer.domElement.setAttribute("role", "img");
@@ -195,6 +214,8 @@
         event.preventDefault();
         lost = true;
         pauseRender();
+        qualityController.invalidateGPU();
+        node("viewer-high-quality").disabled = true;
         // r128 replaces its GPU caches on restoration. Detach the old resource
         // disposal listeners while the context is lost, so a later model reload
         // cannot delete handles from the old context generation. Keep CPU data
@@ -216,6 +237,8 @@
       });
       renderer.domElement.addEventListener("webglcontextrestored", function () {
         lost = false;
+        qualityController.restoreGPU();
+        node("viewer-high-quality").disabled = loading;
         setStatus(model ? "Model ready." : "Choose a costume file to begin.");
         filesChanged();
         if (rigController) rigController.setInteractive(!loading);
@@ -226,11 +249,13 @@
       return true;
     } catch (error) {
       if (renderer) {
+        if (qualityController) qualityController.dispose();
         renderer.dispose();
         if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
       if (controls) controls.dispose();
       renderer = null;
+      qualityController = null;
       setStatus("3D graphics are unavailable here. Update Android System WebView or use a current browser.", true);
       return false;
     }
@@ -570,6 +595,10 @@
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
     node("viewer-auto-face").addEventListener("change", filesChanged);
+    node("viewer-high-quality").addEventListener("change", function () {
+      if (qualityController) { qualityController.setEnabled(this.checked); resize(); }
+      refreshQualityStatus();
+    });
     node("viewer-fit").addEventListener("click", function () { fitModel(); });
     node("viewer-expand").addEventListener("click", function () { setExpanded(!expanded); });
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
@@ -606,6 +635,7 @@
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
     refreshMaterialStatus();
+    refreshQualityStatus();
   }
 
   function setVisible(value) {
@@ -639,6 +669,7 @@
     if (controls) controls.dispose();
     disposePreviewControllers();
     disposeObject(model);
+    if (qualityController) qualityController.dispose();
     if (renderer) renderer.dispose();
     model = null;
   }
@@ -652,10 +683,11 @@
         autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
         loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
-        meshNames: names, trianglesRendered: renderer ? renderer.info.render.triangles : 0,
+        meshNames: names, trianglesRendered: renderer ? modelRenderInfo.triangles : 0,
         sourceTriangles: visibleSourceTriangles(),
         renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
+        quality: qualityController ? qualityController.getState() : null,
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
         rig: rigController ? rigController.getState() : null,
         materials: materialController && materialController.getState ? materialController.getState() : null };
@@ -667,7 +699,7 @@
     // tagged preview helpers such as the separate SIFAS outline pass.
     renderProbe: function (gridSize) {
       if (!renderer || !model || lost) return { ready: false };
-      renderer.render(scene, camera);
+      renderScene();
       renderedFrames += 1;
       var gl = renderer.getContext();
       var size = renderer.getDrawingBufferSize(new window.THREE.Vector2());
@@ -701,9 +733,9 @@
       }
       return { ready: true, nonBackgroundSamples: changed, chromaticSamples: chromatic, samples: grid * grid,
         gridSize: grid, readPixelsCalls: 1, bytesRead: bytes,
-        triangles: renderer.info.render.triangles, sourceTriangles: visibleSourceTriangles(),
-        drawTriangles: renderer.info.render.triangles, renderedFrames: renderedFrames,
-        width: width, height: height, glError: gl.getError() };
+        triangles: modelRenderInfo.triangles, sourceTriangles: visibleSourceTriangles(),
+        drawTriangles: modelRenderInfo.triangles, renderedFrames: renderedFrames,
+        width: width, height: height, glError: qualityController.readGLError() };
     }
   };
 }());

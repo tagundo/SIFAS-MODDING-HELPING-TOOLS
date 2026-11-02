@@ -63,6 +63,9 @@
             <button id="viewer-pose-preview" type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
           </div>
           <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
+          <label class="viewer-quality-choice"><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
+          <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
+          <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
           <div class="viewer-camera-actions" role="group" aria-label="Camera">
             <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
             <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
@@ -169,6 +172,7 @@
   <script src="/static/vendor/three-r128/GLTFLoader.js"></script>
   <script src="/static/sifas-material.js"></script>
   <script src="/static/viewer-rig.js"></script>
+  <script src="/static/viewer-quality.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
 </body>

@@ -220,6 +220,9 @@ main { padding: 14px; }
 .viewer-pose-actions button { min-width: 0; min-height: 44px; overflow-wrap: break-word; }
 .viewer-pose-actions button[aria-pressed=true] { background: var(--accent2); border-color: var(--accent2); color: #fff; }
 .viewer-pose-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.viewer-quality-choice { display: flex; align-items: center; gap: 8px; min-height: 44px; width: fit-content; max-width: 100%; padding: 0 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.viewer-quality-choice input { width: 18px; height: 18px; flex: 0 0 auto; }
+.viewer-quality-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .viewer-gesture-help, .viewer-render-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 7px 0; }
 .viewer-warning { border-left: 3px solid #c79529; padding: 8px 10px; background: var(--panel2); font-size: 12px; line-height: 1.5; white-space: pre-line; }
 .viewer-options { margin-top: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
