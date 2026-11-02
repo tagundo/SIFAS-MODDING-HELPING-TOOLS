@@ -17,6 +17,8 @@
     var bones = [];
     var expressions = [];
     var adjustments = {};
+    var nodeCompensations = {}, compensationStatuses = {}, automaticTargets = [];
+    var automaticMatrices = [];
     var body = { breastPreset: "loaded" };
     var skirtOverrides = {};
     var authoredNodes = {};
@@ -65,7 +67,7 @@
       if (object.isSkinnedMesh) object.frustumCulled = false;
       var index = object.userData && object.userData.elichika_node;
       if (index !== undefined) nodes[String(index)] = object;
-      var record = { object: object, authored: snapshot(object), base: snapshot(object) };
+      var record = { object: object, authored: snapshot(object), base: snapshot(object), frame: snapshot(object), frameMatrix: new THREE.Matrix4() };
       all.push(record);
       if (index !== undefined) authoredNodes[String(index)] = record;
       if (object.isMesh) {
@@ -120,6 +122,159 @@
       var object = record.object, index = object.userData && object.userData.elichika_node;
       if (object.isBone && index !== undefined) bones.push({ id: String(index), name: object.name, object: object });
     });
+    var boneObjects = new Map(), objectRecords = new Map();
+    bones.forEach(function (bone) { boneObjects.set(bone.object, bone); });
+    all.forEach(function (record) { objectRecords.set(record.object, record); });
+
+    function boneName(bone) {
+      return String(bone.object.userData.originalName || bone.object.name || bone.name).replace(/__\d+$/, "");
+    }
+    function descendants(bone, immediate) {
+      var found = [];
+      function visit(object) {
+        (object.children || []).forEach(function (child) {
+          if (isHelper(child)) return;
+          var entry = boneObjects.get(child);
+          if (entry) found.push(entry);
+          if (!entry || !immediate) visit(child);
+        });
+      }
+      visit(bone.object);
+      return found;
+    }
+    function defaultCompensationMode(bone) {
+      return /^Spine/.test(boneName(bone)) && descendants(bone, false).filter(function (child) { return boneName(child) === "Spine2"; }).length === 1 ? "spine2" : "auto";
+    }
+    function compensationSelection(id) {
+      var bone = bones.filter(function (entry) { return entry.id === id; })[0];
+      if (!bone) return null;
+      var setting = nodeCompensations[id];
+      return { bone: bone, enabled: !!(setting && setting.enabled), mode: setting ? setting.mode : defaultCompensationMode(bone) };
+    }
+    function compensationTargets(selection) {
+      var names = { spine2: ["Spine2"], spine1: ["Spine1"], both: ["Spine1", "Spine2"] }[selection.mode];
+      if (!names) {
+        var children = descendants(selection.bone, true);
+        return { bones: children, reason: children.length ? "" : "No descendant bone matches this target choice." };
+      }
+      var children = descendants(selection.bone, false), result = [];
+      for (var index = 0; index < names.length; index += 1) {
+        // Resolve inside this exact hierarchy only. Other source armatures can
+        // legitimately contain the same names and must never be guessed here.
+        var matches = children.filter(function (child) { return boneName(child) === names[index]; });
+        if (matches.length !== 1) return { bones: result, reason: matches.length ? "The target name is ambiguous in this bone’s descendants." : "No descendant bone matches this target choice." };
+        result.push(matches[0]);
+      }
+      return { bones: result, reason: "" };
+    }
+    function compensationStatus(id) {
+      if (compensationStatuses[id]) return compensationStatuses[id];
+      var selection = compensationSelection(id);
+      if (!selection) return null;
+      var targets = compensationTargets(selection);
+      return { node: id, enabled: selection.enabled, mode: selection.mode, state: "off", reason: targets.reason,
+        targets: targets.bones.map(function (bone) { return { node: bone.id, name: boneName(bone) }; }), scaleDelta: [1, 1, 1] };
+    }
+    function releaseAutomaticMatrices() {
+      var released = [];
+      automaticMatrices.forEach(function (entry) {
+        entry.object.matrixAutoUpdate = entry.autoUpdate;
+        // The affine matrix belongs to this evaluation only. Its underlying
+        // TRS always contains the ordinary/manual endpoints, never a lossy
+        // decomposition of automatic shear.
+        entry.object.updateMatrix();
+        released.push(entry.object);
+      });
+      automaticMatrices = []; automaticTargets = [];
+      return released;
+    }
+    function invertible(matrix) {
+      var determinant = matrix.determinant(), e = matrix.elements;
+      var volume = Math.hypot(e[0], e[1], e[2]) * Math.hypot(e[4], e[5], e[6]) * Math.hypot(e[8], e[9], e[10]);
+      // Judge singularity relative to the basis lengths: a small, valid model
+      // unit scale is not itself a singular frame.
+      return e.every(function (value) { return isFinite(value); }) && isFinite(determinant) &&
+        isFinite(volume) && volume > 0 && Math.abs(determinant) / volume > 1e-12;
+    }
+    function relativeBaseline(parent, child) {
+      var path = [], current = child;
+      while (current && current !== parent) {
+        var record = objectRecords.get(current);
+        if (!record || !invertible(record.frameMatrix)) return null;
+        path.unshift(record.frameMatrix); current = current.parent;
+      }
+      if (current !== parent) return null;
+      var result = new THREE.Matrix4();
+      path.forEach(function (matrix) { result.multiply(matrix); });
+      return invertible(result) ? result : null;
+    }
+    function hasShear(matrix) {
+      var e = matrix.elements, columns = [[e[0], e[1], e[2]], [e[4], e[5], e[6]], [e[8], e[9], e[10]]];
+      return columns.some(function (left, index) { return columns.some(function (right, next) {
+        if (next <= index) return false;
+        var dot = left.reduce(function (sum, value, axis) { return sum + value * right[axis]; }, 0);
+        var lengths = Math.sqrt(left.reduce(function (sum, value) { return sum + value * value; }, 0) * right.reduce(function (sum, value) { return sum + value * value; }, 0));
+        return Math.abs(dot) > 1e-7 * lengths;
+      }); });
+    }
+    function applyCompensations() {
+      var corrections = {}, order = Object.keys(nodeCompensations);
+      compensationStatuses = {};
+      function depth(id) { var count = 0, object = nodes[id]; while (object && object !== root) { count += 1; object = object.parent; } return count; }
+      order.sort(function (left, right) { return depth(left) - depth(right); });
+      order.forEach(function (id) {
+        var selection = compensationSelection(id);
+        if (!selection) return;
+        var resolved = compensationTargets(selection), baseline = objectRecords.get(selection.bone.object).frame;
+        var state = { node: id, enabled: selection.enabled, mode: selection.mode, state: selection.enabled ? "ready" : "off", reason: "",
+          targets: resolved.bones.map(function (bone) { return { node: bone.id, name: boneName(bone) }; }), scaleDelta: [1, 1, 1] };
+        compensationStatuses[id] = state;
+        if (!selection.enabled) return;
+        if (resolved.reason) { state.state = "unavailable"; state.reason = resolved.reason; return; }
+        var manual = adjustments[id], scales = manual && manual.scale || [];
+        var invalidBaseline = baseline.scale.toArray().some(function (value) { return !isFinite(value) || Math.abs(value) < 1e-8; });
+        if (invalidBaseline || !invertible(objectRecords.get(selection.bone.object).frameMatrix)) {
+          state.state = "unavailable"; state.reason = "A baseline transform has zero or invalid scale."; return;
+        }
+        state.scaleDelta = baseline.scale.toArray().map(function (value, axis) {
+          return typeof scales[axis] === "number" ? scales[axis] / value : 1;
+        });
+        if (state.scaleDelta.some(function (value) { return !isFinite(value) || Math.abs(value) < 1e-8; })) {
+          state.state = "unavailable"; state.reason = "The edited scale cannot be inverted."; return;
+        }
+        var candidates = [], inverse = new THREE.Matrix4().makeScale(1 / state.scaleDelta[0], 1 / state.scaleDelta[1], 1 / state.scaleDelta[2]);
+        resolved.bones.forEach(function (bone) {
+          var relative = relativeBaseline(selection.bone.object, bone.object);
+          if (!relative) return;
+          // Mesh Baker's full-frame rule: C = L^-1 S_delta^-1 L. Keep C
+          // affine: rotated/nonuniform descendant frames require its shear.
+          var correction = relative.clone().invert().multiply(inverse).multiply(relative);
+          if (invertible(correction)) candidates.push({ bone: bone, correction: correction });
+        });
+        if (candidates.length !== resolved.bones.length) {
+          state.state = "unavailable"; state.reason = "A baseline transform has zero or invalid scale."; return;
+        }
+        if (state.scaleDelta.every(function (value) { return Math.abs(value - 1) <= 1e-10; })) return;
+        state.state = "active";
+        candidates.forEach(function (candidate) {
+          var target = corrections[candidate.bone.id];
+          if (!target) target = corrections[candidate.bone.id] = { bone: candidate.bone, correction: new THREE.Matrix4(), from: [] };
+          // Closer ancestors cancel first when several edited parents target
+          // this bone. Each child's own absolute manual transform stays last.
+          target.correction.premultiply(candidate.correction); target.from.push(id);
+        });
+      });
+      Object.keys(corrections).forEach(function (id) {
+        var entry = corrections[id], object = entry.bone.object, baseline = objectRecords.get(object).frameMatrix;
+        var manual = new THREE.Matrix4().compose(object.position, object.quaternion, object.scale);
+        // B_target C B_target^-1 M_target preserves explicit child endpoints,
+        // including translation and rotation, without undoing source scaling.
+        var matrix = baseline.clone().multiply(entry.correction).multiply(baseline.clone().invert()).multiply(manual);
+        automaticMatrices.push({ object: object, autoUpdate: object.matrixAutoUpdate });
+        object.matrixAutoUpdate = false; object.matrix.copy(matrix); object.matrixWorldNeedsUpdate = true;
+        automaticTargets.push({ node: id, name: boneName(entry.bone), from: entry.from.slice(), matrix: matrix.toArray(), correction: entry.correction.toArray(), shear: hasShear(matrix) });
+      });
+    }
     var savedGroups = {}, rawSaved = {}, conflictKeys = {};
     function differentVector(left, right, rotation) {
       if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length || !left.length) return false;
@@ -276,25 +431,33 @@
       var active = activeSavedOperations();
       var bodyChanged = !!skirtOverrides[id] || body.breastPreset !== "loaded" && !!bodyControl("breast") && bodyControl("breast").nodes.some(function (target) { return String(target.node) === id; });
       return { saved: operations.length > 0, fileChanged: operations.some(function (operation) { return operation.changed && active.indexOf(operation) >= 0; }),
-        modified: !editing.adjustmentEmpty(adjustments[id]), body: bodyChanged,
+        modified: !editing.adjustmentEmpty(adjustments[id]) || !!nodeCompensations[id], body: bodyChanged,
         expression: !!expressionPanel && expressionPanel.getBoneOperations().some(function (operation) { return String(operation.node) === id; }) };
     }
     function savedEuler(id) {
       var entry = activeSavedOperations().filter(function (operation) { return operation.node === id && operation.kind === "rotation"; })[0];
       return entry && entry.sourceEuler;
     }
-    function applyAdjustments() {
+    function applyAdjustments(released) {
       activeSavedOperations().forEach(function (operation) {
         nodes[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
       });
       applyBodyPreset(function (id) { return nodes[id]; });
       applyBody(function (id) { return nodes[id]; });
       if (expressionPanel) expressionPanel.applyBonesAndMorphs();
+      all.forEach(function (record) {
+        capture(record.object, record.frame);
+        record.frameMatrix.compose(record.frame.position, record.frame.quaternion, record.frame.scale);
+      });
       Object.keys(adjustments).forEach(function (id) {
         var target = nodes[id], values = adjustments[id];
         if (!target) return;
         applyUser(target, values, id);
       });
+      // A source may originally manage its own matrix. On release it still
+      // needs this frame's restored TRS rather than the last affine matrix.
+      (released || []).forEach(function (object) { object.updateMatrix(); });
+      applyCompensations();
       parts.forEach(function (part) { part.object.visible = part.visible; });
       if (currentClip) currentClip.visibility.forEach(function (track) {
         var time = currentTime(), value = track.values[0];
@@ -308,10 +471,11 @@
     }
     function evaluate(delta) {
       if (disposed) return;
+      var released = releaseAutomaticMatrices();
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.update(delta || 0);
       all.forEach(function (record) { capture(record.object, record.base); });
-      applyAdjustments();
+      applyAdjustments(released);
       if (nodeEditor && nodeEditor.refreshPose) nodeEditor.refreshPose();
     }
     function listen(id, event, handler) {
@@ -467,7 +631,7 @@
       refreshAvailability(); refreshMotionStatus(); updateTime(); refreshExpression(); refreshNode(); changed();
     }
     function reset() {
-      adjustments = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
+      adjustments = {}; nodeCompensations = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
       if (expressionPanel) expressionPanel.reset(true);
       parts.forEach(function (part) { part.visible = part.fileVisible; part.userVisible = undefined; part.userChanged = false; });
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
@@ -578,7 +742,17 @@
         });
       },
       adjustment: function (id) { return adjustments[id]; }, onSelect: function (id) { selectedNode = id; },
-      change: function (id, value) { if (value) adjustments[id] = value; else delete adjustments[id]; evaluate(0); refreshBodyControls(); changed(); } });
+      compensation: function (id) { return { parent: compensationStatus(id), incoming: automaticTargets.filter(function (target) { return target.node === id; }) }; },
+      changeCompensation: function (id, value) {
+        if (!compensationSelection(id) || !value || ["auto", "spine2", "spine1", "both"].indexOf(value.mode) < 0) return;
+        nodeCompensations[id] = { enabled: !!value.enabled, mode: value.mode };
+        evaluate(0); refreshNode(); changed();
+      },
+      change: function (id, value) {
+        if (value) adjustments[id] = value;
+        else { delete adjustments[id]; delete nodeCompensations[id]; }
+        evaluate(0); refreshBodyControls(); changed();
+      } });
     listen("viewer-breast-preset", "change", function () { chooseBreastProfile(this.value); });
     listen("viewer-breast-reset", "click", function () { if (!this.disabled) chooseBreastProfile("loaded"); });
     listen("viewer-pose-basic", "click", function () { if (!this.disabled) setClip(""); });
@@ -631,7 +805,7 @@
       getBounds: posedBounds,
       getPartVisibility: function (object) { var part = parts.filter(function (item) { return item.object === object; })[0]; return part ? { fileVisible: part.fileVisible, selected: part.visible, userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible } : null; },
       reset: reset,
-      dispose: function () { disposed = true; playing = false; refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
+      dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
@@ -641,6 +815,9 @@
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
           body: { breastPreset: body.breastPreset, skirtMode: Object.keys(skirtOverrides).length ? "absolute" : "file" }, skirtValues: skirtValues(), breastProfile: breastProfile(), heightMode: "saved_settings_only", scaling: scaling,
           nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), selectedNode: selectedNode,
+          nodeCompensations: JSON.parse(JSON.stringify(nodeCompensations)),
+          compensation: { selected: selectedNode ? compensationStatus(selectedNode) : null,
+            parents: Object.keys(compensationStatuses).map(function (id) { return compensationStatuses[id]; }), targets: automaticTargets.slice() },
           nodeValues: selectedNode ? editingValues(selectedNode) : null,
           nodeFileValues: selectedNode ? fileValues(selectedNode) : null,
           expressionPanel: expressionPanel ? expressionPanel.getState() : null, expressionLimits: expressionLimits(),

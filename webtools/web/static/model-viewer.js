@@ -33,6 +33,22 @@
   var resizeObserver = null;
   var bounds = null;
   var expanded = false;
+  var expandedSnapshot = null;
+  var fullscreenMode = "none";
+  var fullscreenPending = "";
+  var fullscreenWanted = false;
+  var fullscreenSnapshot = null;
+  var fullscreenTimer = 0;
+  var lastFullscreenExit = 0;
+  var resizeFrame = 0;
+  var outsideFocus = [];
+  var infoAutoOpened = false;
+  var seriousWarning = false;
+  var materialFailure = false;
+  var qualityFailure = false;
+  var layoutNotice = "";
+  var layoutListeners = [];
+  var layoutState = { viewport: null, stage: null, safeInsets: { top: 0, right: 0, bottom: 0, left: 0 } };
   var statusKey = "Choose a costume file to begin.";
   var statusError = false;
   var statusDetail = "";
@@ -62,6 +78,42 @@
     }
     node("viewer-status").textContent = message + (statusDetail ? " " + t(statusDetail) : "");
     node("viewer-status").classList.toggle("error", statusError);
+    refreshInfoVisibility();
+  }
+
+  function refreshInfoVisibility() {
+    var info = node("viewer-info");
+    if (!info) return;
+    var alert = statusError || seriousWarning || materialFailure || qualityFailure || !!layoutNotice;
+    info.classList.toggle("viewer-info-alert", !!alert);
+    if (alert && !info.open) { infoAutoOpened = true; info.open = true; }
+    else if (!alert && infoAutoOpened) { info.open = false; infoAutoOpened = false; }
+  }
+
+  function viewportRect() {
+    var visual = window.visualViewport;
+    return { width: visual && visual.width || window.innerWidth,
+      height: visual && visual.height || window.innerHeight,
+      top: visual && visual.offsetTop || 0, left: visual && visual.offsetLeft || 0 };
+  }
+
+  function scheduleResize() {
+    if (resizeFrame || destroyed || !active) return;
+    resizeFrame = window.requestAnimationFrame(function () { resizeFrame = 0; resize(); });
+  }
+
+  function measureSafeInsets() {
+    var stage = node("viewer-stage"), rect = stage.getBoundingClientRect();
+    var insets = { top: 0, right: 0, bottom: 0, left: 0 };
+    stage.querySelectorAll("[data-viewer-hud-edge]").forEach(function (hud) {
+      var box = hud.getBoundingClientRect(), edge = hud.dataset.viewerHudEdge;
+      if (!box.width || !box.height || window.getComputedStyle(hud).display === "none") return;
+      if (edge === "top") insets.top = Math.max(insets.top, Math.max(0, Math.min(rect.height, box.bottom - rect.top)));
+      if (edge === "bottom") insets.bottom = Math.max(insets.bottom, Math.max(0, Math.min(rect.height, rect.bottom - box.top)));
+      if (edge === "left") insets.left = Math.max(insets.left, Math.max(0, Math.min(rect.width, box.right - rect.left)));
+      if (edge === "right") insets.right = Math.max(insets.right, Math.max(0, Math.min(rect.width, rect.right - box.left)));
+    });
+    return insets;
   }
 
   function renderFiles() {
@@ -91,6 +143,7 @@
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-add-motion").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-load").disabled = loading || !paths.length;
+    scheduleResize();
   }
 
   function filesChanged() {
@@ -158,6 +211,7 @@
     status.hidden = !limited;
     var text = limited ? t("Device-resolution rendering is enabled; edge smoothing is unavailable on this device.") : "";
     if (status.textContent !== text) status.textContent = text;
+    if (qualityFailure !== limited) { qualityFailure = limited; refreshInfoVisibility(); }
   }
 
   function renderScene() {
@@ -166,20 +220,33 @@
   }
 
   function resize() {
-    if (!renderer || !active || destroyed) return;
+    if (!active || destroyed) return;
     var header = document.querySelector("body > header");
     var headerStyle = header ? window.getComputedStyle(header) : null;
     var pinnedHeader = headerStyle && headerStyle.display !== "none" &&
       (headerStyle.position === "sticky" || headerStyle.position === "fixed");
-    document.documentElement.style.setProperty("--viewer-sticky-top",
-      (pinnedHeader ? Math.max(0, header.getBoundingClientRect().bottom) : 0) + "px");
+    var viewport = viewportRect();
+    var headerBottom = pinnedHeader ? Math.max(viewport.top, header.getBoundingClientRect().bottom) : viewport.top;
+    document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
     var stage = node("viewer-stage");
+    var stageTop = Math.max(viewport.top, headerBottom, stage.getBoundingClientRect().top);
+    var available = Math.max(180, viewport.top + viewport.height - stageTop - 10);
+    var sideBySide = window.innerWidth >= 760;
+    var desired = expanded ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
+    node("tab-viewer").style.setProperty("--viewer-stage-height", Math.round(desired) + "px");
+    node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
     var width = stage.clientWidth;
     var height = stage.clientHeight;
     if (!width || !height) return;
-    qualityController.resize(width, height);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
+    var box = stage.getBoundingClientRect();
+    layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: measureSafeInsets() };
+    if (renderer && qualityController) {
+      qualityController.resize(width, height);
+      // Layout changes preserve the user's orbit, zoom distance and pan. Only
+      // the viewport aspect changes; fitting/recentring is an explicit action.
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
     requestRender();
   }
 
@@ -291,6 +358,9 @@
     var radius = Math.max(sphere.radius, 0.01);
     var halfVertical = camera.fov * Math.PI / 360;
     var halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect);
+    var insets = measureSafeInsets(), stage = node("viewer-stage");
+    var safeWidth = Math.max(1, stage.clientWidth - insets.left - insets.right) / Math.max(1, stage.clientWidth);
+    var safeHeight = Math.max(1, stage.clientHeight - insets.top - insets.bottom) / Math.max(1, stage.clientHeight);
     var view = direction || camera.position.clone().sub(controls.target).normalize();
     if (!view.lengthSq()) view = new window.THREE.Vector3(0, 0, 1);
     view = view.clone().normalize();
@@ -311,14 +381,17 @@
       halfHeight = Math.max(halfHeight, Math.abs(point.dot(up)));
       halfDepth = Math.max(halfDepth, Math.abs(point.dot(view)));
     }
-    var distance = (Math.max(halfWidth / Math.tan(halfHorizontal),
-      halfHeight / Math.tan(halfVertical)) + halfDepth) * 1.12;
+    var distance = (Math.max(halfWidth / (Math.tan(halfHorizontal) * safeWidth),
+      halfHeight / (Math.tan(halfVertical) * safeHeight)) + halfDepth) * 1.12;
+    var target = sphere.center.clone();
+    target.addScaledVector(right, -(insets.left - insets.right) / Math.max(1, stage.clientWidth) * distance * Math.tan(halfHorizontal));
+    target.addScaledVector(up, -(insets.bottom - insets.top) / Math.max(1, stage.clientHeight) * distance * Math.tan(halfVertical));
     camera.near = Math.max(0.001, radius / 1000);
     camera.far = Math.max(100, radius * 100);
     camera.up.set(0, 1, 0);
-    camera.position.copy(sphere.center).addScaledVector(view, distance);
+    camera.position.copy(target).addScaledVector(view, distance);
     camera.updateProjectionMatrix();
-    controls.target.copy(sphere.center);
+    controls.target.copy(target);
     controls.minDistance = radius * 0.12;
     controls.maxDistance = radius * 30;
     controls.update();
@@ -418,6 +491,13 @@
     node("viewer-material-status").textContent = !state ? "" : t(!state.recognizedMaterials ?
       "SIFAS material data is unavailable. Basic textures are shown." : node("viewer-shader").value === "basic" ?
       "Basic textures are shown." : "Uses the file's SIFAS material settings. In-game appearance may differ.");
+    var failures = state && state.enabled && state.recognizedMaterials ? (state.limitations || []).filter(function (message) {
+      return message === "A shader texture could not be loaded." || message === "Auxiliary shader texture loading is unavailable.";
+    }) : [];
+    materialFailure = failures.length > 0;
+    var warning = node("viewer-material-warning");
+    if (warning) { warning.hidden = !materialFailure; warning.textContent = failures.map(t).join("\n"); }
+    refreshInfoVisibility();
   }
 
   function buildParts() {
@@ -496,6 +576,10 @@
     }).filter(function (message, index, values) { return message && values.indexOf(message) === index; });
     box.hidden = !messages.length;
     box.textContent = messages.join("\n");
+    seriousWarning = !!messages.length && (warnings || []).some(function (warning) {
+      return typeof warning === "string" || warning && /missing|unavailable|failed|invalid|unsupported|partial|incomplete|limit|timeout|unmatched|conflict/i.test(warning.code || "");
+    });
+    refreshInfoVisibility();
   }
 
   function showFaceStatus() {
@@ -591,6 +675,7 @@
       metadata = prepared;
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
+      node("tab-viewer").classList.add("viewer-has-model");
       scene.add(model);
       materialController = pendingMaterials;
       pendingMaterials = null;
@@ -622,12 +707,182 @@
     }
   }
 
+  function focusElement(element) {
+    if (!element || !element.focus || !element.isConnected) return;
+    try { element.focus({ preventScroll: true }); } catch (_) { element.focus(); }
+  }
+
+  function isolateViewer(value) {
+    if (!value) {
+      outsideFocus.forEach(function (record) {
+        if (record.aria === null) record.element.removeAttribute("aria-hidden");
+        else record.element.setAttribute("aria-hidden", record.aria);
+        if (record.inert !== null) record.element.inert = record.inert;
+        record.tabs.forEach(function (entry) {
+          if (entry.value === null) entry.element.removeAttribute("tabindex");
+          else entry.element.setAttribute("tabindex", entry.value);
+        });
+      });
+      outsideFocus = []; return;
+    }
+    var current = node("tab-viewer");
+    while (current && current.parentElement) {
+      Array.prototype.forEach.call(current.parentElement.children, function (element) {
+        if (element === current || /^(SCRIPT|STYLE|LINK)$/.test(element.tagName)) return;
+        var record = { element: element, aria: element.getAttribute("aria-hidden"), inert: "inert" in element ? element.inert : null, tabs: [] };
+        var candidates = Array.prototype.slice.call(element.querySelectorAll("a[href],button,input,select,textarea,[tabindex],[contenteditable]"));
+        if (element.matches("a[href],button,input,select,textarea,[tabindex],[contenteditable]")) candidates.unshift(element);
+        candidates.forEach(function (item) { record.tabs.push({ element: item, value: item.getAttribute("tabindex") }); item.setAttribute("tabindex", "-1"); });
+        element.setAttribute("aria-hidden", "true");
+        if (record.inert !== null) element.inert = true;
+        outsideFocus.push(record);
+      });
+      if (current.parentElement === document.body) break;
+      current = current.parentElement;
+    }
+  }
+
   function setExpanded(value) {
+    value = !!value;
+    if (value && (destroyed || !active)) return;
+    if (expanded === value) { scheduleResize(); return; }
+    if (value) {
+      lastFullscreenExit = 0;
+      expandedSnapshot = { x: window.scrollX, y: window.scrollY, focus: document.activeElement };
+      isolateViewer(true);
+    }
     expanded = value;
     node("tab-viewer").classList.toggle("viewer-expanded", value);
-    node("viewer-expand").textContent = t(value ? "Close expanded view" : "Expand view");
+    var label = t(value ? "Close expanded view" : "Expand view");
+    node("viewer-expand").textContent = label;
+    node("viewer-expand").title = label;
+    node("viewer-expand").setAttribute("aria-label", label);
+    node("viewer-expand").setAttribute("aria-pressed", String(value));
     document.body.classList.toggle("viewer-is-expanded", value);
     resize();
+    if (value) focusElement(node("viewer-expand"));
+    else {
+      var snapshot = expandedSnapshot;
+      expandedSnapshot = null;
+      isolateViewer(false);
+      if (snapshot) window.requestAnimationFrame(function () {
+        if (expanded) return;
+        if (!destroyed && active) focusElement(snapshot.focus);
+        window.scrollTo(snapshot.x, snapshot.y);
+        if (!destroyed) scheduleResize();
+      });
+    }
+  }
+
+  function browserFullscreenElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  function nativeFullscreenBridge() {
+    var bridge = window.ElichikaViewerFullscreen;
+    return bridge && typeof bridge.postMessage === "function" ? bridge : null;
+  }
+  function refreshFullscreenButton() {
+    var button = node("viewer-fullscreen");
+    if (!button) return;
+    var on = fullscreenWanted || fullscreenMode !== "none";
+    var label = t(on ? "Exit full screen" : "Full screen");
+    button.textContent = label; button.title = label; button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(on));
+    node("tab-viewer").classList.toggle("viewer-fullscreen", fullscreenMode !== "none");
+  }
+  function setLayoutNotice(message) {
+    layoutNotice = message || "";
+    var status = node("viewer-layout-status");
+    if (status) { status.hidden = !layoutNotice; status.textContent = layoutNotice ? t(layoutNotice) : ""; }
+    refreshInfoVisibility();
+  }
+  function clearFullscreenTimer() {
+    if (fullscreenTimer) window.clearTimeout(fullscreenTimer);
+    fullscreenTimer = 0;
+  }
+  function finishFullscreenExit(forceCollapse) {
+    clearFullscreenTimer();
+    var snapshot = fullscreenSnapshot;
+    fullscreenSnapshot = null; fullscreenWanted = false; fullscreenPending = ""; fullscreenMode = "none";
+    lastFullscreenExit = Date.now();
+    refreshFullscreenButton();
+    setExpanded(forceCollapse ? false : snapshot ? snapshot.expanded : expanded);
+    if (snapshot && active && !destroyed && !document.hidden) focusElement(snapshot.focus);
+    scheduleResize();
+  }
+  function fullscreenFailed() {
+    if (!fullscreenWanted || destroyed || !active) return;
+    clearFullscreenTimer(); fullscreenWanted = false; fullscreenPending = ""; fullscreenMode = "none"; fullscreenSnapshot = null;
+    refreshFullscreenButton();
+    setLayoutNotice("Full screen is unavailable here. Expanded view is open.");
+    scheduleResize();
+  }
+  function acceptFullscreen(mode) {
+    if (!fullscreenWanted || !active || destroyed) { exitFullscreen(!active || destroyed); return; }
+    clearFullscreenTimer(); fullscreenPending = ""; fullscreenMode = mode;
+    refreshFullscreenButton(); setLayoutNotice(""); scheduleResize();
+  }
+  function enterFullscreen() {
+    if (!active || destroyed) return;
+    if (fullscreenWanted || fullscreenMode !== "none") { exitFullscreen(false); return; }
+    fullscreenSnapshot = { expanded: expanded, focus: document.activeElement };
+    lastFullscreenExit = 0;
+    fullscreenWanted = true; fullscreenPending = "enter";
+    setLayoutNotice(""); setExpanded(true); refreshFullscreenButton();
+    focusElement(node("viewer-fullscreen"));
+    fullscreenTimer = window.setTimeout(fullscreenFailed, 4000);
+    var bridge = nativeFullscreenBridge();
+    if (bridge) {
+      try { bridge.postMessage("enter"); } catch (_) { fullscreenFailed(); }
+      return;
+    }
+    var viewer = node("tab-viewer"), request = viewer.requestFullscreen || viewer.webkitRequestFullscreen;
+    if (!request) { fullscreenFailed(); return; }
+    try {
+      var result = request.call(viewer, { navigationUI: "hide" });
+      if (result && result.then) result.then(function () {
+        if (browserFullscreenElement() === viewer) acceptFullscreen("browser");
+      }, fullscreenFailed);
+    } catch (_) { fullscreenFailed(); }
+  }
+  function exitFullscreen(forceCollapse) {
+    fullscreenWanted = false;
+    if (fullscreenSnapshot && forceCollapse) fullscreenSnapshot.expanded = false;
+    clearFullscreenTimer();
+    var bridge = nativeFullscreenBridge();
+    if (bridge && (fullscreenMode === "native" || fullscreenPending)) {
+      fullscreenPending = "exit";
+      try { bridge.postMessage("exit"); } catch (_) { /* Native lifecycle also restores chrome on navigation. */ }
+    }
+    var element = browserFullscreenElement();
+    if (element === node("tab-viewer")) {
+      var exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) try { var result = exit.call(document); if (result && result.catch) result.catch(function () {}); } catch (_) {}
+    }
+    // Restore the web layout immediately. A delayed acknowledgement may only
+    // confirm exit; it must never bring back an inactive/disposed viewer.
+    finishFullscreenExit(!!forceCollapse);
+  }
+  function fullscreenChanged() {
+    if (browserFullscreenElement() === node("tab-viewer")) acceptFullscreen("browser");
+    else if (fullscreenMode === "browser" || fullscreenPending === "exit") finishFullscreenExit(false);
+  }
+  function nativeFullscreenChanged(event) {
+    var detail = event && event.detail;
+    if (!detail || typeof detail.active !== "boolean") return;
+    // Page-finished broadcasts describe initialization, not command settlement.
+    // A delayed initial false must not cancel a newer pending/accepted entry.
+    if (!detail.active && detail.settled === false) return;
+    if (detail.active) {
+      if (!fullscreenWanted || destroyed || !active) {
+        var bridge = nativeFullscreenBridge();
+        if (bridge) try { bridge.postMessage("exit"); } catch (_) {}
+        return;
+      }
+      acceptFullscreen("native");
+    } else if (fullscreenMode === "native" || fullscreenPending === "enter" || fullscreenPending === "exit" || document.hidden) finishFullscreenExit(false);
+  }
+  function listenLayout(target, event, handler) {
+    target.addEventListener(event, handler);
+    layoutListeners.push(function () { target.removeEventListener(event, handler); });
   }
 
   function mount(options) {
@@ -652,7 +907,13 @@
       refreshQualityStatus();
     });
     node("viewer-fit").addEventListener("click", function () { fitModel(); });
-    node("viewer-expand").addEventListener("click", function () { setExpanded(!expanded); });
+    node("viewer-expand").addEventListener("click", function () {
+      if (expanded && (fullscreenWanted || fullscreenMode !== "none")) exitFullscreen(true);
+      else setExpanded(!expanded);
+    });
+    if (node("viewer-fullscreen")) node("viewer-fullscreen").addEventListener("click", enterFullscreen);
+    var info = node("viewer-info"), infoSummary = info && info.querySelector("summary");
+    if (infoSummary) infoSummary.addEventListener("click", function () { infoAutoOpened = false; });
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
       button.addEventListener("click", function () { setView(button.dataset.viewerView); });
     });
@@ -664,14 +925,30 @@
       node("viewer-fov-value").textContent = this.value + "°";
       if (camera) { camera.fov = Number(this.value); camera.updateProjectionMatrix(); requestRender(); }
     });
-    window.addEventListener("resize", resize);
-    document.addEventListener("visibilitychange", function () { if (document.hidden) pauseRender(); else requestRender(); });
-    document.addEventListener("keydown", function (event) { if (event.key === "Escape" && expanded) setExpanded(false); });
+    listenLayout(window, "resize", scheduleResize);
+    listenLayout(window, "orientationchange", scheduleResize);
+    listenLayout(window, "scroll", scheduleResize);
+    if (window.visualViewport) {
+      listenLayout(window.visualViewport, "resize", scheduleResize);
+      listenLayout(window.visualViewport, "scroll", scheduleResize);
+    }
+    listenLayout(document, "fullscreenchange", fullscreenChanged);
+    listenLayout(document, "webkitfullscreenchange", fullscreenChanged);
+    listenLayout(window, "elichika-native-fullscreen", nativeFullscreenChanged);
+    listenLayout(document, "visibilitychange", function () { if (document.hidden) pauseRender(); else { scheduleResize(); requestRender(); } });
+    listenLayout(document, "keydown", function (event) {
+      if (event.key !== "Escape") return;
+      if (fullscreenWanted || fullscreenMode !== "none") { event.preventDefault(); exitFullscreen(false); }
+      else if (expanded && Date.now() - lastFullscreenExit > 200) { event.preventDefault(); setExpanded(false); }
+    });
     if (window.ResizeObserver) {
-      resizeObserver = new window.ResizeObserver(resize);
+      resizeObserver = new window.ResizeObserver(scheduleResize);
       resizeObserver.observe(node("viewer-stage"));
       var header = document.querySelector("body > header");
       if (header) resizeObserver.observe(header);
+      var files = node("tab-viewer").querySelector(".viewer-files");
+      if (files) resizeObserver.observe(files);
+      node("viewer-stage").querySelectorAll("[data-viewer-hud-edge]").forEach(function (hud) { resizeObserver.observe(hud); });
     }
     window.addEventListener("pagehide", function (event) { if (!event.persisted) dispose(); });
     updateLanguage();
@@ -686,7 +963,12 @@
     if (!mounted) return;
     renderFiles();
     refreshStatus();
-    node("viewer-expand").textContent = t(expanded ? "Close expanded view" : "Expand view");
+    var expandLabel = t(expanded ? "Close expanded view" : "Expand view");
+    node("viewer-expand").textContent = expandLabel;
+    node("viewer-expand").title = expandLabel; node("viewer-expand").setAttribute("aria-label", expandLabel);
+    refreshFullscreenButton();
+    var notice = node("viewer-layout-status");
+    if (notice) notice.textContent = layoutNotice ? t(layoutNotice) : "";
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
     if (metadata) showWarnings(metadata.warnings);
     showFaceStatus();
@@ -694,11 +976,18 @@
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
+    scheduleResize();
   }
 
   function setVisible(value) {
+    if (destroyed) return;
     active = !!value;
-    if (!active) { pauseRender(); if (expanded) setExpanded(false); return; }
+    if (!active) {
+      pauseRender();
+      if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
+      if (expanded) setExpanded(false);
+      return;
+    }
     window.requestAnimationFrame(function () { resize(); requestRender(); });
   }
 
@@ -718,11 +1007,19 @@
   }
 
   function dispose() {
+    if (destroyed) return;
+    active = false;
+    if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
+    if (expanded) setExpanded(false);
     destroyed = true;
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
     pauseRender();
+    if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
+    clearFullscreenTimer();
+    layoutListeners.forEach(function (remove) { remove(); }); layoutListeners = [];
     if (resizeObserver) resizeObserver.disconnect();
     if (controls) controls.dispose();
     disposePreviewControllers();
@@ -746,6 +1043,8 @@
         renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
         quality: qualityController ? qualityController.getState() : null,
+        layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
+          viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
         rig: rigController ? rigController.getState() : null,
         materials: materialController && materialController.getState ? materialController.getState() : null };

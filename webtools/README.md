@@ -129,7 +129,17 @@ repacking is unnecessary and the source files remain unchanged.
 
 - Drag to rotate, pinch/scroll to zoom, or use two fingers to pan.
 - **Front**, **Back**, side views and **Fit model** reset the camera.
-- **Expand view** gives the model more room on a phone.
+- Pose, quality and camera controls sit along the viewport edges. The centre
+  remains available for rotating, zooming and moving the model.
+- The regular tablet layout keeps the model beside a bounded editing panel;
+  taller viewports give a standing character more visible space. **Expand view**
+  fills the page with the viewport. **Full screen** also hides the Android app
+  chrome and system bars, or uses browser fullscreen when available. Exit with
+  the viewport control, Escape or Android Back. Changing view size preserves
+  the current pose, edits and camera.
+- **Breast size**, **Skirt scale** and **Common adjustments** can be collapsed
+  independently. Collapsing a section keeps its selected profile, selected bone,
+  saved-setting choices and edited values.
 - **Basic pose** shows the model's authored pose; **Posed view** switches to the
   verified original suit-preview pose. Both buttons pause at the first frame
   and preserve body adjustments, saved-setting choices and individual edits.
@@ -179,6 +189,17 @@ repacking is unnecessary and the source files remain unchanged.
   the file value. Reset clears those pins. Static editing fields do not animate;
   separate read-only rows show the current pose when it differs. Local X/Y/Z
   do not necessarily correspond to model width, height and depth.
+- **Child inverse compensation** is an optional, per-bone switch in advanced
+  editing. It cancels the extra inherited scale at the selected descendant
+  frames, following Mesh Baker's full-frame compensation; it does not undo
+  imported NodeScaling or cancel the parent's translation and rotation. The
+  active baseline supplies the ratio for absolute scale edits. Targets can be
+  immediate children or the available spine boundaries, with the actual target
+  list and any unavailable reason shown beside the control. Child edits remain
+  independent. Disabling the switch restores ordinary hierarchy propagation
+  without deleting manual values. Undoing the selected bone, or resetting the
+  preview, clears the corresponding compensation settings. Automatic affine
+  corrections are reported separately from the file and manual TRS values.
 - **Reset preview adjustments** restores the verified suit-preview first frame
   when compatible, or otherwise the saved pose, and resets the controls and saved
   settings and part visibility to their loaded defaults. These

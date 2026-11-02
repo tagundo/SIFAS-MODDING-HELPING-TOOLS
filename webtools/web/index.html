@@ -38,44 +38,60 @@
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
             <button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
-            <button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
           </div>
-          <div class="viewer-option-row">
-            <label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label>
-          </div>
-          <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Missing face parts are found locally or downloaded automatically.">Missing face parts are found locally or downloaded automatically.</p>
-          <p class="viewer-render-note" data-i18n="The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.">The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.</p>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
+          <details id="viewer-file-options" class="viewer-file-options">
+            <summary><span aria-hidden="true">⚙</span><span class="sr-only" data-i18n="Model options">Model options</span></summary>
+            <div class="viewer-file-options-panel">
+              <div class="viewer-option-row"><label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label></div>
+              <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Missing face parts are found locally or downloaded automatically.">Missing face parts are found locally or downloaded automatically.</p>
+              <p class="viewer-render-note" data-i18n="The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.">The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.</p>
+            </div>
+          </details>
         </aside>
         <div class="viewer-main">
           <div class="viewer-inspect-layout">
           <div class="viewer-model-panel">
-          <div class="viewer-heading">
-            <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
-            <button id="viewer-expand" type="button" data-i18n="Expand view">Expand view</button>
-          </div>
-          <p id="viewer-face-status" class="viewer-status" role="status" aria-live="polite" hidden></p>
-          <p id="viewer-warning" class="viewer-warning" role="status" hidden></p>
           <div id="viewer-stage" class="viewer-stage" aria-label="3D model">
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
-            <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span></div>
+            <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span><button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button></div>
+            <div id="viewer-stage-tools-top" class="viewer-stage-tools viewer-stage-tools-top" data-viewer-hud-edge="top">
+              <div class="viewer-primary-tools">
+                <div id="viewer-pose-actions" class="viewer-pose-actions viewer-toolbar-segment" role="group" aria-label="Pose">
+                  <button id="viewer-pose-basic" type="button" aria-pressed="false" data-i18n="Basic pose" disabled>Basic pose</button>
+                  <button id="viewer-pose-preview" type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
+                </div>
+                <label class="viewer-quality-choice viewer-toolbar-segment"><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
+              </div>
+              <div class="viewer-screen-actions viewer-toolbar-segment">
+                <button id="viewer-expand" class="viewer-icon-button" type="button" data-i18n="Expand view">Expand view</button>
+                <button id="viewer-fullscreen" class="viewer-icon-button" type="button" data-i18n="Full screen">Full screen</button>
+              </div>
+            </div>
+            <div id="viewer-stage-tools-bottom" class="viewer-stage-tools viewer-stage-tools-bottom" data-viewer-hud-edge="bottom">
+              <div class="viewer-camera-actions viewer-toolbar-segment" role="group" aria-label="Camera">
+                <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
+                <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
+                <button type="button" data-viewer-view="left" data-i18n="Left side">Left side</button>
+                <button type="button" data-viewer-view="right" data-i18n="Right side">Right side</button>
+                <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
+              </div>
+              <details id="viewer-info" class="viewer-info viewer-toolbar-segment">
+                <summary><span aria-hidden="true">i</span><span class="sr-only" data-i18n="Model information">Model information</span></summary>
+                <div class="viewer-info-panel">
+                  <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
+                  <p id="viewer-face-status" class="viewer-status" role="status" aria-live="polite" hidden></p>
+                  <p id="viewer-warning" class="viewer-warning" role="status" hidden></p>
+                  <p id="viewer-material-warning" class="viewer-warning" role="status" hidden></p>
+                  <p id="viewer-layout-status" class="viewer-status" role="status" aria-live="polite" hidden></p>
+                  <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
+                  <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
+                  <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
+                  <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
+                </div>
+              </details>
+            </div>
           </div>
-          <div id="viewer-pose-actions" class="viewer-pose-actions" role="group" aria-label="Pose">
-            <button id="viewer-pose-basic" type="button" aria-pressed="false" data-i18n="Basic pose" disabled>Basic pose</button>
-            <button id="viewer-pose-preview" type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
-          </div>
-          <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
-          <label class="viewer-quality-choice"><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
-          <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
-          <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
-          <div class="viewer-camera-actions" role="group" aria-label="Camera">
-            <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
-            <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
-            <button type="button" data-viewer-view="left" data-i18n="Left side">Left side</button>
-            <button type="button" data-viewer-view="right" data-i18n="Right side">Right side</button>
-            <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
-          </div>
-          <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
           </div>
           <div class="viewer-control-panel">
           <details id="viewer-adjustments" class="viewer-adjustments" open>
@@ -90,8 +106,9 @@
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
               <div class="viewer-body-controls">
-                <div class="viewer-body-card viewer-profile-card" aria-labelledby="viewer-breast-title">
-                  <h4 id="viewer-breast-title" data-i18n="Breast size">Breast size</h4>
+                <details id="viewer-breast-card" class="viewer-body-card viewer-profile-card" open>
+                  <summary><span id="viewer-breast-title" data-i18n="Breast size">Breast size</span></summary>
+                  <div class="viewer-card-content">
                   <p class="viewer-control-note" data-i18n="XYZ scale factors">XYZ scale factors</p>
                   <dl class="viewer-profile-values viewer-actual-values">
                     <div><dt data-i18n="File values">File values</dt><dd id="viewer-breast-file-values" class="viewer-factor-values">—</dd></div>
@@ -105,9 +122,11 @@
                   </dl>
                   <button id="viewer-breast-reset" type="button" data-i18n="Undo breast scale edits" disabled>Undo breast scale edits</button>
                   <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
-                </div>
-                <div class="viewer-body-card viewer-scale-card" aria-labelledby="viewer-skirt-title">
-                  <h4 id="viewer-skirt-title" data-i18n="Skirt length and flare">Skirt length and flare</h4>
+                  </div>
+                </details>
+                <details id="viewer-skirt-card" class="viewer-body-card viewer-scale-card" open>
+                  <summary><span id="viewer-skirt-title" data-i18n="Skirt length and flare">Skirt length and flare</span></summary>
+                  <div class="viewer-card-content">
                   <dl class="viewer-profile-values viewer-actual-values">
                     <div><dt data-i18n="File values">File values</dt><dd id="viewer-skirt-file" class="viewer-factor-values">—</dd></div>
                     <div><dt data-i18n="Current values">Current values</dt><dd><output id="viewer-skirt-value" class="viewer-factor-values">—</output></dd></div>
@@ -120,11 +139,14 @@
                     <summary data-i18n="Per-bone values">Per-bone values</summary>
                     <table class="viewer-value-table"><caption data-i18n="XYZ scale factors">XYZ scale factors</caption><thead><tr><th scope="col" data-i18n="Bone">Bone</th><th scope="col" data-i18n="File values">File values</th><th scope="col" data-i18n="Current values">Current values</th></tr></thead><tbody id="viewer-skirt-nodes"></tbody></table>
                   </details>
-                </div>
+                  </div>
+                </details>
                 <details id="viewer-height-card" class="viewer-body-card viewer-source-card">
                   <summary><span id="viewer-height-title" data-i18n="Saved heightScale (reference only)">Saved heightScale (reference only)</span><output id="viewer-height-value" data-i18n="Read-only">Read-only</output></summary>
+                  <div class="viewer-card-content">
                   <p id="viewer-height-source" class="viewer-source-value" hidden></p>
                   <p id="viewer-height-note" class="viewer-control-note" data-i18n="This saved parameter is not a measurement in centimetres or the current model height.">This saved parameter is not a measurement in centimetres or the current model height.</p>
+                  </div>
                 </details>
               </div>
               <div id="viewer-body-presets" class="viewer-preset-list" role="group" aria-labelledby="viewer-body-title"></div>
@@ -153,10 +175,10 @@
               </details>
             </section>
             <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
-            <section class="viewer-control-section viewer-node-quick" aria-labelledby="viewer-node-quick-title">
-              <h3 id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</h3>
+            <details id="viewer-common-adjustments" class="viewer-control-section viewer-node-quick" open>
+              <summary><span id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</span></summary>
               <div id="viewer-node-shortcuts" class="viewer-chip-list" role="group" aria-labelledby="viewer-node-quick-title"></div>
-            </section>
+            </details>
             <details id="viewer-node-editor" class="viewer-node-editor">
               <summary id="viewer-node-editor-title" data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
               <div class="viewer-node-browser">
@@ -169,6 +191,12 @@
               <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
               <p class="viewer-render-note" data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</p>
               <p class="viewer-render-note" data-i18n="Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.">Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.</p>
+              <div id="viewer-bone-compensation" class="viewer-bone-compensation">
+                <label><input id="bone-compensate-children" type="checkbox" disabled><span data-i18n="Compensate child bone scale">Compensate child bone scale</span></label>
+                <label for="bone-compensate-target" data-i18n="Compensation targets">Compensation targets</label>
+                <select id="bone-compensate-target" disabled><option value="auto" data-i18n="Immediate child bones (auto)">Immediate child bones (auto)</option><option value="spine2">Spine2</option><option value="spine1">Spine1</option><option value="both">Spine1 + Spine2</option></select>
+                <p id="bone-compensation-status" role="status" aria-live="polite"></p>
+              </div>
               <div id="viewer-node-fields"></div>
               <button id="viewer-node-reset" type="button" data-i18n="Undo manual bone edits" disabled>Undo manual bone edits</button>
             </details>

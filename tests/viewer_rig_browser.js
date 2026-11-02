@@ -279,7 +279,7 @@ if(require.main===module)(async()=>{
     nearVector((await state()).rig.bones.find(b=>b.node==='2').scale,[1.3,.95,.9],'Typing a file-equal value while a profile differs still pins the requested endpoint');
     assert.deepEqual((await state()).rig.nodeAdjustments['2'].scale,[1.3,null,null]);
     await page.locator('#viewer-breast-reset').click();
-    assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());assert(await page.locator('#viewer-pose-help').isVisible());
+    assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());await page.locator('#viewer-info').evaluate(element=>element.open=true);assert(await page.locator('#viewer-pose-help').isVisible());await page.locator('#viewer-info').evaluate(element=>element.open=false);
     const probe=await page.evaluate(()=>ModelViewer.renderProbe());assert(probe.ready&&probe.nonBackgroundSamples>0&&probe.glError===0);
     await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
@@ -486,7 +486,7 @@ if(require.main===module)(async()=>{
     await page.screenshot({path:path.join(evidence,'synthetic-pose-buttons-ui.png'),fullPage:true});
     const inspectorLayouts=[];
     const twoFrames=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-    for(const viewport of [{width:320,height:900},{width:1024,height:768},{width:1280,height:800},{width:1440,height:900}]){
+    for(const viewport of [{width:320,height:900},{width:768,height:640},{width:853,height:590},{width:1024,height:768},{width:1280,height:800},{width:1440,height:900}]){
       await page.setViewportSize(viewport);
       if(await page.locator('#tab-viewer').evaluate(element=>element.classList.contains('viewer-expanded')))await page.locator('#viewer-expand').click();
       await page.evaluate(()=>{window.scrollTo(0,0);document.querySelector('.viewer-control-panel').scrollTop=0;});await twoFrames();
@@ -495,17 +495,18 @@ if(require.main===module)(async()=>{
         return{stage:rect('#viewer-stage'),controls:rect('.viewer-control-panel'),cameraActions:rect('.viewer-camera-actions'),camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
       });
       assert.equal(normal.overflow,false,'The normal inspector must fit the viewport');
-      if(viewport.width>=900){
+      if(viewport.width>=760){
         assert(normal.stage.right<=normal.controls.x+.5,'Wide normal mode places the model to the LEFT of adjustments');
         assert(normal.cameraActions.x>=normal.stage.x-.5&&normal.cameraActions.right<=normal.stage.right+.5,'View/camera controls remain with the left model');
-        assert(normal.stage.width>=240&&normal.controls.width>=300,'Wide tablet columns must remain usable');
+        assert(normal.stage.width>=300&&normal.controls.width>=280&&normal.controls.width<=380,'Tablet columns keep a bounded usable editor and a visible model');
       }
       await page.locator('#viewer-expand').click();await twoFrames();
       const expanded=await page.evaluate(()=>{
         const stage=document.getElementById('viewer-stage').getBoundingClientRect(),controls=document.querySelector('.viewer-control-panel').getBoundingClientRect();
-        return{stage:{width:stage.width,height:stage.height,bottom:stage.bottom},controls:{y:controls.y},camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
+        return{stage:{width:stage.width,height:stage.height,bottom:stage.bottom},controls:{y:controls.y,displayed:document.querySelector('.viewer-control-panel').getClientRects().length>0},camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
       });
-      assert.equal(expanded.overflow,false);assert(expanded.controls.y>=expanded.stage.bottom-.5,'Expanded mode remains an unsplit vertical inspector');
+      assert.equal(expanded.overflow,false);assert.equal(expanded.controls.displayed,false,'Expanded mode reserves the viewport for the model');
+      assert(expanded.stage.height>=viewport.height*.88,'Expanded view fills screen height');
       assert(expanded.stage.width>=normal.stage.width-.5&&expanded.stage.height>=normal.stage.height-.5,'Expanded mode increases the model viewport');
       assert.deepEqual(expanded.camera,normal.camera,'Changing the layout must not reset the model camera');
       await page.locator('#viewer-expand').click();await twoFrames();

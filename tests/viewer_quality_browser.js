@@ -225,8 +225,10 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
       if (forceNoAA) {
         assert.equal(hq.contextSamples, 0);
         assert.equal(high.quality.mode, 'native-resolution');
+        await page.locator('#viewer-info').evaluate(element => { element.open = true; });
         assert(await page.locator('#viewer-quality-status').isVisible());
         assert((await page.locator('#viewer-quality-status').innerText()).includes('edge smoothing is unavailable'));
+        await page.locator('#viewer-info').evaluate(element => { element.open = false; });
       }
     }
     const uploaded = gpu.uploads;
