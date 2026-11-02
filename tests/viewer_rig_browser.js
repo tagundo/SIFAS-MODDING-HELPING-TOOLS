@@ -459,7 +459,10 @@ if(require.main===module)(async()=>{
     const profileOptionIds=await page.locator('#viewer-breast-preset option').evaluateAll(options=>options.map(option=>option.value));assert.equal(profileOptionIds[0],'loaded');assert.deepEqual(profileOptionIds.slice().sort(),['loaded',...sourceProfiles.map(value=>value.id)].sort(),'Loaded file shape is independent from all16 unique source-tool profiles');
     const loadedProfileState=await state();assert.equal(loadedProfileState.rig.breastProfile.selected,'loaded');assert.equal(loadedProfileState.rig.breastProfile.loadedProfile,null);
     nearVector(loadedProfileState.rig.breastProfile.targets[0].loadedScale,[1.3,.9,1],'Loaded profile preserves custom saved XYZ');
-    assert((await page.locator('#viewer-height-source').innerText()).includes('0.97'),'Saved heightScale remains read-only source metadata');
+    assert.equal(await page.locator('#viewer-height-card').evaluate(card=>card.open),false,'Height reference starts collapsed after the active controls');
+    await page.locator('#viewer-height-card').evaluate(card=>card.open=true);
+    assert((await page.locator('#viewer-height-source').innerText()).includes('0.97'),'Opening the height reference reveals the saved metadata');
+    await page.locator('#viewer-height-card').evaluate(card=>card.open=false);
     await inputNode(6,'rotation','Z',45);await inputNode(7,'rotation','X',30);await slider('viewer-skirt',120);
     const profileInvariant={Move:await world('Move'),Head:await world('Head'),Neck_Hair:await world('Neck_Hair')},profileResults=[];
     for(const expected of sourceProfiles){
