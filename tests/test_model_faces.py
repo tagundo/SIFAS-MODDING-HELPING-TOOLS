@@ -397,6 +397,31 @@ class FaceTests(unittest.TestCase):
         fetch.assert_not_called()
 
     @EXTRACTOR_REQUIRED
+    def test_library_scan_expiry_preserves_time_for_automatic_cdn_download(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        self.context["allow_download"] = True
+        plan = self.plan()
+        original_deadline = plan.deadline
+
+        def expired_local_search(current):
+            self.assertLess(current.deadline, original_deadline)
+            self.assertLessEqual(current.deadline - time.monotonic(), 8.01)
+            raise faces.FaceUnavailable("Local search reached its separate budget")
+
+        def downloaded(*args, **kwargs):
+            self.assertEqual(plan.deadline, original_deadline)
+            return self.encrypted(donor, descriptor)
+
+        with patch.object(faces.FacePlan, "_local", expired_local_search), \
+                patch.object(faces, "_download", side_effect=downloaded) as fetch:
+            result = plan.resolve()
+        self.assertEqual(plan.deadline, original_deadline)
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(len(result), 1)
+        fetch.assert_called_once()
+
+    @EXTRACTOR_REQUIRED
     def test_incomplete_gl_catalog_does_not_hide_valid_jp_catalog(self):
         donor = self.donor()
         self.databases(donor)

@@ -798,9 +798,19 @@ class FacePlan:
                 except Exception:
                     pending.append(descriptor)
             if self.needed:
-                for path in self._local():
-                    if self._accept(path):
-                        break
+                original_deadline = self.deadline
+                if pending and self.context.get("allow_download", True):
+                    # Leave time to obtain a known original when a large local
+                    # collection contains no usable same-character donor.
+                    self.deadline = min(self.deadline, time.monotonic() + 8)
+                try:
+                    for path in self._local():
+                        if self._accept(path):
+                            break
+                except Exception:
+                    pass
+                finally:
+                    self.deadline = original_deadline
             if self.needed:
                 for descriptor in pending:
                     _check(self.deadline)
