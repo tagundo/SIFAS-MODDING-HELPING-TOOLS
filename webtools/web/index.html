@@ -58,6 +58,11 @@
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
             <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span></div>
           </div>
+          <div id="viewer-pose-actions" class="viewer-pose-actions" role="group" aria-label="Pose">
+            <button id="viewer-pose-basic" type="button" aria-pressed="false" data-i18n="Basic pose" disabled>Basic pose</button>
+            <button id="viewer-pose-preview" type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
+          </div>
+          <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
           <div class="viewer-camera-actions" role="group" aria-label="Camera">
             <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
             <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
@@ -80,9 +85,13 @@
               <label><span data-i18n="Breast size">Breast size</span><input id="viewer-breast" type="range" min="50" max="150" step="1" value="100" disabled><output id="viewer-breast-value">100%</output><span id="viewer-breast-note" class="viewer-control-note"></span></label>
             </div>
             <p class="viewer-render-note" data-i18n="100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.">100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.</p>
-            <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Use saved node settings">Use saved node settings</span></label>
-            <p class="viewer-render-note" data-i18n="Uses verified scale and position values from the file. Game height normalization is not applied.">Uses verified scale and position values from the file. Game height normalization is not applied.</p>
+            <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply saved body and outfit settings">Apply saved body and outfit settings</span></label>
+            <p class="viewer-render-note" data-i18n="Uses verified size, position and rotation settings from the file. Game height normalization is not applied.">Uses verified size, position and rotation settings from the file. Game height normalization is not applied.</p>
             <p id="viewer-saved-status" class="viewer-render-note" role="status"></p>
+            <details id="viewer-saved-parts" class="viewer-saved-parts" hidden>
+              <summary data-i18n="Parts in saved settings">Parts in saved settings</summary>
+              <div id="viewer-saved-part-list"></div>
+            </details>
             <div class="viewer-expression-row">
               <label><span data-i18n="Expression channel">Expression channel</span><select id="viewer-expression" disabled></select></label>
               <label><span data-i18n="Expression strength">Expression strength</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><output id="viewer-expression-output">0%</output></label>

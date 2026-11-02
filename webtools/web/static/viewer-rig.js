@@ -37,8 +37,11 @@
     var rigEditable = !!(info && info.available === true);
     var useSavedNodes = false;
     var savedOperations = [];
+    var savedParts = [];
+    var savedPartMap = {};
     var savedSkipped = 0;
     var savedConflicts = 0;
+    var savedMetadataWarnings = Array.isArray(scaling.warnings) ? scaling.warnings.slice() : [];
 
     function snapshot(object) {
       return { position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
@@ -118,24 +121,53 @@
     var savedGroups = {};
     (scaling.components || []).forEach(function (component) {
       (component.entries || []).forEach(function (entry) {
-        if (!rigEditable || entry.supported !== true || (entry.kind !== "scale" && entry.kind !== "position") ||
-            entry.application !== "absolute_local_" + entry.kind || !nodes[String(entry.node)] ||
-            !Array.isArray(entry.scaled) || entry.scaled.length !== 3 || !entry.scaled.every(function (value) { return typeof value === "number" && isFinite(value); }) ||
-            (entry.kind === "scale" && entry.scaled.some(function (value) { return Math.abs(value) < 1e-8; }))) {
+        var rotation = entry.kind === "rotation", values = rotation ? entry.scaledQuaternion : entry.scaled;
+        var application = rotation ? "absolute_local_quaternion" : "absolute_local_" + entry.kind;
+        var valid = rigEditable && entry.supported === true && ["scale", "position", "rotation"].indexOf(entry.kind) >= 0 &&
+          entry.application === application && nodes[String(entry.node)] && Array.isArray(values) &&
+          values.length === (rotation ? 4 : 3) && values.every(function (value) { return typeof value === "number" && isFinite(value); });
+        if (valid && rotation) valid = Math.abs(values.reduce(function (sum, value) { return sum + value * value; }, 0) - 1) <= 1e-3;
+        if (!valid || (entry.kind === "scale" && values.some(function (value) { return Math.abs(value) < 1e-8; }))) {
           savedSkipped += 1; return;
         }
         var key = String(entry.node) + ":" + entry.kind;
         if (!savedGroups[key]) savedGroups[key] = [];
-        savedGroups[key].push(entry);
+        savedGroups[key].push({ node: String(entry.node), kind: entry.kind, value: values.slice(), name: entry.name || nodes[String(entry.node)].name });
       });
     });
     Object.keys(savedGroups).forEach(function (key) {
       var values = savedGroups[key], first = values[0];
-      if (values.some(function (entry) { return entry.scaled.some(function (value, axis) { return Math.abs(value - first.scaled[axis]) > 1e-6; }); })) {
+      if (values.some(function (entry) {
+        var direct = Math.max.apply(null, entry.value.map(function (value, axis) { return Math.abs(value - first.value[axis]); }));
+        var antipodal = first.kind === "rotation" ? Math.max.apply(null, entry.value.map(function (value, axis) { return Math.abs(value + first.value[axis]); })) : Infinity;
+        return Math.min(direct, antipodal) > 1e-6;
+      })) {
         savedConflicts += 1; savedSkipped += values.length; return;
       }
-      savedOperations.push({ node: String(first.node), kind: first.kind, value: first.scaled.slice() });
+      savedOperations.push(first);
     });
+    function savedPart(operation) {
+      // Names group labels for people; every actual target/value comes from the
+      // verified metadata above, including each separate parent/child skirt bone.
+      var name = String(operation.name || "").split("/").pop();
+      var groups = [[/^Move$/, "height", "Height"], [/Breast/i, "breast", "Breast size"], [/Skirt/i, "skirt", "Skirt"],
+        [/^Head(?:_|$)/, "head", "Head"], [/Hair/i, "hair", "Hair"], [/Eye/i, "eyes", "Eyes"],
+        [/Spine|Hips|Waist/i, "torso", "Torso"], [/Arm|Shoulder/i, "arms", "Arms"], [/Hand|Finger/i, "hands", "Hands"],
+        [/Thigh|Calf|Leg/i, "legs", "Legs"], [/Foot|Toe/i, "feet", "Feet"]];
+      var group = groups.filter(function (value) { return value[0].test(name); })[0];
+      return { id: group ? group[1] : "node-" + operation.node, label: group ? group[2] : name || "Part" };
+    }
+    savedOperations.forEach(function (operation) {
+      var identity = savedPart(operation), part = savedPartMap[identity.id];
+      if (!part) { part = { id: identity.id, label: identity.label, enabled: true, operations: [], nodes: [], input: null, title: null }; savedParts.push(part); savedPartMap[part.id] = part; }
+      operation.part = part.id; part.operations.push(operation);
+      if (part.nodes.indexOf(operation.node) < 0) part.nodes.push(operation.node);
+    });
+    useSavedNodes = savedOperations.length > 0;
+    element("viewer-saved-nodes").checked = useSavedNodes;
+    function activeSavedOperations() {
+      return useSavedNodes ? savedOperations.filter(function (operation) { return savedPartMap[operation.part].enabled; }) : [];
+    }
 
     function bodyControl(kind) {
       if (!rigEditable) return null;
@@ -159,8 +191,8 @@
       });
     }
     function applyAdjustments() {
-      if (useSavedNodes) savedOperations.forEach(function (operation) {
-        nodes[operation.node][operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
+      activeSavedOperations().forEach(function (operation) {
+        nodes[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
       });
       applyBody();
       Object.keys(adjustments).forEach(function (id) {
@@ -210,6 +242,11 @@
     }
     function refreshAvailability() {
       var enabled = interactive && !disposed;
+      element("viewer-pose-basic").disabled = !enabled;
+      element("viewer-pose-preview").disabled = !enabled || !defaultClip;
+      element("viewer-pose-basic").setAttribute("aria-pressed", String(!disposed && selectedClip === ""));
+      element("viewer-pose-preview").setAttribute("aria-pressed", String(!disposed && !!defaultClip && selectedClip === defaultClip));
+      element("viewer-pose-help").hidden = !disposed && !!defaultClip;
       element("viewer-motion").disabled = !enabled || !clipEntries.length;
       element("viewer-play").disabled = !enabled || !currentClip || duration() <= 0;
       element("viewer-time").disabled = !enabled || !currentClip || duration() <= 0;
@@ -218,6 +255,7 @@
       element("viewer-node").disabled = !enabled || !bones.length;
       element("viewer-node-reset").disabled = !enabled || !selectedNode;
       element("viewer-saved-nodes").disabled = !enabled || !savedOperations.length;
+      savedParts.forEach(function (part) { if (part.input) part.input.disabled = !enabled || !useSavedNodes; });
       element("viewer-preview-reset").disabled = !enabled || !(bones.length || clipEntries.length || expressions.length);
       ["height", "breast"].forEach(function (kind) {
         var control = bodyControl(kind), input = element("viewer-" + kind);
@@ -290,18 +328,26 @@
     }
     function reset() {
       adjustments = {}; expressionOverrides = {}; body = { height: 100, breast: 100 };
-      useSavedNodes = false; element("viewer-saved-nodes").checked = false;
+      useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
+      savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
       ["height", "breast"].forEach(function (kind) { element("viewer-" + kind).value = "100"; element("viewer-" + kind + "-value").textContent = "100%"; });
       setClip(defaultClip); refreshNode(); refreshExpression(); refreshSavedStatus();
     }
     function refreshSavedStatus() {
       var message = !savedOperations.length ? translate("No verified saved node settings are available.") :
         translate(useSavedNodes ? "Saved node settings are applied. 100% adds no extra scaling." : "Using the file's authored shape. Saved node settings are off.");
-      if (savedSkipped) message += " " + translate("Unsupported or conflicting saved settings were skipped.") + " (" + savedSkipped + ")";
+      if (savedOperations.length) message += " " + translate("Applied settings") + ": " + activeSavedOperations().length + " / " + savedOperations.length + ".";
+      if (savedSkipped || savedMetadataWarnings.length) message += " " + translate("Unsupported or conflicting saved settings were skipped.") + (savedSkipped ? " (" + savedSkipped + ")" : "");
       element("viewer-saved-status").textContent = message;
-      element("viewer-saved-status").classList.toggle("error", savedConflicts > 0);
+      element("viewer-saved-status").classList.toggle("error", savedConflicts > 0 || savedMetadataWarnings.length > 0);
+      element("viewer-saved-parts").hidden = !savedParts.length;
+      savedParts.forEach(function (part) { if (part.title) part.title.textContent = translate(part.label) + " (" + part.operations.length + ")"; });
     }
     function updateLanguage() {
+      element("viewer-pose-actions").setAttribute("aria-label", translate("Pose"));
+      element("viewer-pose-basic").textContent = translate("Basic pose");
+      element("viewer-pose-preview").textContent = translate("Posed view");
+      element("viewer-pose-help").textContent = translate("No compatible preview motion is available.");
       var motion = element("viewer-motion"); motion.textContent = "";
       appendOption(motion, "", translate("Saved pose"));
       clipEntries.forEach(function (clip) { appendOption(motion, clip.name, clip.name === defaultClip ? translate("SIFAS costume preview") : clip.name); }); motion.value = selectedClip;
@@ -338,6 +384,16 @@
           input.addEventListener("change", refreshNode); events.push(function () { input.removeEventListener("change", refreshNode); });
           inputFields[kind].push(input); label.appendChild(input); row.appendChild(label);
         }); holder.appendChild(row);
+      });
+    }
+    function buildSavedParts() {
+      var holder = element("viewer-saved-part-list"); holder.textContent = "";
+      savedParts.forEach(function (part) {
+        var label = document.createElement("label"), input = document.createElement("input"), title = document.createElement("span");
+        input.type = "checkbox"; input.checked = part.enabled; input.dataset.viewerSavedPart = part.id;
+        function change() { part.enabled = input.checked; evaluate(0); refreshSavedStatus(); changed(); }
+        input.addEventListener("change", change); events.push(function () { input.removeEventListener("change", change); });
+        part.input = input; part.title = title; label.appendChild(input); label.appendChild(title); holder.appendChild(label);
       });
     }
     function posedBounds() {
@@ -377,8 +433,11 @@
       return box.isEmpty() ? null : box;
     }
     buildNodeInputs();
+    buildSavedParts();
     selectedNode = bones.length ? bones[0].id : "";
     selectedExpression = expressions.length ? expressions[0].key : "";
+    listen("viewer-pose-basic", "click", function () { if (!this.disabled) setClip(""); });
+    listen("viewer-pose-preview", "click", function () { if (!this.disabled && defaultClip) setClip(defaultClip); });
     listen("viewer-motion", "change", function () { setClip(this.value); });
     if (mixer) mixer.addEventListener("finished", function (event) { if (event.action === action) { playing = false; updateTime(); } });
     listen("viewer-play", "click", function () {
@@ -406,7 +465,7 @@
     });
     listen("viewer-expression", "change", function () { selectedExpression = this.value; refreshExpression(); });
     listen("viewer-saved-nodes", "change", function () {
-      useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); changed();
+      useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); changed();
     });
     listen("viewer-expression-value", "input", function () {
       if (!expressions.length) return;
@@ -437,7 +496,7 @@
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
       reset: reset,
-      dispose: function () { disposed = true; playing = false; events.forEach(function (remove) { remove(); }); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
+      dispose: function () { disposed = true; playing = false; refreshAvailability(); events.forEach(function (remove) { remove(); }); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
@@ -445,8 +504,9 @@
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, selected: part.visible, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
           body: { height: body.height, breast: body.breast }, scaling: scaling, nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), expressionLimits: expressionLimits(),
-          savedNodes: { available: savedOperations.length > 0, enabled: useSavedNodes, applied: useSavedNodes ? savedOperations.length : 0,
-            skipped: savedSkipped, conflicts: savedConflicts, operations: savedOperations } };
+          savedNodes: { available: savedOperations.length > 0, enabled: useSavedNodes, applied: activeSavedOperations().length,
+            skipped: savedSkipped, conflicts: savedConflicts, metadataWarnings: savedMetadataWarnings.slice(), operations: savedOperations,
+            groups: savedParts.map(function (part) { return { id: part.id, label: translate(part.label), enabled: part.enabled, nodes: part.nodes.slice(), settings: part.operations.length }; }) } };
       }
     };
   }
