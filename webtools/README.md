@@ -120,6 +120,10 @@ Downloads are bounded and cached. If a facial source cannot be obtained, the
 costume remains visible with a warning. Disable this option to inspect the
 selected files alone. Standalone installations can use local originals; online
 lookup also needs Elichika's asset database and bundled asset extractor.
+This lookup uses the costume's character, across the installed GL/JP and
+Android/iOS catalogs; it is not limited to one member. Users do not need to
+select or upload facial files. Existing game downloads are reused before CDN
+downloads, and subsequent previews reuse the private cache.
 Original LZMA-compressed facial bundles are decoded with bounded memory; manual
 repacking is unnecessary and the source files remain unchanged.
 
@@ -129,15 +133,14 @@ repacking is unnecessary and the source files remain unchanged.
 - **Basic pose** shows the model's authored pose; **Posed view** switches to the
   verified original suit-preview pose. Both buttons pause at the first frame
   and preserve body adjustments, saved-setting choices and individual edits.
-  Posed view is disabled when the original preview motion is unavailable.
+  The verified common suit-preview motion is included with the app and works
+  offline without selecting a motion file. Posed view stays disabled for
+  incompatible skeletons rather than applying partially bound tracks.
 - **Pose and body** selects available motion clips, plays/pauses or seeks them,
-  and adjusts expression channels. **Add animation file** selects another Unity
+  and adjusts expression channels. **Add custom motion** selects another Unity
   animation bundle. Same-character local eye-animation companions can also be
   discovered within the bounded trusted library search.
-- **Add animation file** also accepts the original encrypted suit-preview pack
-  (for example, `me7wze`) when Elichika's asset database identifies it. The pack
-  is decrypted in a temporary folder and its source bytes are preserved. A
-  verified **SIFAS costume preview** starts at its first frame, paused; press
+- The verified **SIFAS costume preview** starts at its first frame, paused; press
   Play for the original motion. **Saved pose** selects the model's authored
   placement. The shared preview motion does not change the costume's character.
 - **Height** and **Breast size** adjust the model's verified `Move` and
@@ -150,7 +153,7 @@ repacking is unnecessary and the source files remain unchanged.
   multiply them again. Conflicting or unsupported entries are reported.
   **Individual bones** provides additional relative transform controls.
 - **Reset preview adjustments** restores the verified suit-preview first frame
-  when supplied, or otherwise the saved pose, and resets the controls and saved
+  when compatible, or otherwise the saved pose, and resets the controls and saved
   settings to their enabled defaults. These
   preview changes do not write to the source bundle. The separate LiveCore and
   Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
@@ -163,9 +166,10 @@ repacking is unnecessary and the source files remain unchanged.
 Interactive previews retain named skeletons, bind poses, skin weights and
 supported morph/animation data, including edited models with recentered vertices.
 Meshes without valid rig data remain viewable with their saved placement;
-unsupported controls stay disabled. The game's dedicated suit-preview clip must
-be supplied separately; game assets are not bundled. A clip name alone cannot
-select the default pose, and no neutral expression is guessed.
+unsupported controls stay disabled. The bundled 8,826-byte suit-preview clip is
+verified by its content hash and exact asset identity, and every track must bind
+uniquely before it can become the default pose. A clip name alone cannot select
+the default pose, and no neutral expression is guessed.
 The separate game `heightScale` normalization formula is not inferred by the
 preview. Saved Euler rotations use Unity's Z-X-Y rotation order and the exported
 coordinate reflection. The reference evaluator interpolates the original Euler
@@ -179,8 +183,8 @@ generating or resampling pixels. Known member materials ignore the unused generi
 `_Color` field. Unknown materials keep their normal texture fallback. This is not
 a claim of pixel-identical game rendering: runtime lighting/controller values,
 camera, shadows and postprocessing have not all been captured from the game.
-Some SIFAS base costumes contain only the face shell; their eyes and expressions
-require a separate facial asset. Missing parts or unsupported
+Some SIFAS base costumes contain only the face shell; missing facial geometry is
+resolved automatically from original assets. Missing parts or unsupported
 textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.

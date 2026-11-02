@@ -358,8 +358,8 @@
       var boneSelect = element("viewer-node"); boneSelect.textContent = "";
       if (!bones.length) appendOption(boneSelect, "", translate("No editable bones in this model."));
       bones.forEach(function (bone) { appendOption(boneSelect, bone.id, bone.name); }); boneSelect.value = selectedNode;
-      element("viewer-rig-status").textContent = translate(clipEntries.length ? "Choose a supplied motion to play or inspect a pose." :
-        bones.length || expressions.length ? "No motion clips were supplied. You can adjust the available bones and expressions." : "This model supports a static preview only.");
+      element("viewer-rig-status").textContent = translate(clipEntries.length ? "Play or pause a motion to inspect the model's pose." :
+        bones.length || expressions.length ? "No compatible motion is available. You can adjust this model's bones and expressions." : "This model supports a static preview only.");
       ["height", "breast"].forEach(function (kind) {
         element("viewer-" + kind + "-note").textContent = translate(bodyControl(kind) ? "Relative to the selected pose and body settings." : kind === "height" ? "This model has no supported height control." : "This model has no verified breast-size node.");
       });

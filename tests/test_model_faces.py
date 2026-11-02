@@ -77,6 +77,34 @@ class FaceTests(unittest.TestCase):
     def donor(self, owner=207):
         return bundle([(name + ".assets", self.scene(name, owner)) for name in ("Body", "Hair", "Face", "Eyes")])
 
+    def board_part(self, *, owner=209, overlay=False, shell=False, head="Head_Face", active=True):
+        """Neutral rig geometry below the game's verified mask transform paths."""
+        env = self.UnityPy.load(FIXTURE.with_name("viewer_rig.unity").read_bytes())
+        names = {2: f"ch{owner:04}_member", 4: head,
+                 6: "mesh_mask" if overlay or shell else "mesh_facedots", 8: "unusedBone",
+                 10: "Mask_DisplayOverlayparts" if overlay else "UnknownShellLeaf" if shell else "UnknownDisplayLeaf"}
+        for obj in env.objects:
+            if obj.type.name == "GameObject":
+                tree = obj.read_typetree()
+                tree["m_Name"] = names[obj.path_id]
+                if obj.path_id == 10:
+                    tree["m_IsActive"] = active
+                obj.save_typetree(tree)
+            elif obj.type.name == "Transform":
+                tree = obj.read_typetree()
+                if obj.path_id == 3:
+                    tree["m_Children"] = [r for r in tree["m_Children"] if r["m_PathID"] != 11]
+                if obj.path_id == 7:
+                    tree["m_Children"].append({"m_FileID": 0, "m_PathID": 11})
+                if obj.path_id == 11:
+                    tree["m_Father"] = {"m_FileID": 0, "m_PathID": 7}
+                obj.save_typetree(tree)
+            elif obj.type.name == "Mesh":
+                tree = obj.read_typetree()
+                tree["m_Name"] = "BoardOverlay" if overlay else "BoardShell" if shell else "BoardPixels"
+                obj.save_typetree(tree)
+        return next(iter(env.files.values())).save()
+
     def plan(self):
         deadline = time.monotonic() + 100
         scene = viewer._Scene(viewer._environment([str(self.body)], deadline), deadline)
@@ -296,6 +324,288 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(glb_names(metadata), ["Body"])
         self.assertEqual(original.read_bytes(), b"original user bytes")
         self.assertFalse((self.library / "models").exists())
+
+    @EXTRACTOR_REQUIRED
+    def test_all_member_groups_complete_faces_from_automatic_download_only(self):
+        # Different character ranges, including Rina and the final roster
+        # member, must use their own model and must not depend on a 207 file.
+        for owner in (1, 101, 209, 212):
+            with self.subTest(owner=owner):
+                self.body.write_bytes(self.scene("Body", owner=owner))
+                data = self.donor(owner=owner)
+                descriptor = self.descriptor(data, name=f"pack{owner}")
+                plan = self.plan()
+                self.assertEqual(plan.owner, owner)
+                self.context["allow_download"] = True
+                with patch.object(faces.FacePlan, "_descriptor_iter", return_value=[descriptor]), \
+                        patch.object(faces, "_download", return_value=self.encrypted(data, descriptor)) as fetch:
+                    metadata = viewer.prepare([str(self.body)], face_context=self.context)
+                self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 2, "characters": [owner]})
+                self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+                fetch.assert_called_once()
+                self.assertTrue(fetch.call_args.args[0].endswith(f"/pack{owner}"))
+        self.assertEqual(list(self.library.iterdir()), [])
+
+    @EXTRACTOR_REQUIRED
+    def test_jp_ios_downloaded_pack_wins_before_preferred_gl_network(self):
+        donor = self.donor()
+        self.databases(donor)
+        repo = Path(self.context["repo_root"])
+        jp = repo / "assets" / "db" / "jp"
+        jp.mkdir()
+        (jp / "masterdata.db").write_bytes((jp.parent / "gl" / "masterdata.db").read_bytes())
+        (jp / "asset_i_ja.db").write_bytes((jp.parent / "gl" / "asset_a_en.db").read_bytes())
+        with sqlite3.connect(jp / "asset_i_ja.db") as db:
+            db.execute("UPDATE member_model SET pack_name='jpios207',key1=32457,key2=-49532")
+            db.execute("UPDATE m_asset_package_mapping SET pack_name='jpios207'")
+        descriptor = dict(self.descriptor(donor), pack_name="jpios207", key1=32457, key2=-49532)
+        pack = self.library / "files" / "pkgj" / "jpios207"
+        pack.parent.mkdir(parents=True)
+        packed = self.encrypted(donor, descriptor)
+        pack.write_bytes(packed)
+        self.context["allow_download"] = True
+        with patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        fetch.assert_not_called()
+        self.assertEqual(pack.read_bytes(), packed)
+
+    @EXTRACTOR_REQUIRED
+    def test_exact_cached_pack_completes_before_a_large_library_scan(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        pack = self.library / descriptor["pack_name"]
+        packed = self.encrypted(donor, descriptor)
+        pack.write_bytes(packed)
+        with patch.object(faces.FacePlan, "_local", side_effect=AssertionError("Unrelated models must not consume the face budget")) as local, \
+                patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        local.assert_not_called()
+        fetch.assert_not_called()
+        self.assertEqual(pack.read_bytes(), packed)
+
+    @EXTRACTOR_REQUIRED
+    def test_cached_face_is_used_before_opening_later_catalogs(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        (self.library / descriptor["pack_name"]).write_bytes(self.encrypted(donor, descriptor))
+        gl = Path(self.context["repo_root"]) / "assets/db/gl"
+        jp = gl.parent / "jp"
+        jp.mkdir()
+        (jp / "masterdata.db").write_bytes((gl / "masterdata.db").read_bytes())
+        (jp / "asset_a_ja.db").write_bytes((gl / "asset_a_en.db").read_bytes())
+        connect, opened = sqlite3.connect, []
+
+        def guarded_connect(path, *args, **kwargs):
+            opened.append(str(path))
+            if "/jp/" in str(path):
+                raise AssertionError("An available GL face must not wait for the later JP catalog")
+            return connect(path, *args, **kwargs)
+
+        with patch.object(faces.sqlite3, "connect", side_effect=guarded_connect):
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertFalse(any("/jp/" in path for path in opened))
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+
+    def test_broken_catalog_lookup_still_uses_existing_local_unity_face(self):
+        (self.library / "original.unity").write_bytes(self.donor())
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=OSError("Optional catalog unavailable")), \
+                patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        fetch.assert_not_called()
+
+    @EXTRACTOR_REQUIRED
+    def test_library_scan_expiry_preserves_time_for_automatic_cdn_download(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        self.context["allow_download"] = True
+        plan = self.plan()
+        original_deadline = plan.deadline
+
+        def expired_local_search(current):
+            self.assertLess(current.deadline, original_deadline)
+            self.assertLessEqual(current.deadline - time.monotonic(), 8.01)
+            raise faces.FaceUnavailable("Local search reached its separate budget")
+
+        def downloaded(*args, **kwargs):
+            self.assertEqual(plan.deadline, original_deadline)
+            return self.encrypted(donor, descriptor)
+
+        with patch.object(faces.FacePlan, "_local", expired_local_search), \
+                patch.object(faces, "_download", side_effect=downloaded) as fetch:
+            result = plan.resolve()
+        self.assertEqual(plan.deadline, original_deadline)
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(len(result), 1)
+        fetch.assert_called_once()
+
+    @EXTRACTOR_REQUIRED
+    def test_incomplete_gl_catalog_does_not_hide_valid_jp_catalog(self):
+        donor = self.donor()
+        self.databases(donor)
+        gl = Path(self.context["repo_root"]) / "assets" / "db" / "gl"
+        jp = gl.parent / "jp"
+        jp.mkdir()
+        (jp / "masterdata.db").write_bytes((gl / "masterdata.db").read_bytes())
+        (jp / "asset_a_ja.db").write_bytes((gl / "asset_a_en.db").read_bytes())
+        (gl / "asset_a_en.db").write_bytes(b"incomplete catalog")
+        self.context["allow_download"] = True
+        with patch.object(faces, "_download", return_value=self.encrypted(donor, self.descriptor(donor))) as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        fetch.assert_called_once()
+
+    @EXTRACTOR_REQUIRED
+    def test_own_original_body_can_complete_eyes_without_dynamic_dependency(self):
+        # Rina's board model has no shared FaceDynamic dependency. The selected
+        # mod may retain its Face shell while omitting the separate eyes.
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=209)) for name in ("Body", "Face")]))
+        donor = self.donor(owner=209)
+        descriptor = self.databases(donor)
+        gl = Path(self.context["repo_root"]) / "assets" / "db" / "gl"
+        with sqlite3.connect(gl / "masterdata.db") as db:
+            db.execute("UPDATE m_suit SET member_m_id=209 WHERE member_m_id=207")
+            db.execute("UPDATE m_member_init SET member_m_id=209 WHERE member_m_id=207")
+        with sqlite3.connect(gl / "asset_a_en.db") as db:
+            db.execute("DELETE FROM member_model_dependency")
+            db.execute("UPDATE member_model SET asset_path='body207'")
+        self.context["allow_download"] = True
+        with patch.object(faces, "_download", return_value=self.encrypted(donor, descriptor)) as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 1, "characters": [209]})
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        fetch.assert_called_once()
+
+    def test_native_board_subtree_completes_missing_eyes_and_keeps_overlay(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=9999)) for name in ("Body", "Face")]))
+        manifest = self.selected / "modinstall.txt"
+        manifest.write_text("costume_file='costume.unity'\nchara_id=209\n")
+        self.context["manifest_paths"] = [str(manifest)]
+        (self.library / "original_board.unity").write_bytes(bundle([
+            ("pixels.assets", self.board_part()), ("overlay.assets", self.board_part(overlay=True)),
+            ("shell.assets", self.board_part(shell=True))]))
+        with patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 3, "characters": [209]})
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "BoardPixels", "BoardOverlay", "BoardShell"])
+        self.assertEqual(metadata["warnings"], [])
+        fetch.assert_not_called()
+
+    def test_existing_native_board_does_not_request_normal_iris_eyes(self):
+        self.body.write_bytes(bundle([("body.assets", self.scene("Body", owner=209)),
+                                     ("face.assets", self.scene("Face", owner=209)),
+                                     ("board.assets", self.board_part())]))
+        with patch.object(faces, "_download") as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "already_present")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "BoardPixels"])
+        fetch.assert_not_called()
+
+    def test_overlay_alone_never_completes_missing_facial_display(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=209)) for name in ("Body", "Face")]))
+        (self.library / "overlay_only.unity").write_bytes(bundle([
+            ("overlay.assets", self.board_part(overlay=True)), ("shell.assets", self.board_part(shell=True))]))
+        metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(glb_names(metadata), ["Body", "Face"])
+
+    def test_costume_mask_names_and_hidden_or_other_owner_boards_are_excluded(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=209)) for name in ("Body", "Face")]))
+        for name, data in (("hair_board", self.board_part(head="Head_Hair")),
+                           ("hat_overlay", self.board_part(overlay=True, head="Hat")),
+                           ("hidden_board", self.board_part(active=False)),
+                           ("wrong_owner", self.board_part(owner=207))):
+            (self.library / f"{name}.unity").write_bytes(data)
+        metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(glb_names(metadata), ["Body", "Face"])
+
+    def test_ch9999_board_identity_is_rina_only_with_same_source_active_board(self):
+        self.body.write_bytes(bundle([("body.assets", self.scene("Body", owner=9999)),
+                                     ("face.assets", self.scene("Face", owner=9999)),
+                                     ("board.assets", self.board_part(owner=9999))]))
+        metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["characters"], [209])
+        self.assertEqual(metadata["faces"]["status"], "already_present")
+        for body in (self.scene("Body", owner=9999), self.board_part(owner=9999, active=False),
+                     bundle([("board.assets", self.board_part(owner=9999)), ("other.assets", self.scene("Hair", owner=101))])):
+            self.body.write_bytes(body)
+            deadline = time.monotonic() + 20
+            scene = viewer._Scene(viewer._environment([str(self.body)], deadline), deadline)
+            self.assertIn(9999, faces._names(scene, str(self.body))[0])
+        self.body.write_bytes(self.scene("ch9999_Body", owner=9999))
+        other = self.library / "other_board.unity"
+        other.write_bytes(self.board_part(owner=209))
+        deadline = time.monotonic() + 20
+        scene = viewer._Scene(viewer._environment([str(self.body), str(other)], deadline), deadline)
+        self.assertEqual(faces._names(scene, str(self.body))[0], {9999})
+        self.assertEqual(faces._names(scene, str(other))[0], {209})
+        self.assertEqual(faces._names(scene)[0], {9999, 209})
+
+    @EXTRACTOR_REQUIRED
+    def test_normal_rina_uses_unmasked_view_and_rejects_local_board_donor(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=209)) for name in ("Body", "Face")]))
+        (self.library / "ch0209_masked.unity").write_bytes(self.board_part(owner=9999))
+        donor = self.donor(owner=209)
+        descriptor = self.databases(donor)
+        catalog = Path(self.context["repo_root"]) / "assets" / "db" / "gl"
+        with sqlite3.connect(catalog / "masterdata.db") as db:
+            db.execute("UPDATE m_suit SET member_m_id=209 WHERE member_m_id=207")
+            db.execute("UPDATE m_member_init SET member_m_id=209 WHERE member_m_id=207")
+            db.execute("CREATE TABLE m_suit_view(suit_master_id INTEGER,view_status INTEGER,model_asset_path TEXT)")
+            db.execute("INSERT INTO m_suit_view VALUES(207001,2,'unmasked209')")
+        with sqlite3.connect(catalog / "asset_a_en.db") as db:
+            db.execute("UPDATE member_model_dependency SET asset_path='unmasked209'")
+            db.execute("INSERT INTO member_model VALUES('body207','masked209',0,?,123,456)", (len(donor),))
+        self.context["allow_download"] = True
+        with patch.object(faces, "_download", return_value=self.encrypted(donor, descriptor)) as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["characters"], [209])
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        fetch.assert_called_once()
+        self.assertTrue(fetch.call_args.args[0].endswith("/pack207"))
+
+    def test_auxiliary_eye_surfaces_cannot_replace_missing_iris(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name)) for name in ("Body", "Face")]))
+        names = ("Eye_Around", "LeftEyeWhiteLine", "RightEyeWhiteLine", "RinNyaEye_Overlay")
+        (self.library / "eye_details.unity").write_bytes(bundle([(name + ".assets", self.scene(name)) for name in names]))
+        metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(glb_names(metadata), ["Body", "Face"])
+
+    @EXTRACTOR_REQUIRED
+    def test_original_body_keeps_a_slot_when_shared_dependencies_fill_limit(self):
+        donor = self.donor()
+        self.databases(donor)
+        catalog = Path(self.context["repo_root"]) / "assets" / "db" / "gl" / "asset_a_en.db"
+        with sqlite3.connect(catalog) as db:
+            for number in range(4):
+                db.execute("INSERT INTO member_model_dependency VALUES('body207',?)", (f"extra{number}",))
+                db.execute("INSERT INTO member_model VALUES(?,?,0,?,123,456)", (f"extra{number}", f"extra_pack{number}", len(donor) + number))
+            db.execute("INSERT INTO member_model VALUES('body207','body_pack207',0,?,123,456)", (len(donor),))
+        descriptors = self.plan()._descriptors()
+        self.assertEqual(len(descriptors), faces.MAX_AUTO_FILES)
+        self.assertEqual(descriptors[-1]["asset_path"], "body207")
+
+    @EXTRACTOR_REQUIRED
+    def test_bad_local_pack_does_not_block_automatic_original_download(self):
+        donor = self.donor()
+        descriptor = self.databases(donor)
+        damaged = self.library / descriptor["pack_name"]
+        damaged.write_bytes(b"bad original pack")
+        self.context["allow_download"] = True
+        with patch.object(faces, "_download", return_value=self.encrypted(donor, descriptor)) as fetch:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(damaged.read_bytes(), b"bad original pack")
+        fetch.assert_called_once()
 
     @EXTRACTOR_REQUIRED
     def test_transfer_budget_is_reserved_before_any_http_request(self):
@@ -577,7 +887,7 @@ class OptionalBudgetTests(unittest.TestCase):
             return geometry(*args, **kwargs)
 
         def costly_metadata(plan, scene, paths, context, deadline):
-            if context:
+            if context and context.get("enabled", True):
                 self.assertEqual(deadline, 110.)
                 self.assertEqual(scene.deadline, deadline)
                 clock[0] = deadline + 1

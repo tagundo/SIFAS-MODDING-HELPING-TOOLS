@@ -1056,10 +1056,6 @@ _VIEWER_TRANSLATIONS = {
         "3D 모델",
         "3Dモデル"
     ],
-    "Choose a costume model. Add a separate head or hair file if it is missing.": [
-        "의상 모델을 선택하세요. 머리나 헤어가 따로 있는 의상은 해당 파일도 추가하세요.",
-        "衣装モデルを選んでください。頭や髪が別ファイルの場合は、そのファイルも追加してください。"
-    ],
     "Choose costume file": [
         "의상 파일 선택",
         "衣装ファイルを選択"
@@ -1292,9 +1288,9 @@ _VIEWER_TRANSLATIONS.update({
     ]
 })
 _VIEWER_TRANSLATIONS.update({
-    "Open a costume model or ZIP. Missing facial parts can be added automatically.": [
-        "의상 모델이나 ZIP을 여세요. 빠진 얼굴 파츠는 자동으로 불러올 수 있습니다.",
-        "衣装モデルやZIPを開いてください。足りない顔パーツを自動で追加できます。"
+    "Open a costume model or ZIP. Its preview pose and missing face parts load automatically.": [
+        "의상 모델이나 ZIP을 열면 미리보기 포즈와 빠진 얼굴 파츠를 자동으로 불러옵니다.",
+        "衣装モデルやZIPを開くと、プレビュー姿勢と不足した顔パーツを自動で読み込みます。"
     ],
     "Choose costume model or ZIP": [
         "의상 모델 또는 ZIP 선택",
@@ -1342,9 +1338,9 @@ _VIEWER_TRANSLATIONS.update({
         "모드 설명과 모델의 캐릭터 정보가 다릅니다. 모델에 기록된 캐릭터를 기준으로 표시합니다.",
         "MODの説明とモデルのキャラクター情報が異なります。モデルに記録されたキャラクターを使用します。"
     ],
-    "The original face could not be obtained. The costume is still shown; keep a same-character original model locally or check the asset CDN connection.": [
-        "원본 얼굴을 불러오지 못했습니다. 의상은 표시됩니다. 같은 캐릭터의 원본 모델을 기기에 보관하거나 리소스 서버 연결을 확인해주세요.",
-        "元の顔を取得できませんでした。衣装は表示されます。同じキャラクターの元モデルを端末に用意するか、リソース配信サーバーへの接続を確認してください。"
+    "The original face is unavailable. The costume is still shown; check the asset connection and try again.": [
+        "원본 얼굴을 불러오지 못했습니다. 의상은 계속 표시됩니다. 리소스 서버 연결을 확인한 뒤 다시 열어주세요.",
+        "元の顔を取得できませんでした。衣装は引き続き表示されます。リソース配信サーバーへの接続を確認して、もう一度開いてください。"
     ],
     "The original face could not be opened. The costume is still shown.": [
         "원본 얼굴을 열지 못했습니다. 불러온 의상은 계속 확인할 수 있습니다.",
@@ -1362,15 +1358,15 @@ _VIEWER_TRANSLATIONS.update({
     ]
 })
 _VIEWER_TRANSLATIONS.update({
-    "Fills missing face parts from the originals. Uses the internet if needed.": [
-        "빠진 얼굴 파츠만 원본으로 채웁니다. 필요하면 인터넷에서 불러옵니다.",
-        "不足した顔パーツだけ元データで補います。必要に応じて通信します。"
+    "Missing face parts are found locally or downloaded automatically.": [
+        "빠진 얼굴은 저장된 원본에서 찾고, 없으면 자동으로 내려받습니다.",
+        "不足した顔パーツを保存済みデータから探し、必要に応じて元データを自動取得します。"
     ]
 })
 _VIEWER_TRANSLATIONS.update({
     "Pose and body": ["포즈·체형 조절", "ポーズ・体型調整"],
-    "Add animation file": ["모션 파일 추가", "モーションファイルを追加"],
-    "Add a Unity motion/expression bundle or an original SIFAS preview pack, then reopen the model. FBX motion files are not supported.": ["Unity 모션·표정 번들이나 SIFAS 원본 미리보기 팩을 추가한 뒤 모델 열기를 누르세요. FBX 모션 파일은 지원하지 않습니다.", "Unityのモーション・表情バンドルまたはSIFASの元のプレビューパックを追加し、モデルを開き直してください。FBXモーションには対応していません。"],
+    "Add custom motion": ["다른 모션 추가", "別のモーションを追加"],
+    "The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.": ["SIFAS 미리보기 포즈를 자동으로 불러옵니다. 다른 모션·표정은 Unity 번들로 추가할 수 있습니다. FBX 모션은 지원하지 않습니다.", "SIFASプレビュー姿勢を自動で読み込みます。別のモーション・表情はUnityバンドルで追加できます。FBXモーションには対応していません。"],
     "Use saved node settings": ["파일의 노드 설정 적용", "ファイルのノード設定を適用"],
     "Uses verified scale and position values from the file. Game height normalization is not applied.": ["파일에서 확인한 크기·위치 값을 적용합니다. 게임의 키 정규화는 적용하지 않습니다.", "ファイルで確認できたサイズ・位置の値を適用します。ゲームの身長正規化は適用しません。"],
     "100% adds no extra size change. Adjustments follow the selected pose and saved-settings option.": ["100%는 크기를 추가로 바꾸지 않습니다. 선택한 자세와 노드 설정을 기준으로 조절합니다.", "100%ではサイズを追加変更しません。選択した姿勢とノード設定を基準に調整します。"],
@@ -1420,8 +1416,8 @@ _VIEWER_TRANSLATIONS.update({
     "Reset preview adjustments": ["포즈·체형 초기화", "ポーズ・体型をリセット"],
     "No expression channels in this model.": ["이 모델에 표정 채널이 없습니다.", "このモデルに表情チャンネルはありません。"],
     "No editable bones in this model.": ["조절할 수 있는 본이 없습니다.", "調整できるボーンはありません。"],
-    "Choose a supplied motion to play or inspect a pose.": ["포함된 모션을 골라 재생하거나 원하는 자세에서 멈추세요.", "含まれるモーションを選んで再生するか、好きな姿勢で停止できます。"],
-    "No motion clips were supplied. You can adjust the available bones and expressions.": ["모션 파일이 없습니다. 모델에 있는 본과 표정은 조절할 수 있습니다.", "モーションは含まれていません。モデルにあるボーンや表情は調整できます。"],
+    "Play or pause a motion to inspect the model's pose.": ["모션을 재생하거나 멈춰서 모델의 자세를 확인하세요.", "モーションを再生または停止して、モデルの姿勢を確認できます。"],
+    "No compatible motion is available. You can adjust this model's bones and expressions.": ["이 모델에서 사용할 수 있는 모션이 없습니다. 본과 표정은 조절할 수 있습니다.", "このモデルに対応するモーションがありません。ボーンや表情は調整できます。"],
     "This model supports a static preview only.": ["이 모델은 정적인 모습만 표시할 수 있습니다.", "このモデルは静止した状態のプレビューに対応しています。"],
     "Relative to the model's saved size.": ["파일에 저장된 크기를 기준으로 조절합니다.", "ファイルに保存されたサイズを基準に調整します。"],
     "This model has no supported height control.": ["이 모델에는 확인된 키 조절 정보가 없습니다.", "このモデルには確認済みの身長調整情報がありません。"],

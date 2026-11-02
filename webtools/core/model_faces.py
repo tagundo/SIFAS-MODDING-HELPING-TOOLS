@@ -22,6 +22,7 @@ MAX_PACK_BYTES = 16 * 1024 * 1024
 MAX_TRANSFER_BYTES = 32 * 1024 * 1024
 MAX_CACHE_BYTES = 96 * 1024 * 1024
 MAX_CANDIDATES = 32
+MAX_DESCRIPTOR_CANDIDATES = 64
 MAX_LOCAL_FILES = 512
 MAX_AUTO_FILES = 4
 FACE_SECONDS = 40
@@ -36,6 +37,7 @@ _AUXILIARY = {
     "mouth": re.compile(r"(?:^|[^a-z])mouth(?:[^a-z]|$)", re.I),
     "teeth": re.compile(r"(?:^|[^a-z])(?:teeth|tooth)(?:[^a-z]|$)", re.I),
     "tongue": re.compile(r"(?:^|[^a-z])tongue(?:[^a-z]|$)", re.I),
+    "eye_details": re.compile(r"(?:^|[^a-z])eye[_ ]+around(?:[^a-z]|$)|(?:^|[^a-z])(?:left|right)[_ ]+eye[_ ]+white[_ ]+line(?:[^a-z]|$)|(?:^|[^a-z])rin[_ ]*nya[_ ]*eye[_ ]+overlay(?:[^a-z]|$)", re.I),
 }
 
 
@@ -75,7 +77,53 @@ def _names(scene, source=None):
         target = strong if obj.type.name in ("AssetBundle", "GameObject") else weak
         for value in values:
             target.update(int(match) for match in _OWNER.findall(value))
-    return strong or weak, dynamic
+    owners = strong or weak
+    # The game's masked Rina models use ch9999 as a pseudo-character. Only
+    # normalize it when that same source has real native board geometry, and
+    # no other character identity occurs anywhere in its names.
+    if 9999 in owners and (strong | weak) <= {209, 9999}:
+        for renderer, tree, game_object in scene.renderers:
+            if source is not None and _source_path(renderer) != source:
+                continue
+            if not tree.get("m_Enabled", True) or not scene.active(game_object):
+                continue
+            mesh = _mesh(scene, renderer, tree, game_object)
+            if mesh is not None and renderer_role(scene, renderer, game_object, mesh) == "board":
+                # The board must belong to a source which actually supplied
+                # the pseudo identity, rather than another selected file.
+                owner_source = _source_path(renderer)
+                if source is not None or _raw_source_has_pseudo(scene, owner_source):
+                    owners = (owners - {9999}) | {209}
+                    break
+    return owners, dynamic
+
+
+def _raw_source_has_pseudo(scene, source):
+    from .model_viewer import _source_path
+    strong, weak = set(), set()
+    for obj in scene.env.objects:
+        if _source_path(obj) != source or obj.type.name not in ("AssetBundle", "GameObject", "Material", "Texture2D"):
+            continue
+        names = [scene.name(obj)]
+        if obj.type.name == "AssetBundle":
+            names.extend(str(row[0]) for row in scene.tree(obj).get("m_Container", [])[:64])
+        target = strong if obj.type.name in ("AssetBundle", "GameObject") else weak
+        target.update(int(match) for name in names for match in _OWNER.findall(name))
+    return 9999 in (strong or weak)
+
+
+def source_owner(scene, source, metadata=None):
+    """Return canonical owner IDs, given already validated manifest ID metadata.
+
+    Internal identity wins. A manifest declaring Rina can identify a stripped
+    ch9999 board mod whose actual board geometry was removed by the modder.
+    No app selection or arbitrary filename participates in this decision.
+    """
+    internal, _ = _names(scene, source)
+    metadata = set(metadata or ())
+    if internal == {9999} and metadata == {209}:
+        return {209}
+    return internal or metadata
 
 
 def _manifest_owners(paths, manifests, origins=None):
@@ -126,7 +174,7 @@ def facial_role(game_name, mesh_name, dynamic=False):
     # look like a real eye. Auxiliary geometry never completes the iris role.
     names = re.sub(r"([a-z])([A-Z])", r"\1 \2", names)
     names = re.sub(r"([A-Z])([A-Z][a-z])", r"\1 \2", names)
-    for role in ("brows", "eyelids"):
+    for role in ("brows", "eyelids", "eye_details"):
         if _AUXILIARY[role].search(names):
             return role
     if _EYES.search(names):
@@ -140,6 +188,45 @@ def facial_role(game_name, mesh_name, dynamic=False):
         return "eyes" if dynamic else "face"
     return None
 
+
+
+def completion_roles(found):
+    """A native mask display supplies facial expression without iris meshes."""
+    found = set(found)
+    return found | ({"eyes"} if "board" in found else set())
+
+
+def renderer_role(scene, renderer, game_object, mesh, dynamic=False):
+    """Recognize native facial paths without accepting arbitrary costume masks.
+
+    The game's CommonCoreMemberHead looks up Head_Face/mesh_facedots and
+    Head_Face/mesh_mask/Mask_DisplayOverlayparts. A real active renderer may
+    live below those transforms; its leaf mesh name is not a reliable marker.
+    """
+    from .model_viewer import _key, _ref, _source_path
+    source, names, seen = _source_path(renderer), [], set()
+    current = game_object
+    while current is not None:
+        _check(scene.deadline)
+        key = _key(current)
+        if key in seen or len(seen) >= 256:
+            raise FaceUnavailable("The face contains a circular transform hierarchy.")
+        if _source_path(current) != source:
+            break
+        seen.add(key)
+        names.append(scene.name(current).lower())
+        transform = scene.transforms.get(key)
+        parent = _ref(transform, scene.tree(transform).get("m_Father")) if transform else None
+        current = _ref(parent, scene.tree(parent).get("m_GameObject")) if parent else None
+    path = tuple(reversed(names))
+    for index in range(len(path)):
+        if path[index:index + 2] == ("head_face", "mesh_facedots"):
+            return "board"
+        if path[index:index + 3] == ("head_face", "mesh_mask", "mask_displayoverlayparts"):
+            return "face_overlay"
+        if path[index:index + 2] == ("head_face", "mesh_mask"):
+            return "board_shell"
+    return facial_role(scene.name(game_object), scene.name(mesh), dynamic)
 
 def _mesh(scene, renderer, tree, game_object):
     from .model_viewer import _key, _ref
@@ -162,7 +249,7 @@ def roles(scene, sources=None):
             continue
         mesh = _mesh(scene, renderer, tree, game_object)
         if mesh is not None:
-            role = facial_role(scene.name(game_object), scene.name(mesh), source in dynamic)
+            role = renderer_role(scene, renderer, game_object, mesh, source in dynamic)
             if role:
                 found.add(role)
     return found
@@ -391,6 +478,7 @@ class FacePlan:
         self.deadline = min(deadline, time.monotonic() + FACE_SECONDS)
         self.paths, self.auto_paths, self.warnings = list(paths), [], []
         self.owner, self.added, self.transferred = None, 0, 0
+        self.face_mode = "normal"
         self.status, self.needed, self.dynamic_sources = "not_needed", set(), set()
         self.required_roles, self.rendered_roles = set(), set()
         self.target_anchor, self.head_material = None, None
@@ -408,6 +496,9 @@ class FacePlan:
         for source in _body_sources(scene):
             internal, _ = _names(scene, source)
             metadata = manifest_owners.get(source, set())
+            if internal == {9999} and metadata == {209}:
+                internal = source_owner(scene, source, metadata)
+                self.face_mode = "board"
             if internal and metadata and internal != metadata:
                 self.warn("face_owner_conflict", "The mod's character metadata disagrees with its Unity model. The Unity model's owner is used.")
             candidates = internal or metadata
@@ -421,7 +512,9 @@ class FacePlan:
             return
         # SIFAS's base Face is only its surface shell. Stripped costume mods
         # may omit both the manager and dependency metadata but still need eyes.
-        self.needed = {"face", "eyes"} - self.initial_roles
+        if "board" in self.initial_roles:
+            self.face_mode = "board"
+        self.needed = {"face", "eyes"} - completion_roles(self.initial_roles)
         self.required_roles = set(self.needed)
         self.status = "already_present" if not self.needed else "unavailable"
         self.target_anchor, self.head_material = self._anchor(scene)
@@ -471,7 +564,14 @@ class FacePlan:
         trusted = path in self.database_paths
         if not owners and not trusted:
             return None
-        found = roles(scene) & self.needed
+        available = roles(scene)
+        if self.face_mode == "normal" and "board" in available:
+            return None
+        found = available & self.needed
+        if self.face_mode == "board":
+            found.discard("eyes")
+        if "eyes" in self.needed and "board" in available:
+            found.add("board")
         if not found:
             return None
         return scene, dynamic, found
@@ -525,37 +625,75 @@ class FacePlan:
         return [path for _, path in sorted(found)[:MAX_CANDIDATES]]
 
     def _descriptors(self):
+        """Keep original view/region/platform alternatives before trying HTTP."""
+        return list(self._descriptor_iter())
+
+    def _descriptor_iter(self):
+        """Yield a usable recipe before reading later region/platform catalogs."""
         root = self.context.get("repo_root")
         if not root:
-            return []
+            return
         import llas_asset_extractor as extractor
         dbs = extractor.list_asset_dbs(root)
         dbs.sort(key=lambda path: ("asset_a" not in os.path.basename(path), "/gl/" not in path.replace("\\", "/"), "_en" not in path))
-        master = extractor.find_masterdata(root)
-        if not master or not dbs:
-            return []
-        with sqlite3.connect(Path(master).resolve().as_uri() + "?mode=ro", uri=True) as db:
-            row = db.execute("SELECT s.model_asset_path FROM m_member_init i JOIN m_suit s ON s.id=i.suit_m_id WHERE i.member_m_id=? AND s.member_m_id=?", (self.owner, self.owner)).fetchone()
-            if row is None:
-                row = db.execute("SELECT model_asset_path FROM m_suit WHERE member_m_id=? ORDER BY id LIMIT 1", (self.owner,)).fetchone()
-        if row is None:
-            return []
-        with sqlite3.connect(Path(dbs[0]).resolve().as_uri() + "?mode=ro", uri=True) as db:
-            dependencies = [r[0] for r in db.execute("SELECT dependency FROM member_model_dependency WHERE asset_path=?", (row[0],))]
-            keys = dependencies + ([row[0]] if "face" in self.needed else [])
-            result = []
-            for key in keys:
-                record = db.execute("SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path=?", (key,)).fetchone()
-                if not record:
-                    continue
-                pack = db.execute("SELECT file_size FROM m_asset_package_mapping WHERE pack_name=? LIMIT 1", (record[1],)).fetchone()
-                result.append(dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), record), pack_size=pack[0] if pack else None))
-        # The largest shared member dependency normally contains facial mesh
-        # geometry; tiny expression/animation companions need no initial fetch.
-        result.sort(key=lambda resource: (resource["asset_path"] == row[0], -resource["size"]))
-        return result[:MAX_AUTO_FILES]
+        seen = set()
+        for catalog in dbs[:16]:
+            _check(self.deadline)
+            master = Path(catalog).parent / "masterdata.db"
+            if not master.is_file():
+                continue
+            try:
+                with sqlite3.connect(master.resolve().as_uri() + "?mode=ro", uri=True) as db:
+                    row = db.execute("SELECT s.id,s.model_asset_path FROM m_member_init i JOIN m_suit s ON s.id=i.suit_m_id WHERE i.member_m_id=? AND s.member_m_id=?", (self.owner, self.owner)).fetchone()
+                    if row is None:
+                        row = db.execute("SELECT id,model_asset_path FROM m_suit WHERE member_m_id=? ORDER BY id LIMIT 1", (self.owner,)).fetchone()
+                    if row is None:
+                        continue
+                    # Alternate suit views include unmasked Rina. A normal
+                    # target must not receive the default board's face instead.
+                    try:
+                        variants = [r[0] for r in db.execute("SELECT v.model_asset_path FROM m_suit_view v JOIN m_suit s ON s.id=v.suit_master_id WHERE v.suit_master_id=? AND s.member_m_id=? ORDER BY v.view_status DESC LIMIT 4", (row[0], self.owner))]
+                    except sqlite3.Error:
+                        variants = []
+                    models = ([row[1]] + variants) if self.face_mode == "board" else (variants + [row[1]])
+                for model in dict.fromkeys(models):
+                    _check(self.deadline)
+                    with sqlite3.connect(Path(catalog).resolve().as_uri() + "?mode=ro", uri=True) as db:
+                        dependencies = [r[0] for r in db.execute("SELECT dependency FROM member_model_dependency WHERE asset_path=? LIMIT 64", (model,))]
+                        keys = list(dict.fromkeys(dependencies + [model]))
+                        parameters = ",".join("?" for _ in keys)
+                        records = {}
+                        for record in db.execute(f"SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path IN ({parameters})", keys):
+                            records.setdefault(record[0], record)
+                        names = list(dict.fromkeys(record[1] for record in records.values()))
+                        sizes = {}
+                        if names:
+                            parameters = ",".join("?" for _ in names)
+                            for name, size in db.execute(f"SELECT pack_name,file_size FROM m_asset_package_mapping WHERE pack_name IN ({parameters})", names):
+                                sizes.setdefault(name, size)
+                        resources = []
+                        for key in keys:
+                            record = records.get(key)
+                            if not record:
+                                continue
+                            resources.append(dict(zip(("asset_path", "pack_name", "head", "size", "key1", "key2"), record), pack_size=sizes.get(record[1])))
+                    # Close SQLite before yielding: cache conversion must not
+                    # retain an open catalog while it parses a facial bundle.
+                    resources.sort(key=lambda resource: -resource["size"])
+                    body = [resource for resource in resources if resource["asset_path"] == model][:1]
+                    shared = [resource for resource in resources if resource["asset_path"] != model]
+                    for resource in shared[:MAX_AUTO_FILES - len(body)] + body:
+                        identity = tuple(resource[key] for key in ("pack_name", "head", "size", "key1", "key2", "pack_size"))
+                        if identity not in seen:
+                            seen.add(identity)
+                            yield resource
+                            if len(seen) >= MAX_DESCRIPTOR_CANDIDATES:
+                                return
+            except (OSError, sqlite3.Error, TypeError, ValueError):
+                continue
 
-    def _resource(self, descriptor):
+    def _resource(self, descriptor, *, download=True):
+        _check(self.deadline)
         from .model_viewer import _preflight_bundle
         cache = self.context.get("cache_dir")
         if not cache:
@@ -577,6 +715,9 @@ class FacePlan:
             return str(output)
         import llas_asset_extractor as extractor
         roots = list(self.context.get("pack_roots", []))
+        roots.extend(self.context.get("library_roots", []))
+        roots.extend(os.path.dirname(path) for path in self.paths)
+        roots.extend(os.path.dirname(os.path.realpath(origin)) for path, origin in self.context.get("origins", {}).items() if path in self.paths)
         roots.append(extractor.COPIED_PACKS_DIR)
         sukusta = os.environ.get("SUKUSTA_DIR")
         if sukusta:
@@ -586,28 +727,44 @@ class FacePlan:
             roots.extend((os.path.join(repo, "static"), repo))
         # Same game-client pack layout used by the existing extractor.
         roots.extend(p for p, status in extractor.detect_game_candidates() if status == "found")
-        pack_path, packed, managed_pack = None, None, None
-        for directory in roots:
+        def decrypt(section):
+            if len(section) != size:
+                raise FaceUnavailable("The original face section is incomplete.")
+            data = bytearray(section)
+            extractor.decrypt_section(data, extractor.FIXED_KEY0, descriptor["key1"], descriptor["key2"])
+            try:
+                _preflight_bundle(data)
+            except Exception as error:
+                raise FaceUnavailable("The original face could not be decrypted for this platform.") from error
+            return data
+
+        plain, packed, managed_pack = None, None, None
+        for directory in dict.fromkeys(roots):
+            _check(self.deadline)
             for relative in (pack_name, "pkg" + pack_name[0] + "/" + pack_name, "pak" + pack_name[0] + "/" + pack_name, "files/pkg" + pack_name[0] + "/" + pack_name):
                 candidate = os.path.realpath(os.path.join(directory, relative))
-                if _inside(candidate, [os.path.realpath(directory)]) and os.path.isfile(candidate):
-                    pack_path = candidate
+                if not _inside(candidate, [os.path.realpath(directory)]) or not os.path.isfile(candidate):
+                    continue
+                try:
+                    length = os.path.getsize(candidate)
+                    if not head + size <= length <= MAX_PACK_BYTES or (pack_size is not None and length != pack_size):
+                        continue
+                    with open(candidate, "rb") as handle:
+                        handle.seek(head)
+                        plain = decrypt(handle.read(size))
                     break
-            if pack_path:
+                except (OSError, FaceUnavailable):
+                    # A stale or wrong-platform local pack must not prevent
+                    # another local copy or the original CDN from working.
+                    continue
+            if plain is not None:
                 break
-        if pack_path is not None:
-            length = os.path.getsize(pack_path)
-            if not 0 < length <= MAX_PACK_BYTES or (pack_size is not None and length != pack_size):
-                raise FaceUnavailable("The cached original pack is truncated or has the wrong platform.")
-            with open(pack_path, "rb") as handle:
-                handle.seek(head)
-                plain = bytearray(handle.read(size))
-        else:
+        if plain is None:
             cached_pack = _managed_dir(root, "packs") / pack_name
             managed_pack = cached_pack
             packed = _cached(cached_pack, pack_size)
             if packed is None:
-                if not self.context.get("allow_download", True):
+                if not download or not self.context.get("allow_download", True):
                     raise FaceUnavailable("Original face downloads are disabled.")
                 base = self.context.get("cdn_base") or extractor.DEFAULT_CDN_BASE
                 parsed = urlsplit(base)
@@ -622,19 +779,13 @@ class FacePlan:
                 packed = _download_with_deadline(base.rstrip("/") + "/" + pack_name, pack_size, self.deadline, min(MAX_PACK_BYTES, remaining))
                 if not 0 < len(packed) <= MAX_PACK_BYTES or (pack_size is not None and len(packed) != pack_size):
                     raise FaceUnavailable("The original asset download was incomplete.")
-            plain = bytearray(packed[head:head + size])
-        if len(plain) != size:
-            raise FaceUnavailable("The original face section is incomplete.")
-        extractor.decrypt_section(plain, extractor.FIXED_KEY0, descriptor["key1"], descriptor["key2"])
-        try:
-            _preflight_bundle(plain)
-        except Exception:
-            # Do not retain a complete-looking HTML/wrong-platform response as
-            # an immutable successful cache entry. User-owned packs stay intact.
-            if managed_pack is not None:
+            try:
+                plain = decrypt(packed[head:head + size])
+            except FaceUnavailable:
+                # Do not publish wrong-platform/HTML responses as cache hits.
                 managed_pack.unlink(missing_ok=True)
                 Path(str(managed_pack) + ".json").unlink(missing_ok=True)
-            raise FaceUnavailable("The original face could not be decrypted for this platform.")
+                raise
         if managed_pack is not None:
             _save(managed_pack, packed)
         _save(output, plain, self.owner)
@@ -644,27 +795,50 @@ class FacePlan:
     def resolve(self):
         if not self.enabled or self.owner is None or not self.needed:
             return []
-        candidates = []
         try:
-            candidates.extend(self._local())
-            for path in candidates:
-                if self._accept(path):
-                    break
-            if self.needed:
-                for descriptor in self._descriptors():
+            pending = []
+            # Exact original/cache identities come before the broad Unity-file
+            # search. A populated library must not consume the entire facial
+            # budget before we can reuse its already-downloaded original pack.
+            try:
+                for descriptor in self._descriptor_iter():
                     _check(self.deadline)
                     try:
-                        path = self._resource(descriptor)
-                        if self._accept(path):
+                        if self._accept(self._resource(descriptor, download=False)):
                             break
                     except Exception:
-                        # One missing optional pack cannot hide a valid costume.
+                        pending.append(descriptor)
+            except Exception:
+                # Standalone/local-only viewers do not need an asset catalog.
+                pass
+            if self.needed:
+                original_deadline = self.deadline
+                if pending and self.context.get("allow_download", True):
+                    # Leave time to obtain a known original when a large local
+                    # collection contains no usable same-character donor.
+                    self.deadline = min(self.deadline, time.monotonic() + 8)
+                try:
+                    for path in self._local():
+                        if self._accept(path):
+                            break
+                except Exception:
+                    pass
+                finally:
+                    self.deadline = original_deadline
+            if self.needed:
+                for descriptor in pending:
+                    _check(self.deadline)
+                    try:
+                        if self._accept(self._resource(descriptor)):
+                            break
+                    except Exception:
+                        # One missing optional pack cannot hide a costume.
                         continue
         except Exception:
             pass
         if self.needed:
             self.status = "partial" if self.auto_paths else "unavailable"
-            self.warn("face_source_unavailable", "The original face could not be obtained. The costume is still shown; keep a same-character original model locally or check the asset CDN connection.")
+            self.warn("face_source_unavailable", "The original face is unavailable. The costume is still shown; check the asset connection and try again.")
         else:
             self.status = "added"
         try:
@@ -689,8 +863,14 @@ class FacePlan:
             if not hasattr(self, "source_roles"):
                 self.source_roles = {}
             accepted_roles = set().union(*self.source_roles.values())
-            self.source_roles[path] = set(found) | ((roles(scene) & set(_AUXILIARY)) - self.initial_roles - accepted_roles)
-            self.needed.difference_update(found)
+            available = roles(scene)
+            auxiliaries = (available & (set(_AUXILIARY) | {"face_overlay", "board_shell"})) - self.initial_roles - accepted_roles
+            if self.face_mode == "board" and "board" not in available:
+                auxiliaries.clear()
+            if self.face_mode != "board" or "board" not in available:
+                auxiliaries.difference_update({"face_overlay", "board_shell"})
+            self.source_roles[path] = set(found) | auxiliaries
+            self.needed.difference_update(completion_roles(found))
             return not self.needed
         except Exception:
             return False
@@ -700,7 +880,7 @@ class FacePlan:
         source = _source_path(renderer)
         if source not in self.auto_paths:
             return True
-        role = facial_role(scene.name(game_object), scene.name(mesh), source in self.dynamic_sources)
+        role = renderer_role(scene, renderer, game_object, mesh, source in self.dynamic_sources)
         return role in self.source_roles.get(source, set())
 
     def world(self, scene, renderer, world):
@@ -732,7 +912,7 @@ class FacePlan:
         self.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
 
     def finish(self):
-        if self.required_roles - self.rendered_roles:
+        if self.required_roles - completion_roles(self.rendered_roles):
             self.status = "partial" if self.added else "unavailable"
         elif self.required_roles:
             self.status = "added"
