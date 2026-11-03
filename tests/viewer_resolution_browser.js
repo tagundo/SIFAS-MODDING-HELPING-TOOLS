@@ -6,6 +6,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { fixture } = require('./viewer_rig_browser');
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-resolution-'));
@@ -23,7 +24,9 @@ const profiles = [
 const temporaryPickerFiles = new Set();
 let pickerFixture = null;
 const lifecycleOnly = process.env.VIEWER_RESOLUTION_LIFECYCLE_ONLY === '1';
-const report = { status: 'RUNNING', runMode: lifecycleOnly ? 'LIFECYCLE_ONLY_DIAGNOSTIC' : 'FULL_SEVEN_PROFILES_AND_LIFECYCLE', scope: 'Generated skinned GLB through actual product viewer; strict visible target intersections and actual WebGL pixels; host/browser only', profiles: [], lifecycle: [] };
+const pickerRaceOnly = process.env.VIEWER_PICKER_RACE_ONLY === '1';
+assert(!(lifecycleOnly && pickerRaceOnly), 'Select one diagnostic mode at a time');
+const report = { status: 'RUNNING', runMode: pickerRaceOnly ? 'PICKER_RACE_ONLY_DIAGNOSTIC' : lifecycleOnly ? 'LIFECYCLE_ONLY_DIAGNOSTIC' : 'FULL_SEVEN_PROFILES_LIFECYCLE_AND_PICKER_RACES', scope: 'Generated skinned GLB through actual product viewer; strict visible target intersections and actual WebGL pixels; host/browser only', profiles: [], lifecycle: [] };
 const save = () => fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const state = page => page.evaluate(() => ModelViewer.getState());
 const retained = s => ({ modelId: s.modelId, loadedPaths: s.loadedPaths, camera: s.camera, qualityEnabled: s.quality.enabled,
@@ -349,12 +352,164 @@ async function collapseCards(page) {
   await page.evaluate(() => { document.querySelector('.viewer-control-panel').scrollTop = 0; scrollTo(0, 0); }); await closeMenus(page); await settle(page);
   return results;
 }
+async function pickerTransportRegressions(browser) {
+  const context = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const page = await context.newPage(), rules = [], responses = [], errors = [], dialogs = [], cases = [], modelRequests = [];
+  page.setDefaultTimeout(15000);
+  const result = { scope: 'Actual local filesystem API bytes transported unchanged; only completion order/explicit network rejection is controlled. Public picker controls and documented openPicker callback; no model prepare or synthetic positive API response.',
+    cases, responses, pageErrors: errors, dialogs, modelRequests };
+  report.pickerRaces = result; save();
+  const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+  const normalize = file => path.resolve(String(file));
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+  function arm(file, label, delivery = 'unchanged') {
+    const rule = { file: normalize(file), label, delivery, ready: deferred(), gate: deferred(), delivered: deferred(), taken: false, released: false };
+    rules.push(rule); return rule;
+  }
+  async function release(rule) {
+    if (!rule.released) { rule.released = true; rule.gate.resolve(); }
+    await rule.delivered.promise; await frames(page);
+  }
+  const loadedApplicationScript = deferred();
+  page.on('response', async response => { if (new URL(response.url()).pathname === '/static/app.js') { const bytes = await response.body(); result.applicationScriptSha256 = digest(bytes); result.applicationScriptUrl = response.url(); loadedApplicationScript.resolve(); save(); } });
+  page.on('pageerror', error => { errors.push(String(error)); save(); });
+  page.on('dialog', async dialog => { dialogs.push({ type: dialog.type(), message: dialog.message() }); save(); await dialog.dismiss(); });
+  page.on('request', request => { if (request.url().endsWith('/api/viewer/prepare')) modelRequests.push(request.postDataJSON()); });
+  await page.route('**/api/fs/list?*', async route => {
+    const file = normalize(new URL(route.request().url()).searchParams.get('path') || '');
+    const rule = rules.find(item => !item.taken && item.file === file);
+    if (rule) rule.taken = true;
+    try {
+      const actual = await route.fetch(), body = await actual.body();
+      const record = { index: responses.length + 1, requestedPath: file, url: route.request().url(), status: actual.status(), headers: actual.headers(), bytes: body.length,
+        sha256: digest(body), body: JSON.parse(body.toString('utf8')), label: rule ? rule.label : null, held: !!rule, delivery: rule ? rule.delivery : 'unchanged' };
+      responses.push(record); fs.writeFileSync(path.join(evidence, 'picker-real-response-' + record.index + '.json'), body); save();
+      if (rule) { rule.record = record; rule.ready.resolve(record); await rule.gate.promise; }
+      if (rule && rule.delivery === 'transport-abort') await route.abort('failed');
+      else await route.fulfill({ response: actual, body });
+      if (rule) rule.delivered.resolve();
+    } catch (error) {
+      if (rule) { rule.ready.reject(error); rule.delivered.reject(error); }
+      throw error;
+    }
+  });
+  let temporaryRoot = null;
+  const snapshot = () => page.evaluate(() => ({ hidden: document.getElementById('picker').classList.contains('hidden'),
+    crumb: document.getElementById('picker-crumb').textContent,
+    names: Array.from(document.querySelectorAll('#picker-entries > li'), li => Array.from(li.childNodes).filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim()),
+    title: document.getElementById('picker-title').textContent,
+    folderVisible: getComputedStyle(document.getElementById('picker-use-folder')).display !== 'none', folderDisabled: document.getElementById('picker-use-folder').disabled }));
+  const lastResponse = file => responses.filter(item => item.requestedPath === normalize(file)).slice(-1)[0];
+  async function expectDirectory(file, record, folderMode) {
+    await page.waitForFunction(expected => document.getElementById('picker-crumb').textContent === expected, file); await frames(page);
+    const current = await snapshot(), expected = record || lastResponse(file);
+    assert(expected && !expected.body.error && expected.body.path === file, 'Use a real successful server listing as the oracle');
+    const names = (expected.body.parent ? ['..'] : []).concat(expected.body.entries.filter(entry => entry.is_dir || !folderMode).map(entry => entry.name));
+    assert.deepEqual(current.names, names, 'Picker entries must equal the actual current listing');
+    assert.equal(current.hidden, false); assert.equal(current.folderVisible, !!folderMode);
+    if (folderMode) assert.equal(current.folderDisabled, false, 'A successfully validated current folder is usable');
+    return { current, expectedResponse: expected.index };
+  }
+  async function close() { if (!(await snapshot()).hidden) { await page.locator('#picker-cancel').click(); await frames(page); } }
+  async function openViewer(root) {
+    await page.locator('.tab[data-tab="viewer"]').click(); await page.locator('#viewer-add').click();
+    return expectDirectory(root, null, false);
+  }
+  async function openGallery(root) {
+    await page.locator('.tab[data-tab="gallery"]').click(); await page.locator('#gallery-browse').click();
+    return expectDirectory(root, null, true);
+  }
+  async function folder(name) {
+    await page.locator('#picker-entries > li').filter({ hasText: new RegExp('^\\s*📁?\\s*' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$') }).click();
+  }
+  async function modelsRoot() { await page.locator('#picker-roots > button').filter({ hasText: /^models$/ }).click(); }
+  async function attempt(id, body) {
+    const test = { id, status: 'RUNNING', pageErrorsBefore: errors.length, dialogsBefore: dialogs.length }; cases.push(test); save();
+    try { await body(test); }
+    catch (error) { test.error = { message: String(error), actual: error.actual, expected: error.expected, stack: error.stack }; }
+    finally {
+      for (const rule of rules.filter(item => item.taken && !item.released)) await release(rule);
+      await frames(page); test.after = await snapshot();
+      test.pageErrors = errors.slice(test.pageErrorsBefore); test.dialogs = dialogs.slice(test.dialogsBefore);
+      test.status = test.error || test.pageErrors.length || test.dialogs.length ? 'FAIL' : 'PASS'; save(); await close();
+    }
+  }
+  try {
+    await page.addInitScript(() => localStorage.setItem('sifas_lang', 'en'));
+    await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898'); await loadedApplicationScript.promise; await page.waitForFunction(() => typeof openPicker === 'function' && typeof openModelViewer === 'function');
+    const tools = await (await page.request.get((process.env.VIEWER_URL || 'http://127.0.0.1:8898') + '/api/tools')).json();
+    const models = normalize(tools.roots.models), modded = normalize(tools.roots.modded), baseName = 'viewer-picker-race-' + process.pid + '-' + Date.now();
+    temporaryRoot = path.join(models, baseName); const a = path.join(temporaryRoot, 'folder-a'), b = path.join(temporaryRoot, 'folder-b');
+    fs.mkdirSync(path.join(a, 'child-a'), { recursive: true }); fs.mkdirSync(path.join(b, 'child-b'), { recursive: true }); fs.mkdirSync(modded, { recursive: true });
+    for (const [directory, name] of [[a, 'neutral-a.unity'], [b, 'neutral-b.unity']]) fs.copyFileSync(path.join(__dirname, 'fixtures', 'viewer_textured_triangle.unity'), path.join(directory, name));
+    result.fixture = { root: temporaryRoot, sourceSha256: digest(fs.readFileSync(path.join(__dirname, 'fixtures', 'viewer_textured_triangle.unity'))), noGameAsset: true }; save();
+    async function openBase() { await openViewer(models); await folder(baseName); return expectDirectory(temporaryRoot, null, false); }
+    await attempt('cancel-pending-success-does-not-write-hidden-dom', async test => {
+      const pending = arm(models, 'cancelled-initial-models-list');
+      await page.locator('.tab[data-tab="viewer"]').click(); await page.locator('#viewer-add').click(); await pending.ready.promise;
+      test.pending = await snapshot(); await page.locator('#picker-cancel').click(); test.cancelled = await snapshot();
+      await release(pending); test.completed = await snapshot();
+      assert.deepEqual(test.completed, test.cancelled, 'A cancelled response must not write hidden picker DOM');
+    });
+    await attempt('close-reopen-new-session-ignores-old-success', async test => {
+      await openBase(); const old = arm(a, 'closed-session-folder-a'); await folder('folder-a'); await old.ready.promise;
+      await page.locator('#picker-cancel').click(); await openGallery(modded); await modelsRoot(); await expectDirectory(models, null, true);
+      await folder(baseName); await expectDirectory(temporaryRoot, null, true); await folder('folder-b'); test.latest = await expectDirectory(b, null, true);
+      await release(old); assert.deepEqual(await snapshot(), test.latest.current, 'Old picker-session results cannot replace the reopened current folder');
+      await page.locator('#picker-use-folder').click(); await page.waitForFunction(() => document.getElementById('picker').classList.contains('hidden'));
+      assert.equal(await page.locator('#gallery-path').inputValue(), b, 'The real gallery callback receives the current validated directory');
+    });
+    await attempt('same-session-out-of-order-folder-navigation-latest-wins', async test => {
+      await openBase(); const old = arm(models, 'same-session-models-folder-a'), latest = arm(modded, 'same-session-modded-folder-b');
+      await modelsRoot(); await old.ready.promise; await page.locator('#picker-roots > button').filter({ hasText: /^modded$/ }).click(); await latest.ready.promise;
+      await release(latest); test.latest = await expectDirectory(modded, latest.record, false);
+      await release(old); assert.deepEqual(await snapshot(), test.latest.current, 'A late earlier navigation cannot overwrite the latest current folder');
+    });
+    await attempt('stale-http-json-failure-does-not-alert-or-overwrite', async test => {
+      const gone = path.join(temporaryRoot, 'deleted-folder'); fs.mkdirSync(gone); await openBase(); fs.rmdirSync(gone);
+      const old = arm(gone, 'deleted-real-folder-http-json-error'); await folder('deleted-folder'); const response = await old.ready.promise;
+      assert(response.status >= 400 && response.body.error, 'Use the actual server HTTP/JSON failure, not a fabricated payload'); test.realFailureResponse = response.index;
+      await page.locator('#picker-roots > button').filter({ hasText: /^modded$/ }).click(); test.latest = await expectDirectory(modded, null, false); await release(old);
+      assert.deepEqual(await snapshot(), test.latest.current, 'A stale real HTTP/JSON error must not change current picker DOM');
+    });
+    await attempt('stale-transport-rejection-does-not-alert-or-overwrite', async test => {
+      await openBase(); const old = arm(a, 'real-response-followed-by-explicit-transport-rejection', 'transport-abort'); await folder('folder-a'); await old.ready.promise;
+      await page.locator('#picker-cancel').click(); await openViewer(models); await folder(baseName); await expectDirectory(temporaryRoot, null, false);
+      await folder('folder-b'); test.latest = await expectDirectory(b, null, false); await release(old);
+      assert.deepEqual(await snapshot(), test.latest.current, 'A rejected obsolete transport must not contaminate a later picker session');
+    });
+    await attempt('directory-open-clears-stale-ui-and-disables-unvalidated-folder-use', async test => {
+      const pending = arm(modded, 'pending-directory-picker-before-validated-cwd');
+      await page.locator('.tab[data-tab="gallery"]').click(); await page.locator('#gallery-browse').click(); await pending.ready.promise;
+      test.pending = await snapshot(); assert.equal(test.pending.folderVisible, true); assert.equal(test.pending.folderDisabled, true, 'Use folder is disabled until the current directory has been validated');
+      assert.equal(test.pending.crumb, '', 'Reopening clears the old displayed directory immediately'); assert.deepEqual(test.pending.names, [], 'Reopening clears old selectable entries immediately');
+      await release(pending); test.loaded = await expectDirectory(modded, pending.record, true);
+    });
+    await attempt('reentrant-actual-entry-callback-keeps-new-picker-session-open', async test => {
+      await page.evaluate(({ a, b }) => openPicker('path', () => openPicker('dir', () => {}, 'models', b), 'models', a), { a, b });
+      await expectDirectory(a, null, false); const next = arm(b, 'reentrant-next-picker-folder-b');
+      await page.locator('#picker-entries > li').filter({ hasText: 'neutral-a.unity' }).click(); await next.ready.promise;
+      test.pendingNewSession = await snapshot(); assert.equal(test.pendingNewSession.hidden, false, 'Closing the completed old selection must not close its reentrant replacement session');
+      assert.equal(test.pendingNewSession.folderVisible, true); assert.equal(test.pendingNewSession.folderDisabled, true);
+      await release(next); test.loaded = await expectDirectory(b, next.record, true);
+    });
+    result.status = cases.length === 7 && cases.every(test => test.status === 'PASS') && !errors.length && !dialogs.length ? 'PASS' : 'FAIL'; save();
+    assert.deepEqual(modelRequests, [], 'Filesystem race coverage must not fake or claim a model preparation');
+    assert.deepEqual(errors, [], 'No page errors are filtered or permitted'); assert.deepEqual(dialogs, [], 'No stale-response alerts are filtered or permitted');
+    assert(cases.length === 7 && cases.every(test => test.status === 'PASS'), 'Every deterministic picker race must pass: ' + JSON.stringify(cases.filter(test => test.status !== 'PASS').map(test => ({ id: test.id, error: test.error, pageErrors: test.pageErrors, dialogs: test.dialogs }))));
+    result.status = 'PASS'; save(); return result;
+  } finally {
+    for (const rule of rules.filter(item => item.taken && !item.released)) await release(rule).catch(() => {});
+    await context.close(); if (temporaryRoot) fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 (async () => {
   const launch = { headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] };
   if (process.env.CHROMIUM_EXECUTABLE) launch.executablePath = process.env.CHROMIUM_EXECUTABLE;
   const browser = await chromium.launch(launch);
   try {
-    for (const profile of lifecycleOnly ? [] : profiles) {
+    for (const profile of pickerRaceOnly || lifecycleOnly ? [] : profiles) {
       const test = { profile }; report.profiles.push(test); save();
       const { page, context, cdp, errors, requests } = await setup(browser, profile);
       try {
@@ -402,6 +557,7 @@ async function collapseCards(page) {
         save(); throw error;
       } finally { await context.close(); }
     }
+    if (!pickerRaceOnly) {
     // Reparenting a global header across short/normal modes while fullscreen is
     // active must retain focus isolation and restore the same original node.
     const profile = profiles[0], { page, context, cdp, errors } = await setup(browser, profile);
@@ -450,6 +606,8 @@ async function collapseCards(page) {
       try { report.lifecycleFailureImage = await capture(page, cdp, 'fullscreen-lifecycle-failure.png'); } catch (captureError) { report.lifecycleFailureCaptureError = String(captureError); }
       save(); throw error;
     } finally { await context.close(); }
+    }
+    if (!lifecycleOnly) await pickerTransportRegressions(browser);
     report.status = 'PASS'; save(); console.log(JSON.stringify({ status: report.status, profiles: report.profiles.length, lifecycleCases: report.lifecycle.length, evidence }));
   } catch (error) { report.status = 'FAIL'; report.error = { message: String(error), stack: error.stack, actual: error.actual, expected: error.expected }; save(); throw error; }
   finally { await browser.close(); for (const file of temporaryPickerFiles) { if (fs.existsSync(file)) fs.unlinkSync(file); } }
