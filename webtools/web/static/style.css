@@ -327,6 +327,7 @@ main { padding: 14px; }
 .viewer-motion-row, .viewer-expression-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
 .viewer-adjustments input[type=range] { min-height: 36px; }
 .viewer-motion-choice, .viewer-expression-row > label { display: flex; flex: 1 1 200px; min-width: 0; flex-direction: column; gap: 5px; font-size: 13px; }
+.viewer-motion-choice { flex: 1 1 0; min-width: 0; }
 .viewer-time { display: flex; flex: 1 1 240px; align-items: center; gap: 8px; min-width: 0; }
 .viewer-time input { min-width: 40px; flex: 1; }
 .viewer-time output { font-size: 12px; white-space: nowrap; }

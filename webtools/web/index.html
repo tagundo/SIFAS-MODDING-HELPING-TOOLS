@@ -97,6 +97,7 @@
                   <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
                   <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
                   <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
+                  <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
                   <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
                 </div>
               </details>
@@ -106,13 +107,12 @@
           <div class="viewer-control-panel">
           <details id="viewer-adjustments" class="viewer-adjustments" open>
             <summary data-i18n="Pose and body">Pose and body</summary>
-            <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
-            <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
             <div class="viewer-motion-row">
               <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
+            <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
               <div class="viewer-body-controls">
