@@ -221,6 +221,53 @@ async function primaryNavigationTargets(browser) {
     assert.deepEqual(errors, []); return rows;
   } finally { await context.close(); }
 }
+// Measure the real motion selector in bounded inspectors, where an elastic
+// time row must not squeeze the label into a vertical strip or the select shut.
+async function motionChoiceReadability(browser) {
+  const profiles = [
+    { id: 'sidebar-280', width: 853, height: 590, panelWidth: 280 },
+    { id: 'sidebar-320', width: 1024, height: 768, panelWidth: 320 },
+    { id: 'panel-332', width: 360, height: 900, panelWidth: 332 },
+    { id: 'panel-360', width: 388, height: 900, panelWidth: 360 },
+    { id: 'wide-inspector', width: 1692, height: 919 }
+  ];
+  const { page, context, errors } = await openPage(browser);
+  const rows = [];
+  try {
+    await frames(page); const before = retained(await state(page));
+    for (const language of ['en', 'ko', 'ja']) {
+      await page.locator('#lang-select').selectOption(language);
+      await page.waitForFunction(code => document.documentElement.lang === code, language);
+      for (const profile of profiles) {
+        await page.setViewportSize({ width: profile.width, height: profile.height });
+        await frames(page);
+        await page.waitForFunction(() => ModelViewer.getState().loaded && ModelViewer.getState().quality.ready);
+        const value = await page.evaluate(() => {
+          const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+          const row = document.querySelector('.viewer-motion-row'), label = document.querySelector('.viewer-motion-choice > span'), style = getComputedStyle(label);
+          return { panel: rect('.viewer-control-panel'), row: rect('.viewer-motion-row'), label: rect('.viewer-motion-choice > span'),
+            select: rect('#viewer-motion'), play: rect('#viewer-play'), timer: rect('.viewer-time'),
+            labelText: label.textContent, labelLineHeight: parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2,
+            rowGap: parseFloat(getComputedStyle(row).columnGap), rowOverflow: row.scrollWidth > row.clientWidth + 1,
+            pageOverflow: document.documentElement.scrollWidth > innerWidth + 1 };
+        });
+        if (profile.panelWidth) assert(Math.abs(value.panel.width - profile.panelWidth) <= 1, 'Exercise the intended actual inspector width: ' + JSON.stringify({ profile, value }));
+        const availableBesidePlay = value.row.width - value.play.width - value.rowGap;
+        assert(value.select.width >= Math.min(140, availableBesidePlay) - 1,
+          'Motion selection retains a readable width where the real row has room: ' + JSON.stringify({ language, profile, value }));
+        assert(value.label.height <= value.labelLineHeight * 2 + 1, 'Motion label must not wrap one character per line: ' + JSON.stringify({ language, profile, value }));
+        assert(Math.abs(value.select.bottom - value.play.bottom) <= 1 && value.play.x >= value.select.right - 1,
+          'Play remains beside the selector on its first row: ' + JSON.stringify({ language, profile, value }));
+        if (value.row.width <= 380) assert(value.timer.y >= Math.max(value.select.bottom, value.play.bottom) + 7,
+          'The time control wraps below a narrow inspector instead of crushing its selector: ' + JSON.stringify({ language, profile, value }));
+        assert.equal(value.rowOverflow, false); assert.equal(value.pageOverflow, false);
+        assert.deepEqual(retained(await state(page)), before, 'Motion reflow preserves the model, camera, pose and edits');
+        rows.push({ language, profile, ...value });
+      }
+    }
+    assert.deepEqual(errors, []); return rows;
+  } finally { await context.close(); }
+}
 (async () => {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',
     args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -234,6 +281,7 @@ async function primaryNavigationTargets(browser) {
       console.log(JSON.stringify({ status: report.status, navigationProfiles: report.primaryNavigation.length, evidence }));
       return;
     }
+    report.motionReadability = await motionChoiceReadability(browser);
     {
       const model = originalUnityTriangle();
       const { page, context, errors } = await openPage(browser, 'browser', { width: 360, height: 456 }, 2, model);
