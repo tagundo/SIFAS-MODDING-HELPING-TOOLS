@@ -118,6 +118,61 @@ function retained(state) {
     sourceTriangles: state.sourceTriangles, stats: state.stats };
 }
 
+async function exerciseSizingNoOps(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const reference = await capture(page, 'sizing-no-op-reference');
+  const observations = await page.evaluate(() => {
+    const observer = window.__qualitySizingQa, quality = observer.controller;
+    const initial = quality.getState(), ratioProperty = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+    const result = {}, draw = () => ModelViewer.renderProbe(33);
+    function repeats() {
+      const start = quality.getState(), allocations = __qualityGpu.allocations.length;
+      observer.calls.length = 0;
+      for (let count = 0; count < 12; count++) quality.resize(start.cssWidth, start.cssHeight);
+      return { before: start, after: quality.getState(), setters: observer.calls.slice(),
+        newAllocations: __qualityGpu.allocations.length - allocations };
+    }
+    try {
+      result.standard = repeats();
+      quality.resize(initial.cssWidth + 8, initial.cssHeight + 6);
+      result.actualResize = quality.getState();
+      quality.resize(initial.cssWidth, initial.cssHeight); draw();
+      quality.setEnabled(true); quality.resize(initial.cssWidth, initial.cssHeight); draw();
+      result.high = repeats();
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.25 });
+      quality.resize(initial.cssWidth, initial.cssHeight); result.actualDprChange = quality.getState(); draw();
+      const highDimensions = quality.getState();
+      quality.setEnabled(false); quality.resize(initial.cssWidth, initial.cssHeight);
+      result.equalResolutionModeChange = { before: highDimensions, after: quality.getState() }; draw();
+      quality.invalidateGPU(); quality.restoreGPU(); quality.resize(initial.cssWidth, initial.cssHeight);
+      result.gpuRestore = quality.getState(); draw();
+    } finally {
+      if (ratioProperty) Object.defineProperty(window, 'devicePixelRatio', ratioProperty);
+      else delete window.devicePixelRatio;
+      quality.setEnabled(initial.enabled); quality.resize(initial.cssWidth, initial.cssHeight); draw();
+    }
+    return result;
+  });
+  for (const mode of ['standard', 'high']) {
+    const row = observations[mode];
+    assert(row.before.ready && row.after.ready, mode + ': identical measurements must keep the actual rendered pipeline ready');
+    assert.deepEqual(row.setters, [], mode + ': repeated observers must not reset the canvas or GPU resources');
+    assert.equal(row.newAllocations, 0);
+    assert.equal(row.before.width, row.after.width); assert.equal(row.before.height, row.after.height);
+  }
+  for (const key of ['actualResize', 'actualDprChange', 'gpuRestore']) {
+    assert.equal(observations[key].ready, false, key + ': real invalidation still requires a new draw');
+  }
+  const equal = observations.equalResolutionModeChange;
+  assert.equal(equal.before.width, equal.after.width); assert.equal(equal.before.height, equal.after.height);
+  assert.notEqual(equal.before.enabled, equal.after.enabled);
+  assert.equal(equal.after.ready, false, 'A quality-mode change cannot be hidden by identical pixel dimensions');
+  const restored = await capture(page, null, 'sizing-no-op-reference');
+  assert.equal(restored.changedPixels, 0, 'Sizing/HQ/DPR/GPU resource checks must restore exact source pixels');
+  assert.equal(restored.glError, 0); assert.equal(reference.glError, 0);
+  return observations;
+}
+
 async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
   let generated = fixture({ allSaved: true, previewName, previewVerified: true, textureData });
   const context = await browser.newContext({ viewport: { width: 480, height: 780 }, deviceScaleFactor: 2.5 });
@@ -155,6 +210,17 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
   try {
     await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898');
     await page.waitForFunction(() => typeof openModelViewer === 'function' && !!window.ViewerQuality);
+    await page.evaluate(() => {
+      const create = ViewerQuality.create;
+      ViewerQuality.create = function (renderer) {
+        const observer = window.__qualitySizingQa = { renderer, calls: [] };
+        for (const name of ['setSize', 'setPixelRatio']) {
+          const original = renderer[name];
+          renderer[name] = function () { observer.calls.push({ name, args: Array.from(arguments) }); return original.apply(this, arguments); };
+        }
+        return observer.controller = create.apply(this, arguments);
+      };
+    });
     await open('quality-basic');
     const checkbox = page.locator('#viewer-high-quality');
     assert(await checkbox.isVisible(), 'Quality switch must be visible outside collapsed display options');
@@ -189,6 +255,7 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
     assert.equal(before.rig.expressions[0].weight, .65, 'Quality round trips retain an actual selected expression');
     assert(standard.probe.ready && standard.objectSamples > 20 && standard.glError === 0);
     assert.equal(standard.probe.triangles, 1); assert.equal(standard.probe.sourceTriangles, 1);
+    const sizingNoOps = await exerciseSizingNoOps(page);
     const requestCount = requests.length;
     await setQuality(true);
     const high = await state(), hq = await capture(page, 'hq');
@@ -225,8 +292,10 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
       if (forceNoAA) {
         assert.equal(hq.contextSamples, 0);
         assert.equal(high.quality.mode, 'native-resolution');
+        await page.locator('#viewer-info').evaluate(element => { element.open = true; });
         assert(await page.locator('#viewer-quality-status').isVisible());
         assert((await page.locator('#viewer-quality-status').innerText()).includes('edge smoothing is unavailable'));
+        await page.locator('#viewer-info').evaluate(element => { element.open = false; });
       }
     }
     const uploaded = gpu.uploads;
@@ -310,7 +379,7 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
     const reopened = await capture(page); assert.equal(reopened.glError, 0); assert.equal(reopened.probe.triangles, 2);
     assert.deepEqual(errors, []);
     assert(!gpuMessages.some(message => /GL_INVALID|INVALID_OPERATION|THREE.WebGLProgram/.test(message)), JSON.stringify(gpuMessages));
-    return { target: targetName, status: 'PASS', hit, requests,
+    return { target: targetName, status: 'PASS', hit, requests, sizingNoOps,
       standard, high: { state: high.quality, frame: hq }, returned, repeated, resized,
       playing: { before: playingBefore.rig.time, after: playingAfter.rig.time }, recovered,
       member: { standard: memberStandard, high: memberHigh }, disposal: { before: beforeDispose, after: afterDispose },

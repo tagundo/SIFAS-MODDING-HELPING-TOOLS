@@ -43,6 +43,8 @@
     var search = document.getElementById("viewer-node-search"), filter = document.getElementById("viewer-node-filter");
     var shortcutButtons = {}, changeButtons = {};
     var poseCache = null;
+    var compensationCheck = document.getElementById("bone-compensate-children"), compensationChoice = document.getElementById("bone-compensate-target");
+    var compensationStatus = document.getElementById("bone-compensation-status"), automaticRow = null;
     var ownedLists = [document.getElementById("viewer-node-shortcuts"), document.getElementById("viewer-node-change-list")];
     ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
     if (search) search.value = "";
@@ -135,11 +137,32 @@
         var value = flags(bone.id); return value.modified || value.body || value.expression;
       }), "No changed bones.");
     }
+    function refreshInputValidation() {
+      var messages = [];
+      Object.keys(fields).forEach(function (kind) {
+        fields[kind].forEach(function (input) {
+          var key = input.dataset.viewerValidation;
+          if (key) messages.push(input.dataset.axis + ": " + translate(key));
+        });
+      });
+      validation.textContent = messages.join(" "); validation.hidden = !messages.length;
+    }
+    function clearInputValidation(input) {
+      input.setCustomValidity(""); input.removeAttribute("aria-invalid"); input.removeAttribute("aria-describedby"); input.removeAttribute("title");
+      delete input.dataset.viewerValidation;
+    }
     function read(kind, axis, input) {
-      if (!selected || !enabled || !input.value.trim() || !isFinite(Number(input.value))) return;
+      if (!selected || !enabled) return;
       var value = Number(input.value), baseline = options.value(selected, false);
-      if (!baseline || value < Number(input.min) || value > Number(input.max)) return;
-      if (kind === "scale" && Math.abs(value) < 1e-8) return;
+      if (!baseline) return;
+      var invalid = !input.value.trim() || !isFinite(value) || value < Number(input.min) || value > Number(input.max) || kind === "scale" && Math.abs(value) < 1e-8;
+      if (invalid) {
+        var key = kind === "scale" ? "Scale must be a finite nonzero number between -1000000 and 1000000." : "Enter a finite number between -1000000 and 1000000.";
+        input.dataset.viewerValidation = key; input.setCustomValidity(translate(key)); input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", validation.id); input.title = translate(key); refreshInputValidation();
+        return;
+      }
+      clearInputValidation(input); refreshInputValidation();
       var previous = options.adjustment(selected);
       var absolute = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
       ["scale", "position", "rotation"].forEach(function (name) {
@@ -157,7 +180,39 @@
       options.change(selected, adjustmentEmpty(absolute) ? null : absolute);
       refresh(false);
     }
+    function refreshCompensation() {
+      var value = selected && options.compensation ? options.compensation(selected) : null;
+      var state = value && value.parent, incoming = value && value.incoming || [];
+      if (compensationCheck) { compensationCheck.checked = !!(state && state.enabled); compensationCheck.disabled = !enabled || !state; }
+      if (compensationChoice) { compensationChoice.value = state ? state.mode : "auto"; compensationChoice.disabled = !enabled || !state; }
+      if (compensationStatus) {
+        var labels = { off: "Child compensation is off.", ready: "Child compensation is ready; change this bone’s scale to activate it.",
+          active: "Child compensation is active.", unavailable: "Child compensation is unavailable." };
+        var text = state ? translate(labels[state.state]) : translate("Choose a bone to edit.");
+        if (state && state.reason && state.enabled) text += " " + translate(state.reason);
+        if (state && state.state === "unavailable") text += " " + translate("No compensation was applied.");
+        if (state) text += " " + translate("Targets") + ": " + (state.targets.length ? state.targets.map(function (target) { return target.name + " [" + target.node + "]"; }).join(", ") : "—");
+        if (state && state.mode === "both") text += ". " + translate("Each target boundary is corrected separately; corrections accumulate farther down the hierarchy.");
+        if (compensationStatus.textContent !== text) compensationStatus.textContent = text;
+        compensationStatus.dataset.viewerCompensationState = state ? state.state : "off";
+        compensationStatus.classList.toggle("error", !!state && state.state === "unavailable");
+      }
+      var baseline = document.getElementById("viewer-node-baseline");
+      if (!baseline) return;
+      if (!incoming.length) { if (automaticRow && automaticRow.parentNode) automaticRow.parentNode.removeChild(automaticRow); return; }
+      if (!automaticRow) {
+        automaticRow = document.createElement("div"); automaticRow.dataset.viewerValueSource = "compensation"; automaticRow.dataset.viewerValueKind = "affine";
+      }
+      var parentIds = [], shear = incoming.some(function (target) { return target.shear; });
+      incoming.forEach(function (target) { target.from.forEach(function (id) { if (parentIds.indexOf(id) < 0) parentIds.push(id); }); });
+      var parents = parentIds.map(function (id) { var bone = bones.filter(function (entry) { return entry.id === id; })[0]; return bone ? plainName(bone) + " [" + id + "]" : id; });
+      automaticRow.textContent = translate("Automatic affine compensation") + ": " + parents.join(", ") + ". " +
+        translate(shear ? "Includes shear; manual TRS values stay unchanged." : "Manual TRS values stay unchanged.");
+      automaticRow.dataset.viewerCompensationShear = String(shear);
+      if (!automaticRow.parentNode) baseline.appendChild(automaticRow);
+    }
     function refreshPose() {
+      refreshCompensation();
       if (disposed || !poseCache || poseCache.selected !== selected) return;
       var poseValue = options.poseValue ? options.poseValue(selected) : null;
       var pose = poseValue ? toUI(THREE, poseValue, poseCache.savedEuler) : null;
@@ -200,10 +255,11 @@
       Object.keys(fields).forEach(function (kind) {
         fields[kind].forEach(function (input, axis) {
           input.disabled = !enabled || !exists;
-          if (!exists) { input.value = ""; return; }
-          if (force || document.activeElement !== input) input.value = format(value[kind][axis], kind);
+          if (!exists) { input.value = ""; clearInputValidation(input); return; }
+          if (force || document.activeElement !== input) { input.value = format(value[kind][axis], kind); clearInputValidation(input); }
         });
       });
+      refreshInputValidation();
       document.getElementById("viewer-node-reset").disabled = !enabled || !exists || !flags(selected).modified;
       var status = document.getElementById("viewer-node-status"), baseline = document.getElementById("viewer-node-baseline");
       if (status) status.textContent = exists ? optionLabel(bones.filter(function (bone) { return bone.id === selected; })[0]) : translate("Choose a bone to edit.");
@@ -239,8 +295,12 @@
           refreshPose();
         }
       }
+      refreshCompensation();
     }
     var holder = document.getElementById("viewer-node-fields"); holder.textContent = "";
+    var validation = document.createElement("p"); validation.id = "viewer-node-validation"; validation.className = "viewer-status error";
+    validation.hidden = true; validation.setAttribute("role", "status"); validation.setAttribute("aria-live", "polite");
+    holder.parentNode.insertBefore(validation, holder.nextSibling);
     [["scale", "Scale (local factor)", -1000000, 1000000, .001], ["rotation", "Rotation (degrees)", -1000000, 1000000, 1],
       ["position", "Position (model units)", -1000000, 1000000, .001]].forEach(function (definition) {
       var kind = definition[0], row = document.createElement("div"); row.className = "viewer-node-vector";
@@ -258,6 +318,13 @@
     listen(list, "change", function () { select(this.value, false); });
     listen(search, "input", function () { refresh(true); });
     listen(filter, "change", function () { refresh(true); });
+    function changeCompensation() {
+      if (!selected || !enabled || !options.changeCompensation) return;
+      options.changeCompensation(selected, { enabled: !!(compensationCheck && compensationCheck.checked), mode: compensationChoice ? compensationChoice.value : "auto" });
+      refresh(true);
+    }
+    listen(compensationCheck, "change", changeCompensation);
+    listen(compensationChoice, "change", changeCompensation);
     listen(document.getElementById("viewer-node-reset"), "click", function () { if (selected) { options.change(selected, null); refresh(true); } });
     selected = bones.some(function (bone) { return plainName(bone) === "Head"; }) ?
       bones.filter(function (bone) { return plainName(bone) === "Head"; })[0].id : bones.length ? bones[0].id : "";
@@ -275,7 +342,13 @@
       dispose: function () {
         if (disposed) return;
         disposed = true; enabled = false; poseCache = null;
+        if (compensationCheck) { compensationCheck.checked = false; compensationCheck.disabled = true; }
+        if (compensationChoice) compensationChoice.disabled = true;
+        if (compensationStatus) compensationStatus.textContent = "";
+        if (automaticRow && automaticRow.parentNode) automaticRow.parentNode.removeChild(automaticRow);
+        automaticRow = null;
         events.forEach(function (remove) { remove(); }); holder.textContent = "";
+        if (validation.parentNode) validation.parentNode.removeChild(validation);
         ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
         shortcutButtons = {}; changeButtons = {};
       }

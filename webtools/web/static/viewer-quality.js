@@ -30,6 +30,7 @@
     var nativePixelRatio = 1;
     var effectivePixelRatio = 1;
     var dimensionLimited = false;
+    var sizingInvalidated = true;
     var modelInfo = { triangles: 0, calls: 0, lines: 0, points: 0 };
     var size = new T.Vector2();
 
@@ -46,25 +47,41 @@
       value = !!value;
       if (value === enabled) return;
       enabled = value;
+      sizingInvalidated = true;
       allocationFailed = false;
       fallbackReason = "";
       releaseTarget();
     }
     function resize(width, height) {
       if (disposed || interrupted || !width || !height) return;
-      cssWidth = Math.max(1, width);
-      cssHeight = Math.max(1, height);
+      var nextWidth = Math.max(1, width);
+      var nextHeight = Math.max(1, height);
       var ratio = Number(window.devicePixelRatio) || 1;
-      nativePixelRatio = isFinite(ratio) && ratio > 0 ? ratio : 1;
-      var requested = enabled ? nativePixelRatio : Math.min(nativePixelRatio, 1.75);
+      var nextNativeRatio = isFinite(ratio) && ratio > 0 ? ratio : 1;
+      var requested = enabled ? nextNativeRatio : Math.min(nextNativeRatio, 1.75);
       var gl = context();
       var viewport = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
       var maximum = Math.min(renderer.capabilities.maxTextureSize,
         gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), viewport[0], viewport[1]);
-      effectivePixelRatio = Math.min(requested, maximum / cssWidth, maximum / cssHeight);
+      var nextEffectiveRatio = Math.min(requested, maximum / nextWidth, maximum / nextHeight);
+      renderer.getDrawingBufferSize(size);
+      // Three's sizing setters reassign the canvas dimensions even when they
+      // are identical. HUD/layout observers may repeat a resize after a frame
+      // is ready, so preserve that frame and readiness for unchanged sizing.
+      var unchanged = !sizingInvalidated && cssWidth === nextWidth && cssHeight === nextHeight &&
+        nativePixelRatio === nextNativeRatio && effectivePixelRatio === nextEffectiveRatio &&
+        renderer.getPixelRatio() === nextEffectiveRatio &&
+        size.x === Math.floor(nextWidth * nextEffectiveRatio) && size.y === Math.floor(nextHeight * nextEffectiveRatio) &&
+        gl.drawingBufferWidth === size.x && gl.drawingBufferHeight === size.y;
+      cssWidth = nextWidth;
+      cssHeight = nextHeight;
+      nativePixelRatio = nextNativeRatio;
+      effectivePixelRatio = nextEffectiveRatio;
       dimensionLimited = effectivePixelRatio < requested;
-      renderer.setPixelRatio(effectivePixelRatio);
+      if (unchanged) return;
+      if (renderer.getPixelRatio() !== effectivePixelRatio) renderer.setPixelRatio(effectivePixelRatio);
       renderer.setSize(cssWidth, cssHeight, false);
+      sizingInvalidated = false;
       contextSamples = gl.getParameter(gl.SAMPLES);
       renderer.getDrawingBufferSize(size);
       if (target && (target.width !== size.x || target.height !== size.y)) {
@@ -224,6 +241,7 @@
     }
     function invalidateGPU() {
       interrupted = true;
+      sizingInvalidated = true;
       ready = false;
       // Three replaces its GPU-property cache on context restoration. Detach
       // the old target's disposal listener while its old handles still exist.
@@ -232,6 +250,8 @@
     }
     function restoreGPU() {
       interrupted = false;
+      sizingInvalidated = true;
+      ready = false;
       allocationFailed = false;
       fallbackReason = "";
       pendingGLErrors = pendingGLErrors.filter(function (error) { return error !== 0x9242; });

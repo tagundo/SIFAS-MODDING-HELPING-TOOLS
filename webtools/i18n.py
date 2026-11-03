@@ -1686,6 +1686,36 @@ _VIEWER_TRANSLATIONS.update({
     "Visible": ["표시", "表示"],
     "Hidden": ["숨김", "非表示"],
 })
+_VIEWER_TRANSLATIONS.update({
+    "Full screen": ["전체 화면", "全画面表示"],
+    "Exit full screen": ["전체 화면 닫기", "全画面表示を終了"],
+    "Model information": ["모델 정보", "モデル情報"],
+    "Model options": ["모델 옵션", "モデル設定"],
+    "Compensate child bone scale": ["하위 본 배율 보정", "子ボーンの倍率を補正"],
+    "Compensation targets": ["보정 대상", "補正対象"],
+    "Immediate child bones (auto)": ["바로 아래 본 (자동)", "直下の子ボーン（自動）"],
+    "Child compensation is off.": ["하위 본 배율 보정이 꺼져 있습니다.", "子ボーンの倍率補正はオフです。"],
+    "Child compensation is ready; change this bone’s scale to activate it.": ["이 본의 배율을 바꾸면 하위 본을 보정합니다.", "このボーンの倍率を変更すると、子ボーンを補正します。"],
+    "Child compensation is active.": ["하위 본 배율 보정을 적용 중입니다.", "子ボーンの倍率を補正中です。"],
+    "Child compensation is unavailable.": ["이 설정에는 하위 본 배율 보정을 적용할 수 없습니다.", "この設定には子ボーンの倍率補正を適用できません。"],
+    "Targets": ["대상", "対象"],
+    "No descendant bone matches this target choice.": ["선택한 대상에 해당하는 하위 본이 없습니다.", "選択した対象に一致する子孫ボーンがありません。"],
+    "The target name is ambiguous in this bone’s descendants.": ["같은 이름의 하위 본이 여러 개여서 대상을 정할 수 없습니다.", "同名の子孫ボーンが複数あるため、対象を特定できません。"],
+    "A baseline transform has zero or invalid scale.": ["기준 본의 배율이 0이거나 올바르지 않습니다.", "基準ボーンの倍率が0、または無効です。"],
+    "The edited scale cannot be inverted.": ["입력한 배율의 역보정을 계산할 수 없습니다.", "入力した倍率の逆補正を計算できません。"],
+    "Automatic affine compensation": ["자동 행렬 보정", "自動行列補正"],
+    "Includes shear; manual TRS values stay unchanged.": ["기울어짐 보정을 포함합니다. 직접 입력한 이동·회전·배율 값은 유지합니다.", "せん断補正を含みます。手動入力した移動・回転・倍率の値は維持します。"],
+    "Manual TRS values stay unchanged.": ["직접 입력한 이동·회전·배율 값은 유지합니다.", "手動入力した移動・回転・倍率の値は維持します。"],
+    "No automatic compensation on this bone.": ["이 본에는 자동 보정이 적용되지 않았습니다.", "このボーンには自動補正が適用されていません。"],
+    "Incoming automatic compensation": ["상위 본에서 받은 자동 보정", "親ボーンから受ける自動補正"],
+    "No compensation was applied.": ["보정은 적용하지 않았습니다.", "補正は適用されませんでした。"],
+    "Full screen is unavailable here. Expanded view is open.": ["전체 화면을 사용할 수 없어 크게 보기를 열었습니다.", "ここでは全画面表示を利用できないため、拡大表示を開きました。"],
+    "Each target boundary is corrected separately; corrections accumulate farther down the hierarchy.": ["각 대상 경계를 따로 보정하므로, 더 아래 단계에는 보정이 누적됩니다.", "各対象の境界を個別に補正するため、階層の下側ほど補正が累積します。"],
+    "Enter a finite number between -1000000 and 1000000.": ["-1000000~1000000 사이의 유효한 숫자를 입력하세요.", "-1000000から1000000の範囲で有限の数値を入力してください。"],
+    "Scale must be a finite nonzero number between -1000000 and 1000000.": ["배율은 -1000000~1000000 사이에서 0을 제외한 유효한 숫자여야 합니다.", "倍率には-1000000から1000000の範囲で0以外の有限の数値を入力してください。"],
+    "A shader texture could not be loaded.": ["셰이더 텍스처를 불러오지 못했습니다.", "シェーダーテクスチャを読み込めませんでした。"],
+    "Auxiliary shader texture loading is unavailable.": ["추가 셰이더 텍스처를 불러올 수 없습니다.", "補助シェーダーテクスチャを読み込めません。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
