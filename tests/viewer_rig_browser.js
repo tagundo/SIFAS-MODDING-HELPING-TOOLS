@@ -477,10 +477,14 @@ if(require.main===module)(async()=>{
       await page.locator('#lang-select').selectOption(lang);await page.waitForFunction(label=>document.getElementById('viewer-pose-basic').textContent===label,basicLabel);assert.equal(await page.locator('#viewer-pose-preview').innerText(),posedLabel);
       for(const viewport of [{width:320,height:900},{width:720,height:400},{width:1366,height:900}]){
         await page.setViewportSize(viewport);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+        const compact=viewport.width<760&&viewport.height<=560;
+        await page.waitForFunction(expected=>ModelViewer.getState().layout.compactControls===expected,compact);
+        if(compact)await page.locator('#viewer-view-menu > summary').click();
         for(const id of ['viewer-pose-basic','viewer-pose-preview']){
           await page.locator('#'+id).scrollIntoViewIfNeeded();const button=await page.locator('#'+id).evaluate(element=>{const r=element.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return{width:r.width,height:r.height,left:r.x,right:r.right,viewport:innerWidth,hit:hit===element||element.contains(hit),insideDetails:!!element.closest('details'),pressed:element.getAttribute('aria-pressed')};});
-          assert(button.width>=44&&button.height>=44&&button.left>=0&&button.right<=button.viewport);assert(button.hit&&!button.insideDetails);responsiveButtons.push({lang,viewport,id,...button});
+          assert(button.width>=44&&button.height>=44&&button.left>=0&&button.right<=button.viewport);assert(button.hit);assert.equal(button.insideDetails,compact,'Only the intentionally compact short-phone layout groups pose buttons in the accessible View controls menu');responsiveButtons.push({lang,viewport,id,...button});
         }
+        if(compact)await page.keyboard.press('Escape');
       }
     }
     await page.screenshot({path:path.join(evidence,'synthetic-pose-buttons-ui.png'),fullPage:true});
