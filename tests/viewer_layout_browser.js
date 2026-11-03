@@ -98,6 +98,49 @@ function assertHud(value) {
   assert.equal(value.glError, 0);
   assert(value.foregroundPixels > 100 && value.foregroundHeight > 50, 'Real model pixels must remain visible');
 }
+// An empty viewer already provides a natural document scroll range. Its later
+// file bar must not cover any part of the sticky primary navigation targets.
+async function stickyHeaderNaturalScroll(browser) {
+  const context = await browser.newContext({ viewport: { width: 752, height: 699 }, deviceScaleFactor: 1.125 });
+  const page = await context.newPage(), errors = [], modelRequests = [], observations = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('request', request => { if (request.url().includes('/api/viewer/prepare')) modelRequests.push(request.url()); });
+  await page.addInitScript(() => localStorage.setItem('sifas_lang', 'en'));
+  try {
+    await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898');
+    await page.waitForFunction(() => !!window.ModelViewer && typeof openModelViewer === 'function');
+    await page.locator('.tab[data-tab="viewer"]').click(); await frames(page);
+    assert(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight), 'Use the real unloaded-viewer document scroll range');
+    for (let step = 0; step < 12; step++) {
+      if (step) {
+        // Scroll the real document margin, leaving the canvas wheel gesture for zoom.
+        await page.mouse.move(750, 500); await page.mouse.wheel(0, 100);
+        if (step === 1) await page.waitForFunction(() => scrollY > 0, null, { timeout: 5000 });
+        await frames(page);
+      }
+      const observation = await page.evaluate(() => {
+        const target = document.querySelector('.tab[data-tab="tools"]'), header = document.querySelector('body > header'), files = document.querySelector('#tab-viewer .viewer-files');
+        const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom }; };
+        const r = target.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, edge = 21, diagonal = edge / Math.sqrt(2);
+        const samples = [[0, 0], [-edge, 0], [edge, 0], [0, -edge], [0, edge], [-diagonal, -diagonal], [diagonal, -diagonal], [-diagonal, diagonal], [diagonal, diagonal]].map(([dx, dy]) => {
+          const hit = document.elementFromPoint(x + dx, y + dy);
+          return { x: x + dx, y: y + dy, hit: !!hit && (hit === target || target.contains(hit)), tag: hit && hit.tagName, id: hit && hit.id };
+        });
+        return { scrollY, viewport: { width: innerWidth, height: innerHeight }, target: rect(target), header: rect(header), files: rect(files), samples,
+          headerZ: getComputedStyle(header).zIndex, fileBarZ: getComputedStyle(files).zIndex, loaded: ModelViewer.getState().loaded };
+      });
+      assert(observation.target.width >= 43.5 && observation.target.height >= 43.5 && observation.samples.every(sample => sample.hit),
+        'All nine actual points in the primary Tools touch target remain reachable during natural scroll: ' + JSON.stringify(observation));
+      assert.equal(observation.loaded, false); observations.push(observation);
+    }
+    assert(observations.some(value => value.scrollY > 0 && value.files.y < value.target.bottom && value.files.bottom > value.target.y),
+      'Natural mouse-wheel scrolling must move the real file bar behind the sticky navigation: ' + JSON.stringify(observations));
+    await page.locator('.tab[data-tab="tools"]').click();
+    assert(await page.locator('#tab-tools').evaluate(element => element.classList.contains('active')), 'The scrolled Tools target performs its actual navigation');
+    assert.deepEqual(errors, []); assert.deepEqual(modelRequests, []);
+    return { status: 'PASS', scope: 'Actual empty viewer and mouse-wheel document scroll; no padding, overlays or model preparation', observations };
+  } finally { await context.close(); }
+}
 // Native webview-sized CSS profiles cover the tablet, inner Fold orientations,
 // and cover orientations. These are host layout regressions, not device claims.
 async function primaryNavigationTargets(browser) {
@@ -178,6 +221,7 @@ async function primaryNavigationTargets(browser) {
     args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const report = { status: 'RUNNING', scope: 'Original generated rig through real viewer/GL/DOM and actual browser fullscreen', layouts: [], lifecycles: [] };
   try {
+    report.headerNaturalScroll = await stickyHeaderNaturalScroll(browser);
     report.primaryNavigation = await primaryNavigationTargets(browser);
     if (process.env.VIEWER_NAVIGATION_TARGETS_ONLY === '1') {
       report.status = 'PASS'; report.runMode = 'FIVE_PROFILE_PRIMARY_NAVIGATION_ONLY';
