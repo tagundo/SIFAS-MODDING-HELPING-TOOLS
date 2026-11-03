@@ -487,7 +487,13 @@
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
-    layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: measureSafeInsets() };
+    var safeInsets = measureSafeInsets();
+    // An open panel must leave both toolbar rows reachable. Its absolute
+    // children do not contribute to the measured toolbar border boxes.
+    var popupHeight = Math.max(0, height - safeInsets.top - safeInsets.bottom - 16);
+    node("tab-viewer").style.setProperty("--viewer-popup-height", Math.floor(popupHeight) + "px");
+    node("tab-viewer").style.setProperty("--viewer-popup-padding", Math.max(0, Math.min(8, Math.floor((popupHeight - 46) / 2))) + "px");
+    layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: safeInsets };
     if (renderer && qualityController) {
       qualityController.resize(width, height);
       // Layout changes preserve the user's orbit, zoom distance and pan. Only

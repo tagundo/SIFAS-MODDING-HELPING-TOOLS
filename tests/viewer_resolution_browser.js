@@ -25,8 +25,9 @@ const temporaryPickerFiles = new Set();
 let pickerFixture = null;
 const lifecycleOnly = process.env.VIEWER_RESOLUTION_LIFECYCLE_ONLY === '1';
 const pickerRaceOnly = process.env.VIEWER_PICKER_RACE_ONLY === '1';
-assert(!(lifecycleOnly && pickerRaceOnly), 'Select one diagnostic mode at a time');
-const report = { status: 'RUNNING', runMode: pickerRaceOnly ? 'PICKER_RACE_ONLY_DIAGNOSTIC' : lifecycleOnly ? 'LIFECYCLE_ONLY_DIAGNOSTIC' : 'FULL_SEVEN_PROFILES_LIFECYCLE_AND_PICKER_RACES', scope: 'Generated skinned GLB through actual product viewer; strict visible target intersections and actual WebGL pixels; host/browser only', profiles: [], lifecycle: [] };
+const popoverBoundsOnly = process.env.VIEWER_POPOVER_BOUNDS_ONLY === '1';
+assert([lifecycleOnly, pickerRaceOnly, popoverBoundsOnly].filter(Boolean).length <= 1, 'Select one diagnostic mode at a time');
+const report = { status: 'RUNNING', runMode: popoverBoundsOnly ? 'POPOVER_BOUNDS_ONLY_DIAGNOSTIC' : pickerRaceOnly ? 'PICKER_RACE_ONLY_DIAGNOSTIC' : lifecycleOnly ? 'LIFECYCLE_ONLY_DIAGNOSTIC' : 'FULL_SEVEN_PROFILES_LIFECYCLE_AND_PICKER_RACES', scope: 'Generated skinned GLB through actual product viewer; strict visible target intersections and actual WebGL pixels; host/browser only', profiles: [], lifecycle: [] };
 const save = () => fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const state = page => page.evaluate(() => ModelViewer.getState());
 const retained = s => ({ modelId: s.modelId, loadedPaths: s.loadedPaths, camera: s.camera, qualityEnabled: s.quality.enabled,
@@ -88,7 +89,8 @@ async function target(page, selector, popup) {
     return { selector, width: r.width, height: r.height, visibleWidth: Math.max(0, right - left), visibleHeight: Math.max(0, bottom - top),
       x: r.x, y: r.y, right: r.right, bottom: r.bottom, hit: !!hit && (hit === e || e.contains(hit)), disabled: !!n.disabled,
       popupScrolls, scrollBefore, scrollAfter: { pageX: scrollX, pageY: scrollY, popup: panel ? panel.scrollTop : null },
-      hitElement: hit ? hit.tagName + '#' + hit.id : null };
+      hitElement: hit ? hit.tagName + '#' + hit.id : null,
+      hitStack: document.elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2).slice(0, 6).map(item => ({ tag: item.tagName, id: item.id, className: item.className, text: item.textContent.trim().slice(0, 80) })) };
   }, { selector, popup });
 }
 function assertTarget(c, message) {
@@ -172,33 +174,101 @@ async function setup(browser, profile) {
   await page.locator('#viewer-fit').click(); await closeMenus(page); await settle(page);
   return { context, page, cdp, errors, requests };
 }
-async function assertHud(page, short) {
+async function popoverObservation(page, opened, context) {
+  const geometry = await page.evaluate(() => {
+    const rect = selector => { const n = document.querySelector(selector); if (!n) return null; const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom, scrollHeight: n.scrollHeight, clientHeight: n.clientHeight, overflowY: getComputedStyle(n).overflowY, display: getComputedStyle(n).display }; };
+    const layout = ModelViewer.getState().layout, stage = rect('#viewer-stage'), topHud = rect('#viewer-stage-tools-top'), bottomHud = rect('#viewer-stage-tools-bottom');
+    const topInset = topHud.display !== 'none' && topHud.height ? Math.max(0, topHud.bottom - stage.y) : 0;
+    const bottomInset = bottomHud.display !== 'none' && bottomHud.height ? Math.max(0, stage.bottom - bottomHud.y) : 0;
+    return { locale: document.documentElement.lang, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+      stage, topHud, bottomHud,
+      info: { open: document.getElementById('viewer-info').open, panel: rect('.viewer-info-panel') },
+      view: { open: document.getElementById('viewer-view-menu').open, panel: rect('#viewer-view-menu-content') },
+      measuredInsets: layout.safeInsets, actualHudInsets: { top: topInset, bottom: bottomInset },
+      clearBand: { top: stage.y + topInset + 8, bottom: stage.bottom - bottomInset - 8,
+        height: stage.height - topInset - bottomInset - 16 } };
+  });
+  const observation = { opened, context, ...geometry, oppositeControls: [] };
+  if (!report.popoverObservations) report.popoverObservations = [];
+  report.popoverObservations.push(observation); save(); return observation;
+}
+async function assertOppositeHud(page, opened, context, capturePopup) {
+  const observation = await popoverObservation(page, opened, context);
+  const selectors = opened === 'info'
+    ? ['#viewer-view-menu > summary', '#viewer-workspace-menu > summary', '#viewer-pose-basic', '#viewer-pose-preview', '#viewer-high-quality', '#viewer-expand', '#viewer-fullscreen']
+    : ['#viewer-info > summary', '#viewer-stage-tools-bottom [data-viewer-view="front"]', '#viewer-stage-tools-bottom [data-viewer-view="back"]', '#viewer-stage-tools-bottom [data-viewer-view="left"]', '#viewer-stage-tools-bottom [data-viewer-view="right"]', '#viewer-stage-tools-bottom #viewer-fit'];
+  for (const selector of selectors) {
+    const locator = page.locator(selector); if (!(await locator.count()) || !(await locator.isVisible())) continue;
+    const control = await target(page, selector); observation.oppositeControls.push(control); save();
+    assertTarget(control, opened + ' open must leave opposite/same-row HUD44px visible and hittable; ' + JSON.stringify({ context, locale: observation.locale, viewport: observation.viewport,
+      stage: observation.stage, topHud: observation.topHud, bottomHud: observation.bottomHud, info: observation.info, view: observation.view, clearBand: observation.clearBand }));
+  }
+  const panel = opened === 'info' ? observation.info.panel : observation.view.panel;
+  assert(panel.y >= observation.clearBand.top - 1 && panel.bottom <= observation.clearBand.bottom + 1,
+    'The natural ' + opened + ' popup must remain between measured HUD edge rows; ' + JSON.stringify(observation));
+  if (capturePopup) { observation.image = await capturePopup(opened); save(); }
+  return observation;
+}
+async function assertHud(page, short, context = {}, capturePopup) {
   const controls = [];
   await closeMenus(page);
-  for (const selector of ['#viewer-expand', '#viewer-fullscreen', '#viewer-info > summary']) { const c = await target(page, selector); assertTarget(c, selector); controls.push(c); }
+  for (const selector of ['#viewer-expand', '#viewer-fullscreen', '#viewer-info > summary']) { const c = await target(page, selector); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c); }
   const hasViewMenu = await page.locator('#viewer-view-menu > summary').isVisible();
-  if (hasViewMenu) { const c = await target(page, '#viewer-view-menu > summary'); assertTarget(c, c.selector); controls.push(c); await openDetails(page, 'viewer-view-menu'); }
+  if (hasViewMenu) { const c = await target(page, '#viewer-view-menu > summary'); assertTarget(c, c.selector + ' ' + JSON.stringify(context)); controls.push(c); await openDetails(page, 'viewer-view-menu'); }
   for (const selector of ['#viewer-pose-basic', '#viewer-pose-preview', '#viewer-high-quality']) {
-    const c = await target(page, selector, hasViewMenu ? '#viewer-view-menu-content' : null); assertTarget(c, selector); controls.push(c);
+    const c = await target(page, selector, hasViewMenu ? '#viewer-view-menu-content' : null); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
   }
+  const viewObservation = hasViewMenu ? await assertOppositeHud(page, 'view', context, capturePopup) : null;
   for (const selector of ['[data-viewer-view="front"]', '[data-viewer-view="back"]', '[data-viewer-view="left"]', '[data-viewer-view="right"]', '#viewer-fit']) {
-    const c = await target(page, selector, short ? '#viewer-view-menu-content' : null); assertTarget(c, selector); controls.push(c);
+    const c = await target(page, selector, short ? '#viewer-view-menu-content' : null); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
   }
   await closeMenus(page);
   await page.locator('#viewer-info > summary').click(); await frames(page);
+  const infoObservation = await assertOppositeHud(page, 'info', context, capturePopup);
   const info = await page.locator('.viewer-info-panel').evaluate(n => {
     const p = n.getBoundingClientRect(), s = document.getElementById('viewer-stage').getBoundingClientRect();
     return { top: p.top, bottom: p.bottom, left: p.left, right: p.right, height: p.height, scrollHeight: n.scrollHeight,
       stageTop: s.top, stageBottom: s.bottom, viewportHeight: innerHeight, viewportWidth: innerWidth };
   });
   assert(info.top >= Math.max(0, info.stageTop) - 1 && info.bottom <= Math.min(info.viewportHeight, info.stageBottom) + 1,
-    'Info and actual status text must fit inside the visible model viewport: ' + JSON.stringify(info));
+    'Info and actual status text must fit inside the visible model viewport: ' + JSON.stringify({ context, info }));
   if (hasViewMenu) {
     await openDetails(page, 'viewer-view-menu'); assert.equal(await page.locator('#viewer-info').evaluate(n => n.open), false);
+    await assertOppositeHud(page, 'view', context);
     await page.locator('#viewer-info > summary').click(); await frames(page); assert.equal(await page.locator('#viewer-view-menu').evaluate(n => n.open), false);
   }
   await closeMenus(page);
-  return { controls, info, mutualExclusion: hasViewMenu ? 'exercised' : 'not-applicable' };
+  return { controls, info, viewObservation, infoObservation, mutualExclusion: hasViewMenu ? 'exercised' : 'not-applicable' };
+}
+async function popoverBoundsRegressions(browser) {
+  const cases = []; report.popoverBounds = { scope: 'Natural translated product Info/View content with the unchanged original generated neutral rig; no fabricated warnings or actual-character/model claim', cases };
+  for (const profile of [{ id: 'phone-360x400', width: 360, height: 400, dpr: 2 }, { id: 'phone-320x400', width: 320, height: 400, dpr: 2 }, { id: 'legacy-phone-360x456', width: 360, height: 456, dpr: 2 }]) {
+    const { page, context, cdp, errors } = await setup(browser, profile);
+    try {
+      for (const locale of ['ko', 'en', 'ja']) {
+        await page.locator('#lang-select').selectOption(locale); await page.waitForFunction(language => document.documentElement.lang === language, locale); await settle(page);
+        for (const mode of ['normal', 'expanded']) {
+          const test = { profile, locale, mode, naturalProductHelp: true }; cases.push(test); save();
+          try {
+            if (mode === 'expanded') { await page.locator('#viewer-expand').click(); await settle(page); }
+            const before = retained(await state(page)); test.geometry = await viewportMetrics(page);
+            const label = profile.id + '-' + locale + '-' + mode;
+            test.hud = await assertHud(page, false, { profile: profile.id, viewport: profile, locale, mode }, kind => capture(page, cdp, label + '-' + kind + '-open.png'));
+            assert.deepEqual(retained(await state(page)), before, 'Opening natural popovers and real mutual-exclusion clicks retain camera, pose, HQ and source edits');
+            test.status = 'PASS'; save();
+            if (mode === 'expanded') { await page.locator('#viewer-expand').click(); await settle(page); }
+          } catch (error) {
+            test.error = { message: String(error), stack: error.stack };
+            test.failureSnapshot = await popoverObservation(page, 'failure-state', { profile: profile.id, locale, mode });
+            try { test.failureImage = await capture(page, cdp, profile.id + '-' + locale + '-' + mode + '-failure.png'); } catch (captureError) { test.captureError = String(captureError); }
+            save(); throw error;
+          }
+        }
+      }
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+  }
+  assert.equal(cases.length, 18); assert(cases.every(test => test.status === 'PASS')); report.popoverBounds.status = 'PASS'; save(); return cases;
 }
 async function pickerState(page) {
   return page.locator('#picker').evaluate(n => {
@@ -509,7 +579,7 @@ async function pickerTransportRegressions(browser) {
   if (process.env.CHROMIUM_EXECUTABLE) launch.executablePath = process.env.CHROMIUM_EXECUTABLE;
   const browser = await chromium.launch(launch);
   try {
-    for (const profile of pickerRaceOnly || lifecycleOnly ? [] : profiles) {
+    for (const profile of pickerRaceOnly || lifecycleOnly || popoverBoundsOnly ? [] : profiles) {
       const test = { profile }; report.profiles.push(test); save();
       const { page, context, cdp, errors, requests } = await setup(browser, profile);
       try {
@@ -543,11 +613,11 @@ async function pickerTransportRegressions(browser) {
           assert(test.normal.inspector.width >= 319 && test.normal.inspector.width <= 321, 'Tall1200 viewport retains the bounded320px editor');
           assert(cards.breast.width >= 259 && cards.skirt.width >= 259 && Math.abs(cards.skirt.x - cards.breast.x) <= 2 && cards.skirt.y > cards.breast.y, 'A bounded320px editor uses usable single-column cards rather than two tiny forced columns'); test.tallCards = cards;
         }
-        test.hud = await assertHud(page, !!profile.short); assert.deepEqual(retained(await state(page)), edited);
+        test.hud = await assertHud(page, !!profile.short, { profile: profile.id, locale: 'ko', mode: 'normal' }); assert.deepEqual(retained(await state(page)), edited);
         test.cards = await collapseCards(page); test.normalImage = await capture(page, cdp, profile.id + '-normal.png');
         const beforeExpand = retained(await state(page)); await page.locator('#viewer-expand').click(); await settle(page);
         assert.deepEqual(retained(await state(page)), beforeExpand, 'Expand preserves actual orbit, zoom, pose, HQ and source/edit endpoints');
-        test.expanded = await viewportMetrics(page); assert(test.expanded.stage.height >= profile.height - 1); test.expandedHud = await assertHud(page, !!profile.short);
+        test.expanded = await viewportMetrics(page); assert(test.expanded.stage.height >= profile.height - 1); test.expandedHud = await assertHud(page, !!profile.short, { profile: profile.id, locale: 'ko', mode: 'expanded' });
         if (profile.short) test.expandedWorkspace = await workspace(page, 'expanded-short', profile.id === 'cover-default-landscape');
         await page.locator('#viewer-expand').click(); await settle(page); assert.deepEqual(retained(await state(page)), beforeExpand);
         test.retained = retained(await state(page)); assert.deepEqual(errors, []); test.errors = errors; test.prepareCalls = requests.length; test.status = 'PASS'; save();
@@ -557,7 +627,7 @@ async function pickerTransportRegressions(browser) {
         save(); throw error;
       } finally { await context.close(); }
     }
-    if (!pickerRaceOnly) {
+    if (!pickerRaceOnly && !popoverBoundsOnly) {
     // Reparenting a global header across short/normal modes while fullscreen is
     // active must retain focus isolation and restore the same original node.
     const profile = profiles[0], { page, context, cdp, errors } = await setup(browser, profile);
@@ -607,7 +677,8 @@ async function pickerTransportRegressions(browser) {
       save(); throw error;
     } finally { await context.close(); }
     }
-    if (!lifecycleOnly) await pickerTransportRegressions(browser);
+    if (!lifecycleOnly && !pickerRaceOnly) await popoverBoundsRegressions(browser);
+    if (!lifecycleOnly && !popoverBoundsOnly) await pickerTransportRegressions(browser);
     report.status = 'PASS'; save(); console.log(JSON.stringify({ status: report.status, profiles: report.profiles.length, lifecycleCases: report.lifecycle.length, evidence }));
   } catch (error) { report.status = 'FAIL'; report.error = { message: String(error), stack: error.stack, actual: error.actual, expected: error.expected }; save(); throw error; }
   finally { await browser.close(); for (const file of temporaryPickerFiles) { if (fs.existsSync(file)) fs.unlinkSync(file); } }
