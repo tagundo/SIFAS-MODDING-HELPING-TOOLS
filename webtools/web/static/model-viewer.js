@@ -46,6 +46,11 @@
   var lastFullscreenExit = 0;
   var resizeFrame = 0;
   var compactControls = false;
+  var shortHeight = false;
+  var layoutHomes = [];
+  var shortScroll = null;
+  var pickerHome = null;
+  var pickerObserver = null;
   var outsideFocus = [];
   var infoAutoOpened = false;
   var seriousWarning = false;
@@ -157,14 +162,21 @@
   }
 
   function refreshPopoverStack(preferred) {
-    var menu = node("viewer-view-menu"), info = node("viewer-info");
-    if (menu && info && menu.open && info.open) {
-      if (preferred === menu) { info.open = false; infoAutoOpened = false; }
-      else menu.open = false;
+    var menu = node("viewer-view-menu"), info = node("viewer-info"), workspace = node("viewer-workspace-menu");
+    var popovers = [menu, info, workspace].filter(function (item) { return !!item; });
+    var opened = popovers.filter(function (item) { return item.open; });
+    if (opened.length > 1) {
+      var keep = preferred && preferred.open ? preferred : info && info.open ? info : opened[0];
+      popovers.forEach(function (item) {
+        if (item === keep || !item.open) return;
+        item.open = false;
+        if (item === info) infoAutoOpened = false;
+      });
     }
     var top = node("viewer-stage-tools-top"), bottom = node("viewer-stage-tools-bottom");
-    if (top) top.classList.toggle("viewer-popover-open", !!(menu && menu.open && compactControls));
-    if (bottom) bottom.classList.toggle("viewer-popover-open", !!(info && info.open));
+    [top, bottom].forEach(function (hud) {
+      if (hud) hud.classList.toggle("viewer-popover-open", popovers.some(function (item) { return item.open && hud.contains(item); }));
+    });
   }
 
   function bindViewportPopover(details) {
@@ -200,12 +212,98 @@
     if (focused) focusElement(focused);
   }
 
+  function focusViewportControl() {
+    [node("viewer-fullscreen"), node("viewer-expand"), node("viewer-view-menu") && node("viewer-view-menu").querySelector("summary")].some(function (element) {
+      if (!element) return false;
+      var rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+      focusElement(element); return true;
+    });
+  }
+
+  function rememberLayoutHomes() {
+    if (layoutHomes.length) return;
+    var tab = node("tab-viewer");
+    [document.querySelector("body > header"), tab.querySelector(".viewer-files"),
+      tab.querySelector(".viewer-control-panel"), tab.querySelector(".viewer-camera-actions"), node("viewer-info")].forEach(function (element) {
+      if (element) layoutHomes.push({ element: element, parent: element.parentNode, next: element.nextSibling });
+    });
+  }
+
+  function updateShortLayout(viewport) {
+    var workspace = node("viewer-workspace-menu"), content = node("viewer-workspace-menu-content");
+    if (!workspace || !content) return;
+    rememberLayoutHomes();
+    var next = !!(viewport && active && model && viewport.height <= 320);
+    var narrow = next && viewport.width < 720;
+    var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
+    var viewContent = node("viewer-view-menu-content"), changed = next !== shortHeight;
+    var focused = document.activeElement;
+    var plans = layoutHomes.map(function (home, index) {
+      var parent = home.parent, before = home.next && home.next.parentNode === parent ? home.next : null;
+      if (next) {
+        if (index < 2 || index === 2 && narrow) { parent = content; before = null; }
+        else if (index === 3) { parent = viewContent; before = null; }
+        else if (index === 4) { parent = top; before = top.querySelector(".viewer-screen-actions"); }
+      }
+      return { home: home, parent: parent, before: before };
+    });
+    var relocating = plans.some(function (plan) { return plan.home.element.parentNode !== plan.parent; });
+    // A moved page header crosses the expanded viewer's focus boundary. Restore
+    // the previous isolation before moving it, then capture the new boundary.
+    if (relocating && expanded) isolateViewer(false);
+    if (changed && next) shortScroll = { x: window.scrollX, y: window.scrollY };
+    shortHeight = next;
+    tab.classList.toggle("viewer-short-height", next);
+    document.body.classList.toggle("viewer-short-workspace", next);
+    plans.forEach(function (plan) { moveLayoutElement(plan.home.element, plan.parent, plan.before); });
+    if (relocating && expanded) isolateViewer(true);
+    if (next && focused && content.contains(focused)) workspace.open = true;
+    if (!next) {
+      workspace.open = false;
+      if (focused && (workspace.contains(focused) || expanded && !tab.contains(focused))) focusViewportControl();
+      if (changed && shortScroll) {
+        var scroll = shortScroll; shortScroll = null;
+        window.requestAnimationFrame(function () { if (active && !destroyed && !shortHeight && !expanded) window.scrollTo(scroll.x, scroll.y); });
+      }
+    }
+    refreshPopoverStack(workspace.open ? workspace : null);
+  }
+
+  function restoreViewerPicker() {
+    if (pickerObserver) pickerObserver.disconnect();
+    pickerObserver = null;
+    var home = pickerHome; pickerHome = null;
+    if (!home) return;
+    if (expanded) isolateViewer(false);
+    moveLayoutElement(home.element, home.parent, home.next && home.next.parentNode === home.parent ? home.next : null);
+    if (expanded) isolateViewer(true);
+    if (active && !destroyed) focusElement(home.focus);
+  }
+
+  function containViewerPicker() {
+    var picker = node("picker");
+    if (!picker || pickerHome) return;
+    // Browser fullscreen only displays descendants of its owning element. The
+    // same chooser must also remain inside the viewer's focus boundary.
+    pickerHome = { element: picker, parent: picker.parentNode, next: picker.nextSibling, focus: document.activeElement };
+    if (expanded) {
+      isolateViewer(false);
+      moveLayoutElement(picker, node("tab-viewer"), null);
+      isolateViewer(true);
+    }
+    pickerObserver = new window.MutationObserver(function () {
+      if (picker.classList.contains("hidden")) restoreViewerPicker();
+    });
+    pickerObserver.observe(picker, { attributes: true, attributeFilter: ["class"] });
+  }
+
   function updateCompactControls(viewport) {
     var menu = node("viewer-view-menu"), content = node("viewer-view-menu-content");
     if (!menu || !content) return;
     // A declared costume choice stays reachable inside the same viewport menu
     // even in expanded/fullscreen mode, without adding another HUD row.
-    var compact = (viewport.width < 760 && viewport.height <= 560) ||
+    var compact = shortHeight || (viewport.width < 760 && viewport.height <= 560) ||
       paths.some(function (path) { return !!variantOptions[path]; });
     var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
     var primary = top.querySelector(".viewer-primary-tools");
@@ -353,6 +451,7 @@
   function resize() {
     if (!active || destroyed) return;
     var viewport = viewportRect();
+    updateShortLayout(viewport);
     updateCompactControls(viewport);
     var header = document.querySelector("body > header");
     var headerStyle = header ? window.getComputedStyle(header) : null;
@@ -362,11 +461,18 @@
     document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
     var stage = node("viewer-stage");
     var stageTop = Math.max(viewport.top, headerBottom, stage.getBoundingClientRect().top);
-    var available = Math.max(180, viewport.top + viewport.height - stageTop - 10);
-    var sideBySide = window.innerWidth >= 760;
-    var desired = expanded ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
+    var available = Math.max(1, viewport.top + viewport.height - stageTop - 10);
+    var sideBySide = window.innerWidth >= 720;
+    var desired = expanded || shortHeight ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
     node("tab-viewer").style.setProperty("--viewer-stage-height", Math.round(desired) + "px");
     node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
+    if (!expanded && !shortHeight && viewport.width >= 1200) {
+      var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
+      // Give a standing model a useful portrait-shaped area, and use the freed
+      // width for independent editing cards rather than another empty margin.
+      var previewWidth = Math.max(360, Math.min(inspect.clientWidth - 332, desired * 1.25));
+      node("tab-viewer").style.setProperty("--viewer-model-width", Math.round(previewWidth) + "px");
+    } else node("tab-viewer").style.removeProperty("--viewer-model-width");
     var width = stage.clientWidth;
     var height = stage.clientHeight;
     if (!width || !height) return;
@@ -1053,11 +1159,17 @@
     mounted = true;
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
-      config.pickFile(function (path) {
-        if (paths.indexOf(path) < 0) paths.push(path);
-        renderFiles();
-        filesChanged();
-      });
+      containViewerPicker();
+      try {
+        config.pickFile(function (path) {
+          if (destroyed) return;
+          if (paths.indexOf(path) < 0) paths.push(path);
+          renderFiles();
+          filesChanged();
+        });
+        var picker = node("picker");
+        if (picker && !picker.classList.contains("hidden")) focusElement(node("picker-cancel"));
+      } catch (error) { restoreViewerPicker(); throw error; }
     }
     node("viewer-add").addEventListener("click", pickCompanion);
     node("viewer-add-motion").addEventListener("click", pickCompanion);
@@ -1076,6 +1188,7 @@
     if (node("viewer-fullscreen")) node("viewer-fullscreen").addEventListener("click", enterFullscreen);
     bindViewportPopover(node("viewer-view-menu"));
     bindViewportPopover(node("viewer-info"));
+    bindViewportPopover(node("viewer-workspace-menu"));
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
       button.addEventListener("click", function () { setView(button.dataset.viewerView); });
     });
@@ -1099,10 +1212,22 @@
     listenLayout(window, "elichika-native-fullscreen", nativeFullscreenChanged);
     listenLayout(document, "visibilitychange", function () { if (document.hidden) pauseRender(); else { scheduleResize(); requestRender(); } });
     listenLayout(document, "keydown", function (event) {
-      if (event.key !== "Escape") return;
+      if (!active || destroyed || event.defaultPrevented || event.key !== "Escape") return;
+      var picker = node("picker");
+      if ((shortHeight || pickerHome) && picker && !picker.classList.contains("hidden")) {
+        event.preventDefault(); node("picker-cancel").click(); return;
+      }
+      var workspaceMenu = node("viewer-workspace-menu");
+      if (workspaceMenu && workspaceMenu.open) {
+        event.preventDefault(); workspaceMenu.open = false; refreshPopoverStack(null); focusElement(workspaceMenu.querySelector("summary")); return;
+      }
       var viewMenu = node("viewer-view-menu");
       if (viewMenu && viewMenu.open) {
         event.preventDefault(); viewMenu.open = false; refreshPopoverStack(null); focusElement(viewMenu.querySelector("summary")); return;
+      }
+      var infoMenu = node("viewer-info");
+      if (infoMenu && infoMenu.open) {
+        event.preventDefault(); infoMenu.open = false; infoAutoOpened = false; refreshPopoverStack(null); focusElement(infoMenu.querySelector("summary")); return;
       }
       if (fullscreenWanted || fullscreenMode !== "none") { event.preventDefault(); exitFullscreen(false); }
       else if (expanded && Date.now() - lastFullscreenExit > 200) { event.preventDefault(); setExpanded(false); }
@@ -1150,9 +1275,11 @@
     active = !!value;
     if (!active) {
       pauseRender();
+      restoreViewerPicker();
       if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
       if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
       if (expanded) setExpanded(false);
+      updateShortLayout(null);
       return;
     }
     window.requestAnimationFrame(function () { resize(); requestRender(); });
@@ -1178,9 +1305,11 @@
   function dispose() {
     if (destroyed) return;
     active = false;
+    restoreViewerPicker();
     if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
     if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
     if (expanded) setExpanded(false);
+    updateShortLayout(null);
     destroyed = true;
     generation += 1;
     if (controller) controller.abort();
@@ -1215,7 +1344,7 @@
         modelId: metadata ? metadata.id : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
-          compactControls: compactControls,
+          compactControls: compactControls, shortHeight: shortHeight,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
         rig: rigController ? rigController.getState() : null,

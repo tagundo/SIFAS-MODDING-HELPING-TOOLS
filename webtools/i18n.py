@@ -1693,6 +1693,7 @@ _VIEWER_TRANSLATIONS.update({
     "Model information": ["모델 정보", "モデル情報"],
     "Model options": ["모델 옵션", "モデル設定"],
     "View controls": ["보기 설정", "表示操作"],
+    "Files and app controls": ["파일·앱 메뉴", "ファイル・アプリ操作"],
     "Compensate child bone scale": ["하위 본 배율 보정", "子ボーンの倍率を補正"],
     "Compensation targets": ["보정 대상", "補正対象"],
     "Immediate child bones (auto)": ["바로 아래 본 (자동)", "直下の子ボーン（自動）"],
