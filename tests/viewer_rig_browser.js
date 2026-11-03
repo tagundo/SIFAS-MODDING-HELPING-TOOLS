@@ -84,6 +84,7 @@ function fixture(options = {}) {
   }
   if(options.authoredHidden)doc.nodes[4].extras.hidden_default=true;
   if(options.zeroAuthoredAxis)doc.nodes[6].scale=[0,1,1];
+  if(options.authoredSkirtScale)skirtRootIds.forEach(node=>doc.nodes[node].scale=options.authoredSkirtScale.slice());
   const json = Buffer.from(JSON.stringify(doc)), jsonPadded = Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
   const bin = Buffer.concat(chunks), binPadded = Buffer.concat([bin,Buffer.alloc((4-bin.length%4)%4)]);
   const header = Buffer.alloc(12), jh = Buffer.alloc(8), bh = Buffer.alloc(8);
@@ -140,7 +141,7 @@ function fixture(options = {}) {
     if(options.rotationConflict)components[0].entries.push(rotation([0,0,0,1]));
     if(options.skirtSet){
       components[0].entries=components[0].entries.filter(entry=>entry.kind!=='scale'||entry.node===2);
-      skirtRootIds.forEach((node,index)=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:options.skirtFileScales?options.skirtFileScales[index]:[.85,.85,.85]}));
+      if(!options.authoredSkirtScale)skirtRootIds.forEach((node,index)=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:options.skirtFileScales?options.skirtFileScales[index]:[.85,.85,.85]}));
       skirtDescendantIds.forEach(node=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:[1,1,1]}));
     }
   }
@@ -286,6 +287,22 @@ if(require.main===module)(async()=>{
     assert.equal(requests[0].rigged,true);
     const initial=await state();assert(initial.rig.available);await noContinuousControls();assert.equal(initial.rig.heightMode,'saved_settings_only');assert(!('heightCompensation' in initial.rig));assert.deepEqual(initial.rig.body,{breastPreset:'loaded',skirtMode:'file'});assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
     assert.equal(initial.rig.savedNodes.enabled,true);assert.equal(initial.rig.savedNodes.applied,1);assert.equal(initial.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.3);
+    // A model without any skirt targets has no numeric source/current factor.
+    // Exercise real language changes so an unavailable card cannot look like a zero-valued file.
+    assert.equal(initial.rig.skirtValues.available,false);assert.deepEqual(initial.rig.skirtValues.targets,[]);
+    assert.equal(initial.rig.skirtValues.fileUniform,null);assert.equal(initial.rig.skirtValues.currentUniform,null);
+    const unavailableSkirtLanguages=[];
+    for(const [code,text] of [['en','Not available for this model.'],['ko','이 모델에서는 조절할 수 없는 부위입니다.'],['ja','このモデルでは調整できません。'],['en','Not available for this model.']]){
+      await page.locator('#lang-select').selectOption(code);
+      await page.waitForFunction(([code,text])=>document.documentElement.lang===code&&document.getElementById('viewer-skirt-file').textContent===text&&document.getElementById('viewer-skirt-value').textContent===text,[code,text]);
+      assert(await page.locator('#viewer-skirt-number').isDisabled());assert(await page.locator('#viewer-skirt-apply').isDisabled());
+      assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'');
+      assert.equal(await page.locator('#viewer-skirt-number').getAttribute('placeholder'),text);
+      const current=await state();assert.equal(current.rig.skirtValues.fileUniform,null);assert.equal(current.rig.skirtValues.currentUniform,null);
+      assert.deepEqual(current.camera,initial.camera);assert.deepEqual(current.rig.nodeAdjustments,initial.rig.nodeAdjustments);
+      assert.equal(current.rig.selectedClip,initial.rig.selectedClip);assert.equal(current.rig.time,initial.rig.time);assert.deepEqual(current.rig.body,initial.rig.body);
+      unavailableSkirtLanguages.push({code,text,skirt:current.rig.skirtValues});
+    }
     await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('2');
     const importedFields=await page.locator('[data-viewer-node-kind="scale"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value)));
     nearVector(importedFields,[1.3,.9,1],'Advanced fields must display actual saved NodeScaling values');
@@ -689,6 +706,21 @@ if(require.main===module)(async()=>{
     nearVector((await state()).rig.breastProfile.targets[0].fileScale,[1.3,.9,1],'Breast file XYZ is immutable during per-part opt-out');
     await page.locator('#viewer-saved-nodes').uncheck();assert.equal(await page.locator('#viewer-breast-file-values').innerText(),breastFileReadout);
     const absoluteControlsState=await state();
+    // An authored numeric zero in actual nodes remains distinct from no targets.
+    generated=fixture({skirtSet:true,authoredSkirtScale:[0,0,0]});await page.evaluate(()=>openModelViewer(['/synthetic/zero-authored-skirt.unity']));
+    const zeroSkirt=await state();assert.equal(zeroSkirt.rig.skirtValues.targets.length,8);assert.equal(zeroSkirt.rig.skirtValues.available,true);
+    assert.equal(zeroSkirt.rig.skirtValues.fileUniform,0);assert.equal(zeroSkirt.rig.skirtValues.currentUniform,0);
+    assert(zeroSkirt.rig.skirtValues.targets.every(target=>target.fileStatus==='authored'));
+    assert.equal(await page.locator('#viewer-skirt-file').innerText(),'0 · Authored fallback');assert.equal(await page.locator('#viewer-skirt-value').innerText(),'0');
+    assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'0');assert(!(await page.locator('#viewer-skirt-number').isDisabled()));
+    assert.equal(await page.locator('#viewer-skirt-number').getAttribute('placeholder'),'Different values');
+    // A zero saved endpoint still follows the existing unsupported-value path.
+    generated=fixture({skirtSet:true,skirtFileScales:Array.from({length:8},()=>[0,0,0])});await page.evaluate(()=>openModelViewer(['/synthetic/unsupported-zero-skirt.unity']));
+    const unsupportedZeroSkirt=await state();assert.equal(unsupportedZeroSkirt.rig.skirtValues.targets.length,8);
+    assert.equal(unsupportedZeroSkirt.rig.skirtValues.fileUniform,null);assert.equal(unsupportedZeroSkirt.rig.skirtValues.currentUniform,1);
+    assert(unsupportedZeroSkirt.rig.skirtValues.targets.every(target=>target.fileStatus==='unsupported'));
+    assert.equal(await page.locator('#viewer-skirt-file').innerText(),'Unsupported file value');assert.equal(await page.locator('#viewer-skirt-value').innerText(),'1');
+    assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'1');
     const mixedSource=Array.from({length:8},(_,index)=>index===0?[.85,.9,.95]:index===1?[.8,.8,.8]:[.85,.85,.85]);
     generated=fixture({skirtSet:true,skirtFileScales:mixedSource});await page.evaluate(()=>openModelViewer(['/synthetic/mixed-skirt-file.unity']));
     const mixedSkirt=await state();assert.equal(mixedSkirt.rig.skirtValues.fileUniform,null);assert.equal(mixedSkirt.rig.skirtValues.currentUniform,null);
@@ -770,7 +802,7 @@ if(require.main===module)(async()=>{
     const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,
       bodyTools:{headBeforeProfile,hairBeforeProfile,moveBeforeProfile,profileInvariant,profileResults,loadedProfile:loadedProfileState.rig.breastProfile,manualProfile:manualProfile.rig.breastProfile,restoredProfile:restoredProfile.rig.breastProfile,toolPresetState:toolPresetState.rig.body,customProfile:customProfileState.rig.breastProfile},inspectorLayouts,
       multiAxisUnity:{loaded:loadedMultiAxis.rig.bones.find(bone=>bone.node==='3'),edited:editedMultiAxis.rig.bones.find(bone=>bone.node==='3'),reset:multiAxisState.rig.bones.find(bone=>bone.node==='3')},
-      sourceValueControls:{initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues,initializedPosition:initializedPosition.rig.nodeFileValues},
+      sourceValueControls:{unavailableSkirtLanguages,zeroSkirt:zeroSkirt.rig.skirtValues,unsupportedZeroSkirt:unsupportedZeroSkirt.rig.skirtValues,initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues,initializedPosition:initializedPosition.rig.nodeFileValues},
       namedExpressions:{base:namedExpressionBase,final:namedExpressionState.rig},
       previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));
