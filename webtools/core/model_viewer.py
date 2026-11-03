@@ -597,7 +597,9 @@ class _Materials:
         image = decode._android_image(texture, self.scene.deadline)
         try:
             output = io.BytesIO()
-            image.save(output, format="PNG")
+            # PNG remains lossless; avoid spending the preview budget on its
+            # compression search. The existing GLB byte limit still applies.
+            image.save(output, format="PNG", compress_level=1)
             png = output.getvalue()
         finally:
             image.close()

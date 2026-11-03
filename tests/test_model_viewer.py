@@ -141,6 +141,80 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(viewer._SESSIONS)
 
 
+class PreviewPngTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from PIL import Image
+        except ImportError as error:
+            raise unittest.SkipTest("Pillow is required for lossless PNG assertions") from error
+        cls.Image = Image
+
+    def image(self, mode="RGBA"):
+        image = self.Image.new(mode, (17, 11))
+        pixels = [(x * 17 % 256, y * 29 % 256, (x + y) * 43 % 256, (x ^ y) * 31 % 256)
+                  for y in range(11) for x in range(17)]
+        image.putdata(pixels if mode == "RGBA" else [pixel[:3] for pixel in pixels])
+        self.addCleanup(image.close)
+        return image
+
+    def material(self, image):
+        scene = SimpleNamespace(deadline=time.monotonic() + 10, stats={"textures": 0})
+        glb = viewer._Glb()
+        texture = SimpleNamespace(m_Name="original", m_Width=image.width, m_Height=image.height,
+                                  m_TextureSettings=SimpleNamespace(m_WrapU=1, m_WrapV=2))
+        obj = SimpleNamespace(assets_file=object(), path_id=7, read=lambda: texture)
+        return viewer._Materials(scene, glb), obj, scene, glb
+
+    def test_preview_png_preserves_rgb_rgba_hidden_colors_and_sampler_metadata(self):
+        for mode in ("RGB", "RGBA"):
+            image = self.image(mode)
+            before = image.tobytes()
+            material, obj, scene, glb = self.material(image)
+            with self.subTest(mode=mode), patch.object(viewer.decode, "_android_image", side_effect=lambda *args: image.copy()):
+                self.assertEqual(material.texture(obj), 0)
+                item = glb.doc["images"][0]
+                view = glb.doc["bufferViews"][item["bufferView"]]
+                png = glb.data[view["byteOffset"]:view["byteOffset"] + view["byteLength"]]
+                with self.Image.open(io.BytesIO(png)) as actual:
+                    self.assertEqual(actual.mode, mode)
+                    self.assertEqual(actual.size, image.size)
+                    self.assertEqual(actual.tobytes(), before)
+                    if mode == "RGBA":
+                        self.assertEqual(actual.getchannel("A").getextrema(), image.getchannel("A").getextrema())
+                self.assertEqual(image.tobytes(), before)
+                self.assertEqual(item["name"], "original")
+                self.assertEqual(item["mimeType"], "image/png")
+                self.assertEqual(glb.doc["samplers"][0], {"magFilter": 9729, "minFilter": 9729,
+                                                         "wrapS": 33071, "wrapT": 33648})
+                self.assertEqual(scene.stats["textures"], 1)
+
+    def test_png_byte_limit_still_rejects_output_before_adding_image(self):
+        image = self.image()
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG", compress_level=1)
+        material, obj, scene, glb = self.material(image)
+        limit = len(encoded.getvalue()) - 1
+        with patch.object(viewer, "MAX_GLB_BYTES", limit), \
+                patch.object(viewer.decode, "_android_image", side_effect=lambda *args: image.copy()):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "preview is too large"):
+                material.texture(obj)
+        self.assertLessEqual(len(glb.data), limit)
+        self.assertEqual(glb.doc["images"], [])
+        self.assertEqual(glb.doc["textures"], [])
+        self.assertEqual(scene.stats["textures"], 0)
+
+    def test_pixel_budget_is_checked_before_decoder_and_png_allocation(self):
+        image = self.image()
+        material, obj, _, glb = self.material(image)
+        with patch.object(viewer, "MAX_TEXTURE_PIXELS", image.width * image.height - 1), \
+                patch.object(viewer.decode, "_android_image") as decode:
+            with self.assertRaisesRegex(viewer.ModelViewerError, "textures exceed"):
+                material.texture(obj)
+            decode.assert_not_called()
+        self.assertEqual(glb.doc["images"], [])
+
+
 class InputTests(unittest.TestCase):
     def test_rejects_empty_non_paths_missing_and_directories(self):
         for value in (None, "model.unity", [], [None], [""], ["/no/such/model.unity"], [str(FIXTURES)]):
