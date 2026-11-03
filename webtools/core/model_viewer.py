@@ -17,6 +17,7 @@ import secrets
 import struct
 import threading
 import time
+import zlib
 
 from . import decode
 
@@ -575,6 +576,54 @@ def _as_member_material(scene, obj, tree):
     return False
 
 
+def _png_texture(image, deadline):
+    """Encode unchanged RGBA pixels with fixed SUB filtering in 64-row strips."""
+    _remaining(deadline)
+    with io.BytesIO() as output:
+        # Native ASTC output inherits these TGA controls through convert/flip;
+        # Pillow's PNG writer ignores them. Preserve its behavior for every
+        # other mode or metadata item, including color/transparency metadata.
+        if image.mode != "RGBA" or set(image.info) - {"orientation", "compression", "id_section"}:
+            image.save(output, format="PNG", compress_level=1)
+            _remaining(deadline)
+            return output.getvalue()
+
+        import numpy as np
+
+        def chunk(kind, data):
+            output.write(struct.pack(">I", len(data)))
+            output.write(kind)
+            output.write(data)
+            output.write(struct.pack(">I", zlib.crc32(data, zlib.crc32(kind)) & 0xffffffff))
+
+        width, height = image.size
+        output.write(b"\x89PNG\r\n\x1a\n")
+        chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        compressor = zlib.compressobj(level=1, strategy=zlib.Z_RLE)
+        for top in range(0, height, 64):
+            _remaining(deadline)
+            rows = min(64, height - top)
+            with image.crop((0, top, width, top + rows)) as strip:
+                raw = strip.tobytes()
+            source = np.frombuffer(raw, dtype=np.uint8).reshape(rows, width * 4)
+            filtered = np.empty((rows, width * 4 + 1), dtype=np.uint8)
+            filtered[:, 0] = 1  # SUB: bytes relative to the previous pixel.
+            filtered[:, 1:5] = source[:, :4]
+            np.subtract(source[:, 4:], source[:, :-4], out=filtered[:, 5:])
+            data = compressor.compress(memoryview(filtered).cast("B"))
+            if data:
+                chunk(b"IDAT", data)
+            del source, raw, filtered, data
+        _remaining(deadline)
+        data = compressor.flush()
+        _remaining(deadline)
+        if data:
+            chunk(b"IDAT", data)
+        chunk(b"IEND", b"")
+        _remaining(deadline)
+        return output.getvalue()
+
+
 class _Materials:
     def __init__(self, scene, glb, rigged=False):
         self.scene, self.glb = scene, glb
@@ -596,11 +645,7 @@ class _Materials:
         self.pixels += pixels
         image = decode._android_image(texture, self.scene.deadline)
         try:
-            output = io.BytesIO()
-            # PNG remains lossless; avoid spending the preview budget on its
-            # compression search. The existing GLB byte limit still applies.
-            image.save(output, format="PNG", compress_level=1)
-            png = output.getvalue()
+            png = _png_texture(image, self.scene.deadline)
         finally:
             image.close()
         image_index = len(self.glb.doc["images"])

@@ -18,6 +18,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import zlib
 
 from webtools.core import model_viewer as viewer
 
@@ -150,13 +151,162 @@ class PreviewPngTests(unittest.TestCase):
             raise unittest.SkipTest("Pillow is required for lossless PNG assertions") from error
         cls.Image = Image
 
-    def image(self, mode="RGBA"):
-        image = self.Image.new(mode, (17, 11))
+    def image(self, mode="RGBA", size=(17, 11)):
+        image = self.Image.new(mode, size)
         pixels = [(x * 17 % 256, y * 29 % 256, (x + y) * 43 % 256, (x ^ y) * 31 % 256)
-                  for y in range(11) for x in range(17)]
+                  for y in range(size[1]) for x in range(size[0])]
         image.putdata(pixels if mode == "RGBA" else [pixel[:3] for pixel in pixels])
         self.addCleanup(image.close)
         return image
+
+    def assert_rgba_png(self, png, image):
+        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+        offset, kinds, idat = 8, [], []
+        while offset < len(png):
+            length, kind = struct.unpack_from(">I4s", png, offset)
+            payload = png[offset + 8:offset + 8 + length]
+            self.assertEqual(len(payload), length)
+            crc = struct.unpack_from(">I", png, offset + 8 + length)[0]
+            self.assertEqual(crc, zlib.crc32(payload, zlib.crc32(kind)) & 0xffffffff)
+            kinds.append(kind)
+            if kind == b"IHDR":
+                self.assertEqual(struct.unpack(">IIBBBBB", payload), (*image.size, 8, 6, 0, 0, 0))
+            elif kind == b"IDAT":
+                idat.append(payload)
+            elif kind == b"IEND":
+                self.assertEqual(payload, b"")
+            offset += 12 + length
+        self.assertEqual(offset, len(png))
+        self.assertEqual(kinds[0], b"IHDR")
+        self.assertEqual(kinds[-1], b"IEND")
+        self.assertTrue(idat)
+        self.assertTrue(all(kind == b"IDAT" for kind in kinds[1:-1]))
+        decoder = zlib.decompressobj()
+        rows = decoder.decompress(b"".join(idat)) + decoder.flush()
+        self.assertTrue(decoder.eof)
+        self.assertEqual(decoder.unused_data, b"")
+        self.assertEqual(decoder.unconsumed_tail, b"")
+        stride = image.width * 4 + 1
+        self.assertEqual(len(rows), stride * image.height)
+        self.assertEqual(rows[::stride], b"\x01" * image.height)
+        with self.Image.open(io.BytesIO(png)) as actual:
+            actual.load()
+            self.assertEqual(actual.mode, image.mode)
+            self.assertEqual(actual.size, image.size)
+            self.assertEqual(actual.tobytes(), image.tobytes())
+
+    def test_fixed_sub_png_preserves_alpha_hidden_rgb_and_strip_boundaries(self):
+        for size in ((1, 1), (1, 64), (7, 65), (5, 129)):
+            with self.subTest(size=size):
+                image = self.image(size=size)
+                before = image.tobytes()
+                with patch.object(image, "crop", wraps=image.crop) as crop, \
+                        patch.object(image, "tobytes", side_effect=AssertionError("Whole-image copy is forbidden")), \
+                        patch.object(image, "save", side_effect=AssertionError("Fast-path fallback is forbidden")):
+                    png = viewer._png_texture(image, time.monotonic() + 10)
+                self.assertEqual(image.tobytes(), before)
+                self.assertEqual(crop.call_args_list[0].args[0], (0, 0, size[0], min(64, size[1])))
+                self.assertTrue(all(0 < call.args[0][3] - call.args[0][1] <= 64
+                                    for call in crop.call_args_list))
+                self.assertEqual(sum(call.args[0][3] - call.args[0][1] for call in crop.call_args_list), size[1])
+                self.assert_rgba_png(png, image)
+
+    def test_expired_png_deadline_stops_before_encoding(self):
+        image = self.image()
+        with patch.object(image, "crop") as crop, patch.object(image, "save") as save:
+            with self.assertRaisesRegex(viewer.ModelViewerError, "too long"):
+                viewer._png_texture(image, time.monotonic() - 1)
+        crop.assert_not_called()
+        save.assert_not_called()
+
+    def test_png_deadline_expiring_between_strips_propagates_without_fallback(self):
+        image = self.image(size=(7, 129))
+        clock = [0.0]
+        original_crop = image.crop
+
+        def crop_then_expire(box):
+            strip = original_crop(box)
+            clock[0] = 2.0
+            return strip
+
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(image, "crop", side_effect=crop_then_expire) as crop, \
+                patch.object(image, "save", side_effect=AssertionError("Partial PNG must not fall back")):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "too long"):
+                viewer._png_texture(image, 1.0)
+        self.assertEqual(crop.call_count, 1)
+
+    def test_png_deadline_expiring_in_last_strip_prevents_flush(self):
+        image = self.image(size=(1, 64))
+        clock = [0.0]
+        compressor = zlib.compressobj(level=1, strategy=zlib.Z_RLE)
+
+        def compress_then_expire(data):
+            value = compressor.compress(data)
+            clock[0] = 2.0
+            return value
+
+        proxy = SimpleNamespace(compress=compress_then_expire, flush=Mock(wraps=compressor.flush))
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(viewer.zlib, "compressobj", return_value=proxy), \
+                patch.object(image, "save", side_effect=AssertionError("Partial PNG must not fall back")):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "too long"):
+                viewer._png_texture(image, 1.0)
+        proxy.flush.assert_not_called()
+
+    def test_png_deadline_expiring_during_flush_prevents_return(self):
+        image = self.image(size=(1, 64))
+        clock = [0.0]
+        compressor = zlib.compressobj(level=1, strategy=zlib.Z_RLE)
+
+        def flush_then_expire():
+            value = compressor.flush()
+            clock[0] = 2.0
+            return value
+
+        proxy = SimpleNamespace(compress=compressor.compress, flush=flush_then_expire)
+        with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(viewer.zlib, "compressobj", return_value=proxy), \
+                patch.object(image, "save", side_effect=AssertionError("Partial PNG must not fall back")):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "too long"):
+                viewer._png_texture(image, 1.0)
+
+    def test_other_modes_and_color_or_unknown_metadata_keep_pillow_payload(self):
+        palette = self.Image.new("P", (7, 3))
+        palette.putpalette([value for index in range(256) for value in (index, 255 - index, index ^ 85)])
+        palette.putdata([index * 13 % 256 for index in range(21)])
+        self.addCleanup(palette.close)
+        cases = [("RGB", self.image("RGB")), ("palette", palette)]
+        for metadata in ({"icc_profile": b"original profile bytes"}, {"dpi": (72, 144)},
+                         {"transparency": None}, {"custom_tool_note": "original"}):
+            image = self.image()
+            image.info.update(metadata)
+            cases.append((next(iter(metadata)), image))
+        for name, image in cases:
+            with self.subTest(name=name):
+                expected = io.BytesIO()
+                image.save(expected, format="PNG", compress_level=1)
+                before = image.tobytes()
+                with patch.object(image, "save", wraps=image.save) as save, \
+                        patch.object(image, "crop", side_effect=AssertionError("Fallback must use Pillow")):
+                    actual = viewer._png_texture(image, time.monotonic() + 10)
+                self.assertEqual(actual, expected.getvalue())
+                self.assertEqual(image.tobytes(), before)
+                self.assertEqual(save.call_count, 1)
+                self.assertEqual(save.call_args.kwargs, {"format": "PNG", "compress_level": 1})
+
+    def test_known_tga_control_metadata_keeps_exact_pixels_on_fast_path(self):
+        original = self.image(size=(7, 65))
+        encoded = io.BytesIO()
+        original.save(encoded, format="TGA", compression="tga_rle", id_section=b"synthetic fixture")
+        with self.Image.open(io.BytesIO(encoded.getvalue())) as source:
+            image = source.convert("RGBA").transpose(self.Image.Transpose.FLIP_TOP_BOTTOM)
+        self.addCleanup(image.close)
+        self.assertTrue(image.info)
+        self.assertTrue(set(image.info) <= {"orientation", "compression", "id_section"})
+        with patch.object(image, "save", side_effect=AssertionError("Known TGA metadata should use fast path")):
+            png = viewer._png_texture(image, time.monotonic() + 10)
+        self.assert_rgba_png(png, image)
 
     def material(self, image):
         scene = SimpleNamespace(deadline=time.monotonic() + 10, stats={"textures": 0})
@@ -171,8 +321,12 @@ class PreviewPngTests(unittest.TestCase):
             image = self.image(mode)
             before = image.tobytes()
             material, obj, scene, glb = self.material(image)
-            with self.subTest(mode=mode), patch.object(viewer.decode, "_android_image", side_effect=lambda *args: image.copy()):
+            with self.subTest(mode=mode), \
+                    patch.object(viewer.decode, "_android_image", side_effect=lambda *args: image.copy()), \
+                    patch.object(viewer, "_png_texture", wraps=viewer._png_texture) as encode:
                 self.assertEqual(material.texture(obj), 0)
+                encode.assert_called_once()
+                self.assertEqual(encode.call_args.args[1], scene.deadline)
                 item = glb.doc["images"][0]
                 view = glb.doc["bufferViews"][item["bufferView"]]
                 png = glb.data[view["byteOffset"]:view["byteOffset"] + view["byteLength"]]
@@ -191,10 +345,9 @@ class PreviewPngTests(unittest.TestCase):
 
     def test_png_byte_limit_still_rejects_output_before_adding_image(self):
         image = self.image()
-        encoded = io.BytesIO()
-        image.save(encoded, format="PNG", compress_level=1)
+        png = viewer._png_texture(image, time.monotonic() + 10)
         material, obj, scene, glb = self.material(image)
-        limit = len(encoded.getvalue()) - 1
+        limit = len(png) - 1
         with patch.object(viewer, "MAX_GLB_BYTES", limit), \
                 patch.object(viewer.decode, "_android_image", side_effect=lambda *args: image.copy()):
             with self.assertRaisesRegex(viewer.ModelViewerError, "preview is too large"):
