@@ -204,7 +204,7 @@ async function pickerState(page) {
     const active = document.activeElement, a = active.getBoundingClientRect(), activeHit = document.elementFromPoint(a.x + a.width / 2, a.y + a.height / 2);
     return { blocked, hidden: n.classList.contains('hidden'), ariaHidden: n.getAttribute('aria-hidden'), inert: !!n.inert,
       cancel: { width: r.width, height: r.height, x: r.x, y: r.y, right: r.right, bottom: r.bottom, hit: !!hit && (hit === c || c.contains(hit)) },
-      activeInsidePicker: n.contains(active), active: { id: active.id, tag: active.tagName, inWorkspace: !!active.closest('#viewer-workspace-menu'), visible: a.width > 0 && a.height > 0 && a.x >= 0 && a.y >= 0 && a.right <= innerWidth + 1 && a.bottom <= innerHeight + 1 && !!activeHit && (activeHit === active || active.contains(activeHit)) },
+      activeInsidePicker: n.contains(active), active: { id: active.id, tag: active.tagName, inWorkspace: !!active.closest('#viewer-workspace-menu'), inViewer: !!active.closest('#tab-viewer'), visible: a.width > 0 && a.height > 0 && a.x >= 0 && a.y >= 0 && a.right <= innerWidth + 1 && a.bottom <= innerHeight + 1 && !!activeHit && (activeHit === active || active.contains(activeHit)) },
       parent: n.parentElement.id || n.parentElement.tagName, browserFullscreen: !!document.fullscreenElement, viewport: { width: innerWidth, height: innerHeight } };
   });
 }
@@ -266,6 +266,33 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
   }
   await closeMenus(page);
   return { controls, originalHeaderAndFileNodes: true, fileAndMotionPickerListeners: true, pickerProofs, callback };
+}
+async function pickerOpenAcrossViewportChange(page, cdp, dpr) {
+  const baseline = retained(await state(page)), cases = []; report.openPickerResize = cases;
+  await page.locator('#viewer-expand').click(); await settle(page);
+  for (const input of [{ trigger: 'viewer-add', close: 'Cancel button' }, { trigger: 'viewer-add-motion', close: 'Escape' }]) {
+    await setViewport(page, cdp, { width: 840, height: 195 }, dpr); await openDetails(page, 'viewer-workspace-menu');
+    const hit = await target(page, '#' + input.trigger, '#viewer-workspace-menu-content'); assertTarget(hit, input.trigger + ' before open-picker resize');
+    const originalPicker = await pickerState(page), test = { ...input, originalPicker }; cases.push(test); save();
+    await page.locator('#' + input.trigger).click(); test.immediate = await pickerState(page); save();
+    assert(test.immediate.activeInsidePicker && !test.immediate.hidden && !test.immediate.blocked.length, 'The opened picker immediately owns usable focus before resize');
+    await setViewport(page, cdp, { width: 1024, height: 768 }, dpr);
+    test.beforeClose = await pickerState(page); test.layoutBeforeClose = (await state(page)).layout; save();
+    assert.equal(test.layoutBeforeClose.shortHeight, false); assert.equal(test.layoutBeforeClose.expanded, true);
+    assert(test.beforeClose.activeInsidePicker && !test.beforeClose.hidden && !test.beforeClose.blocked.length && test.beforeClose.cancel.hit,
+      'An open chooser remains usable and focused after switching to a tall expanded viewport: ' + JSON.stringify(test.beforeClose));
+    if (input.close === 'Escape') await page.keyboard.press('Escape'); else await page.locator('#picker-cancel').click();
+    await page.waitForFunction(() => document.getElementById('picker').classList.contains('hidden')); await frames(page);
+    test.restored = await pickerState(page); test.layoutAfterClose = (await state(page)).layout; save();
+    assert.equal(test.restored.parent, originalPicker.parent, 'Viewport-changing Cancel restores the original picker parent');
+    assert.equal(test.restored.ariaHidden, originalPicker.ariaHidden); assert.equal(test.restored.inert, originalPicker.inert);
+    assert.equal(test.layoutAfterClose.expanded, true); assert.equal(test.layoutAfterClose.fullscreen, 'none');
+    assert(test.restored.active.inViewer && test.restored.active.visible,
+      'Closing a resized expanded chooser must focus a visible active viewer control, not a hidden old File button: ' + JSON.stringify(test.restored));
+    assert.deepEqual(retained(await state(page)), baseline, 'Keeping a chooser open across resize preserves camera, pose, HQ and edits'); test.status = 'PASS'; save();
+  }
+  await setViewport(page, cdp, { width: 840, height: 195 }, dpr); await page.locator('#viewer-expand').click(); await settle(page);
+  assert.deepEqual(retained(await state(page)), baseline); return cases;
 }
 async function finishRealInputCoast(page) {
   const initial = await state(page), trace = [], startedAt = new Date().toISOString();
@@ -379,6 +406,7 @@ async function collapseCards(page) {
     // active must retain focus isolation and restore the same original node.
     const profile = profiles[0], { page, context, cdp, errors } = await setup(browser, profile);
     try {
+      const openPickerResize = await pickerOpenAcrossViewportChange(page, cdp, profile.dpr);
       const actualUserCamera = await adjustCameraWithRealInput(page);
       const inputCoast = await finishRealInputCoast(page);
       const before = retained(await state(page));
@@ -416,7 +444,7 @@ async function collapseCards(page) {
       await page.evaluate(() => ModelViewer.dispose());
       assert(await page.evaluate(() => __resolutionIdentity.header.parentElement === document.body));
       assert.notEqual(await page.locator('.tab[data-tab="tools"]').getAttribute('tabindex'), '-1');
-      assert.deepEqual(errors, []); report.lifecycle.push({ status: 'PASS', sameHeaderRestored: true, focusIsolationAcrossReparenting: true, realTabNavigation: true, disposedNavigationRestored: true, actualUserCamera, fullscreenWorkspace, inactiveEscape, fullscreenImage });
+      assert.deepEqual(errors, []); report.lifecycle.push({ status: 'PASS', sameHeaderRestored: true, focusIsolationAcrossReparenting: true, realTabNavigation: true, disposedNavigationRestored: true, actualUserCamera, fullscreenWorkspace, inactiveEscape, openPickerResize, fullscreenImage });
     } catch (error) {
       report.lifecycleError = { message: String(error), stack: error.stack };
       try { report.lifecycleFailureImage = await capture(page, cdp, 'fullscreen-lifecycle-failure.png'); } catch (captureError) { report.lifecycleFailureCaptureError = String(captureError); }

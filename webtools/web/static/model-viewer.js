@@ -216,8 +216,10 @@
     [node("viewer-fullscreen"), node("viewer-expand"), node("viewer-view-menu") && node("viewer-view-menu").querySelector("summary")].some(function (element) {
       if (!element) return false;
       var rect = element.getBoundingClientRect();
-      if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
-      focusElement(element); return true;
+      if (!rect.width || !rect.height || rect.left < 0 || rect.top < 0 || rect.right > window.innerWidth || rect.bottom > window.innerHeight) return false;
+      var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      if (!hit || hit !== element && !element.contains(hit)) return false;
+      focusElement(element); return document.activeElement === element;
     });
   }
 
@@ -278,7 +280,15 @@
     if (expanded) isolateViewer(false);
     moveLayoutElement(home.element, home.parent, home.next && home.next.parentNode === home.parent ? home.next : null);
     if (expanded) isolateViewer(true);
-    if (active && !destroyed) focusElement(home.focus);
+    if (active && !destroyed) {
+      var focus = home.focus, rect = focus && focus.isConnected ? focus.getBoundingClientRect() : null;
+      var allowed = rect && rect.width && rect.height && rect.left >= 0 && rect.top >= 0 &&
+        rect.right <= window.innerWidth && rect.bottom <= window.innerHeight && (!expanded || node("tab-viewer").contains(focus));
+      var hit = allowed ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) : null;
+      allowed = allowed && hit && (hit === focus || focus.contains(hit));
+      if (allowed) focusElement(focus);
+      if (!allowed || document.activeElement !== focus) focusViewportControl();
+    }
   }
 
   function containViewerPicker() {
