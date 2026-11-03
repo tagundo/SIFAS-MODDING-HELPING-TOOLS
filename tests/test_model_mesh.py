@@ -159,6 +159,16 @@ class StridedVertexTests(unittest.TestCase):
             with self.subTest(data=type(data).__name__, count=count):
                 self.compare(data, channels, streams, count=count, fast=False)
 
+    def test_zero_count_short_circuits_before_missing_data_field(self):
+        source = SimpleNamespace(m_VertexData=SimpleNamespace(m_VertexCount=0))
+        results = []
+        for handler_class in (MeshHelper.MeshHandler, model_mesh.PreviewMeshHandler):
+            handler = handler_class(source, version=(2019, 4, 0, 0))
+            with patch.object(model_mesh, "_strided_values", side_effect=AssertionError("must delegate")):
+                handler.read_vertex_data([], [])
+            results.append(snapshot(handler))
+        self.assertEqual(results[0], results[1])
+
     def test_boost_keeps_upstream_method(self):
         src = SimpleNamespace(m_VertexData=None)
         handler = model_mesh.PreviewMeshHandler(src, version=(2019, 4, 0, 0))

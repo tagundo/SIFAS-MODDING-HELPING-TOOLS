@@ -17,7 +17,10 @@ class PreviewMeshHandler(MeshHelper.MeshHandler):
         vertex = self.src.m_VertexData
         if vertex is None:
             return None
-        count, data = vertex.m_VertexCount, vertex.m_DataSize
+        count = vertex.m_VertexCount
+        if count == 0:
+            return None  # upstream does not access m_DataSize for compressed-only meshes
+        data = vertex.m_DataSize
         # Other containers keep the upstream interpretation and error behavior.
         if type(count) is not int or count <= 0 or type(data) not in (bytes, bytearray) or not data:
             return None
