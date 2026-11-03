@@ -727,11 +727,11 @@ def _validate_mesh_allocations(mesh):
 
 def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None):
     import numpy as np
-    from UnityPy.helpers.MeshHelper import MeshHandler
+    from .model_mesh import PreviewMeshHandler
 
     mesh = mesh_obj.read()
     _validate_mesh_allocations(mesh)
-    handler = MeshHandler(mesh)
+    handler = PreviewMeshHandler(mesh)
     handler.process()
     positions = np.asarray(handler.m_Vertices, dtype=float)
     if positions.ndim != 2 or positions.shape[1] < 3 or not 0 < len(positions) <= MAX_VERTICES:

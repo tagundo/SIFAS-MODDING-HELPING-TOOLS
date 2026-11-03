@@ -406,7 +406,7 @@ class RealUnityFixtureTests(unittest.TestCase):
         self.assertEqual(pixels, [(0, 0, 255, 255), (0, 255, 255, 255)])
 
     def test_malformed_mesh_counts_are_rejected_before_meshhandler(self):
-        from UnityPy.helpers import MeshHelper
+        from webtools.core import model_mesh
         def mesh(**changes):
             value = SimpleNamespace(m_VertexData=SimpleNamespace(m_VertexCount=3),
                                     m_CompressedMesh=None, m_IndexFormat=0, m_Use16BitIndices=None,
@@ -426,7 +426,7 @@ class RealUnityFixtureTests(unittest.TestCase):
                 m_UV=SimpleNamespace(m_NumItems=2**31))),
         ]
         for value in malformed:
-            with self.subTest(value=value), patch.object(MeshHelper, "MeshHandler") as handler:
+            with self.subTest(value=value), patch.object(model_mesh, "PreviewMeshHandler") as handler:
                 with self.assertRaises(viewer.ModelViewerError):
                     viewer._geometry(SimpleNamespace(read=lambda: value), self.np.eye(4))
                 handler.assert_not_called()
