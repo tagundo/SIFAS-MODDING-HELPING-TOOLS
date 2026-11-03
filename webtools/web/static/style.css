@@ -46,11 +46,11 @@ header h1 { font-size: 18px; margin: 0; }
 .lang-pick { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted, #999); }
 .lang-pick select {
   background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-  padding: 5px 8px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  padding: 5px 8px; border-radius: 8px; font-size: 13px; cursor: pointer; min-height: 44px;
 }
 .tab {
   background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; min-height: 44px;
 }
 .tab.active { background: var(--accent2); border-color: var(--accent); }
 
@@ -64,7 +64,7 @@ main { padding: 14px; }
 .tool-list button {
   text-align: left; background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
-  cursor: pointer; font-size: 14px;
+  cursor: pointer; font-size: 14px; min-height: 44px;
 }
 .tool-list button.active { border-color: var(--accent); background: var(--panel2); }
 .tool-list button small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
