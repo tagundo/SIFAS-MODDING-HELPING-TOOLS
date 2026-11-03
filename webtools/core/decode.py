@@ -125,7 +125,10 @@ def _android_image(texture, deadline):
             subprocess.run([binary, "-dl", source, output], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            timeout=_remaining(deadline))
-            with Image.open(output) as decoded:
+            # This output is always TGA. Generic Image.open falls back to
+            # importing every Pillow plugin when TGA is not preinitialized.
+            from PIL.TgaImagePlugin import TgaImageFile
+            with TgaImageFile(output) as decoded:
                 if decoded.size != (width, height):
                     raise ValueError("ASTC decoder returned incorrect dimensions")
                 image = decoded.convert("RGBA")
