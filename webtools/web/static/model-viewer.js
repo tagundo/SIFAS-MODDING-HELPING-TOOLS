@@ -89,6 +89,32 @@
     info.classList.toggle("viewer-info-alert", !!alert);
     if (alert && !info.open) { infoAutoOpened = true; info.open = true; }
     else if (!alert && infoAutoOpened) { info.open = false; infoAutoOpened = false; }
+    refreshPopoverStack(info.open ? info : null);
+  }
+
+  function refreshPopoverStack(preferred) {
+    var menu = node("viewer-view-menu"), info = node("viewer-info");
+    if (menu && info && menu.open && info.open) {
+      if (preferred === menu) { info.open = false; infoAutoOpened = false; }
+      else menu.open = false;
+    }
+    var top = node("viewer-stage-tools-top"), bottom = node("viewer-stage-tools-bottom");
+    if (top) top.classList.toggle("viewer-popover-open", !!(menu && menu.open && compactControls));
+    if (bottom) bottom.classList.toggle("viewer-popover-open", !!(info && info.open));
+  }
+
+  function bindViewportPopover(details) {
+    if (!details) return;
+    var summary = details.querySelector("summary");
+    if (summary) summary.addEventListener("click", function (event) {
+      // details' toggle event is deferred. Update stacking during this actual
+      // activation so another control can be hit-tested in the same turn.
+      event.preventDefault();
+      if (details === node("viewer-info")) infoAutoOpened = false;
+      details.open = !details.open;
+      refreshPopoverStack(details.open ? details : null);
+    });
+    details.addEventListener("toggle", function () { refreshPopoverStack(details.open ? details : null); });
   }
 
   function viewportRect() {
@@ -133,6 +159,7 @@
     if (hideList && list && list.contains(document.activeElement)) options.open = true;
     moveLayoutElement(list, hideList ? options.querySelector(".viewer-file-options-panel") : options.parentNode,
       hideList ? null : options);
+    refreshPopoverStack(menu.open ? menu : null);
   }
 
   function measureSafeInsets() {
@@ -946,8 +973,8 @@
       else setExpanded(!expanded);
     });
     if (node("viewer-fullscreen")) node("viewer-fullscreen").addEventListener("click", enterFullscreen);
-    var info = node("viewer-info"), infoSummary = info && info.querySelector("summary");
-    if (infoSummary) infoSummary.addEventListener("click", function () { infoAutoOpened = false; });
+    bindViewportPopover(node("viewer-view-menu"));
+    bindViewportPopover(node("viewer-info"));
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
       button.addEventListener("click", function () { setView(button.dataset.viewerView); });
     });
@@ -974,7 +1001,7 @@
       if (event.key !== "Escape") return;
       var viewMenu = node("viewer-view-menu");
       if (viewMenu && viewMenu.open) {
-        event.preventDefault(); viewMenu.open = false; focusElement(viewMenu.querySelector("summary")); return;
+        event.preventDefault(); viewMenu.open = false; refreshPopoverStack(null); focusElement(viewMenu.querySelector("summary")); return;
       }
       if (fullscreenWanted || fullscreenMode !== "none") { event.preventDefault(); exitFullscreen(false); }
       else if (expanded && Date.now() - lastFullscreenExit > 200) { event.preventDefault(); setExpanded(false); }
