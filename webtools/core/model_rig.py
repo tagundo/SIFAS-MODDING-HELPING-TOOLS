@@ -178,7 +178,7 @@ class RigBuilder:
         key = _key(transform)
         if key in self.nodes:
             return self.nodes[key]
-        tree = self.scene.tree(transform)
+        tree = self.scene.local_tree(transform)
         obj = _ref(transform, tree.get("m_GameObject"))
         name = self.scene.name(obj) if obj is not None else "Bone"
         world = self.scene.world(transform)

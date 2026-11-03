@@ -401,6 +401,8 @@ class _Scene:
             # actual renderers exist in the supplied scene.
             self.renderers.extend((obj, {"m_Enabled": True, "m_Materials": []}, obj)
                                   for obj in env.objects if obj.type.name == "Mesh")
+        from .model_board import board_positions
+        self.runtime_positions = board_positions(self)
 
     def tree(self, obj):
         _remaining(self.deadline)
@@ -423,6 +425,14 @@ class _Scene:
             _remaining(self.deadline)
         return self.names[key]
 
+    def local_tree(self, transform):
+        """Runtime TRS view; tree() continues to expose immutable source values."""
+        tree = self.tree(transform)
+        position = self.runtime_positions.get(_key(transform))
+        if position is None:
+            return tree
+        return dict(tree, m_LocalPosition=dict(zip("xyz", position)))
+
     def world(self, transform, visiting=None):
         import numpy as np
         if transform is None:
@@ -434,7 +444,7 @@ class _Scene:
         if key in visiting or len(visiting) > 256:
             raise ModelViewerError("The model contains a circular transform hierarchy.")
         visiting.add(key)
-        tree = self.tree(transform)
+        tree = self.local_tree(transform)
         parent = _ref(transform, tree.get("m_Father"))
         result = self.world(parent, visiting) @ _trs(tree)
         visiting.remove(key)
