@@ -22,9 +22,14 @@ function originalUnityTriangle() {
   const data = JSON.parse(execFileSync(process.env.PYTHON_EXECUTABLE || 'python3', ['-c',
     'import base64,hashlib,json,sys;from pathlib import Path;from webtools.core import model_viewer as v;' +
     'p=Path(sys.argv[1]);m=v.prepare([str(p)],rigged=True);' +
-    'print(json.dumps({"metadata":m,"glb":base64.b64encode(v.get_model(m["id"])).decode(),"sourceSha256":hashlib.sha256(p.read_bytes()).hexdigest()}))', source],
+    'print(json.dumps({"metadata":m,"rawMetadata":json.dumps(m,ensure_ascii=False,separators=(",",":")),"glb":base64.b64encode(v.get_model(m["id"])).decode(),"sourceSha256":hashlib.sha256(p.read_bytes()).hexdigest()}))', source],
   { cwd: path.join(__dirname, '..'), encoding: 'utf8' }));
   assert.equal(data.sourceSha256, '512035f15592dd8a32bdeca4cacaaf2ea8a9c5d70c9b269080c9348ebf537fd4', 'Use the unchanged Unity fixture from the official Android pixel test');
+  // Retain this already-authorized conversion for independent host checks.
+  // The Python-produced metadata text and model bytes are written without field changes.
+  fs.writeFileSync(path.join(evidence, 'original-unity-metadata.json'), data.rawMetadata);
+  fs.writeFileSync(path.join(evidence, 'original-unity-model.glb'), Buffer.from(data.glb, 'base64'));
+  fs.writeFileSync(path.join(evidence, 'original-unity-source.json'), JSON.stringify({ source, sourceSha256: data.sourceSha256 }));
   return { ...data.metadata, glb: Buffer.from(data.glb, 'base64'), sourceSha256: data.sourceSha256 };
 }
 async function openPage(browser, mode = 'browser', viewport = { width: 853, height: 590 }, dpr = 1.5, model = generated) {
@@ -249,7 +254,7 @@ async function primaryNavigationTargets(browser) {
         assert(normal.layout.safeInsets.top <= 55 && normal.layout.safeInsets.bottom <= 55,
           'The closed phone HUD must occupy one 44 px row at each edge');
         assert(normal.stage.height - normal.layout.safeInsets.top - normal.layout.safeInsets.bottom >= 150,
-          'The actual short phone must retain usable unobscured model height');
+          'The actual short phone must retain usable unobscured model height: ' + JSON.stringify({ language, stage: normal.stage, safeInsets: normal.layout.safeInsets }));
         assert.equal(normal.overflow, false);
         assert.equal(await page.locator('#viewer-view-menu').evaluate(element => element.open), false);
         assert(await page.locator('#viewer-file-options').evaluate(element => element.contains(document.getElementById('viewer-file-list'))),
@@ -263,7 +268,14 @@ async function primaryNavigationTargets(browser) {
           assert(control.width >= 44 && control.height >= 44 && control.x >= 0 && control.y >= 0 &&
             control.right <= control.viewportWidth + 1 && control.bottom <= control.viewportHeight + 1 && control.hit,
           selector + ' remains a reachable 44 px control on the exact failing phone viewport: ' + JSON.stringify(control));
+          return { selector, ...control };
         }
+        const primaryNavigation = [];
+        for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) primaryNavigation.push(await assertReachable(selector));
+        assert(Math.max(...primaryNavigation.map(value => value.y + value.height / 2)) - Math.min(...primaryNavigation.map(value => value.y + value.height / 2)) <= 1,
+          'Short-phone primary navigation and language selection share one reachable row: ' + JSON.stringify(primaryNavigation));
+        assert.equal(await page.getByRole('heading', { level: 1 }).count(), 1, 'The visually compact brand remains an accessible heading');
+        assert.equal(normal.layout.expanded, false); assert.equal(normal.layout.fullscreen, 'none');
         for (const selector of ['#viewer-view-menu > summary', '#viewer-expand', '#viewer-fullscreen', '#viewer-fit']) await assertReachable(selector);
         await page.locator('#viewer-view-menu > summary').click();
         assert(await page.locator('#viewer-view-menu').evaluate(element => element.open));
@@ -280,7 +292,7 @@ async function primaryNavigationTargets(browser) {
         assert.deepEqual(retained(await state(page)), before, 'Phone orientation reflow preserves camera, pose and edits');
         await page.setViewportSize({ width: 360, height: 456 }); await frames(page);
         assert.deepEqual(retained(await state(page)), before);
-        report.shortPhone.languages.push({ language, normal, sparseProbe });
+        report.shortPhone.languages.push({ language, normal, sparseProbe, primaryNavigation });
       }
       assert.deepEqual(errors, []); await context.close();
     }

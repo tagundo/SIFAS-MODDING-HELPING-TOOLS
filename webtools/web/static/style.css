@@ -527,6 +527,15 @@ main { padding: 14px; }
   header .tab { flex: 1 1 auto; min-width: 0; padding: 8px 6px; font-size: 12px; }
 }
 
+
+@media (max-width: 480px) and (max-height: 600px) {
+  body > header { flex-wrap: nowrap; }
+  body > header h1 { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  body > header .tabs { order: 0; flex: 1 1 auto; width: auto; }
+  body > header .tab { min-width: 44px; padding: 4px 6px; line-height: 1.2; }
+  body > header .lang-pick { flex: 0 0 auto; margin-left: 0; }
+}
+
 @media (max-width: 380px) {
   .viewer-node-vector { grid-template-columns: minmax(0, 1fr); }
   .viewer-node-vector label { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 6px; }
