@@ -216,13 +216,41 @@ if(require.main===module)(async()=>{
     await page.evaluate(()=>openModelViewer(['/synthetic/rig.unity']));
     await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
     const state=()=>page.evaluate(()=>ModelViewer.getState());
-    const capture=(save,compare)=>page.evaluate(([save,compare])=>{
+    const capture=(save,compare)=>page.evaluate(([save,compare])=>new Promise((resolve,reject)=>{
+      const previousSize=(window.__poseButtonFrameSizes||{})[compare];
+      // Locator actions may scroll the page; pixel comparisons use the same
+      // outer-page position as their reference. The inspector keeps its scroll.
+      window.scrollTo(previousSize?previousSize.windowScrollX||0:0,previousSize?previousSize.windowScroll:0);
+      let previousGeometry=null,lastGeometry=null,finished=false;
+      const timeout=setTimeout(()=>{finished=true;reject(new Error('Pose capture geometry did not settle: '+JSON.stringify(lastGeometry)));},30000);
+      function readyFrame(){
+        if(finished)return;
+        const stage=document.getElementById('viewer-stage'),canvas=document.getElementById('viewer-canvas');
+        const s=ModelViewer.getState(),q=s.quality,layout=s.layout,box=stage.getBoundingClientRect();
+        const gl=canvas&&(canvas.getContext('webgl2')||canvas.getContext('webgl'));
+        const coherent=!!(q&&q.ready&&!s.contextLost&&gl&&layout.stage.width===stage.clientWidth&&layout.stage.height===stage.clientHeight&&
+          Math.abs(layout.stage.top-box.top)<1e-6&&Math.abs(layout.stage.left-box.left)<1e-6&&
+          q.cssWidth===stage.clientWidth&&q.cssHeight===stage.clientHeight&&
+          canvas.width===q.width&&canvas.height===q.height&&gl.drawingBufferWidth===q.width&&gl.drawingBufferHeight===q.height);
+        lastGeometry={coherent,stage:{width:stage.clientWidth,height:stage.clientHeight,top:box.top,left:box.left},layout,
+          canvas:canvas&&{width:canvas.width,height:canvas.height},quality:q,windowScroll:scrollY};
+        const key=JSON.stringify([stage.clientWidth,stage.clientHeight,box.top,box.left,canvas&&canvas.width,canvas&&canvas.height,scrollX,scrollY]);
+        if(coherent&&key===previousGeometry){
+          finished=true;clearTimeout(timeout);
+          // Capture in this same coherent frame. Polling never renders a probe
+          // or consumes GL errors; the original capture below performs both.
+          try{resolve(captureFrame());}catch(error){reject(error);}
+        }else{previousGeometry=coherent?key:null;requestAnimationFrame(readyFrame);}
+      }
+      function captureFrame(){
       const probe=ModelViewer.renderProbe(33),canvas=document.getElementById('viewer-canvas'),gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
       const width=gl.drawingBufferWidth,height=gl.drawingBufferHeight,pixels=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);const error=gl.getError();
       const frames=window.__poseButtonFrames||(window.__poseButtonFrames={});let changedPixels=null;
       if(compare){const previous=frames[compare];if(!previous||previous.length!==pixels.length)throw new Error('Pose comparison viewport changed: '+JSON.stringify({reference:compare,previousBytes:previous&&previous.length,current:{width,height,bytes:pixels.length},previousSize:(window.__poseButtonFrameSizes||{})[compare],layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop}));changedPixels=0;for(let offset=0;offset<pixels.length;offset+=4)if(Math.abs(pixels[offset]-previous[offset])+Math.abs(pixels[offset+1]-previous[offset+1])+Math.abs(pixels[offset+2]-previous[offset+2])>24)changedPixels++;}
-      if(save){frames[save]=pixels;(window.__poseButtonFrameSizes||(window.__poseButtonFrameSizes={}))[save]={width,height,layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop};}return{probe,glError:error,changedPixels,width,height};
-    },[save,compare]);
+      if(save){frames[save]=pixels;(window.__poseButtonFrameSizes||(window.__poseButtonFrameSizes={}))[save]={width,height,layout:ModelViewer.getState().layout,windowScrollX:scrollX,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop};}return{probe,glError:error,changedPixels,width,height};
+      }
+      requestAnimationFrame(readyFrame);
+    }),[save,compare]);
     const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
     const slider=async(id,value)=>{
       if(id==='viewer-expression-value'){
