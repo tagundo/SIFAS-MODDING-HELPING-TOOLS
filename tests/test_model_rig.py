@@ -389,6 +389,129 @@ class RigTests(unittest.TestCase):
         self.assertTrue(metadata["rig"]["clips"][0]["bindingComplete"])
         self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
 
+    def test_face_geometry_finishes_before_cap_then_uses_fixed_binding_reserve(self):
+        from webtools.core import model_motion, model_rig
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            preview, recipes = self._offline_preview(directory)
+            clock, geometry_calls, finish_calls = [0.], [0], []
+            geometry, finalize = viewer._geometry, model_rig.RigBuilder.finalize
+
+            def timed_geometry(*args, **kwargs):
+                geometry_calls[0] += 1
+                clock[0] = 50. if geometry_calls[0] == 1 else 159.
+                return geometry(*args, **kwargs)
+
+            def finish_rig(rig, animations=True):
+                if rig.faces.enabled and rig.faces.added:
+                    self.assertEqual(rig.deadline, 180.)
+                    self.assertEqual(rig.scene.deadline, 180.)
+                    if animations:
+                        finish_calls.append(clock[0])
+                        clock[0] = 179.
+                return finalize(rig, animations=animations)
+
+            with patch.object(model_motion, "KNOWN_PREVIEWS", recipes), \
+                    patch.object(model_motion, "BUNDLED_PREVIEW", preview), \
+                    patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_geometry", timed_geometry), \
+                    patch.object(model_rig.RigBuilder, "finalize", finish_rig):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertEqual(finish_calls, [159.])
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(metadata["faces"]["added"], 2)
+        self.assertEqual(metadata["stats"]["meshes"], 3)
+        self.assertEqual(len(document["meshes"]), 3)
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
+        self.assertTrue(metadata["rig"]["clips"][0]["bindingComplete"])
+
+    def test_expired_face_geometry_cannot_enter_reserved_binding_phase(self):
+        from webtools.core import model_motion, model_rig
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            preview, recipes = self._offline_preview(directory)
+            clock, updates = [0.], []
+            append, update = viewer._append_scene, model_rig.RigBuilder.update
+
+            def expire_geometry(scene, glb, faces, deadline, **kwargs):
+                result = append(scene, glb, faces, deadline, **kwargs)
+                if kwargs.get("auto_only"):
+                    self.assertEqual(deadline, 160.)
+                    clock[0] = 160.
+                return result
+
+            def track_deadline(rig, scene, faces, deadline):
+                updates.append(deadline)
+                return update(rig, scene, faces, deadline)
+
+            with patch.object(model_motion, "KNOWN_PREVIEWS", recipes), \
+                    patch.object(model_motion, "BUNDLED_PREVIEW", preview), \
+                    patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_append_scene", expire_geometry), \
+                    patch.object(model_rig.RigBuilder, "update", track_deadline):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertNotIn(180., updates)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["faces"]["added"], 0)
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual(len(document["meshes"]), 1)
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
+
+    def test_face_recovery_reuses_fixed_geometry_and_binding_deadlines(self):
+        from webtools.core import model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            clock, attempts, calls = [0.], [0], []
+            append, build = viewer._append_scene, viewer._build
+
+            def fail_face(scene, glb, faces, deadline, **kwargs):
+                if kwargs.get("auto_only"):
+                    clock[0] = 150.
+                    append(scene, glb, faces, deadline, **kwargs)
+                    raise OSError("partial optional face")
+                attempts[0] += 1
+                clock[0] = 50. if attempts[0] == 1 else 159.
+                return append(scene, glb, faces, deadline, **kwargs)
+
+            def track_build(paths, deadline, *args, **kwargs):
+                calls.append((deadline, kwargs.get("_geometry_deadline"), kwargs.get("_optional_deadline")))
+                return build(paths, deadline, *args, **kwargs)
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_append_scene", fail_face), \
+                    patch.object(viewer, "_build", track_build), \
+                    patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertEqual(calls, [(120., None, None), (160., 160., 180.)])
+        self.assertEqual(attempts[0], 2)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(len(document["meshes"]), 1)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+
+    def test_nonplayable_rig_does_not_receive_binding_reserve(self):
+        from test_model_faces import FaceTests, bundle
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, donor = root / "body.unity", root / "original.unity"
+            path.write_bytes(FaceTests.scene(self, "Body"))
+            donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+            deadlines, finish = [], viewer._to_glb
+
+            def inspect_finish(scene, glb, faces, deadline, **kwargs):
+                deadlines.append(deadline)
+                return finish(scene, glb, faces, deadline, **kwargs)
+
+            with patch.object(viewer, "_to_glb", inspect_finish):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True,
+                    "allow_download": False, "library_roots": [str(root)], "cache_dir": str(root / "cache")})
+        self.assertFalse(metadata["rig"]["available"])
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(len(deadlines), 2)
+        self.assertLessEqual(deadlines[1] - deadlines[0], 40.)
+
     def test_rina_board_placeholder_uses_validated_costume_metadata_for_motion_owner(self):
         from webtools.core import model_motion
         environment = self.UnityPy.load(self.owner_rig_without_clips())
@@ -554,7 +677,7 @@ class RigTests(unittest.TestCase):
 
             def optional_motion(stage, rig, loaded, deadline):
                 observed["motion"].append(deadline)
-                self.assertEqual(deadline, 160.)
+                self.assertEqual(deadline, 180.)
                 self.assertEqual(rig.deadline, deadline)
                 self.assertEqual(rig.scene.deadline, deadline)
                 clock[0] = 158.
@@ -576,10 +699,11 @@ class RigTests(unittest.TestCase):
         self.assertEqual(len(document["meshes"]), 3)
         for phase in ("scene", "rig", "materials", "decode"):
             self.assertIn(160., observed[phase], phase)
-            self.assertTrue(all(deadline <= 160. for deadline in observed[phase]), (phase, observed[phase]))
+            self.assertTrue(all(deadline <= 180. for deadline in observed[phase]), (phase, observed[phase]))
         self.assertEqual(observed["scene"][0], 120.)
         self.assertEqual(observed["decode"][0], 120.)
-        self.assertEqual(observed["motion"], [160.])
+        self.assertTrue(all(deadline <= 160. for deadline in observed["decode"]), observed["decode"])
+        self.assertEqual(observed["motion"], [180.])
 
     def test_early_body_preserves_fixed_rigged_face_and_later_motion_allowance(self):
         from webtools.core import model_motion
@@ -595,7 +719,7 @@ class RigTests(unittest.TestCase):
 
             def optional_motion(stage, rig, loaded, deadline):
                 motion_deadlines.append(deadline)
-                self.assertEqual(deadline, 160.)
+                self.assertEqual(deadline, 165.)
                 self.assertEqual(rig.deadline, deadline)
                 self.assertEqual(rig.scene.deadline, deadline)
                 clock[0] = 150.
@@ -610,7 +734,7 @@ class RigTests(unittest.TestCase):
         self.assertEqual(metadata["faces"]["added"], 2)
         self.assertEqual(metadata["stats"]["meshes"], 3)
         self.assertEqual(len(document["meshes"]), 3)
-        self.assertEqual(motion_deadlines, [160.])
+        self.assertEqual(motion_deadlines, [165.])
         self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
 
     def test_late_body_motion_uses_remaining_shared_allowance_with_faces_on_or_off(self):
@@ -633,7 +757,7 @@ class RigTests(unittest.TestCase):
 
                 def optional_motion(stage, rig, loaded, deadline):
                     calls.append(deadline)
-                    self.assertEqual(deadline, 160. if enabled else 159.)
+                    self.assertEqual(deadline, 180. if enabled else 159.)
                     self.assertEqual(rig.deadline, deadline)
                     self.assertEqual(rig.scene.deadline, deadline)
                     clock[0] = 158.
@@ -644,13 +768,13 @@ class RigTests(unittest.TestCase):
                         patch.object(model_faces.FacePlan, "resolve", face_lookup), \
                         patch.object(model_motion.MotionInputs, "automatic", optional_motion):
                     metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": enabled})
-                self.assertEqual(calls, [160. if enabled else 159.])
+                self.assertEqual(calls, [180. if enabled else 159.])
                 self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
                 self.assertEqual(metadata["faces"]["enabled"], enabled)
 
     def test_failed_face_recovery_keeps_original_optional_deadline_and_clean_geometry(self):
         from webtools.core import model_motion
-        cases = ((50., 70., 145., 150., 160.), (119., 130., 145., 150., 160.))
+        cases = ((50., 70., 145., 150., 180.), (119., 130., 145., 150., 180.))
         for body_at, failure_at, recovery_at, motion_at, optional_end in cases:
             with self.subTest(body_finished_at=body_at), tempfile.TemporaryDirectory() as directory:
                 path, context = self._face_budget_inputs(directory)
@@ -659,7 +783,7 @@ class RigTests(unittest.TestCase):
 
                 def partial_face(scene, glb, faces, deadline, **kwargs):
                     if kwargs.get("auto_only"):
-                        self.assertEqual(deadline, optional_end)
+                        self.assertEqual(deadline, 160.)
                         clock[0] = failure_at
                         append(scene, glb, faces, deadline, **kwargs)
                         raise OSError("face failed after mutating the shared GLB")

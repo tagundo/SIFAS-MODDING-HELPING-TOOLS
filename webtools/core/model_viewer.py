@@ -35,6 +35,7 @@ MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ENTRIES = 2
 CACHE_SECONDS = 600
 BUILD_SECONDS = 120
+FINAL_BINDING_SECONDS = 20
 
 _BUILD_LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -1047,15 +1048,14 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
     return result + (base_rig,)
 
 
-def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadline=None):
-    """Finish the selected model before spending any time on optional faces.
+def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadline=None, _geometry_deadline=None):
+    """Keep geometry and mandatory finishing work within separate fixed caps.
 
-    The selected model keeps its original deadline. Rigged faces and automatic
-    motion share one fixed deadline forty seconds after the original deadline,
-    regardless of when the body finishes. The initial body budget is unchanged.
-    Lookup/network and legacy static facial conversion keep their forty-second
-    caps. Recovery reuses the same optional deadline instead of renewing it.
-    Completed GLBs are immutable and survive optional phase failures.
+    Selected geometry retains its original allowance. Facial geometry ends
+    forty seconds after that deadline; playable rigs reserve a further twenty
+    seconds for final binding/serialization. Lookup/network and static facial
+    conversion keep their forty-second caps. Recovery reuses both original
+    deadlines instead of renewing either allowance. Completed GLBs are immutable.
     """
     from .model_faces import FacePlan, FACE_SECONDS
     env = _environment(paths, deadline)
@@ -1076,16 +1076,19 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     if not face_context or (not face_enabled and not playable_rig):
         return base
 
+    geometry_deadline = _geometry_deadline
+    if geometry_deadline is None:
+        geometry_deadline = deadline + FACE_SECONDS
     optional_deadline = _optional_deadline
     if optional_deadline is None:
-        optional_deadline = deadline + FACE_SECONDS
+        optional_deadline = geometry_deadline + (FINAL_BINDING_SECONDS if playable_rig else 0)
     # Commit the verified offline pose before optional faces can consume the
     # common allowance. No catalog/cache lookup or expression discovery runs
     # here, and automatic motion never becomes a selected NodeScaling source.
     early_motion, preload_failed = [], False
     stage = face_context.get("_motion_stage")
     if playable_rig and stage is not None:
-        motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
+        motion_deadline = min(geometry_deadline, time.monotonic() + FACE_SECONDS)
         try:
             _remaining(motion_deadline)
             early_motion = stage.bundled(rig, paths, motion_deadline)
@@ -1110,7 +1113,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
                 "code": "animation_unavailable", "message": "The bundled preview could not be imported. The completed model is still shown."}]
             base = base[:4] + (metadata,)
-    face_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
+    face_deadline = min(geometry_deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
     face_append_started = False
     if face_enabled:
@@ -1125,9 +1128,9 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             extra = faces.resolve()
             _remaining(face_deadline)
             if extra:
-                # Rigged geometry and later motion share the fixed optional
-                # allowance; a late body cannot exhaust it before faces start.
-                render_deadline = optional_deadline if rig is not None else face_deadline
+                # Facial geometry keeps the original cap. Only a fully
+                # completed append may enter the reserved finishing phase.
+                render_deadline = geometry_deadline if rig is not None else face_deadline
                 _paths(paths + early_motion + extra)
                 face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
@@ -1136,7 +1139,12 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 if rig is not None:
                     rig.update(expanded, faces, render_deadline)
                 _append_scene(expanded, glb, faces, render_deadline, auto_only=True, materials=materials, rig=rig)
-                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig,
+                _remaining(render_deadline)
+                finish_deadline = optional_deadline if playable_rig else render_deadline
+                expanded.deadline = finish_deadline
+                if rig is not None:
+                    rig.update(expanded, faces, finish_deadline)
+                completed = _to_glb(expanded, glb, faces, finish_deadline, rig=rig,
                                     require_existing_clips=bool(early_motion))
                 scene = expanded
             else:
@@ -1159,12 +1167,12 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 # environment, GLB and rig. Rebuild only this failed rigged
                 # attempt, with faces disabled, so its independent automatic
                 # motion cannot inherit partially appended facial geometry.
-                # This cleanup spends only the existing optional time left;
-                # it does not renew the initial body or optional allowance.
-                if playable_rig and time.monotonic() < optional_deadline:
+                # This cleanup uses only the original geometry time left;
+                # it cannot borrow the finishing reserve or renew either cap.
+                if playable_rig and time.monotonic() < geometry_deadline:
                     try:
-                        recovered = _build(paths, optional_deadline, dict(face_context, enabled=False), rigged=True,
-                                           _optional_deadline=optional_deadline)
+                        recovered = _build(paths, geometry_deadline, dict(face_context, enabled=False), rigged=True,
+                                           _optional_deadline=optional_deadline, _geometry_deadline=geometry_deadline)
                         return recovered[:2] + (list(recovered[2]) + faces.warnings, faces.metadata()) + recovered[4:]
                     except Exception:
                         pass
