@@ -5,6 +5,7 @@ bounds checks remain runnable on a standard-library-only host.
 """
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
@@ -240,6 +241,7 @@ class SafeDecoderTests(unittest.TestCase):
         image.putdata([(255, 0, 0, 255)] * 2 + [(0, 0, 255, 255)] * 2)
         def worker(command, **options):
             self.assertEqual(command[1], "-dl")
+            self.assertEqual(Path(command[3]).suffix, ".tga")
             encoded = Path(command[2]).read_bytes()
             self.assertEqual(encoded[:16], b"\x13\xab\xa1\x5c\x06\x06\x01\x02\x00\x00\x02\x00\x00\x01\x00\x00")
             self.assertEqual(encoded[16:], b"a" * 16)
@@ -256,6 +258,44 @@ class SafeDecoderTests(unittest.TestCase):
                 actual = self.image(texture)
             self.assertEqual(actual.getpixel((0, 0)), (0, 0, 255, 255))
             self.assertFalse(Path(run.call_args.args[0][2]).exists())
+
+    @unittest.skipUnless(Image and os.environ.get("ASTCENC_HOST_TEST_BIN"),
+                         "Set ASTCENC_HOST_TEST_BIN for exact native transport assertions")
+    def test_actual_cli_tga_preserves_png_rgba_alpha_and_unity_orientation(self):
+        binary = Path(os.environ["ASTCENC_HOST_TEST_BIN"])
+        self.assertTrue(binary.is_file())
+
+        def block(rgba):
+            # Original generated ASTC LDR constant blocks, as defined by the
+            # format: a void-extent prefix followed by four UNORM16 channels.
+            return bytes.fromhex("fcfdffffffffffff") + struct.pack("<4H", *(v * 257 for v in rgba))
+
+        cases = [
+            (4, 4, [(12, 57, 190, 255)]),
+            (4, 4, [(240, 60, 20, 37)]),
+            (8, 8, [(255, 0, 0, 255), (0, 255, 0, 127), (0, 0, 255, 0), (255, 0, 255, 255)]),
+            (7, 5, [(0, 255, 128, 0), (20, 80, 240, 64), (180, 30, 250, 128), (255, 255, 255, 255)]),
+        ]
+        for width, height, colors in cases:
+            data = b"".join(map(block, colors))
+            texture = Texture(data, m_Width=width, m_Height=height, m_TextureFormat="ASTC_RGBA_4x4")
+            with self.subTest(size=(width, height), colors=colors), tempfile.TemporaryDirectory() as directory:
+                source, png = Path(directory) / "source.astc", Path(directory) / "reference.png"
+                source.write_bytes(bytes.fromhex("13aba15c040401") + width.to_bytes(3, "little")
+                                   + height.to_bytes(3, "little") + b"\x01\x00\x00" + data)
+                subprocess.run([str(binary), "-dl", str(source), str(png)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+                with Image.open(png) as reference:
+                    expected = reference.convert("RGBA").transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                    with patch.dict(os.environ, {"ASTCENC_BIN": str(binary)}):
+                        actual = self.image(texture)
+                    try:
+                        self.assertEqual(actual.size, expected.size)
+                        self.assertEqual(actual.tobytes(), expected.tobytes())
+                        self.assertEqual(actual.getchannel("A").getextrema(), expected.getchannel("A").getextrema())
+                    finally:
+                        actual.close()
+                        expected.close()
 
     @unittest.skipUnless(Image, "Pillow is required for isolated ASTC output assertions")
     def test_astc_cli_timeout_crash_and_wrong_image_dimensions_are_not_accepted(self):

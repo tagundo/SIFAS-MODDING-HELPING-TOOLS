@@ -116,7 +116,9 @@ def _android_image(texture, deadline):
                   + b"\x01\x00\x00")
         with tempfile.TemporaryDirectory(prefix="webtools_astc_") as directory:
             source = os.path.join(directory, "texture.astc")
-            output = os.path.join(directory, "texture.png")
+            # The viewer will encode the final PNG after Unity's vertical flip.
+            # A lossless TGA intermediate avoids compressing that image twice.
+            output = os.path.join(directory, "texture.tga")
             with open(source, "wb") as stream:
                 stream.write(header)
                 stream.write(data[:needed])  # the remaining bytes are lower mip levels
