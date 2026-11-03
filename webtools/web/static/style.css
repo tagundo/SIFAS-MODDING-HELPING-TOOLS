@@ -187,7 +187,7 @@ main { padding: 14px; }
 .gcard .cap { padding: 6px 8px; font-size: 12px; word-break: break-all; }
 .gallery-view-model { display: block; width: calc(100% - 16px); min-height: 44px; margin: 0 8px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); color: var(--text); cursor: pointer; }
 
-/* 3D model viewing keeps file choice and camera controls outside the canvas. */
+/* Viewport controls share measured edge rows; editing stays in a bounded panel. */
 [hidden] { display: none !important; }
 .tabs { flex-wrap: wrap; }
 .viewer-workspace { display: block; }
@@ -210,7 +210,7 @@ main { padding: 14px; }
 .viewer-files .viewer-remove { flex: 0 0 44px; padding: 4px; min-width: 44px; font-size: 20px; }
 .viewer-file-options { position: relative; flex: 0 0 44px; margin-left: auto; }
 .viewer-file-options > summary { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); font-size: 20px; cursor: pointer; list-style: none; }
-.viewer-file-options > summary::-webkit-details-marker, .viewer-info > summary::-webkit-details-marker { display: none; }
+.viewer-file-options > summary::-webkit-details-marker, .viewer-info > summary::-webkit-details-marker, .viewer-view-menu > summary::-webkit-details-marker { display: none; }
 .viewer-file-options-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 10; width: 300px; max-width: calc(100vw - 32px); max-height: 60vh; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 28px rgba(20,30,50,.16); }
 .viewer-status { margin: 0; font-size: 13px; line-height: 1.4; overflow-wrap: break-word; }
 .viewer-status.error { color: var(--err); }
@@ -225,6 +225,17 @@ main { padding: 14px; }
 .viewer-stage-tools-top { top: 8px; flex-wrap: wrap; }
 .viewer-stage-tools-bottom { bottom: 8px; align-items: flex-end; justify-content: space-between; }
 .viewer-primary-tools { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; max-width: 100%; }
+.viewer-view-menu { display: none; position: relative; min-width: 0; }
+.viewer-view-menu > summary { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; cursor: pointer; list-style: none; font-size: 12px; white-space: nowrap; }
+.viewer-view-menu > summary::after { content: ""; width: 6px; height: 6px; margin-left: 9px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-2px); }
+.viewer-view-menu[open] > summary::after { transform: rotate(225deg) translate(-2px, -1px); }
+.viewer-view-menu-content { position: absolute; top: calc(100% + 8px); left: 0; width: 260px; max-width: calc(100vw - 48px); max-height: calc(var(--viewer-stage-height, 60vh) - 76px); overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 28px rgba(20,30,50,.18); touch-action: pan-y; }
+.viewer-view-menu:not([open]) > .viewer-view-menu-content { display: none; }
+.viewer-view-menu-content .viewer-primary-tools { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.viewer-view-menu-content .viewer-pose-actions { width: 100%; }
+.viewer-view-menu-content .viewer-pose-actions button { flex: 1 1 0; }
+.viewer-view-menu-content .viewer-quality-choice { width: 100%; }
+.viewer-view-menu > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .viewer-toolbar-segment { pointer-events: auto; border: 1px solid rgba(137,151,172,.4); border-radius: 10px; background: rgba(248,250,253,.92); color: #253148; box-shadow: 0 2px 8px rgba(37,49,72,.08); }
 .viewer-stage .viewer-toolbar-segment button { min-width: 44px; min-height: 44px; margin: 0; padding: 6px 9px; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 12px; line-height: 1.2; }
 .viewer-stage .viewer-toolbar-segment button + button { border-left: 1px solid rgba(137,151,172,.25); }
@@ -249,6 +260,12 @@ main { padding: 14px; }
 .viewer-info-panel { position: absolute; right: 0; bottom: calc(100% + 8px); width: 300px; max-width: calc(100vw - 32px); max-height: 50vh; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 28px rgba(20,30,50,.18); touch-action: pan-y; }
 .viewer-info-panel > p + p { margin-top: 8px; }
 .viewer-info-panel .viewer-status { font-size: 12px; }
+.viewer-compact-controls .viewer-stage-tools-top { flex-wrap: nowrap; align-items: flex-start; }
+.viewer-compact-controls .viewer-view-menu { display: block; }
+.viewer-compact-controls.viewer-has-model .viewer-files { flex-wrap: nowrap; }
+.viewer-compact-controls.viewer-has-model .viewer-file-actions { flex: 1 1 0; max-width: none; }
+.viewer-compact-controls .viewer-file-options-panel .viewer-file-list { max-height: 132px; margin-bottom: 8px; }
+.viewer-expanded .viewer-view-menu-content, .viewer-fullscreen .viewer-view-menu-content { max-height: calc(var(--viewer-viewport-height, 100vh) - 76px); }
 .viewer-control-panel { width: 100%; max-width: 380px; margin: 10px auto 0; }
 .viewer-gesture-help, .viewer-render-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 7px 0; }
 .viewer-warning { border-left: 3px solid #c79529; padding: 8px 10px; background: var(--panel2); font-size: 12px; line-height: 1.5; white-space: pre-line; }

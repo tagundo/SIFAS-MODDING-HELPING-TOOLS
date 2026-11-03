@@ -1691,6 +1691,7 @@ _VIEWER_TRANSLATIONS.update({
     "Exit full screen": ["전체 화면 닫기", "全画面表示を終了"],
     "Model information": ["모델 정보", "モデル情報"],
     "Model options": ["모델 옵션", "モデル設定"],
+    "View controls": ["보기 설정", "表示操作"],
     "Compensate child bone scale": ["하위 본 배율 보정", "子ボーンの倍率を補正"],
     "Compensation targets": ["보정 대상", "補正対象"],
     "Immediate child bones (auto)": ["바로 아래 본 (자동)", "直下の子ボーン（自動）"],
