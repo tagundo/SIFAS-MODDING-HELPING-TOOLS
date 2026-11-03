@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from webtools.core import model_viewer as viewer
+from webtools.core.model_rig import RigBuilder, RigError, MAX_NODES
 
 FIXTURE = Path(__file__).parent / "fixtures" / "viewer_rig.unity"
 
@@ -213,6 +214,8 @@ class RigTests(unittest.TestCase):
         transform = SimpleNamespace(assets_file=asset, path_id=1)
         game = SimpleNamespace(assets_file=asset, path_id=2)
         builder = RigBuilder.__new__(RigBuilder)
+        builder.deadline = float("inf")
+        builder._path_cache = {}
         builder.scene = SimpleNamespace(tree=lambda obj: {"m_GameObject": game, "m_Father": None},
                                         name=lambda obj: "x" * (MAX_NAME_BYTES + 1))
         with patch.object(viewer, "_ref", side_effect=lambda obj, pointer: pointer):
@@ -283,6 +286,108 @@ class RigTests(unittest.TestCase):
         self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
         self.assertTrue(metadata["rig"]["available"])
         self.assertEqual(metadata["stats"]["meshes"], 1)
+
+    def _offline_preview(self, directory):
+        environment = self.UnityPy.load(FIXTURE.read_bytes())
+        for obj in list(environment.objects):
+            if obj.type.name != "AnimationClip":
+                del obj.assets_file.objects[obj.path_id]
+        plain = next(iter(environment.files.values())).save()
+        path = Path(directory) / "preview.unity"
+        path.write_bytes(plain)
+        return path, {hashlib.sha256(plain).hexdigest(): {
+            "size": len(plain), "assetName": None, "clipName": "Neutral swing", "channels": 1}}
+
+    def test_verified_preview_is_committed_before_face_lookup_exhausts_allowance(self):
+        from webtools.core import model_faces, model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            preview, recipes = self._offline_preview(directory)
+            clock, finish, calls = [0.], viewer._to_glb, []
+
+            def finish_body(*args, **kwargs):
+                result = finish(*args, **kwargs)
+                if not calls:
+                    clock[0] = 120.
+                calls.append(result)
+                return result
+
+            def expire_lookup(faces):
+                self.assertEqual(faces.deadline, 160.)
+                self.assertEqual([clip["name"] for clip in calls[-1][4]["clips"]], ["Neutral swing"])
+                clock[0] = 160.
+                return []
+
+            with patch.object(model_motion, "KNOWN_PREVIEWS", recipes), \
+                    patch.object(model_motion, "BUNDLED_PREVIEW", preview), \
+                    patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_to_glb", side_effect=finish_body), \
+                    patch.object(model_faces.FacePlan, "resolve", expire_lookup):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
+        self.assertEqual(len(document["animations"]), 1)
+
+    def test_failed_face_rebinding_returns_pre_face_preview_not_stale_face_bytes(self):
+        from webtools.core import model_motion, model_rig
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            preview, recipes = self._offline_preview(directory)
+            finalize, failures = model_rig.RigBuilder.finalize, []
+
+            def fail_rebinding(rig, animations=True):
+                if animations and rig.faces.enabled and rig.faces.added:
+                    # The live animation list has already been replaced when
+                    # re-export fails. Its pre-face snapshot must remain valid.
+                    rig.glb.doc.pop("animations", None)
+                    failures.append(True)
+                    raise viewer.ModelViewerError("late facial rebind expired")
+                return finalize(rig, animations=animations)
+
+            with patch.object(model_motion, "KNOWN_PREVIEWS", recipes), \
+                    patch.object(model_motion, "BUNDLED_PREVIEW", preview), \
+                    patch.object(model_rig.RigBuilder, "finalize", fail_rebinding):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+            document, _ = unpack(metadata)
+        self.assertEqual(failures, [True])
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["faces"]["added"], 0)
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual(len(document["meshes"]), 1)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
+        for animation in document["animations"]:
+            for channel in animation["channels"]:
+                self.assertLess(channel["target"]["node"], len(document["nodes"]))
+
+    def test_incomplete_face_rebind_cannot_reuse_old_complete_preview_metadata(self):
+        from webtools.core import model_motion, model_rig
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            preview, recipes = self._offline_preview(directory)
+            finalize = model_rig.RigBuilder.finalize
+
+            def incomplete_rebinding(rig, animations=True):
+                result = finalize(rig, animations=animations)
+                if animations and rig.faces.enabled and rig.faces.added:
+                    for clip in rig.clips:
+                        clip["bindingComplete"] = False
+                return result
+
+            with patch.object(model_motion, "KNOWN_PREVIEWS", recipes), \
+                    patch.object(model_motion, "BUNDLED_PREVIEW", preview), \
+                    patch.object(model_rig.RigBuilder, "finalize", incomplete_rebinding):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+            document, _ = unpack(metadata)
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["faces"]["added"], 0)
+        self.assertEqual(metadata["stats"]["meshes"], 1)
+        self.assertEqual(len(document["meshes"]), 1)
+        self.assertTrue(metadata["rig"]["clips"][0]["bindingComplete"])
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
 
     def test_rina_board_placeholder_uses_validated_costume_metadata_for_motion_owner(self):
         from webtools.core import model_motion
@@ -739,3 +844,175 @@ class ActualRigTests(unittest.TestCase):
         self.assertGreater(abs(enlarged[body] - rest[body]).max(), .001)
         for name in ("Face", "Eye", "Eye_Around", "Mouth", "Hair"):
             np.testing.assert_allclose(enlarged[name], rest[name], atol=4e-6, rtol=0)
+
+
+class RigPathScene:
+    def __init__(self):
+        self.records = {}
+        self.tree_reads = self.name_reads = 0
+
+    def add(self, name, parent=None, *, asset=None, index=None):
+        asset = asset if asset is not None else object()
+        index = index if index is not None else len(self.records) + 1
+        game = SimpleNamespace(assets_file=asset, path_id=index * 2, name=name)
+        transform = SimpleNamespace(assets_file=asset, path_id=index * 2 + 1)
+        self.records[viewer._key(transform)] = {"m_GameObject": game, "m_Father": parent}
+        return transform
+
+    def tree(self, transform):
+        self.tree_reads += 1
+        return self.records[viewer._key(transform)]
+
+    def name(self, game):
+        self.name_reads += 1
+        return game.name
+
+
+class RigPathCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.resolve = patch.object(viewer, "_ref", side_effect=lambda owner, pointer: pointer)
+        self.resolve.start()
+        self.addCleanup(self.resolve.stop)
+
+    def builder(self, scene):
+        value = RigBuilder.__new__(RigBuilder)
+        value.scene, value.deadline, value._path_cache = scene, float("inf"), {}
+        return value
+
+    def chain(self, scene, names, *, asset=None):
+        result, parent = [], None
+        for index, name in enumerate(names, 1):
+            parent = scene.add(name, parent, asset=asset, index=index)
+            result.append(parent)
+        return result
+
+    def test_paths_keep_omitted_root_unicode_and_empty_segments(self):
+        for names, expected in (
+            (["Reference"], ""),
+            (["Reference", "Head", "Face"], "Head/Face"),
+            (["", "머리", "얼굴"], "머리/얼굴"),
+            (["Reference", "", "Face"], "/Face"),
+            (["Reference", "Head", ""], "Head/"),
+            (["Reference", "", ""], "/"),
+        ):
+            with self.subTest(names=names):
+                scene = RigPathScene()
+                nodes = self.chain(scene, names)
+                builder = self.builder(scene)
+                # Warm a parent prefix separately before extending it.
+                if len(nodes) > 1:
+                    builder._path(nodes[-2])
+                self.assertEqual(builder._path(nodes[-1]), expected)
+                self.assertEqual(builder._path(nodes[-1]), expected)
+
+    def test_equal_path_ids_in_different_asset_files_do_not_alias(self):
+        scene = RigPathScene()
+        first = self.chain(scene, ["Reference", "Head"], asset=object())
+        second = self.chain(scene, ["Reference", "Hair"], asset=object())
+        builder = self.builder(scene)
+        self.assertEqual(builder._path(first[-1]), "Head")
+        self.assertEqual(builder._path(second[-1]), "Hair")
+
+    def test_cached_ancestor_retains_full_depth_limit(self):
+        scene = RigPathScene()
+        nodes = self.chain(scene, ["x"] * 257)
+        builder = self.builder(scene)
+        self.assertEqual(builder._path(nodes[254]).count("/"), 253)
+        self.assertEqual(builder._path(nodes[255]).count("/"), 254)
+        with self.assertRaisesRegex(RigError, "circular"):
+            builder._path(nodes[256])
+
+    def test_cold_depth_limit_matches_cached_limit(self):
+        scene = RigPathScene()
+        nodes = self.chain(scene, ["x"] * 257)
+        with self.assertRaisesRegex(RigError, "circular"):
+            self.builder(scene)._path(nodes[-1])
+
+    def test_root_bytes_still_count_when_cached_output_omits_root(self):
+        scene = RigPathScene()
+        nodes = self.chain(scene, ["x" * 1023] * 4 + [""])
+        builder = self.builder(scene)
+        self.assertEqual(len(builder._path(nodes[3])), 3071)
+        # Four names plus their separators already cost the full4096bytes.
+        # An empty fifth component still costs one byte, despite the root
+        # being absent from the returned relative path.
+        with self.assertRaisesRegex(RigError, "byte limit"):
+            builder._path(nodes[4])
+
+    def test_utf8_name_limit_counts_bytes_even_for_omitted_root(self):
+        scene = RigPathScene()
+        valid = scene.add("가" * 341)
+        invalid = scene.add("가" * 342)
+        builder = self.builder(scene)
+        self.assertEqual(builder._path(valid), "")
+        with self.assertRaisesRegex(RigError, "byte limit"):
+            builder._path(invalid)
+
+    def test_cycle_rejected_without_populating_cache(self):
+        scene = RigPathScene()
+        root, child = self.chain(scene, ["Reference", "Head"])
+        scene.records[viewer._key(root)]["m_Father"] = child
+        builder = self.builder(scene)
+        with self.assertRaisesRegex(RigError, "circular"):
+            builder._path(child)
+        self.assertEqual(builder._path_cache, {})
+
+    def test_update_invalidates_paths_for_replaced_scene(self):
+        asset = object()
+        first, second = RigPathScene(), RigPathScene()
+        old = self.chain(first, ["Reference", "Head"], asset=asset)
+        new = self.chain(second, ["Reference", "Hair"], asset=asset)
+        builder = self.builder(first)
+        self.assertEqual(builder._path(old[-1]), "Head")
+        builder.update(second, None, float("inf"))
+        self.assertEqual(builder._path_cache, {})
+        self.assertEqual(builder._path(new[-1]), "Hair")
+
+    def test_update_cannot_hide_new_cycle_behind_cached_prefix(self):
+        scene = RigPathScene()
+        root, child = self.chain(scene, ["Reference", "Head"])
+        builder = self.builder(scene)
+        self.assertEqual(builder._path(child), "Head")
+        scene.records[viewer._key(root)]["m_Father"] = child
+        builder.update(scene, None, float("inf"))
+        with self.assertRaisesRegex(RigError, "circular"):
+            builder._path(child)
+
+    def test_deadline_is_checked_for_cache_hit(self):
+        scene = RigPathScene()
+        node = scene.add("Reference")
+        builder = self.builder(scene)
+        builder._path(node)
+        before = scene.tree_reads
+        builder.deadline = 1.
+        with patch.object(viewer.time, "monotonic", return_value=1.):
+            with self.assertRaisesRegex(viewer.ModelViewerError, "too long"):
+                builder._path(node)
+        self.assertEqual(scene.tree_reads, before)
+
+    def test_shared_ancestors_are_read_once_per_scene(self):
+        scene = RigPathScene()
+        chain = self.chain(scene, ["Reference"] + ["Bone"] * 63)
+        leaves = [scene.add("Leaf" + str(index), chain[-1]) for index in range(128)]
+        builder = self.builder(scene)
+        for node in leaves:
+            builder._path(node)
+        self.assertEqual(scene.name_reads, 64 + 128)
+        self.assertEqual(scene.tree_reads, 2 * (64 + 128))
+        before = scene.tree_reads
+        for node in leaves:
+            builder._path(node)
+        self.assertEqual(scene.tree_reads, before)
+
+    def test_cache_is_bounded_without_changing_uncached_paths(self):
+        scene = RigPathScene()
+        root = scene.add("Reference")
+        builder = self.builder(scene)
+        for index in range(MAX_NODES + 20):
+            node = scene.add("Leaf" + str(index), root)
+            self.assertEqual(builder._path(node), "Leaf" + str(index))
+        self.assertEqual(len(builder._path_cache), MAX_NODES)
+
+
+if __name__ == "__main__":
+    unittest.main()

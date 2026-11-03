@@ -1006,7 +1006,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     return materials
 
 
-def _to_glb(scene, glb, faces, deadline, rig=None):
+def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=False):
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
@@ -1027,10 +1027,22 @@ def _to_glb(scene, glb, faces, deadline, rig=None):
     if any(obj.type.name == "AnimationClip" for obj in scene.env.objects):
         try:
             rig.finalize()
+            # A later optional append must not erase a complete, playable clip
+            # already committed with this same geometry. The immutable snapshot
+            # also protects its valid accessors if re-export only partly fails.
+            for previous in base_rig.get("clips", []) if require_existing_clips else []:
+                if previous.get("bindingComplete") and not any(
+                    all(current.get(key) == previous.get(key) for key in
+                        ("sourceId", "sourceHash", "sourceName", "channels", "sourceTracks"))
+                    and current.get("bindingComplete") for current in rig.clips
+                ):
+                    raise ModelViewerError("A completed animation could not be retained.")
             animated = bytes(glb.finish())
             _remaining(deadline)
             return (animated,) + result[1:] + (rig.metadata(),)
         except Exception:
+            if require_existing_clips:
+                raise
             base_rig["animationWarnings"].append({"code": "animation_unavailable", "message": "Animation loading exceeded its remaining preview budget. The completed model is still shown."})
     return result + (base_rig,)
 
@@ -1067,12 +1079,45 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     optional_deadline = _optional_deadline
     if optional_deadline is None:
         optional_deadline = deadline + FACE_SECONDS
+    # Commit the verified offline pose before optional faces can consume the
+    # common allowance. No catalog/cache lookup or expression discovery runs
+    # here, and automatic motion never becomes a selected NodeScaling source.
+    early_motion, preload_failed = [], False
+    stage = face_context.get("_motion_stage")
+    if playable_rig and stage is not None:
+        motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
+        try:
+            _remaining(motion_deadline)
+            early_motion = stage.bundled(rig, paths, motion_deadline)
+            if early_motion:
+                _paths(paths + early_motion)
+                env = _environment(early_motion, motion_deadline, base_env=env)
+                expanded = _Scene(env, motion_deadline, trees=scene.trees)
+                expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
+                rig.update(expanded, disabled_faces, motion_deadline)
+                candidate = _to_glb(expanded, glb, disabled_faces, motion_deadline, rig=rig)
+                stage.promote(candidate[4])
+                if not candidate[4].get("previewMotion", {}).get("verified"):
+                    raise ModelViewerError("The bundled preview could not be exported.")
+                base, scene = candidate, expanded
+        except Exception:
+            # A failed merge may have changed the live environment or GLB.
+            # Its immutable body remains safe; do not append faces to that
+            # partially imported state or spend another body allowance.
+            preload_failed = bool(early_motion)
+            early_motion = []
+            metadata = dict(base[4])
+            metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
+                "code": "animation_unavailable", "message": "The bundled preview could not be imported. The completed model is still shown."}]
+            base = base[:4] + (metadata,)
     face_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
     face_append_started = False
     if face_enabled:
         faces = None
         try:
+            if preload_failed:
+                raise ModelViewerError("The optional preview import failed.")
             _remaining(face_deadline)
             scene.deadline = face_deadline
             faces = FacePlan(scene, paths, face_context, face_deadline)
@@ -1083,7 +1128,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 # Rigged geometry and later motion share the fixed optional
                 # allowance; a late body cannot exhaust it before faces start.
                 render_deadline = optional_deadline if rig is not None else face_deadline
-                _paths(paths + extra)
+                _paths(paths + early_motion + extra)
                 face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
                 expanded = _Scene(env, render_deadline, trees=scene.trees)
@@ -1091,7 +1136,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 if rig is not None:
                     rig.update(expanded, faces, render_deadline)
                 _append_scene(expanded, glb, faces, render_deadline, auto_only=True, materials=materials, rig=rig)
-                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig)
+                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig,
+                                    require_existing_clips=bool(early_motion))
                 scene = expanded
             else:
                 warnings = list(base[2]) + faces.warnings
@@ -1106,6 +1152,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             faces.status = "unavailable"
             faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
             completed = (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+            if preload_failed or (face_append_started and early_motion):
+                return completed
             if face_append_started:
                 # Optional import/rendering may already have changed the shared
                 # environment, GLB and rig. Rebuild only this failed rigged
@@ -1125,7 +1173,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
 
     # Motion is independent of automatic facial completion. Unsupported/static
     # rigs cannot use discovered tracks; errors must not rewrite face status.
-    if rig is None or not (rig.skinned > 0 or rig.morphs):
+    if preload_failed or rig is None or not (rig.skinned > 0 or rig.morphs):
         return completed
     motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     try:
@@ -1135,9 +1183,9 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         from .model_animation import discover_animation_paths
         stage = face_context.get("_motion_stage")
         animation_paths = stage.automatic(rig, paths + extra, motion_deadline) if stage is not None else []
-        if not animation_paths and rig.clips and not face_context.get("animation_paths"):
+        if not animation_paths and rig.clips and not early_motion and not face_context.get("animation_paths"):
             return completed
-        loaded = paths + extra
+        loaded = paths + early_motion + extra
 
         def append_motion(additions):
             nonlocal env, scene

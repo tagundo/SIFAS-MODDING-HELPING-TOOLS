@@ -204,10 +204,27 @@ class MotionInputs:
             pass
         return []
 
+    def bundled(self, rig, loaded, deadline):
+        """Stage only the offline preview, without suppressing later discovery.
+
+        An incompatible rig must not leave an unbound registration that makes
+        ``automatic`` believe a playable preview has already been supplied.
+        """
+        if self.verified or len(loaded) >= 8:
+            return []
+        previous = list(self.verified)
+        bundled = []
+        try:
+            bundled = self._bundled(rig, deadline)
+            return bundled
+        finally:
+            if not bundled:
+                self.verified[:] = previous
+
     def automatic(self, rig, loaded, deadline):
         if self.verified or len(loaded) >= 8:
             return []
-        bundled = self._bundled(rig, deadline)
+        bundled = self.bundled(rig, loaded, deadline)
         if bundled:
             return bundled
         if not self.context.get("repo_root"):
