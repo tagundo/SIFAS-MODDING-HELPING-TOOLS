@@ -7,6 +7,7 @@ Only the viewer decides which Face/Eyes renderers from a donor can be exported.
 import ast
 import hashlib
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import re
@@ -53,6 +54,30 @@ def _check(deadline):
 def _inside(path, roots):
     path = os.path.realpath(path)
     return any(path == root or path.startswith(root + os.sep) for root in roots)
+
+
+def _pack_sizes(db, names, suit_id):
+    """Prefer the current suit's indexed mapping; scan only missing packs."""
+    sizes = {}
+    if not names:
+        return sizes
+    parameters = ",".join("?" for _ in names)
+    try:
+        # A pack is one physical CDN file. Its selected-suit record is the
+        # relevant size if a custom catalog contains contradictory mappings.
+        for name, size in db.execute(
+                f"SELECT pack_name,file_size FROM m_asset_package_mapping WHERE package_key=? AND pack_name IN ({parameters})",
+                [f"suit:{suit_id}", *names]):
+            sizes.setdefault(name, size)
+    except sqlite3.Error:
+        pass  # older catalogs may not expose package_key
+    missing = [name for name in names if name not in sizes]
+    if missing:
+        parameters = ",".join("?" for _ in missing)
+        for name, size in db.execute(
+                f"SELECT pack_name,file_size FROM m_asset_package_mapping WHERE pack_name IN ({parameters})", missing):
+            sizes.setdefault(name, size)
+    return sizes
 
 
 def _names(scene, source=None):
@@ -576,6 +601,68 @@ class FacePlan:
             return None
         return scene, dynamic, found
 
+    def _known_local(self):
+        """Probe owner-named originals before opening optional asset catalogs."""
+        roots = [os.path.dirname(path) for path in self.paths]
+        roots.extend(os.path.dirname(os.path.realpath(origin)) for path, origin in self.context.get("origins", {}).items()
+                     if path in self.paths)
+        roots.extend(os.path.realpath(root) for root in self.context.get("library_roots", []))
+        seen, probes, candidates = set(self.paths), 0, 0
+        names = [f"ch{self.owner:04}_facedynamic.unity", f"ch{self.owner:04}_face.unity"]
+        for root in dict.fromkeys(os.path.realpath(path) for path in roots):
+            for relative in ("", "3d_model", os.path.join("extracted", "3d_model")):
+                for name in names:
+                    if probes >= MAX_LOCAL_FILES:
+                        return
+                    _check(self.deadline)
+                    probes += 1
+                    path = os.path.join(root, relative, name)
+                    real = os.path.realpath(path)
+                    if real in seen or not _inside(real, [root]) or os.path.islink(path):
+                        continue
+                    try:
+                        if not os.path.isfile(path) or not 0 < os.path.getsize(path) <= MAX_PACK_BYTES:
+                            continue
+                    except OSError:
+                        continue
+                    seen.add(real)
+                    yield path
+                    candidates += 1
+                    if candidates >= MAX_CANDIDATES:
+                        return
+        cache = self.context.get("cache_dir")
+        if not cache:
+            return
+        try:
+            directory = _cache_root(cache) / "models"
+            if directory.is_symlink() or directory.resolve() != directory:
+                return
+            pattern = re.compile(rf"ch{self.owner:04}_[0-9a-f]{{24}}\.unity", re.I)
+            found = []
+            with os.scandir(directory) as entries:
+                for entry in islice(entries, MAX_LOCAL_FILES - probes):
+                    _check(self.deadline)
+                    probes += 1
+                    if not pattern.fullmatch(entry.name):
+                        continue
+                    try:
+                        if not entry.is_file(follow_symlinks=False) or not 0 < entry.stat(follow_symlinks=False).st_size <= MAX_PACK_BYTES:
+                            continue
+                    except OSError:
+                        continue
+                    real = os.path.realpath(entry.path)
+                    if real in seen or not _inside(real, [str(directory)]):
+                        continue
+                    seen.add(real)
+                    found.append(entry.path)
+                    if len(found) + candidates >= MAX_CANDIDATES:
+                        break
+            for path in sorted(found):
+                _check(self.deadline)
+                yield path
+        except (OSError, FaceUnavailable):
+            return
+
     def _local(self):
         try:
             import llas_asset_extractor as extractor
@@ -666,11 +753,7 @@ class FacePlan:
                         for record in db.execute(f"SELECT asset_path,pack_name,head,size,key1,key2 FROM member_model WHERE asset_path IN ({parameters})", keys):
                             records.setdefault(record[0], record)
                         names = list(dict.fromkeys(record[1] for record in records.values()))
-                        sizes = {}
-                        if names:
-                            parameters = ",".join("?" for _ in names)
-                            for name, size in db.execute(f"SELECT pack_name,file_size FROM m_asset_package_mapping WHERE pack_name IN ({parameters})", names):
-                                sizes.setdefault(name, size)
+                        sizes = _pack_sizes(db, names, row[0])
                         resources = []
                         for key in keys:
                             record = records.get(key)
@@ -797,17 +880,26 @@ class FacePlan:
             return []
         try:
             pending = []
+            # A downloaded same-owner original must not wait behind catalog
+            # scans. Names only select candidates; _accept validates contents.
+            try:
+                for path in self._known_local():
+                    if self._accept(path):
+                        break
+            except Exception:
+                pass
             # Exact original/cache identities come before the broad Unity-file
             # search. A populated library must not consume the entire facial
             # budget before we can reuse its already-downloaded original pack.
             try:
-                for descriptor in self._descriptor_iter():
-                    _check(self.deadline)
-                    try:
-                        if self._accept(self._resource(descriptor, download=False)):
-                            break
-                    except Exception:
-                        pending.append(descriptor)
+                if self.needed:
+                    for descriptor in self._descriptor_iter():
+                        _check(self.deadline)
+                        try:
+                            if self._accept(self._resource(descriptor, download=False)):
+                                break
+                        except Exception:
+                            pending.append(descriptor)
             except Exception:
                 # Standalone/local-only viewers do not need an asset catalog.
                 pass
