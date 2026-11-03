@@ -220,8 +220,8 @@ if(require.main===module)(async()=>{
       const probe=ModelViewer.renderProbe(33),canvas=document.getElementById('viewer-canvas'),gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
       const width=gl.drawingBufferWidth,height=gl.drawingBufferHeight,pixels=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);const error=gl.getError();
       const frames=window.__poseButtonFrames||(window.__poseButtonFrames={});let changedPixels=null;
-      if(compare){const previous=frames[compare];if(!previous||previous.length!==pixels.length)throw new Error('Pose comparison viewport changed');changedPixels=0;for(let offset=0;offset<pixels.length;offset+=4)if(Math.abs(pixels[offset]-previous[offset])+Math.abs(pixels[offset+1]-previous[offset+1])+Math.abs(pixels[offset+2]-previous[offset+2])>24)changedPixels++;}
-      if(save)frames[save]=pixels;return{probe,glError:error,changedPixels,width,height};
+      if(compare){const previous=frames[compare];if(!previous||previous.length!==pixels.length)throw new Error('Pose comparison viewport changed: '+JSON.stringify({reference:compare,previousBytes:previous&&previous.length,current:{width,height,bytes:pixels.length},previousSize:(window.__poseButtonFrameSizes||{})[compare],layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop}));changedPixels=0;for(let offset=0;offset<pixels.length;offset+=4)if(Math.abs(pixels[offset]-previous[offset])+Math.abs(pixels[offset+1]-previous[offset+1])+Math.abs(pixels[offset+2]-previous[offset+2])>24)changedPixels++;}
+      if(save){frames[save]=pixels;(window.__poseButtonFrameSizes||(window.__poseButtonFrameSizes={}))[save]={width,height,layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop};}return{probe,glError:error,changedPixels,width,height};
     },[save,compare]);
     const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
     const slider=async(id,value)=>{
