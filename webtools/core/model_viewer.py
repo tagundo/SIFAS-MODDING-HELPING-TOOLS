@@ -978,13 +978,14 @@ def _to_glb(scene, glb, faces, deadline, rig=None):
     return result + (base_rig,)
 
 
-def _build(paths, deadline, face_context=None, rigged=False):
+def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadline=None):
     """Finish the selected model before spending any time on optional faces.
 
-    The original conversion gets its entire allowance. Face lookup/network is
-    capped separately; valid rigged facial geometry uses the global time left.
-    Motion gets a fresh bounded wait only after the face result is complete.
-    The original total deadline and legacy static-face budget are unchanged.
+    The selected model keeps its original deadline. Rigged faces and automatic
+    motion share one fixed deadline that preserves the original time left and
+    extends the original budget by at most forty seconds.
+    Lookup/network and legacy static facial conversion keep their forty-second
+    caps. Recovery reuses the same optional deadline instead of renewing it.
     Completed GLBs are immutable and survive optional phase failures.
     """
     from .model_faces import FacePlan, FACE_SECONDS
@@ -1006,7 +1007,11 @@ def _build(paths, deadline, face_context=None, rigged=False):
     if not face_context or (not face_enabled and not playable_rig):
         return base
 
-    face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    optional_deadline = _optional_deadline
+    if optional_deadline is None:
+        completed_at = min(time.monotonic(), deadline)
+        optional_deadline = max(deadline, completed_at + FACE_SECONDS)
+    face_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
     face_append_started = False
     if face_enabled:
@@ -1019,10 +1024,9 @@ def _build(paths, deadline, face_context=None, rigged=False):
             extra = faces.resolve()
             _remaining(face_deadline)
             if extra:
-                # Lookup/network stays capped at forty seconds. Once a valid
-                # face is local, rigged geometry may use the original global
-                # conversion time left; motion must wait for its completion.
-                render_deadline = deadline if rig is not None else face_deadline
+                # Rigged geometry and later motion share the fixed optional
+                # allowance; a late body cannot exhaust it before faces start.
+                render_deadline = optional_deadline if rig is not None else face_deadline
                 _paths(paths + extra)
                 face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
@@ -1051,25 +1055,27 @@ def _build(paths, deadline, face_context=None, rigged=False):
                 # environment, GLB and rig. Rebuild only this failed rigged
                 # attempt, with faces disabled, so its independent automatic
                 # motion cannot inherit partially appended facial geometry.
-                if playable_rig and time.monotonic() < deadline:
+                # This cleanup spends only the existing optional time left;
+                # it does not renew the initial body or optional allowance.
+                if playable_rig and time.monotonic() < optional_deadline:
                     try:
-                        recovered = _build(paths, deadline, dict(face_context, enabled=False), rigged=True)
+                        recovered = _build(paths, optional_deadline, dict(face_context, enabled=False), rigged=True,
+                                           _optional_deadline=optional_deadline)
                         return recovered[:2] + (list(recovered[2]) + faces.warnings, faces.metadata()) + recovered[4:]
                     except Exception:
                         pass
                 return completed
             extra = []
-            scene.deadline = deadline
-            if rig is not None:
-                rig.update(scene, faces, deadline)
 
     # Motion is independent of automatic facial completion. Unsupported/static
     # rigs cannot use discovered tracks; errors must not rewrite face status.
     if rig is None or not (rig.skinned > 0 or rig.morphs):
         return completed
-    motion_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     try:
         _remaining(motion_deadline)
+        scene.deadline = motion_deadline
+        rig.update(scene, faces, motion_deadline)
         from .model_animation import discover_animation_paths
         stage = face_context.get("_motion_stage")
         animation_paths = stage.automatic(rig, paths + extra, motion_deadline) if stage is not None else []

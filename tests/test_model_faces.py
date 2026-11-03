@@ -905,8 +905,13 @@ class OptionalBudgetTests(unittest.TestCase):
 
     def test_body_retains_original_allowance_when_optional_resolution_expires(self):
         base_bytes, _ = self.baseline()
-        clock, order = [0.], []
-        geometry = viewer._geometry
+        clock, order, body_deadlines = [0.], [], []
+        geometry, environment = viewer._geometry, viewer._environment
+
+        def load_body(paths, deadline, base_env=None):
+            if base_env is None:
+                body_deadlines.append(deadline)
+            return environment(paths, deadline, base_env=base_env)
 
         def slow_body(*args, **kwargs):
             order.append("body")
@@ -915,18 +920,39 @@ class OptionalBudgetTests(unittest.TestCase):
 
         def expired_resolution(plan):
             order.append("faces")
-            self.assertEqual(plan.deadline, 120.)
-            clock[0] = 120
+            self.assertEqual(plan.deadline, 159.)
+            clock[0] = 159
             return []
 
         with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(viewer, "_geometry", side_effect=slow_body), \
+                patch.object(viewer, "_environment", side_effect=load_body), \
                 patch.object(faces.FacePlan, "resolve", expired_resolution):
             metadata = viewer.prepare([str(self.body)], face_context=self.context)
             result = viewer.get_model(metadata["id"])
         self.assertEqual(order, ["body", "faces"])
+        self.assertEqual(body_deadlines, [120.])
         self.assertEqual(result, base_bytes)
         self.assertEqual(metadata["faces"]["added"], 0)
+
+    def test_optional_allowance_does_not_extend_selected_body_deadline(self):
+        geometry = viewer._geometry
+
+        for expired_at in (120., 121.):
+            with self.subTest(body_finished_at=expired_at):
+                clock = [0.]
+
+                def expired_body(*args, **kwargs):
+                    clock[0] = expired_at
+                    return geometry(*args, **kwargs)
+
+                with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(viewer, "_geometry", side_effect=expired_body), \
+                        patch.object(faces.FacePlan, "resolve") as resolve:
+                    with self.assertRaisesRegex(viewer.ModelViewerError, "took too long"):
+                        viewer.prepare([str(self.body)], face_context=self.context)
+                resolve.assert_not_called()
+                self.assertFalse(viewer._SESSIONS)
 
     def test_partial_optional_append_timeout_returns_immutable_base(self):
         base_bytes, base_stats = self.baseline()

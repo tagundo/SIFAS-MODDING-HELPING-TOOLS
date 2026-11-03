@@ -112,6 +112,15 @@ class RigTests(unittest.TestCase):
                 obj.save_typetree(tree)
         return next(iter(environment.files.values())).save()
 
+    def _face_budget_inputs(self, directory):
+        from test_model_faces import FaceTests, bundle
+        root = Path(directory)
+        path, donor = root / "rig.unity", root / "Setsuna_original.unity"
+        path.write_bytes(self.owner_rig_without_clips())
+        donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+        return path, {"enabled": True, "allow_download": False,
+                      "library_roots": [str(root)], "cache_dir": str(root / "cache")}
+
     def test_genuine_skin_preserves_rest_positions_and_standard_binding_graph(self):
         before = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
         static = evaluate(*unpack(viewer.prepare([str(FIXTURE)])))
@@ -379,23 +388,201 @@ class RigTests(unittest.TestCase):
             discovery.assert_called_once()
             self.assertEqual(metadata["faces"]["status"], "not_needed")
 
-    def test_disabled_faces_survive_global_expiry_before_optional_constructor(self):
+    def test_disabled_faces_get_clamped_optional_deadline_after_base_completion(self):
+        from webtools.core import model_animation, model_motion
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rig.unity"
             path.write_bytes(self.owner_rig_without_clips())
             baseline = viewer.prepare([str(path)], rigged=True)
-            original, clock, finish = viewer.get_model(baseline["id"]), [0.], viewer._to_glb
+            original, clock, finish, motion_deadlines = viewer.get_model(baseline["id"]), [0.], viewer._to_glb, []
 
             def finish_then_expire(*args, **kwargs):
                 result = finish(*args, **kwargs)
                 clock[0] = 120.
                 return result
 
-            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_to_glb", side_effect=finish_then_expire):
+            def optional_motion(stage, rig, loaded, deadline):
+                motion_deadlines.append(deadline)
+                self.assertEqual(deadline, 160.)
+                return []
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_to_glb", side_effect=finish_then_expire), \
+                    patch.object(model_motion.MotionInputs, "automatic", optional_motion), \
+                    patch.object(model_animation, "discover_animation_paths", return_value=[]):
                 metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": False})
                 self.assertEqual(viewer.get_model(metadata["id"]), original)
+        self.assertEqual(motion_deadlines, [160.])
         self.assertEqual(metadata["faces"], baseline["faces"])
         self.assertEqual(metadata["warnings"], baseline["warnings"])
+
+    def test_late_body_faces_and_motion_share_deadline_through_real_readers(self):
+        from webtools.core import model_motion, model_rig
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            clock, geometry_calls = [0.], [0]
+            observed = {key: [] for key in ("scene", "rig", "materials", "decode", "motion")}
+            geometry, scene_init = viewer._geometry, viewer._Scene.__init__
+            rig_update, texture, decode_image = model_rig.RigBuilder.update, viewer._Materials.texture, viewer.decode._android_image
+
+            def timed_geometry(*args, **kwargs):
+                geometry_calls[0] += 1
+                clock[0] = 119. if geometry_calls[0] == 1 else 150.
+                return geometry(*args, **kwargs)
+
+            def inspect_scene(scene, env, deadline, trees=None):
+                observed["scene"].append(deadline)
+                return scene_init(scene, env, deadline, trees=trees)
+
+            def inspect_rig(rig, scene, faces, deadline):
+                self.assertEqual(scene.deadline, deadline)
+                observed["rig"].append(deadline)
+                return rig_update(rig, scene, faces, deadline)
+
+            def inspect_texture(materials, obj):
+                observed["materials"].append(materials.scene.deadline)
+                return texture(materials, obj)
+
+            def inspect_decode(texture, deadline):
+                observed["decode"].append(deadline)
+                return decode_image(texture, deadline)
+
+            def optional_motion(stage, rig, loaded, deadline):
+                observed["motion"].append(deadline)
+                self.assertEqual(deadline, 159.)
+                self.assertEqual(rig.deadline, deadline)
+                self.assertEqual(rig.scene.deadline, deadline)
+                clock[0] = 158.
+                return [str(FIXTURE)]
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_geometry", timed_geometry), \
+                    patch.object(viewer._Scene, "__init__", inspect_scene), \
+                    patch.object(model_rig.RigBuilder, "update", inspect_rig), \
+                    patch.object(viewer._Materials, "texture", inspect_texture), \
+                    patch.object(viewer.decode, "_android_image", inspect_decode), \
+                    patch.object(model_motion.MotionInputs, "automatic", optional_motion):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(metadata["faces"]["added"], 2)
+        self.assertEqual(metadata["stats"]["meshes"], 3)
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertEqual(len(document["meshes"]), 3)
+        for phase in ("scene", "rig", "materials", "decode"):
+            self.assertIn(159., observed[phase], phase)
+            self.assertTrue(all(deadline <= 159. for deadline in observed[phase]), (phase, observed[phase]))
+        self.assertEqual(observed["scene"][0], 120.)
+        self.assertEqual(observed["decode"][0], 120.)
+        self.assertEqual(observed["motion"], [159.])
+
+    def test_late_body_motion_uses_remaining_shared_allowance_with_faces_on_or_off(self):
+        from webtools.core import model_faces, model_motion
+        for enabled in (False, True):
+            with self.subTest(faces_enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "rig.unity"
+                path.write_bytes(self.owner_rig_without_clips())
+                clock, calls = [0.], []
+                geometry = viewer._geometry
+
+                def late_body(*args, **kwargs):
+                    clock[0] = 119.
+                    return geometry(*args, **kwargs)
+
+                def face_lookup(plan):
+                    self.assertEqual(plan.deadline, 159.)
+                    clock[0] = 150.
+                    return []
+
+                def optional_motion(stage, rig, loaded, deadline):
+                    calls.append(deadline)
+                    self.assertEqual(deadline, 159.)
+                    self.assertEqual(rig.deadline, deadline)
+                    self.assertEqual(rig.scene.deadline, deadline)
+                    clock[0] = 158.
+                    return [str(FIXTURE)]
+
+                with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(viewer, "_geometry", late_body), \
+                        patch.object(model_faces.FacePlan, "resolve", face_lookup), \
+                        patch.object(model_motion.MotionInputs, "automatic", optional_motion):
+                    metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": enabled})
+                self.assertEqual(calls, [159.])
+                self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+                self.assertEqual(metadata["faces"]["enabled"], enabled)
+
+    def test_failed_face_recovery_keeps_original_optional_deadline_and_clean_geometry(self):
+        from webtools.core import model_motion
+        cases = ((50., 70., 100., 119., 120.), (119., 130., 140., 158., 159.))
+        for body_at, failure_at, recovery_at, motion_at, optional_end in cases:
+            with self.subTest(body_finished_at=body_at), tempfile.TemporaryDirectory() as directory:
+                path, context = self._face_budget_inputs(directory)
+                clock, body_attempts, motion_deadlines = [0.], [0], []
+                append = viewer._append_scene
+
+                def partial_face(scene, glb, faces, deadline, **kwargs):
+                    if kwargs.get("auto_only"):
+                        self.assertEqual(deadline, optional_end)
+                        clock[0] = failure_at
+                        append(scene, glb, faces, deadline, **kwargs)
+                        raise OSError("face failed after mutating the shared GLB")
+                    body_attempts[0] += 1
+                    clock[0] = body_at if body_attempts[0] == 1 else recovery_at
+                    return append(scene, glb, faces, deadline, **kwargs)
+
+                def optional_motion(stage, rig, loaded, deadline):
+                    motion_deadlines.append(deadline)
+                    self.assertEqual(deadline, optional_end)
+                    self.assertEqual(rig.scene.deadline, deadline)
+                    self.assertEqual(rig.deadline, deadline)
+                    clock[0] = motion_at
+                    return [str(FIXTURE)]
+
+                with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(viewer, "_append_scene", partial_face), \
+                        patch.object(model_motion.MotionInputs, "automatic", optional_motion):
+                    metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                    document, _ = unpack(metadata)
+                self.assertEqual(body_attempts[0], 2)
+                self.assertEqual(motion_deadlines, [optional_end])
+                self.assertEqual(metadata["faces"]["status"], "unavailable")
+                self.assertEqual(metadata["faces"]["added"], 0)
+                self.assertEqual(metadata["stats"]["meshes"], 1)
+                self.assertEqual(len(document["meshes"]), 1)
+                self.assertEqual(len(document["skins"]), 1)
+                self.assertTrue(all(joint < len(document["nodes"]) for skin in document["skins"] for joint in skin["joints"]))
+                self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+
+    def test_expired_optional_face_append_preserves_base_without_recovery_or_motion(self):
+        from webtools.core import model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            baseline = viewer.prepare([str(path)], rigged=True)
+            original = viewer.get_model(baseline["id"])
+            clock, body_attempts = [0.], [0]
+            append = viewer._append_scene
+
+            def expire_after_partial_face(scene, glb, faces, deadline, **kwargs):
+                if kwargs.get("auto_only"):
+                    self.assertEqual(deadline, 159.)
+                    clock[0] = 150.
+                    append(scene, glb, faces, deadline, **kwargs)
+                    clock[0] = 159.
+                    raise viewer.ModelViewerError("optional facial append expired")
+                body_attempts[0] += 1
+                clock[0] = 119.
+                return append(scene, glb, faces, deadline, **kwargs)
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_append_scene", expire_after_partial_face), \
+                    patch.object(model_motion.MotionInputs, "automatic") as automatic:
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                self.assertEqual(viewer.get_model(metadata["id"]), original)
+            automatic.assert_not_called()
+        self.assertEqual(body_attempts[0], 1)
+        self.assertEqual(metadata["stats"], baseline["stats"])
+        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        self.assertEqual(metadata["faces"]["added"], 0)
 
     def test_already_present_faces_survive_unrelated_motion_load_failure(self):
         from webtools.core import model_animation
