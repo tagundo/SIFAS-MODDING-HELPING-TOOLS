@@ -17,6 +17,7 @@ import secrets
 import struct
 import threading
 import time
+import zlib
 
 from . import decode
 
@@ -34,6 +35,7 @@ MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ENTRIES = 2
 CACHE_SECONDS = 600
 BUILD_SECONDS = 120
+FINAL_BINDING_SECONDS = 20
 
 _BUILD_LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -401,6 +403,8 @@ class _Scene:
             # actual renderers exist in the supplied scene.
             self.renderers.extend((obj, {"m_Enabled": True, "m_Materials": []}, obj)
                                   for obj in env.objects if obj.type.name == "Mesh")
+        from .model_board import board_positions
+        self.runtime_positions = board_positions(self)
 
     def tree(self, obj):
         _remaining(self.deadline)
@@ -423,6 +427,14 @@ class _Scene:
             _remaining(self.deadline)
         return self.names[key]
 
+    def local_tree(self, transform):
+        """Runtime TRS view; tree() continues to expose immutable source values."""
+        tree = self.tree(transform)
+        position = self.runtime_positions.get(_key(transform))
+        if position is None:
+            return tree
+        return dict(tree, m_LocalPosition=dict(zip("xyz", position)))
+
     def world(self, transform, visiting=None):
         import numpy as np
         if transform is None:
@@ -434,7 +446,7 @@ class _Scene:
         if key in visiting or len(visiting) > 256:
             raise ModelViewerError("The model contains a circular transform hierarchy.")
         visiting.add(key)
-        tree = self.tree(transform)
+        tree = self.local_tree(transform)
         parent = _ref(transform, tree.get("m_Father"))
         result = self.world(parent, visiting) @ _trs(tree)
         visiting.remove(key)
@@ -565,6 +577,54 @@ def _as_member_material(scene, obj, tree):
     return False
 
 
+def _png_texture(image, deadline):
+    """Encode unchanged RGBA pixels with fixed SUB filtering in 64-row strips."""
+    _remaining(deadline)
+    with io.BytesIO() as output:
+        # Native ASTC output inherits these TGA controls through convert/flip;
+        # Pillow's PNG writer ignores them. Preserve its behavior for every
+        # other mode or metadata item, including color/transparency metadata.
+        if image.mode != "RGBA" or set(image.info) - {"orientation", "compression", "id_section"}:
+            image.save(output, format="PNG", compress_level=1)
+            _remaining(deadline)
+            return output.getvalue()
+
+        import numpy as np
+
+        def chunk(kind, data):
+            output.write(struct.pack(">I", len(data)))
+            output.write(kind)
+            output.write(data)
+            output.write(struct.pack(">I", zlib.crc32(data, zlib.crc32(kind)) & 0xffffffff))
+
+        width, height = image.size
+        output.write(b"\x89PNG\r\n\x1a\n")
+        chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        compressor = zlib.compressobj(level=1, strategy=zlib.Z_RLE)
+        for top in range(0, height, 64):
+            _remaining(deadline)
+            rows = min(64, height - top)
+            with image.crop((0, top, width, top + rows)) as strip:
+                raw = strip.tobytes()
+            source = np.frombuffer(raw, dtype=np.uint8).reshape(rows, width * 4)
+            filtered = np.empty((rows, width * 4 + 1), dtype=np.uint8)
+            filtered[:, 0] = 1  # SUB: bytes relative to the previous pixel.
+            filtered[:, 1:5] = source[:, :4]
+            np.subtract(source[:, 4:], source[:, :-4], out=filtered[:, 5:])
+            data = compressor.compress(memoryview(filtered).cast("B"))
+            if data:
+                chunk(b"IDAT", data)
+            del source, raw, filtered, data
+        _remaining(deadline)
+        data = compressor.flush()
+        _remaining(deadline)
+        if data:
+            chunk(b"IDAT", data)
+        chunk(b"IEND", b"")
+        _remaining(deadline)
+        return output.getvalue()
+
+
 class _Materials:
     def __init__(self, scene, glb, rigged=False):
         self.scene, self.glb = scene, glb
@@ -586,9 +646,7 @@ class _Materials:
         self.pixels += pixels
         image = decode._android_image(texture, self.scene.deadline)
         try:
-            output = io.BytesIO()
-            image.save(output, format="PNG")
-            png = output.getvalue()
+            png = _png_texture(image, self.scene.deadline)
         finally:
             image.close()
         image_index = len(self.glb.doc["images"])
@@ -727,11 +785,11 @@ def _validate_mesh_allocations(mesh):
 
 def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None):
     import numpy as np
-    from UnityPy.helpers.MeshHelper import MeshHandler
+    from .model_mesh import PreviewMeshHandler
 
     mesh = mesh_obj.read()
     _validate_mesh_allocations(mesh)
-    handler = MeshHandler(mesh)
+    handler = PreviewMeshHandler(mesh)
     handler.process()
     positions = np.asarray(handler.m_Vertices, dtype=float)
     if positions.ndim != 2 or positions.shape[1] < 3 or not 0 < len(positions) <= MAX_VERTICES:
@@ -949,7 +1007,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     return materials
 
 
-def _to_glb(scene, glb, faces, deadline, rig=None):
+def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=False):
     if not scene.stats["meshes"]:
         raise ModelViewerError("No visible model meshes were found. Choose an extracted 3D model file.")
     _remaining(deadline)
@@ -970,22 +1028,34 @@ def _to_glb(scene, glb, faces, deadline, rig=None):
     if any(obj.type.name == "AnimationClip" for obj in scene.env.objects):
         try:
             rig.finalize()
+            # A later optional append must not erase a complete, playable clip
+            # already committed with this same geometry. The immutable snapshot
+            # also protects its valid accessors if re-export only partly fails.
+            for previous in base_rig.get("clips", []) if require_existing_clips else []:
+                if previous.get("bindingComplete") and not any(
+                    all(current.get(key) == previous.get(key) for key in
+                        ("sourceId", "sourceHash", "sourceName", "channels", "sourceTracks"))
+                    and current.get("bindingComplete") for current in rig.clips
+                ):
+                    raise ModelViewerError("A completed animation could not be retained.")
             animated = bytes(glb.finish())
             _remaining(deadline)
             return (animated,) + result[1:] + (rig.metadata(),)
         except Exception:
+            if require_existing_clips:
+                raise
             base_rig["animationWarnings"].append({"code": "animation_unavailable", "message": "Animation loading exceeded its remaining preview budget. The completed model is still shown."})
     return result + (base_rig,)
 
 
-def _build(paths, deadline, face_context=None, rigged=False):
-    """Finish the selected model before spending any time on optional faces.
+def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadline=None, _geometry_deadline=None):
+    """Keep geometry and mandatory finishing work within separate fixed caps.
 
-    The original conversion gets its entire allowance. Face lookup/network is
-    capped separately; valid rigged facial geometry uses the global time left.
-    Motion gets a fresh bounded wait only after the face result is complete.
-    The original total deadline and legacy static-face budget are unchanged.
-    Completed GLBs are immutable and survive optional phase failures.
+    Selected geometry retains its original allowance. Facial geometry ends
+    forty seconds after that deadline; playable rigs reserve a further twenty
+    seconds for final binding/serialization. Lookup/network and static facial
+    conversion keep their forty-second caps. Recovery reuses both original
+    deadlines instead of renewing either allowance. Completed GLBs are immutable.
     """
     from .model_faces import FacePlan, FACE_SECONDS
     env = _environment(paths, deadline)
@@ -1006,12 +1076,51 @@ def _build(paths, deadline, face_context=None, rigged=False):
     if not face_context or (not face_enabled and not playable_rig):
         return base
 
-    face_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    geometry_deadline = _geometry_deadline
+    if geometry_deadline is None:
+        geometry_deadline = deadline + FACE_SECONDS
+    optional_deadline = _optional_deadline
+    if optional_deadline is None:
+        optional_deadline = geometry_deadline + (FINAL_BINDING_SECONDS if playable_rig else 0)
+    # Commit the verified offline pose before optional faces can consume the
+    # common allowance. No catalog/cache lookup or expression discovery runs
+    # here, and automatic motion never becomes a selected NodeScaling source.
+    early_motion, preload_failed = [], False
+    stage = face_context.get("_motion_stage")
+    if playable_rig and stage is not None:
+        motion_deadline = min(geometry_deadline, time.monotonic() + FACE_SECONDS)
+        try:
+            _remaining(motion_deadline)
+            early_motion = stage.bundled(rig, paths, motion_deadline)
+            if early_motion:
+                _paths(paths + early_motion)
+                env = _environment(early_motion, motion_deadline, base_env=env)
+                expanded = _Scene(env, motion_deadline, trees=scene.trees)
+                expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
+                rig.update(expanded, disabled_faces, motion_deadline)
+                candidate = _to_glb(expanded, glb, disabled_faces, motion_deadline, rig=rig)
+                stage.promote(candidate[4])
+                if not candidate[4].get("previewMotion", {}).get("verified"):
+                    raise ModelViewerError("The bundled preview could not be exported.")
+                base, scene = candidate, expanded
+        except Exception:
+            # A failed merge may have changed the live environment or GLB.
+            # Its immutable body remains safe; do not append faces to that
+            # partially imported state or spend another body allowance.
+            preload_failed = bool(early_motion)
+            early_motion = []
+            metadata = dict(base[4])
+            metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{
+                "code": "animation_unavailable", "message": "The bundled preview could not be imported. The completed model is still shown."}]
+            base = base[:4] + (metadata,)
+    face_deadline = min(geometry_deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
     face_append_started = False
     if face_enabled:
         faces = None
         try:
+            if preload_failed:
+                raise ModelViewerError("The optional preview import failed.")
             _remaining(face_deadline)
             scene.deadline = face_deadline
             faces = FacePlan(scene, paths, face_context, face_deadline)
@@ -1019,11 +1128,10 @@ def _build(paths, deadline, face_context=None, rigged=False):
             extra = faces.resolve()
             _remaining(face_deadline)
             if extra:
-                # Lookup/network stays capped at forty seconds. Once a valid
-                # face is local, rigged geometry may use the original global
-                # conversion time left; motion must wait for its completion.
-                render_deadline = deadline if rig is not None else face_deadline
-                _paths(paths + extra)
+                # Facial geometry keeps the original cap. Only a fully
+                # completed append may enter the reserved finishing phase.
+                render_deadline = geometry_deadline if rig is not None else face_deadline
+                _paths(paths + early_motion + extra)
                 face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
                 expanded = _Scene(env, render_deadline, trees=scene.trees)
@@ -1031,7 +1139,13 @@ def _build(paths, deadline, face_context=None, rigged=False):
                 if rig is not None:
                     rig.update(expanded, faces, render_deadline)
                 _append_scene(expanded, glb, faces, render_deadline, auto_only=True, materials=materials, rig=rig)
-                completed = _to_glb(expanded, glb, faces, render_deadline, rig=rig)
+                _remaining(render_deadline)
+                finish_deadline = optional_deadline if playable_rig else render_deadline
+                expanded.deadline = finish_deadline
+                if rig is not None:
+                    rig.update(expanded, faces, finish_deadline)
+                completed = _to_glb(expanded, glb, faces, finish_deadline, rig=rig,
+                                    require_existing_clips=bool(early_motion))
                 scene = expanded
             else:
                 warnings = list(base[2]) + faces.warnings
@@ -1046,36 +1160,40 @@ def _build(paths, deadline, face_context=None, rigged=False):
             faces.status = "unavailable"
             faces.warn("face_source_unavailable", "The original face could not be opened. The costume is still shown.")
             completed = (base[0], base[1], list(base[2]) + faces.warnings, faces.metadata()) + base[4:]
+            if preload_failed or (face_append_started and early_motion):
+                return completed
             if face_append_started:
                 # Optional import/rendering may already have changed the shared
                 # environment, GLB and rig. Rebuild only this failed rigged
                 # attempt, with faces disabled, so its independent automatic
                 # motion cannot inherit partially appended facial geometry.
-                if playable_rig and time.monotonic() < deadline:
+                # This cleanup uses only the original geometry time left;
+                # it cannot borrow the finishing reserve or renew either cap.
+                if playable_rig and time.monotonic() < geometry_deadline:
                     try:
-                        recovered = _build(paths, deadline, dict(face_context, enabled=False), rigged=True)
+                        recovered = _build(paths, geometry_deadline, dict(face_context, enabled=False), rigged=True,
+                                           _optional_deadline=optional_deadline, _geometry_deadline=geometry_deadline)
                         return recovered[:2] + (list(recovered[2]) + faces.warnings, faces.metadata()) + recovered[4:]
                     except Exception:
                         pass
                 return completed
             extra = []
-            scene.deadline = deadline
-            if rig is not None:
-                rig.update(scene, faces, deadline)
 
     # Motion is independent of automatic facial completion. Unsupported/static
     # rigs cannot use discovered tracks; errors must not rewrite face status.
-    if rig is None or not (rig.skinned > 0 or rig.morphs):
+    if preload_failed or rig is None or not (rig.skinned > 0 or rig.morphs):
         return completed
-    motion_deadline = min(deadline, time.monotonic() + FACE_SECONDS)
+    motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     try:
         _remaining(motion_deadline)
+        scene.deadline = motion_deadline
+        rig.update(scene, faces, motion_deadline)
         from .model_animation import discover_animation_paths
         stage = face_context.get("_motion_stage")
         animation_paths = stage.automatic(rig, paths + extra, motion_deadline) if stage is not None else []
-        if not animation_paths and rig.clips and not face_context.get("animation_paths"):
+        if not animation_paths and rig.clips and not early_motion and not face_context.get("animation_paths"):
             return completed
-        loaded = paths + extra
+        loaded = paths + early_motion + extra
 
         def append_motion(additions):
             nonlocal env, scene

@@ -1664,6 +1664,7 @@ _VIEWER_TRANSLATIONS.update({
     "File value unavailable": ["파일 값 확인 불가", "ファイルの値を確認できません"],
     "Unsupported file value": ["지원하지 않는 파일 값", "未対応のファイル値"],
     "Current editing value": ["현재 편집값", "現在の編集値"],
+    "Game initial value": ["게임 초기값", "ゲーム初期値"],
     "Current pose value": ["현재 포즈 값", "現在の姿勢の値"],
     "Partially supported motion": ["일부만 지원되는 모션", "一部のみ対応しているモーション"],
     "Some animation tracks could not be applied.": ["일부 모션 트랙은 적용하지 못했습니다.", "一部のモーショントラックは適用できませんでした。"],
@@ -1692,6 +1693,7 @@ _VIEWER_TRANSLATIONS.update({
     "Model information": ["모델 정보", "モデル情報"],
     "Model options": ["모델 옵션", "モデル設定"],
     "View controls": ["보기 설정", "表示操作"],
+    "Files and app controls": ["파일·앱 메뉴", "ファイル・アプリ操作"],
     "Compensate child bone scale": ["하위 본 배율 보정", "子ボーンの倍率を補正"],
     "Compensation targets": ["보정 대상", "補正対象"],
     "Immediate child bones (auto)": ["바로 아래 본 (자동)", "直下の子ボーン（自動）"],
@@ -1716,6 +1718,21 @@ _VIEWER_TRANSLATIONS.update({
     "Scale must be a finite nonzero number between -1000000 and 1000000.": ["배율은 -1000000~1000000 사이에서 0을 제외한 유효한 숫자여야 합니다.", "倍率には-1000000から1000000の範囲で0以外の有限の数値を入力してください。"],
     "A shader texture could not be loaded.": ["셰이더 텍스처를 불러오지 못했습니다.", "シェーダーテクスチャを読み込めませんでした。"],
     "Auxiliary shader texture loading is unavailable.": ["추가 셰이더 텍스처를 불러올 수 없습니다.", "補助シェーダーテクスチャを読み込めません。"],
+})
+_VIEWER_TRANSLATIONS.update({
+    "Rina face": ["리나 얼굴", "璃奈の顔"],
+    "Rina board": ["리나 보드", "璃奈ちゃんボード"],
+    "Normal face": ["일반 얼굴", "素顔"],
+    "Changing the face style reloads the model.": ["얼굴 표시를 바꾸면 모델을 다시 불러옵니다.", "顔の表示を変えるとモデルを読み込み直します。"],
+    "Face style changed. Press Open model to refresh the preview.": ["얼굴 표시가 바뀌었습니다. 모델 열기를 눌러 반영하세요.", "顔の表示が変更されました。「モデルを開く」で反映してください。"],
+    "The costume variant could not be selected.": ["선택한 의상 버전을 불러오지 못했습니다.", "選択した衣装バージョンを読み込めませんでした。"],
+    "Costume variant choices must use selected file numbers.": ["의상 버전은 선택한 파일에서만 고를 수 있습니다.", "衣装バージョンは選択したファイルから指定してください。"],
+    "Choose primary or unmasked for the costume variant.": ["의상 버전은 기본 또는 일반 얼굴 중에서 고르세요.", "衣装バージョンは通常版または素顔版を選んでください。"],
+    "Conflicting costume variant choices refer to the same file.": ["같은 파일에 서로 다른 의상 버전이 선택됐습니다.", "同じファイルに異なる衣装バージョンが指定されています。"],
+    "The costume ZIP declares conflicting costume variants.": ["ZIP의 의상 버전 정보가 서로 충돌합니다.", "ZIP内の衣装バージョン情報が競合しています。"],
+    "Choose a valid costume variant.": ["올바른 의상 버전을 선택하세요.", "有効な衣装バージョンを選んでください。"],
+    "Costume variant choices must refer to selected costume ZIPs.": ["선택한 의상 ZIP의 버전만 고를 수 있습니다.", "選択した衣装ZIPのバージョンのみ指定できます。"],
+    "This costume ZIP does not offer that variant.": ["이 ZIP에는 해당 의상 버전이 없습니다.", "このZIPには指定された衣装バージョンがありません。"],
 })
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]

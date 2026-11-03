@@ -287,6 +287,7 @@
             var triples = fileStatus === "conflict" || fileStatus === "unsupported" ? entry.values || [] : [];
             if (!triples.length && Array.isArray(entry.value)) triples = [entry.value];
             appendLine("file", kind, title, triples.length ? triples.map(function (parts) { return tripleText(parts, kind); }).join(" | ") : "—", fileStatus);
+            if (Array.isArray(entry.runtime)) appendLine("initialization", kind, "Game initial value", tripleText(entry.runtime, kind));
             poseCache.anchors[kind] = appendLine("editing", kind, "Current editing value", value[kind].map(function (part) { return format(part, kind); }).join(" / "));
             var row = document.createElement("div");
             row.dataset.viewerValueSource = "pose"; row.dataset.viewerValueKind = kind;

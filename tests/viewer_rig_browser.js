@@ -84,6 +84,7 @@ function fixture(options = {}) {
   }
   if(options.authoredHidden)doc.nodes[4].extras.hidden_default=true;
   if(options.zeroAuthoredAxis)doc.nodes[6].scale=[0,1,1];
+  if(options.authoredSkirtScale)skirtRootIds.forEach(node=>doc.nodes[node].scale=options.authoredSkirtScale.slice());
   const json = Buffer.from(JSON.stringify(doc)), jsonPadded = Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
   const bin = Buffer.concat(chunks), binPadded = Buffer.concat([bin,Buffer.alloc((4-bin.length%4)%4)]);
   const header = Buffer.alloc(12), jh = Buffer.alloc(8), bh = Buffer.alloc(8);
@@ -140,7 +141,7 @@ function fixture(options = {}) {
     if(options.rotationConflict)components[0].entries.push(rotation([0,0,0,1]));
     if(options.skirtSet){
       components[0].entries=components[0].entries.filter(entry=>entry.kind!=='scale'||entry.node===2);
-      skirtRootIds.forEach((node,index)=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:options.skirtFileScales?options.skirtFileScales[index]:[.85,.85,.85]}));
+      if(!options.authoredSkirtScale)skirtRootIds.forEach((node,index)=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:options.skirtFileScales?options.skirtFileScales[index]:[.85,.85,.85]}));
       skirtDescendantIds.forEach(node=>components[0].entries.push({node,name:doc.nodes[node].name,kind:'scale',supported:true,application:'absolute_local_scale',origin:[1,1,1],scaled:[1,1,1]}));
     }
   }
@@ -216,13 +217,41 @@ if(require.main===module)(async()=>{
     await page.evaluate(()=>openModelViewer(['/synthetic/rig.unity']));
     await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
     const state=()=>page.evaluate(()=>ModelViewer.getState());
-    const capture=(save,compare)=>page.evaluate(([save,compare])=>{
+    const capture=(save,compare)=>page.evaluate(([save,compare])=>new Promise((resolve,reject)=>{
+      const previousSize=(window.__poseButtonFrameSizes||{})[compare];
+      // Locator actions may scroll the page; pixel comparisons use the same
+      // outer-page position as their reference. The inspector keeps its scroll.
+      window.scrollTo(previousSize?previousSize.windowScrollX||0:0,previousSize?previousSize.windowScroll:0);
+      let previousGeometry=null,lastGeometry=null,finished=false;
+      const timeout=setTimeout(()=>{finished=true;reject(new Error('Pose capture geometry did not settle: '+JSON.stringify(lastGeometry)));},30000);
+      function readyFrame(){
+        if(finished)return;
+        const stage=document.getElementById('viewer-stage'),canvas=document.getElementById('viewer-canvas');
+        const s=ModelViewer.getState(),q=s.quality,layout=s.layout,box=stage.getBoundingClientRect();
+        const gl=canvas&&(canvas.getContext('webgl2')||canvas.getContext('webgl'));
+        const coherent=!!(q&&q.ready&&!s.contextLost&&gl&&layout.stage.width===stage.clientWidth&&layout.stage.height===stage.clientHeight&&
+          Math.abs(layout.stage.top-box.top)<1e-6&&Math.abs(layout.stage.left-box.left)<1e-6&&
+          q.cssWidth===stage.clientWidth&&q.cssHeight===stage.clientHeight&&
+          canvas.width===q.width&&canvas.height===q.height&&gl.drawingBufferWidth===q.width&&gl.drawingBufferHeight===q.height);
+        lastGeometry={coherent,stage:{width:stage.clientWidth,height:stage.clientHeight,top:box.top,left:box.left},layout,
+          canvas:canvas&&{width:canvas.width,height:canvas.height},quality:q,windowScroll:scrollY};
+        const key=JSON.stringify([stage.clientWidth,stage.clientHeight,box.top,box.left,canvas&&canvas.width,canvas&&canvas.height,scrollX,scrollY]);
+        if(coherent&&key===previousGeometry){
+          finished=true;clearTimeout(timeout);
+          // Capture in this same coherent frame. Polling never renders a probe
+          // or consumes GL errors; the original capture below performs both.
+          try{resolve(captureFrame());}catch(error){reject(error);}
+        }else{previousGeometry=coherent?key:null;requestAnimationFrame(readyFrame);}
+      }
+      function captureFrame(){
       const probe=ModelViewer.renderProbe(33),canvas=document.getElementById('viewer-canvas'),gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
       const width=gl.drawingBufferWidth,height=gl.drawingBufferHeight,pixels=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);const error=gl.getError();
       const frames=window.__poseButtonFrames||(window.__poseButtonFrames={});let changedPixels=null;
       if(compare){const previous=frames[compare];if(!previous||previous.length!==pixels.length)throw new Error('Pose comparison viewport changed: '+JSON.stringify({reference:compare,previousBytes:previous&&previous.length,current:{width,height,bytes:pixels.length},previousSize:(window.__poseButtonFrameSizes||{})[compare],layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop}));changedPixels=0;for(let offset=0;offset<pixels.length;offset+=4)if(Math.abs(pixels[offset]-previous[offset])+Math.abs(pixels[offset+1]-previous[offset+1])+Math.abs(pixels[offset+2]-previous[offset+2])>24)changedPixels++;}
-      if(save){frames[save]=pixels;(window.__poseButtonFrameSizes||(window.__poseButtonFrameSizes={}))[save]={width,height,layout:ModelViewer.getState().layout,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop};}return{probe,glError:error,changedPixels,width,height};
-    },[save,compare]);
+      if(save){frames[save]=pixels;(window.__poseButtonFrameSizes||(window.__poseButtonFrameSizes={}))[save]={width,height,layout:ModelViewer.getState().layout,windowScrollX:scrollX,windowScroll:scrollY,sidebarScroll:document.querySelector('.viewer-control-panel').scrollTop};}return{probe,glError:error,changedPixels,width,height};
+      }
+      requestAnimationFrame(readyFrame);
+    }),[save,compare]);
     const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
     const slider=async(id,value)=>{
       if(id==='viewer-expression-value'){
@@ -258,6 +287,22 @@ if(require.main===module)(async()=>{
     assert.equal(requests[0].rigged,true);
     const initial=await state();assert(initial.rig.available);await noContinuousControls();assert.equal(initial.rig.heightMode,'saved_settings_only');assert(!('heightCompensation' in initial.rig));assert.deepEqual(initial.rig.body,{breastPreset:'loaded',skirtMode:'file'});assert.deepEqual(initial.rig.clipNames,['Synthetic test motion','Synthetic motion visibility','Synthetic visibility only']);
     assert.equal(initial.rig.savedNodes.enabled,true);assert.equal(initial.rig.savedNodes.applied,1);assert.equal(initial.rig.bones.find(b=>b.name==='BreastSize').scale[0],1.3);
+    // A model without any skirt targets has no numeric source/current factor.
+    // Exercise real language changes so an unavailable card cannot look like a zero-valued file.
+    assert.equal(initial.rig.skirtValues.available,false);assert.deepEqual(initial.rig.skirtValues.targets,[]);
+    assert.equal(initial.rig.skirtValues.fileUniform,null);assert.equal(initial.rig.skirtValues.currentUniform,null);
+    const unavailableSkirtLanguages=[];
+    for(const [code,text] of [['en','Not available for this model.'],['ko','이 모델에서는 조절할 수 없는 부위입니다.'],['ja','このモデルでは調整できません。'],['en','Not available for this model.']]){
+      await page.locator('#lang-select').selectOption(code);
+      await page.waitForFunction(([code,text])=>document.documentElement.lang===code&&document.getElementById('viewer-skirt-file').textContent===text&&document.getElementById('viewer-skirt-value').textContent===text,[code,text]);
+      assert(await page.locator('#viewer-skirt-number').isDisabled());assert(await page.locator('#viewer-skirt-apply').isDisabled());
+      assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'');
+      assert.equal(await page.locator('#viewer-skirt-number').getAttribute('placeholder'),text);
+      const current=await state();assert.equal(current.rig.skirtValues.fileUniform,null);assert.equal(current.rig.skirtValues.currentUniform,null);
+      assert.deepEqual(current.camera,initial.camera);assert.deepEqual(current.rig.nodeAdjustments,initial.rig.nodeAdjustments);
+      assert.equal(current.rig.selectedClip,initial.rig.selectedClip);assert.equal(current.rig.time,initial.rig.time);assert.deepEqual(current.rig.body,initial.rig.body);
+      unavailableSkirtLanguages.push({code,text,skirt:current.rig.skirtValues});
+    }
     await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);await page.locator('#viewer-node').selectOption('2');
     const importedFields=await page.locator('[data-viewer-node-kind="scale"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value)));
     nearVector(importedFields,[1.3,.9,1],'Advanced fields must display actual saved NodeScaling values');
@@ -499,10 +544,12 @@ if(require.main===module)(async()=>{
         return{stage:rect('#viewer-stage'),controls:rect('.viewer-control-panel'),cameraActions:rect('.viewer-camera-actions'),camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
       });
       assert.equal(normal.overflow,false,'The normal inspector must fit the viewport');
-      if(viewport.width>=760){
+      if(viewport.width>=720){
         assert(normal.stage.right<=normal.controls.x+.5,'Wide normal mode places the model to the LEFT of adjustments');
         assert(normal.cameraActions.x>=normal.stage.x-.5&&normal.cameraActions.right<=normal.stage.right+.5,'View/camera controls remain with the left model');
-        assert(normal.stage.width>=300&&normal.controls.width>=280&&normal.controls.width<=380,'Tablet columns keep a bounded usable editor and a visible model');
+        assert(normal.stage.width>=300&&normal.controls.width>=280,'Tablet columns keep a usable editor and a visible model');
+        if(viewport.width<1200)assert(normal.controls.width<=380,'Compact tablet editors stay bounded');
+        else assert(normal.stage.width<=normal.stage.height*1.27,'Wide tablets use the freed width for editing');
       }
       await page.locator('#viewer-expand').click();await twoFrames();
       const expanded=await page.evaluate(()=>{
@@ -659,6 +706,21 @@ if(require.main===module)(async()=>{
     nearVector((await state()).rig.breastProfile.targets[0].fileScale,[1.3,.9,1],'Breast file XYZ is immutable during per-part opt-out');
     await page.locator('#viewer-saved-nodes').uncheck();assert.equal(await page.locator('#viewer-breast-file-values').innerText(),breastFileReadout);
     const absoluteControlsState=await state();
+    // An authored numeric zero in actual nodes remains distinct from no targets.
+    generated=fixture({skirtSet:true,authoredSkirtScale:[0,0,0]});await page.evaluate(()=>openModelViewer(['/synthetic/zero-authored-skirt.unity']));
+    const zeroSkirt=await state();assert.equal(zeroSkirt.rig.skirtValues.targets.length,8);assert.equal(zeroSkirt.rig.skirtValues.available,true);
+    assert.equal(zeroSkirt.rig.skirtValues.fileUniform,0);assert.equal(zeroSkirt.rig.skirtValues.currentUniform,0);
+    assert(zeroSkirt.rig.skirtValues.targets.every(target=>target.fileStatus==='authored'));
+    assert.equal(await page.locator('#viewer-skirt-file').innerText(),'0 · Authored fallback');assert.equal(await page.locator('#viewer-skirt-value').innerText(),'0');
+    assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'0');assert(!(await page.locator('#viewer-skirt-number').isDisabled()));
+    assert.equal(await page.locator('#viewer-skirt-number').getAttribute('placeholder'),'Different values');
+    // A zero saved endpoint still follows the existing unsupported-value path.
+    generated=fixture({skirtSet:true,skirtFileScales:Array.from({length:8},()=>[0,0,0])});await page.evaluate(()=>openModelViewer(['/synthetic/unsupported-zero-skirt.unity']));
+    const unsupportedZeroSkirt=await state();assert.equal(unsupportedZeroSkirt.rig.skirtValues.targets.length,8);
+    assert.equal(unsupportedZeroSkirt.rig.skirtValues.fileUniform,null);assert.equal(unsupportedZeroSkirt.rig.skirtValues.currentUniform,1);
+    assert(unsupportedZeroSkirt.rig.skirtValues.targets.every(target=>target.fileStatus==='unsupported'));
+    assert.equal(await page.locator('#viewer-skirt-file').innerText(),'Unsupported file value');assert.equal(await page.locator('#viewer-skirt-value').innerText(),'1');
+    assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'1');
     const mixedSource=Array.from({length:8},(_,index)=>index===0?[.85,.9,.95]:index===1?[.8,.8,.8]:[.85,.85,.85]);
     generated=fixture({skirtSet:true,skirtFileScales:mixedSource});await page.evaluate(()=>openModelViewer(['/synthetic/mixed-skirt-file.unity']));
     const mixedSkirt=await state();assert.equal(mixedSkirt.rig.skirtValues.fileUniform,null);assert.equal(mixedSkirt.rig.skirtValues.currentUniform,null);
@@ -714,6 +776,17 @@ if(require.main===module)(async()=>{
     assert.deepEqual(backendConflictState.rig.nodeFileValues.position.values,[[0,1,0],[0,2,0]],'Both rejected backend conflict endpoints remain visible as raw file values');
     assert.equal(await page.locator('[data-viewer-value-source="file"][data-viewer-value-kind="position"]').getAttribute('data-viewer-file-status'),'conflict');
     assert.equal(backendConflictState.rig.nodeFileValues.rotation.status,'unsupported');assert.equal(backendConflictState.rig.nodeFileValues.scale.status,'authored');
+    generated=fixture();generated.rig.sourcePositions={'6':[0,1.5,-.001]};await page.evaluate(()=>openModelViewer(['/synthetic/native-initialized-position.unity']));
+    await page.locator('.viewer-node-editor').evaluate(details=>details.open=true);await page.locator('#viewer-node').selectOption('6');
+    const initializedPosition=await state();
+    nearVector(initializedPosition.rig.nodeFileValues.position.value,[0,1.5,-.001],'File position retains the original source before native initialization');
+    nearVector(initializedPosition.rig.nodeFileValues.position.runtime,[0,1.5,0],'Game initialization is separate from the original source');
+    nearVector(bone(initializedPosition,6).position,[0,1.5,0],'Actual current bone retains initialized runtime position');
+    assert((await page.locator('[data-viewer-value-source="initialization"][data-viewer-value-kind="position"]').innerText()).includes('Game initial value'));
+    assert(!initializedPosition.rig.nodeAdjustments['6'],'Native initialization is not a user adjustment');
+    await inputNode(6,'position','Z',.2);await page.locator('#viewer-node-reset').click();
+    nearVector(bone(await state(),6).position,[0,1.5,0],'Reset restores the initialized position instead of the raw source position');
+    nearVector((await state()).rig.nodeFileValues.position.value,[0,1.5,-.001],'Reset does not rewrite the original file position');
     generated=fixture({zeroAuthoredAxis:true});await page.evaluate(()=>openModelViewer(['/synthetic/zero-axis-absolute-edit.unity']));
     await inputNode(6,'scale','X',.5);nearVector(bone(await state(),6).scale,[.5,1,1],'A zero authored axis can be explicitly edited to a nonzero absolute factor');
     assert.deepEqual((await state()).rig.nodeAdjustments['6'].scale,[.5,null,null]);
@@ -729,7 +802,7 @@ if(require.main===module)(async()=>{
     const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,
       bodyTools:{headBeforeProfile,hairBeforeProfile,moveBeforeProfile,profileInvariant,profileResults,loadedProfile:loadedProfileState.rig.breastProfile,manualProfile:manualProfile.rig.breastProfile,restoredProfile:restoredProfile.rig.breastProfile,toolPresetState:toolPresetState.rig.body,customProfile:customProfileState.rig.breastProfile},inspectorLayouts,
       multiAxisUnity:{loaded:loadedMultiAxis.rig.bones.find(bone=>bone.node==='3'),edited:editedMultiAxis.rig.bones.find(bone=>bone.node==='3'),reset:multiAxisState.rig.bones.find(bone=>bone.node==='3')},
-      sourceValueControls:{initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues},
+      sourceValueControls:{unavailableSkirtLanguages,zeroSkirt:zeroSkirt.rig.skirtValues,unsupportedZeroSkirt:unsupportedZeroSkirt.rig.skirtValues,initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues,initializedPosition:initializedPosition.rig.nodeFileValues},
       namedExpressions:{base:namedExpressionBase,final:namedExpressionState.rig},
       previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));

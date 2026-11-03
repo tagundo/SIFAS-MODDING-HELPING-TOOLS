@@ -124,7 +124,9 @@ class RigBuilder:
             owners.update(source_owner(scene, source, manifests.get(source)))
         self.owner = next(iter(owners)) if len(owners) == 1 else None
         self.nodes, self.worlds, self.names = {}, {}, defaultdict(list)
+        self._path_cache = {}
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}
+        self.source_positions = {}
         self.expression_sources = {}
         self.visibility_bindings = {"renderer": {}, "gameObject": {}}
         self.warnings, self.skinned, self.morph_values = [], 0, 0
@@ -146,22 +148,44 @@ class RigBuilder:
         return index
 
     def _path(self, transform):
-        from .model_viewer import _key, _ref
-        names, seen, path_bytes = [], set(), 0
+        from .model_viewer import _key, _ref, _remaining
+        _remaining(self.deadline)
+        pending, seen = [], set()
+        path, depth, path_bytes = "", 0, 0
         while transform is not None:
+            _remaining(self.deadline)
             key = _key(transform)
             if key in seen or len(seen) >= 256:
                 raise RigError("The rig contains a circular transform hierarchy.")
             seen.add(key)
+            cached = self._path_cache.get(key)
+            if cached is not None:
+                path, depth, path_bytes = cached
+                if depth + len(pending) > 256:
+                    raise RigError("The rig contains a circular transform hierarchy.")
+                break
             obj = _ref(transform, self.scene.tree(transform).get("m_GameObject"))
             name = self.scene.name(obj) if obj is not None else ""
             length = len(name.encode("utf-8"))
-            path_bytes += length + 1
-            if length > MAX_NAME_BYTES or path_bytes > MAX_PATH_BYTES:
+            if length > MAX_NAME_BYTES:
                 raise RigError("A rig hierarchy path exceeds the preview byte limit.")
-            names.append(name)
+            pending.append((key, name, length + 1))
             transform = _ref(transform, self.scene.tree(transform).get("m_Father"))
-        return "/".join(reversed(names[:-1]))
+        # Source names/parents are immutable within a Scene. Reuse validated
+        # ancestor paths instead of walking the same hierarchy for every bone.
+        for key, name, component_bytes in reversed(pending):
+            _remaining(self.deadline)
+            depth += 1
+            path_bytes += component_bytes
+            if depth > 256:
+                raise RigError("The rig contains a circular transform hierarchy.")
+            if path_bytes > MAX_PATH_BYTES:
+                raise RigError("A rig hierarchy path exceeds the preview byte limit.")
+            if depth > 1:
+                path = (path + "/" if depth > 2 else "") + name
+            if len(self._path_cache) < MAX_NODES:
+                self._path_cache[key] = (path, depth, path_bytes)
+        return path
 
     def _binding(self, path, node):
         for key in (path, zlib.crc32(path.encode())):
@@ -178,7 +202,7 @@ class RigBuilder:
         key = _key(transform)
         if key in self.nodes:
             return self.nodes[key]
-        tree = self.scene.tree(transform)
+        tree = self.scene.local_tree(transform)
         obj = _ref(transform, tree.get("m_GameObject"))
         name = self.scene.name(obj) if obj is not None else "Bone"
         world = self.scene.world(transform)
@@ -198,6 +222,8 @@ class RigBuilder:
         parent_world = self.worlds.get(parent_index, np.eye(4))
         local = np.linalg.inv(parent_world) @ world
         node = self._node(name, _authored_trs(tree) if primary else _trs(local), "bone")
+        if key in self.scene.runtime_positions:
+            self.source_positions[node] = _authored_trs(self.scene.tree(transform))["translation"]
         self.nodes[key], self.worlds[node] = node, world
         self.glb.doc["nodes"][parent_index].setdefault("children", []).append(node)
         path = self._path(transform)
@@ -209,6 +235,7 @@ class RigBuilder:
 
     def update(self, scene, faces, deadline):
         self.scene, self.faces, self.deadline = scene, faces, deadline
+        self._path_cache.clear()
 
     def record_bounds(self, positions):
         import numpy as np
@@ -378,13 +405,16 @@ class RigBuilder:
         import copy
         from .model_expressions import describe_expressions
         bounds = {"min": self.bounds[0].tolist(), "max": self.bounds[1].tolist()} if self.bounds is not None else None
-        return copy.deepcopy({"enabled": True, "available": self.skinned > 0, "root": self.root,
+        result = {"enabled": True, "available": self.skinned > 0, "root": self.root,
                 "bones": self.bones, "bounds": bounds, "morphs": self.morphs,
                 "clips": self.clips, "animationWarnings": self.animation_warnings,
                 "expressionCatalog": describe_expressions(self.morphs, self.bones, self.glb.doc,
                                                           owner=self.owner, sources=self.expression_sources,
                                                           clips=self.clips),
-                "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))})
+                "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
+        if self.source_positions:
+            result["sourcePositions"] = self.source_positions
+        return copy.deepcopy(result)
 
     def finalize(self, animations=True):
         from .model_animation import append_animations

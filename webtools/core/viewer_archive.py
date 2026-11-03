@@ -1,6 +1,6 @@
 """Bounded, temporary model inputs from costume ZIPs; never execute manifests."""
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ast
 import os
 from pathlib import Path, PurePosixPath
@@ -25,6 +25,7 @@ class ExpandedInputs:
     manifest_paths: list
     source_names: list
     origins: dict
+    variants: list = field(default_factory=list)
 
 
 def _entry_path(info):
@@ -69,34 +70,31 @@ def _copy_member(archive, info, destination):
             raise ValueError("The costume ZIP exceeds its declared file size.")
 
 
-def _platform_models(models, manifests):
-    """Prefer declared Android variants, preserving unrelated model parts.
+_PLATFORM_PAIRS = (("costume_file", "costume_file_ios"),
+                   ("rina_unmask_costume_file", "rina_unmask_costume_file_ios"))
 
-    A dual-platform installer names two alternative copies of each costume.
-    Loading both duplicates the skeleton and prevents automatic facial bones
-    from joining it. Only exclude an iOS member when its declared Android
-    counterpart is also a real model in this ZIP. Names alone are not evidence
-    of a platform, and iOS-only packages remain usable by the viewer.
-    """
-    pairs = (("costume_file", "costume_file_ios"),
-             ("rina_unmask_costume_file", "rina_unmask_costume_file_ios"))
-    keys = {key for pair in pairs for key in pair}
+
+def _manifest_models(models, manifests):
+    """Resolve only bounded literal model references in this archive."""
+    keys = {key for pair in _PLATFORM_PAIRS for key in pair}
     available = {str(relative).casefold() for _, relative in models}
-    preferred, alternatives = set(), set()
+    records = []
     for path, relative in manifests:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-            values = {}
+            values, assignments = {}, {}
             for item in tree.body:
                 if (isinstance(item, ast.Assign) and len(item.targets) == 1
                         and isinstance(item.targets[0], ast.Name)
                         and item.targets[0].id in keys):
-                    values[item.targets[0].id] = ast.literal_eval(item.value)
+                    key = item.targets[0].id
+                    value = ast.literal_eval(item.value)
+                    values[key] = value
+                    assignments.setdefault(key, []).append(value)
         except (OSError, UnicodeError, SyntaxError, ValueError, TypeError, RecursionError):
             continue
 
-        def member(key):
-            value = values.get(key)
+        def member(value):
             if not isinstance(value, str) or not value or len(value) > 512:
                 return None
             target = PurePosixPath(value.replace("\\", "/"))
@@ -106,8 +104,26 @@ def _platform_models(models, manifests):
             target = str(relative.parent / target).casefold()
             return target if target in available else None
 
-        for android, ios in pairs:
-            primary, alternate = member(android), member(ios)
+        resolved = {key: member(values.get(key)) for key in keys}
+        conflicts = {key for key, assigned in assignments.items()
+                     if any(member(value) != resolved[key] for value in assigned)}
+        records.append((resolved, conflicts))
+    return records
+
+
+def _platform_models(models, manifests, records=None):
+    """Prefer declared Android variants, preserving unrelated model parts.
+
+    A dual-platform installer names two alternative copies of each costume.
+    Loading both duplicates the skeleton and prevents automatic facial bones
+    from joining it. Only exclude an iOS member when its declared Android
+    counterpart is also a real model in this ZIP. Names alone are not evidence
+    of a platform, and iOS-only packages remain usable by the viewer.
+    """
+    preferred, alternatives = set(), set()
+    for values, _ in records if records is not None else _manifest_models(models, manifests):
+        for android, ios in _PLATFORM_PAIRS:
+            primary, alternate = values.get(android), values.get(ios)
             if primary is not None:
                 preferred.add(primary)
                 if alternate is not None and alternate != primary:
@@ -116,6 +132,62 @@ def _platform_models(models, manifests):
     excluded = alternatives - preferred
     return [(info, relative) for info, relative in models
             if str(relative).casefold() not in excluded]
+
+
+def _variant_models(models, manifests, choice):
+    """Choose one declared costume family before any Unity model is loaded.
+
+    The manifest's primary and Rina-unmasked files are alternatives, while
+    Android/iOS names within either family are platform copies. Unrelated
+    explicitly supplied model parts remain independent of this choice.
+    """
+    records = _manifest_models(models, manifests)
+    declarations = {}
+    all_primary, all_unmasked = set(), set()
+    conflicting = False
+    for values, conflicts in records:
+        primary = frozenset(filter(None, (values.get(key) for key in _PLATFORM_PAIRS[0])))
+        unmasked = frozenset(filter(None, (values.get(key) for key in _PLATFORM_PAIRS[1])))
+        all_primary.update(primary)
+        all_unmasked.update(unmasked)
+        if not primary or not unmasked:
+            continue
+        if primary == unmasked and (
+                values.get(_PLATFORM_PAIRS[0][0]) or values.get(_PLATFORM_PAIRS[0][1])) == (
+                values.get(_PLATFORM_PAIRS[1][0]) or values.get(_PLATFORM_PAIRS[1][1])):
+            continue
+        if primary & unmasked or conflicts:
+            conflicting = True
+        pair = (primary, unmasked)
+        previous = declarations.get(pair)
+        if previous is not None and any(
+                (previous.get(android) or previous.get(ios)) !=
+                (values.get(android) or values.get(ios))
+                for android, ios in _PLATFORM_PAIRS):
+            conflicting = True
+        declarations[pair] = values
+    if declarations:
+        if len(declarations) != 1:
+            conflicting = True
+        primary, unmasked = next(iter(declarations))
+        if primary & all_unmasked or unmasked & all_primary:
+            conflicting = True
+        if conflicting:
+            raise ValueError("The costume ZIP declares conflicting costume variants.")
+        selected = choice or "primary"
+        values = next(iter(declarations.values()))
+        family = _PLATFORM_PAIRS[0 if selected == "primary" else 1]
+        selected_member = values.get(family[0]) or values.get(family[1])
+        excluded = (primary | unmasked) - {selected_member}
+        filtered = {str(relative).casefold()
+                    for _, relative in _platform_models(models, manifests, records)}
+        return ([(info, relative) for info, relative in models
+                 if str(relative).casefold() not in excluded and
+                 (str(relative).casefold() in filtered or
+                  str(relative).casefold() == selected_member)], selected)
+    if choice is not None:
+        raise ValueError("This costume ZIP does not offer that variant.")
+    return _platform_models(models, manifests, records), None
 
 
 def _preflight_zip(path):
@@ -150,16 +222,25 @@ def _preflight_zip(path):
 
 
 @contextmanager
-def expand_inputs(paths, cache_root):
+def expand_inputs(paths, cache_root, variant_choices=None):
     """Yield selected files plus isolated ZIP members for one conversion.
 
     Only Unity model bytes and bounded modinstall.txt data are extracted. All
     filenames are validated before extraction, including ignored ZIP entries.
     Temporary files live through GLB conversion and disappear on every exit.
     """
+    choices = {} if variant_choices is None else variant_choices
+    if (not isinstance(choices, dict) or len(choices) > MAX_MODELS
+            or any(not isinstance(value, str) or value not in ("primary", "unmasked")
+                   for value in choices.values())):
+        raise ValueError("Choose a valid costume variant.")
+    if any(not isinstance(path, str) or path not in paths for path in choices):
+        raise ValueError("Costume variant choices must refer to selected costume ZIPs.")
     names = [Path(path).name for path in paths]
     archives = [path for path in paths
                 if Path(path).suffix.lower() == ".zip" or zipfile.is_zipfile(path)]
+    if any(path not in archives for path in choices):
+        raise ValueError("Costume variant choices must refer to selected costume ZIPs.")
     if not archives:
         yield ExpandedInputs(list(paths), [], names, {path: path for path in paths})
         return
@@ -174,7 +255,7 @@ def expand_inputs(paths, cache_root):
         if cache_root.resolve() != cache_root.absolute():
             raise ValueError("The model preview cache must use its real folder path.")
         with tempfile.TemporaryDirectory(prefix="viewer-zip-", dir=cache_root) as temporary:
-            result, manifests, origins = [], [], {}
+            result, manifests, origins, variants = [], [], {}, []
             total = 0
             for index, path in enumerate(paths):
                 if path not in archives:
@@ -218,7 +299,13 @@ def expand_inputs(paths, cache_root):
                         if not _model_header(header, info.file_size):
                             continue
                         models.append((info, relative))
-                    for info, relative in _platform_models(models, archive_manifests):
+                    selected_models, selected_variant = _variant_models(
+                        models, archive_manifests, choices.get(path))
+                    if selected_variant is not None:
+                        variants.append({"source_path": path, "source_name": Path(path).name,
+                                         "selected": selected_variant,
+                                         "choices": ["primary", "unmasked"]})
+                    for info, relative in selected_models:
                         destination = Path(temporary) / str(index) / Path(*relative.parts)
                         _copy_member(archive, info, destination)
                         result.append(str(destination))
@@ -227,7 +314,7 @@ def expand_inputs(paths, cache_root):
                             raise ValueError("Choose a costume ZIP containing at most eight model files.")
             if not 1 <= len(result) <= MAX_MODELS:
                 raise ValueError("The costume ZIP contains no extracted Unity model files.")
-            expanded = ExpandedInputs(result, manifests, names, origins)
+            expanded = ExpandedInputs(result, manifests, names, origins, variants)
             # Keep conversion errors distinct from ZIP parsing errors.
             conversion_started = True
             yield expanded

@@ -385,7 +385,11 @@
         var supported = savedOperations.some(function (operation) { return operation.node === id && operation.kind === kind; });
         var status = conflictKeys[key] || entries.some(function (entry) { return entry.reason === "conflicting_saved_entries"; }) ? "conflict" : entries.length ? (!supported || entries.some(function (entry) { return !entry.supported; }) ? "unsupported" : "saved") : "authored";
         var authored = record && (kind === "rotation" ? editing.quaternionUI(THREE, record.authored.quaternion) : record.authored[kind === "position" ? "position" : "scale"].toArray());
+        var sourcePosition = info && info.sourcePositions && info.sourcePositions[id];
+        if (kind === "position" && Array.isArray(sourcePosition) && sourcePosition.length === 3 &&
+            sourcePosition.every(function (part) { return typeof part === "number" && isFinite(part); })) authored = sourcePosition;
         result[kind] = { status: status, value: status === "authored" ? authored.slice() : status === "saved" ? values[0].slice() : null, values: values.map(function (value) { return value.slice(); }) };
+        if (kind === "position" && authored === sourcePosition) result[kind].runtime = record.authored.position.toArray();
       });
       return result;
     }
@@ -549,6 +553,7 @@
           activeScale: active[id].scale.toArray(), currentScale: current[id].scale.toArray() };
       });
       function uniform(key) {
+        if (!targets.length) return null;
         var first = targets.length && targets[0][key] && targets[0][key][0];
         return typeof first === "number" && targets.every(function (target) { return target[key] && target[key].every(function (value) { return Math.abs(value - first) <= 1e-7; }); }) ? first : null;
       }
@@ -579,13 +584,13 @@
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
     }
     function refreshBodyControls() {
-      var skirt = skirtValues(), enabled = interactive && !disposed && skirt.available, input = element("viewer-skirt-number");
+      var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && !disposed && skirt.available, input = element("viewer-skirt-number");
       input.disabled = !enabled; input.min = String(skirt.editBounds.min); input.max = String(skirt.editBounds.max);
-      if (document.activeElement !== input) input.value = skirt.currentUniform === null ? "" : numberText(skirt.currentUniform);
-      input.placeholder = translate("Different values"); element("viewer-skirt-apply").disabled = !enabled;
+      if (noSkirt || document.activeElement !== input) input.value = skirt.currentUniform === null ? "" : numberText(skirt.currentUniform);
+      input.placeholder = translate(noSkirt ? "Not available for this model." : "Different values"); element("viewer-skirt-apply").disabled = !enabled;
       var badFile = skirt.targets.some(function (target) { return target.fileStatus === "conflict"; }) ? "Conflicting file values" : skirt.targets.some(function (target) { return target.fileStatus === "unsupported"; }) ? "Unsupported file value" : null;
-      element("viewer-skirt-file").textContent = badFile ? translate(badFile) : (skirt.fileUniform === null ? translate("Different values") : numberText(skirt.fileUniform)) + (skirt.targets.some(function (target) { return target.fileStatus === "authored"; }) ? " · " + translate("Authored fallback") : "");
-      element("viewer-skirt-value").textContent = skirt.currentUniform === null ? translate("Different values") : numberText(skirt.currentUniform);
+      element("viewer-skirt-file").textContent = noSkirt ? translate("Not available for this model.") : badFile ? translate(badFile) : (skirt.fileUniform === null ? translate("Different values") : numberText(skirt.fileUniform)) + (skirt.targets.some(function (target) { return target.fileStatus === "authored"; }) ? " · " + translate("Authored fallback") : "");
+      element("viewer-skirt-value").textContent = noSkirt ? translate("Not available for this model.") : skirt.currentUniform === null ? translate("Different values") : numberText(skirt.currentUniform);
       element("viewer-skirt-reset").disabled = !interactive || disposed || !skirt.edited;
       var rows = element("viewer-skirt-nodes"); rows.textContent = "";
       var repeatedNames = {};

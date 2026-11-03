@@ -81,6 +81,42 @@ class MotionTests(unittest.TestCase):
     def prepare(self, paths):
         return viewer.prepare([str(path) for path in paths], face_context=self.context, rigged=True)
 
+    def test_incompatible_early_bundle_does_not_suppress_later_automatic_lookup(self):
+        stage = motion.MotionInputs([], self.context, self.deadline)
+        self.addCleanup(stage.close)
+        rejected = {"path": "unbound-preview.unity"}
+
+        def unbound(rig, deadline):
+            stage.verified.append(rejected)
+            return []
+
+        with patch.object(stage, "_bundled", side_effect=unbound):
+            self.assertEqual(stage.bundled(object(), [], self.deadline), [])
+        self.assertEqual(stage.verified, [])
+        with patch.object(stage, "_bundled", return_value=["later-preview.unity"]) as lookup:
+            self.assertEqual(stage.automatic(object(), [], self.deadline), ["later-preview.unity"])
+        lookup.assert_called_once()
+
+    def test_early_bundle_registration_rolls_back_on_exception_and_keeps_selected(self):
+        stage = motion.MotionInputs([], self.context, self.deadline)
+        self.addCleanup(stage.close)
+
+        def broken(rig, deadline):
+            stage.verified.append({"path": "half-loaded.unity"})
+            raise RuntimeError("optional import")
+
+        with patch.object(stage, "_bundled", side_effect=broken):
+            with self.assertRaisesRegex(RuntimeError, "optional import"):
+                stage.bundled(object(), [], self.deadline)
+        self.assertEqual(stage.verified, [])
+        selected = {"path": "explicit-preview.unity"}
+        stage.verified.append(selected)
+        with patch.object(stage, "_bundled") as lookup:
+            self.assertEqual(stage.bundled(object(), [], self.deadline), [])
+            self.assertEqual(stage.automatic(object(), [], self.deadline), [])
+        lookup.assert_not_called()
+        self.assertEqual(stage.verified, [selected])
+
     def test_raw_selected_stages_read_only_and_cleans_on_success(self):
         before = self.raw.read_bytes()
         with motion.prepare_motion_inputs([str(self.raw)], self.context, self.deadline) as staged:

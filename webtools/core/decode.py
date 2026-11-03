@@ -116,14 +116,19 @@ def _android_image(texture, deadline):
                   + b"\x01\x00\x00")
         with tempfile.TemporaryDirectory(prefix="webtools_astc_") as directory:
             source = os.path.join(directory, "texture.astc")
-            output = os.path.join(directory, "texture.png")
+            # The viewer will encode the final PNG after Unity's vertical flip.
+            # A lossless TGA intermediate avoids compressing that image twice.
+            output = os.path.join(directory, "texture.tga")
             with open(source, "wb") as stream:
                 stream.write(header)
                 stream.write(data[:needed])  # the remaining bytes are lower mip levels
             subprocess.run([binary, "-dl", source, output], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            timeout=_remaining(deadline))
-            with Image.open(output) as decoded:
+            # This output is always TGA. Generic Image.open falls back to
+            # importing every Pillow plugin when TGA is not preinitialized.
+            from PIL.TgaImagePlugin import TgaImageFile
+            with TgaImageFile(output) as decoded:
                 if decoded.size != (width, height):
                     raise ValueError("ASTC decoder returned incorrect dimensions")
                 image = decoded.convert("RGBA")

@@ -56,9 +56,15 @@
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
             <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span><button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button></div>
             <div id="viewer-stage-tools-top" class="viewer-stage-tools viewer-stage-tools-top" data-viewer-hud-edge="top">
+              <details id="viewer-workspace-menu" class="viewer-workspace-menu viewer-toolbar-segment">
+                <summary><span class="sr-only" data-i18n="Files and app controls">Files and app controls</span></summary>
+                <div id="viewer-workspace-menu-content" class="viewer-workspace-menu-content"></div>
+              </details>
               <details id="viewer-view-menu" class="viewer-view-menu viewer-toolbar-segment">
                 <summary data-i18n="View controls">View controls</summary>
-                <div id="viewer-view-menu-content" class="viewer-view-menu-content"></div>
+                <div id="viewer-view-menu-content" class="viewer-view-menu-content">
+                  <div id="viewer-variant-options" class="viewer-variant-options" hidden></div>
+                </div>
               </details>
               <div class="viewer-primary-tools">
                 <div id="viewer-pose-actions" class="viewer-pose-actions viewer-toolbar-segment" role="group" aria-label="Pose">
@@ -91,6 +97,7 @@
                   <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
                   <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
                   <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
+                  <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
                   <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
                 </div>
               </details>
@@ -100,13 +107,12 @@
           <div class="viewer-control-panel">
           <details id="viewer-adjustments" class="viewer-adjustments" open>
             <summary data-i18n="Pose and body">Pose and body</summary>
-            <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
-            <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
             <div class="viewer-motion-row">
               <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
+            <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
               <div class="viewer-body-controls">

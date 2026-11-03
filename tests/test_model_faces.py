@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sqlite3
 import struct
 import tempfile
@@ -37,6 +38,49 @@ def glb_names(metadata):
     data = viewer.get_model(metadata["id"])
     size, = struct.unpack_from("<I", data, 12)
     return [mesh["name"] for mesh in json.loads(data[20:20 + size])["meshes"]]
+
+
+class PackageSizeTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.addCleanup(self.db.close)
+        self.db.execute("CREATE TABLE m_asset_package_mapping(package_key TEXT,pack_name TEXT,file_size INTEGER,PRIMARY KEY(package_key,pack_name))")
+        self.queries = []
+        class RecordingConnection:
+            def execute(inner, query, parameters):
+                self.queries.append((query, list(parameters)))
+                return self.db.execute(query, parameters)
+        self.recording = RecordingConnection()
+
+    def test_selected_suit_sizes_do_not_scan_other_groups(self):
+        self.db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?,?)", [("suit:2", "a", 11), ("suit:2", "b", 22)])
+        self.assertEqual(faces._pack_sizes(self.recording, ["a", "b"], 2), {"a": 11, "b": 22})
+        self.assertEqual(len(self.queries), 1)
+        self.assertIn("package_key=?", self.queries[0][0])
+        self.assertEqual(self.queries[0][1], ["suit:2", "a", "b"])
+
+    def test_legacy_scan_only_receives_names_missing_from_selected_suit(self):
+        self.db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?,?)", [("suit:2", "a", 11), ("other", "b", 22)])
+        self.assertEqual(faces._pack_sizes(self.recording, ["a", "b"], 2), {"a": 11, "b": 22})
+        self.assertEqual(len(self.queries), 2)
+        self.assertNotIn("package_key", self.queries[1][0])
+        self.assertEqual(self.queries[1][1], ["b"])
+
+    def test_unknown_suit_and_legacy_schema_keep_old_first_mapping(self):
+        self.db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?,?)", [("other1", "a", 11), ("other2", "a", 22)])
+        self.assertEqual(faces._pack_sizes(self.recording, ["a"], 99), {"a": 11})
+        self.db.execute("DROP TABLE m_asset_package_mapping")
+        self.db.execute("CREATE TABLE m_asset_package_mapping(pack_name TEXT,file_size INTEGER)")
+        self.db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?)", [("a", 33), ("a", 44)])
+        self.assertEqual(faces._pack_sizes(self.recording, ["a"], 2), {"a": 33})
+
+    def test_selected_suit_record_is_explicitly_preferred_for_conflicting_custom_catalog(self):
+        self.db.executemany("INSERT INTO m_asset_package_mapping VALUES(?,?,?)", [("other", "a", 11), ("suit:2", "a", 22)])
+        self.assertEqual(faces._pack_sizes(self.recording, ["a"], 2), {"a": 22})
+
+    def test_empty_pack_list_does_not_open_a_query(self):
+        self.assertEqual(faces._pack_sizes(self.recording, [], 2), {})
+        self.assertEqual(self.queries, [])
 
 
 class FaceTests(unittest.TestCase):
@@ -170,6 +214,191 @@ class FaceTests(unittest.TestCase):
             metadata = viewer.prepare([str(self.body)], face_context=self.context)
         self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
         self.assertEqual(metadata["faces"]["status"], "added")
+
+    def test_known_owner_originals_complete_before_catalog_or_broad_scan_for_all_owners(self):
+        for owner in (1, 101, 207, 209, 301):
+            with self.subTest(owner=owner):
+                self.body.write_bytes(self.scene("Body", owner=owner))
+                path = self.library / f"ch{owner:04}_facedynamic.unity"
+                path.write_bytes(self.donor(owner=owner))
+                before = hashlib.sha256(path.read_bytes()).hexdigest()
+                with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("No catalog needed")) as catalog, \
+                        patch.object(faces.FacePlan, "_local", side_effect=AssertionError("No broad scan needed")) as broad, \
+                        patch.object(faces, "_download") as fetch:
+                    metadata = viewer.prepare([str(self.body)], face_context=self.context)
+                self.assertEqual(metadata["faces"]["status"], "added")
+                self.assertEqual(metadata["faces"]["characters"], [owner])
+                self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+                catalog.assert_not_called()
+                broad.assert_not_called()
+                fetch.assert_not_called()
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
+
+    def test_known_extracted_model_ignores_large_library_and_suit_origin_before_sql(self):
+        directory = self.library / "extracted" / "3d_model"
+        directory.mkdir(parents=True)
+        (directory / "ch0207_facedynamic.unity").write_bytes(self.donor())
+        for number in range(faces.MAX_LOCAL_FILES + 10):
+            (self.library / f"unrelated-{number}.unity").write_bytes(b"unrelated")
+        origin = self.root / "suit" / "costume.zip"
+        origin.parent.mkdir()
+        origin.write_bytes(b"original costume placeholder")
+        self.context["origins"] = {str(self.body): str(origin)}
+        with patch.object(faces.sqlite3, "connect", side_effect=AssertionError("Known original must precede SQL")) as connect, \
+                patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("No catalog needed")) as catalog, \
+                patch.object(faces.FacePlan, "_local", side_effect=AssertionError("No broad scan needed")) as broad:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        connect.assert_not_called()
+        catalog.assert_not_called()
+        broad.assert_not_called()
+        self.assertEqual(origin.read_bytes(), b"original costume placeholder")
+
+    def test_managed_same_owner_cache_precedes_catalog_and_keeps_prune_protection(self):
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        cached = directory / ("ch0207_" + "a" * 24 + ".unity")
+        faces._save(cached, self.donor(), 207)
+        before = {path: path.read_bytes() for path in (cached, Path(str(cached) + ".json"))}
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("No catalog needed")) as catalog, \
+                patch.object(faces.FacePlan, "_local", side_effect=AssertionError("No broad scan needed")) as broad, \
+                patch.object(faces, "_prune_cache", wraps=faces._prune_cache) as prune:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        catalog.assert_not_called()
+        broad.assert_not_called()
+        self.assertTrue(any(str(cached) in call.args[1] for call in prune.call_args_list))
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_partial_known_original_retains_roles_then_uses_existing_fallback(self):
+        canonical = self.library / "ch0207_face.unity"
+        canonical.write_bytes(self.scene("Face"))
+        companion = self.library / "original_eyes.unity"
+        companion.write_bytes(self.scene("Eyes"))
+        plan = self.plan()
+        with patch.object(plan, "_descriptor_iter", return_value=iter(())) as catalog, \
+                patch.object(plan, "_local", wraps=plan._local) as broad:
+            paths = plan.resolve()
+        self.assertEqual(set(paths), {str(canonical), str(companion)})
+        self.assertEqual(plan.status, "added")
+        self.assertEqual(plan.needed, set())
+        self.assertEqual(plan.source_roles[str(canonical)], {"face"})
+        catalog.assert_called_once()
+        broad.assert_called_once()
+
+    def test_partial_known_original_completes_from_verified_cache_before_catalog(self):
+        canonical = self.library / "ch0207_face.unity"
+        canonical.write_bytes(self.scene("Face"))
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        companion = directory / ("ch0207_" + "d" * 24 + ".unity")
+        faces._save(companion, self.scene("Eyes"), 207)
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("No catalog needed")) as catalog, \
+                patch.object(faces.FacePlan, "_local", side_effect=AssertionError("No broad scan needed")) as broad:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
+        catalog.assert_not_called()
+        broad.assert_not_called()
+
+    def test_rejected_known_filename_does_not_modify_owner_or_accepted_state(self):
+        canonical = self.library / "ch0207_facedynamic.unity"
+        for owner in (101, None):
+            with self.subTest(owner=owner):
+                canonical.write_bytes(self.donor(owner=owner))
+                plan = self.plan()
+                before = set(plan.needed)
+                with patch.object(plan, "_descriptor_iter", return_value=iter(())) as catalog, \
+                        patch.object(plan, "_local", return_value=[]):
+                    self.assertEqual(plan.resolve(), [])
+                self.assertEqual(plan.owner, 207)
+                self.assertEqual(plan.needed, before)
+                self.assertEqual(plan.auto_paths, [])
+                self.assertEqual(plan.dynamic_sources, set())
+                self.assertEqual(plan.source_adjustments, {})
+                self.assertEqual(plan.database_paths, set())
+                catalog.assert_called_once()
+
+    def test_normal_rina_rejects_known_masked_donor_before_fallback(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=209)) for name in ("Body", "Face")]))
+        (self.library / "ch0209_facedynamic.unity").write_bytes(self.board_part(owner=9999))
+        plan = self.plan()
+        with patch.object(plan, "_descriptor_iter", return_value=iter(())) as catalog, \
+                patch.object(plan, "_local", return_value=[]):
+            self.assertEqual(plan.resolve(), [])
+        self.assertEqual(plan.owner, 209)
+        self.assertEqual(plan.face_mode, "normal")
+        self.assertEqual(plan.needed, {"eyes"})
+        self.assertEqual(plan.auto_paths, [])
+        catalog.assert_called_once()
+
+    def test_known_rina_board_donor_keeps_overlay_and_shell_without_normal_eyes(self):
+        self.body.write_bytes(bundle([(name + ".assets", self.scene(name, owner=9999)) for name in ("Body", "Face")]))
+        manifest = self.selected / "modinstall.txt"
+        manifest.write_text("costume_file='costume.unity'\nchara_id=209\n")
+        self.context["manifest_paths"] = [str(manifest)]
+        (self.library / "ch0209_facedynamic.unity").write_bytes(bundle([
+            ("pixels.assets", self.board_part(owner=9999)),
+            ("overlay.assets", self.board_part(owner=9999, overlay=True)),
+            ("shell.assets", self.board_part(owner=9999, shell=True)),
+            ("normal_eyes.assets", self.scene("Eyes", owner=209))]))
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("No catalog needed")) as catalog, \
+                patch.object(faces.FacePlan, "_local", side_effect=AssertionError("No broad scan needed")) as broad:
+            metadata = viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 3, "characters": [209]})
+        self.assertEqual(glb_names(metadata), ["Body", "Face", "BoardPixels", "BoardOverlay", "BoardShell"])
+        catalog.assert_not_called()
+        broad.assert_not_called()
+
+    def test_invalid_managed_cache_and_escaped_links_are_not_fast_candidates(self):
+        directory = Path(self.context["cache_dir"]) / "models"
+        directory.mkdir(parents=True)
+        cached = directory / ("ch0207_" + "b" * 24 + ".unity")
+        faces._save(cached, self.donor(), 207)
+        cached.write_bytes(b"corrupt cached bytes")
+        outside = self.root / "outside.unity"
+        outside.write_bytes(self.donor())
+        (self.library / "ch0207_facedynamic.unity").symlink_to(outside)
+        linked_cache = directory / ("ch0207_" + "c" * 24 + ".unity")
+        linked_cache.symlink_to(outside)
+        plan = self.plan()
+        with patch.object(plan, "_descriptor_iter", return_value=iter(())), patch.object(plan, "_local", return_value=[]):
+            self.assertEqual(plan.resolve(), [])
+        self.assertEqual(plan.auto_paths, [])
+        self.assertEqual(cached.read_bytes(), b"corrupt cached bytes")
+        cached.unlink()
+        linked_cache.unlink()
+        Path(str(cached) + ".json").unlink()
+        directory.rmdir()
+        directory.symlink_to(self.library, target_is_directory=True)
+        self.assertEqual(list(self.plan()._known_local()), [])
+
+    def test_known_candidate_and_cache_entry_bounds_are_applied_before_sorting(self):
+        roots = []
+        for number in range(faces.MAX_CANDIDATES):
+            directory = self.root / f"named-{number}"
+            directory.mkdir()
+            (directory / "ch0207_facedynamic.unity").write_bytes(b"candidate")
+            (directory / "ch0207_face.unity").write_bytes(b"candidate")
+            roots.append(str(directory))
+        self.context["library_roots"] = roots
+        self.assertEqual(len(list(self.plan()._known_local())), faces.MAX_CANDIDATES)
+        self.context["library_roots"] = []
+        consumed = []
+        class Entries:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def __iter__(self):
+                for index in range(faces.MAX_LOCAL_FILES + 10):
+                    consumed.append(index)
+                    yield SimpleNamespace(name=f"unrelated-{index}")
+        with patch.object(faces.os, "scandir", return_value=Entries()):
+            self.assertEqual(list(self.plan()._known_local()), [])
+        # One source root produces six deterministic probes before cache scan.
+        self.assertEqual(len(consumed), faces.MAX_LOCAL_FILES - 6)
 
     def test_optional_textures_can_append_after_untextured_base_is_finished(self):
         env = self.UnityPy.load(FIXTURE.with_name("viewer_triangle.unity").read_bytes())
@@ -905,8 +1134,13 @@ class OptionalBudgetTests(unittest.TestCase):
 
     def test_body_retains_original_allowance_when_optional_resolution_expires(self):
         base_bytes, _ = self.baseline()
-        clock, order = [0.], []
-        geometry = viewer._geometry
+        clock, order, body_deadlines = [0.], [], []
+        geometry, environment = viewer._geometry, viewer._environment
+
+        def load_body(paths, deadline, base_env=None):
+            if base_env is None:
+                body_deadlines.append(deadline)
+            return environment(paths, deadline, base_env=base_env)
 
         def slow_body(*args, **kwargs):
             order.append("body")
@@ -915,18 +1149,39 @@ class OptionalBudgetTests(unittest.TestCase):
 
         def expired_resolution(plan):
             order.append("faces")
-            self.assertEqual(plan.deadline, 120.)
-            clock[0] = 120
+            self.assertEqual(plan.deadline, 159.)
+            clock[0] = 159
             return []
 
         with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(viewer, "_geometry", side_effect=slow_body), \
+                patch.object(viewer, "_environment", side_effect=load_body), \
                 patch.object(faces.FacePlan, "resolve", expired_resolution):
             metadata = viewer.prepare([str(self.body)], face_context=self.context)
             result = viewer.get_model(metadata["id"])
         self.assertEqual(order, ["body", "faces"])
+        self.assertEqual(body_deadlines, [120.])
         self.assertEqual(result, base_bytes)
         self.assertEqual(metadata["faces"]["added"], 0)
+
+    def test_optional_allowance_does_not_extend_selected_body_deadline(self):
+        geometry = viewer._geometry
+
+        for expired_at in (120., 121.):
+            with self.subTest(body_finished_at=expired_at):
+                clock = [0.]
+
+                def expired_body(*args, **kwargs):
+                    clock[0] = expired_at
+                    return geometry(*args, **kwargs)
+
+                with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(viewer, "_geometry", side_effect=expired_body), \
+                        patch.object(faces.FacePlan, "resolve") as resolve:
+                    with self.assertRaisesRegex(viewer.ModelViewerError, "took too long"):
+                        viewer.prepare([str(self.body)], face_context=self.context)
+                resolve.assert_not_called()
+                self.assertFalse(viewer._SESSIONS)
 
     def test_partial_optional_append_timeout_returns_immutable_base(self):
         base_bytes, base_stats = self.baseline()

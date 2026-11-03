@@ -6,7 +6,7 @@ const state = {
   currentTool: null,
   currentMode: "single",
   es: null,
-  picker: null, // { type: 'path'|'dir', onPick: fn, cwd: str }
+  picker: null, // { type: 'path'|'dir', onPick: fn, cwd: str, navigation: number, pending: bool }
   lang: "en",
   strings: {},       // { "English source": "translation" } for the active language
   languages: [],     // [["en","English"], ...] from the server
@@ -118,7 +118,12 @@ async function init() {
   $("#console-view-model").addEventListener("click", () => openModelViewer(state.savedModelPaths.slice(0, 1)));
   $("#picker-cancel").addEventListener("click", closePicker);
   $("#picker-use-folder").addEventListener("click", () => {
-    if (state.picker) { state.picker.onPick(state.picker.cwd); closePicker(); }
+    const picker = state.picker;
+    if (picker && picker.type === "dir" && !picker.pending && picker.cwd) {
+      const navigation = picker.navigation;
+      picker.onPick(picker.cwd);
+      if (state.picker === picker && picker.navigation === navigation) closePicker();
+    }
   });
   $("#gallery-browse").addEventListener("click", () =>
     openPicker("dir", (p) => { $("#gallery-path").value = p; }, "modded"));
@@ -843,9 +848,12 @@ function setProgress(done, total) {
 
 // ------------------------------------------------------------- file picker
 function openPicker(type, onPick, rootName, startPath) {
-  state.picker = { type, onPick, cwd: "" };
+  state.picker = { type, onPick, cwd: "", navigation: 0, pending: true };
   $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : T("Choose a bundle file");
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";
+  $("#picker-use-folder").disabled = true;
+  $("#picker-crumb").textContent = "";
+  $("#picker-entries").textContent = "";
   $("#picker").classList.remove("hidden");
   renderRoots();
   const start = startPath || (rootName && state.roots[rootName]) || state.roots.home;
@@ -854,33 +862,53 @@ function openPicker(type, onPick, rootName, startPath) {
 function closePicker() { $("#picker").classList.add("hidden"); state.picker = null; }
 
 function renderRoots() {
+  const picker = state.picker;
   const box = $("#picker-roots");
   box.innerHTML = "";
   for (const [name, path] of Object.entries(state.roots)) {
-    box.appendChild(el("button", { text: name, onclick: () => navigate(path) }));
+    box.appendChild(el("button", { text: name, onclick: () => { if (state.picker === picker) navigate(path); } }));
   }
 }
 
 async function navigate(path) {
+  const picker = state.picker;
+  if (!picker) return;
+  const navigation = ++picker.navigation;
+  const isCurrent = () => state.picker === picker && picker.navigation === navigation;
+  picker.pending = true;
+  picker.cwd = "";
+  $("#picker-use-folder").disabled = true;
+  $("#picker-crumb").textContent = "";
+  $("#picker-entries").textContent = "";
   let data;
   try {
     data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path || ""))).json();
-  } catch (e) { alert(T("Cannot open: ") + e); return; }
+  } catch (e) {
+    if (isCurrent()) { picker.pending = false; alert(T("Cannot open: ") + e); }
+    return;
+  }
+  if (!isCurrent()) return;
+  picker.pending = false;
   if (data.error) { alert(data.error); return; }
-  state.picker.cwd = data.path;
+  picker.cwd = data.path;
+  $("#picker-use-folder").disabled = !picker.cwd;
   $("#picker-crumb").textContent = data.path;
   const ul = $("#picker-entries");
   ul.innerHTML = "";
   if (data.parent) {
-    ul.appendChild(el("li", { onclick: () => navigate(data.parent) },
+    ul.appendChild(el("li", { onclick: () => { if (isCurrent()) navigate(data.parent); } },
       [el("span", { class: "ic", text: "↩" }), document.createTextNode("..")]));
   }
   for (const e of data.entries) {
     if (e.is_dir) {
-      ul.appendChild(el("li", { onclick: () => navigate(e.path) },
+      ul.appendChild(el("li", { onclick: () => { if (isCurrent()) navigate(e.path); } },
         [el("span", { class: "ic", text: "📁" }), document.createTextNode(e.name)]));
-    } else if (state.picker.type === "path") {
-      const li = el("li", { class: e.is_bundle ? "bundle" : "", onclick: () => { state.picker.onPick(e.path); closePicker(); } },
+    } else if (picker.type === "path") {
+      const li = el("li", { class: e.is_bundle ? "bundle" : "", onclick: () => {
+        if (!isCurrent()) return;
+        picker.onPick(e.path);
+        if (isCurrent()) closePicker();
+      } },
         [el("span", { class: "ic", text: e.is_bundle ? "🎁" : "📄" }),
          document.createTextNode(e.name),
          el("span", { class: "sz", text: fmtSize(e.size) })]);

@@ -10,6 +10,10 @@
   var paths = [];
   var loadedPaths = [];
   var loadedAutoFace = true;
+  var variantChoices = Object.create(null);
+  var variantOptions = Object.create(null);
+  var loadedVariants = [];
+  var variantFocus = "";
   var metadata = null;
   var generation = 0;
   var controller = null;
@@ -42,6 +46,11 @@
   var lastFullscreenExit = 0;
   var resizeFrame = 0;
   var compactControls = false;
+  var shortHeight = false;
+  var layoutHomes = [];
+  var shortScroll = null;
+  var pickerHome = null;
+  var pickerObserver = null;
   var outsideFocus = [];
   var infoAutoOpened = false;
   var seriousWarning = false;
@@ -59,6 +68,66 @@
   function node(id) { return document.getElementById(id); }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
+  function variantsFor(selected) { return selected.map(function (path) { return variantChoices[path] || "primary"; }); }
+  function sameSelection(selected, autoFace, variants) {
+    return !destroyed && JSON.stringify(paths) === JSON.stringify(selected) &&
+      node("viewer-auto-face").checked === autoFace &&
+      JSON.stringify(variantsFor(paths)) === JSON.stringify(variants);
+  }
+  function variantsLoaded() { return JSON.stringify(variantsFor(paths)) === JSON.stringify(loadedVariants); }
+  function readVariantOptions(records, selected, variants) {
+    var result = Object.create(null), indices = Object.create(null);
+    if (records === undefined) records = [];
+    if (!Array.isArray(records) || records.length > selected.length) throw new Error(t("The costume variant could not be selected."));
+    records.forEach(function (record) {
+      var index = record && record.source_index;
+      if (typeof index !== "number" || Math.floor(index) !== index || index < 0 || index >= selected.length ||
+          indices[index] || !Array.isArray(record.choices) || record.choices.length !== 2 ||
+          record.choices.indexOf("primary") < 0 || record.choices.indexOf("unmasked") < 0 ||
+          record.selected !== variants[index]) throw new Error(t("The costume variant could not be selected."));
+      indices[index] = true;
+      result[selected[index]] = { selected: record.selected, choices: ["primary", "unmasked"] };
+    });
+    selected.forEach(function (path, index) {
+      if (variants[index] !== "primary" && !result[path]) throw new Error(t("The costume variant could not be selected."));
+    });
+    return result;
+  }
+
+  function renderVariantOptions() {
+    var box = node("viewer-variant-options");
+    if (!box) return;
+    box.textContent = "";
+    var offered = paths.filter(function (path) { return !!variantOptions[path]; });
+    box.hidden = !offered.length;
+    offered.forEach(function (path) {
+      var label = document.createElement("label"), title = document.createElement("span");
+      title.textContent = t("Rina face") + (offered.length > 1 ? " · " + basename(path) : "");
+      var select = document.createElement("select"), index = paths.indexOf(path);
+      select.id = "viewer-variant-" + index;
+      select.dataset.viewerVariantIndex = String(index);
+      select.setAttribute("aria-label", t("Rina face") + " · " + basename(path));
+      select.setAttribute("aria-describedby", "viewer-variant-help");
+      ["primary", "unmasked"].forEach(function (choice) {
+        var option = document.createElement("option"); option.value = choice;
+        option.textContent = t(choice === "primary" ? "Rina board" : "Normal face");
+        select.appendChild(option);
+      });
+      select.value = variantChoices[path] || "primary";
+      select.disabled = loading || lost;
+      select.addEventListener("change", function () {
+        if (loading || lost || (this.value !== "primary" && this.value !== "unmasked")) return;
+        variantChoices[path] = this.value; variantFocus = path;
+        filesChanged(); loadSelected();
+      });
+      label.appendChild(title); label.appendChild(select); box.appendChild(label);
+      if (!loading && variantFocus === path) { focusElement(select); variantFocus = ""; }
+    });
+    if (offered.length) {
+      var help = document.createElement("p"); help.id = "viewer-variant-help";
+      help.textContent = t("Changing the face style reloads the model."); box.appendChild(help);
+    }
+  }
   function replaceValues(text, values) {
     return text.replace(/\{([a-z_]+)\}/g, function (_, key) {
       return values[key] === undefined ? "" : String(values[key]);
@@ -89,6 +158,39 @@
     info.classList.toggle("viewer-info-alert", !!alert);
     if (alert && !info.open) { infoAutoOpened = true; info.open = true; }
     else if (!alert && infoAutoOpened) { info.open = false; infoAutoOpened = false; }
+    refreshPopoverStack(info.open ? info : null);
+  }
+
+  function refreshPopoverStack(preferred) {
+    var menu = node("viewer-view-menu"), info = node("viewer-info"), workspace = node("viewer-workspace-menu");
+    var popovers = [menu, info, workspace].filter(function (item) { return !!item; });
+    var opened = popovers.filter(function (item) { return item.open; });
+    if (opened.length > 1) {
+      var keep = preferred && preferred.open ? preferred : info && info.open ? info : opened[0];
+      popovers.forEach(function (item) {
+        if (item === keep || !item.open) return;
+        item.open = false;
+        if (item === info) infoAutoOpened = false;
+      });
+    }
+    var top = node("viewer-stage-tools-top"), bottom = node("viewer-stage-tools-bottom");
+    [top, bottom].forEach(function (hud) {
+      if (hud) hud.classList.toggle("viewer-popover-open", popovers.some(function (item) { return item.open && hud.contains(item); }));
+    });
+  }
+
+  function bindViewportPopover(details) {
+    if (!details) return;
+    var summary = details.querySelector("summary");
+    if (summary) summary.addEventListener("click", function (event) {
+      // details' toggle event is deferred. Update stacking during this actual
+      // activation so another control can be hit-tested in the same turn.
+      event.preventDefault();
+      if (details === node("viewer-info")) infoAutoOpened = false;
+      details.open = !details.open;
+      refreshPopoverStack(details.open ? details : null);
+    });
+    details.addEventListener("toggle", function () { refreshPopoverStack(details.open ? details : null); });
   }
 
   function viewportRect() {
@@ -110,10 +212,109 @@
     if (focused) focusElement(focused);
   }
 
+  function focusViewportControl() {
+    [node("viewer-fullscreen"), node("viewer-expand"), node("viewer-view-menu") && node("viewer-view-menu").querySelector("summary")].some(function (element) {
+      if (!element) return false;
+      var rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height || rect.left < 0 || rect.top < 0 || rect.right > window.innerWidth || rect.bottom > window.innerHeight) return false;
+      var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      if (!hit || hit !== element && !element.contains(hit)) return false;
+      focusElement(element); return document.activeElement === element;
+    });
+  }
+
+  function rememberLayoutHomes() {
+    if (layoutHomes.length) return;
+    var tab = node("tab-viewer");
+    [document.querySelector("body > header"), tab.querySelector(".viewer-files"),
+      tab.querySelector(".viewer-control-panel"), tab.querySelector(".viewer-camera-actions"), node("viewer-info")].forEach(function (element) {
+      if (element) layoutHomes.push({ element: element, parent: element.parentNode, next: element.nextSibling });
+    });
+  }
+
+  function updateShortLayout(viewport) {
+    var workspace = node("viewer-workspace-menu"), content = node("viewer-workspace-menu-content");
+    if (!workspace || !content) return;
+    rememberLayoutHomes();
+    var next = !!(viewport && active && model && viewport.height <= 320);
+    var narrow = next && viewport.width < 720;
+    var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
+    var viewContent = node("viewer-view-menu-content"), changed = next !== shortHeight;
+    var focused = document.activeElement;
+    var plans = layoutHomes.map(function (home, index) {
+      var parent = home.parent, before = home.next && home.next.parentNode === parent ? home.next : null;
+      if (next) {
+        if (index < 2 || index === 2 && narrow) { parent = content; before = null; }
+        else if (index === 3) { parent = viewContent; before = null; }
+        else if (index === 4) { parent = top; before = top.querySelector(".viewer-screen-actions"); }
+      }
+      return { home: home, parent: parent, before: before };
+    });
+    var relocating = plans.some(function (plan) { return plan.home.element.parentNode !== plan.parent; });
+    // A moved page header crosses the expanded viewer's focus boundary. Restore
+    // the previous isolation before moving it, then capture the new boundary.
+    if (relocating && expanded) isolateViewer(false);
+    if (changed && next) shortScroll = { x: window.scrollX, y: window.scrollY };
+    shortHeight = next;
+    tab.classList.toggle("viewer-short-height", next);
+    document.body.classList.toggle("viewer-short-workspace", next);
+    plans.forEach(function (plan) { moveLayoutElement(plan.home.element, plan.parent, plan.before); });
+    if (relocating && expanded) isolateViewer(true);
+    if (next && focused && content.contains(focused)) workspace.open = true;
+    if (!next) {
+      workspace.open = false;
+      if (focused && (workspace.contains(focused) || expanded && !tab.contains(focused))) focusViewportControl();
+      if (changed && shortScroll) {
+        var scroll = shortScroll; shortScroll = null;
+        window.requestAnimationFrame(function () { if (active && !destroyed && !shortHeight && !expanded) window.scrollTo(scroll.x, scroll.y); });
+      }
+    }
+    refreshPopoverStack(workspace.open ? workspace : null);
+  }
+
+  function restoreViewerPicker() {
+    if (pickerObserver) pickerObserver.disconnect();
+    pickerObserver = null;
+    var home = pickerHome; pickerHome = null;
+    if (!home) return;
+    if (expanded) isolateViewer(false);
+    moveLayoutElement(home.element, home.parent, home.next && home.next.parentNode === home.parent ? home.next : null);
+    if (expanded) isolateViewer(true);
+    if (active && !destroyed) {
+      var focus = home.focus, rect = focus && focus.isConnected ? focus.getBoundingClientRect() : null;
+      var allowed = rect && rect.width && rect.height && rect.left >= 0 && rect.top >= 0 &&
+        rect.right <= window.innerWidth && rect.bottom <= window.innerHeight && (!expanded || node("tab-viewer").contains(focus));
+      var hit = allowed ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) : null;
+      allowed = allowed && hit && (hit === focus || focus.contains(hit));
+      if (allowed) focusElement(focus);
+      if (!allowed || document.activeElement !== focus) focusViewportControl();
+    }
+  }
+
+  function containViewerPicker() {
+    var picker = node("picker");
+    if (!picker || pickerHome) return;
+    // Browser fullscreen only displays descendants of its owning element. The
+    // same chooser must also remain inside the viewer's focus boundary.
+    pickerHome = { element: picker, parent: picker.parentNode, next: picker.nextSibling, focus: document.activeElement };
+    if (expanded) {
+      isolateViewer(false);
+      moveLayoutElement(picker, node("tab-viewer"), null);
+      isolateViewer(true);
+    }
+    pickerObserver = new window.MutationObserver(function () {
+      if (picker.classList.contains("hidden")) restoreViewerPicker();
+    });
+    pickerObserver.observe(picker, { attributes: true, attributeFilter: ["class"] });
+  }
+
   function updateCompactControls(viewport) {
     var menu = node("viewer-view-menu"), content = node("viewer-view-menu-content");
     if (!menu || !content) return;
-    var compact = viewport.width < 760 && viewport.height <= 560;
+    // A declared costume choice stays reachable inside the same viewport menu
+    // even in expanded/fullscreen mode, without adding another HUD row.
+    var compact = shortHeight || (viewport.width < 760 && viewport.height <= 560) ||
+      paths.some(function (path) { return !!variantOptions[path]; });
     var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
     var primary = top.querySelector(".viewer-primary-tools");
     var focusedPrimary = primary && primary.contains(document.activeElement) ? document.activeElement : null;
@@ -133,6 +334,7 @@
     if (hideList && list && list.contains(document.activeElement)) options.open = true;
     moveLayoutElement(list, hideList ? options.querySelector(".viewer-file-options-panel") : options.parentNode,
       hideList ? null : options);
+    refreshPopoverStack(menu.open ? menu : null);
   }
 
   function measureSafeInsets() {
@@ -165,6 +367,7 @@
       remove.disabled = loading;
       remove.addEventListener("click", function () {
         paths.splice(index, 1);
+        delete variantChoices[path]; delete variantOptions[path];
         renderFiles();
         filesChanged();
       });
@@ -176,6 +379,7 @@
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-add-motion").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-load").disabled = loading || !paths.length;
+    renderVariantOptions();
     scheduleResize();
   }
 
@@ -185,6 +389,8 @@
       setStatus("Files changed. Press Open model to refresh the preview.");
     } else if (model && node("viewer-auto-face").checked !== loadedAutoFace) {
       setStatus("Face option changed. Press Open model to refresh the preview.");
+    } else if (model && !variantsLoaded()) {
+      setStatus("Face style changed. Press Open model to refresh the preview.");
     } else if (!model) setStatus("Press Open model to see the costume.");
     else if (!loading) setStatus("Model ready.");
     showFaceStatus();
@@ -255,6 +461,7 @@
   function resize() {
     if (!active || destroyed) return;
     var viewport = viewportRect();
+    updateShortLayout(viewport);
     updateCompactControls(viewport);
     var header = document.querySelector("body > header");
     var headerStyle = header ? window.getComputedStyle(header) : null;
@@ -264,16 +471,29 @@
     document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
     var stage = node("viewer-stage");
     var stageTop = Math.max(viewport.top, headerBottom, stage.getBoundingClientRect().top);
-    var available = Math.max(180, viewport.top + viewport.height - stageTop - 10);
-    var sideBySide = window.innerWidth >= 760;
-    var desired = expanded ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
+    var available = Math.max(1, viewport.top + viewport.height - stageTop - 10);
+    var sideBySide = window.innerWidth >= 720;
+    var desired = expanded || shortHeight ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
     node("tab-viewer").style.setProperty("--viewer-stage-height", Math.round(desired) + "px");
     node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
+    if (!expanded && !shortHeight && viewport.width >= 1200) {
+      var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
+      // Give a standing model a useful portrait-shaped area, and use the freed
+      // width for independent editing cards rather than another empty margin.
+      var previewWidth = Math.max(360, Math.min(inspect.clientWidth - 332, desired * 1.25));
+      node("tab-viewer").style.setProperty("--viewer-model-width", Math.round(previewWidth) + "px");
+    } else node("tab-viewer").style.removeProperty("--viewer-model-width");
     var width = stage.clientWidth;
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
-    layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: measureSafeInsets() };
+    var safeInsets = measureSafeInsets();
+    // An open panel must leave both toolbar rows reachable. Its absolute
+    // children do not contribute to the measured toolbar border boxes.
+    var popupHeight = Math.max(0, height - safeInsets.top - safeInsets.bottom - 16);
+    node("tab-viewer").style.setProperty("--viewer-popup-height", Math.floor(popupHeight) + "px");
+    node("tab-viewer").style.setProperty("--viewer-popup-padding", Math.max(0, Math.min(8, Math.floor((popupHeight - 46) / 2))) + "px");
+    layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: safeInsets };
     if (renderer && qualityController) {
       qualityController.resize(width, height);
       // Layout changes preserve the user's orbit, zoom distance and pan. Only
@@ -342,6 +562,7 @@
           setLoading(false);
         }
         setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
+        renderVariantOptions();
         showFaceStatus();
       });
       renderer.domElement.addEventListener("webglcontextrestored", function () {
@@ -350,6 +571,7 @@
         node("viewer-high-quality").disabled = loading;
         setStatus(model ? "Model ready." : "Choose a costume file to begin.");
         filesChanged();
+        renderVariantOptions();
         if (rigController) rigController.setInteractive(!loading);
         resize();
       });
@@ -625,7 +847,7 @@
     var message = "";
     if (!loading && !lost && faces && faces.enabled &&
         JSON.stringify(paths) === JSON.stringify(loadedPaths) &&
-        node("viewer-auto-face").checked === loadedAutoFace) {
+        node("viewer-auto-face").checked === loadedAutoFace && variantsLoaded()) {
       if (faces.status === "added" && Number(faces.added) > 0) message = "Missing face parts were added automatically.";
       else if (faces.status === "already_present") message = "The model already includes its face.";
       else if (faces.status === "partial" && Number(faces.added) > 0) {
@@ -638,6 +860,20 @@
     box.textContent = message ? t(message) : "";
   }
 
+  function restoreVariantPose(previous) {
+    if (!previous || !rigController) return;
+    var next = rigController.getState(), clip = previous.selectedClip;
+    if (clip && next.clipNames.indexOf(clip) < 0) return;
+    var motion = node("viewer-motion");
+    motion.value = clip;
+    motion.dispatchEvent(new Event("change", { bubbles: true }));
+    if (clip && isFinite(previous.time)) {
+      node("viewer-time").value = String(previous.time);
+      node("viewer-time").dispatchEvent(new Event("input", { bubbles: true }));
+      if (previous.playing && !node("viewer-play").disabled) node("viewer-play").click();
+    }
+  }
+
   async function loadSelected() {
     if (!paths.length) { setStatus("Choose a costume file to begin.", true); return; }
     if (!ensureRenderer()) return;
@@ -648,6 +884,13 @@
     var requestController = controller;
     var selected = paths.slice();
     var selectedAutoFace = node("viewer-auto-face").checked;
+    var selectedVariants = variantsFor(selected);
+    var archiveVariants = {};
+    selected.forEach(function (path, index) {
+      if (variantOptions[path] || selectedVariants[index] !== "primary") archiveVariants[index] = selectedVariants[index];
+    });
+    var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
+    if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
     var pendingModel = null;
     var pendingMaterials = null;
     function discard() {
@@ -661,11 +904,12 @@
     try {
       var response = await window.fetch("/api/viewer/prepare", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: selected, auto_face: selectedAutoFace, rigged: true }), signal: requestController.signal
+        body: JSON.stringify(payload), signal: requestController.signal
       });
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
-      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
+      if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      var nextVariantOptions = readVariantOptions(prepared.variants, selected, selectedVariants);
       if (typeof prepared.url !== "string" || !/^\/api\/viewer\/model\/[a-zA-Z0-9_-]+\.glb$/.test(prepared.url)) {
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
@@ -676,11 +920,11 @@
       if (length > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
       var data = await modelResponse.arrayBuffer();
       if (data.byteLength > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
-      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked) return;
+      if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
       var gltf = await new Promise(function (resolve, reject) {
         new window.THREE.GLTFLoader().parse(data, "", resolve, reject);
       });
-      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) {
+      if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) {
         disposeObject(gltf.scene); return;
       }
       var next = gltf.scene;
@@ -701,7 +945,10 @@
         });
         if (pendingMaterials.ready) await pendingMaterials.ready;
       }
-      if (current !== generation || selectedAutoFace !== node("viewer-auto-face").checked || destroyed) return;
+      if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      var keepView = !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
+        selectedAutoFace === loadedAutoFace && JSON.stringify(selectedVariants) !== JSON.stringify(loadedVariants);
+      var previousPose = keepView && rigController ? rigController.getState() : null;
       disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
@@ -709,6 +956,8 @@
       metadata = prepared;
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
+      loadedVariants = selectedVariants;
+      variantOptions = nextVariantOptions;
       node("tab-viewer").classList.add("viewer-has-model");
       scene.add(model);
       materialController = pendingMaterials;
@@ -716,6 +965,7 @@
       pendingModel = null;
       if (window.ViewerRig) {
         rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged });
+        restoreVariantPose(previousPose);
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -725,7 +975,7 @@
       updateAppearance();
       showWarnings(prepared.warnings);
       resize();
-      setView("front");
+      if (!keepView) setView("front");
       setStatus("Model ready.");
     } catch (error) {
       if (current !== generation) return;
@@ -736,7 +986,7 @@
       if (current === generation) {
         controller = null;
         setLoading(false);
-        if (selectedAutoFace !== node("viewer-auto-face").checked) filesChanged();
+        if (!sameSelection(selected, selectedAutoFace, selectedVariants)) filesChanged();
       }
     }
   }
@@ -925,11 +1175,17 @@
     mounted = true;
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
-      config.pickFile(function (path) {
-        if (paths.indexOf(path) < 0) paths.push(path);
-        renderFiles();
-        filesChanged();
-      });
+      containViewerPicker();
+      try {
+        config.pickFile(function (path) {
+          if (destroyed) return;
+          if (paths.indexOf(path) < 0) paths.push(path);
+          renderFiles();
+          filesChanged();
+        });
+        var picker = node("picker");
+        if (picker && !picker.classList.contains("hidden")) focusElement(node("picker-cancel"));
+      } catch (error) { restoreViewerPicker(); throw error; }
     }
     node("viewer-add").addEventListener("click", pickCompanion);
     node("viewer-add-motion").addEventListener("click", pickCompanion);
@@ -946,8 +1202,9 @@
       else setExpanded(!expanded);
     });
     if (node("viewer-fullscreen")) node("viewer-fullscreen").addEventListener("click", enterFullscreen);
-    var info = node("viewer-info"), infoSummary = info && info.querySelector("summary");
-    if (infoSummary) infoSummary.addEventListener("click", function () { infoAutoOpened = false; });
+    bindViewportPopover(node("viewer-view-menu"));
+    bindViewportPopover(node("viewer-info"));
+    bindViewportPopover(node("viewer-workspace-menu"));
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
       button.addEventListener("click", function () { setView(button.dataset.viewerView); });
     });
@@ -971,10 +1228,22 @@
     listenLayout(window, "elichika-native-fullscreen", nativeFullscreenChanged);
     listenLayout(document, "visibilitychange", function () { if (document.hidden) pauseRender(); else { scheduleResize(); requestRender(); } });
     listenLayout(document, "keydown", function (event) {
-      if (event.key !== "Escape") return;
+      if (!active || destroyed || event.defaultPrevented || event.key !== "Escape") return;
+      var picker = node("picker");
+      if ((shortHeight || pickerHome) && picker && !picker.classList.contains("hidden")) {
+        event.preventDefault(); node("picker-cancel").click(); return;
+      }
+      var workspaceMenu = node("viewer-workspace-menu");
+      if (workspaceMenu && workspaceMenu.open) {
+        event.preventDefault(); workspaceMenu.open = false; refreshPopoverStack(null); focusElement(workspaceMenu.querySelector("summary")); return;
+      }
       var viewMenu = node("viewer-view-menu");
       if (viewMenu && viewMenu.open) {
-        event.preventDefault(); viewMenu.open = false; focusElement(viewMenu.querySelector("summary")); return;
+        event.preventDefault(); viewMenu.open = false; refreshPopoverStack(null); focusElement(viewMenu.querySelector("summary")); return;
+      }
+      var infoMenu = node("viewer-info");
+      if (infoMenu && infoMenu.open) {
+        event.preventDefault(); infoMenu.open = false; infoAutoOpened = false; refreshPopoverStack(null); focusElement(infoMenu.querySelector("summary")); return;
       }
       if (fullscreenWanted || fullscreenMode !== "none") { event.preventDefault(); exitFullscreen(false); }
       else if (expanded && Date.now() - lastFullscreenExit > 200) { event.preventDefault(); setExpanded(false); }
@@ -1022,9 +1291,11 @@
     active = !!value;
     if (!active) {
       pauseRender();
+      restoreViewerPicker();
       if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
       if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
       if (expanded) setExpanded(false);
+      updateShortLayout(null);
       return;
     }
     window.requestAnimationFrame(function () { resize(); requestRender(); });
@@ -1041,6 +1312,8 @@
     });
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
     paths = unique;
+    Object.keys(variantChoices).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantChoices[path]; });
+    Object.keys(variantOptions).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantOptions[path]; });
     renderFiles();
     return loadSelected();
   }
@@ -1048,9 +1321,11 @@
   function dispose() {
     if (destroyed) return;
     active = false;
+    restoreViewerPicker();
     if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
     if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
     if (expanded) setExpanded(false);
+    updateShortLayout(null);
     destroyed = true;
     generation += 1;
     if (controller) controller.abort();
@@ -1077,6 +1352,7 @@
       return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), loading: loading, loaded: !!model,
         autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
         loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
+        archiveVariants: variantsFor(paths), loadedArchiveVariants: loadedVariants.slice(),
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
         meshNames: names, trianglesRendered: renderer ? modelRenderInfo.triangles : 0,
         sourceTriangles: visibleSourceTriangles(),
@@ -1084,7 +1360,7 @@
         modelId: metadata ? metadata.id : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
-          compactControls: compactControls,
+          compactControls: compactControls, shortHeight: shortHeight,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
         rig: rigController ? rigController.getState() : null,

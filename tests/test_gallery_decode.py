@@ -3,12 +3,16 @@
 Raw/ASTC pixel assertions use Pillow when installed. Routing, selection and
 bounds checks remain runnable on a standard-library-only host.
 """
+import io
+import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import textwrap
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -240,6 +244,7 @@ class SafeDecoderTests(unittest.TestCase):
         image.putdata([(255, 0, 0, 255)] * 2 + [(0, 0, 255, 255)] * 2)
         def worker(command, **options):
             self.assertEqual(command[1], "-dl")
+            self.assertEqual(Path(command[3]).suffix, ".tga")
             encoded = Path(command[2]).read_bytes()
             self.assertEqual(encoded[:16], b"\x13\xab\xa1\x5c\x06\x06\x01\x02\x00\x00\x02\x00\x00\x01\x00\x00")
             self.assertEqual(encoded[16:], b"a" * 16)
@@ -257,6 +262,44 @@ class SafeDecoderTests(unittest.TestCase):
             self.assertEqual(actual.getpixel((0, 0)), (0, 0, 255, 255))
             self.assertFalse(Path(run.call_args.args[0][2]).exists())
 
+    @unittest.skipUnless(Image and os.environ.get("ASTCENC_HOST_TEST_BIN"),
+                         "Set ASTCENC_HOST_TEST_BIN for exact native transport assertions")
+    def test_actual_cli_tga_preserves_png_rgba_alpha_and_unity_orientation(self):
+        binary = Path(os.environ["ASTCENC_HOST_TEST_BIN"])
+        self.assertTrue(binary.is_file())
+
+        def block(rgba):
+            # Original generated ASTC LDR constant blocks, as defined by the
+            # format: a void-extent prefix followed by four UNORM16 channels.
+            return bytes.fromhex("fcfdffffffffffff") + struct.pack("<4H", *(v * 257 for v in rgba))
+
+        cases = [
+            (4, 4, [(12, 57, 190, 255)]),
+            (4, 4, [(240, 60, 20, 37)]),
+            (8, 8, [(255, 0, 0, 255), (0, 255, 0, 127), (0, 0, 255, 0), (255, 0, 255, 255)]),
+            (7, 5, [(0, 255, 128, 0), (20, 80, 240, 64), (180, 30, 250, 128), (255, 255, 255, 255)]),
+        ]
+        for width, height, colors in cases:
+            data = b"".join(map(block, colors))
+            texture = Texture(data, m_Width=width, m_Height=height, m_TextureFormat="ASTC_RGBA_4x4")
+            with self.subTest(size=(width, height), colors=colors), tempfile.TemporaryDirectory() as directory:
+                source, png = Path(directory) / "source.astc", Path(directory) / "reference.png"
+                source.write_bytes(bytes.fromhex("13aba15c040401") + width.to_bytes(3, "little")
+                                   + height.to_bytes(3, "little") + b"\x01\x00\x00" + data)
+                subprocess.run([str(binary), "-dl", str(source), str(png)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+                with Image.open(png) as reference:
+                    expected = reference.convert("RGBA").transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                    with patch.dict(os.environ, {"ASTCENC_BIN": str(binary)}):
+                        actual = self.image(texture)
+                    try:
+                        self.assertEqual(actual.size, expected.size)
+                        self.assertEqual(actual.tobytes(), expected.tobytes())
+                        self.assertEqual(actual.getchannel("A").getextrema(), expected.getchannel("A").getextrema())
+                    finally:
+                        actual.close()
+                        expected.close()
+
     @unittest.skipUnless(Image, "Pillow is required for isolated ASTC output assertions")
     def test_astc_cli_timeout_crash_and_wrong_image_dimensions_are_not_accepted(self):
         texture = Texture(b"a" * 16, m_TextureFormat="ASTC_RGB_4x4")
@@ -273,6 +316,72 @@ class SafeDecoderTests(unittest.TestCase):
                 with patch.object(decode.subprocess, "run", side_effect=wrong_size), \
                         self.assertRaisesRegex(ValueError, "incorrect dimensions"):
                     self.image(texture)
+
+    @unittest.skipUnless(Image, "Pillow is required for explicit TGA assertions")
+    def test_astc_output_rejects_other_formats_and_truncated_tga_with_cleanup(self):
+        encoded = io.BytesIO()
+        Image.new("RGBA", (2, 2), (10, 20, 30, 40)).save(encoded, format="PNG")
+        header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, 2, 2, 32, 0x28)
+        for payload in (encoded.getvalue(), header + b"\0" * 4):
+            called = []
+            def worker(command, **options):
+                called.append((Path(command[2]), Path(command[3])))
+                Path(command[3]).write_bytes(payload)
+                return SimpleNamespace(returncode=0)
+            with self.subTest(payload=payload[:18]), tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "libastcenc.so"
+                binary.touch()
+                with patch.dict(os.environ, {"ASTCENC_BIN": str(binary)}), \
+                        patch.object(decode.subprocess, "run", side_effect=worker), \
+                        self.assertRaises((SyntaxError, OSError)):
+                    self.image(Texture(b"a" * 16, m_TextureFormat="ASTC_RGBA_4x4"))
+                self.assertEqual(len(called), 1)
+                self.assertFalse(called[0][0].exists())
+                self.assertFalse(called[0][1].exists())
+
+    @unittest.skipUnless(Image and os.environ.get("ASTCENC_HOST_TEST_BIN"),
+                         "Set ASTCENC_HOST_TEST_BIN for clean-process transport assertions")
+    def test_clean_cli_decode_and_final_png_do_not_discover_all_image_plugins(self):
+        # A fresh process is essential: earlier image tests may already have
+        # registered TGA, hiding Image.open's expensive fallback to Image.init.
+        script = textwrap.dedent(r'''
+            import io, json, os, struct, sys, time
+            from types import SimpleNamespace
+            from PIL import Image
+            from webtools.core import decode
+            before = [name for name in sys.modules if name.startswith("PIL.") and name.endswith("ImagePlugin")]
+            assert not before, before
+            def forbidden():
+                raise AssertionError("Bulk Pillow plugin discovery must not run")
+            Image.init = forbidden
+            sys.modules["UnityPy.enums"] = SimpleNamespace(TextureFormat=lambda value: SimpleNamespace(name=value))
+            colors = [(255,0,0,255), (0,255,0,127), (0,0,255,0), (255,0,255,255)]
+            data = b"".join(bytes.fromhex("fcfdffffffffffff") + struct.pack("<4H", *(v*257 for v in color)) for color in colors)
+            texture = SimpleNamespace(m_Width=8, m_Height=8, m_ImageCount=1, m_TextureDimension=2,
+                m_StreamData=None, image_data=data, m_TextureFormat="ASTC_RGBA_4x4", get_image_data=lambda: data)
+            image = decode._android_image(texture, time.monotonic()+10)
+            expected = bytes(channel for y in range(8) for x in range(8)
+                for channel in colors[((7-y)//4)*2 + x//4])
+            assert image.size == (8,8) and image.tobytes() == expected
+            encoded = io.BytesIO()
+            image.save(encoded, format="PNG")
+            image.close()
+            from PIL.PngImagePlugin import PngImageFile
+            with PngImageFile(io.BytesIO(encoded.getvalue())) as actual:
+                assert actual.mode == "RGBA" and actual.size == (8,8)
+                assert actual.tobytes() == expected
+                assert actual.getchannel("A").getextrema() == (0,255)
+            print(json.dumps({"pluginModulesBefore":before,"pluginModulesAfter":[name for name in sys.modules
+                if name.startswith("PIL.") and name.endswith("ImagePlugin")],"pixelsAndFinalPng":True}))
+        ''')
+        env = dict(os.environ, ASTCENC_BIN=os.environ["ASTCENC_HOST_TEST_BIN"])
+        result = subprocess.run([sys.executable, "-c", script], env=env, check=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["pluginModulesBefore"], [])
+        self.assertTrue(observed["pixelsAndFinalPng"])
+        self.assertIn("PIL.TgaImagePlugin", observed["pluginModulesAfter"])
+        self.assertIn("PIL.PngImagePlugin", observed["pluginModulesAfter"])
 
 
 class PackerSelectionTests(unittest.TestCase):
