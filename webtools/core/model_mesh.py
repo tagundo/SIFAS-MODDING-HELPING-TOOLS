@@ -14,6 +14,8 @@ def _strided_values(data, offset, stride, count, unpack):
 
 class PreviewMeshHandler(MeshHelper.MeshHandler):
     def _vertex_plans(self, channels, streams):
+        if not isinstance(channels, (list, tuple)) or not isinstance(streams, (list, tuple)):
+            return None  # do not consume one-shot iterables before an upstream fallback
         vertex = self.src.m_VertexData
         if vertex is None:
             return None

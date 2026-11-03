@@ -169,6 +169,24 @@ class StridedVertexTests(unittest.TestCase):
             results.append(snapshot(handler))
         self.assertEqual(results[0], results[1])
 
+    def test_generator_channels_are_not_consumed_before_fallback(self):
+        source = SimpleNamespace(m_VertexData=SimpleNamespace(m_VertexCount=3, m_DataSize=bytes(36)))
+        for invalid_later in (False, True):
+            results = []
+            for handler_class in (MeshHelper.MeshHandler, model_mesh.PreviewMeshHandler):
+                channels = [MeshHelper.ChannelInfo(3, 0, 0, 0)]
+                if invalid_later:
+                    channels.append(MeshHelper.ChannelInfo(3, 0, 0, 99))
+                handler = handler_class(source, version=(2019, 4, 0, 0))
+                with patch.object(model_mesh, "_strided_values", side_effect=AssertionError("must delegate")):
+                    if invalid_later:
+                        with self.assertRaises(IndexError):
+                            handler.read_vertex_data(iter(channels), [MeshHelper.StreamInfo(1, 0, 12)])
+                    else:
+                        handler.read_vertex_data(iter(channels), [MeshHelper.StreamInfo(1, 0, 12)])
+                results.append(snapshot(handler))
+            self.assertEqual(results[0], results[1])
+
     def test_boost_keeps_upstream_method(self):
         src = SimpleNamespace(m_VertexData=None)
         handler = model_mesh.PreviewMeshHandler(src, version=(2019, 4, 0, 0))
