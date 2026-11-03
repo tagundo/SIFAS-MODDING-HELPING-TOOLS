@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { chromium } = require('playwright');
 const { fixture } = require('./viewer_rig_browser');
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-layout-'));
@@ -16,7 +17,17 @@ const retained = value => ({ camera: value.camera, modelId: value.modelId, paths
     playing: value.rig.playing, nodeAdjustments: value.rig.nodeAdjustments,
     nodeCompensations: value.rig.nodeCompensations, expressions: value.rig.expressions,
     savedEnabled: value.rig.savedNodes.enabled, savedGroups: value.rig.savedNodes.groups.map(({ id, enabled, nodes, settings }) => ({ id, enabled, nodes, settings })) } });
-async function openPage(browser, mode = 'browser', viewport = { width: 853, height: 590 }, dpr = 1.5) {
+function originalUnityTriangle() {
+  const source = path.join(__dirname, 'fixtures', 'viewer_textured_triangle.unity');
+  const data = JSON.parse(execFileSync(process.env.PYTHON_EXECUTABLE || 'python3', ['-c',
+    'import base64,hashlib,json,sys;from pathlib import Path;from webtools.core import model_viewer as v;' +
+    'p=Path(sys.argv[1]);m=v.prepare([str(p)],rigged=True);' +
+    'print(json.dumps({"metadata":m,"glb":base64.b64encode(v.get_model(m["id"])).decode(),"sourceSha256":hashlib.sha256(p.read_bytes()).hexdigest()}))', source],
+  { cwd: path.join(__dirname, '..'), encoding: 'utf8' }));
+  assert.equal(data.sourceSha256, '512035f15592dd8a32bdeca4cacaaf2ea8a9c5d70c9b269080c9348ebf537fd4', 'Use the unchanged Unity fixture from the official Android pixel test');
+  return { ...data.metadata, glb: Buffer.from(data.glb, 'base64'), sourceSha256: data.sourceSha256 };
+}
+async function openPage(browser, mode = 'browser', viewport = { width: 853, height: 590 }, dpr = 1.5, model = generated) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: dpr, hasTouch: true });
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
@@ -37,11 +48,11 @@ async function openPage(browser, mode = 'browser', viewport = { width: 853, heig
   }, { mode });
   await page.route('**/api/viewer/prepare', route => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ id: 'layout-original', url: '/api/viewer/model/layout-original.glb', warnings: mode === 'touch' ? Array.from({ length: 12 }, (_, i) => 'Original QA diagnostic ' + i + ': this generated warning provides a long, scrollable information panel for touch verification.') : [],
-      stats: { meshes: 1, vertices: 3, triangles: 1, textures: 0, materials: 1 }, rig: generated.rig }) }));
-  await page.route('**/api/viewer/model/*.glb', route => route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: generated.glb }));
+      stats: model.stats || { meshes: 1, vertices: 3, triangles: 1, textures: 0, materials: 1 }, rig: model.rig }) }));
+  await page.route('**/api/viewer/model/*.glb', route => route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: model.glb }));
   await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898');
   await page.waitForFunction(() => typeof openModelViewer === 'function' && !!window.ViewerRig);
-  await page.evaluate(() => openModelViewer(['/original/layout.unity']));
+  await page.evaluate(source => openModelViewer([source]), model.sourceSha256 ? '/original/viewer-qa-832049459529.unity' : '/original/layout.unity');
   await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
   return { page, context, errors };
 }
@@ -92,6 +103,61 @@ function assertHud(value) {
     args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const report = { status: 'RUNNING', scope: 'Original generated rig through real viewer/GL/DOM and actual browser fullscreen', layouts: [], lifecycles: [] };
   try {
+    {
+      const model = originalUnityTriangle();
+      const { page, context, errors } = await openPage(browser, 'browser', { width: 360, height: 456 }, 2, model);
+      report.shortPhone = { sourceSha256: model.sourceSha256, languages: [] };
+      for (const language of ['en', 'ko', 'ja']) {
+        await page.locator('#lang-select').selectOption(language);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await frames(page);
+        const before = retained(await state(page));
+        const normal = await metrics(page);
+        const sparseProbe = await page.evaluate(() => ModelViewer.renderProbe());
+        assert(sparseProbe.ready && sparseProbe.sourceTriangles >= 1 && sparseProbe.triangles >= 1 &&
+          sparseProbe.nonBackgroundSamples >= 5 && sparseProbe.chromaticSamples >= 3 &&
+          sparseProbe.width >= 100 && sparseProbe.height >= 100 && sparseProbe.glError === 0,
+        'The exact official Unity texture fixture must pass the unchanged native sparse pixel thresholds: ' + JSON.stringify({ language, sparseProbe, layout: normal.layout }));
+        assert.equal(sparseProbe.gridSize, 11, 'Use the production default sparse probe; denser samples would mask a tiny model');
+        assert(normal.layout.compactControls, 'Short phone view reserves model space by grouping view controls');
+        assert(normal.layout.safeInsets.top <= 55 && normal.layout.safeInsets.bottom <= 55,
+          'The closed phone HUD must occupy one 44 px row at each edge');
+        assert(normal.stage.height - normal.layout.safeInsets.top - normal.layout.safeInsets.bottom >= 150,
+          'The actual short phone must retain usable unobscured model height');
+        assert.equal(normal.overflow, false);
+        assert.equal(await page.locator('#viewer-view-menu').evaluate(element => element.open), false);
+        assert(await page.locator('#viewer-file-options').evaluate(element => element.contains(document.getElementById('viewer-file-list'))),
+          'The loaded filename stays accessible in Model options without another row above the phone model');
+        async function assertReachable(selector) {
+          const control = await page.locator(selector).evaluate(element => {
+            const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return { width: r.width, height: r.height, x: r.x, y: r.y, right: r.right, bottom: r.bottom,
+              hit: !!hit && (hit === element || element.contains(hit)), viewportWidth: innerWidth, viewportHeight: innerHeight };
+          });
+          assert(control.width >= 44 && control.height >= 44 && control.x >= 0 && control.y >= 0 &&
+            control.right <= control.viewportWidth + 1 && control.bottom <= control.viewportHeight + 1 && control.hit,
+          selector + ' remains a reachable 44 px control on the exact failing phone viewport: ' + JSON.stringify(control));
+        }
+        for (const selector of ['#viewer-view-menu > summary', '#viewer-expand', '#viewer-fullscreen', '#viewer-fit']) await assertReachable(selector);
+        await page.locator('#viewer-view-menu > summary').click();
+        assert(await page.locator('#viewer-view-menu').evaluate(element => element.open));
+        for (const selector of ['#viewer-pose-basic', '#viewer-pose-preview', '.viewer-quality-choice']) await assertReachable(selector);
+        await page.locator('#viewer-high-quality').check();
+        await page.waitForFunction(() => { const q = ModelViewer.getState().quality; return q.enabled && q.ready; });
+        await page.locator('#viewer-high-quality').uncheck();
+        await page.waitForFunction(() => { const q = ModelViewer.getState().quality; return !q.enabled && q.ready; });
+        await page.keyboard.press('Escape');
+        assert.equal(await page.locator('#viewer-view-menu').evaluate(element => element.open), false);
+        assert.deepEqual(retained(await state(page)), before, 'Opening view controls and quality round-trip preserve the model, rig and camera');
+        await page.screenshot({ path: path.join(evidence, 'short-phone-' + language + '.png') });
+        await page.setViewportSize({ width: 456, height: 360 }); await frames(page);
+        assert.deepEqual(retained(await state(page)), before, 'Phone orientation reflow preserves camera, pose and edits');
+        await page.setViewportSize({ width: 360, height: 456 }); await frames(page);
+        assert.deepEqual(retained(await state(page)), before);
+        report.shortPhone.languages.push({ language, normal, sparseProbe });
+      }
+      assert.deepEqual(errors, []); await context.close();
+    }
     const { page, context, errors } = await openPage(browser);
     await page.locator('#viewer-breast-preset').selectOption('rin');
     await page.locator('#viewer-skirt-number').fill('.9'); await page.locator('#viewer-skirt-apply').click();

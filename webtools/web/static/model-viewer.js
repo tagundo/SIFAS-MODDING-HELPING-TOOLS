@@ -41,6 +41,7 @@
   var fullscreenTimer = 0;
   var lastFullscreenExit = 0;
   var resizeFrame = 0;
+  var compactControls = false;
   var outsideFocus = [];
   var infoAutoOpened = false;
   var seriousWarning = false;
@@ -100,6 +101,38 @@
   function scheduleResize() {
     if (resizeFrame || destroyed || !active) return;
     resizeFrame = window.requestAnimationFrame(function () { resizeFrame = 0; resize(); });
+  }
+
+  function moveLayoutElement(element, parent, before) {
+    if (!element || !parent || element.parentNode === parent) return;
+    var focused = element.contains(document.activeElement) ? document.activeElement : null;
+    parent.insertBefore(element, before || null);
+    if (focused) focusElement(focused);
+  }
+
+  function updateCompactControls(viewport) {
+    var menu = node("viewer-view-menu"), content = node("viewer-view-menu-content");
+    if (!menu || !content) return;
+    var compact = viewport.width < 760 && viewport.height <= 560;
+    var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
+    var primary = top.querySelector(".viewer-primary-tools");
+    var focusedPrimary = primary && primary.contains(document.activeElement) ? document.activeElement : null;
+    var focusedSummary = !compact && menu.contains(document.activeElement) && !focusedPrimary;
+    var changed = compact !== compactControls;
+    if (changed) {
+      menu.open = compact && !!focusedPrimary;
+      compactControls = compact;
+    }
+    tab.classList.toggle("viewer-compact-controls", compact);
+    moveLayoutElement(primary, compact ? content : top,
+      compact ? null : top.querySelector(".viewer-screen-actions"));
+    if (changed && focusedPrimary) focusElement(focusedPrimary);
+    else if (changed && focusedSummary) focusElement(node("viewer-expand"));
+    var list = node("viewer-file-list"), options = node("viewer-file-options");
+    var hideList = compact && tab.classList.contains("viewer-has-model");
+    if (hideList && list && list.contains(document.activeElement)) options.open = true;
+    moveLayoutElement(list, hideList ? options.querySelector(".viewer-file-options-panel") : options.parentNode,
+      hideList ? null : options);
   }
 
   function measureSafeInsets() {
@@ -221,11 +254,12 @@
 
   function resize() {
     if (!active || destroyed) return;
+    var viewport = viewportRect();
+    updateCompactControls(viewport);
     var header = document.querySelector("body > header");
     var headerStyle = header ? window.getComputedStyle(header) : null;
     var pinnedHeader = headerStyle && headerStyle.display !== "none" &&
       (headerStyle.position === "sticky" || headerStyle.position === "fixed");
-    var viewport = viewportRect();
     var headerBottom = pinnedHeader ? Math.max(viewport.top, header.getBoundingClientRect().bottom) : viewport.top;
     document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
     var stage = node("viewer-stage");
@@ -938,6 +972,10 @@
     listenLayout(document, "visibilitychange", function () { if (document.hidden) pauseRender(); else { scheduleResize(); requestRender(); } });
     listenLayout(document, "keydown", function (event) {
       if (event.key !== "Escape") return;
+      var viewMenu = node("viewer-view-menu");
+      if (viewMenu && viewMenu.open) {
+        event.preventDefault(); viewMenu.open = false; focusElement(viewMenu.querySelector("summary")); return;
+      }
       if (fullscreenWanted || fullscreenMode !== "none") { event.preventDefault(); exitFullscreen(false); }
       else if (expanded && Date.now() - lastFullscreenExit > 200) { event.preventDefault(); setExpanded(false); }
     });
@@ -984,6 +1022,7 @@
     active = !!value;
     if (!active) {
       pauseRender();
+      if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
       if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
       if (expanded) setExpanded(false);
       return;
@@ -1009,6 +1048,7 @@
   function dispose() {
     if (destroyed) return;
     active = false;
+    if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
     if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
     if (expanded) setExpanded(false);
     destroyed = true;
@@ -1044,6 +1084,7 @@
         modelId: metadata ? metadata.id : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
+          compactControls: compactControls,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
         rig: rigController ? rigController.getState() : null,
