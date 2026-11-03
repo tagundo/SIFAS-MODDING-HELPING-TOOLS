@@ -982,8 +982,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     """Finish the selected model before spending any time on optional faces.
 
     The selected model keeps its original deadline. Rigged faces and automatic
-    motion share one fixed deadline that preserves the original time left and
-    extends the original budget by at most forty seconds.
+    motion share one fixed deadline forty seconds after the original deadline,
+    regardless of when the body finishes. The initial body budget is unchanged.
     Lookup/network and legacy static facial conversion keep their forty-second
     caps. Recovery reuses the same optional deadline instead of renewing it.
     Completed GLBs are immutable and survive optional phase failures.
@@ -1009,8 +1009,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
 
     optional_deadline = _optional_deadline
     if optional_deadline is None:
-        completed_at = min(time.monotonic(), deadline)
-        optional_deadline = max(deadline, completed_at + FACE_SECONDS)
+        optional_deadline = deadline + FACE_SECONDS
     face_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     faces, completed, extra = disabled_faces, base, []
     face_append_started = False

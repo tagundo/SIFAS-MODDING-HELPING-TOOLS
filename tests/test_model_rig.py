@@ -449,7 +449,7 @@ class RigTests(unittest.TestCase):
 
             def optional_motion(stage, rig, loaded, deadline):
                 observed["motion"].append(deadline)
-                self.assertEqual(deadline, 159.)
+                self.assertEqual(deadline, 160.)
                 self.assertEqual(rig.deadline, deadline)
                 self.assertEqual(rig.scene.deadline, deadline)
                 clock[0] = 158.
@@ -470,11 +470,43 @@ class RigTests(unittest.TestCase):
         self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
         self.assertEqual(len(document["meshes"]), 3)
         for phase in ("scene", "rig", "materials", "decode"):
-            self.assertIn(159., observed[phase], phase)
-            self.assertTrue(all(deadline <= 159. for deadline in observed[phase]), (phase, observed[phase]))
+            self.assertIn(160., observed[phase], phase)
+            self.assertTrue(all(deadline <= 160. for deadline in observed[phase]), (phase, observed[phase]))
         self.assertEqual(observed["scene"][0], 120.)
         self.assertEqual(observed["decode"][0], 120.)
-        self.assertEqual(observed["motion"], [159.])
+        self.assertEqual(observed["motion"], [160.])
+
+    def test_early_body_preserves_fixed_rigged_face_and_later_motion_allowance(self):
+        from webtools.core import model_motion
+        with tempfile.TemporaryDirectory() as directory:
+            path, context = self._face_budget_inputs(directory)
+            clock, geometry_calls, motion_deadlines = [0.], [0], []
+            geometry = viewer._geometry
+
+            def timed_geometry(*args, **kwargs):
+                geometry_calls[0] += 1
+                clock[0] = 50. if geometry_calls[0] == 1 else 125.
+                return geometry(*args, **kwargs)
+
+            def optional_motion(stage, rig, loaded, deadline):
+                motion_deadlines.append(deadline)
+                self.assertEqual(deadline, 160.)
+                self.assertEqual(rig.deadline, deadline)
+                self.assertEqual(rig.scene.deadline, deadline)
+                clock[0] = 150.
+                return [str(FIXTURE)]
+
+            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(viewer, "_geometry", timed_geometry), \
+                    patch.object(model_motion.MotionInputs, "automatic", optional_motion):
+                metadata = viewer.prepare([str(path)], rigged=True, face_context=context)
+                document, _ = unpack(metadata)
+        self.assertEqual(metadata["faces"]["status"], "added")
+        self.assertEqual(metadata["faces"]["added"], 2)
+        self.assertEqual(metadata["stats"]["meshes"], 3)
+        self.assertEqual(len(document["meshes"]), 3)
+        self.assertEqual(motion_deadlines, [160.])
+        self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
 
     def test_late_body_motion_uses_remaining_shared_allowance_with_faces_on_or_off(self):
         from webtools.core import model_faces, model_motion
@@ -496,7 +528,7 @@ class RigTests(unittest.TestCase):
 
                 def optional_motion(stage, rig, loaded, deadline):
                     calls.append(deadline)
-                    self.assertEqual(deadline, 159.)
+                    self.assertEqual(deadline, 160. if enabled else 159.)
                     self.assertEqual(rig.deadline, deadline)
                     self.assertEqual(rig.scene.deadline, deadline)
                     clock[0] = 158.
@@ -507,13 +539,13 @@ class RigTests(unittest.TestCase):
                         patch.object(model_faces.FacePlan, "resolve", face_lookup), \
                         patch.object(model_motion.MotionInputs, "automatic", optional_motion):
                     metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": enabled})
-                self.assertEqual(calls, [159.])
+                self.assertEqual(calls, [160. if enabled else 159.])
                 self.assertEqual([clip["name"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
                 self.assertEqual(metadata["faces"]["enabled"], enabled)
 
     def test_failed_face_recovery_keeps_original_optional_deadline_and_clean_geometry(self):
         from webtools.core import model_motion
-        cases = ((50., 70., 100., 119., 120.), (119., 130., 140., 158., 159.))
+        cases = ((50., 70., 145., 150., 160.), (119., 130., 145., 150., 160.))
         for body_at, failure_at, recovery_at, motion_at, optional_end in cases:
             with self.subTest(body_finished_at=body_at), tempfile.TemporaryDirectory() as directory:
                 path, context = self._face_budget_inputs(directory)
@@ -564,10 +596,10 @@ class RigTests(unittest.TestCase):
 
             def expire_after_partial_face(scene, glb, faces, deadline, **kwargs):
                 if kwargs.get("auto_only"):
-                    self.assertEqual(deadline, 159.)
+                    self.assertEqual(deadline, 160.)
                     clock[0] = 150.
                     append(scene, glb, faces, deadline, **kwargs)
-                    clock[0] = 159.
+                    clock[0] = 160.
                     raise viewer.ModelViewerError("optional facial append expired")
                 body_attempts[0] += 1
                 clock[0] = 119.
@@ -629,23 +661,24 @@ class RigTests(unittest.TestCase):
 
     def test_rigged_face_global_timeout_retains_original_completed_body(self):
         from test_model_faces import FaceTests, bundle
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path, donor = root / "rig.unity", root / "Setsuna_original.unity"
-            path.write_bytes(self.owner_rig_without_clips())
-            donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
-            baseline = viewer.prepare([str(path)], rigged=True)
-            original, geometry, clock, calls = viewer.get_model(baseline["id"]), viewer._geometry, [0.], [0]
-            def times(mesh, *args, **kwargs):
-                calls[0] += 1
-                clock[0] = 50. if calls[0] == 1 else 121.
-                return geometry(mesh, *args, **kwargs)
-            with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_geometry", side_effect=times):
-                metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True, "allow_download": False,
-                    "library_roots": [str(root)], "cache_dir": str(root / "cache")})
-                self.assertEqual(viewer.get_model(metadata["id"]), original)
-        self.assertEqual(metadata["stats"], baseline["stats"])
-        self.assertEqual(metadata["faces"]["status"], "unavailable")
+        for expired_at in (160., 161.):
+            with self.subTest(facial_geometry_finished_at=expired_at), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, donor = root / "rig.unity", root / "Setsuna_original.unity"
+                path.write_bytes(self.owner_rig_without_clips())
+                donor.write_bytes(bundle([(name + ".assets", FaceTests.scene(self, name)) for name in ("Face", "Eyes")]))
+                baseline = viewer.prepare([str(path)], rigged=True)
+                original, geometry, clock, calls = viewer.get_model(baseline["id"]), viewer._geometry, [0.], [0]
+                def times(mesh, *args, **kwargs):
+                    calls[0] += 1
+                    clock[0] = 50. if calls[0] == 1 else expired_at
+                    return geometry(mesh, *args, **kwargs)
+                with patch.object(viewer.time, "monotonic", side_effect=lambda: clock[0]), patch.object(viewer, "_geometry", side_effect=times):
+                    metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True, "allow_download": False,
+                        "library_roots": [str(root)], "cache_dir": str(root / "cache")})
+                    self.assertEqual(viewer.get_model(metadata["id"]), original)
+                self.assertEqual(metadata["stats"], baseline["stats"])
+                self.assertEqual(metadata["faces"]["status"], "unavailable")
 
 
 class ActualRigTests(unittest.TestCase):
