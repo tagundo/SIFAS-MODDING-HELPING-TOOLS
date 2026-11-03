@@ -151,6 +151,7 @@ class BoardTests(unittest.TestCase):
             self.np.testing.assert_allclose(rigged[name], static[name], atol=2e-6)
         dots_node = next(b["node"] for b in result["rig"]["bones"] if b["name"] == "mesh_facedots")
         self.assertEqual(document["nodes"][dots_node]["translation"], list(board.BOARD_POSITION))
+        self.np.testing.assert_allclose(result["rig"]["sourcePositions"][dots_node], [-.2, -.3, .4], atol=2e-8)
         head = next(b["node"] for b in result["rig"]["bones"] if b["name"] == "Head_Face")
         rotation = [0, .3826834323650898, 0, .9238795325112867]
         changed = evaluate(document, binary, {head: {"rotation": rotation}})

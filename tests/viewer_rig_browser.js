@@ -742,6 +742,17 @@ if(require.main===module)(async()=>{
     assert.deepEqual(backendConflictState.rig.nodeFileValues.position.values,[[0,1,0],[0,2,0]],'Both rejected backend conflict endpoints remain visible as raw file values');
     assert.equal(await page.locator('[data-viewer-value-source="file"][data-viewer-value-kind="position"]').getAttribute('data-viewer-file-status'),'conflict');
     assert.equal(backendConflictState.rig.nodeFileValues.rotation.status,'unsupported');assert.equal(backendConflictState.rig.nodeFileValues.scale.status,'authored');
+    generated=fixture();generated.rig.sourcePositions={'6':[0,1.5,-.001]};await page.evaluate(()=>openModelViewer(['/synthetic/native-initialized-position.unity']));
+    await page.locator('.viewer-node-editor').evaluate(details=>details.open=true);await page.locator('#viewer-node').selectOption('6');
+    const initializedPosition=await state();
+    nearVector(initializedPosition.rig.nodeFileValues.position.value,[0,1.5,-.001],'File position retains the original source before native initialization');
+    nearVector(initializedPosition.rig.nodeFileValues.position.runtime,[0,1.5,0],'Game initialization is separate from the original source');
+    nearVector(bone(initializedPosition,6).position,[0,1.5,0],'Actual current bone retains initialized runtime position');
+    assert((await page.locator('[data-viewer-value-source="initialization"][data-viewer-value-kind="position"]').innerText()).includes('Game initial value'));
+    assert(!initializedPosition.rig.nodeAdjustments['6'],'Native initialization is not a user adjustment');
+    await inputNode(6,'position','Z',.2);await page.locator('#viewer-node-reset').click();
+    nearVector(bone(await state(),6).position,[0,1.5,0],'Reset restores the initialized position instead of the raw source position');
+    nearVector((await state()).rig.nodeFileValues.position.value,[0,1.5,-.001],'Reset does not rewrite the original file position');
     generated=fixture({zeroAuthoredAxis:true});await page.evaluate(()=>openModelViewer(['/synthetic/zero-axis-absolute-edit.unity']));
     await inputNode(6,'scale','X',.5);nearVector(bone(await state(),6).scale,[.5,1,1],'A zero authored axis can be explicitly edited to a nonzero absolute factor');
     assert.deepEqual((await state()).rig.nodeAdjustments['6'].scale,[.5,null,null]);
@@ -757,7 +768,7 @@ if(require.main===module)(async()=>{
     const report={status:'PASS',scope:'Generated original skinned triangle; product viewer/WebGL and real UI events',requests,initialProbe:probe,scaledProbe,resetRig:reset.rig,unsupportedRig:fallback.rig,visibilityStart:hiddenAtStart,shiftedInitial,shiftedBasic,shiftedMember,memberRecovered,afterContextReload,
       bodyTools:{headBeforeProfile,hairBeforeProfile,moveBeforeProfile,profileInvariant,profileResults,loadedProfile:loadedProfileState.rig.breastProfile,manualProfile:manualProfile.rig.breastProfile,restoredProfile:restoredProfile.rig.breastProfile,toolPresetState:toolPresetState.rig.body,customProfile:customProfileState.rig.breastProfile},inspectorLayouts,
       multiAxisUnity:{loaded:loadedMultiAxis.rig.bones.find(bone=>bone.node==='3'),edited:editedMultiAxis.rig.bones.find(bone=>bone.node==='3'),reset:multiAxisState.rig.bones.find(bone=>bone.node==='3')},
-      sourceValueControls:{initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues},
+      sourceValueControls:{initialSkirt:skirtInitial.rig.skirtValues,absoluteControls:absoluteControlsState.rig,mixedSkirt:mixedSkirt.rig.skirtValues,partialMotion:partialMotionState.rig,visibilityChoice:visibilityChoiceState.rig.parts,rawExpressions:rawExpressionState.rig.expressionPanel,backendConflict:backendConflictState.rig.nodeFileValues,initializedPosition:initializedPosition.rig.nodeFileValues},
       namedExpressions:{base:namedExpressionBase,final:namedExpressionState.rig},
       previewMotion:{rejected:previewCases,initial:previewInitial.rig,scaled:previewScaled.rig,reset:previewReset.rig,probe:previewProbe},poseButtons:{allSavedInitial:allSavedInitial.rig,retained:retained.rig,basicFrame,retainedFrame,repeated,responsiveButtons,reset:buttonReset.rig,rotationConflict:rotationConflict.rig,invalidMetadata:invalidMetadata.rig,disposedPressed:await pressed()},errors,gpuMessages};
     fs.writeFileSync(process.env.VIEWER_REPORT||path.join(evidence,'report.json'),JSON.stringify(report,null,2));

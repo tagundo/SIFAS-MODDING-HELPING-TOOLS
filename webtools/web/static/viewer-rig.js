@@ -385,7 +385,11 @@
         var supported = savedOperations.some(function (operation) { return operation.node === id && operation.kind === kind; });
         var status = conflictKeys[key] || entries.some(function (entry) { return entry.reason === "conflicting_saved_entries"; }) ? "conflict" : entries.length ? (!supported || entries.some(function (entry) { return !entry.supported; }) ? "unsupported" : "saved") : "authored";
         var authored = record && (kind === "rotation" ? editing.quaternionUI(THREE, record.authored.quaternion) : record.authored[kind === "position" ? "position" : "scale"].toArray());
+        var sourcePosition = info && info.sourcePositions && info.sourcePositions[id];
+        if (kind === "position" && Array.isArray(sourcePosition) && sourcePosition.length === 3 &&
+            sourcePosition.every(function (part) { return typeof part === "number" && isFinite(part); })) authored = sourcePosition;
         result[kind] = { status: status, value: status === "authored" ? authored.slice() : status === "saved" ? values[0].slice() : null, values: values.map(function (value) { return value.slice(); }) };
+        if (kind === "position" && authored === sourcePosition) result[kind].runtime = record.authored.position.toArray();
       });
       return result;
     }

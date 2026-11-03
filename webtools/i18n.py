@@ -1664,6 +1664,7 @@ _VIEWER_TRANSLATIONS.update({
     "File value unavailable": ["파일 값 확인 불가", "ファイルの値を確認できません"],
     "Unsupported file value": ["지원하지 않는 파일 값", "未対応のファイル値"],
     "Current editing value": ["현재 편집값", "現在の編集値"],
+    "Game initial value": ["게임 초기값", "ゲーム初期値"],
     "Current pose value": ["현재 포즈 값", "現在の姿勢の値"],
     "Partially supported motion": ["일부만 지원되는 모션", "一部のみ対応しているモーション"],
     "Some animation tracks could not be applied.": ["일부 모션 트랙은 적용하지 못했습니다.", "一部のモーショントラックは適用できませんでした。"],

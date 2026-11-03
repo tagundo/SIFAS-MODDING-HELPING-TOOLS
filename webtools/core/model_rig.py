@@ -125,6 +125,7 @@ class RigBuilder:
         self.owner = next(iter(owners)) if len(owners) == 1 else None
         self.nodes, self.worlds, self.names = {}, {}, defaultdict(list)
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}
+        self.source_positions = {}
         self.expression_sources = {}
         self.visibility_bindings = {"renderer": {}, "gameObject": {}}
         self.warnings, self.skinned, self.morph_values = [], 0, 0
@@ -198,6 +199,8 @@ class RigBuilder:
         parent_world = self.worlds.get(parent_index, np.eye(4))
         local = np.linalg.inv(parent_world) @ world
         node = self._node(name, _authored_trs(tree) if primary else _trs(local), "bone")
+        if key in self.scene.runtime_positions:
+            self.source_positions[node] = _authored_trs(self.scene.tree(transform))["translation"]
         self.nodes[key], self.worlds[node] = node, world
         self.glb.doc["nodes"][parent_index].setdefault("children", []).append(node)
         path = self._path(transform)
@@ -378,13 +381,16 @@ class RigBuilder:
         import copy
         from .model_expressions import describe_expressions
         bounds = {"min": self.bounds[0].tolist(), "max": self.bounds[1].tolist()} if self.bounds is not None else None
-        return copy.deepcopy({"enabled": True, "available": self.skinned > 0, "root": self.root,
+        result = {"enabled": True, "available": self.skinned > 0, "root": self.root,
                 "bones": self.bones, "bounds": bounds, "morphs": self.morphs,
                 "clips": self.clips, "animationWarnings": self.animation_warnings,
                 "expressionCatalog": describe_expressions(self.morphs, self.bones, self.glb.doc,
                                                           owner=self.owner, sources=self.expression_sources,
                                                           clips=self.clips),
-                "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))})
+                "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
+        if self.source_positions:
+            result["sourcePositions"] = self.source_positions
+        return copy.deepcopy(result)
 
     def finalize(self, animations=True):
         from .model_animation import append_animations
