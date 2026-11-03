@@ -527,10 +527,12 @@ if(require.main===module)(async()=>{
         return{stage:rect('#viewer-stage'),controls:rect('.viewer-control-panel'),cameraActions:rect('.viewer-camera-actions'),camera:ModelViewer.getState().camera,overflow:document.documentElement.scrollWidth>innerWidth};
       });
       assert.equal(normal.overflow,false,'The normal inspector must fit the viewport');
-      if(viewport.width>=760){
+      if(viewport.width>=720){
         assert(normal.stage.right<=normal.controls.x+.5,'Wide normal mode places the model to the LEFT of adjustments');
         assert(normal.cameraActions.x>=normal.stage.x-.5&&normal.cameraActions.right<=normal.stage.right+.5,'View/camera controls remain with the left model');
-        assert(normal.stage.width>=300&&normal.controls.width>=280&&normal.controls.width<=380,'Tablet columns keep a bounded usable editor and a visible model');
+        assert(normal.stage.width>=300&&normal.controls.width>=280,'Tablet columns keep a usable editor and a visible model');
+        if(viewport.width<1200)assert(normal.controls.width<=380,'Compact tablet editors stay bounded');
+        else assert(normal.stage.width<=normal.stage.height*1.27,'Wide tablets use the freed width for editing');
       }
       await page.locator('#viewer-expand').click();await twoFrames();
       const expanded=await page.evaluate(()=>{

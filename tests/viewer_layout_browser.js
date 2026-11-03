@@ -184,9 +184,11 @@ function assertHud(value) {
       for (const viewport of [{ width: 320, height: 900 }, { width: 768, height: 640 }, { width: 853, height: 590 }, { width: 1024, height: 768 }, { width: 1280, height: 800 }]) {
         await page.setViewportSize(viewport); await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('.viewer-control-panel').scrollTop = 0; });
         const normal = await metrics(page); assertHud(normal);
-        if (viewport.width >= 760) {
+        if (viewport.width >= 720) {
           assert(normal.stage.right <= normal.sidebar.x + 1, 'Tablet model and editor use separate columns');
-          assert(normal.sidebar.width >= 280 && normal.sidebar.width <= 380, 'Editor width stays usable rather than stretching across tablet');
+          assert(normal.sidebar.width >= 280, 'Editor keeps usable controls beside the model');
+          if (viewport.width < 1200) assert(normal.sidebar.width <= 380, 'Compact tablet editors stay bounded');
+          else assert(normal.stage.width <= normal.stage.height * 1.27, 'Wide tablets use freed preview width for editing rather than empty canvas');
           assert(normal.breast.width <= 380 && normal.skirt.width <= 380);
           assert(normal.stage.height >= viewport.height * .55, 'Tablet model must use meaningful screen height');
         }
