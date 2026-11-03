@@ -6,6 +6,7 @@ The GLB contains static rest geometry and original-size PNG textures; source
 meshes, skin weights, texture pixels and bundle files are never written.
 """
 from collections import OrderedDict
+from importlib import import_module
 import io
 import hashlib
 import json
@@ -34,6 +35,7 @@ MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ENTRIES = 2
 CACHE_SECONDS = 600
 BUILD_SECONDS = 120
+RUNTIME_INIT_SECONDS = 120
 
 _BUILD_LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -47,6 +49,56 @@ class ModelViewerError(ValueError):
 
 class ViewerBusyError(ModelViewerError):
     """Another bounded conversion is already using the worker."""
+
+
+class ViewerRuntimeError(ModelViewerError):
+    """The shared model engine is not ready to convert an input."""
+
+
+def _load_runtime():
+    # Only fixed dependencies are imported here. The worker never receives
+    # selected files, cache locations or network operations.
+    import_module("UnityPy")
+    import_module("numpy")
+
+
+class _RuntimeInitialization:
+    """One lazy import worker; a timed-out waiter never queues another import."""
+    def __init__(self, loader):
+        self._loader = loader
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._started = False
+        self._error = None
+
+    def _initialize(self):
+        try:
+            self._loader()
+        except BaseException as error:
+            with self._lock:
+                self._error = error
+        finally:
+            self._ready.set()
+
+    def ensure(self, timeout):
+        with self._lock:
+            if not self._started:
+                self._started = True
+                try:
+                    threading.Thread(target=self._initialize,
+                                     name="viewer-runtime-initialization", daemon=True).start()
+                except Exception as error:
+                    self._error = error
+                    self._ready.set()
+        if not self._ready.wait(timeout):
+            raise ViewerRuntimeError("The 3D model engine is still preparing. Try again shortly.")
+        with self._lock:
+            error = self._error
+        if error is not None:
+            raise ViewerRuntimeError("The 3D model engine could not be initialized. Restart the app and try again.") from error
+
+
+_RUNTIME_INITIALIZATION = _RuntimeInitialization(_load_runtime)
 
 
 def _remaining(deadline):
@@ -1123,6 +1175,10 @@ def prepare(paths, *, face_context=None, rigged=False):
     if not _BUILD_LOCK.acquire(timeout=1):
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
     try:
+        # Cold dependency imports are shared setup, not work on this model.
+        # Keep both waits bounded, and give conversion its unchanged allowance
+        # only after the engine can actually start reading selected input.
+        _RUNTIME_INITIALIZATION.ensure(RUNTIME_INIT_SECONDS)
         deadline = time.monotonic() + BUILD_SECONDS
         try:
             # Keep the original internal call shape for callers/tests that do
