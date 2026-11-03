@@ -1717,6 +1717,21 @@ _VIEWER_TRANSLATIONS.update({
     "A shader texture could not be loaded.": ["셰이더 텍스처를 불러오지 못했습니다.", "シェーダーテクスチャを読み込めませんでした。"],
     "Auxiliary shader texture loading is unavailable.": ["추가 셰이더 텍스처를 불러올 수 없습니다.", "補助シェーダーテクスチャを読み込めません。"],
 })
+_VIEWER_TRANSLATIONS.update({
+    "Rina face": ["리나 얼굴", "璃奈の顔"],
+    "Rina board": ["리나 보드", "璃奈ちゃんボード"],
+    "Normal face": ["일반 얼굴", "素顔"],
+    "Changing the face style reloads the model.": ["얼굴 표시를 바꾸면 모델을 다시 불러옵니다.", "顔の表示を変えるとモデルを読み込み直します。"],
+    "Face style changed. Press Open model to refresh the preview.": ["얼굴 표시가 바뀌었습니다. 모델 열기를 눌러 반영하세요.", "顔の表示が変更されました。「モデルを開く」で反映してください。"],
+    "The costume variant could not be selected.": ["선택한 의상 버전을 불러오지 못했습니다.", "選択した衣装バージョンを読み込めませんでした。"],
+    "Costume variant choices must use selected file numbers.": ["의상 버전은 선택한 파일에서만 고를 수 있습니다.", "衣装バージョンは選択したファイルから指定してください。"],
+    "Choose primary or unmasked for the costume variant.": ["의상 버전은 기본 또는 일반 얼굴 중에서 고르세요.", "衣装バージョンは通常版または素顔版を選んでください。"],
+    "Conflicting costume variant choices refer to the same file.": ["같은 파일에 서로 다른 의상 버전이 선택됐습니다.", "同じファイルに異なる衣装バージョンが指定されています。"],
+    "The costume ZIP declares conflicting costume variants.": ["ZIP의 의상 버전 정보가 서로 충돌합니다.", "ZIP内の衣装バージョン情報が競合しています。"],
+    "Choose a valid costume variant.": ["올바른 의상 버전을 선택하세요.", "有効な衣装バージョンを選んでください。"],
+    "Costume variant choices must refer to selected costume ZIPs.": ["선택한 의상 ZIP의 버전만 고를 수 있습니다.", "選択した衣装ZIPのバージョンのみ指定できます。"],
+    "This costume ZIP does not offer that variant.": ["이 ZIP에는 해당 의상 버전이 없습니다.", "このZIPには指定された衣装バージョンがありません。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

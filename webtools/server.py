@@ -175,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
-        if set(params) - {"paths", "auto_face", "rigged"}:
+        if set(params) - {"paths", "auto_face", "rigged", "archive_variants"}:
             return self._send_json({"error": "Unsupported model viewer option."}, status=400)
         auto_face = params.get("auto_face", True)
         if not isinstance(auto_face, bool):
@@ -187,7 +187,16 @@ class Handler(BaseHTTPRequestHandler):
         if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or not path.strip() for path in paths)):
             return self._send_json({"error": "Choose between one and eight model files."}, status=400)
+        choices = params.get("archive_variants", {})
+        indices = {str(index): index for index in range(len(paths))}
+        if (not isinstance(choices, dict) or len(choices) > len(paths)
+                or any(key not in indices for key in choices)):
+            return self._send_json({"error": "Costume variant choices must use selected file numbers."}, status=400)
+        if any(not isinstance(value, str) or value not in ("primary", "unmasked")
+               for value in choices.values()):
+            return self._send_json({"error": "Choose primary or unmasked for the costume variant."}, status=400)
         resolved = []
+        input_paths = []
         for path in paths:
             real = os.path.realpath(os.path.expanduser(path))
             if not filebrowser.is_within_allowed(real):
@@ -196,6 +205,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "Model file was not found."}, status=404)
             if real not in resolved:
                 resolved.append(real)
+            input_paths.append(real)
+        variant_choices = {}
+        for index, choice in choices.items():
+            original = input_paths[indices[index]]
+            if original in variant_choices and variant_choices[original] != choice:
+                return self._send_json({"error": "Conflicting costume variant choices refer to the same file."}, status=400)
+            variant_choices[original] = choice
         from webtools.core import model_viewer, viewer_archive
         from webtools.core.sukusta import default_sukusta_dir
         # The UI may select inputs and enable the feature; filesystem and CDN
@@ -210,13 +226,20 @@ class Handler(BaseHTTPRequestHandler):
             "cache_dir": cache_dir,
         }
         try:
-            with viewer_archive.expand_inputs(resolved, cache_dir) as expanded:
+            with viewer_archive.expand_inputs(resolved, cache_dir, variant_choices=variant_choices) as expanded:
                 context.update(manifest_paths=expanded.manifest_paths, origins=expanded.origins)
                 options = {"face_context": context}
                 if rigged:
                     options["rigged"] = True
                 result = model_viewer.prepare(expanded.paths, **options)
                 result["source_names"] = expanded.source_names
+                # Indices select among the caller's already jailed inputs, never
+                # arbitrary archive members or temporary extracted paths.
+                result["variants"] = [
+                    {"source_index": input_paths.index(item["source_path"]),
+                     "source_name": item["source_name"], "selected": item["selected"],
+                     "choices": item["choices"]}
+                    for item in expanded.variants]
             return self._send_json(result)
         except (ValueError, TypeError) as exc:
             return self._send_json({"error": str(exc)}, status=400)

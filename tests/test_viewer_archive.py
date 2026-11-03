@@ -55,7 +55,7 @@ class ViewerArchiveTests(unittest.TestCase):
             self.assertEqual(Path(expanded.paths[0]).read_bytes(), self.fixture)
             self.assertEqual(expanded.paths[1], str(plain))
 
-    def test_declared_platform_pairs_choose_android_and_keep_same_platform_parts(self):
+    def test_declared_variants_choose_one_family_and_keep_unrelated_parts(self):
         # Identical bytes are intentional: deduplicating by hash would also
         # remove the separate accessory which the manifest does not pair.
         manifest = ("costume_file='models/primary'\n"
@@ -69,14 +69,25 @@ class ViewerArchiveTests(unittest.TestCase):
                         ("nested/models/primary", self.fixture),
                         ("nested/models/unmasked", self.fixture)])
         original = self.archive.read_bytes()
-        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
-            self.assertEqual([Path(path).name for path in expanded.paths],
-                             ["accessory", "primary", "unmasked"])
-            self.assertEqual(len(expanded.manifest_paths), 1)
-            self.assertEqual(Path(expanded.manifest_paths[0]).read_bytes(), manifest)
-            for path in expanded.paths:
-                self.assertEqual(Path(path).read_bytes(), self.fixture)
-                self.assertEqual(expanded.origins[path], str(self.archive))
+        # These were previously all loaded together. The two costume families
+        # are alternatives; only unrelated parts should accompany either one.
+        for choice, expected in ((None, "primary"), ("primary", "primary"),
+                                 ("unmasked", "unmasked")):
+            with self.subTest(choice=choice):
+                choices = None if choice is None else {str(self.archive): choice}
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache, choices) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths],
+                                     ["accessory", expected])
+                    self.assertEqual(expanded.variants, [{
+                        "source_path": str(self.archive), "source_name": "costume.zip",
+                        "selected": choice or "primary", "choices": ["primary", "unmasked"]}])
+                    self.assertEqual(len(expanded.manifest_paths), 1)
+                    self.assertEqual(Path(expanded.manifest_paths[0]).read_bytes(), manifest)
+                    copied = [path.name for path in self.cache.rglob("*") if path.is_file()]
+                    self.assertEqual(sorted(copied), sorted(["modinstall.txt", "accessory", expected]))
+                    for path in expanded.paths:
+                        self.assertEqual(Path(path).read_bytes(), self.fixture)
+                        self.assertEqual(expanded.origins[path], str(self.archive))
         self.assertEqual(self.archive.read_bytes(), original)
         self.assertEqual(list(self.cache.iterdir()), [])
 
@@ -132,12 +143,153 @@ class ViewerArchiveTests(unittest.TestCase):
             self.assertEqual([Path(path).name for path in expanded.paths], ["android", "portable"])
             self.assertEqual(expanded.origins[expanded.paths[1]], str(second))
 
-    def test_a_variant_explicitly_needed_as_another_primary_is_not_removed(self):
+    def test_cross_family_platform_alias_is_rejected_instead_of_merging_bodies(self):
         self.write_zip([("device", self.fixture), ("shared", self.fixture),
                         ("modinstall.txt", b"costume_file='device'\ncostume_file_ios='shared'\n"
                                            b"rina_unmask_costume_file='shared'\n")])
+        with self.assertRaisesRegex(ValueError, "conflicting costume variants"):
+            with viewer_archive.expand_inputs([str(self.archive)], self.cache):
+                self.fail("Ambiguous whole-costume variants must not be combined")
+
+    def test_ios_only_variant_families_and_empty_platform_fields_are_supported(self):
+        manifest = ("costume_file=''\ncostume_file_ios='board'\n"
+                    "rina_unmask_costume_file=''\nrina_unmask_costume_file_ios='normal'\n").encode()
+        self.write_zip([("normal", self.fixture), ("board", self.fixture),
+                        ("modinstall.txt", manifest)])
+        for choice, expected in ((None, "board"), ("unmasked", "normal")):
+            with self.subTest(choice=choice):
+                selection = None if choice is None else {str(self.archive): choice}
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache, selection) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], [expected])
+                    self.assertEqual(expanded.variants[0]["selected"], choice or "primary")
+
+    def test_variant_reference_aliases_to_the_same_member_are_not_alternatives(self):
+        self.write_zip([("nested/models/shared", self.fixture), ("accessory", self.fixture),
+                        ("nested/modinstall.txt", b"costume_file='models/SHARED'\n"
+                                                 b"rina_unmask_costume_file=r'models\\shared'\n")])
         with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
-            self.assertEqual([Path(path).name for path in expanded.paths], ["device", "shared"])
+            self.assertEqual([Path(path).name for path in expanded.paths], ["shared", "accessory"])
+            self.assertEqual(expanded.variants, [])
+        with self.assertRaisesRegex(ValueError, "does not offer"):
+            with viewer_archive.expand_inputs([str(self.archive)], self.cache,
+                                              {str(self.archive): "unmasked"}):
+                self.fail("A path alias is not a second costume choice")
+
+    def test_equivalent_duplicate_literal_references_coalesce_after_normalization(self):
+        self.write_zip([("models/board", self.fixture), ("models/normal", self.fixture),
+                        ("modinstall.txt", b"costume_file='models/BOARD'\n"
+                                           b"costume_file=r'models\\board'\n"
+                                           b"rina_unmask_costume_file='models/normal'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["board"])
+            self.assertEqual(len(expanded.variants), 1)
+
+    def test_consistent_nested_declarations_share_one_archive_choice(self):
+        self.write_zip([("models/board", self.fixture), ("models/normal", self.fixture),
+                        ("modinstall.txt", b"costume_file='models/board'\n"
+                                           b"rina_unmask_costume_file='models/normal'\n"),
+                        ("models/modinstall.txt", b"costume_file='board'\n"
+                                                  b"rina_unmask_costume_file='normal'\n")])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache,
+                                          {str(self.archive): "unmasked"}) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["normal"])
+            self.assertEqual(len(expanded.variants), 1)
+            self.assertEqual(len(expanded.manifest_paths), 2)
+
+    def test_conflicting_literal_and_multiple_variant_declarations_are_rejected(self):
+        cases = [
+            [("modinstall.txt", b"costume_file='a'\ncostume_file='b'\n"
+                                b"rina_unmask_costume_file='normal'\n")],
+            [("modinstall.txt", b"costume_file='a'\nrina_unmask_costume_file='normal'\n"),
+             ("models/modinstall.txt", b"costume_file='other'\nrina_unmask_costume_file='normal2'\n")],
+            [("modinstall.txt", b"costume_file='models/a'\nrina_unmask_costume_file='models/normal'\n"),
+             ("models/modinstall.txt", b"costume_file='normal'\n")],
+            [("modinstall.txt", b"costume_file='models/a'\ncostume_file_ios='models/b'\n"
+                                b"rina_unmask_costume_file='models/normal'\n"),
+             ("models/modinstall.txt", b"costume_file='b'\ncostume_file_ios='a'\n"
+                                       b"rina_unmask_costume_file='normal'\n")],
+            [("modinstall.txt", b"costume_file='a'\ncostume_file_ios='b'\n"
+                                b"rina_unmask_costume_file='b'\nrina_unmask_costume_file_ios='a'\n")],
+        ]
+        model_names = ["a", "b", "normal", "models/a", "models/b", "models/normal",
+                       "models/other", "models/normal2"]
+        for manifests in cases:
+            with self.subTest(manifests=manifests):
+                self.write_zip([(name, self.fixture) for name in model_names] + manifests)
+                for choices in (None, {str(self.archive): "unmasked"}):
+                    with self.assertRaisesRegex(ValueError, "conflicting costume variants"):
+                        with viewer_archive.expand_inputs([str(self.archive)], self.cache, choices):
+                            self.fail("Conflicting declared choices must not reach conversion")
+                self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_invalid_variant_references_keep_generic_zip_behavior(self):
+        for unmasked in ("'../normal'", "'absent'", "get_name()", "('normal',)"):
+            with self.subTest(unmasked=unmasked):
+                manifest = ("costume_file='board'\nrina_unmask_costume_file=%s\n" % unmasked).encode()
+                self.write_zip([("board", self.fixture), ("normal", self.fixture),
+                                ("modinstall.txt", manifest)])
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], ["board", "normal"])
+                    self.assertEqual(expanded.variants, [])
+                with self.assertRaisesRegex(ValueError, "does not offer"):
+                    with viewer_archive.expand_inputs([str(self.archive)], self.cache,
+                                                      {str(self.archive): "unmasked"}):
+                        self.fail("Invalid manifest data must not create an option")
+
+    def test_variant_data_never_executes_other_manifest_statements(self):
+        marker = self.root / "never-execute-variant-manifest"
+        manifest = ("costume_file='board'\nrina_unmask_costume_file='normal'\n"
+                    "open(%r,'w').write('executed')\n" % str(marker)).encode()
+        self.write_zip([("board", self.fixture), ("normal", self.fixture),
+                        ("modinstall.txt", manifest)])
+        with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["board"])
+            self.assertFalse(marker.exists())
+
+    def test_variant_modes_and_selected_source_keys_are_strict(self):
+        self.write_zip([("board", self.fixture), ("normal", self.fixture),
+                        ("modinstall.txt", b"costume_file='board'\nrina_unmask_costume_file='normal'\n")])
+        for choices in ([], True, {str(self.archive): True}, {str(self.archive): "both"},
+                        {str(self.archive): ""}, {str(self.archive): None}):
+            with self.subTest(choices=choices):
+                with patch.object(viewer_archive, "_preflight_zip", side_effect=AssertionError("No ZIP read needed")):
+                    with self.assertRaisesRegex(ValueError, "valid costume variant"):
+                        with viewer_archive.expand_inputs([str(self.archive)], self.cache, choices):
+                            self.fail("Invalid choices must be rejected before extraction")
+        for choices in ({str(self.root / "not-selected.zip"): "unmasked"}, {0: "primary"}):
+            with self.subTest(choices=choices):
+                with self.assertRaisesRegex(ValueError, "selected costume ZIPs"):
+                    with viewer_archive.expand_inputs([str(self.archive)], self.cache, choices):
+                        self.fail("Choices cannot select an unlisted source")
+        plain = self.root / "body.unity"
+        plain.write_bytes(self.fixture)
+        with self.assertRaisesRegex(ValueError, "selected costume ZIPs"):
+            with viewer_archive.expand_inputs([str(plain)], self.cache, {str(plain): "primary"}):
+                self.fail("Plain model paths have no archive variant authority")
+
+    def test_explicit_variant_of_an_unpaired_zip_is_rejected(self):
+        self.write_zip([("body", self.fixture)])
+        with self.assertRaisesRegex(ValueError, "does not offer"):
+            with viewer_archive.expand_inputs([str(self.archive)], self.cache,
+                                              {str(self.archive): "primary"}):
+                self.fail("A generic ZIP must not invent variants")
+
+    def test_per_archive_variant_choices_do_not_leak_between_sources(self):
+        manifest = b"costume_file='board'\nrina_unmask_costume_file='normal'\n"
+        self.write_zip([("board", self.fixture), ("normal", self.fixture),
+                        ("modinstall.txt", manifest)])
+        other = self.root / "second.zip"
+        with zipfile.ZipFile(other, "w") as archive:
+            archive.writestr("board", self.fixture)
+            archive.writestr("normal", self.fixture)
+            archive.writestr("modinstall.txt", manifest)
+        selection = {str(other): "unmasked"}
+        with viewer_archive.expand_inputs([str(self.archive), str(other)], self.cache, selection) as expanded:
+            self.assertEqual([Path(path).name for path in expanded.paths], ["board", "normal"])
+            self.assertEqual([item["selected"] for item in expanded.variants], ["primary", "unmasked"])
+            self.assertEqual([item["source_path"] for item in expanded.variants], [str(self.archive), str(other)])
+            self.assertEqual(expanded.source_names, ["costume.zip", "second.zip"])
+        self.assertEqual(selection, {str(other): "unmasked"})
 
     def test_nested_manifest_primary_survives_a_parent_manifest_alternative(self):
         self.write_zip([("models/device", self.fixture), ("models/shared", self.fixture),
