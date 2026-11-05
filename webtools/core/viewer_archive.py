@@ -26,6 +26,7 @@ class ExpandedInputs:
     source_names: list
     origins: dict
     variants: list = field(default_factory=list)
+    archive_members: dict = field(default_factory=dict)
 
 
 def _entry_path(info):
@@ -255,7 +256,7 @@ def expand_inputs(paths, cache_root, variant_choices=None):
         if cache_root.resolve() != cache_root.absolute():
             raise ValueError("The model preview cache must use its real folder path.")
         with tempfile.TemporaryDirectory(prefix="viewer-zip-", dir=cache_root) as temporary:
-            result, manifests, origins, variants = [], [], {}, []
+            result, manifests, origins, variants, members = [], [], {}, [], {}
             total = 0
             for index, path in enumerate(paths):
                 if path not in archives:
@@ -310,11 +311,12 @@ def expand_inputs(paths, cache_root, variant_choices=None):
                         _copy_member(archive, info, destination)
                         result.append(str(destination))
                         origins[str(destination)] = path
+                        members[str(destination)] = info.filename
                         if len(result) > MAX_MODELS:
                             raise ValueError("Choose a costume ZIP containing at most eight model files.")
             if not 1 <= len(result) <= MAX_MODELS:
                 raise ValueError("The costume ZIP contains no extracted Unity model files.")
-            expanded = ExpandedInputs(result, manifests, names, origins, variants)
+            expanded = ExpandedInputs(result, manifests, names, origins, variants, members)
             # Keep conversion errors distinct from ZIP parsing errors.
             conversion_started = True
             yield expanded

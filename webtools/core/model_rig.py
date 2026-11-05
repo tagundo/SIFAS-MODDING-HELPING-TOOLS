@@ -110,6 +110,7 @@ class RigBuilder:
         from .model_faces import _names, _body_sources, _manifest_owners, source_owner
         self.glb, self.scene, self.faces, self.deadline = glb, scene, faces, deadline
         self.selected = set(selected_paths)
+        self.source_indices = {path: index for index, path in enumerate(selected_paths)}
         _, self.facial_sources = _names(scene)
         owners = set()
         # Body identity wins when present. Hair/accessory and renamed-body
@@ -127,6 +128,7 @@ class RigBuilder:
         self._path_cache = {}
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}
         self.source_positions = {}
+        self.read_only_skin_joints = set()
         self.expression_sources = {}
         self.visibility_bindings = {"renderer": {}, "gameObject": {}}
         self.warnings, self.skinned, self.morph_values = [], 0, 0
@@ -197,7 +199,7 @@ class RigBuilder:
 
     def ensure(self, transform, renderer=None):
         import numpy as np
-        from .model_viewer import _key, _ref, _source_path, _remaining
+        from .model_viewer import _key, _ref, _source_path, _source_hash, _remaining
         _remaining(self.deadline)
         key = _key(transform)
         if key in self.nodes:
@@ -227,7 +229,13 @@ class RigBuilder:
         self.nodes[key], self.worlds[node] = node, world
         self.glb.doc["nodes"][parent_index].setdefault("children", []).append(node)
         path = self._path(transform)
-        self.bones.append({"node": node, "name": name, "parent": parent_index, "path": path})
+        bone = {"node": node, "name": name, "parent": parent_index, "path": path}
+        if primary:
+            # Stable source identities, never server paths, bind persistent
+            # changes to this exact serialized Transform instead of its name.
+            bone.update(sourceIndex=self.source_indices[source], transformId=str(transform.path_id),
+                        sourceHash=_source_hash(transform))
+        self.bones.append(bone)
         if primary:
             self.names[name].append(node)
         self._binding(path, node)
@@ -377,10 +385,12 @@ class RigBuilder:
         return targets, names, hashes, defaults
 
     def place(self, node, renderer, game_object, skin, morph_names, morph_hashes, morph_weights):
-        from .model_viewer import _key, _source_hash
+        from .model_viewer import _key, _source_hash, _source_path
         value = self.glb.doc["nodes"][node]
         self.skinned += 1
         value["skin"] = skin
+        if _source_path(renderer) not in self.selected:
+            self.read_only_skin_joints.update(self.glb.doc["skins"][skin].get("joints", []))
         value.setdefault("extras", {}).update(elichika_node=node, role="mesh")
         self.expression_sources[node] = {"part": self.scene.name(game_object),
                                          "sourceHash": _source_hash(renderer)}
@@ -412,6 +422,7 @@ class RigBuilder:
                                                           owner=self.owner, sources=self.expression_sources,
                                                           clips=self.clips),
                 "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
+        result["readOnlySkinJoints"] = sorted(self.read_only_skin_joints)
         if self.source_positions:
             result["sourcePositions"] = self.source_positions
         return copy.deepcopy(result)
