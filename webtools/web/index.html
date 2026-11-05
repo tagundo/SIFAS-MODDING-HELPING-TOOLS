@@ -57,37 +57,37 @@
             <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span><button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button></div>
             <div id="viewer-stage-tools-top" class="viewer-stage-tools viewer-stage-tools-top" data-viewer-hud-edge="top">
               <details id="viewer-workspace-menu" class="viewer-workspace-menu viewer-toolbar-segment">
-                <summary><span class="sr-only" data-i18n="Files and app controls">Files and app controls</span></summary>
+                <summary data-viewer-hud-control><span class="sr-only" data-i18n="Files and app controls">Files and app controls</span></summary>
                 <div id="viewer-workspace-menu-content" class="viewer-workspace-menu-content"></div>
               </details>
               <details id="viewer-view-menu" class="viewer-view-menu viewer-toolbar-segment">
-                <summary data-i18n="View controls">View controls</summary>
+                <summary data-viewer-hud-control data-i18n="View controls">View controls</summary>
                 <div id="viewer-view-menu-content" class="viewer-view-menu-content">
                   <div id="viewer-variant-options" class="viewer-variant-options" hidden></div>
                 </div>
               </details>
               <div class="viewer-primary-tools">
                 <div id="viewer-pose-actions" class="viewer-pose-actions viewer-toolbar-segment" role="group" aria-label="Pose">
-                  <button id="viewer-pose-basic" type="button" aria-pressed="false" data-i18n="Basic pose" disabled>Basic pose</button>
-                  <button id="viewer-pose-preview" type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
+                  <button id="viewer-pose-basic" data-viewer-hud-control type="button" aria-pressed="false" data-i18n="Basic pose" disabled>Basic pose</button>
+                  <button id="viewer-pose-preview" data-viewer-hud-control type="button" aria-pressed="false" aria-describedby="viewer-pose-help" data-i18n="Posed view" disabled>Posed view</button>
                 </div>
-                <label class="viewer-quality-choice viewer-toolbar-segment"><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
+                <label class="viewer-quality-choice viewer-toolbar-segment" data-viewer-hud-control><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
               </div>
               <div class="viewer-screen-actions viewer-toolbar-segment">
-                <button id="viewer-expand" class="viewer-icon-button" type="button" data-i18n="Expand view">Expand view</button>
-                <button id="viewer-fullscreen" class="viewer-icon-button" type="button" data-i18n="Full screen">Full screen</button>
+                <button id="viewer-expand" data-viewer-hud-control class="viewer-icon-button" type="button" data-i18n="Expand view">Expand view</button>
+                <button id="viewer-fullscreen" data-viewer-hud-control class="viewer-icon-button" type="button" data-i18n="Full screen">Full screen</button>
               </div>
             </div>
             <div id="viewer-stage-tools-bottom" class="viewer-stage-tools viewer-stage-tools-bottom" data-viewer-hud-edge="bottom">
               <div class="viewer-camera-actions viewer-toolbar-segment" role="group" aria-label="Camera">
-                <button type="button" data-viewer-view="front" data-i18n="Front">Front</button>
-                <button type="button" data-viewer-view="back" data-i18n="Back">Back</button>
-                <button type="button" data-viewer-view="left" data-i18n="Left side">Left side</button>
-                <button type="button" data-viewer-view="right" data-i18n="Right side">Right side</button>
-                <button id="viewer-fit" type="button" data-i18n="Fit model">Fit model</button>
+                <button type="button" data-viewer-hud-control data-viewer-view="front" data-i18n="Front">Front</button>
+                <button type="button" data-viewer-hud-control data-viewer-view="back" data-i18n="Back">Back</button>
+                <button type="button" data-viewer-hud-control data-viewer-view="left" data-i18n="Left side">Left side</button>
+                <button type="button" data-viewer-hud-control data-viewer-view="right" data-i18n="Right side">Right side</button>
+                <button id="viewer-fit" data-viewer-hud-control type="button" data-i18n="Fit model">Fit model</button>
               </div>
               <details id="viewer-info" class="viewer-info viewer-toolbar-segment">
-                <summary><span aria-hidden="true">i</span><span class="sr-only" data-i18n="Model information">Model information</span></summary>
+                <summary data-viewer-hud-control><span aria-hidden="true">i</span><span class="sr-only" data-i18n="Model information">Model information</span></summary>
                 <div class="viewer-info-panel">
                   <p id="viewer-status" class="viewer-status" role="status" aria-live="polite" data-i18n="Choose a costume file to begin.">Choose a costume file to begin.</p>
                   <p id="viewer-face-status" class="viewer-status" role="status" aria-live="polite" hidden></p>

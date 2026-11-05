@@ -86,7 +86,12 @@ async function target(page, selector, popup) {
       const c = p.getBoundingClientRect(); left = Math.max(left, c.left); top = Math.max(top, c.top); right = Math.min(right, c.right); bottom = Math.min(bottom, c.bottom);
     }
     const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    const vertical = document.getElementById('tab-viewer').classList.contains('viewer-vertical-controls');
+    const inPopup = !!e.closest('.viewer-workspace-menu-content,.viewer-view-menu-content,.viewer-file-options-panel,.viewer-info-panel,.modal-box');
+    const compactSurface = !!e.closest('.viewer-stage-tools,.viewer-files,body.viewer-active-page > header');
+    const minimumTarget = vertical && compactSurface && !inPopup ? 32 : 44;
     return { selector, width: r.width, height: r.height, visibleWidth: Math.max(0, right - left), visibleHeight: Math.max(0, bottom - top),
+      minimumTarget, inPopup,
       x: r.x, y: r.y, right: r.right, bottom: r.bottom, hit: !!hit && (hit === e || e.contains(hit)), disabled: !!n.disabled,
       popupScrolls, scrollBefore, scrollAfter: { pageX: scrollX, pageY: scrollY, popup: panel ? panel.scrollTop : null },
       hitElement: hit ? hit.tagName + '#' + hit.id : null,
@@ -94,7 +99,8 @@ async function target(page, selector, popup) {
   }, { selector, popup });
 }
 function assertTarget(c, message) {
-  assert(!c.missing && c.width >= 43.5 && c.height >= 43.5 && c.visibleWidth >= 43.5 && c.visibleHeight >= 43.5 && c.hit,
+  const minimum = (c.minimumTarget || 44) - .5;
+  assert(!c.missing && c.width >= minimum && c.height >= minimum && c.visibleWidth >= c.width - .5 && c.visibleHeight >= c.height - .5 && c.hit,
     message + ': ' + JSON.stringify(c));
   assert.equal(c.scrollBefore.pageX, c.scrollAfter.pageX, 'HUD reachability must not rely on scrolling the page');
   assert.equal(c.scrollBefore.pageY, c.scrollAfter.pageY, 'HUD reachability must not rely on scrolling the model off screen');
@@ -185,8 +191,8 @@ async function popoverObservation(page, opened, context) {
       info: { open: document.getElementById('viewer-info').open, panel: rect('.viewer-info-panel') },
       view: { open: document.getElementById('viewer-view-menu').open, panel: rect('#viewer-view-menu-content') },
       measuredInsets: layout.safeInsets, actualHudInsets: { top: topInset, bottom: bottomInset },
-      clearBand: { top: stage.y + topInset + 8, bottom: stage.bottom - bottomInset - 8,
-        height: stage.height - topInset - bottomInset - 16 } };
+      visibleCanvas: { top: Math.max(0, stage.y), bottom: Math.min(innerHeight, stage.bottom),
+        left: Math.max(0, stage.x), right: Math.min(innerWidth, stage.right) } };
   });
   const observation = { opened, context, ...geometry, oppositeControls: [] };
   if (!report.popoverObservations) report.popoverObservations = [];
@@ -194,18 +200,27 @@ async function popoverObservation(page, opened, context) {
 }
 async function assertOppositeHud(page, opened, context, capturePopup) {
   const observation = await popoverObservation(page, opened, context);
-  const selectors = opened === 'info'
-    ? ['#viewer-view-menu > summary', '#viewer-workspace-menu > summary', '#viewer-pose-basic', '#viewer-pose-preview', '#viewer-high-quality', '#viewer-expand', '#viewer-fullscreen']
-    : ['#viewer-info > summary', '#viewer-stage-tools-bottom [data-viewer-view="front"]', '#viewer-stage-tools-bottom [data-viewer-view="back"]', '#viewer-stage-tools-bottom [data-viewer-view="left"]', '#viewer-stage-tools-bottom [data-viewer-view="right"]', '#viewer-stage-tools-bottom #viewer-fit'];
+  // With visible side columns, each individual control must remain reachable;
+  // the empty middle of a HUD bounding box is no longer a reserved edge strip.
+  const selectors = ['#viewer-view-menu > summary', '#viewer-workspace-menu > summary',
+    '#viewer-pose-basic', '#viewer-pose-preview', '#viewer-high-quality', '#viewer-expand', '#viewer-fullscreen',
+    '#viewer-info > summary', '[data-viewer-view="front"]', '[data-viewer-view="back"]',
+    '[data-viewer-view="left"]', '[data-viewer-view="right"]', '#viewer-fit'];
   for (const selector of selectors) {
     const locator = page.locator(selector); if (!(await locator.count()) || !(await locator.isVisible())) continue;
     const control = await target(page, selector); observation.oppositeControls.push(control); save();
-    assertTarget(control, opened + ' open must leave opposite/same-row HUD44px visible and hittable; ' + JSON.stringify({ context, locale: observation.locale, viewport: observation.viewport,
-      stage: observation.stage, topHud: observation.topHud, bottomHud: observation.bottomHud, info: observation.info, view: observation.view, clearBand: observation.clearBand }));
+    assertTarget(control, opened + ' open must leave every visible HUD action fully visible and hittable at its explicit size policy; ' + JSON.stringify({ context, locale: observation.locale, viewport: observation.viewport,
+      stage: observation.stage, topHud: observation.topHud, bottomHud: observation.bottomHud, info: observation.info, view: observation.view, visibleCanvas: observation.visibleCanvas }));
   }
   const panel = opened === 'info' ? observation.info.panel : observation.view.panel;
-  assert(panel.y >= observation.clearBand.top - 1 && panel.bottom <= observation.clearBand.bottom + 1,
-    'The natural ' + opened + ' popup must remain between measured HUD edge rows; ' + JSON.stringify(observation));
+  const bounds = observation.visibleCanvas;
+  assert(panel.y >= bounds.top - 1 && panel.bottom <= bounds.bottom + 1 && panel.x >= bounds.left - 1 && panel.right <= bounds.right + 1 && panel.height > 0 && panel.width > 0,
+    'The natural ' + opened + ' popup must remain inside the actually visible canvas; ' + JSON.stringify(observation));
+  for (const control of observation.oppositeControls) {
+    const overlapX = Math.min(panel.right, control.right) - Math.max(panel.x, control.x);
+    const overlapY = Math.min(panel.bottom, control.bottom) - Math.max(panel.y, control.y);
+    assert(overlapX <= .5 || overlapY <= .5, 'A popup must not cover any visible side-column action: ' + JSON.stringify({ opened, panel, control, context }));
+  }
   if (capturePopup) { observation.image = await capturePopup(opened); save(); }
   return observation;
 }
@@ -216,11 +231,11 @@ async function assertHud(page, short, context = {}, capturePopup) {
   const hasViewMenu = await page.locator('#viewer-view-menu > summary').isVisible();
   if (hasViewMenu) { const c = await target(page, '#viewer-view-menu > summary'); assertTarget(c, c.selector + ' ' + JSON.stringify(context)); controls.push(c); await openDetails(page, 'viewer-view-menu'); }
   for (const selector of ['#viewer-pose-basic', '#viewer-pose-preview', '#viewer-high-quality']) {
-    const c = await target(page, selector, hasViewMenu ? '#viewer-view-menu-content' : null); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
+    const c = await target(page, selector); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
   }
   const viewObservation = hasViewMenu ? await assertOppositeHud(page, 'view', context, capturePopup) : null;
   for (const selector of ['[data-viewer-view="front"]', '[data-viewer-view="back"]', '[data-viewer-view="left"]', '[data-viewer-view="right"]', '#viewer-fit']) {
-    const c = await target(page, selector, short ? '#viewer-view-menu-content' : null); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
+    const c = await target(page, selector); assertTarget(c, selector + ' ' + JSON.stringify(context)); controls.push(c);
   }
   await closeMenus(page);
   await page.locator('#viewer-info > summary').click(); await frames(page);
@@ -590,7 +605,7 @@ async function pickerTransportRegressions(browser) {
         assert(test.normal.stage.y >= -1 && test.normal.stage.bottom <= profile.height + 1, 'Initial model stage must be fully visible, not revealed by scrolling');
         if (profile.short) {
           assert(test.normal.stage.height >= profile.height - 8, 'Loaded short window gives its usable height to the preview');
-          assert(test.normal.layout.safeInsets.top <= 56 && test.normal.layout.safeInsets.bottom <= 1, 'Short HUD reserves one top row rather than two edge rows');
+          assert(test.normal.layout.safeInsets.top <= 8.5 && test.normal.layout.safeInsets.bottom <= 8.5, 'Vertical HUD fitting uses a small canvas margin, not full-width edge rows');
           assert(test.normal.foregroundHeight > (test.normal.stage.height - test.normal.layout.safeInsets.top) * .45, 'Generated vertical geometry must use a useful part of unobscured height');
           assert.equal(test.normal.layout.shortHeight, true);
           test.workspace = await workspace(page);

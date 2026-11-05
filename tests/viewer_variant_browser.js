@@ -150,7 +150,10 @@ const state = page => page.evaluate(() => ModelViewer.getState());
         return { controls, language: document.documentElement.lang, overflow: document.documentElement.scrollWidth > innerWidth + 1 };
       });
       assert.equal(result.language, 'ko'); assert(!result.overflow);
-      for (const control of result.controls) assert(control.width >= 44 && control.height >= 44 && control.hit && control.withinViewport, JSON.stringify({ viewport, control }));
+      for (const control of result.controls) {
+        const minimum = control.id.startsWith('viewer-variant-') ? 44 : 32;
+        assert(control.width >= minimum && control.height >= minimum && control.hit && control.withinViewport, JSON.stringify({ viewport, control }));
+      }
       assert(result.controls.filter(control => control.id !== 'viewer-pose-preview').every(control => !control.disabled));
       layouts.push({ viewport, ...result });
       await page.screenshot({ path: path.join(evidence, 'variant-' + viewport.width + 'x' + viewport.height + '.png') });

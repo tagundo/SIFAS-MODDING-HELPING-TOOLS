@@ -64,6 +64,11 @@
   var statusDetail = "";
   var destroyed = false;
   var renderedFrames = 0;
+  var framingState = null;
+  // Fitting is explicit, never a render-loop task. Bound the optional precise
+  // snapshot to 8 MiB (three Float64 and two Float32 values per source vertex).
+  var MAX_FIT_VERTICES = 250000;
+  var MAX_FIT_TRIANGLE_VISITS = 1000000;
 
   function node(id) { return document.getElementById(id); }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
@@ -236,17 +241,20 @@
     var workspace = node("viewer-workspace-menu"), content = node("viewer-workspace-menu-content");
     if (!workspace || !content) return;
     rememberLayoutHomes();
-    var next = !!(viewport && active && model && viewport.height <= 320);
+    // Enlarged text can consume the normal phone header/file rows before the
+    // viewport itself is particularly short. Use only stable viewport/font
+    // inputs here: testing the current stage height would alternate between
+    // normal and workspace layouts after moving those rows into the drawer.
+    var largeText = parseFloat(window.getComputedStyle(document.documentElement).fontSize) >= 24;
+    var next = !!(viewport && active && model && (viewport.height <= 320 ||
+      viewport.width < 720 && viewport.height <= 560 && largeText));
     var narrow = next && viewport.width < 720;
-    var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
-    var viewContent = node("viewer-view-menu-content"), changed = next !== shortHeight;
+    var tab = node("tab-viewer"), changed = next !== shortHeight;
     var focused = document.activeElement;
     var plans = layoutHomes.map(function (home, index) {
       var parent = home.parent, before = home.next && home.next.parentNode === parent ? home.next : null;
       if (next) {
         if (index < 2 || index === 2 && narrow) { parent = content; before = null; }
-        else if (index === 3) { parent = viewContent; before = null; }
-        else if (index === 4) { parent = top; before = top.querySelector(".viewer-screen-actions"); }
       }
       return { home: home, parent: parent, before: before };
     });
@@ -317,16 +325,21 @@
       paths.some(function (path) { return !!variantOptions[path]; });
     var tab = node("tab-viewer"), top = node("viewer-stage-tools-top");
     var primary = top.querySelector(".viewer-primary-tools");
+    var hasVariants = paths.some(function (path) { return !!variantOptions[path]; });
+    tab.classList.add("viewer-vertical-controls");
+    tab.classList.toggle("viewer-has-variants", hasVariants);
     var focusedPrimary = primary && primary.contains(document.activeElement) ? document.activeElement : null;
     var focusedSummary = !compact && menu.contains(document.activeElement) && !focusedPrimary;
     var changed = compact !== compactControls;
     if (changed) {
-      menu.open = compact && !!focusedPrimary;
+      menu.open = hasVariants && menu.open;
       compactControls = compact;
     }
     tab.classList.toggle("viewer-compact-controls", compact);
-    moveLayoutElement(primary, compact ? content : top,
-      compact ? null : top.querySelector(".viewer-screen-actions"));
+    // Keep pose/quality on the canvas, including short and native fullscreen
+    // windows. The remaining View popover contains costume choices only.
+    moveLayoutElement(primary, top, top.querySelector(".viewer-screen-actions"));
+    if (!hasVariants) menu.open = false;
     if (changed && focusedPrimary) focusElement(focusedPrimary);
     else if (changed && focusedSummary) focusElement(node("viewer-expand"));
     var list = node("viewer-file-list"), options = node("viewer-file-options");
@@ -338,17 +351,10 @@
   }
 
   function measureSafeInsets() {
-    var stage = node("viewer-stage"), rect = stage.getBoundingClientRect();
-    var insets = { top: 0, right: 0, bottom: 0, left: 0 };
-    stage.querySelectorAll("[data-viewer-hud-edge]").forEach(function (hud) {
-      var box = hud.getBoundingClientRect(), edge = hud.dataset.viewerHudEdge;
-      if (!box.width || !box.height || window.getComputedStyle(hud).display === "none") return;
-      if (edge === "top") insets.top = Math.max(insets.top, Math.max(0, Math.min(rect.height, box.bottom - rect.top)));
-      if (edge === "bottom") insets.bottom = Math.max(insets.bottom, Math.max(0, Math.min(rect.height, rect.bottom - box.top)));
-      if (edge === "left") insets.left = Math.max(insets.left, Math.max(0, Math.min(rect.width, box.right - rect.left)));
-      if (edge === "right") insets.right = Math.max(insets.right, Math.max(0, Math.min(rect.width, rect.right - box.left)));
-    });
-    return insets;
+    // Vertical corner controls leave the centre open all the way to the top
+    // and bottom. Framing tests their individual rectangles instead of
+    // reserving an entire horizontal strip for a mostly empty HUD container.
+    return { top: 8, right: 8, bottom: 8, left: 8 };
   }
 
   function renderFiles() {
@@ -473,7 +479,7 @@
     var stageTop = Math.max(viewport.top, headerBottom, stage.getBoundingClientRect().top);
     var available = Math.max(1, viewport.top + viewport.height - stageTop - 10);
     var sideBySide = window.innerWidth >= 720;
-    var desired = expanded || shortHeight ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .6);
+    var desired = expanded || shortHeight ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .76);
     node("tab-viewer").style.setProperty("--viewer-stage-height", Math.round(desired) + "px");
     node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
     if (!expanded && !shortHeight && viewport.width >= 1200) {
@@ -488,10 +494,32 @@
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
     var safeInsets = measureSafeInsets();
-    // An open panel must leave both toolbar rows reachable. Its absolute
-    // children do not contribute to the measured toolbar border boxes.
-    var popupHeight = Math.max(0, height - safeInsets.top - safeInsets.bottom - 16);
+    // Popovers occupy the gap between corner columns, leaving every viewport
+    // action reachable while a panel scrolls. These limits do not shrink the
+    // model's fit; only explicit fitting tests the individual control boxes.
+    function topOccupation(element) {
+      var rect = element && element.getBoundingClientRect();
+      return rect && rect.width && rect.height ? Math.max(0, rect.bottom - box.top) : 0;
+    }
+    function bottomOccupation(element) {
+      var rect = element && element.getBoundingClientRect();
+      return rect && rect.width && rect.height ? Math.max(0, box.bottom - rect.top) : 0;
+    }
+    var popupHeight = Math.max(0, height - Math.max(40, topOccupation(node("viewer-workspace-menu").querySelector("summary"))) - 12);
     node("tab-viewer").style.setProperty("--viewer-popup-height", Math.floor(popupHeight) + "px");
+    var hudBox = node("viewer-stage-tools-top").getBoundingClientRect();
+    var primaryBox = stage.querySelector(".viewer-primary-tools").getBoundingClientRect();
+    var cameraBox = stage.querySelector(".viewer-camera-actions").getBoundingClientRect();
+    var screenBox = stage.querySelector(".viewer-screen-actions").getBoundingClientRect();
+    var popupLeft = primaryBox.right + 6;
+    var popupRight = Math.min(cameraBox.left, screenBox.left) - 6;
+    node("tab-viewer").style.setProperty("--viewer-popup-left", Math.max(0, Math.floor(popupLeft - hudBox.left)) + "px");
+    node("tab-viewer").style.setProperty("--viewer-popup-width", Math.max(1, Math.floor(popupRight - popupLeft)) + "px");
+    var infoHeight = Math.max(0, height - bottomOccupation(node("viewer-info").querySelector("summary")) -
+      Math.max(40, topOccupation(node("viewer-view-menu").querySelector("summary"))) - 12);
+    var variantHeight = Math.max(0, height - topOccupation(node("viewer-view-menu").querySelector("summary")) - 12);
+    node("tab-viewer").style.setProperty("--viewer-info-popup-height", Math.floor(infoHeight) + "px");
+    node("tab-viewer").style.setProperty("--viewer-variant-popup-height", Math.floor(variantHeight) + "px");
     node("tab-viewer").style.setProperty("--viewer-popup-padding", Math.max(0, Math.min(8, Math.floor((popupHeight - 46) / 2))) + "px");
     layoutState = { viewport: viewport, stage: { width: width, height: height, top: box.top, left: box.left }, safeInsets: safeInsets };
     if (renderer && qualityController) {
@@ -598,58 +626,189 @@
     requestRender();
   }
 
+  function framingObstacles(stage) {
+    var rect = stage.getBoundingClientRect(), result = [];
+    stage.querySelectorAll("[data-viewer-hud-control]").forEach(function (element) {
+      var box = element.getBoundingClientRect();
+      if (!box.width || !box.height || window.getComputedStyle(element).visibility === "hidden") return;
+      var left = Math.max(0, box.left - rect.left - 4), top = Math.max(0, box.top - rect.top - 4);
+      var right = Math.min(stage.clientWidth, box.right - rect.left + 4), bottom = Math.min(stage.clientHeight, box.bottom - rect.top + 4);
+      if (right > left && bottom > top) result.push({ left: left, top: top, right: right, bottom: bottom });
+    });
+    return result;
+  }
+
+  function rectanglesOverlap(a, b) {
+    return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+  }
+
+  function triangleOverlapsRectangle(ax, ay, bx, by, cx, cy, rect) {
+    if (Math.max(ax, bx, cx) < rect.left || Math.min(ax, bx, cx) > rect.right ||
+        Math.max(ay, by, cy) < rect.top || Math.min(ay, by, cy) > rect.bottom) return false;
+    var centreX = (rect.left + rect.right) / 2, centreY = (rect.top + rect.bottom) / 2;
+    var halfX = (rect.right - rect.left) / 2, halfY = (rect.bottom - rect.top) / 2;
+    function separated(dx, dy) {
+      var pa = ax * dx + ay * dy, pb = bx * dx + by * dy, pc = cx * dx + cy * dy;
+      var centre = centreX * dx + centreY * dy, radius = halfX * Math.abs(dx) + halfY * Math.abs(dy);
+      return Math.max(pa, pb, pc) < centre - radius || Math.min(pa, pb, pc) > centre + radius;
+    }
+    return !separated(ay - by, bx - ax) && !separated(by - cy, cx - bx) && !separated(cy - ay, ax - cx);
+  }
+
   function fitModel(direction) {
     if (!model || !bounds || !camera) return;
-    if (rigController && rigController.getBounds) {
-      var posed = rigController.getBounds();
-      if (posed) bounds = posed;
-    }
-    // A view preset must also clear the previous drag's damping and pan. If
-    // their deltas survive, OrbitControls moves away again after the next frame.
+    // A view preset must also clear the previous drag's damping and pan.
     var damping = controls.enableDamping;
-    controls.enableDamping = false;
-    controls.update();
-    controls.enableDamping = damping;
-    var sphere = bounds.getBoundingSphere(new window.THREE.Sphere());
-    var radius = Math.max(sphere.radius, 0.01);
-    var halfVertical = camera.fov * Math.PI / 360;
-    var halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect);
-    var insets = measureSafeInsets(), stage = node("viewer-stage");
-    var safeWidth = Math.max(1, stage.clientWidth - insets.left - insets.right) / Math.max(1, stage.clientWidth);
-    var safeHeight = Math.max(1, stage.clientHeight - insets.top - insets.bottom) / Math.max(1, stage.clientHeight);
-    var view = direction || camera.position.clone().sub(controls.target).normalize();
+    controls.enableDamping = false; controls.update(); controls.enableDamping = damping;
+    var stage = node("viewer-stage"), width = Math.max(1, stage.clientWidth), height = Math.max(1, stage.clientHeight);
+    var view = direction || camera.position.clone().sub(controls.target);
     if (!view.lengthSq()) view = new window.THREE.Vector3(0, 0, 1);
     view = view.clone().normalize();
     var right = new window.THREE.Vector3().crossVectors(camera.up, view).normalize();
     if (!right.lengthSq()) right.set(1, 0, 0);
     var up = new window.THREE.Vector3().crossVectors(view, right).normalize();
-    var halfWidth = 0;
-    var halfHeight = 0;
-    var halfDepth = 0;
-    // Fit projected box extents instead of a sphere: a tall, slender character
-    // should fill the view rather than shrink to fit its height across the width.
-    for (var corner = 0; corner < 8; corner += 1) {
-      var point = new window.THREE.Vector3(
-        corner & 1 ? bounds.max.x : bounds.min.x,
-        corner & 2 ? bounds.max.y : bounds.min.y,
-        corner & 4 ? bounds.max.z : bounds.min.z).sub(sphere.center);
-      halfWidth = Math.max(halfWidth, Math.abs(point.dot(right)));
-      halfHeight = Math.max(halfHeight, Math.abs(point.dot(up)));
-      halfDepth = Math.max(halfDepth, Math.abs(point.dot(view)));
+    var tanV = Math.tan(camera.fov * Math.PI / 360), tanH = tanV * width / height;
+    var insets = measureSafeInsets(), obstacles = framingObstacles(stage);
+    var records = [], byMesh = Object.create(null), vertexCount = 0, triangleCount = 0, precise = true;
+    model.traverseVisible(function (mesh) {
+      if (!mesh.isMesh || isViewerHelper(mesh) || !mesh.geometry || !mesh.geometry.attributes.position) return;
+      var geometry = mesh.geometry, count = geometry.attributes.position.count;
+      vertexCount += count;
+      var indexCount = geometry.index ? geometry.index.count : count, range = geometry.drawRange || { start: 0, count: Infinity };
+      var start = Math.max(0, range.start), end = Math.min(indexCount, range.start + range.count);
+      triangleCount += Math.max(0, Math.floor((end - start) / 3));
+      if (vertexCount > MAX_FIT_VERTICES || mesh.drawMode && mesh.drawMode !== window.THREE.TrianglesDrawMode) precise = false;
+      records.push({ mesh: mesh, count: count, index: geometry.index, start: start, end: end });
+    });
+    if (!vertexCount || triangleCount > MAX_FIT_TRIANGLE_VISITS) precise = false;
+    if (precise && rigController && rigController.getBounds) records.forEach(function (record) {
+      record.points = new Float64Array(record.count * 3);
+      record.screen = new Float32Array(record.count * 2);
+      byMesh[record.mesh.uuid] = record;
+    });
+    else precise = false;
+    var invalid = false;
+    var posed = rigController && rigController.getBounds ? rigController.getBounds(precise ? function (point, mesh, vertex) {
+      var record = byMesh[mesh.uuid];
+      if (!record) return;
+      var at = vertex * 3;
+      record.points[at] = point.dot(right); record.points[at + 1] = point.dot(up); record.points[at + 2] = point.dot(view);
+      if (!isFinite(record.points[at]) || !isFinite(record.points[at + 1]) || !isFinite(record.points[at + 2])) invalid = true;
+    } : null) : null;
+    if (posed && !posed.isEmpty() && [posed.min.x, posed.min.y, posed.min.z, posed.max.x, posed.max.y, posed.max.z].every(isFinite)) bounds = posed;
+    if (invalid) precise = false;
+    var sphere = bounds.getBoundingSphere(new window.THREE.Sphere()), radius = Math.max(sphere.radius, 0.01);
+    var centre = sphere.center, target = centre.clone(), centreR = centre.dot(right), centreU = centre.dot(up), centreV = centre.dot(view);
+    var safeX = Math.max(1, width - insets.left - insets.right) / width;
+    var safeY = Math.max(1, height - insets.top - insets.bottom) / height;
+    var distance = 0, visits = 0, passes = 0, summary = null;
+    if (precise) records.forEach(function (record) {
+      var points = record.points;
+      for (var at = 0; at < points.length; at += 3) {
+        // Each deformed vertex supplies its own depth. Combining the highest
+        // head point with an unrelated mesh's deepest point leaves headroom.
+        distance = Math.max(distance, points[at + 2] - centreV + Math.max(
+          Math.abs(points[at] - centreR) / (tanH * safeX), Math.abs(points[at + 1] - centreU) / (tanV * safeY)));
+      }
+    });
+    distance = Math.max(radius * .12, distance * 1.04);
+    function projectSnapshot() {
+      var result = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, pointsOutside: 0 };
+      var tr = target.dot(right), tu = target.dot(up), tv = target.dot(view);
+      records.forEach(function (record) {
+        var points = record.points, screen = record.screen;
+        var box = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+        for (var i = 0; i < record.count; i += 1) {
+          var at = i * 3, depth = distance - (points[at + 2] - tv);
+          var x = width / 2 + (points[at] - tr) / (depth * tanH) * width / 2;
+          var y = height / 2 - (points[at + 1] - tu) / (depth * tanV) * height / 2;
+          screen[i * 2] = x; screen[i * 2 + 1] = y;
+          box.left = Math.min(box.left, x); box.right = Math.max(box.right, x);
+          box.top = Math.min(box.top, y); box.bottom = Math.max(box.bottom, y);
+          if (depth <= 0 || x < 0 || x > width || y < 0 || y > height) result.pointsOutside += 1;
+        }
+        record.box = box;
+        result.left = Math.min(result.left, box.left); result.right = Math.max(result.right, box.right);
+        result.top = Math.min(result.top, box.top); result.bottom = Math.max(result.bottom, box.bottom);
+      });
+      return result;
     }
-    var distance = (Math.max(halfWidth / (Math.tan(halfHorizontal) * safeWidth),
-      halfHeight / (Math.tan(halfVertical) * safeHeight)) + halfDepth) * 1.12;
-    var target = sphere.center.clone();
-    target.addScaledVector(right, -(insets.left - insets.right) / Math.max(1, stage.clientWidth) * distance * Math.tan(halfHorizontal));
-    target.addScaledVector(up, -(insets.bottom - insets.top) / Math.max(1, stage.clientHeight) * distance * Math.tan(halfVertical));
+    function intersectsControls() {
+      for (var meshIndex = 0; meshIndex < records.length; meshIndex += 1) {
+        var record = records[meshIndex], candidates = obstacles.filter(function (rect) { return rectanglesOverlap(record.box, rect); });
+        if (!candidates.length) continue;
+        var screen = record.screen, index = record.index;
+        for (var vertex = record.start; vertex + 2 < record.end; vertex += 3) {
+          visits += 1;
+          if (visits > MAX_FIT_TRIANGLE_VISITS) return null;
+          var a = (index ? index.getX(vertex) : vertex) * 2;
+          var b = (index ? index.getX(vertex + 1) : vertex + 1) * 2;
+          var c = (index ? index.getX(vertex + 2) : vertex + 2) * 2;
+          for (var rectangle = 0; rectangle < candidates.length; rectangle += 1) {
+            if (triangleOverlapsRectangle(screen[a], screen[a + 1], screen[b], screen[b + 1], screen[c], screen[c + 1], candidates[rectangle])) return true;
+          }
+        }
+      }
+      return false;
+    }
+    var method = "posed-triangles", clear = false;
+    if (precise) for (passes = 1; passes <= 8; passes += 1) {
+      summary = projectSnapshot();
+      var collision = intersectsControls();
+      if (collision === false && !summary.pointsOutside) { clear = true; break; }
+      if (collision === null) break;
+      distance *= 1.12;
+    }
+    if (!clear) {
+      // A bounded fallback needs only the existing posed box. Side controls
+      // reserve side space here, never a top/bottom strip. It also handles
+      // unusually large meshes without allocating an unbounded vertex copy.
+      method = precise ? "conservative-controls" : "conservative-large-geometry";
+      var left = insets.left, rightInset = insets.right;
+      obstacles.forEach(function (rect) {
+        if ((rect.left + rect.right) / 2 < width / 2) left = Math.max(left, rect.right + 4);
+        else rightInset = Math.max(rightInset, width - rect.left + 4);
+      });
+      var availableX = Math.max(1, width - left - rightInset) / width;
+      var halfWidth = 0, halfHeight = 0, halfDepth = 0;
+      for (var corner = 0; corner < 8; corner += 1) {
+        var point = new window.THREE.Vector3(corner & 1 ? bounds.max.x : bounds.min.x,
+          corner & 2 ? bounds.max.y : bounds.min.y, corner & 4 ? bounds.max.z : bounds.min.z).sub(centre);
+        halfWidth = Math.max(halfWidth, Math.abs(point.dot(right)));
+        halfHeight = Math.max(halfHeight, Math.abs(point.dot(up)));
+        halfDepth = Math.max(halfDepth, Math.abs(point.dot(view)));
+      }
+      distance = (Math.max(halfWidth / (tanH * availableX), halfHeight / (tanV * safeY)) + halfDepth) * 1.04;
+      distance = Math.max(radius * .12, distance);
+      target.addScaledVector(right, -(left - rightInset) / width * distance * tanH);
+      if (precise) summary = projectSnapshot();
+      else {
+        summary = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, pointsOutside: 0 };
+        for (var boundCorner = 0; boundCorner < 8; boundCorner += 1) {
+          var boundPoint = new window.THREE.Vector3(boundCorner & 1 ? bounds.max.x : bounds.min.x,
+            boundCorner & 2 ? bounds.max.y : bounds.min.y, boundCorner & 4 ? bounds.max.z : bounds.min.z).sub(target);
+          var depth = distance - boundPoint.dot(view);
+          var screenX = width / 2 + boundPoint.dot(right) / (depth * tanH) * width / 2;
+          var screenY = height / 2 - boundPoint.dot(up) / (depth * tanV) * height / 2;
+          summary.left = Math.min(summary.left, screenX); summary.right = Math.max(summary.right, screenX);
+          summary.top = Math.min(summary.top, screenY); summary.bottom = Math.max(summary.bottom, screenY);
+          if (depth <= 0 || screenX < 0 || screenX > width || screenY < 0 || screenY > height) summary.pointsOutside += 1;
+        }
+      }
+    }
+    framingState = { method: method, vertices: vertexCount, triangles: triangleCount,
+      passes: Math.min(passes, 8), triangleVisits: visits, obstacles: obstacles,
+      snapshotVertices: precise ? vertexCount : 0, projectedBoundsKind: precise ? "posed-vertices" : "posed-box",
+      projectedBounds: summary && { left: summary.left, top: summary.top, right: summary.right, bottom: summary.bottom },
+      pointsOutside: summary ? summary.pointsOutside : null };
     camera.near = Math.max(0.001, radius / 1000);
-    camera.far = Math.max(100, radius * 100);
+    camera.far = Math.max(100, radius * 100, distance * 3);
     camera.up.set(0, 1, 0);
     camera.position.copy(target).addScaledVector(view, distance);
     camera.updateProjectionMatrix();
     controls.target.copy(target);
     controls.minDistance = radius * 0.12;
-    controls.maxDistance = radius * 30;
+    controls.maxDistance = Math.max(radius * 30, distance * 2);
     controls.update();
     requestRender();
   }
@@ -953,6 +1112,7 @@
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
       bounds = nextBounds;
+      framingState = null;
       metadata = prepared;
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
@@ -1255,7 +1415,7 @@
       if (header) resizeObserver.observe(header);
       var files = node("tab-viewer").querySelector(".viewer-files");
       if (files) resizeObserver.observe(files);
-      node("viewer-stage").querySelectorAll("[data-viewer-hud-edge]").forEach(function (hud) { resizeObserver.observe(hud); });
+      node("viewer-stage").querySelectorAll("[data-viewer-hud-edge], .viewer-primary-tools, .viewer-camera-actions, .viewer-info, .viewer-screen-actions").forEach(function (hud) { resizeObserver.observe(hud); });
     }
     window.addEventListener("pagehide", function (event) { if (!event.persisted) dispose(); });
     updateLanguage();
@@ -1289,6 +1449,7 @@
   function setVisible(value) {
     if (destroyed) return;
     active = !!value;
+    document.body.classList.toggle("viewer-active-page", active);
     if (!active) {
       pauseRender();
       restoreViewerPicker();
@@ -1321,6 +1482,7 @@
   function dispose() {
     if (destroyed) return;
     active = false;
+    document.body.classList.remove("viewer-active-page");
     restoreViewerPicker();
     if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
     if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) exitFullscreen(true);
@@ -1356,7 +1518,7 @@
         visible: active, contextLost: lost, hasRenderer: !!renderer, stats: metadata ? metadata.stats : null,
         meshNames: names, trianglesRendered: renderer ? modelRenderInfo.triangles : 0,
         sourceTriangles: visibleSourceTriangles(),
-        renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
+        framing: framingState, renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,

@@ -524,12 +524,12 @@ if(require.main===module)(async()=>{
         await page.setViewportSize(viewport);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
         const compact=viewport.width<760&&viewport.height<=560;
         await page.waitForFunction(expected=>ModelViewer.getState().layout.compactControls===expected,compact);
-        if(compact)await page.locator('#viewer-view-menu > summary').click();
+        assert(await page.locator('#tab-viewer').evaluate(element=>element.classList.contains('viewer-vertical-controls')));
         for(const id of ['viewer-pose-basic','viewer-pose-preview']){
           await page.locator('#'+id).scrollIntoViewIfNeeded();const button=await page.locator('#'+id).evaluate(element=>{const r=element.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return{width:r.width,height:r.height,left:r.x,right:r.right,viewport:innerWidth,hit:hit===element||element.contains(hit),insideDetails:!!element.closest('details'),pressed:element.getAttribute('aria-pressed')};});
-          assert(button.width>=44&&button.height>=44&&button.left>=0&&button.right<=button.viewport);assert(button.hit);assert.equal(button.insideDetails,compact,'Only the intentionally compact short-phone layout groups pose buttons in the accessible View controls menu');responsiveButtons.push({lang,viewport,id,...button});
+          assert(button.width>=32&&button.height>=32&&button.left>=0&&button.right<=button.viewport);assert(button.hit);assert.equal(button.insideDetails,false,'Pose buttons remain visible in their vertical column at every viewport');responsiveButtons.push({lang,viewport,id,...button});
         }
-        if(compact)await page.keyboard.press('Escape');
+
       }
     }
     await page.screenshot({path:path.join(evidence,'synthetic-pose-buttons-ui.png'),fullPage:true});

@@ -1093,7 +1093,7 @@ _VIEWER_TRANSLATIONS = {
         "右側"
     ],
     "Fit model": [
-        "전체 보기",
+        "화면에 맞춤",
         "全体を表示"
     ],
     "Drag to rotate · Pinch or scroll to zoom · Two fingers to move": [

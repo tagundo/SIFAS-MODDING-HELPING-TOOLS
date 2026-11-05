@@ -229,7 +229,7 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
       const label = input.closest('label'), rect = label.getBoundingClientRect();
       return { width: rect.width, height: rect.height, label: label.textContent.trim() };
     });
-    assert(hit.width >= 44 && hit.height >= 44, JSON.stringify(hit));
+    assert(hit.width >= 32 && hit.height >= 32, JSON.stringify(hit));
     const initial = await state();
     assert.equal(initial.quality.enabled, false);
     assert.equal(initial.quality.nativePixelRatio, 2.5);

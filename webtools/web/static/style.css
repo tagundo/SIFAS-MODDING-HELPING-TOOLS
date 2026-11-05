@@ -558,3 +558,95 @@ main { padding: 14px; }
 .multi-list li.muted { opacity: 0.6; border-style: dashed; justify-content: center; }
 .multi-rm { border: none; background: transparent; cursor: pointer;
   font-size: 1em; line-height: 1; padding: 2px 6px; }
+
+/* The viewer keeps compact controls visible at the corners. Other tabs retain
+   their larger navigation and file controls. These are real 32–34px targets. */
+body.viewer-active-page > header { padding: 4px 6px; gap: 6px; flex-wrap: nowrap; min-height: 42px; }
+body.viewer-active-page > header h1 { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+body.viewer-active-page > header .tabs { order: 0; flex: 1 1 auto; width: auto; min-width: 0; margin: 0; gap: 4px; flex-wrap: nowrap; }
+body.viewer-active-page > header .tab { flex: 1 1 0; min-width: 0; min-height: 32px; padding: 4px 6px; font-size: .6875rem; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; }
+body.viewer-active-page > header .lang-pick { flex: 0 0 auto; margin: 0; }
+body.viewer-active-page > header .lang-pick > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+body.viewer-active-page > header .lang-pick select { min-height: 32px; max-width: 6rem; padding: 4px; font-size: .6875rem; }
+body.viewer-active-page > main { padding: 6px; }
+.viewer-vertical-controls { --viewer-left-column: 4.5rem; --viewer-right-column: 4rem; --viewer-tools-left: 0px; }
+.viewer-vertical-controls .viewer-files { gap: 4px; padding: 3px; margin-bottom: 6px; }
+.viewer-vertical-controls .viewer-files h2 { font-size: 1rem; }
+.viewer-vertical-controls .viewer-intro { font-size: .75rem; }
+.viewer-vertical-controls .viewer-file-actions { flex: 1 1 208px; max-width: 350px; flex-wrap: wrap; gap: 3px; }
+.viewer-vertical-controls .viewer-file-actions button { flex: 1 1 3.5rem; min-width: 3.5rem; min-height: 32px; padding: 4px; font-size: .6875rem; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.viewer-vertical-controls .viewer-file-list { flex: 1 1 90px; max-height: 36px; }
+.viewer-vertical-controls .viewer-file-list li { min-height: 32px; gap: 3px; font-size: .6875rem; }
+.viewer-vertical-controls .viewer-files .viewer-remove { flex: 0 0 32px; min-width: 32px; min-height: 32px; padding: 0; font-size: 18px; }
+.viewer-vertical-controls .viewer-file-options { flex: 0 0 32px; }
+.viewer-vertical-controls .viewer-file-options > summary { width: 32px; height: 32px; font-size: 18px; }
+.viewer-vertical-controls.viewer-has-model .viewer-files { flex-wrap: nowrap; }
+.viewer-vertical-controls.viewer-has-model .viewer-file-actions { flex: 1 1 208px; max-width: 350px; }
+.viewer-vertical-controls .viewer-stage { border-radius: 8px; }
+.viewer-vertical-controls .viewer-stage-tools { right: 6px; left: 6px; display: block; height: 34px; }
+.viewer-vertical-controls .viewer-stage-tools-top { top: 6px; }
+.viewer-vertical-controls .viewer-stage-tools-bottom { bottom: 6px; }
+.viewer-vertical-controls .viewer-primary-tools { position: absolute; top: 0; left: var(--viewer-tools-left); display: flex; flex-direction: column; flex-wrap: nowrap; gap: 5px; width: var(--viewer-left-column); max-width: 100px; }
+.viewer-vertical-controls .viewer-pose-actions { width: 100%; flex-direction: column; border-radius: 7px; }
+.viewer-vertical-controls .viewer-stage .viewer-pose-actions button { flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px; padding: 4px; font-size: .6875rem; line-height: 1.2; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.viewer-vertical-controls .viewer-stage .viewer-pose-actions button + button { border-left: 0; border-top: 1px solid rgba(137,151,172,.25); }
+.viewer-vertical-controls .viewer-quality-choice { width: 100%; min-height: 34px; padding: 4px; gap: 4px; font-size: .6875rem; line-height: 1.2; border-radius: 7px; }
+.viewer-vertical-controls .viewer-quality-choice input { width: 14px; height: 14px; }
+.viewer-vertical-controls .viewer-quality-choice span { min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.viewer-vertical-controls .viewer-screen-actions { position: absolute; top: 0; right: 0; margin: 0; border-radius: 7px; }
+.viewer-vertical-controls .viewer-stage .viewer-screen-actions button.viewer-icon-button { flex: 0 0 32px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; max-height: 32px; }
+.viewer-vertical-controls .viewer-icon-button::before { width: 18px; height: 18px; background-size: 18px 18px; }
+.viewer-vertical-controls .viewer-camera-actions { position: absolute; right: 0; bottom: 0; display: grid; grid-template-columns: minmax(0, 1fr); width: var(--viewer-right-column); max-width: 100px; border-radius: 7px; }
+.viewer-vertical-controls .viewer-stage .viewer-camera-actions button { width: 100%; min-width: 0; min-height: 32px; padding: 4px; font-size: .6875rem; line-height: 1.2; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.viewer-vertical-controls .viewer-stage .viewer-camera-actions button + button { border-left: 0; border-top: 1px solid rgba(137,151,172,.25); }
+.viewer-vertical-controls .viewer-info { position: static; width: 34px; height: 34px; margin: 0; border-radius: 7px; }
+.viewer-vertical-controls .viewer-info > summary { width: 32px; height: 32px; font-size: 17px; }
+.viewer-vertical-controls .viewer-info > summary > span[aria-hidden] { width: 17px; height: 17px; font-size: 13px; }
+.viewer-vertical-controls .viewer-info-panel { z-index: 1; left: var(--viewer-popup-left, 0px); right: auto; width: 300px; max-width: var(--viewer-popup-width, 100%); max-height: var(--viewer-info-popup-height, var(--viewer-popup-height, 50vh)); overscroll-behavior: contain; }
+.viewer-vertical-controls .viewer-info-panel .viewer-status,
+.viewer-vertical-controls .viewer-info-panel .viewer-render-note,
+.viewer-vertical-controls .viewer-info-panel .viewer-gesture-help { font-size: .75rem; }
+
+/* Menus only hold file/app controls in short windows and costume variants.
+   Popovers use the measured gap between columns, not the trigger's tiny box. */
+.viewer-vertical-controls .viewer-workspace-menu,
+.viewer-vertical-controls .viewer-view-menu { position: static; width: 0; height: 0; margin: 0; border: 0; background: transparent; box-shadow: none; }
+.viewer-vertical-controls .viewer-view-menu { display: none; }
+.viewer-vertical-controls.viewer-has-variants .viewer-view-menu { display: block; }
+.viewer-vertical-controls .viewer-workspace-menu > summary,
+.viewer-vertical-controls .viewer-view-menu > summary { position: absolute; top: 0; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; border: 1px solid rgba(137,151,172,.4); border-radius: 7px; background: rgba(248,250,253,.92); color: #253148; }
+.viewer-vertical-controls .viewer-workspace-menu > summary { left: 0; }
+.viewer-vertical-controls .viewer-view-menu > summary { left: calc(var(--viewer-tools-left) + var(--viewer-left-column) + 6px); font-size: 0; }
+.viewer-vertical-controls .viewer-view-menu > summary::after { display: none; }
+.viewer-vertical-controls .viewer-view-menu > summary::before { content: ""; width: 20px; height: 20px; background: center / 20px 20px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23253148' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-8 0v6'/%3E%3C/svg%3E"); }
+.viewer-vertical-controls .viewer-workspace-menu > summary::before { width: 20px; height: 20px; background-size: 20px 20px; }
+.viewer-vertical-controls .viewer-workspace-menu-content,
+.viewer-vertical-controls .viewer-view-menu-content { z-index: 1; top: calc(100% + 6px); left: var(--viewer-popup-left, 0px); right: auto; max-width: var(--viewer-popup-width, 100%); max-height: var(--viewer-popup-height, 50vh); overscroll-behavior: contain; }
+.viewer-vertical-controls .viewer-view-menu-content { max-height: var(--viewer-variant-popup-height, var(--viewer-popup-height, 50vh)); padding: 8px; }
+.viewer-vertical-controls .viewer-file-options-panel .viewer-remove,
+#viewer-workspace-menu-content .viewer-remove { flex-basis: 44px; min-width: 44px; min-height: 44px; }
+#viewer-workspace-menu-content .viewer-file-options > summary { width: 44px; height: 44px; }
+#viewer-workspace-menu-content select { max-width: 100%; }
+.viewer-vertical-controls .viewer-variant-options:last-child { margin-bottom: 0; border-bottom: 0; padding-bottom: 0; }
+.viewer-vertical-controls.viewer-short-height { --viewer-tools-left: 40px; }
+.viewer-vertical-controls.viewer-short-height .viewer-stage-tools-bottom { display: block; }
+.viewer-vertical-controls.viewer-short-height .viewer-workspace-menu { display: block; }
+.viewer-vertical-controls.viewer-expanded .viewer-stage,
+.viewer-vertical-controls.viewer-fullscreen .viewer-stage,
+.viewer-vertical-controls.viewer-short-height .viewer-stage { border-radius: 0; }
+@media (max-width: 480px) {
+  .viewer-vertical-controls .viewer-file-actions { flex-basis: 190px; }
+  .viewer-vertical-controls.viewer-has-model .viewer-file-actions { flex-basis: 190px; }
+}
+@media (max-height: 360px) {
+  .viewer-vertical-controls .viewer-camera-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: calc(var(--viewer-right-column) * 1.5); max-width: 150px; }
+  .viewer-vertical-controls .viewer-camera-actions #viewer-fit { grid-column: 1 / -1; }
+  .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(2) { border-top: 0; }
+  .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(even) { border-left: 1px solid rgba(137,151,172,.25); }
+}
+@media (max-width: 480px) and (max-height: 360px) {
+  .viewer-vertical-controls .viewer-camera-actions { grid-template-columns: minmax(0, 1fr); width: var(--viewer-right-column); max-width: 100px; }
+  .viewer-vertical-controls .viewer-camera-actions #viewer-fit { grid-column: auto; }
+  .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(2) { border-top: 1px solid rgba(137,151,172,.25); }
+  .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(even) { border-left: 0; }
+}

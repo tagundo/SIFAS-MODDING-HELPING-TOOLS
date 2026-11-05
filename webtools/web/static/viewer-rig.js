@@ -698,8 +698,7 @@
         part.input = input; part.title = title; label.appendChild(input); label.appendChild(title); holder.appendChild(label);
       });
     }
-    function posedBounds() {
-      if (!bones.length) return null;
+    function posedBounds(visitVertex) {
       var box = new THREE.Box3(), point = new THREE.Vector3(), original = new THREE.Vector3();
       var source = new THREE.Vector3(), weighted = new THREE.Vector3(), transformed = new THREE.Vector3();
       var matrix = new THREE.Matrix4();
@@ -729,7 +728,11 @@
             });
             point.copy(weighted).applyMatrix4(mesh.bindMatrixInverse);
           }
-          box.expandByPoint(point.applyMatrix4(mesh.matrixWorld));
+          point.applyMatrix4(mesh.matrixWorld);
+          box.expandByPoint(point);
+          // Explicit framing can reuse this exact skin/morph evaluation. The
+          // point is scratch storage: a visitor must copy any values it keeps.
+          if (visitVertex) visitVertex(point, mesh, vertex);
         }
       });
       return box.isEmpty() ? null : box;

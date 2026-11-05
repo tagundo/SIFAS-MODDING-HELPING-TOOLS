@@ -92,7 +92,7 @@ async function metrics(page) {
 }
 function assertHud(value) {
   for (const [name, control] of Object.entries(value.controls)) {
-    assert(control.width >= 44 && control.height >= 44, name + ' must keep a44px target: ' + JSON.stringify(control));
+    assert(control.width >= 32 && control.height >= 32, name + ' must keep an actual32px compact HUD target: ' + JSON.stringify(control));
     assert(control.x >= value.stage.x - 1 && control.right <= value.stage.right + 1 &&
       control.y >= value.stage.y - 1 && control.bottom <= value.stage.bottom + 1, name + ' must remain inside model viewport');
     assert(control.x >= -1 && control.right <= value.viewport.width + 1 && control.y >= -1 && control.bottom <= value.viewport.height + 1,
@@ -115,35 +115,41 @@ async function stickyHeaderNaturalScroll(browser) {
     await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898');
     await page.waitForFunction(() => !!window.ModelViewer && typeof openModelViewer === 'function');
     await page.locator('.tab[data-tab="viewer"]').click(); await frames(page);
-    assert(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight), 'Use the real unloaded-viewer document scroll range');
-    for (let step = 0; step < 12; step++) {
-      if (step) {
-        // Scroll the real document margin, leaving the canvas wheel gesture for zoom.
-        await page.mouse.move(750, 500); await page.mouse.wheel(0, 100);
-        if (step === 1) await page.waitForFunction(() => scrollY > 0, null, { timeout: 5000 });
-        await frames(page);
-      }
-      const observation = await page.evaluate(() => {
-        const target = document.querySelector('.tab[data-tab="tools"]'), header = document.querySelector('body > header'), files = document.querySelector('#tab-viewer .viewer-files');
-        const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom }; };
-        const r = target.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, edge = 21, diagonal = edge / Math.sqrt(2);
-        const samples = [[0, 0], [-edge, 0], [edge, 0], [0, -edge], [0, edge], [-diagonal, -diagonal], [diagonal, -diagonal], [-diagonal, diagonal], [diagonal, diagonal]].map(([dx, dy]) => {
-          const hit = document.elementFromPoint(x + dx, y + dy);
-          return { x: x + dx, y: y + dy, hit: !!hit && (hit === target || target.contains(hit)), tag: hit && hit.tagName, id: hit && hit.id };
+    // The compact header legitimately removes the old 699px document overflow.
+    // A genuinely short empty window still overflows its original min-height
+    // canvas; use that natural range without adding padding or fake overlays.
+    for (const viewport of [{ width: 752, height: 699 }, { width: 752, height: 250 }]) {
+      await page.setViewportSize(viewport); await page.evaluate(() => scrollTo(0, 0)); await frames(page);
+      const hasRange = await page.evaluate(() => document.documentElement.scrollHeight > innerHeight);
+      if (viewport.height === 250) assert(hasRange, 'Use the real short-window unloaded-viewer document scroll range');
+      for (let step = 0; step < (hasRange ? 12 : 1); step++) {
+        if (step) {
+          await page.mouse.move(750, Math.min(220, viewport.height - 5)); await page.mouse.wheel(0, 100);
+          if (step === 1) await page.waitForFunction(() => scrollY > 0, null, { timeout: 5000 });
+          await frames(page);
+        }
+        const observation = await page.evaluate(() => {
+          const target = document.querySelector('.tab[data-tab="tools"]'), header = document.querySelector('body > header'), files = document.querySelector('#tab-viewer .viewer-files');
+          const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom }; };
+          const r = target.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, edge = 14, diagonal = edge / Math.sqrt(2);
+          const samples = [[0, 0], [-edge, 0], [edge, 0], [0, -edge], [0, edge], [-diagonal, -diagonal], [diagonal, -diagonal], [-diagonal, diagonal], [diagonal, diagonal]].map(([dx, dy]) => {
+            const hit = document.elementFromPoint(x + dx, y + dy);
+            return { x: x + dx, y: y + dy, hit: !!hit && (hit === target || target.contains(hit)), tag: hit && hit.tagName, id: hit && hit.id };
+          });
+          return { scrollY, viewport: { width: innerWidth, height: innerHeight }, target: rect(target), header: rect(header), files: rect(files), samples,
+            headerZ: getComputedStyle(header).zIndex, fileBarZ: getComputedStyle(files).zIndex, loaded: ModelViewer.getState().loaded };
         });
-        return { scrollY, viewport: { width: innerWidth, height: innerHeight }, target: rect(target), header: rect(header), files: rect(files), samples,
-          headerZ: getComputedStyle(header).zIndex, fileBarZ: getComputedStyle(files).zIndex, loaded: ModelViewer.getState().loaded };
-      });
-      assert(observation.target.width >= 43.5 && observation.target.height >= 43.5 && observation.samples.every(sample => sample.hit),
-        'All nine actual points in the primary Tools touch target remain reachable during natural scroll: ' + JSON.stringify(observation));
-      assert.equal(observation.loaded, false); observations.push(observation);
+        assert(observation.target.width >= 31.5 && observation.target.height >= 31.5 && observation.samples.every(sample => sample.hit),
+          'Nine actual points in the compact Tools target remain reachable during natural scroll: ' + JSON.stringify(observation));
+        assert.equal(observation.loaded, false); observations.push(observation);
+      }
     }
     assert(observations.some(value => value.scrollY > 0 && value.files.y < value.target.bottom && value.files.bottom > value.target.y),
-      'Natural mouse-wheel scrolling must move the real file bar behind the sticky navigation: ' + JSON.stringify(observations));
+      'Natural mouse-wheel scrolling moves the real file bar behind the sticky navigation: ' + JSON.stringify(observations));
     await page.locator('.tab[data-tab="tools"]').click();
     assert(await page.locator('#tab-tools').evaluate(element => element.classList.contains('active')), 'The scrolled Tools target performs its actual navigation');
     assert.deepEqual(errors, []); assert.deepEqual(modelRequests, []);
-    return { status: 'PASS', scope: 'Actual empty viewer and mouse-wheel document scroll; no padding, overlays or model preparation', observations };
+    return { status: 'PASS', scope: 'Actual empty viewer and natural short-window mouse-wheel document scroll; no padding, overlays or model preparation', observations };
   } finally { await context.close(); }
 }
 // Native webview-sized CSS profiles cover the tablet, inner Fold orientations,
@@ -172,8 +178,8 @@ async function primaryNavigationTargets(browser) {
           visibleHeight: Math.max(0, Math.min(innerHeight, r.bottom) - Math.max(0, r.y)),
           hit: !!hit && (hit === element || element.contains(hit)) };
       });
-      assert(value.width >= 43.5 && value.height >= 43.5 && value.visibleWidth >= 43.5 && value.visibleHeight >= 43.5 && value.hit,
-        selector + ' keeps a visible, reachable44px primary navigation target: ' + JSON.stringify(value));
+      assert(value.width >= 31.5 && value.height >= 31.5 && value.visibleWidth >= 31.5 && value.visibleHeight >= 31.5 && value.hit,
+        selector + ' keeps a visible, reachable32px compact viewer navigation target: ' + JSON.stringify(value));
       return { selector, ...value };
     }
     async function geometry() {
@@ -227,8 +233,8 @@ async function motionChoiceReadability(browser) {
   const profiles = [
     { id: 'sidebar-280', width: 853, height: 590, panelWidth: 280 },
     { id: 'sidebar-320', width: 1024, height: 768, panelWidth: 320 },
-    { id: 'panel-332', width: 360, height: 900, panelWidth: 332 },
-    { id: 'panel-360', width: 388, height: 900, panelWidth: 360 },
+    { id: 'panel-348', width: 360, height: 900, panelWidth: 348 },
+    { id: 'panel-376', width: 388, height: 900, panelWidth: 376 },
     { id: 'wide-inspector', width: 1692, height: 919 }
   ];
   const { page, context, errors } = await openPage(browser);
@@ -298,9 +304,9 @@ async function motionChoiceReadability(browser) {
           sparseProbe.width >= 100 && sparseProbe.height >= 100 && sparseProbe.glError === 0,
         'The exact official Unity texture fixture must pass the unchanged native sparse pixel thresholds: ' + JSON.stringify({ language, sparseProbe, layout: normal.layout }));
         assert.equal(sparseProbe.gridSize, 11, 'Use the production default sparse probe; denser samples would mask a tiny model');
-        assert(normal.layout.compactControls, 'Short phone view reserves model space by grouping view controls');
+        assert(await page.locator('#tab-viewer').evaluate(element => element.classList.contains('viewer-vertical-controls')), 'Short phone retains the visible vertical HUD');
         assert(normal.layout.safeInsets.top <= 55 && normal.layout.safeInsets.bottom <= 55,
-          'The closed phone HUD must occupy one 44 px row at each edge');
+          'The central model fit must not reserve the whole side-control rectangles');
         assert(normal.stage.height - normal.layout.safeInsets.top - normal.layout.safeInsets.bottom >= 150,
           'The actual short phone must retain usable unobscured model height: ' + JSON.stringify({ language, stage: normal.stage, safeInsets: normal.layout.safeInsets }));
         assert.equal(normal.overflow, false);
@@ -313,9 +319,9 @@ async function motionChoiceReadability(browser) {
             return { width: r.width, height: r.height, x: r.x, y: r.y, right: r.right, bottom: r.bottom,
               hit: !!hit && (hit === element || element.contains(hit)), viewportWidth: innerWidth, viewportHeight: innerHeight };
           });
-          assert(control.width >= 44 && control.height >= 44 && control.x >= 0 && control.y >= 0 &&
+          assert(control.width >= 32 && control.height >= 32 && control.x >= 0 && control.y >= 0 &&
             control.right <= control.viewportWidth + 1 && control.bottom <= control.viewportHeight + 1 && control.hit,
-          selector + ' remains a reachable 44 px control on the exact failing phone viewport: ' + JSON.stringify(control));
+          selector + ' remains a reachable32px compact control on this phone viewport: ' + JSON.stringify(control));
           return { selector, ...control };
         }
         const primaryNavigation = [];
@@ -324,9 +330,8 @@ async function motionChoiceReadability(browser) {
           'Short-phone primary navigation and language selection share one reachable row: ' + JSON.stringify(primaryNavigation));
         assert.equal(await page.getByRole('heading', { level: 1 }).count(), 1, 'The visually compact brand remains an accessible heading');
         assert.equal(normal.layout.expanded, false); assert.equal(normal.layout.fullscreen, 'none');
-        for (const selector of ['#viewer-view-menu > summary', '#viewer-expand', '#viewer-fullscreen', '#viewer-fit']) await assertReachable(selector);
-        await page.locator('#viewer-view-menu > summary').click();
-        assert(await page.locator('#viewer-view-menu').evaluate(element => element.open));
+        for (const selector of ['#viewer-expand', '#viewer-fullscreen', '#viewer-fit']) await assertReachable(selector);
+        assert.equal(await page.locator('#viewer-view-menu > summary').isVisible(), false, 'A variant-free model needs no extra View menu');
         for (const selector of ['#viewer-pose-basic', '#viewer-pose-preview', '.viewer-quality-choice']) await assertReachable(selector);
         await page.locator('#viewer-high-quality').check();
         await page.waitForFunction(() => { const q = ModelViewer.getState().quality; return q.enabled && q.ready; });
@@ -334,7 +339,7 @@ async function motionChoiceReadability(browser) {
         await page.waitForFunction(() => { const q = ModelViewer.getState().quality; return !q.enabled && q.ready; });
         await page.keyboard.press('Escape');
         assert.equal(await page.locator('#viewer-view-menu').evaluate(element => element.open), false);
-        assert.deepEqual(retained(await state(page)), before, 'Opening view controls and quality round-trip preserve the model, rig and camera');
+        assert.deepEqual(retained(await state(page)), before, 'Visible compact controls and quality round-trip preserve the model, rig and camera');
         await page.screenshot({ path: path.join(evidence, 'short-phone-' + language + '.png') });
         await page.setViewportSize({ width: 456, height: 360 }); await frames(page);
         assert.deepEqual(retained(await state(page)), before, 'Phone orientation reflow preserves camera, pose and edits');
