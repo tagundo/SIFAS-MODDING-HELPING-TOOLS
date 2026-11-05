@@ -543,6 +543,20 @@ def _mesh_delta(info, current, desired):
         if np.allclose(base, goal, atol=1e-9, rtol=1e-9):
             continue
         count, channels, stride, start, _ = stream_layout(tree)
+        # The legacy vertex writer also accepts UNorm8 and clips into [0, 1].
+        # That is unsuitable for arbitrary baked positions or signed rotated
+        # normals/tangents. Keep packed inputs viewable and Node-editable, but
+        # refuse a mesh write until a lossless format conversion is supported.
+        for attribute, width, label, required in (
+                (ATTR_POS, 3, "vertex positions", True),
+                (ATTR_NORMAL, 3, "vertex normals", False),
+                (ATTR_TANGENT, 4, "vertex tangents", False)):
+            channel = channels[attribute] if attribute < len(channels) else {}
+            dimension = channel.get("dimension", 0)
+            if not required and dimension == 0:
+                continue
+            if channel.get("format") != 0 or dimension != width:
+                _fail("Mesh baking requires Float32 " + label + "; use saved node settings for this model.")
         vertices_total += count
         if count <= 0 or vertices_total > MAX_VERTICES:
             _fail("The edited meshes exceed the persistent body editor vertex limit.")

@@ -17,7 +17,7 @@ try:
     import numpy as np
     import UnityPy
     from webtools.core import model_viewer, viewer_archive
-    from sifas_mesh_baker import stream_layout, read_attr, ATTR_POS, ATTR_NORMAL
+    from sifas_mesh_baker import stream_layout, read_attr, ATTR_POS, ATTR_NORMAL, ATTR_TANGENT
     AVAILABLE = True
 except ImportError:
     AVAILABLE = False
@@ -331,6 +331,73 @@ class ModelEditTests(unittest.TestCase):
         self.assertTrue(np.all(positions+envelope <= center+extent+1e-5))
         self.assertEqual(len(tree["m_Shapes"]["channels"]), 2)
         self.assertEqual(path.read_bytes(), raw)
+
+    def packed_attribute_fixture(self, attribute):
+        """Valid serialized stream layouts, not just a changed format flag."""
+        env = UnityPy.load(self.raw)
+        mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
+        tree = mesh.read_typetree()
+        count, channels, strides, starts, _ = stream_layout(tree)
+        self.assertEqual(strides, {0: 56})
+        old = np.frombuffer(tree["m_VertexData"]["m_DataSize"], np.uint8).reshape(count, 56)
+        if attribute == ATTR_TANGENT:
+            # Reuse the existing valid UNorm RGBA channel as a tangent. The
+            # reader accepts it, but a signed rotated tangent cannot be stored.
+            tree["m_VertexData"]["m_Channels"][ATTR_TANGENT] = copy.deepcopy(channels[3])
+            tree["m_VertexData"]["m_Channels"][3]["dimension"] = 0
+        else:
+            offset = channels[attribute]["offset"]
+            values = read_attr(old.reshape(-1), attribute, channels, strides, starts, count)
+            if attribute == ATTR_POS:
+                values = np.clip(values * .3 + .35, .1, .8)
+            raw = np.zeros(((count*47+15)//16)*16, np.uint8)
+            packed = raw[:count*47].reshape(count, 47)
+            packed[:, :offset] = old[:, :offset]
+            packed[:, offset:offset+3] = np.clip(values*255 + .5, 0, 255).astype(np.uint8)
+            packed[:, offset+3:] = old[:, offset+12:]
+            for index, channel in enumerate(tree["m_VertexData"]["m_Channels"]):
+                if not channel["dimension"]:
+                    continue
+                if index == attribute:
+                    channel["format"] = 2
+                elif channel["offset"] > offset:
+                    channel["offset"] -= 9
+            tree["m_VertexData"]["m_DataSize"] = raw.tobytes()
+        mesh.save_typetree(tree)
+        return env.file.save()
+
+    def assert_packed_mesh_rejected_but_node_preserved(self, attribute, label):
+        raw = self.packed_attribute_fixture(attribute)
+        path = self.base / (label + ".unity"); path.write_bytes(raw)
+        # The real viewer must accept the source, including its skin weights.
+        prepared = model_viewer.prepare([str(path)], rigged=True,
+            face_context={"enabled": False, "allow_download": False})
+        self.assertTrue(prepared["rig"]["available"])
+        metadata = edits.register_session(prepared["id"], [str(path)], prepared["rig"])
+        node = next(value for value in metadata["nodes"] if value["name"] == "LeftUpLeg")
+        change = {"node": node["node"], "method": "mesh", "scale": [4., 4., 4.],
+                  "rotation": [180., 0., 0.]}
+        output = self.base / (label + "-mesh-output")
+        with self.assertRaisesRegex(edits.ModelEditError, "Float32 " + label):
+            edits.export(prepared["id"], self.state(change), output)
+        self.assertFalse(output.exists())
+        self.assertEqual(path.read_bytes(), raw)
+        change["method"] = "node"
+        saved = edits.export(prepared["id"], self.state(change), self.base / (label + "-node-output"))
+        before = next(obj for obj in UnityPy.load(raw).objects if obj.type.name == "Mesh").get_raw_data()
+        after = next(obj for obj in UnityPy.load(Path(saved["preview_paths"][0]).read_bytes()).objects
+                     if obj.type.name == "Mesh").get_raw_data()
+        self.assertEqual(after, before)
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_unorm_positions_are_viewable_and_node_editable_but_not_silently_clipped_by_mesh(self):
+        self.assert_packed_mesh_rejected_but_node_preserved(ATTR_POS, "vertex positions")
+
+    def test_unorm_normals_are_not_clipped_when_mesh_rotation_requires_negative_components(self):
+        self.assert_packed_mesh_rejected_but_node_preserved(ATTR_NORMAL, "vertex normals")
+
+    def test_unorm_tangents_are_not_clipped_when_mesh_rotation_requires_signed_components(self):
+        self.assert_packed_mesh_rejected_but_node_preserved(ATTR_TANGENT, "vertex tangents")
 
 
 if __name__ == "__main__":
