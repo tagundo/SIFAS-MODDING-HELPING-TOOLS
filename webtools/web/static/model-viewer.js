@@ -28,6 +28,7 @@
   var controls = null;
   var model = null;
   var rigController = null;
+  var persistenceController = null;
   var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
@@ -400,6 +401,7 @@
     } else if (!model) setStatus("Press Open model to see the costume.");
     else if (!loading) setStatus("Model ready.");
     showFaceStatus();
+    if (persistenceController) persistenceController.refresh();
   }
 
   function setLoading(value) {
@@ -409,9 +411,10 @@
     node("viewer-load").hidden = value;
     node("viewer-auto-face").disabled = value;
     node("viewer-high-quality").disabled = value || lost;
-    if (rigController) rigController.setInteractive(!value && !lost);
+    if (rigController) rigController.setInteractive(!value && !lost && !(persistenceController && persistenceController.getState().busy));
     renderFiles();
     showFaceStatus();
+    if (persistenceController) persistenceController.refresh();
   }
 
   function cancelLoading() {
@@ -600,7 +603,7 @@
         setStatus(model ? "Model ready." : "Choose a costume file to begin.");
         filesChanged();
         renderVariantOptions();
-        if (rigController) rigController.setInteractive(!loading);
+        if (rigController) rigController.setInteractive(!loading && !(persistenceController && persistenceController.getState().busy));
         resize();
       });
       setBackground();
@@ -981,6 +984,7 @@
   function rigChanged() {
     syncPartVisibility();
     requestRender();
+    if (persistenceController) persistenceController.refresh();
   }
 
   function showWarnings(warnings) {
@@ -1124,7 +1128,8 @@
       pendingMaterials = null;
       pendingModel = null;
       if (window.ViewerRig) {
-        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged });
+        rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged, editing: prepared.editing || {},
+          onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
         restoreVariantPose(previousPose);
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
@@ -1333,6 +1338,47 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    if (window.ViewerPersistence && node("viewer-save")) persistenceController = window.ViewerPersistence.create({
+      translate: t,
+      context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+        loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
+      busyChanged: function (busy) { if (rigController) rigController.setInteractive(!busy && !loading && !lost); },
+      pickFile: function (callback) {
+        containViewerPicker();
+        try { config.pickFile(function (path) { if (!destroyed) callback(path); }); }
+        catch (error) { restoreViewerPicker(); throw error; }
+      },
+      captureInspection: function () {
+        var pose = rigController && rigController.getState();
+        return { pose: pose ? { selectedClip: pose.selectedClip, time: pose.time, playing: pose.playing, evaluationMode: pose.evaluation && pose.evaluation.mode, editorGroup: pose.editorGroup, selectedNode: pose.selectedNode } : null,
+          camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null };
+      },
+      openFiles: async function (nextPaths, nextVariants, inspection) {
+        var previousPose = inspection ? inspection.pose : rigController && rigController.getState();
+        var view = inspection ? inspection.camera : camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null;
+        if (nextVariants && typeof nextVariants === "object") {
+          if (Array.isArray(nextVariants) && nextVariants.length !== nextPaths.length || Object.keys(nextVariants).some(function (key) {
+            return !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= nextPaths.length || ["primary", "unmasked"].indexOf(nextVariants[key]) < 0;
+          })) throw new Error("The saved costume variant choices are invalid.");
+          nextPaths.forEach(function (path, index) { variantChoices[path] = nextVariants[index] || "primary"; });
+        }
+        await open(nextPaths);
+        if (destroyed || loading || JSON.stringify(loadedPaths) !== JSON.stringify(nextPaths)) return;
+        restoreVariantPose(previousPose);
+        if (rigController && previousPose) {
+          rigController.setEvaluationMode(previousPose.evaluationMode || previousPose.evaluation && previousPose.evaluation.mode || "authoring");
+          if (previousPose.editorGroup) rigController.setEditorGroup(previousPose.editorGroup);
+          var bone = node("viewer-node");
+          if (bone && previousPose.selectedNode && Array.prototype.some.call(bone.options, function (option) { return option.value === previousPose.selectedNode; })) {
+            bone.value = previousPose.selectedNode; bone.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+        if (view && camera && controls) {
+          camera.position.fromArray(view.position); controls.target.fromArray(view.target); camera.fov = view.fov;
+          camera.updateProjectionMatrix(); controls.update(); requestRender();
+        }
+      }
+    });
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
       containViewerPicker();
@@ -1440,6 +1486,7 @@
     if (metadata) showWarnings(metadata.warnings);
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
+    if (persistenceController) persistenceController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -1489,6 +1536,7 @@
     if (expanded) setExpanded(false);
     updateShortLayout(null);
     destroyed = true;
+    if (persistenceController) persistenceController.dispose();
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
@@ -1508,6 +1556,13 @@
 
   window.ModelViewer = {
     mount: mount, open: open, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
+    getAuthoringState: function () { return rigController && rigController.getAuthoringState ? rigController.getAuthoringState() : null; },
+    restoreAuthoringState: function (state) {
+      if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
+      rigController.restoreAuthoringState(state);
+      if (persistenceController) persistenceController.refresh();
+    },
+    getEditingMetadata: function () { return metadata && metadata.editing || null; },
     getState: function () {
       var names = [];
       if (model) model.traverse(function (child) { if (child.isMesh && !isViewerHelper(child)) names.push(child.name); });
@@ -1520,6 +1575,7 @@
         sourceTriangles: visibleSourceTriangles(),
         framing: framingState, renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
+        persistence: persistenceController ? persistenceController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
           compactControls: compactControls, shortHeight: shortHeight,

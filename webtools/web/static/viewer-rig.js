@@ -24,9 +24,10 @@
     var authoredNodes = {};
     var nodeEditor = null, expressionPanel = null;
     var selectedNode = "";
+    var editingMethods = {}, meshConversions = {}, editorGroup = "node", editorSelections = {}, evaluationMode = "authoring", restoredCompensationReference = {};
     var selectedClip = "";
     var playing = false;
-    var interactive = true;
+    var interactive = true, authoringEnabled = true;
     var disposed = false;
     var events = [];
     var clips = animations || [];
@@ -200,8 +201,10 @@
       var path = [], current = child;
       while (current && current !== parent) {
         var record = objectRecords.get(current);
-        if (!record || !invertible(record.frameMatrix)) return null;
-        path.unshift(record.frameMatrix); current = current.parent;
+        var reference = record && restoredCompensationReference[String(current.userData && current.userData.elichika_node)];
+        var matrix = reference ? new THREE.Matrix4().compose(reference.position, reference.quaternion, reference.scale) : record && record.frameMatrix;
+        if (!record || !matrix || !invertible(matrix)) return null;
+        path.unshift(matrix); current = current.parent;
       }
       if (current !== parent) return null;
       var result = new THREE.Matrix4();
@@ -225,7 +228,7 @@
       order.forEach(function (id) {
         var selection = compensationSelection(id);
         if (!selection) return;
-        var resolved = compensationTargets(selection), baseline = objectRecords.get(selection.bone.object).frame;
+        var resolved = compensationTargets(selection), baseline = restoredCompensationReference[id] || objectRecords.get(selection.bone.object).frame;
         var state = { node: id, enabled: selection.enabled, mode: selection.mode, state: selection.enabled ? "ready" : "off", reason: "",
           targets: resolved.bones.map(function (bone) { return { node: bone.id, name: boneName(bone) }; }), scaleDelta: [1, 1, 1] };
         compensationStatuses[id] = state;
@@ -233,7 +236,7 @@
         if (resolved.reason) { state.state = "unavailable"; state.reason = resolved.reason; return; }
         var manual = adjustments[id], scales = manual && manual.scale || [];
         var invalidBaseline = baseline.scale.toArray().some(function (value) { return !isFinite(value) || Math.abs(value) < 1e-8; });
-        if (invalidBaseline || !invertible(objectRecords.get(selection.bone.object).frameMatrix)) {
+        if (invalidBaseline || !invertible(new THREE.Matrix4().compose(baseline.position, baseline.quaternion, baseline.scale))) {
           state.state = "unavailable"; state.reason = "A baseline transform has zero or invalid scale."; return;
         }
         state.scaleDelta = baseline.scale.toArray().map(function (value, axis) {
@@ -265,7 +268,8 @@
         });
       });
       Object.keys(corrections).forEach(function (id) {
-        var entry = corrections[id], object = entry.bone.object, baseline = objectRecords.get(object).frameMatrix;
+        var entry = corrections[id], object = entry.bone.object, reference = restoredCompensationReference[id];
+        var baseline = reference ? new THREE.Matrix4().compose(reference.position, reference.quaternion, reference.scale) : objectRecords.get(object).frameMatrix;
         var manual = new THREE.Matrix4().compose(object.position, object.quaternion, object.scale);
         // B_target C B_target^-1 M_target preserves explicit child endpoints,
         // including translation and rotation, without undoing source scaling.
@@ -435,14 +439,14 @@
       var active = activeSavedOperations();
       var bodyChanged = !!skirtOverrides[id] || body.breastPreset !== "loaded" && !!bodyControl("breast") && bodyControl("breast").nodes.some(function (target) { return String(target.node) === id; });
       return { saved: operations.length > 0, fileChanged: operations.some(function (operation) { return operation.changed && active.indexOf(operation) >= 0; }),
-        modified: !editing.adjustmentEmpty(adjustments[id]) || !!nodeCompensations[id], body: bodyChanged,
+        modified: !editing.adjustmentEmpty(adjustments[id]) || !!nodeCompensations[id] || !!meshConversions[id], body: bodyChanged,
         expression: !!expressionPanel && expressionPanel.getBoneOperations().some(function (operation) { return String(operation.node) === id; }) };
     }
     function savedEuler(id) {
       var entry = activeSavedOperations().filter(function (operation) { return operation.node === id && operation.kind === "rotation"; })[0];
       return entry && entry.sourceEuler;
     }
-    function applyAdjustments(released) {
+    function applyAdjustments(released, beforeAnimation) {
       activeSavedOperations().forEach(function (operation) {
         nodes[operation.node][operation.kind === "rotation" ? "quaternion" : operation.kind === "scale" ? "scale" : "position"].fromArray(operation.value);
       });
@@ -461,7 +465,7 @@
       // A source may originally manage its own matrix. On release it still
       // needs this frame's restored TRS rather than the last affine matrix.
       (released || []).forEach(function (object) { object.updateMatrix(); });
-      applyCompensations();
+      if (!beforeAnimation) applyCompensations();
       parts.forEach(function (part) { part.object.visible = part.visible; });
       if (currentClip) currentClip.visibility.forEach(function (track) {
         var time = currentTime(), value = track.values[0];
@@ -473,13 +477,38 @@
       root.updateMatrixWorld(true);
       root.traverse(function (object) { if (object.isSkinnedMesh) object.skeleton.update(); });
     }
+    function replayAnimationTracks() {
+      if (!currentClip || !currentClip.animation) return;
+      if (!currentClip.replayTracks) currentClip.replayTracks = currentClip.animation.tracks.map(function (track) {
+        var binding = THREE.PropertyBinding.create(root, track.name); binding.bind();
+        return { binding: binding, interpolant: track.createInterpolant() };
+      });
+      // Three's PropertyMixer skips writing an unchanged constant value. We
+      // restore authoring values each frame, so explicitly replay each loaded
+      // single-action track after update, including paused/scrubbed frames.
+      currentClip.replayTracks.forEach(function (track) { track.binding.setValue(track.interpolant.evaluate(currentTime()), 0); });
+    }
     function evaluate(delta) {
       if (disposed) return;
       var released = releaseAutomaticMatrices();
-      all.forEach(function (record) { restore(record.object, record.base); });
-      if (mixer) mixer.update(delta || 0);
-      all.forEach(function (record) { capture(record.object, record.base); });
-      applyAdjustments(released);
+      if (evaluationMode === "animation") {
+        // Inspect the loaded clip's own track writes. This deliberately does
+        // not pretend that changing a bone is the same as baking its mesh.
+        all.forEach(function (record) { restore(record.object, record.authored); });
+        applyAdjustments(released, true);
+        if (mixer) mixer.update(delta || 0);
+        replayAnimationTracks();
+        // Facial choices remain render-only inspection controls in both modes;
+        // changing the body's evaluation order must not disable face review.
+        if (expressionPanel) { expressionPanel.applyBonesAndMorphs(); expressionPanel.applyVisibility(parts); }
+        root.updateMatrixWorld(true);
+        root.traverse(function (object) { if (object.isSkinnedMesh) object.skeleton.update(); });
+      } else {
+        all.forEach(function (record) { restore(record.object, record.base); });
+        if (mixer) mixer.update(delta || 0);
+        all.forEach(function (record) { capture(record.object, record.base); });
+        applyAdjustments(released);
+      }
       if (nodeEditor && nodeEditor.refreshPose) nodeEditor.refreshPose();
     }
     function listen(id, event, handler) {
@@ -508,10 +537,11 @@
       element("viewer-play").disabled = !enabled || !currentClip || duration() <= 0;
       element("viewer-time").disabled = !enabled || !currentClip || duration() <= 0;
       if (expressionPanel) expressionPanel.setInteractive(enabled);
-      if (nodeEditor) nodeEditor.setInteractive(enabled);
-      element("viewer-saved-nodes").disabled = !enabled || !savedOperations.length;
-      savedParts.forEach(function (part) { if (part.input) part.input.disabled = !enabled || !useSavedNodes; });
+      if (nodeEditor) nodeEditor.setInteractive(enabled && authoringEnabled);
+      element("viewer-saved-nodes").disabled = !enabled || !authoringEnabled || !savedOperations.length;
+      savedParts.forEach(function (part) { if (part.input) part.input.disabled = !enabled || !authoringEnabled || !useSavedNodes; });
       element("viewer-preview-reset").disabled = !enabled || !(bones.length || clipEntries.length || expressions.length);
+      ["node", "mesh"].forEach(function (tool) { var tab = element("viewer-editor-" + tool + "-tab"); if (tab) tab.disabled = !enabled || !rigEditable; });
       refreshBodyControls();
     }
     function refreshExpression() {
@@ -561,9 +591,45 @@
         edited: Object.keys(skirtOverrides).length > 0 || targets.some(function (target) { return adjustments[target.node] && (adjustments[target.node].scale || []).some(function (value) { return value !== null; }); }),
         overrides: JSON.parse(JSON.stringify(skirtOverrides)), editBounds: control && control.editBounds || { min: .01, max: 10 } };
     }
+    function clearUnusedMethod(id) {
+      if (!editing.adjustmentEmpty(adjustments[id]) || meshConversions[id] || skirtOverrides[id]) return;
+      var breast = bodyControl("breast");
+      if (body.breastPreset !== "loaded" && breast && breast.nodes.some(function (target) { return String(target.node) === id; })) return;
+      delete editingMethods[id];
+    }
+    function methodForNewEdit(id, tool) {
+      if (!Object.prototype.hasOwnProperty.call(editingMethods, id)) editingMethods[id] = tool || editorGroup;
+    }
+    function toolAccepts(id) {
+      if (!(options.editing && options.editing.available)) return true;
+      var target = (options.editing.nodes || []).filter(function (entry) { return String(entry.node) === String(id); })[0];
+      return !!target && target.recommendedMethod === editorGroup;
+    }
+    function setEditorGroup(group) {
+      if (disposed || ["node", "mesh"].indexOf(group) < 0) return;
+      var previous = editorGroup;
+      if (nodeEditor) editorSelections[previous] = nodeEditor.getSelected();
+      editorGroup = group;
+      var shared = element("viewer-shared-bone-editor"), slot = element(group === "mesh" ? "viewer-mesh-tool-slot" : "viewer-node-tool-slot");
+      if (shared && slot && shared.parentNode !== slot) slot.appendChild(shared);
+      ["node", "mesh"].forEach(function (tool) {
+        var selected = tool === group, tab = element("viewer-editor-" + tool + "-tab"), panel = element("viewer-editor-" + tool + "-panel");
+        if (tab) { tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1; }
+        if (panel) panel.hidden = !selected;
+      });
+      if (nodeEditor) {
+        var filter = element("viewer-node-filter"), search = element("viewer-node-search");
+        if (filter) filter.value = options.editing && options.editing.available ? "tool" : "all";
+        if (search) search.value = "";
+        if (editorSelections[group] && toolAccepts(editorSelections[group])) nodeEditor.select(editorSelections[group], false);
+        else nodeEditor.refresh(true);
+      }
+      if (options.onSelection) options.onSelection();
+    }
     function chooseBreastProfile(id) {
       if (!bodyControl("breast") || id !== "loaded" && !breastPresets().some(function (preset) { return preset.id === id; })) return;
-      body.breastPreset = id; clearManualScale(bodyControl("breast").nodes);
+      body.breastPreset = id; restoredCompensationReference = {}; clearManualScale(bodyControl("breast").nodes);
+      bodyControl("breast").nodes.forEach(function (target) { var node = String(target.node); delete meshConversions[node]; if (id !== "loaded") methodForNewEdit(node, "node"); else clearUnusedMethod(node); });
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
     function setSkirt() {
@@ -571,11 +637,12 @@
       if (!state.available || !input.value.trim() || !isFinite(value) || value < state.editBounds.min || value > state.editBounds.max) {
         input.setCustomValidity(translate("Skirt scale must be between 0.01 and 10.")); input.reportValidity(); return;
       }
-      input.setCustomValidity(""); state.targets.forEach(function (target) { skirtOverrides[target.node] = [value, value, value]; }); clearManualScale(state.targets);
+      input.setCustomValidity(""); restoredCompensationReference = {}; state.targets.forEach(function (target) { skirtOverrides[target.node] = [value, value, value]; delete meshConversions[target.node]; methodForNewEdit(String(target.node), "node"); }); clearManualScale(state.targets);
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
     function undoSkirt() {
-      var state = skirtValues(); skirtOverrides = {}; clearManualScale(state.targets);
+      var state = skirtValues(); skirtOverrides = {}; restoredCompensationReference = {}; clearManualScale(state.targets);
+      state.targets.forEach(function (target) { delete meshConversions[target.node]; clearUnusedMethod(String(target.node)); });
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
     function numberText(value) { return String(Number(value.toPrecision(7))); }
@@ -584,14 +651,14 @@
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
     }
     function refreshBodyControls() {
-      var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && !disposed && skirt.available, input = element("viewer-skirt-number");
+      var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && authoringEnabled && !disposed && skirt.available, input = element("viewer-skirt-number");
       input.disabled = !enabled; input.min = String(skirt.editBounds.min); input.max = String(skirt.editBounds.max);
       if (noSkirt || document.activeElement !== input) input.value = skirt.currentUniform === null ? "" : numberText(skirt.currentUniform);
       input.placeholder = translate(noSkirt ? "Not available for this model." : "Different values"); element("viewer-skirt-apply").disabled = !enabled;
       var badFile = skirt.targets.some(function (target) { return target.fileStatus === "conflict"; }) ? "Conflicting file values" : skirt.targets.some(function (target) { return target.fileStatus === "unsupported"; }) ? "Unsupported file value" : null;
       element("viewer-skirt-file").textContent = noSkirt ? translate("Not available for this model.") : badFile ? translate(badFile) : (skirt.fileUniform === null ? translate("Different values") : numberText(skirt.fileUniform)) + (skirt.targets.some(function (target) { return target.fileStatus === "authored"; }) ? " · " + translate("Authored fallback") : "");
       element("viewer-skirt-value").textContent = noSkirt ? translate("Not available for this model.") : skirt.currentUniform === null ? translate("Different values") : numberText(skirt.currentUniform);
-      element("viewer-skirt-reset").disabled = !interactive || disposed || !skirt.edited;
+      element("viewer-skirt-reset").disabled = !interactive || !authoringEnabled || disposed || !skirt.edited;
       var rows = element("viewer-skirt-nodes"); rows.textContent = "";
       var repeatedNames = {};
       skirt.targets.forEach(function (target) { repeatedNames[target.name] = (repeatedNames[target.name] || 0) + 1; });
@@ -609,8 +676,8 @@
       element("viewer-breast-value").textContent = !state.available ? translate("This model has no verified breast-size node.") : state.custom ? translate("Custom shape") : preset ? label(preset) : translate("No extra edits");
       element("viewer-breast-file-values").textContent = state.targets.map(function (target) { return scaleText(target.fileScale, target.fileStatus); }).join("; ") || "—";
       element("viewer-breast-current-values").textContent = state.targets.map(function (target) { return scaleText(target.currentScale); }).join("; ") || "—";
-      var select = element("viewer-breast-preset"); select.disabled = !interactive || disposed || !state.available; select.value = body.breastPreset;
-      element("viewer-breast-reset").disabled = !interactive || disposed || !state.available || state.selected === "loaded" && !state.custom;
+      var select = element("viewer-breast-preset"); select.disabled = !interactive || !authoringEnabled || disposed || !state.available; select.value = body.breastPreset;
+      element("viewer-breast-reset").disabled = !interactive || !authoringEnabled || disposed || !state.available || state.selected === "loaded" && !state.custom;
       element("viewer-height-value").textContent = translate("Height correction unavailable");
       var metadata = (scaling.components || []).filter(function (part) { return typeof part.heightScale === "number" && isFinite(part.heightScale); });
       var source = element("viewer-height-source"); source.hidden = !metadata.length;
@@ -636,7 +703,7 @@
       refreshAvailability(); refreshMotionStatus(); updateTime(); refreshExpression(); refreshNode(); changed();
     }
     function reset() {
-      adjustments = {}; nodeCompensations = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
+      adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
       if (expressionPanel) expressionPanel.reset(true);
       parts.forEach(function (part) { part.visible = part.fileVisible; part.userVisible = undefined; part.userChanged = false; });
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
@@ -659,6 +726,8 @@
       element("viewer-rig-status").textContent = text;
     }
     function updateLanguage() {
+      if (element("viewer-editor-tabs")) element("viewer-editor-tabs").setAttribute("aria-label", translate("Body editing tools"));
+      ["node", "mesh"].forEach(function (tool) { var count = element("viewer-editor-" + tool + "-count"); if (count) count.setAttribute("aria-label", translate(tool === "node" ? "Node edits" : "Mesh edits")); });
       element("viewer-pose-actions").setAttribute("aria-label", translate("Pose"));
       element("viewer-pose-basic").textContent = translate("Basic pose");
       element("viewer-pose-preview").textContent = translate("Posed view");
@@ -742,6 +811,7 @@
       channels: expressions, catalog: info && info.expressionCatalog || {},
       change: function () { evaluate(0); refreshBodyControls(); refreshNode(); changed(); } });
     nodeEditor = editing.createNodeEditor({ THREE: THREE, translate: translate, nodes: nodes, bones: bones, scaling: scaling,
+      defaultFilter: options.editing && options.editing.available ? "tool" : "all", forTool: toolAccepts,
       value: function (id, adjusted) { return staticMap(adjusted)[id]; }, fileValues: fileValues, poseValue: function (id) { return snapshot(nodes[id]); }, flags: nodeFlags, savedEuler: savedEuler,
       savedEntries: function (id) {
         var active = activeSavedOperations();
@@ -749,7 +819,7 @@
           return { kind: operation.kind, value: operation.value, sourceEuler: operation.sourceEuler, applied: active.indexOf(operation) >= 0 };
         });
       },
-      adjustment: function (id) { return adjustments[id]; }, onSelect: function (id) { selectedNode = id; },
+      adjustment: function (id) { return adjustments[id]; }, onSelect: function (id) { selectedNode = id; if (options.onSelection) options.onSelection(); },
       compensation: function (id) { return { parent: compensationStatus(id), incoming: automaticTargets.filter(function (target) { return target.node === id; }) }; },
       changeCompensation: function (id, value) {
         if (!compensationSelection(id) || !value || ["auto", "spine2", "spine1", "both"].indexOf(value.mode) < 0) return;
@@ -757,10 +827,21 @@
         evaluate(0); refreshNode(); changed();
       },
       change: function (id, value) {
-        if (value) adjustments[id] = value;
-        else { delete adjustments[id]; delete nodeCompensations[id]; }
+        if (value) { adjustments[id] = value; methodForNewEdit(id); }
+        else { delete adjustments[id]; delete nodeCompensations[id]; delete editingMethods[id]; delete meshConversions[id]; }
         evaluate(0); refreshBodyControls(); changed();
       } });
+    ["node", "mesh"].forEach(function (tool) {
+      if (!element("viewer-editor-" + tool + "-tab")) return;
+      listen("viewer-editor-" + tool + "-tab", "click", function () { setEditorGroup(tool); });
+      listen("viewer-editor-" + tool + "-tab", "keydown", function (event) {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(event.key) < 0) return;
+        event.preventDefault();
+        var next = event.key === "Home" ? "node" : event.key === "End" ? "mesh" : tool === "node" ? "mesh" : "node";
+        setEditorGroup(next); element("viewer-editor-" + next + "-tab").focus();
+      });
+    });
+    setEditorGroup("node");
     listen("viewer-breast-preset", "change", function () { chooseBreastProfile(this.value); });
     listen("viewer-breast-reset", "click", function () { if (!this.disabled) chooseBreastProfile("loaded"); });
     listen("viewer-pose-basic", "click", function () { if (!this.disabled) setClip(""); });
@@ -792,7 +873,149 @@
     listen("viewer-preview-reset", "click", reset);
     updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
 
+    function getAuthoringState() {
+      // Source-authoring TRS comes from immutable file values and explicit
+      // body edits. Never serialize record.base/frame: those contain animation.
+      var baseline = storedFileMap(), desired = fileMap(), unsupported = [], edits = [];
+      applyBodyPreset(function (id) { return desired[id]; });
+      applyBody(function (id) { return desired[id]; });
+      Object.keys(adjustments).forEach(function (id) { if (desired[id]) applyUser(desired[id], adjustments[id], id); });
+      var invalid = document.querySelector("#viewer-node-fields [aria-invalid='true'], #viewer-node-fields :invalid, #viewer-skirt-number:invalid");
+      if (invalid) unsupported.push("Correct the invalid editing values before saving.");
+      var savedEnabled = !savedOperations.length || useSavedNodes && savedParts.every(function (part) { return part.enabled; });
+      if (!savedEnabled) unsupported.push("Turn saved file settings on before saving body changes.");
+      if (savedConflicts || savedSkipped || savedMetadataWarnings.length) unsupported.push("Unsupported saved settings must be resolved before saving body changes.");
+      bones.forEach(function (bone) {
+        var id = bone.id, initial = baseline[id], current = desired[id];
+        if (!initial || !current) return;
+        var edit = { node: Number(id), method: editingMethods[id] || "auto", compensate: false };
+        var scale = current.scale.toArray(), position = current.position.toArray();
+        if (differentVector(initial.scale.toArray(), scale, false) || meshConversions[id]) edit.scale = scale;
+        if (differentVector(initial.position.toArray(), position, false)) edit.position = position;
+        if (differentVector(initial.quaternion.toArray(), current.quaternion.toArray(), true)) {
+          edit.rotation = editing.quaternionUI(THREE, current.quaternion, savedEuler(id));
+          var manual = adjustments[id];
+          if (manual && manual.rotation) manual.rotation.forEach(function (value, axis) { if (typeof value === "number") edit.rotation[axis] = value; });
+        }
+        var compensation = nodeCompensations[id] && nodeCompensations[id].enabled && edit.scale ? compensationStatus(id) : null;
+        if (compensation && compensation.enabled && edit.scale) {
+          if (compensation.state === "unavailable") unsupported.push(compensation.reason || "Child compensation is unavailable.");
+          edit.compensate = true; edit.compensationTargets = compensation.targets.map(function (target) { return Number(target.node); });
+          if (edit.method === "node") unsupported.push("Child compensation requires a mesh scale edit.");
+        }
+        if (edit.method === "auto" && (edit.position || edit.rotation)) unsupported.push("Choose a save method explicitly for position or rotation edits; MV compatibility differs by motion.");
+        if (edit.scale || edit.position || edit.rotation) edits.push(edit);
+      });
+      if (options.editing && options.editing.available) {
+        var writableNodes = {};
+        (options.editing.nodes || []).forEach(function (entry) { writableNodes[String(entry.node)] = true; });
+        if (edits.some(function (edit) { return !writableNodes[String(edit.node)]; })) unsupported.push("Some edited bones are read-only. Open their original model file to save them.");
+        (options.editing.nodes || []).forEach(function (target) {
+          var edit = edits.filter(function (entry) { return entry.node === target.node; })[0];
+          if (edit && edit.method === "auto" && !edit.compensate && target.recommendedMethod === "choose") unsupported.push("Choose a save method for unverified body nodes in advanced settings.");
+          if (edit && edit.position && target.positionWritable === false) unsupported.push("Edit an attached model's original position in its own source model file.");
+        });
+      }
+      var state = { version: 1, edits: edits, savedSettingsEnabled: savedEnabled,
+        unsupported: unsupported.filter(function (message, index, values) { return values.indexOf(message) === index; }) };
+      if (edits.some(function (edit) { return edit.compensate; })) {
+        var reference = fileMap(), writable = {};
+        applyBodyPreset(function (id) { return reference[id]; });
+        applyBody(function (id) { return reference[id]; });
+        ((options.editing || {}).nodes || []).forEach(function (entry) { writable[String(entry.node)] = true; });
+        state.compensationReference = bones.filter(function (bone) { return writable[bone.id] && reference[bone.id]; }).map(function (bone) {
+          var value = restoredCompensationReference[bone.id] || reference[bone.id];
+          return { node: Number(bone.id), scale: value.scale.toArray(), position: value.position.toArray(),
+            rotation: editing.quaternionUI(THREE, value.quaternion, savedEuler(bone.id)) };
+        });
+      }
+      return state;
+    }
+    function restoreAuthoringState(state) {
+      if (!state || state.version !== 1 || !Array.isArray(state.edits) || state.edits.length > bones.length || state.savedSettingsEnabled !== true) {
+        throw new Error("The body edit recipe is invalid.");
+      }
+      var next = {}, methods = {}, compensations = {}, seen = {};
+      state.edits.forEach(function (edit) {
+        var id = String(edit.node);
+        if (!Number.isInteger(edit.node) || !authoredNodes[id] || seen[id] || ["auto", "node", "mesh"].indexOf(edit.method) < 0) throw new Error("The body edit recipe is invalid.");
+        seen[id] = true;
+        var value = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
+        ["scale", "position", "rotation"].forEach(function (kind) {
+          if (edit[kind] === undefined) return;
+          if (!Array.isArray(edit[kind]) || edit[kind].length !== 3 || !edit[kind].every(function (number) {
+            return typeof number === "number" && isFinite(number) && Math.abs(number) <= 1000000 && (kind !== "scale" || Math.abs(number) >= 1e-8);
+          })) throw new Error("The body edit recipe is invalid.");
+          value[kind] = edit[kind].slice();
+        });
+        if (editing.adjustmentEmpty(value)) throw new Error("The body edit recipe is invalid.");
+        if (edit.compensate) {
+          var choice = compensationSelection(id), targets = edit.compensationTargets;
+          if (!choice || !Array.isArray(targets)) throw new Error("The body edit recipe is invalid.");
+          var mode = ["auto", "spine2", "spine1", "both"].filter(function (candidate) {
+            var resolved = compensationTargets({ bone: choice.bone, enabled: true, mode: candidate });
+            var actual = resolved.bones.map(function (bone) { return Number(bone.id); }).sort(function (a, b) { return a - b; });
+            return !resolved.reason && JSON.stringify(actual) === JSON.stringify(targets.slice().sort(function (a, b) { return a - b; }));
+          })[0];
+          if (!mode) throw new Error("The body edit recipe is invalid.");
+          compensations[id] = { enabled: true, mode: mode };
+        }
+        next[id] = value; methods[id] = edit.method;
+      });
+      var references = {};
+      (state.compensationReference || []).forEach(function (entry) {
+        var id = String(entry.node);
+        if (!Number.isInteger(entry.node) || !authoredNodes[id] || references[id] || !["scale", "position", "rotation"].every(function (kind) {
+          return Array.isArray(entry[kind]) && entry[kind].length === 3 && entry[kind].every(function (value) {
+            return typeof value === "number" && isFinite(value) && Math.abs(value) <= 1000000 && (kind !== "scale" || Math.abs(value) >= 1e-8);
+          });
+        })) throw new Error("The body edit recipe is invalid.");
+        references[id] = { scale: new THREE.Vector3().fromArray(entry.scale), position: new THREE.Vector3().fromArray(entry.position), quaternion: editing.uiQuaternion(THREE, entry.rotation) };
+      });
+      adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
+      var baseline = storedFileMap();
+      state.edits.forEach(function (edit) {
+        var id = String(edit.node);
+        if (edit.method === "mesh" && edit.scale && baseline[id] && !differentVector(baseline[id].scale.toArray(), edit.scale, false)) meshConversions[id] = true;
+      });
+      body = { breastPreset: "loaded" }; skirtOverrides = {};
+      useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
+      savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
+      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); changed();
+    }
+    function motionScaleTargets() {
+      if (!currentClip || !currentClip.animation) return [];
+      var result = [];
+      currentClip.animation.tracks.forEach(function (track) {
+        if (!/\.scale$/.test(track.name)) return;
+        bones.forEach(function (bone) {
+          if (track.name === bone.object.name + ".scale" && result.indexOf(bone.id) < 0) result.push(bone.id);
+        });
+      });
+      return result;
+    }
     return {
+      getAuthoringState: getAuthoringState,
+      restoreAuthoringState: restoreAuthoringState,
+      setEditingMethod: function (id, method) {
+        id = String(id);
+        if (!authoredNodes[id] || ["auto", "node", "mesh"].indexOf(method) < 0) throw new Error("Choose a valid body save method.");
+        editingMethods[id] = method;
+        if (method === "mesh") meshConversions[id] = true; else delete meshConversions[id];
+        refreshNode(); changed();
+      },
+      setEditorGroup: setEditorGroup,
+      setEvaluationMode: function (mode) {
+        if (["authoring", "animation"].indexOf(mode) < 0 || mode === evaluationMode) return;
+        if (mode === "authoring") {
+          releaseAutomaticMatrices();
+          all.forEach(function (record) { restore(record.object, record.authored); });
+          if (mixer) mixer.update(0);
+          replayAnimationTracks();
+          all.forEach(function (record) { capture(record.object, record.base); });
+        }
+        evaluationMode = mode; evaluate(0); refreshNode(); changed();
+      },
       update: function (delta) {
         if (playing && currentClip) {
           delta = clamp(delta, 0, .1);
@@ -809,6 +1032,7 @@
         evaluate(0); changed();
       },
       setInteractive: function (value) { interactive = !!value; refreshAvailability(); },
+      setAuthoringEnabled: function (value) { if (!!value !== authoringEnabled) { authoringEnabled = !!value; refreshAvailability(); } },
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
       getPartVisibility: function (object) { var part = parts.filter(function (item) { return item.object === object; })[0]; return part ? { fileVisible: part.fileVisible, selected: part.visible, userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible } : null; },
@@ -816,7 +1040,7 @@
       dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
-        return { available: !!bones.length, bones: values, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
+        return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
           playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),

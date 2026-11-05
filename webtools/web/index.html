@@ -97,7 +97,7 @@
                   <p id="viewer-pose-help" class="viewer-render-note" data-i18n="No compatible preview motion is available.">No compatible preview motion is available.</p>
                   <p id="viewer-quality-help" class="viewer-render-note" data-i18n="Uses your device's resolution and smoother model edges.">Uses your device's resolution and smoother model edges.</p>
                   <p id="viewer-quality-status" class="viewer-render-note" role="status" aria-live="polite" hidden></p>
-                  <p class="viewer-render-note" data-i18n="Preview only. The original files stay unchanged.">Preview only. The original files stay unchanged.</p>
+                  <p class="viewer-render-note" data-i18n="Preview edits stay temporary until you save a new copy.">Preview edits stay temporary until you save a new copy.</p>
                   <p class="viewer-gesture-help" data-i18n="Drag to rotate · Pinch or scroll to zoom · Two fingers to move">Drag to rotate · Pinch or scroll to zoom · Two fingers to move</p>
                 </div>
               </details>
@@ -105,6 +105,32 @@
           </div>
           </div>
           <div class="viewer-control-panel">
+          <details id="viewer-save-panel" class="viewer-adjustments viewer-save-panel">
+            <summary data-i18n="Save body edits">Save body edits</summary>
+            <p class="viewer-render-note" data-i18n="Save a new costume copy and an edit recipe. Your original files stay unchanged.">Save a new costume copy and an edit recipe. Your original files stay unchanged.</p>
+            <p class="viewer-render-note" data-i18n="Only body edits are saved. Pose, expression, visibility and camera choices are preview-only.">Only body edits are saved. Pose, expression, visibility and camera choices are preview-only.</p>
+            <div class="viewer-save-actions">
+              <button id="viewer-save" type="button" class="viewer-primary" data-i18n="Save edited copy" disabled>Save edited copy</button>
+              <button id="viewer-recipe-open" type="button" data-i18n="Load edit recipe" disabled>Load edit recipe</button>
+              <button id="viewer-save-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
+            </div>
+            <p id="viewer-save-status" class="viewer-render-note" role="status" aria-live="polite"></p>
+            <p id="viewer-save-result-note" class="viewer-render-note" hidden></p>
+            <progress id="viewer-save-progress" aria-label="Save progress" hidden></progress>
+            <ul id="viewer-save-output-list" class="viewer-save-output-list" hidden></ul>
+            <div class="viewer-save-actions">
+              <button id="viewer-open-saved" type="button" data-i18n="Open saved result" hidden>Open saved result</button>
+              <button id="viewer-reedit-original" type="button" data-i18n="Re-edit from original" hidden>Re-edit from original</button>
+            </div>
+            <details class="viewer-save-advanced">
+              <summary data-i18n="Motion overwrite check">Motion overwrite check</summary>
+              <label><span data-i18n="Preview evaluation">Preview evaluation</span><select id="viewer-edit-evaluation" disabled>
+                <option value="authoring" data-i18n="Edit preview">Edit preview</option>
+                <option value="animation" data-i18n="Check node edits against motion">Check node edits against motion</option>
+              </select></label>
+              <p id="viewer-edit-evaluation-status" class="viewer-render-note" role="status"></p>
+            </details>
+          </details>
           <details id="viewer-adjustments" class="viewer-adjustments" open>
             <summary data-i18n="Pose and body">Pose and body</summary>
             <div class="viewer-motion-row">
@@ -113,6 +139,12 @@
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
             <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
+            <div id="viewer-editor-tabs" class="viewer-editor-tabs" role="tablist" aria-label="Body editing tools">
+              <button id="viewer-editor-node-tab" type="button" role="tab" aria-selected="true" aria-controls="viewer-editor-node-panel" tabindex="0"><span data-i18n="Node Scaling">Node Scaling</span><output id="viewer-editor-node-count" aria-label="Node edits">0</output></button>
+              <button id="viewer-editor-mesh-tab" type="button" role="tab" aria-selected="false" aria-controls="viewer-editor-mesh-panel" tabindex="-1"><span data-i18n="Mesh Baker">Mesh Baker</span><output id="viewer-editor-mesh-count" aria-label="Mesh edits">0</output></button>
+            </div>
+            <section id="viewer-editor-node-panel" class="viewer-editor-panel" role="tabpanel" aria-labelledby="viewer-editor-node-tab">
+              <p class="viewer-render-note" data-i18n="New edits here use node settings. Existing edits keep their save method.">New edits here use node settings. Existing edits keep their save method.</p>
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
               <div class="viewer-body-controls">
@@ -163,6 +195,46 @@
               <div id="viewer-body-extra" class="viewer-body-controls" hidden></div>
               <p class="viewer-render-note"><span data-i18n="File values stay unchanged when you edit the preview or turn saved settings off.">File values stay unchanged when you edit the preview or turn saved settings off.</span> <span data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</span></p>
             </section>
+              <div id="viewer-node-tool-slot"><div id="viewer-shared-bone-editor" class="viewer-shared-bone-editor">
+            <details id="viewer-common-adjustments" class="viewer-control-section viewer-node-quick" open>
+              <summary><span id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</span></summary>
+              <div id="viewer-node-shortcuts" class="viewer-chip-list" role="group" aria-labelledby="viewer-node-quick-title"></div>
+            </details>
+            <details id="viewer-node-editor" class="viewer-node-editor">
+              <summary id="viewer-node-editor-title" data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
+              <p id="viewer-save-selected" class="viewer-render-note"></p>
+              <label><span data-i18n="Selected bone save method">Selected bone save method</span><select id="viewer-save-method" disabled>
+                <option value="auto" data-i18n="Automatic recommendation">Automatic recommendation</option>
+                <option value="node" data-i18n="Node scaling">Node scaling</option>
+                <option value="mesh" data-i18n="Bake into mesh">Bake into mesh</option>
+              </select></label>
+              <p id="viewer-save-method-status" class="viewer-render-note" role="status"></p>
+              <div class="viewer-node-browser">
+                <label><span data-i18n="Find a bone">Find a bone</span><input id="viewer-node-search" type="search" data-i18n-ph="Search by body part or bone name" placeholder="Search by body part or bone name" autocomplete="off" disabled></label>
+                <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="tool" data-i18n="Recommended for this tool">Recommended for this tool</option><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option><option value="frequent" data-i18n="Frequently adjusted">Frequently adjusted</option></select></label>
+              </div>
+              <div id="viewer-node-change-list" class="viewer-node-change-list" role="group" aria-labelledby="viewer-node-editor-title"></div>
+              <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
+              <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
+              <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
+              <p class="viewer-render-note" data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</p>
+              <p class="viewer-render-note" data-i18n="Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.">Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.</p>
+              <div id="viewer-bone-compensation" class="viewer-bone-compensation">
+                <label><input id="bone-compensate-children" type="checkbox" disabled><span data-i18n="Compensate child bone scale">Compensate child bone scale</span></label>
+                <label for="bone-compensate-target" data-i18n="Compensation targets">Compensation targets</label>
+                <select id="bone-compensate-target" disabled><option value="auto" data-i18n="Immediate child bones (auto)">Immediate child bones (auto)</option><option value="spine2">Spine2</option><option value="spine1">Spine1</option><option value="both">Spine1 + Spine2</option></select>
+                <p id="bone-compensation-status" role="status" aria-live="polite"></p>
+              </div>
+              <div id="viewer-node-fields"></div>
+              <button id="viewer-node-reset" type="button" data-i18n="Undo manual bone edits" disabled>Undo manual bone edits</button>
+            </details>
+
+</div></div>
+            </section>
+            <section id="viewer-editor-mesh-panel" class="viewer-editor-panel" role="tabpanel" aria-labelledby="viewer-editor-mesh-tab" hidden>
+              <p class="viewer-render-note" data-i18n="New edits here are baked into a costume copy. Existing edits keep their save method.">New edits here are baked into a costume copy. Existing edits keep their save method.</p>
+              <div id="viewer-mesh-tool-slot"></div>
+            </section>
             <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
             <p class="viewer-render-note" data-i18n="Loads the file's size, position and rotation corrections.">Loads the file's size, position and rotation corrections.</p>
             <p id="viewer-saved-status" class="viewer-render-note" role="status"></p>
@@ -185,31 +257,6 @@
               </details>
             </section>
             <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
-            <details id="viewer-common-adjustments" class="viewer-control-section viewer-node-quick" open>
-              <summary><span id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</span></summary>
-              <div id="viewer-node-shortcuts" class="viewer-chip-list" role="group" aria-labelledby="viewer-node-quick-title"></div>
-            </details>
-            <details id="viewer-node-editor" class="viewer-node-editor">
-              <summary id="viewer-node-editor-title" data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
-              <div class="viewer-node-browser">
-                <label><span data-i18n="Find a bone">Find a bone</span><input id="viewer-node-search" type="search" data-i18n-ph="Search by body part or bone name" placeholder="Search by body part or bone name" autocomplete="off" disabled></label>
-                <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option><option value="frequent" data-i18n="Frequently adjusted">Frequently adjusted</option></select></label>
-              </div>
-              <div id="viewer-node-change-list" class="viewer-node-change-list" role="group" aria-labelledby="viewer-node-editor-title"></div>
-              <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
-              <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
-              <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
-              <p class="viewer-render-note" data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</p>
-              <p class="viewer-render-note" data-i18n="Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.">Each bone uses local X, Y and Z axes. Their directions may differ from the model axes.</p>
-              <div id="viewer-bone-compensation" class="viewer-bone-compensation">
-                <label><input id="bone-compensate-children" type="checkbox" disabled><span data-i18n="Compensate child bone scale">Compensate child bone scale</span></label>
-                <label for="bone-compensate-target" data-i18n="Compensation targets">Compensation targets</label>
-                <select id="bone-compensate-target" disabled><option value="auto" data-i18n="Immediate child bones (auto)">Immediate child bones (auto)</option><option value="spine2">Spine2</option><option value="spine1">Spine1</option><option value="both">Spine1 + Spine2</option></select>
-                <p id="bone-compensation-status" role="status" aria-live="polite"></p>
-              </div>
-              <div id="viewer-node-fields"></div>
-              <button id="viewer-node-reset" type="button" data-i18n="Undo manual bone edits" disabled>Undo manual bone edits</button>
-            </details>
             <button id="viewer-preview-reset" type="button" data-i18n="Reset preview adjustments" disabled>Reset preview adjustments</button>
           </details>
           <details class="viewer-options">
@@ -280,6 +327,7 @@
   <script src="/static/viewer-expressions.js"></script>
   <script src="/static/viewer-rig.js"></script>
   <script src="/static/viewer-quality.js"></script>
+  <script src="/static/viewer-persistence.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
 </body>

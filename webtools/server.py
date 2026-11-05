@@ -10,7 +10,7 @@ import os
 import posixpath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from webtools import filebrowser
 from webtools import i18n
@@ -92,6 +92,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_download()
             if path.startswith("/api/viewer/model/"):
                 return self._api_viewer_model(path[len("/api/viewer/model/"):])
+            if path.startswith("/api/viewer/edit/result/"):
+                return self._api_viewer_edit_result(path[len("/api/viewer/edit/result/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
                 job_id = path[len("/api/jobs/"):-len("/events")]
                 return self._api_events(job_id)
@@ -107,6 +109,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/viewer/prepare":
                 return self._api_viewer_prepare()
+            if path == "/api/viewer/edit/export":
+                return self._api_viewer_edit_export()
+            if path == "/api/viewer/edit/restore":
+                return self._api_viewer_edit_restore()
             if path.startswith("/api/run/"):
                 return self._api_run(path[len("/api/run/"):])
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
@@ -161,8 +167,15 @@ class Handler(BaseHTTPRequestHandler):
         name = os.path.basename(real)
         with open(real, "rb") as f:
             data = f.read()
+        # HTTP headers are Latin-1. Keep the original Unicode filename in the
+        # RFC 5987 parameter, with an ASCII fallback for older download clients.
+        import re
+        fallback = re.sub(r"[^A-Za-z0-9._-]", "_", name.encode("ascii", "ignore").decode("ascii"))
+        if not fallback or fallback.startswith("."):
+            fallback = "download" + fallback
         self._send_bytes(data, "application/octet-stream",
-                         extra_headers={"Content-Disposition": f'attachment; filename="{name}"'})
+                         extra_headers={"Content-Disposition":
+                                        f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(name, safe="")}'})
 
     def _api_viewer_prepare(self):
         # Keep selected paths and feature flags bounded before loading assets.
@@ -240,6 +253,23 @@ class Handler(BaseHTTPRequestHandler):
                      "source_name": item["source_name"], "selected": item["selected"],
                      "choices": item["choices"]}
                     for item in expanded.variants]
+                # The editable inputs must be captured while ZIP members still
+                # exist. Auto-discovered faces and motions are deliberately not
+                # writable sources, even though they appear in the preview.
+                if rigged and result.get("rig", {}).get("available"):
+                    from webtools.core import model_edits
+                    try:
+                        result["editing"] = model_edits.register_session(
+                            result["id"], expanded.paths, result["rig"],
+                            originals=resolved, origins=expanded.origins,
+                            archive_members=getattr(expanded, "archive_members", {}),
+                            variants={item["source_path"]: item["selected"]
+                                      for item in expanded.variants},
+                            cache_dir=cache_dir)
+                    except (ValueError, OSError) as exc:
+                        # A bounded editing-cache failure must not prevent
+                        # opening an otherwise valid read-only model.
+                        result["editing"] = {"available": False, "reason": str(exc)}
             return self._send_json(result)
         except (ValueError, TypeError) as exc:
             return self._send_json({"error": str(exc)}, status=400)
@@ -259,6 +289,104 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "Model preview expired. Load the model again."}, status=404)
         return self._send_bytes(data, "model/gltf-binary",
                                 extra_headers={"Cache-Control": "no-store"})
+
+    def _viewer_edit_request(self, fields):
+        """Bound writes to source-bound sessions, without caller output paths."""
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlsplit(origin)
+            if (parsed.scheme not in ("http", "https") or parsed.username
+                    or parsed.password or parsed.path not in ("", "/")
+                    or parsed.query or parsed.fragment
+                    or parsed.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                raise PermissionError("Open the editor from this app before saving changes.")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid editing request size.") from None
+        if not 0 < length <= 512 * 1024:
+            raise ValueError("The editing request is too large or empty.")
+        params = self._read_json_body()
+        if not isinstance(params, dict) or set(params) != set(fields):
+            raise ValueError("Unsupported editing request.")
+        import re
+        if not isinstance(params.get("token"), str) or not re.fullmatch(r"[a-f0-9]{32}", params["token"]):
+            raise ValueError("Load the original model before editing it.")
+        return params
+
+    def _api_viewer_edit_export(self):
+        try:
+            params = self._viewer_edit_request({"token", "state"})
+            if not isinstance(params["state"], dict):
+                raise ValueError("Invalid model editing values.")
+            from webtools.core import model_edits
+            from webtools.core.sukusta import default_sukusta_dir
+            # Validate before creating a background job so expired sessions and
+            # invalid input remain actionable errors beside the save control.
+            validator = getattr(model_edits, "validate_state", None)
+            if validator is not None:
+                validator(params["token"], params["state"])
+            output_dir = os.path.realpath(default_sukusta_dir("modded/viewer"))
+            if not filebrowser.is_within_allowed(output_dir):
+                raise PermissionError("The model output folder is outside the allowed folders.")
+            job = MANAGER.create("viewer_body_edit")
+
+            def save(current):
+                if current.should_stop():
+                    return "Model saving was cancelled."
+                current.progress(0, 1)
+                result = model_edits.export(
+                    params["token"], params["state"], output_dir, log=current.log)
+                # Only fully written copies are exposed. The source files are
+                # never replaced, and each export owns a distinct directory.
+                current._viewer_edit_result = result
+                for path in result.get("output_paths", []):
+                    current.add_output(path)
+                recipe_path = result.get("recipe_path")
+                if recipe_path:
+                    current.add_output(recipe_path)
+                current.progress(1, 1)
+                return "Edited model and editing recipe saved."
+
+            MANAGER.run_async(job, save)
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except FileNotFoundError:
+            return self._send_json({"error": "The original model is no longer available. Load it again."}, status=404)
+        except TimeoutError:
+            return self._send_json({"error": "Another model is saving. Try again shortly."}, status=503)
+
+    def _api_viewer_edit_restore(self):
+        try:
+            params = self._viewer_edit_request({"token", "recipe"})
+            if not isinstance(params["recipe"], dict):
+                raise ValueError("Choose an editing recipe for this original model.")
+            from webtools.core import model_edits
+            state = model_edits.restore(params["token"], params["recipe"])
+            return self._send_json({"state": state})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except FileNotFoundError:
+            return self._send_json({"error": "The original model is no longer available. Load it again."}, status=404)
+
+    def _api_viewer_edit_result(self, job_id):
+        import re
+        if not re.fullmatch(r"[a-f0-9]{12}", job_id):
+            return self._send_json({"error": "The saved model was not found."}, status=404)
+        job = MANAGER.get(job_id)
+        if job is None or job.tool_id != "viewer_body_edit":
+            return self._send_json({"error": "The saved model was not found."}, status=404)
+        if not job.is_done:
+            return self._send_json({"status": job.status}, status=202)
+        result = getattr(job, "_viewer_edit_result", None)
+        if job.status != "done" or not isinstance(result, dict):
+            return self._send_json({"error": "The model was not saved. Check the save status and try again."}, status=400)
+        return self._send_json(result)
 
     def _api_options(self, spec):
         """Serve a dynamic_select field's options: /api/options/<tool>/<field>.

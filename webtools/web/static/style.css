@@ -650,3 +650,23 @@ body.viewer-active-page > main { padding: 6px; }
   .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(2) { border-top: 1px solid rgba(137,151,172,.25); }
   .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(even) { border-left: 0; }
 }
+
+/* Persistent editing stays in the existing side/drawer workspace. */
+.viewer-save-panel { margin-bottom: .7rem; }
+.viewer-save-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin: .55rem 0; }
+.viewer-save-actions button { min-height: 44px; }
+.viewer-save-panel progress { width: 100%; max-width: 100%; }
+.viewer-save-output-list { margin: .6rem 0; padding-inline-start: 1.25rem; overflow-wrap: anywhere; }
+.viewer-save-output-list li { margin: .35rem 0; }
+.viewer-save-advanced { margin-top: .65rem; }
+.viewer-save-advanced label { display: grid; gap: .3rem; margin: .6rem 0; }
+.viewer-save-advanced select { min-height: 44px; max-width: 100%; width: 100%; }
+.viewer-save-panel .viewer-save-error { color: var(--danger, #ff8a8a); }
+
+.viewer-editor-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; margin: .7rem 0; }
+.viewer-editor-tabs button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .3rem; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+.viewer-editor-tabs button[aria-selected="true"] { border-color: var(--accent, #8fa8ff); background: var(--accent-soft, rgba(125, 145, 255, .16)); }
+.viewer-editor-tabs output { min-width: 1.25em; border-radius: .7em; padding: .05em .3em; background: rgba(125, 145, 255, .16); }
+.viewer-editor-panel[hidden] { display: none !important; }
+.viewer-shared-bone-editor > .viewer-node-editor { margin-top: .6rem; }
+.viewer-shared-bone-editor #viewer-save-method { width: 100%; min-height: 44px; }

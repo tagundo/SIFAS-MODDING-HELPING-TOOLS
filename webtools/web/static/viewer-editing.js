@@ -48,7 +48,7 @@
     var ownedLists = [document.getElementById("viewer-node-shortcuts"), document.getElementById("viewer-node-change-list")];
     ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
     if (search) search.value = "";
-    if (filter) filter.value = "all";
+    if (filter) filter.value = options.defaultFilter || "all";
     var labels = { Head: "Head", Head_Hair: "Hair", Neck_Hair: "Back hair", Spine: "Waist and torso",
       Spine2: "Upper body", HipsSize: "Hip size", BreastSize: "Breast size", Move: "Whole model",
       LeftThigh: "Left thigh", RightThigh: "Right thigh", LeftArm: "Left arm", RightArm: "Right arm" };
@@ -109,7 +109,7 @@
       var term = search ? search.value.trim().toLowerCase() : "", mode = filter ? filter.value : "all";
       var visible = bones.filter(function (bone) {
         var state = flags(bone.id);
-        var category = mode === "all" || mode === "saved" && state.saved ||
+        var category = mode === "all" || mode === "tool" && (!options.forTool || options.forTool(bone.id)) || mode === "saved" && state.saved ||
           mode === "changed" && (state.modified || state.body || state.expression) ||
           mode === "frequent" && isFrequent(bone);
         return category && (!term || (friendly(bone) + " " + bone.name).toLowerCase().indexOf(term) >= 0);
@@ -132,7 +132,7 @@
       if (search) search.disabled = !enabled || !bones.length;
       if (filter) filter.disabled = !enabled || !bones.length;
       var shortcuts = document.getElementById("viewer-node-shortcuts"), changes = document.getElementById("viewer-node-change-list");
-      updateButtons(shortcuts, shortcutButtons, bones.filter(isFrequent), "No recommended bones in this model.");
+      updateButtons(shortcuts, shortcutButtons, bones.filter(isFrequent).filter(function (bone) { return !options.forTool || options.forTool(bone.id); }), "No recommended bones in this model.");
       updateButtons(changes, changeButtons, bones.filter(function (bone) {
         var value = flags(bone.id); return value.modified || value.body || value.expression;
       }), "No changed bones.");

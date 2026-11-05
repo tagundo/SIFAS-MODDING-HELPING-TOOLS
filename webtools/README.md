@@ -140,6 +140,13 @@ repacking is unnecessary and the source files remain unchanged.
 - **Breast size**, **Skirt scale** and **Common adjustments** can be collapsed
   independently. Collapsing a section keeps its selected profile, selected bone,
   saved-setting choices and edited values.
+- **Node Scaling** and **Mesh Baker** share the same viewport but have separate
+  editing sections. The node section contains breast/skirt controls and its
+  recommended bones; the mesh section starts with bones whose scale is animated
+  in the audited MV clips. Switching sections changes the available controls,
+  not existing edits. Advanced selection can show all bones and choose either
+  storage method explicitly. These recommendations cover observed clips, not
+  every song or every original-game animation.
 - **Basic pose** shows the model's authored pose; **Posed view** switches to the
   verified original suit-preview pose. Both buttons pause at the first frame
   and preserve body adjustments, saved-setting choices and individual edits.
@@ -203,9 +210,31 @@ repacking is unnecessary and the source files remain unchanged.
 - **Reset preview adjustments** restores the verified suit-preview first frame
   when compatible, or otherwise the saved pose, and resets the controls and saved
   settings and part visibility to their loaded defaults. These
-  preview changes do not write to the source bundle. The separate LiveCore and
-  Mesh Baker tools save persistent edits; Node Scaling Fix also exposes the
-  optional raw game `heightScale` setting for single-file runs.
+  preview changes do not write to the source bundle until **Save edited copy**
+  is used. The separate tool forms remain available; Node Scaling Fix also
+  exposes the optional raw game `heightScale` setting for single-file runs.
+- **Save edited copy** writes the selected body changes to new Unity files or
+  replaces only the selected model members of a costume ZIP. Other ZIP members,
+  variant models and installer manifests are retained. Original copies and a
+  content-bound `recipe.json` are saved beside the models under
+  `sukusta/modded/viewer/body-edit-…/`. Reopening preserved originals and importing
+  the recipe rebuilds from those originals rather than repeatedly baking a
+  previous result. Camera, animation playhead, expression preview and part
+  visibility are viewing choices and are not silently written as body edits.
+- **Open saved result** inspects the actual serialized output. Persistent body
+  controls stay locked while inspecting it; pose, motion, camera and expressions
+  remain available. **Re-edit from original** restores the saved editing recipe
+  on its preserved original files. Save newer body changes before inspecting an
+  older result so returning to its recipe cannot discard unsaved edits.
+- **Animation priority** shows the loaded clip's own track values after node
+  adjustments, including constant scale tracks. It helps expose competing keys;
+  it is not a complete SIFAS renderer or a guarantee about unselected MV clips.
+  Mesh baking preserves the requested reference-frame shape, but a rotated,
+  multiply weighted skin can differ from the live node-edit preview. Inspect
+  the saved result when checking its animation. Unsafe rigid-face or read-only
+  attachment changes are refused rather than exporting only part of a model.
+  Baking currently requires Float32 positions and any normal/tangent channels
+  it rewrites; packed geometry can still use saved-node edits when available.
 - Expression controls show immutable file and current morph weights. A stored
   negative or over-100% weight is preserved and represented by the raw controls;
   weights are absolute blend weights, not extra bone multipliers. Motion choices

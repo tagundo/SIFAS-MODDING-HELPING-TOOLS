@@ -1734,6 +1734,177 @@ _VIEWER_TRANSLATIONS.update({
     "Costume variant choices must refer to selected costume ZIPs.": ["선택한 의상 ZIP의 버전만 고를 수 있습니다.", "選択した衣装ZIPのバージョンのみ指定できます。"],
     "This costume ZIP does not offer that variant.": ["이 ZIP에는 해당 의상 버전이 없습니다.", "このZIPには指定された衣装バージョンがありません。"],
 })
+_VIEWER_TRANSLATIONS.update({'Save body edits': ['체형 편집 저장', '体型編集を保存'],
+ 'Save a new costume copy and an edit recipe. Your original files stay unchanged.': ['수정한 의상 사본과 편집 기록을 '
+                                                                                     '저장합니다. 원본 파일은 유지됩니다.',
+                                                                                     '編集した衣装のコピーと編集レシピを保存します。元ファイルは保持されます。'],
+ 'Save edited copy': ['수정본 저장', '編集コピーを保存'],
+ 'Load edit recipe': ['편집 기록 불러오기', '編集レシピを開く'],
+ 'Open saved result': ['저장 결과 확인', '保存結果を確認'],
+ 'Re-edit from original': ['원본에서 계속 편집', '元ファイルから編集を続ける'],
+ 'Save method and motion check': ['저장 방식·모션 확인', '保存方法・モーション確認'],
+ 'Selected bone save method': ['선택한 본의 저장 방식', '選択ボーンの保存方法'],
+ 'Automatic recommendation': ['자동 추천', '自動おすすめ'],
+ 'Node scaling': ['노드 배율', 'ノード倍率'],
+ 'Bake into mesh': ['메시에 반영', 'メッシュに反映'],
+ 'Preview evaluation': ['미리보기 적용 순서', 'プレビューの適用順序'],
+ 'Editing view': ['편집 결과 보기', '編集結果を表示'],
+ 'Check node edits against motion': ['모션의 노드 덮어쓰기 확인', 'モーションによるノード上書きを確認'],
+ 'Preview edits stay temporary until you save a new copy.': ['새 사본을 저장하기 전까지 편집은 미리보기에만 적용됩니다.',
+                                                             '新しいコピーを保存するまで、編集はプレビューのみに適用されます。'],
+ 'Open a model to save body edits.': ['모델을 열면 체형 편집을 저장할 수 있습니다.', 'モデルを開くと体型編集を保存できます。'],
+ 'Body saving is unavailable for this model.': ['이 모델은 체형 편집을 저장할 수 없습니다.', 'このモデルでは体型編集を保存できません。'],
+ 'Body changes': ['체형 변경', '体型の変更'],
+ 'Selected bone': ['선택한 본', '選択中のボーン'],
+ 'Choose a bone in Individual bones to set its save method.': ['개별 본에서 본을 선택하면 저장 방식을 지정할 수 있습니다.',
+                                                               '個別ボーンでボーンを選ぶと、保存方法を設定できます。'],
+ 'Recommended': ['추천', 'おすすめ'],
+ 'observed_mv_scale_track': ['확인한 MV에서 배율 키가 있는 본', '調査したMVに倍率トラックがあるボーン'],
+ 'saved_node_setting': ['파일에 저장된 노드 설정 사용', 'ファイルに保存されたノード設定を使用'],
+ 'unverified_motion_coverage': ['모션 적용 여부 미확인', 'モーションへの適用は未確認'],
+ 'The current scale will be saved into the mesh, including existing node scaling.': ['기존 노드 배율을 포함한 현재 배율을 '
+                                                                                     '메시에 반영합니다.',
+                                                                                     '既存のノード倍率を含む現在の倍率をメッシュに反映します。'],
+ 'Checks loaded motion tracks against node edits. Open the saved result to inspect mesh changes.': ['불러온 모션이 '
+                                                                                                    '노드 편집을 '
+                                                                                                    '덮어쓰는지 '
+                                                                                                    '확인합니다. '
+                                                                                                    '메시 반영 '
+                                                                                                    '결과는 저장 '
+                                                                                                    '후 다시 열어 '
+                                                                                                    '확인하세요.',
+                                                                                                    '読み込んだモーションがノード編集を上書きするか確認します。メッシュへの反映結果は保存後に開いて確認してください。'],
+ 'Editing values are shown after motion. They may differ from game playback.': ['모션 뒤에 편집값을 적용해 보여 줍니다. 게임 '
+                                                                                '재생 결과와 다를 수 있습니다.',
+                                                                                'モーションの後に編集値を適用して表示します。ゲーム内の再生結果と異なる場合があります。'],
+ 'Loaded motion scale targets': ['모션의 배율 적용 본', 'モーションの倍率対象ボーン'],
+ 'No motion is selected.': ['선택한 모션이 없습니다.', 'モーションが選択されていません。'],
+ "The recipe's saved child-compensation baseline is retained.": ['편집 기록의 하위 본 보정 기준을 유지합니다.',
+                                                                 '編集レシピの子ボーン補正基準を保持しています。'],
+ 'Reviewing the saved copy. Re-edit from original to continue.': ['저장한 사본을 확인 중입니다. 계속 수정하려면 원본에서 계속 편집을 '
+                                                                  '누르세요.',
+                                                                  '保存コピーを確認中です。編集を続けるには「元ファイルから編集を続ける」を押してください。'],
+ 'The body edits could not be saved.': ['체형 편집을 저장하지 못했습니다.', '体型編集を保存できませんでした。'],
+ 'Saving cancelled.': ['저장을 취소했습니다.', '保存をキャンセルしました。'],
+ 'Save progress is unavailable. Reopen this page and try again.': ['저장 진행 상황을 연결할 수 없습니다. 이 화면을 다시 열어 시도하세요.',
+                                                                   '保存状況に接続できません。この画面を開き直して再度お試しください。'],
+ 'The save response is invalid.': ['저장 응답이 올바르지 않습니다.', '保存の応答が無効です。'],
+ 'Reconnecting to save progress…': ['저장 진행 상황에 다시 연결 중…', '保存状況に再接続中…'],
+ 'Save progress was interrupted. Your original files are unchanged.': ['저장 진행 연결이 끊어졌습니다. 원본 파일은 유지됩니다.',
+                                                                       '保存状況の接続が切れました。元ファイルは変更されていません。'],
+ 'Open the original model before saving body edits.': ['원본 모델을 열고 체형 편집을 저장하세요.',
+                                                       '元のモデルを開いてから体型編集を保存してください。'],
+ 'Change a body value before saving.': ['체형 값을 바꾼 뒤 저장하세요.', '体型の値を変更してから保存してください。'],
+ 'Saving a new costume copy…': ['새 의상 사본 저장 중…', '新しい衣装コピーを保存中…'],
+ 'The save result is unavailable.': ['저장 결과를 가져오지 못했습니다.', '保存結果を取得できませんでした。'],
+ 'Saved. Open the saved result to verify it.': ['저장했습니다. 저장 결과 확인을 눌러 다시 열어 보세요.',
+                                                '保存しました。「保存結果を確認」で開き直して確認してください。'],
+ 'Saved the previous model. The current preview was not changed.': ['이전 모델을 저장했습니다. 현재 미리보기는 유지됩니다.',
+                                                                    '前のモデルを保存しました。現在のプレビューは変更されていません。'],
+ 'Choose a saved body edit recipe JSON file.': ['저장한 체형 편집 기록 JSON 파일을 선택하세요.',
+                                                '保存した体型編集レシピのJSONファイルを選択してください。'],
+ 'The edit recipe could not be opened.': ['편집 기록을 열지 못했습니다.', '編集レシピを開けませんでした。'],
+ 'The edit recipe is too large or empty.': ['편집 기록 파일이 너무 크거나 비어 있습니다.', '編集レシピのファイルが大きすぎるか空です。'],
+ 'The body edit recipe is invalid.': ['체형 편집 기록이 올바르지 않습니다.', '体型編集レシピが無効です。'],
+ 'Open the original model before loading its recipe.': ['원본 모델을 연 뒤 편집 기록을 불러오세요.',
+                                                        '元のモデルを開いてから編集レシピを読み込んでください。'],
+ 'The model changed while its recipe was loading. Try again.': ['편집 기록을 불러오는 동안 모델이 바뀌었습니다. 다시 시도하세요.',
+                                                                '編集レシピの読み込み中にモデルが変わりました。再度お試しください。'],
+ 'Edit recipe restored from the original model.': ['원본 모델에 편집 기록을 불러왔습니다.', '元のモデルに編集レシピを復元しました。'],
+ 'Loading edit recipe…': ['편집 기록 불러오는 중…', '編集レシピを読み込み中…'],
+ 'The saved model could not be opened.': ['저장한 모델을 열지 못했습니다.', '保存したモデルを開けませんでした。'],
+ 'Opening the original model and edit recipe…': ['원본 모델과 편집 기록 여는 중…', '元のモデルと編集レシピを開いています…'],
+ 'The original model could not be opened.': ['원본 모델을 열지 못했습니다.', '元のモデルを開けませんでした。'],
+ 'Reset expression edits before saving body changes.': ['체형 변경을 저장하려면 표정 편집을 먼저 초기화하세요.',
+                                                        '体型変更を保存する前に表情編集をリセットしてください。'],
+ 'Reset part visibility changes before saving body changes.': ['체형 변경을 저장하려면 부분 표시 변경을 먼저 초기화하세요.',
+                                                               '体型変更を保存する前にパーツ表示の変更をリセットしてください。'],
+ 'Correct the invalid editing values before saving.': ['잘못 입력한 편집 값을 수정한 뒤 저장하세요.', '無効な編集値を修正してから保存してください。'],
+ 'Turn saved file settings on before saving body changes.': ['체형 변경을 저장하려면 파일에 저장된 설정을 켜세요.',
+                                                             '体型変更を保存する前にファイルに保存された設定を有効にしてください。'],
+ 'Unsupported saved settings must be resolved before saving body changes.': ['지원하지 않는 파일 설정을 해결한 뒤 체형 변경을 '
+                                                                             '저장하세요.',
+                                                                             '未対応の保存設定を解決してから体型変更を保存してください。'],
+ 'Some edited bones are read-only. Open their original model file to save them.': ['편집한 본 중 읽기 전용 본이 있습니다. '
+                                                                                   '해당 본의 원본 모델 파일을 열어 '
+                                                                                   '저장하세요.',
+                                                                                   '編集したボーンに読み取り専用のものがあります。その元モデルを開いて保存してください。'],
+ 'Choose a valid body save method.': ['올바른 체형 저장 방식을 선택하세요.', '有効な体型保存方法を選択してください。']})
+_VIEWER_TRANSLATIONS.update({'Edit preview': ['편집 미리보기', '編集プレビュー'],
+ 'Choose a save method': ['저장 방식 선택 필요', '保存方法を選択してください'],
+ 'Baked results can differ while moving. Open the saved result to check the exported model.': ['움직일 때 메시 반영 '
+                                                                                               '결과가 미리보기와 다를 '
+                                                                                               '수 있습니다. 저장 '
+                                                                                               '결과를 다시 열어 '
+                                                                                               '확인하세요.',
+                                                                                               '動作中のベイク結果はプレビューと異なる場合があります。保存結果を開いて出力モデルを確認してください。'],
+ 'Choose a save method for unverified body nodes in advanced settings.': ['확인되지 않은 본은 고급 설정에서 저장 방식을 선택하세요.',
+                                                                          '未確認のボーンは詳細設定で保存方法を選択してください。'],
+ "Edit an attached model's original position in its own source model file.": ['자동 연결된 모델의 위치는 해당 원본 모델 파일에서 '
+                                                                              '편집하세요.',
+                                                                              '自動接続されたモデルの位置は、その元モデルファイルで編集してください。'],
+ 'The body editing session is invalid. Open the model again.': ['체형 편집 세션이 올바르지 않습니다. 모델을 다시 여세요.',
+                                                                '体型編集セッションが無効です。モデルを開き直してください。'],
+ 'The body editing session expired. Open the original model again.': ['체형 편집 세션이 만료됐습니다. 원본 모델을 다시 여세요.',
+                                                                      '体型編集セッションが期限切れです。元のモデルを開き直してください。'],
+ 'An original model changed after opening. Reopen it before saving.': ['모델을 연 뒤 원본 파일이 바뀌었습니다. 다시 연 후 저장하세요.',
+                                                                       'モデルを開いた後に元ファイルが変更されました。開き直してから保存してください。'],
+ 'This recipe belongs to different original model bytes. Open its preserved originals first.': ['이 편집 기록의 '
+                                                                                                '원본과 현재 모델이 '
+                                                                                                '다릅니다. 기록과 '
+                                                                                                '함께 보존된 원본을 '
+                                                                                                '먼저 여세요.',
+                                                                                                'この編集レシピの元データと現在のモデルが異なります。レシピとともに保存された元ファイルを先に開いてください。'],
+ 'This model has no writable saved NodeScaling component; choose mesh baking.': ['이 모델에는 수정할 수 있는 노드 배율 설정이 '
+                                                                                 '없습니다. 메시 반영을 선택하세요.',
+                                                                                 'このモデルには編集可能なノード倍率設定がありません。メッシュへの反映を選択してください。'],
+ 'Child compensation requires a mesh scale edit.': ['하위 본 보정은 메시 배율 편집에서 사용할 수 있습니다.',
+                                                    '子ボーン補正はメッシュの倍率編集で使用できます。'],
+ 'This model has no editable rig.': ['이 모델에는 편집할 수 있는 본이 없습니다.', 'このモデルには編集可能なボーンがありません。'],
+ 'No original writable body nodes were found.': ['수정할 수 있는 원본 체형 본을 찾지 못했습니다.', '編集可能な元の体型ボーンが見つかりませんでした。'],
+ 'The selected mesh changes do not influence any writable skinned vertices.': ['선택한 메시 변경이 수정 가능한 정점에 영향을 주지 '
+                                                                               '않습니다.',
+                                                                               '選択したメッシュ変更は編集可能なスキン頂点に影響しません。']})
+_VIEWER_TRANSLATIONS.update({
+    "Scale recommendation": ["배율 저장 추천", "倍率の保存おすすめ"],
+    "Choose a save method explicitly for position or rotation edits; MV compatibility differs by motion.": ["이동·회전 편집은 저장 방식을 직접 선택하세요. MV 반영 여부는 모션에 따라 다릅니다.", "位置・回転の編集は保存方法を明示的に選択してください。MVへの反映はモーションによって異なります。"],
+})
+_VIEWER_TRANSLATIONS.update({
+    "Save current body changes before opening the saved result.": ["현재 체형 변경을 먼저 저장한 뒤 저장 결과를 여세요.", "現在の体型変更を先に保存してから保存結果を開いてください。"],
+})
+_VIEWER_TRANSLATIONS.update({'Node Scaling': ['노드 스케일링', 'ノードスケーリング'],
+ 'Mesh Baker': ['메시 베이커', 'メッシュベイカー'],
+ 'Motion overwrite check': ['모션 덮어쓰기 확인', 'モーションの上書きを確認'],
+ 'Recommended for this tool': ['이 도구의 추천 본', 'このツールのおすすめボーン'],
+ 'New edits here use node settings. Existing edits keep their save method.': ['이 구역의 새 편집은 노드 설정으로 저장합니다. 기존 '
+                                                                              '편집의 저장 방식은 유지됩니다.',
+                                                                              'このエリアの新しい編集はノード設定として保存します。既存の編集は保存方法を維持します。'],
+ 'New edits here are baked into a costume copy. Existing edits keep their save method.': ['이 구역의 새 편집은 의상 '
+                                                                                          '사본의 메시에 반영합니다. 기존 '
+                                                                                          '편집의 저장 방식은 유지됩니다.',
+                                                                                          'このエリアの新しい編集は衣装コピーのメッシュに反映します。既存の編集は保存方法を維持します。'],
+ 'This bone keeps its existing save method when switching tools.': ['구역을 바꿔도 이 본의 기존 저장 방식은 유지됩니다.',
+                                                                    'ツールを切り替えても、このボーンの既存の保存方法は維持されます。'],
+ 'Only body edits are saved. Pose, expression, visibility and camera choices are preview-only.': ['체형 편집만 '
+                                                                                                  '저장합니다. '
+                                                                                                  '포즈·표정·표시 '
+                                                                                                  '여부·카메라는 '
+                                                                                                  '미리보기 '
+                                                                                                  '설정입니다.',
+                                                                                                  '体型編集のみを保存します。姿勢・表情・表示・カメラの選択はプレビュー専用です。']})
+_VIEWER_TRANSLATIONS.update({
+    "Body editing tools": ["체형 편집 도구", "体型編集ツール"],
+    "Node edits": ["노드 편집 수", "ノード編集数"],
+    "Mesh edits": ["메시 편집 수", "メッシュ編集数"],
+})
+_VIEWER_TRANSLATIONS.update({
+    "The saved costume variant choices are invalid.": ["저장된 의상 버전 정보가 올바르지 않습니다.", "保存された衣装バージョンの情報が無効です。"],
+})
+_VIEWER_TRANSLATIONS.update({
+    "Mesh baking requires Float32 vertex positions; use saved node settings for this model.": ["메시 반영에는 Float32 정점 위치가 필요합니다. 이 모델은 노드 설정으로 저장하세요.", "メッシュへの反映にはFloat32の頂点位置が必要です。このモデルはノード設定で保存してください。"],
+    "Mesh baking requires Float32 vertex normals; use saved node settings for this model.": ["메시 반영에는 Float32 정점 노멀이 필요합니다. 이 모델은 노드 설정으로 저장하세요.", "メッシュへの反映にはFloat32の頂点法線が必要です。このモデルはノード設定で保存してください。"],
+    "Mesh baking requires Float32 vertex tangents; use saved node settings for this model.": ["메시 반영에는 Float32 정점 탄젠트가 필요합니다. 이 모델은 노드 설정으로 저장하세요.", "メッシュへの反映にはFloat32の頂点接線が必要です。このモデルはノード設定で保存してください。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

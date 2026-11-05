@@ -1,0 +1,24 @@
+{
+  "bytes": 72872,
+  "sha256": "0536f659457f2a6df0f3fb7451aa449b65720735c54e571b5204fd6d6602aee1",
+  "nodes": [
+    "Move",
+    "LeftUpLeg",
+    "BreastSize"
+  ],
+  "weighted_mesh": "NeutralRibbon",
+  "vertices": 6,
+  "saved_thigh_scale": [
+    1.3,
+    0.9,
+    1.0
+  ],
+  "animation": "Neutral MV scale override",
+  "animation_thigh_scale": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "morphs": false,
+  "scope": "Original generated neutral geometry, not a SIFAS game asset"
+}
