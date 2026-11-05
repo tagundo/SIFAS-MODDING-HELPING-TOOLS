@@ -25,6 +25,9 @@ const $ = (sel) => document.querySelector(sel);
 const SUPPORTED_LANGS = ["en", "ko", "ja"];
 
 function detectLang() {
+  const platform = window.ElichikaPlatform;
+  const nativeLanguage = platform && platform.info().language;
+  if (nativeLanguage && SUPPORTED_LANGS.includes(nativeLanguage)) return nativeLanguage;
   const saved = localStorage.getItem("sifas_lang");
   if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
   const nav = (navigator.language || "en").slice(0, 2).toLowerCase();
@@ -68,9 +71,13 @@ function buildLangSelect() {
 }
 
 async function changeLang(code) {
+  if (!SUPPORTED_LANGS.includes(code) || state.lang === code) return;
   state.lang = code;
   localStorage.setItem("sifas_lang", code);
   await reloadForLang();
+  if (window.ElichikaPlatform && ElichikaPlatform.supports("setLanguage")) {
+    ElichikaPlatform.request("setLanguage", { language: code }).catch((error) => console.warn(String(error.message || error)));
+  }
 }
 
 // reload everything that carries server-translated text and re-render the UI
@@ -137,6 +144,31 @@ async function init() {
   if (window.ModelViewer) window.ModelViewer.mount({
     translate: T,
     pickFile: (onPick) => openPicker("path", onPick, "models"),
+    nativeFilePicker: !!(window.ElichikaPlatform && ElichikaPlatform.supports("openFiles")),
+  });
+  if (window.ElichikaPlatform) ElichikaPlatform.bind({
+    showViewer: () => switchTab("viewer"),
+    openModel: async (args) => {
+      const result = args.paths ? { paths: args.paths } : await ElichikaPlatform.request("openFiles", {
+        multiple: true, extensions: ["unity", "zip", "bundle", "asset", "bytes"], title: T("Choose costume file"),
+      });
+      const paths = ElichikaPlatform.chosenPaths(result);
+      if (paths.length > 8) throw new Error(T("Open at most eight model files at a time."));
+      if (paths.length) return openModelViewer(paths);
+    },
+    saveModel: () => {
+      if (!$("#tab-viewer").classList.contains("active")) return;
+      const focused = document.activeElement;
+      if (focused && $("#viewer-adjustments").contains(focused) && focused.blur) focused.blur();
+      const save = $("#viewer-save");
+      if (save && !save.disabled) save.click();
+    },
+  });
+  window.addEventListener("keydown", (event) => {
+    if (!event.defaultPrevented && event.metaKey && !event.shiftKey && !event.altKey && !event.ctrlKey && window.ElichikaPlatform && ElichikaPlatform.info().native) {
+      const command = event.key.toLowerCase() === "s" ? "saveModel" : event.key.toLowerCase() === "o" ? "openModel" : "";
+      if (command) { event.preventDefault(); ElichikaPlatform.perform(command); }
+    }
   });
 }
 
@@ -848,6 +880,20 @@ function setProgress(done, total) {
 
 // ------------------------------------------------------------- file picker
 function openPicker(type, onPick, rootName, startPath) {
+  const platform = window.ElichikaPlatform, capability = type === "dir" ? "chooseDirectory" : "openFiles";
+  if (platform && platform.supports(capability)) {
+    const picker = { type, onPick, pending: true, native: true };
+    state.picker = picker;
+    platform.request(capability, { multiple: false, title: T(type === "dir" ? "Choose a folder" : "Choose a bundle file") })
+      .then((result) => {
+        if (state.picker !== picker || result && result.cancelled) return;
+        const paths = type === "dir" ? platform.chosenPaths({ paths: result && result.path ? [result.path] : [] }) : platform.chosenPaths(result);
+        if (paths.length > 1) throw new Error("The file selection response is invalid.");
+        if (paths.length) onPick(paths[0]);
+      }).catch((error) => { if (state.picker === picker && platform.supports(capability)) alert(T("Cannot open: ") + T(String(error.message || error))); })
+      .finally(() => { if (state.picker === picker) closePicker(); });
+    return;
+  }
   state.picker = { type, onPick, cwd: "", navigation: 0, pending: true };
   $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : T("Choose a bundle file");
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";

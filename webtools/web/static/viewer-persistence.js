@@ -137,7 +137,18 @@
       outputPaths.forEach(function (path) {
         var item = document.createElement("li"), link = document.createElement("a");
         link.textContent = basename(path); link.href = "/api/download?path=" + encodeURIComponent(path); link.setAttribute("download", basename(path));
-        item.appendChild(link); list.appendChild(item);
+        item.appendChild(link);
+        if (global.ElichikaPlatform && global.ElichikaPlatform.supports("reveal")) {
+          var reveal = document.createElement("button");
+          reveal.type = "button"; reveal.className = "viewer-reveal"; reveal.textContent = translate("Show in Finder");
+          reveal.addEventListener("click", function () {
+            global.ElichikaPlatform.request("reveal", { path: path }).catch(function (error) {
+              if (global.ElichikaPlatform.supports("reveal")) global.alert(translate(String(error.message || error)));
+            });
+          });
+          item.appendChild(reveal);
+        }
+        list.appendChild(item);
       });
     }
     function canonicalBody(input, metadata) {

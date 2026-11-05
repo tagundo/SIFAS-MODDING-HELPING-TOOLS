@@ -301,6 +301,7 @@
   }
 
   function containViewerPicker() {
+    if (config && config.nativeFilePicker) return;
     var picker = node("picker");
     if (!picker || pickerHome) return;
     // Browser fullscreen only displays descendants of its owning element. The
@@ -618,7 +619,7 @@
       if (controls) controls.dispose();
       renderer = null;
       qualityController = null;
-      setStatus("3D graphics are unavailable here. Update Android System WebView or use a current browser.", true);
+      setStatus("3D graphics are unavailable here. Update your system web view or use a current browser.", true);
       return false;
     }
   }

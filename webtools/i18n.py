@@ -1905,6 +1905,19 @@ _VIEWER_TRANSLATIONS.update({
     "Mesh baking requires Float32 vertex normals; use saved node settings for this model.": ["메시 반영에는 Float32 정점 노멀이 필요합니다. 이 모델은 노드 설정으로 저장하세요.", "メッシュへの反映にはFloat32の頂点法線が必要です。このモデルはノード設定で保存してください。"],
     "Mesh baking requires Float32 vertex tangents; use saved node settings for this model.": ["메시 반영에는 Float32 정점 탄젠트가 필요합니다. 이 모델은 노드 설정으로 저장하세요.", "メッシュへの反映にはFloat32の頂点接線が必要です。このモデルはノード設定で保存してください。"],
 })
+_VIEWER_TRANSLATIONS.update({
+    "Show in Finder": ["Finder에서 보기", "Finderで表示"],
+    "The file selection response is invalid.": ["파일 선택 응답이 올바르지 않습니다.", "ファイル選択の応答が無効です。"],
+    "This action is unavailable in this window.": ["이 창에서는 해당 동작을 사용할 수 없습니다.", "このウィンドウではこの操作を利用できません。"],
+    "Finish the current native action first.": ["현재 열려 있는 시스템 작업을 먼저 마치세요.", "開いているシステム操作を先に完了してください。"],
+    "The native request failed.": ["시스템 작업을 완료하지 못했습니다.", "システム操作を完了できませんでした。"],
+    "Choose a saved file to reveal.": ["저장된 파일을 선택하세요.", "保存されたファイルを選択してください。"],
+    "Choose a supported language.": ["지원하는 언어를 선택하세요.", "対応している言語を選択してください。"],
+    "The native action did not finish. Try again.": ["시스템 작업이 완료되지 않았습니다. 다시 시도하세요.", "システム操作が完了しませんでした。もう一度お試しください。"],
+    "This window was closed.": ["창이 닫혔습니다.", "ウィンドウが閉じられました。"],
+    "Open at most eight model files at a time.": ["모델 파일은 한 번에 최대 8개까지 열 수 있습니다.", "モデルファイルは一度に8個まで開けます。"],
+    "3D graphics are unavailable here. Update your system web view or use a current browser.": ["여기서는 3D 그래픽을 사용할 수 없습니다. 시스템 웹 뷰를 업데이트하거나 최신 브라우저를 사용하세요.", "ここでは3Dグラフィックスを利用できません。システムのWebビューを更新するか、新しいブラウザーを使用してください。"],
+})
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

@@ -631,6 +631,37 @@ body.viewer-active-page > main { padding: 6px; }
 .viewer-vertical-controls.viewer-short-height { --viewer-tools-left: 40px; }
 .viewer-vertical-controls.viewer-short-height .viewer-stage-tools-bottom { display: block; }
 .viewer-vertical-controls.viewer-short-height .viewer-workspace-menu { display: block; }
+
+/* Same files, model and editor components; native desktop windows use their width. */
+.elichika-desktop body > header { padding: 8px 12px; gap: 8px; }
+.elichika-desktop body > header h1 { display: none; }
+.elichika-desktop body > header .tabs { margin-left: 0; }
+.elichika-desktop body > header .lang-pick { margin-left: auto; }
+.elichika-desktop body > header .tab, .elichika-desktop body > header select { min-height: 36px; }
+.viewer-save-output-list .viewer-reveal { margin-left: 8px; }
+@media (min-width: 1080px) and (min-height: 480px) {
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-workspace {
+    display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 12px; align-items: start;
+  }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-files {
+    display: block; position: sticky; top: calc(var(--viewer-sticky-top, 0px) + 8px);
+    max-height: calc(var(--viewer-viewport-height, 100vh) - var(--viewer-sticky-top, 0px) - 24px);
+    margin: 0; padding: 10px; overflow-y: auto; scrollbar-gutter: stable;
+  }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-files h2 { display: block; margin: 0 0 10px; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-intro { display: none; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-actions { flex-direction: column; max-width: none; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list { margin-top: 10px; max-height: 352px; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list:empty { margin: 0; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list li > span { white-space: normal; overflow-wrap: anywhere; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-options { display: block; margin-top: 10px; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-options-panel { position: static; width: auto; max-width: none; margin-top: 6px; box-shadow: none; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout {
+    grid-template-columns: minmax(320px, 1fr) 304px;
+  }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { width: 304px; max-width: none; }
+  .elichika-desktop #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-body-controls { display: block; }
+}
 .viewer-vertical-controls.viewer-expanded .viewer-stage,
 .viewer-vertical-controls.viewer-fullscreen .viewer-stage,
 .viewer-vertical-controls.viewer-short-height .viewer-stage { border-radius: 0; }
