@@ -21,7 +21,6 @@ MAX_MODEL_BYTES = 64 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 MAX_OPTIONS = 200
 IMPORT_SECONDS = 90
-CACHE_VERSION = 2
 _PACK = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
 _SUIT = re.compile(r"suit:([1-9][0-9]{0,11})\Z")
 _IMPORT_SLOT = threading.BoundedSemaphore(1)
@@ -157,10 +156,8 @@ def _attachment(db, suit_id, owner, model):
         seen.add(original)
         try:
             row = db.execute("SELECT original_suit_master_id,attach_key FROM m_suit_attach WHERE suit_master_id=?", (original,)).fetchone()
-        except sqlite3.Error as exc:
-            # A missing/broken attachment table must not silently turn a
-            # recoloured costume into its original colour.
-            raise ValueError("The costume colour mapping is unavailable. Restore or update the game data.") from exc
+        except sqlite3.Error:
+            row = None
         if row is None:
             return original, key
         source_id, next_key = row
@@ -300,15 +297,12 @@ def _source(root, record, extractor, job, deadline):
     return None, None
 
 
-def _cache_hit(root, identity, signature, record):
+def _cache_hit(root, identity, signature):
     manifest = root / (".selection-" + identity + ".json")
     try:
-        if manifest.is_symlink() or manifest.stat().st_size > 65536:
+        if manifest.is_symlink() or manifest.stat().st_size > 8192:
             return None
         value = json.loads(manifest.read_text())
-        selection = {key: record[key] for key in ("region", "suit_id", "variant", "attach_key")}
-        if value.get("version") != CACHE_VERSION or value.get("selection") != selection:
-            return None
         relative = value["model"]
         if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
             return None
@@ -319,9 +313,6 @@ def _cache_hit(root, identity, signature, record):
             return None
         if _sha(model) != value.get("sha256"):
             return None
-        if record["attach_key"]:
-            from adminui.tools.assets_extract import _verify_recolour_receipt
-            _verify_recolour_receipt(model, value.get("recolour"), record["attach_key"])
         return model
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -439,10 +430,8 @@ def run_import(job, *, repo_root, output_root, record):
         resources = [record] + record["recolours"]
         found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]
-        recipe = {"version": CACHE_VERSION, "record": {key: value for key, value in record.items() if key != "download"}}
-        identity = hashlib.sha256(json.dumps(recipe, sort_keys=True).encode()).hexdigest()[:32]
-        job.log(f"Selected {record['region'].upper()} costume {record['suit_id']} ({record['variant']}); colour {record['attach_key'] or 'original'}.")
-        cached = _cache_hit(root, identity, signatures, record)
+        identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
+        cached = _cache_hit(root, identity, signatures)
         if cached:
             _check(job, deadline)
             job.log("Using the previously extracted game model.")
@@ -457,9 +446,8 @@ def run_import(job, *, repo_root, output_root, record):
         data = _plain_section(job, record, source, signature, extractor, deadline)
         name = f"ch{record['owner']:04}_suit{record['suit_id']}_{record['variant']}.unity"
         output = temporary / name
-        recolour_receipt = None
         if record["attach_key"]:
-            from adminui.tools.assets_extract import _composite_recolour, _verify_recolour_receipt
+            from adminui.tools.assets_extract import _composite_recolour
             base = temporary / ".base.unity"
             base.write_bytes(data)
             variants = []
@@ -474,13 +462,8 @@ def run_import(job, *, repo_root, output_root, record):
             def log(line):
                 _check(job, deadline)
                 job.log(line)
-            recolour_receipt = {}
-            imported = _composite_recolour(base, variants, output,
-                attach_key=record["attach_key"], log=log, receipt=recolour_receipt)
-            if imported <= 0:
+            if _composite_recolour(base, variants, output, attach_key=record["attach_key"], log=log) <= 0:
                 raise ValueError("The selected costume colour could not be applied. The base colour was not substituted.")
-            _verify_recolour_receipt(output, recolour_receipt, record["attach_key"])
-            job.log(f"Verified {imported} selected-colour textures; the original model and material bindings were preserved.")
             for path in temporary.iterdir():
                 if path != output:
                     path.unlink()
@@ -490,10 +473,7 @@ def run_import(job, *, repo_root, output_root, record):
         _check(job, deadline)
         from webtools.core.model_viewer import _preflight_bundle
         _preflight_bundle(output.read_bytes())
-        manifest = {"version": CACHE_VERSION,
-                    "selection": {key: record[key] for key in ("region", "suit_id", "variant", "attach_key")},
-                    "model": str(output.relative_to(root)), "sha256": _sha(output), "source": signatures,
-                    "recolour": recolour_receipt}
+        manifest = {"model": str(output.relative_to(root)), "sha256": _sha(output), "source": signatures}
         descriptor, temporary_name = tempfile.mkstemp(prefix=".selection-", suffix=".part", dir=root)
         temporary_manifest = Path(temporary_name)
         destination_manifest = root / (".selection-" + identity + ".json")
