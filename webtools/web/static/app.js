@@ -238,15 +238,25 @@ function renderForm() {
 
   const form = el("form", { id: "tool-form", onsubmit: (e) => { e.preventDefault(); runTool(); } });
   if (tool.id === "mesh_baker") form.classList.add("mesh-form");
-  const expert = el("details", { class: "expert-options" });
+  const files = el("div", { class: "tool-io" });
+  const settings = el("div", { class: "tool-settings" });
+  const actions = el("div", { class: "tool-actions" });
+  const expert = el("details", { class: "expert-options tool-field-wide" });
   expert.appendChild(el("summary", { text: T("Expert options — individual bones and save settings") }));
   let hasExpert = false;
   for (const field of tool.fields) {
     if (field.mode && field.mode !== state.currentMode) continue;
-    if (field.expert) { expert.appendChild(renderField(field)); hasExpert = true; }
-    else form.appendChild(renderField(field));
+    const rendered = renderField(field);
+    if (field.expert) { expert.appendChild(rendered); hasExpert = true; }
+    else if (["path", "dir", "paths"].includes(field.type) || ["prefix", "suffix"].includes(field.name)) files.appendChild(rendered);
+    else {
+      if (["text", "textarea", "vec3", "preset", "dynamic_select", "bone_targets", "body_parts"].includes(field.type)) rendered.classList.add("tool-field-wide");
+      settings.appendChild(rendered);
+    }
   }
-  if (hasExpert) form.appendChild(expert);
+  if (hasExpert) settings.appendChild(expert);
+  if (files.childNodes.length) { form.appendChild(files); form.classList.add("tool-form-has-files"); }
+  if (settings.childNodes.length) { form.appendChild(settings); form.classList.add("tool-form-has-settings"); }
   const run = el("button", { class: "run-btn", type: "submit", text: T(tool.id === "mesh_baker" ? "Save model" : "Run") });
   if (tool.id === "mesh_baker") {
     const preview = el("button", { type: "button", id: "mesh-view-input", class: "mesh-preview-btn",
@@ -255,8 +265,9 @@ function renderForm() {
         if (path) openModelViewer([path]);
       } });
     preview.disabled = true;
-    form.appendChild(el("div", { class: "mesh-save-bar" }, [preview, run]));
-  } else form.appendChild(run);
+    actions.appendChild(el("div", { class: "mesh-save-bar" }, [preview, run]));
+  } else actions.appendChild(run);
+  form.appendChild(actions);
   panel.appendChild(form);
   if (tool.id === "mesh_baker") {
     for (const input of form.querySelectorAll("[data-name]")) {
