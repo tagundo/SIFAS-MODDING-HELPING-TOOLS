@@ -312,8 +312,20 @@ async function hybridRoundTrip(page, source, label, variant = 'primary') {
   }
   if (original.archive_entries) {
     assert.deepEqual(Object.keys(output.archive_entries).sort(), Object.keys(original.archive_entries).sort(), 'ZIP retains every original entry');
+    const family = label === 'unmasked-ZIP-variant' ? ['primary.unity', 'alternate.unity'] : [selectedMember];
     for (const [name, value] of Object.entries(original.archive_entries)) {
-      if (name !== selectedMember) assert.deepEqual(output.archive_entries[name], value, 'Unselected ZIP companion stays exact: ' + name);
+      if (!family.includes(name)) assert.deepEqual(output.archive_entries[name], value, 'Unrelated ZIP companion stays exact: ' + name);
+    }
+    for (const member of family.filter(name => name !== selectedMember)) {
+      const before = fixtureCommand([source, '--member', member]);
+      const after = fixtureCommand([outputPath, '--member', member]);
+      assert.notEqual(after.model_sha256, before.model_sha256, 'Every declared editable Rina counterpart receives the same body edits');
+      assert.deepEqual(after.transforms, before.transforms, 'The counterpart retains its original skeleton');
+      assert.deepEqual(after.meshes, output.meshes, 'Equal-baseline counterparts receive the same baked geometry and retain bindposes/morphs');
+      scaleRecord(after, 'BreastSize').scaled.forEach((value, i) => assert(Math.abs(value - [1.08, 1.02, 1.03][i]) < .00001));
+      for (const object of before.objects.filter(item => unchangedTypes.has(item.type))) {
+        assert.equal(after.objects.find(item => item.id === object.id).sha256, object.sha256, 'Counterpart unedited object stays exact: ' + object.type + '/' + object.id);
+      }
     }
   }
 

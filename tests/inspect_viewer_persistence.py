@@ -46,7 +46,9 @@ def setup(directory):
         archive.writestr("primary.unity", fractional_raw)
         archive.writestr("notes.txt", b"Preserve this companion exactly.\n")
     alternate = (Path(__file__).parent / "fixtures" / "viewer_triangle.unity").read_bytes()
-    manifest = (b"chara_id=209\ncostume_file='primary.unity'\n"
+    # A legacy selection-only ZIP has no declared costume owner/family; its
+    # unrelated non-editable alternative must remain byte-identical on raw save.
+    manifest = (b"costume_file='primary.unity'\n"
                 b"rina_unmask_costume_file='alternate.unity'\n")
     archive = models / "two-variants.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
@@ -65,7 +67,7 @@ def setup(directory):
             tree["targetName"] = "AlternateRig"; obj.save_typetree(tree)
     with zipfile.ZipFile(editable, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for name, data in (("primary.unity", raw), ("alternate.unity", second.file.save()),
-                           ("modinstall.txt", manifest), ("notes.txt", b"Keep both editable alternatives.\n")):
+                           ("modinstall.txt", b"chara_id=209\n" + manifest), ("notes.txt", b"Keep both editable alternatives.\n")):
             info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             bundle.writestr(info, data)
