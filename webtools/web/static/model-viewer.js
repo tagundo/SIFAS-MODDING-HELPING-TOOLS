@@ -539,7 +539,7 @@
   function updateFilesWidth() {
     var tab = node("tab-viewer"), workspace = tab.querySelector(".viewer-workspace");
     var files = node("viewer-files-panel"), handle = node("viewer-files-resizer"), limits = filesWidthLimits();
-    var enabled = active && document.documentElement.classList.contains("elichika-desktop") && window.innerWidth >= 1080 && window.innerHeight >= 480 &&
+    var enabled = active && window.innerWidth >= 1080 && window.innerHeight >= 480 &&
       limits.max >= limits.min && !shortHeight && !expanded && !fullscreenWanted && !fullscreenPending && fullscreenMode === "none" && files.parentNode === workspace;
     if (!enabled && panelDrag && panelDrag.files) finishPanelDrag(true);
     tab.classList.toggle("viewer-files-resizable", enabled); handle.hidden = !enabled;
@@ -566,7 +566,7 @@
     if (viewport.width >= 1200) {
       defaultWidth = inspect.clientWidth - panelGap() - Math.max(360, Math.min(inspect.clientWidth - 320 - panelGap(), desiredHeight * 1.25));
     }
-    if (document.documentElement.classList.contains("elichika-desktop") && window.innerWidth >= 1080 && window.innerHeight >= 480) defaultWidth = 304;
+    if (tab.classList.contains("viewer-files-resizable")) defaultWidth = 304;
     var width = clampPanelWidth(panelWidthPreference === null ? defaultWidth : panelWidthPreference);
     var cssWidth = width + "px";
     if (tab.style.getPropertyValue("--viewer-panel-width") !== cssWidth) tab.style.setProperty("--viewer-panel-width", cssWidth);

@@ -83,7 +83,8 @@ async function metrics(page) {
       const hit = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight ? document.elementFromPoint(x, y) : null;
       controls[selector] = { ...rect(selector), hit: !!hit && (hit === element || element.contains(hit)), disabled: !!element.disabled };
     }
-    return { stage: rect('#viewer-stage'), sidebar: rect('.viewer-control-panel'), breast: rect('#viewer-breast-card'),
+    return { stage: rect('#viewer-stage'), sidebar: rect('.viewer-control-panel'), files: rect('.viewer-files'),
+      filesResizable: !document.getElementById('viewer-files-resizer').hidden, breast: rect('#viewer-breast-card'),
       skirt: rect('#viewer-skirt-card'), viewport: { width: innerWidth, height: innerHeight },
       sidebarDisplayed: document.querySelector('.viewer-control-panel').getClientRects().length > 0,
       foregroundHeight: (bottom - top + 1) / h * canvas.getBoundingClientRect().height, foregroundPixels: count,
@@ -188,6 +189,7 @@ async function primaryNavigationTargets(browser) {
         const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
         const sidebar = document.querySelector('.viewer-control-panel');
         return { viewport: { width: innerWidth, height: innerHeight }, stage: rect('#viewer-stage'), sidebar: rect('.viewer-control-panel'),
+          files: rect('.viewer-files'), filesResizable: !document.getElementById('viewer-files-resizer').hidden,
           sidebarDisplayed: sidebar.getClientRects().length > 0, breast: rect('#viewer-breast-card'), skirt: rect('#viewer-skirt-card'),
           overflow: document.documentElement.scrollWidth > innerWidth + 1, layout: ModelViewer.getState().layout };
       });
@@ -212,7 +214,12 @@ async function primaryNavigationTargets(browser) {
       if (profile.width >= 720 && !normal.layout.shortHeight) {
         assert(normal.stage.right <= normal.sidebar.x + 1 && normal.sidebar.width >= 280, 'Model and usable editor retain separate columns');
         assert(normal.breast.width <= 380 && normal.skirt.width <= 380, 'Body cards remain compact');
-        if (profile.width >= 1200) assert(normal.stage.width <= normal.stage.height * 1.27 || Math.abs(normal.sidebar.width - 640) < 1,
+        if (normal.filesResizable) {
+          assert(normal.files.width >= 160 && normal.files.width <= 360 && normal.stage.width >= 320,
+            'Wide touch layouts retain usable files, model and adjustment columns');
+          assert(Math.abs(normal.stage.x - normal.files.right - 12) < 1 && Math.abs(normal.sidebar.x - normal.stage.right - 12) < 1,
+            'Both resize boundaries keep their twelve-pixel layout gaps without overlapping the model');
+        } else if (profile.width >= 1200) assert(normal.stage.width <= normal.stage.height * 1.27 || Math.abs(normal.sidebar.width - 640) < 1,
           'Tablet preview keeps portrait proportions until the adjustment panel reaches its width limit');
       }
       assert.deepEqual(retained(await state(page)), before, 'Real app navigation and resizing retain the loaded model and edits');
