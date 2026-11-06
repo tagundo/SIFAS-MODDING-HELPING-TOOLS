@@ -688,16 +688,21 @@ body.viewer-active-page > main { padding: 6px; }
 }
 
 /* The splitter owns only the gap between the model and adjustment panel. */
-.viewer-panel-resizer { position: absolute; top: 0; left: calc(var(--viewer-panel-boundary) - 12px); z-index: 6; width: 24px; height: var(--viewer-stage-height); cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
+.viewer-panel-resizable { --viewer-panel-gap: 28px; --viewer-panel-reset-size: 28px; --viewer-panel-drag-top: 40px; }
+.viewer-panel-resizer { position: absolute; top: var(--viewer-panel-drag-top); left: calc(var(--viewer-panel-boundary) - 12px); z-index: 6; width: 24px; height: calc(var(--viewer-stage-height) - var(--viewer-panel-drag-top)); cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
 .viewer-panel-resizer > span { position: absolute; top: 50%; left: 10px; width: 4px; height: 48px; margin-top: -24px; border-radius: 4px; background: var(--line); }
 .viewer-panel-resizer:hover > span, .viewer-panel-resizer:focus-visible > span, .viewer-panel-resizer.viewer-panel-dragging > span { background: var(--accent2); }
 .viewer-panel-resizer:focus-visible { outline: 2px solid var(--accent2); outline-offset: -4px; border-radius: 5px; }
-.viewer-panel-width-tools { display: flex; justify-content: flex-end; margin-bottom: 6px; }
-.viewer-panel-width-tools button { font-size: 12px; }
-.viewer-expanded .viewer-panel-resizer, .viewer-fullscreen .viewer-panel-resizer, .viewer-short-height .viewer-panel-resizer { display: none; }
+.viewer-panel-width-tools { position: absolute; top: 4px; left: calc(var(--viewer-panel-boundary) - var(--viewer-panel-reset-size) / 2); z-index: 7; }
+.viewer-panel-width-tools > button { position: relative; display: flex; align-items: center; justify-content: center; width: var(--viewer-panel-reset-size); min-width: var(--viewer-panel-reset-size); height: var(--viewer-panel-reset-size); min-height: var(--viewer-panel-reset-size); margin: 0; padding: 0; border-radius: 7px; font-size: 20px; line-height: 1; }
+.viewer-panel-width-tools > button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
+.viewer-panel-width-tools > button:focus-visible::after { content: attr(aria-label); position: absolute; top: calc(100% + 6px); right: 0; width: max-content; max-width: 220px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; line-height: 1.5; text-align: left; pointer-events: none; }
+.viewer-expanded .viewer-panel-resizer, .viewer-fullscreen .viewer-panel-resizer, .viewer-short-height .viewer-panel-resizer,
+.viewer-expanded .viewer-panel-width-tools, .viewer-fullscreen .viewer-panel-width-tools, .viewer-short-height .viewer-panel-width-tools { display: none; }
+@media (pointer: coarse) { .viewer-panel-resizable { --viewer-panel-gap: 44px; --viewer-panel-reset-size: 44px; --viewer-panel-drag-top: 56px; } }
 @media (max-width: 719px) { .viewer-panel-resizer, .viewer-panel-width-tools { display: none; } }
 @media (min-width: 720px) {
-  #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { position: relative; grid-template-columns: minmax(320px, 1fr) var(--viewer-panel-width); }
+  #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { position: relative; grid-template-columns: minmax(320px, 1fr) var(--viewer-panel-width); column-gap: var(--viewer-panel-gap); }
   #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { width: 100%; max-width: none; }
 }
 

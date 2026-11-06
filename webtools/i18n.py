@@ -1911,6 +1911,7 @@ _VIEWER_TRANSLATIONS.update({
     "Adjustment panel width": ["조절 패널 너비", "調整パネルの幅"],
     "The panel width is invalid.": ["조절 패널 너비가 올바르지 않습니다.", "調整パネルの幅が無効です。"],
     "Default panel width": ["기본 너비", "標準の幅"],
+    "Reset adjustment panel width": ["조절 패널을 기본 너비로 복원", "調整パネルの幅を標準に戻す"],
     "Drag to resize. Left and right arrows adjust the width; Home restores the default.": ["드래그하여 너비를 바꾸세요. 좌우 화살표로 조절하고 Home 키로 기본 너비를 복원합니다.", "ドラッグして幅を変更できます。左右矢印で調整し、Homeキーで標準の幅に戻します。"],
     "The file selection response is invalid.": ["파일 선택 응답이 올바르지 않습니다.", "ファイル選択の応答が無効です。"],
     "This action is unavailable in this window.": ["이 창에서는 해당 동작을 사용할 수 없습니다.", "このウィンドウではこの操作を利用できません。"],

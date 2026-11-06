@@ -471,9 +471,11 @@
     refreshQualityStatus();
   }
 
+  function panelGap() { return window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 44 : 28; }
+
   function panelWidthLimits() {
     var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
-    return { min: 240, max: Math.min(640, Math.floor(inspect.clientWidth - 332)) };
+    return { min: 240, max: Math.min(640, Math.floor(inspect.clientWidth - 320 - panelGap())) };
   }
 
   function clampPanelWidth(value) {
@@ -520,13 +522,13 @@
     if (!enabled) return;
     var defaultWidth = window.innerWidth >= 960 ? 320 : 280;
     if (viewport.width >= 1200) {
-      defaultWidth = inspect.clientWidth - 12 - Math.max(360, Math.min(inspect.clientWidth - 332, desiredHeight * 1.25));
+      defaultWidth = inspect.clientWidth - panelGap() - Math.max(360, Math.min(inspect.clientWidth - 320 - panelGap(), desiredHeight * 1.25));
     }
     if (document.documentElement.classList.contains("elichika-desktop") && window.innerWidth >= 1080 && window.innerHeight >= 480) defaultWidth = 304;
     var width = clampPanelWidth(panelWidthPreference === null ? defaultWidth : panelWidthPreference);
     var cssWidth = width + "px";
     if (tab.style.getPropertyValue("--viewer-panel-width") !== cssWidth) tab.style.setProperty("--viewer-panel-width", cssWidth);
-    var boundary = Math.round(panel.getBoundingClientRect().left - inspect.getBoundingClientRect().left - 6) + "px";
+    var boundary = Math.round(panel.getBoundingClientRect().left - inspect.getBoundingClientRect().left - panelGap() / 2) + "px";
     if (tab.style.getPropertyValue("--viewer-panel-boundary") !== boundary) tab.style.setProperty("--viewer-panel-boundary", boundary);
     handle.setAttribute("aria-valuemin", String(limits.min)); handle.setAttribute("aria-valuemax", String(limits.max));
     handle.setAttribute("aria-valuenow", String(width)); handle.setAttribute("aria-valuetext", width + " px");
@@ -1589,6 +1591,8 @@
     node("viewer-expand").title = expandLabel; node("viewer-expand").setAttribute("aria-label", expandLabel);
     refreshFullscreenButton();
     node("viewer-panel-resizer").setAttribute("aria-label", t("Adjustment panel width"));
+    node("viewer-panel-width-reset").setAttribute("aria-label", t("Reset adjustment panel width"));
+    node("viewer-panel-width-reset").title = t("Reset adjustment panel width");
     node("viewer-panel-resize-help").textContent = t("Drag to resize. Left and right arrows adjust the width; Home restores the default.");
     var notice = node("viewer-layout-status");
     if (notice) notice.textContent = layoutNotice ? t(layoutNotice) : "";
