@@ -380,6 +380,57 @@ async function compensatedProfileRoundTrip(page, source) {
     sameRecipeGeometry: true, repeatExportByteIdentical: true };
 }
 
+async function fractionalFileValues(page, source) {
+  const original = fixtureCommand([source]);
+  await openModel(page, source); await basicPose(page);
+  await showAncestors(page.locator('#viewer-breast-preset'));
+  await page.locator('#viewer-breast-preset').selectOption('nozomi');
+  await setScale(page, 'LeftUpLeg', [1.55, 1.234567, 1.1]);
+  const offGrid = await page.locator('#viewer-node-fields input').evaluateAll(inputs =>
+    inputs.filter(input => input.validity.stepMismatch).map(input => ({ kind: input.dataset.viewerNodeKind,
+      axis: input.dataset.axis, value: input.value, step: input.step })));
+  assert(offGrid.some(input => input.kind === 'position') && offGrid.some(input => input.kind === 'rotation'),
+    'The actual authored fractional position and rotation stay visible, without rounding to spinner steps');
+  assert(offGrid.some(input => input.kind === 'scale' && input.value === '1.234567'),
+    'Explicit finite scale edits may use precision finer than the spinner increment');
+  assert.deepEqual(await page.evaluate(() => ModelViewer.getAuthoringState().unsupported), [],
+    'Fractional original TRS and precise body edits are valid authoring values');
+  assert.equal(await page.locator('input[data-viewer-node-kind="scale"][data-axis="Y"]').getAttribute('step'), '0.001');
+  assert.equal(await page.locator('input[data-viewer-node-kind="rotation"][data-axis="X"]').getAttribute('step'), '1');
+  const expected = await skinPoints(page);
+  const first = await save(page);
+  const serialized = fixtureCommand([first.previewPaths[0]]);
+  const before = original.transforms.find(node => node.name === 'LeftUpLeg');
+  const after = serialized.transforms.find(node => node.name === 'LeftUpLeg');
+  assert.deepEqual(after.position, before.position, 'Untouched original position floats remain exact');
+  assert.deepEqual(after.rotation, before.rotation, 'Untouched original quaternion floats remain exact');
+  assert.equal(sha(fs.readFileSync(source)), original.file_sha256, 'ZIP source bytes are unchanged');
+  assert.equal(serialized.archive_entries['notes.txt'].sha256, original.archive_entries['notes.txt'].sha256);
+  await showAncestors(page.locator('#viewer-open-saved')); await page.locator('#viewer-open-saved').click();
+  await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().persistence.reviewingSaved);
+  await basicPose(page);
+  const maximumError = comparePoints(await skinPoints(page), expected, 'Fractional-file hybrid output reload');
+  await showAncestors(page.locator('#viewer-reedit-original')); await page.locator('#viewer-reedit-original').click();
+  await page.waitForFunction(() => !ModelViewer.getState().loading && !ModelViewer.getState().persistence.busy &&
+    ModelViewer.getAuthoringState().edits.length > 0 && !ModelViewer.getState().persistence.reviewingSaved);
+  await selectBone(page, 'LeftUpLeg');
+  const input = page.locator('input[data-viewer-node-kind="scale"][data-axis="Y"]');
+  for (const value of ['', '0', '1000001', '-1000001']) {
+    await input.fill(value);
+    assert.equal(await page.locator('#viewer-save').isDisabled(), true, 'Actual invalid input still blocks saving: ' + JSON.stringify(value));
+    assert((await page.evaluate(() => ModelViewer.getAuthoringState())).unsupported.includes('Correct the invalid editing values before saving.'));
+    await input.fill('1.234567'); await input.dispatchEvent('change');
+    assert.equal(await page.locator('#viewer-save').isDisabled(), false, 'Recovering a valid precise value re-enables saving');
+  }
+  const second = await save(page);
+  assert.equal(sha(fs.readFileSync(first.previewPaths[0])), sha(fs.readFileSync(second.previewPaths[0])),
+    'Re-editing the exact original and recipe preserves fractional file data without accumulating changes');
+  return { label: 'fractional-ZIP-breast-and-thigh-save', spinnerIncrementsPreserved: true,
+    authoredPositionAndQuaternionPreserved: true, fineScalePrecisionAccepted: true,
+    invalidFiniteRangeAndNonzeroValidationRetained: true, maximumReloadVertexError: maximumError,
+    repeatExportByteIdentical: true, offGridInputs: offGrid };
+}
+
 async function rejectionCases(page, source) {
   await openModel(page, source); await basicPose(page);
   await setScale(page, 'LeftUpLeg', [1.7, 1.1, 1.2]);
@@ -527,7 +578,7 @@ async function reachable(page, selector) {
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const { page, context, errors } = await openPage(browser, server.url);
     const selectedCases = process.env.PERSISTENCE_CASES ? process.env.PERSISTENCE_CASES.split(',') : null;
-    const knownGroups = ['groups', 'raw', 'zip', 'unmasked', 'morph', 'mixed', 'compensation', 'conversion', 'inspection', 'rejections', 'layout'];
+    const knownGroups = ['groups', 'raw', 'zip', 'unmasked', 'morph', 'mixed', 'compensation', 'conversion', 'inspection', 'precision', 'rejections', 'layout'];
     assert(!selectedCases || selectedCases.every(name => knownGroups.includes(name)), 'Choose known persistence case groups');
     report.selectedCaseGroups = selectedCases;
     const enabled = name => !selectedCases || selectedCases.includes(name);
@@ -541,6 +592,7 @@ async function reachable(page, selector) {
     await run('compensation', () => compensatedProfileRoundTrip(page, fixtures.raw));
     await run('conversion', () => convertExistingNodeScale(page, fixtures.raw));
     await run('inspection', () => previewOnlyInspectionSave(page, fixtures.morph));
+    await run('precision', () => fractionalFileValues(page, fixtures.fractional_archive));
     await run('rejections', () => rejectionCases(page, fixtures.stale));
     assert.deepEqual(errors, [], 'Successful persistence flows do not cause page errors');
     await context.close();
@@ -567,7 +619,7 @@ async function reachable(page, selector) {
       assert.deepEqual(opened.errors, []); report.cases.push({ label: 'layout', profile, controls });
       await opened.context.close();
     }
-    if (!selectedCases) assert.equal(report.cases.length, 14, 'The full suite runs every persistence and layout case');
+    if (!selectedCases) assert.equal(report.cases.length, 15, 'The full suite runs every persistence and layout case');
     report.status = 'PASS';
   } catch (error) {
     report.status = 'FAIL'; report.error = error.stack || String(error);

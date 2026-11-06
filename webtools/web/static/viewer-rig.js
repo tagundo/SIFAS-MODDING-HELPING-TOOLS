@@ -880,7 +880,15 @@
       applyBodyPreset(function (id) { return desired[id]; });
       applyBody(function (id) { return desired[id]; });
       Object.keys(adjustments).forEach(function (id) { if (desired[id]) applyUser(desired[id], adjustments[id], id); });
-      var invalid = document.querySelector("#viewer-node-fields [aria-invalid='true'], #viewer-node-fields :invalid, #viewer-skirt-number:invalid");
+      // Numeric steps control spinner increments, not the precision of Unity
+      // file values or explicit edits. A fractional untouched TRS can be off
+      // that grid while remaining a valid finite authoring value.
+      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number"), function (input) {
+        if (input.disabled) return false;
+        var validity = input.validity;
+        return input.getAttribute("aria-invalid") === "true" || validity &&
+          (validity.badInput || validity.customError || validity.rangeOverflow || validity.rangeUnderflow || validity.typeMismatch || validity.valueMissing);
+      });
       if (invalid) unsupported.push("Correct the invalid editing values before saving.");
       var savedEnabled = !savedOperations.length || useSavedNodes && savedParts.every(function (part) { return part.enabled; });
       if (!savedEnabled) unsupported.push("Turn saved file settings on before saving body changes.");

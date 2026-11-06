@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import zipfile
 
@@ -23,6 +24,27 @@ def setup(directory):
         (models / name).write_bytes(raw)
     (models / "body-morph.unity").write_bytes(fixture_bytes(morphs=True))
     (models / "body-mixed.unity").write_bytes(fixture_bytes(mixed_skin=True))
+    # Real costumes commonly carry fractional authored TRS values which do not
+    # match the browser number spinner's increments. Keep those bytes intact.
+    fractional = UnityPy.load(raw)
+    names = {obj.path_id: obj.read_typetree()["m_Name"] for obj in fractional.objects
+             if obj.type.name == "GameObject"}
+    for obj in fractional.objects:
+        if obj.type.name != "Transform":
+            continue
+        tree = obj.read_typetree()
+        if names.get(tree["m_GameObject"]["m_PathID"]) != "LeftUpLeg":
+            continue
+        tree["m_LocalPosition"]["y"] = .1234567
+        tree["m_LocalRotation"] = {"x": math.sin(math.radians(13.125) / 2),
+                                  "y": 0., "z": 0., "w": math.cos(math.radians(13.125) / 2)}
+        obj.save_typetree(tree)
+    fractional_raw = fractional.file.save()
+    (models / "fractional.unity").write_bytes(fractional_raw)
+    fractional_zip = models / "fractional-costume.zip"
+    with zipfile.ZipFile(fractional_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("primary.unity", fractional_raw)
+        archive.writestr("notes.txt", b"Preserve this companion exactly.\n")
     alternate = (Path(__file__).parent / "fixtures" / "viewer_triangle.unity").read_bytes()
     manifest = (b"chara_id=209\ncostume_file='primary.unity'\n"
                 b"rina_unmask_costume_file='alternate.unity'\n")
@@ -50,6 +72,7 @@ def setup(directory):
     return {"raw": str(models / "body.unity"), "morph": str(models / "body-morph.unity"),
             "mixed": str(models / "body-mixed.unity"),
             "stale": str(models / "stale.unity"), "archive": str(archive),
+            "fractional": str(models / "fractional.unity"), "fractional_archive": str(fractional_zip),
             "editable_archive": str(editable),
             "original_raw_sha256": sha(raw)}
 
