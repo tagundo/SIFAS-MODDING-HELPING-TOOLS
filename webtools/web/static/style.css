@@ -687,6 +687,20 @@ body.viewer-active-page > main { padding: 6px; }
   .viewer-vertical-controls .viewer-stage .viewer-camera-actions button:nth-child(even) { border-left: 0; }
 }
 
+/* The splitter owns only the gap between the model and adjustment panel. */
+.viewer-panel-resizer { position: absolute; top: 0; left: calc(var(--viewer-panel-boundary) - 12px); z-index: 6; width: 24px; height: var(--viewer-stage-height); cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
+.viewer-panel-resizer > span { position: absolute; top: 50%; left: 10px; width: 4px; height: 48px; margin-top: -24px; border-radius: 4px; background: var(--line); }
+.viewer-panel-resizer:hover > span, .viewer-panel-resizer:focus-visible > span, .viewer-panel-resizer.viewer-panel-dragging > span { background: var(--accent2); }
+.viewer-panel-resizer:focus-visible { outline: 2px solid var(--accent2); outline-offset: -4px; border-radius: 5px; }
+.viewer-panel-width-tools { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.viewer-panel-width-tools button { font-size: 12px; }
+.viewer-expanded .viewer-panel-resizer, .viewer-fullscreen .viewer-panel-resizer, .viewer-short-height .viewer-panel-resizer { display: none; }
+@media (max-width: 719px) { .viewer-panel-resizer, .viewer-panel-width-tools { display: none; } }
+@media (min-width: 720px) {
+  #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { position: relative; grid-template-columns: minmax(320px, 1fr) var(--viewer-panel-width); }
+  #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { width: 100%; max-width: none; }
+}
+
 /* Persistent editing stays in the existing side/drawer workspace. */
 .viewer-save-panel { margin-bottom: .7rem; }
 .viewer-save-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin: .55rem 0; }

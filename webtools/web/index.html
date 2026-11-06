@@ -104,7 +104,10 @@
             </div>
           </div>
           </div>
-          <div class="viewer-control-panel">
+          <div id="viewer-panel-resizer" class="viewer-panel-resizer" role="separator" aria-orientation="vertical" aria-controls="viewer-control-panel" aria-label="Adjustment panel width" aria-describedby="viewer-panel-resize-help" tabindex="0" hidden><span aria-hidden="true"></span></div>
+          <div id="viewer-control-panel" class="viewer-control-panel">
+          <div id="viewer-panel-width-tools" class="viewer-panel-width-tools" hidden><button id="viewer-panel-width-reset" type="button" data-i18n="Default panel width">Default panel width</button></div>
+          <p id="viewer-panel-resize-help" class="sr-only" data-i18n="Drag to resize. Left and right arrows adjust the width; Home restores the default.">Drag to resize. Left and right arrows adjust the width; Home restores the default.</p>
           <details id="viewer-save-panel" class="viewer-adjustments viewer-save-panel">
             <summary data-i18n="Save body edits">Save body edits</summary>
             <p class="viewer-render-note" data-i18n="Save a new costume copy and an edit recipe. Your original files stay unchanged.">Save a new costume copy and an edit recipe. Your original files stay unchanged.</p>

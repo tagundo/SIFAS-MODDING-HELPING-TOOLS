@@ -46,6 +46,9 @@
   var fullscreenTimer = 0;
   var lastFullscreenExit = 0;
   var resizeFrame = 0;
+  var PANEL_WIDTH_KEY = "elichika.viewer.panel-width.v1";
+  var panelWidthPreference = null;
+  var panelDrag = null;
   var compactControls = false;
   var shortHeight = false;
   var layoutHomes = [];
@@ -468,6 +471,108 @@
     refreshQualityStatus();
   }
 
+  function panelWidthLimits() {
+    var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
+    return { min: 240, max: Math.min(640, Math.floor(inspect.clientWidth - 332)) };
+  }
+
+  function clampPanelWidth(value) {
+    var limits = panelWidthLimits();
+    return Math.max(limits.min, Math.min(limits.max, Math.round(value)));
+  }
+
+  function storePanelWidth() {
+    try {
+      if (panelWidthPreference === null) window.localStorage.removeItem(PANEL_WIDTH_KEY);
+      else window.localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidthPreference));
+    } catch (_) { /* The panel remains usable when preferences cannot be saved. */ }
+    var platform = window.ElichikaPlatform;
+    if (platform && platform.supports("setViewerPanelWidth")) {
+      platform.request("setViewerPanelWidth", { width: panelWidthPreference === null ? 0 : panelWidthPreference }).catch(function () {});
+    }
+  }
+
+  function finishPanelDrag(cancelled) {
+    if (!panelDrag) return;
+    var previous = panelDrag; panelDrag = null;
+    if (cancelled) panelWidthPreference = previous.preference;
+    else storePanelWidth();
+    var handle = node("viewer-panel-resizer");
+    handle.classList.remove("viewer-panel-dragging");
+    try { if (handle.hasPointerCapture(previous.id)) handle.releasePointerCapture(previous.id); } catch (_) {}
+    scheduleResize();
+  }
+
+  function resetPanelWidth() {
+    finishPanelDrag(true);
+    panelWidthPreference = null; storePanelWidth(); scheduleResize();
+  }
+
+  function updatePanelWidth(viewport, desiredHeight) {
+    var tab = node("tab-viewer"), inspect = tab.querySelector(".viewer-inspect-layout");
+    var panel = node("viewer-control-panel"), handle = node("viewer-panel-resizer");
+    var limits = panelWidthLimits();
+    var enabled = active && window.innerWidth >= 720 && limits.max >= limits.min && !shortHeight && !expanded &&
+      !fullscreenWanted && !fullscreenPending && fullscreenMode === "none" && panel.parentNode === inspect;
+    if (!enabled) finishPanelDrag(true);
+    tab.classList.toggle("viewer-panel-resizable", enabled);
+    handle.hidden = !enabled; node("viewer-panel-width-tools").hidden = !enabled;
+    if (!enabled) return;
+    var defaultWidth = window.innerWidth >= 960 ? 320 : 280;
+    if (viewport.width >= 1200) {
+      defaultWidth = inspect.clientWidth - 12 - Math.max(360, Math.min(inspect.clientWidth - 332, desiredHeight * 1.25));
+    }
+    if (document.documentElement.classList.contains("elichika-desktop") && window.innerWidth >= 1080 && window.innerHeight >= 480) defaultWidth = 304;
+    var width = clampPanelWidth(panelWidthPreference === null ? defaultWidth : panelWidthPreference);
+    var cssWidth = width + "px";
+    if (tab.style.getPropertyValue("--viewer-panel-width") !== cssWidth) tab.style.setProperty("--viewer-panel-width", cssWidth);
+    var boundary = Math.round(panel.getBoundingClientRect().left - inspect.getBoundingClientRect().left - 6) + "px";
+    if (tab.style.getPropertyValue("--viewer-panel-boundary") !== boundary) tab.style.setProperty("--viewer-panel-boundary", boundary);
+    handle.setAttribute("aria-valuemin", String(limits.min)); handle.setAttribute("aria-valuemax", String(limits.max));
+    handle.setAttribute("aria-valuenow", String(width)); handle.setAttribute("aria-valuetext", width + " px");
+  }
+
+  function bindPanelResize() {
+    try {
+      var stored = window.localStorage.getItem(PANEL_WIDTH_KEY);
+      if (typeof stored === "string" && /^\d{3}$/.test(stored) && Number(stored) >= 240 && Number(stored) <= 640) panelWidthPreference = Number(stored);
+    } catch (_) {}
+    var platform = window.ElichikaPlatform;
+    if (platform && platform.supports("setViewerPanelWidth")) {
+      var nativeWidth = platform.info().viewerPanelWidth;
+      panelWidthPreference = nativeWidth >= 240 && nativeWidth <= 640 ? nativeWidth : null;
+    }
+    var handle = node("viewer-panel-resizer");
+    listenLayout(handle, "pointerdown", function (event) {
+      if (handle.hidden || panelDrag || event.isPrimary === false || event.button !== 0) return;
+      event.preventDefault(); handle.focus();
+      panelDrag = { id: event.pointerId, x: event.clientX, width: node("viewer-control-panel").getBoundingClientRect().width, preference: panelWidthPreference };
+      handle.classList.add("viewer-panel-dragging");
+      try { handle.setPointerCapture(event.pointerId); } catch (_) { finishPanelDrag(true); }
+    });
+    listenLayout(handle, "pointermove", function (event) {
+      if (!panelDrag || event.pointerId !== panelDrag.id) return;
+      panelWidthPreference = clampPanelWidth(panelDrag.width + panelDrag.x - event.clientX);
+      scheduleResize();
+    });
+    listenLayout(handle, "pointerup", function (event) { if (panelDrag && event.pointerId === panelDrag.id) finishPanelDrag(false); });
+    ["pointercancel", "lostpointercapture"].forEach(function (name) {
+      listenLayout(handle, name, function (event) { if (panelDrag && event.pointerId === panelDrag.id) finishPanelDrag(true); });
+    });
+    listenLayout(handle, "keydown", function (event) {
+      if (handle.hidden || ["ArrowLeft", "ArrowRight", "Home", "Escape"].indexOf(event.key) < 0) return;
+      event.preventDefault();
+      if (event.key === "Escape") { finishPanelDrag(true); return; }
+      if (event.key === "Home") { resetPanelWidth(); return; }
+      finishPanelDrag(true);
+      var width = node("viewer-control-panel").getBoundingClientRect().width;
+      panelWidthPreference = clampPanelWidth(width + (event.key === "ArrowLeft" ? 1 : -1) * (event.shiftKey ? 64 : 16));
+      storePanelWidth(); scheduleResize();
+    });
+    listenLayout(handle, "dblclick", resetPanelWidth);
+    listenLayout(node("viewer-panel-width-reset"), "click", resetPanelWidth);
+  }
+
   function resize() {
     if (!active || destroyed) return;
     var viewport = viewportRect();
@@ -493,6 +598,7 @@
       var previewWidth = Math.max(360, Math.min(inspect.clientWidth - 332, desired * 1.25));
       node("tab-viewer").style.setProperty("--viewer-model-width", Math.round(previewWidth) + "px");
     } else node("tab-viewer").style.removeProperty("--viewer-model-width");
+    updatePanelWidth(viewport, desired);
     var width = stage.clientWidth;
     var height = stage.clientHeight;
     if (!width || !height) return;
@@ -1409,6 +1515,7 @@
       else setExpanded(!expanded);
     });
     if (node("viewer-fullscreen")) node("viewer-fullscreen").addEventListener("click", enterFullscreen);
+    bindPanelResize();
     bindViewportPopover(node("viewer-view-menu"));
     bindViewportPopover(node("viewer-info"));
     bindViewportPopover(node("viewer-workspace-menu"));
@@ -1481,6 +1588,8 @@
     node("viewer-expand").textContent = expandLabel;
     node("viewer-expand").title = expandLabel; node("viewer-expand").setAttribute("aria-label", expandLabel);
     refreshFullscreenButton();
+    node("viewer-panel-resizer").setAttribute("aria-label", t("Adjustment panel width"));
+    node("viewer-panel-resize-help").textContent = t("Drag to resize. Left and right arrows adjust the width; Home restores the default.");
     var notice = node("viewer-layout-status");
     if (notice) notice.textContent = layoutNotice ? t(layoutNotice) : "";
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
@@ -1497,6 +1606,7 @@
   function setVisible(value) {
     if (destroyed) return;
     active = !!value;
+    if (!active) finishPanelDrag(true);
     document.body.classList.toggle("viewer-active-page", active);
     if (!active) {
       pauseRender();
@@ -1530,6 +1640,7 @@
   function dispose() {
     if (destroyed) return;
     active = false;
+    finishPanelDrag(true);
     document.body.classList.remove("viewer-active-page");
     restoreViewerPicker();
     if (node("viewer-view-menu")) node("viewer-view-menu").open = false;

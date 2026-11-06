@@ -11,7 +11,8 @@
     handler && typeof handler.postMessage === "function" && global.location.protocol === "http:" &&
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
-  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage" };
+  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth" };
+  function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
   function notify(error) {
     if (unloading) return;
     var message = String(error.message || error);
@@ -59,6 +60,10 @@
       if (["en", "ko", "ja"].indexOf(args.language) < 0) return Promise.reject(new Error("Choose a supported language."));
       message.language = args.language;
     }
+    if (action === "setViewerPanelWidth") {
+      if (!validPanelWidth(args.width)) return Promise.reject(new Error("The panel width is invalid."));
+      message.width = args.width;
+    }
     return new Promise(function (resolve, reject) {
       var timer = global.setTimeout(function () {
         delete pending[message.id]; reject(new Error("The native action did not finish. Try again."));
@@ -84,7 +89,8 @@
   }
   function info() {
     return { platform: native ? "macos" : "browser", native: native,
-      language: native && ["en", "ko", "ja"].indexOf(description.language) >= 0 ? description.language : "" };
+      language: native && ["en", "ko", "ja"].indexOf(description.language) >= 0 ? description.language : "",
+      viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0 };
   }
   global.ElichikaPlatform = Object.freeze({ supports: supports, request: request, receive: receive,
     perform: perform, bind: bind, info: info, chosenPaths: chosenPaths });
