@@ -32,7 +32,7 @@
 
     <section id="tab-viewer" class="tab-panel" aria-labelledby="viewer-title">
       <div class="viewer-workspace">
-        <aside class="viewer-files">
+        <aside id="viewer-files-panel" class="viewer-files">
           <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
           <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Its preview pose and missing face parts load automatically.">Open a costume model or ZIP. Its preview pose and missing face parts load automatically.</p>
           <div class="viewer-file-actions">
@@ -49,7 +49,10 @@
               <p class="viewer-render-note" data-i18n="The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.">The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.</p>
             </div>
           </details>
+          <div id="viewer-panel-width-tools" class="viewer-panel-width-tools" hidden><button id="viewer-panel-width-reset" type="button" aria-label="Restore default layout" title="Restore default layout"><span aria-hidden="true">↺</span> <span data-i18n="Default layout">Default layout</span></button></div>
+          <p id="viewer-files-resize-help" class="sr-only" data-i18n="Drag to resize files. Left and right arrows adjust the width; Home restores the default layout.">Drag to resize files. Left and right arrows adjust the width; Home restores the default layout.</p>
         </aside>
+        <div id="viewer-files-resizer" class="viewer-files-resizer" role="separator" aria-orientation="vertical" aria-controls="viewer-files-panel" aria-label="File panel width" aria-describedby="viewer-files-resize-help" tabindex="0" hidden><span aria-hidden="true"></span></div>
         <div class="viewer-main">
           <div class="viewer-inspect-layout">
           <div class="viewer-model-panel">
@@ -106,9 +109,8 @@
           </div>
           </div>
           <div id="viewer-panel-resizer" class="viewer-panel-resizer" role="separator" aria-orientation="vertical" aria-controls="viewer-control-panel" aria-label="Adjustment panel width" aria-describedby="viewer-panel-resize-help" tabindex="0" hidden><span aria-hidden="true"></span></div>
-          <div id="viewer-panel-width-tools" class="viewer-panel-width-tools" hidden><button id="viewer-panel-width-reset" type="button" aria-label="Reset adjustment panel width" title="Reset adjustment panel width"><span aria-hidden="true">↺</span><span class="sr-only" data-i18n="Reset adjustment panel width">Reset adjustment panel width</span></button></div>
           <div id="viewer-control-panel" class="viewer-control-panel">
-          <p id="viewer-panel-resize-help" class="sr-only" data-i18n="Drag to resize. Left and right arrows adjust the width; Home restores the default.">Drag to resize. Left and right arrows adjust the width; Home restores the default.</p>
+          <p id="viewer-panel-resize-help" class="sr-only" data-i18n="Drag to resize. Left and right arrows adjust the width; Home restores the default layout.">Drag to resize. Left and right arrows adjust the width; Home restores the default layout.</p>
           <details id="viewer-save-panel" class="viewer-adjustments viewer-save-panel">
             <summary data-i18n="Save body edits">Save body edits</summary>
             <p class="viewer-render-note" data-i18n="Save a new costume copy and an edit recipe. Your original files stay unchanged.">Save a new costume copy and an edit recipe. Your original files stay unchanged.</p>

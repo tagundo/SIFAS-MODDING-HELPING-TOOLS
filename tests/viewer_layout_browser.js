@@ -212,7 +212,8 @@ async function primaryNavigationTargets(browser) {
       if (profile.width >= 720 && !normal.layout.shortHeight) {
         assert(normal.stage.right <= normal.sidebar.x + 1 && normal.sidebar.width >= 280, 'Model and usable editor retain separate columns');
         assert(normal.breast.width <= 380 && normal.skirt.width <= 380, 'Body cards remain compact');
-        if (profile.width >= 1200) assert(normal.stage.width <= normal.stage.height * 1.27, 'Tablet preview does not waste width beside a standing model');
+        if (profile.width >= 1200) assert(normal.stage.width <= normal.stage.height * 1.27 || Math.abs(normal.sidebar.width - 640) < 1,
+          'Tablet preview keeps portrait proportions until the adjustment panel reaches its width limit');
       }
       assert.deepEqual(retained(await state(page)), before, 'Real app navigation and resizing retain the loaded model and edits');
       await page.locator('#viewer-expand').click();

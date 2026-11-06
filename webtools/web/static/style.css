@@ -726,19 +726,25 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 }
 
 /* The splitter owns only the gap between the model and adjustment panel. */
-.viewer-panel-resizable { --viewer-panel-gap: 28px; --viewer-panel-reset-size: 28px; --viewer-panel-drag-top: 40px; }
-.viewer-panel-resizer { position: absolute; top: var(--viewer-panel-drag-top); left: calc(var(--viewer-panel-boundary) - 12px); z-index: 6; width: 24px; height: calc(var(--viewer-stage-height) - var(--viewer-panel-drag-top)); cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
-.viewer-panel-resizer > span { position: absolute; top: 50%; left: 10px; width: 4px; height: 48px; margin-top: -24px; border-radius: 4px; background: var(--line); }
-.viewer-panel-resizer:hover > span, .viewer-panel-resizer:focus-visible > span, .viewer-panel-resizer.viewer-panel-dragging > span { background: var(--accent2); }
-.viewer-panel-resizer:focus-visible { outline: 2px solid var(--accent2); outline-offset: -4px; border-radius: 5px; }
-.viewer-panel-width-tools { position: absolute; top: 4px; left: calc(var(--viewer-panel-boundary) - var(--viewer-panel-reset-size) / 2); z-index: 7; }
-.viewer-panel-width-tools > button { position: relative; display: flex; align-items: center; justify-content: center; width: var(--viewer-panel-reset-size); min-width: var(--viewer-panel-reset-size); height: var(--viewer-panel-reset-size); min-height: var(--viewer-panel-reset-size); margin: 0; padding: 0; border-radius: 7px; font-size: 20px; line-height: 1; }
+.viewer-panel-resizable { --viewer-panel-gap: 12px; }
+.viewer-panel-resizer, .viewer-files-resizer { position: absolute; top: 0; z-index: 6; width: 24px; height: var(--viewer-stage-height); cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
+.viewer-panel-resizer { left: calc(var(--viewer-panel-boundary) - 12px); }
+.viewer-files-resizer { left: calc(var(--viewer-files-boundary) - 12px); }
+.viewer-panel-resizer > span, .viewer-files-resizer > span { position: absolute; top: 50%; left: 10px; width: 4px; height: 48px; margin-top: -24px; border-radius: 4px; background: var(--line); }
+.viewer-panel-resizer:hover > span, .viewer-panel-resizer:focus-visible > span, .viewer-panel-resizer.viewer-panel-dragging > span,
+.viewer-files-resizer:hover > span, .viewer-files-resizer:focus-visible > span, .viewer-files-resizer.viewer-panel-dragging > span { background: var(--accent2); }
+.viewer-panel-resizer:focus-visible, .viewer-files-resizer:focus-visible { outline: 2px solid var(--accent2); outline-offset: -4px; border-radius: 5px; }
+.viewer-panel-width-tools { display: flex; align-items: center; margin-top: 8px; }
+.viewer-panel-width-tools > button { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; min-width: 0; margin: 0; padding: 5px 8px; border-radius: 7px; font-size: 12px; line-height: 1.5; }
 .viewer-panel-width-tools > button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
-.viewer-panel-width-tools > button:focus-visible::after { content: attr(aria-label); position: absolute; top: calc(100% + 6px); right: 0; width: max-content; max-width: 220px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; line-height: 1.5; text-align: left; pointer-events: none; }
 .viewer-expanded .viewer-panel-resizer, .viewer-fullscreen .viewer-panel-resizer, .viewer-short-height .viewer-panel-resizer,
+.viewer-expanded .viewer-files-resizer, .viewer-fullscreen .viewer-files-resizer, .viewer-short-height .viewer-files-resizer,
 .viewer-expanded .viewer-panel-width-tools, .viewer-fullscreen .viewer-panel-width-tools, .viewer-short-height .viewer-panel-width-tools { display: none; }
-@media (pointer: coarse) { .viewer-panel-resizable { --viewer-panel-gap: 44px; --viewer-panel-reset-size: 44px; --viewer-panel-drag-top: 56px; } }
-@media (max-width: 719px) { .viewer-panel-resizer, .viewer-panel-width-tools { display: none; } }
+@media (pointer: coarse) { .viewer-panel-width-tools > button { min-height: 44px; } }
+@media (max-width: 719px) { .viewer-panel-resizer, .viewer-files-resizer, .viewer-panel-width-tools { display: none; } }
+@media (min-width: 1080px) and (min-height: 480px) {
+  .elichika-desktop #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-workspace { position: relative; grid-template-columns: var(--viewer-files-width, 196px) minmax(0, 1fr); }
+}
 @media (min-width: 720px) {
   #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { position: relative; grid-template-columns: minmax(320px, 1fr) var(--viewer-panel-width); column-gap: var(--viewer-panel-gap); }
   #tab-viewer.viewer-panel-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { width: 100%; max-width: none; }
@@ -763,3 +769,36 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-editor-panel[hidden] { display: none !important; }
 .viewer-shared-bone-editor > .viewer-node-editor { margin-top: .6rem; }
 .viewer-shared-bone-editor #viewer-save-method { width: 100%; min-height: 44px; }
+
+/* Native mouse/trackpad controls can be denser without reducing touch targets. */
+@media (hover: hover) and (pointer: fine) {
+  .elichika-desktop .tool-list button { min-height: 34px; padding: 7px 10px; font-size: 13px; line-height: 1.4; }
+  .elichika-desktop .field input[type=text], .elichika-desktop .field input[type=number],
+  .elichika-desktop .field select, .elichika-desktop .field textarea,
+  .elichika-desktop .gallery-bar input { min-height: 34px; padding: 6px 8px; font-size: 13px; line-height: 1.4; }
+  .elichika-desktop .path-row button, .elichika-desktop .gallery-bar button,
+  .elichika-desktop .mode-toggle button, .elichika-desktop .body-editor button,
+  .elichika-desktop .bone-target button, .elichika-desktop .mesh-save-bar .mesh-preview-btn {
+    min-height: 34px; padding: 6px 10px; font-size: 13px; line-height: 1.4;
+  }
+  .elichika-desktop .run-btn { min-height: 36px; padding: 8px 12px; font-size: 13px; line-height: 1.4; }
+  .elichika-desktop .viewer-vertical-controls .viewer-file-actions button {
+    flex: 0 0 auto; min-height: 34px; padding: 6px 8px;
+  }
+  .elichika-desktop .viewer-control-panel .viewer-adjustments button,
+  .elichika-desktop .viewer-preview-actions > button { min-height: 34px; padding: 6px 9px; line-height: 1.4; }
+  .elichika-desktop .viewer-adjustments select,
+  .elichika-desktop .viewer-adjustments input[type=number],
+  .elichika-desktop .viewer-adjustments input[type=search],
+  .elichika-desktop #viewer-save-method { min-height: 34px; padding: 5px 7px; font-size: 13px; line-height: 1.4; }
+  .elichika-desktop .viewer-adjustments > summary,
+  .elichika-desktop .viewer-node-editor > summary,
+  .elichika-desktop .viewer-expression-advanced > summary,
+  .elichika-desktop .viewer-scale-details > summary,
+  .elichika-desktop .viewer-node-quick > summary,
+  .elichika-desktop .viewer-saved-parts > summary { min-height: 34px; padding: 6px 0; line-height: 1.5; }
+  .elichika-desktop .viewer-body-card > summary { min-height: 34px; padding: 6px 10px; }
+  .elichika-desktop .viewer-saved-choice,
+  .elichika-desktop .viewer-bone-compensation > label:not([for]),
+  .elichika-desktop #viewer-saved-part-list label { min-height: 34px; }
+}

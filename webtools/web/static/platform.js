@@ -11,8 +11,9 @@
     handler && typeof handler.postMessage === "function" && global.location.protocol === "http:" &&
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
-  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth" };
+  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth" };
   function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
+  function validFilesWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 160 && width <= 360); }
   function notify(error) {
     if (unloading) return;
     var message = String(error.message || error);
@@ -64,6 +65,10 @@
       if (!validPanelWidth(args.width)) return Promise.reject(new Error("The panel width is invalid."));
       message.width = args.width;
     }
+    if (action === "setViewerFilesWidth") {
+      if (!validFilesWidth(args.width)) return Promise.reject(new Error("The panel width is invalid."));
+      message.width = args.width;
+    }
     return new Promise(function (resolve, reject) {
       var timer = global.setTimeout(function () {
         delete pending[message.id]; reject(new Error("The native action did not finish. Try again."));
@@ -90,7 +95,8 @@
   function info() {
     return { platform: native ? "macos" : "browser", native: native,
       language: native && ["en", "ko", "ja"].indexOf(description.language) >= 0 ? description.language : "",
-      viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0 };
+      viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0,
+      viewerFilesWidth: native && validFilesWidth(description.viewerFilesWidth) ? description.viewerFilesWidth : 0 };
   }
   global.ElichikaPlatform = Object.freeze({ supports: supports, request: request, receive: receive,
     perform: perform, bind: bind, info: info, chosenPaths: chosenPaths });

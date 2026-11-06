@@ -48,6 +48,8 @@
   var resizeFrame = 0;
   var PANEL_WIDTH_KEY = "elichika.viewer.panel-width.v1";
   var panelWidthPreference = null;
+  var FILES_WIDTH_KEY = "elichika.viewer.files-width.v1";
+  var filesWidthPreference = null;
   var panelDrag = null;
   var compactControls = false;
   var shortHeight = false;
@@ -471,7 +473,7 @@
     refreshQualityStatus();
   }
 
-  function panelGap() { return window.matchMedia && window.matchMedia("(pointer: coarse)").matches ? 44 : 28; }
+  function panelGap() { return 12; }
 
   function panelWidthLimits() {
     var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
@@ -494,12 +496,35 @@
     }
   }
 
+  function filesWidthLimits() {
+    var workspace = node("tab-viewer").querySelector(".viewer-workspace");
+    return { min: 160, max: Math.min(360, Math.floor(workspace.clientWidth - 584)) };
+  }
+
+  function clampFilesWidth(value) {
+    var limits = filesWidthLimits();
+    return Math.max(limits.min, Math.min(limits.max, Math.round(value)));
+  }
+
+  function storeFilesWidth() {
+    try {
+      if (filesWidthPreference === null) window.localStorage.removeItem(FILES_WIDTH_KEY);
+      else window.localStorage.setItem(FILES_WIDTH_KEY, String(filesWidthPreference));
+    } catch (_) {}
+    var platform = window.ElichikaPlatform;
+    if (platform && platform.supports("setViewerFilesWidth")) {
+      platform.request("setViewerFilesWidth", { width: filesWidthPreference === null ? 0 : filesWidthPreference }).catch(function () {});
+    }
+  }
+
   function finishPanelDrag(cancelled) {
     if (!panelDrag) return;
     var previous = panelDrag; panelDrag = null;
-    if (cancelled) panelWidthPreference = previous.preference;
-    else storePanelWidth();
-    var handle = node("viewer-panel-resizer");
+    if (cancelled) {
+      if (previous.files) filesWidthPreference = previous.preference;
+      else panelWidthPreference = previous.preference;
+    } else if (previous.files) storeFilesWidth(); else storePanelWidth();
+    var handle = node(previous.files ? "viewer-files-resizer" : "viewer-panel-resizer");
     handle.classList.remove("viewer-panel-dragging");
     try { if (handle.hasPointerCapture(previous.id)) handle.releasePointerCapture(previous.id); } catch (_) {}
     scheduleResize();
@@ -507,7 +532,24 @@
 
   function resetPanelWidth() {
     finishPanelDrag(true);
-    panelWidthPreference = null; storePanelWidth(); scheduleResize();
+    panelWidthPreference = null; filesWidthPreference = null;
+    storePanelWidth(); storeFilesWidth(); scheduleResize();
+  }
+
+  function updateFilesWidth() {
+    var tab = node("tab-viewer"), workspace = tab.querySelector(".viewer-workspace");
+    var files = node("viewer-files-panel"), handle = node("viewer-files-resizer"), limits = filesWidthLimits();
+    var enabled = active && document.documentElement.classList.contains("elichika-desktop") && window.innerWidth >= 1080 && window.innerHeight >= 480 &&
+      limits.max >= limits.min && !shortHeight && !expanded && !fullscreenWanted && !fullscreenPending && fullscreenMode === "none" && files.parentNode === workspace;
+    if (!enabled && panelDrag && panelDrag.files) finishPanelDrag(true);
+    tab.classList.toggle("viewer-files-resizable", enabled); handle.hidden = !enabled;
+    if (!enabled) return;
+    var width = clampFilesWidth(filesWidthPreference === null ? 196 : filesWidthPreference), cssWidth = width + "px";
+    if (tab.style.getPropertyValue("--viewer-files-width") !== cssWidth) tab.style.setProperty("--viewer-files-width", cssWidth);
+    var boundary = Math.round(files.getBoundingClientRect().right - workspace.getBoundingClientRect().left + 6) + "px";
+    if (tab.style.getPropertyValue("--viewer-files-boundary") !== boundary) tab.style.setProperty("--viewer-files-boundary", boundary);
+    handle.setAttribute("aria-valuemin", String(limits.min)); handle.setAttribute("aria-valuemax", String(limits.max));
+    handle.setAttribute("aria-valuenow", String(width)); handle.setAttribute("aria-valuetext", width + " px");
   }
 
   function updatePanelWidth(viewport, desiredHeight) {
@@ -516,9 +558,9 @@
     var limits = panelWidthLimits();
     var enabled = active && window.innerWidth >= 720 && limits.max >= limits.min && !shortHeight && !expanded &&
       !fullscreenWanted && !fullscreenPending && fullscreenMode === "none" && panel.parentNode === inspect;
-    if (!enabled) finishPanelDrag(true);
+    if (!enabled && panelDrag && !panelDrag.files) finishPanelDrag(true);
     tab.classList.toggle("viewer-panel-resizable", enabled);
-    handle.hidden = !enabled; node("viewer-panel-width-tools").hidden = !enabled;
+    handle.hidden = !enabled; node("viewer-panel-width-tools").hidden = !enabled && !tab.classList.contains("viewer-files-resizable");
     if (!enabled) return;
     var defaultWidth = window.innerWidth >= 960 ? 320 : 280;
     if (viewport.width >= 1200) {
@@ -538,23 +580,35 @@
     try {
       var stored = window.localStorage.getItem(PANEL_WIDTH_KEY);
       if (typeof stored === "string" && /^\d{3}$/.test(stored) && Number(stored) >= 240 && Number(stored) <= 640) panelWidthPreference = Number(stored);
+      var storedFiles = window.localStorage.getItem(FILES_WIDTH_KEY);
+      if (typeof storedFiles === "string" && /^\d{3}$/.test(storedFiles) && Number(storedFiles) >= 160 && Number(storedFiles) <= 360) filesWidthPreference = Number(storedFiles);
     } catch (_) {}
     var platform = window.ElichikaPlatform;
     if (platform && platform.supports("setViewerPanelWidth")) {
       var nativeWidth = platform.info().viewerPanelWidth;
       panelWidthPreference = nativeWidth >= 240 && nativeWidth <= 640 ? nativeWidth : null;
     }
-    var handle = node("viewer-panel-resizer");
+    if (platform && platform.supports("setViewerFilesWidth")) {
+      var nativeFilesWidth = platform.info().viewerFilesWidth;
+      filesWidthPreference = nativeFilesWidth >= 160 && nativeFilesWidth <= 360 ? nativeFilesWidth : null;
+    }
+    bindWidthHandle(false); bindWidthHandle(true);
+    listenLayout(node("viewer-panel-width-reset"), "click", resetPanelWidth);
+  }
+
+  function bindWidthHandle(files) {
+    var handle = node(files ? "viewer-files-resizer" : "viewer-panel-resizer");
     listenLayout(handle, "pointerdown", function (event) {
       if (handle.hidden || panelDrag || event.isPrimary === false || event.button !== 0) return;
       event.preventDefault(); handle.focus();
-      panelDrag = { id: event.pointerId, x: event.clientX, width: node("viewer-control-panel").getBoundingClientRect().width, preference: panelWidthPreference };
+      panelDrag = { files: files, id: event.pointerId, x: event.clientX, width: node(files ? "viewer-files-panel" : "viewer-control-panel").getBoundingClientRect().width, preference: files ? filesWidthPreference : panelWidthPreference };
       handle.classList.add("viewer-panel-dragging");
       try { handle.setPointerCapture(event.pointerId); } catch (_) { finishPanelDrag(true); }
     });
     listenLayout(handle, "pointermove", function (event) {
       if (!panelDrag || event.pointerId !== panelDrag.id) return;
-      panelWidthPreference = clampPanelWidth(panelDrag.width + panelDrag.x - event.clientX);
+      if (files) filesWidthPreference = clampFilesWidth(panelDrag.width + event.clientX - panelDrag.x);
+      else panelWidthPreference = clampPanelWidth(panelDrag.width + panelDrag.x - event.clientX);
       scheduleResize();
     });
     listenLayout(handle, "pointerup", function (event) { if (panelDrag && event.pointerId === panelDrag.id) finishPanelDrag(false); });
@@ -567,12 +621,13 @@
       if (event.key === "Escape") { finishPanelDrag(true); return; }
       if (event.key === "Home") { resetPanelWidth(); return; }
       finishPanelDrag(true);
-      var width = node("viewer-control-panel").getBoundingClientRect().width;
-      panelWidthPreference = clampPanelWidth(width + (event.key === "ArrowLeft" ? 1 : -1) * (event.shiftKey ? 64 : 16));
-      storePanelWidth(); scheduleResize();
+      var width = node(files ? "viewer-files-panel" : "viewer-control-panel").getBoundingClientRect().width;
+      var delta = (event.key === "ArrowLeft" ? 1 : -1) * (files ? -1 : 1) * (event.shiftKey ? 64 : 16);
+      if (files) { filesWidthPreference = clampFilesWidth(width + delta); storeFilesWidth(); }
+      else { panelWidthPreference = clampPanelWidth(width + delta); storePanelWidth(); }
+      scheduleResize();
     });
     listenLayout(handle, "dblclick", resetPanelWidth);
-    listenLayout(node("viewer-panel-width-reset"), "click", resetPanelWidth);
   }
 
   function resize() {
@@ -580,6 +635,7 @@
     var viewport = viewportRect();
     updateShortLayout(viewport);
     updateCompactControls(viewport);
+    updateFilesWidth();
     var header = document.querySelector("body > header");
     var headerStyle = header ? window.getComputedStyle(header) : null;
     var pinnedHeader = headerStyle && headerStyle.display !== "none" &&
@@ -1591,9 +1647,11 @@
     node("viewer-expand").title = expandLabel; node("viewer-expand").setAttribute("aria-label", expandLabel);
     refreshFullscreenButton();
     node("viewer-panel-resizer").setAttribute("aria-label", t("Adjustment panel width"));
-    node("viewer-panel-width-reset").setAttribute("aria-label", t("Reset adjustment panel width"));
-    node("viewer-panel-width-reset").title = t("Reset adjustment panel width");
-    node("viewer-panel-resize-help").textContent = t("Drag to resize. Left and right arrows adjust the width; Home restores the default.");
+    node("viewer-files-resizer").setAttribute("aria-label", t("File panel width"));
+    node("viewer-panel-width-reset").setAttribute("aria-label", t("Restore default layout"));
+    node("viewer-panel-width-reset").title = t("Restore default layout");
+    node("viewer-panel-resize-help").textContent = t("Drag to resize. Left and right arrows adjust the width; Home restores the default layout.");
+    node("viewer-files-resize-help").textContent = t("Drag to resize files. Left and right arrows adjust the width; Home restores the default layout.");
     var notice = node("viewer-layout-status");
     if (notice) notice.textContent = layoutNotice ? t(layoutNotice) : "";
     if (renderer) renderer.domElement.setAttribute("aria-label", t("3D model"));
