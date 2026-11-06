@@ -11,12 +11,14 @@ from http.server import ThreadingHTTPServer
 import http.client
 import importlib.util
 import json
+import os
 from pathlib import Path
 import secrets
 import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -185,6 +187,96 @@ class ViewerModFlowTests(unittest.TestCase):
             with sqlite3.connect(path) as database:
                 database.execute("CREATE TABLE qa_gate_only(value INTEGER)")
 
+    def test_real_http_raw_and_mod_exports_edit_both_declared_platforms(self):
+        from webtools.server import Handler, MANAGER
+        import unity_costumemod_packer as packer
+        source = self.library / "extracted/3d_model/dual.zip"
+        source.parent.mkdir(parents=True)
+        environment = UnityPy.load(self.raw)
+        # A declared transplant may retain Rina donor texture names while the
+        # installer explicitly assigns this costume to character 6.
+        for obj in environment.objects:
+            if obj.type.name == "Texture2D":
+                tree = obj.read_typetree()
+                tree["m_Name"] = "ch0209_co0001_body"
+                obj.save_typetree(tree)
+        android = environment.file.save()
+        environment.file._m_target_platform = 9
+        ios = environment.file.save()
+        manifest = packer.generate_modinstall_txt("Dual costume", "android.unity", "thumb.png", 6)
+        values = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(manifest).body}
+        values["costume_file_ios"] = "ios.unity"
+        manifest = "\n".join(key + " = " + repr(value) for key, value in values.items()) + "\n"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("android.unity", android)
+            archive.writestr("ios.unity", ios)
+            archive.writestr("modinstall.txt", manifest)
+            archive.writestr("thumb.png", packer.make_name_thumbnail_png("Dual costume", 32, 6))
+            archive.writestr("notes.txt", b"Original notes stay byte-identical.")
+        original = source.read_bytes()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host = "127.0.0.1:" + str(server.server_port)
+
+        def request(path, body=None):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+            try:
+                connection.request("POST" if body is not None else "GET", path,
+                    body=json.dumps(body) if body is not None else None,
+                    headers={"Host": host, "Origin": "http://" + host, "Content-Type": "application/json"})
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                self.assertEqual(response.status, 200, payload)
+                return payload
+            finally:
+                connection.close()
+
+        try:
+            with patch.dict(os.environ, {"SUKUSTA_DIR": str(self.library)}):
+                prepared = request("/api/viewer/prepare", {"paths": [str(source)], "rigged": True, "auto_face": False})
+                nodes = {node["name"]: node for node in prepared["editing"]["nodes"]}
+                state = {"version": 1, "savedSettingsEnabled": True, "edits": [
+                    {"node": nodes["BreastSize"]["node"], "method": "auto",
+                     "scale": [value * 1.1 for value in nodes["BreastSize"]["baseline"]["scale"]]},
+                    {"node": nodes["LeftUpLeg"]["node"], "method": "mesh",
+                     "scale": [nodes["LeftUpLeg"]["baseline"]["scale"][0], 1.2, 1.1]}]}
+                for endpoint in ("export", "package"):
+                    with self.subTest(endpoint=endpoint):
+                        body = {"token": prepared["editing"]["token"], "state": state}
+                        if endpoint == "package":
+                            body.update(display_name="Both platforms edited", character_id=6,
+                                        counterpart_path=None, selected_variant=None)
+                        started = request("/api/viewer/edit/" + endpoint, body)
+                        job = MANAGER.get(started["job_id"])
+                        deadline = time.monotonic() + 15
+                        while not job.is_done and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        self.assertEqual(job.status, "done", job._events[-3:])
+                        result = request("/api/viewer/edit/result/" + job.id)
+                        target = result["preview_paths"][0] if endpoint == "export" else result["mod_package"]["package_path"]
+                        with zipfile.ZipFile(target) as archive:
+                            values = {node.targets[0].id: ast.literal_eval(node.value)
+                                for node in ast.parse(archive.read("modinstall.txt").decode()).body}
+                            for field, platform, old in (("costume_file", 13, android), ("costume_file_ios", 9, ios)):
+                                raw = archive.read(values[field])
+                                self.assertNotEqual(raw, old)
+                                info = model_edits._inspect(raw)
+                                breast = next(key for key, value in info["names"].items() if value == "BreastSize")
+                                expected = state["edits"][0]["scale"]
+                                for actual, wanted in zip(info["effective"][breast]["scale"], expected):
+                                    self.assertAlmostEqual(actual, wanted, places=6)
+                                self.assertEqual(int(UnityPy.load(raw).file.target_platform), platform)
+                                self.assertNotEqual(next(obj for obj in UnityPy.load(raw).objects if obj.type.name == "Mesh").get_raw_data(),
+                                    next(obj for obj in UnityPy.load(old).objects if obj.type.name == "Mesh").get_raw_data())
+                            note = "notes.txt" if endpoint == "export" else "notes.txt.data"
+                            self.assertEqual(archive.read(note), b"Original notes stay byte-identical.")
+                        if endpoint == "package":
+                            self.assertEqual(result["mod_package"]["platform"], "android+ios")
+                        self.assertEqual(source.read_bytes(), original)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(3)
+
     def install(self, token, job=None):
         return flow.install_package(token, repo_root=self.runtime, library_root=self.library,
                                     job=job or self.job)
@@ -235,6 +327,20 @@ class ViewerModFlowTests(unittest.TestCase):
             self.package()
         self.assertEqual(len(flow._PACKAGES), 0)
         self.assertFalse(self.output.exists())
+
+    def test_failed_counterpart_mapping_removes_only_the_newly_created_export(self):
+        from webtools.core import viewer_mod_pair_edits
+        prior = self.output / "body-edit-20261101-120000-12345678"
+        prior.mkdir(parents=True)
+        sentinel = prior / "user-saved-original.unity"
+        sentinel.write_bytes(self.raw)
+        with patch.object(viewer_mod_pair_edits, "apply_pair_edits", side_effect=ValueError("Missing matching hierarchy")):
+            with self.assertRaisesRegex(ValueError, "Missing matching hierarchy"):
+                self.package()
+        self.assertEqual(list(self.output.iterdir()), [prior])
+        self.assertEqual(sentinel.read_bytes(), self.raw)
+        self.assertEqual(self.source.read_bytes(), self.raw)
+        self.assertEqual(len(flow._PACKAGES), 0)
 
     def test_invalid_state_and_busy_slot_do_not_create_receipts(self):
         self.state["edits"][0]["scale"][0] = 0

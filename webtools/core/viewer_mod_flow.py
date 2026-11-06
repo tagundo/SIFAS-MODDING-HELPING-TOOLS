@@ -24,6 +24,17 @@ MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 PACKAGE_SECONDS = 3600
 
 
+def discard_failed_export(result, output_root):
+    """Remove only this exporter's newly generated directory after failure."""
+    if not isinstance(result, dict) or not isinstance(result.get("recipe_path"), str):
+        return
+    directory = Path(result["recipe_path"]).parent
+    if (directory.is_symlink() or not re.fullmatch(r"body-edit-\d{8}-\d{6}-[a-f0-9]{8}", directory.name)
+            or directory.resolve().parent != Path(output_root).resolve()):
+        return
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 def _hash_file(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MAX_PACKAGE_BYTES:
@@ -219,11 +230,13 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
     if not _PACKAGE_SLOT.acquire(blocking=False):
         raise ValueError("Another Mod ZIP is being prepared. Try again shortly.")
+    exported_result = None
     try:
         _check(job)
         context = model_edits.mod_source_context(token)
         normalized = model_edits.validate_state(token, state)
         result = model_edits.export(token, normalized, output_root, log=job.log)
+        exported_result = result
         remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
         _check(job)
         selection = {"counterpart_path": counterpart_path, "selected_variant": selected_variant} if counterpart_path else None
@@ -262,6 +275,9 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         result["mod_package"] = public
         result["output_paths"] = list(dict.fromkeys(result["output_paths"] + [path]))
         return result
+    except Exception:
+        discard_failed_export(exported_result, output_root)
+        raise
     finally:
         _PACKAGE_SLOT.release()
 

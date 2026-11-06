@@ -305,10 +305,20 @@ def resolve_pair(context, export_result, *, repo_root, output_root, job, selecti
     containers, sources = _snapshots(context)
     bindings = {item["source"]: item for item in game_context(context, repo_root, receipts=receipts)}
     rina = []
+    declared_families = {}
     for source in sources:
         container = containers[source["container"]]
-        if source["member"] is not None and _complete_rina_zip(container["raw"], source["member"]):
-            continue
+        if source["member"] is not None:
+            # A validated dual-platform manifest also establishes the family
+            # for transplants retaining another character's texture names.
+            from .viewer_mod_pair_edits import _zip_declarations
+            index = source["container"]
+            if index not in declared_families:
+                declared_families[index] = _zip_declarations(container["raw"])
+            if any(source["member"] in group for group in declared_families[index]):
+                continue
+            if _complete_rina_zip(container["raw"], source["member"]):
+                continue
         facts = _model_facts(source["raw"])
         binding = bindings.get(source["source"])
         if facts["rina"] or (binding is not None and binding["record"].get("owner") == 209):

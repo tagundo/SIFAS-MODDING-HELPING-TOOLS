@@ -1073,7 +1073,8 @@
       useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
     });
     listen("viewer-preview-reset", "click", reset);
-    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression(); initializeNodeCards();
+    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
+    if (options.initializeNodeCards !== false) initializeNodeCards();
 
     function getAuthoringState() {
       // Source-authoring TRS comes from immutable file values and explicit

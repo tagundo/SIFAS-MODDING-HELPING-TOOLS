@@ -1,5 +1,6 @@
 """HTTP boundaries for original-bound viewer exports and portable recipes."""
 import json
+import hashlib
 import http.client
 import os
 from pathlib import Path
@@ -63,7 +64,12 @@ class ViewerEditRouteTests(unittest.TestCase):
 
         self.backend = SimpleNamespace(
             register_session=Mock(return_value={"available": True, "token": self.token, "nodes": []}),
-            validate_state=Mock(), export=Mock(side_effect=export),
+            mod_source_context=Mock(return_value={"model_id": self.token,
+                "containers": [{"path": str(self.source), "name": self.source.name,
+                    "raw": self.source.read_bytes(),
+                    "sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}],
+                "sources": [], "variants": {}, "nodes": []}),
+            validate_state=Mock(return_value=self.state), export=Mock(side_effect=export),
             restore=Mock(return_value=self.state))
         self.viewer = SimpleNamespace(prepare=Mock(return_value={
             "id": self.token, "rig": {"available": True, "bones": []}}))

@@ -2177,6 +2177,9 @@ _VIEWER_TRANSLATIONS.update({
         "모드 ZIP과 게임 의상에 같은 이름을 사용합니다. 제안된 이름을 직접 바꿀 수 있습니다.",
         "MOD ZIPとゲームの衣装に同じ名前を使います。候補の名前は変更できます。"],
     "Save mod ZIP": ["모드 ZIP 저장", "MOD ZIPを保存"],
+    "If one mod ZIP already contains Android and iOS bundles, saving applies the same body edits to both platforms. A single bundle keeps its original platform. Saving does not convert between Android and iOS.": [
+        "하나의 모드 ZIP에 Android와 iOS 번들이 이미 함께 들어 있으면, 저장할 때 양쪽 플랫폼에 같은 체형 편집을 적용합니다. 단일 번들은 원래 플랫폼을 유지하며, Android와 iOS 사이의 플랫폼 변환은 하지 않습니다.",
+        "1つのMOD ZIPにAndroid用とiOS用のバンドルがすでに含まれている場合、保存時に両プラットフォームへ同じ体型編集を適用します。単一のバンドルは元のプラットフォームを維持し、AndroidとiOSの間で変換は行いません。"],
     "Mod ZIP": ["모드 ZIP", "MOD ZIP"],
     "Edited preview copy": ["편집한 미리보기 사본", "編集したプレビュー用コピー"],
     "Edit recipe": ["편집 기록", "編集レシピ"],

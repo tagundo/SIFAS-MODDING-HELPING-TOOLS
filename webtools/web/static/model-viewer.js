@@ -1316,6 +1316,9 @@
       pendingModel = null;
       if (window.ViewerRig) {
         rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged, editing: prepared.editing || {},
+          // A Rina variant change recreates the rig within the same model.
+          // Preserve the user's folds; initial defaults belong to a new model.
+          initializeNodeCards: !keepView,
           onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
         restoreVariantPose(previousPose);
       }

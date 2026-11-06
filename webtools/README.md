@@ -261,13 +261,17 @@ repacking is unnecessary and the source files remain unchanged.
   is used. The separate tool forms remain available; Node Scaling Fix also
   exposes the optional raw game `heightScale` setting for single-file runs.
 - **Save edited copy** writes the selected body changes to new Unity files or
-  replaces only the selected model members of a costume ZIP. Other ZIP members,
-  variant models and installer manifests are retained. Original copies and a
+  updates the relevant model members of a costume ZIP. Other ZIP members and
+  installer manifests are retained. Original copies and a
   content-bound `recipe.json` are saved beside the models under
   `sukusta/modded/viewer/body-edit-…/`. Reopening preserved originals and importing
   the recipe rebuilds from those originals rather than repeatedly baking a
   previous result. Camera, animation playhead, expression preview and part
   visibility are viewing choices and are not silently written as body edits.
+  If one mod ZIP already contains Android and iOS bundles, **Save edited copy**
+  and **Save mod ZIP** apply the same body edits to both platform versions.
+  A single bundle keeps its input platform. This also applies on Mac: saving
+  does not convert Android bundles to iOS or iOS bundles to Android.
 - **Save mod ZIP** creates a package for the costume mod installer. **Add to
   game** packages the current valid edits and installs that package in one
   action; it does not reuse an older download after you change the model or

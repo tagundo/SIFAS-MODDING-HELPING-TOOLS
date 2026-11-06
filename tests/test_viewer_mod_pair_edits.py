@@ -1,4 +1,4 @@
-"""Actual serialized Rina rigs: relative intent, different IDs, ZIPs and reloads."""
+"""Serialized costume/platform rigs: relative edits, IDs, ZIPs and reloads."""
 import copy
 import importlib.util
 import io
@@ -85,11 +85,12 @@ class PairedBodyEditTests(unittest.TestCase):
 
     def register(self, path, *, archive=False, variant="primary"):
         if archive:
-            with viewer_archive.expand_inputs([str(path)], self.root / "zip-cache", {str(path): variant}) as expanded:
+            variants = {str(path): variant} if variant is not None else {}
+            with viewer_archive.expand_inputs([str(path)], self.root / "zip-cache", variants) as expanded:
                 preview = model_viewer.prepare(expanded.paths, rigged=True, face_context={"enabled": False, "allow_download": False})
                 meta = edits.register_session(preview["id"], expanded.paths, preview["rig"],
                     originals=[str(path)], origins=expanded.origins, archive_members=expanded.archive_members,
-                    variants={str(path): variant})
+                    variants=variants)
         else:
             preview = model_viewer.prepare([str(path)], rigged=True, face_context={"enabled": False, "allow_download": False})
             meta = edits.register_session(preview["id"], [str(path)], preview["rig"])
@@ -243,6 +244,192 @@ class PairedBodyEditTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), source_bytes)
                 self.assertEqual(output["result"]["preview_variants"], {"0": "primary"})
                 self.assertTrue(all(Path(recipe).is_file() for recipe in output["result"]["paired_recipe_paths"]))
+
+    def platform_zip(self, *, owner=6, ios_platform=9, ios_missing=False, ios_unsupported=False):
+        # These textures deliberately retain their Rina donor names. A known
+        # literal owner binds an explicitly declared transplanted costume;
+        # texture prefixes must not silently replace that declaration.
+        original = {"android-body": self.fixture(morphs=True),
+                    "ios-body": self.fixture(other=True, offset=5000, platform=ios_platform,
+                                             morphs=True, missing=ios_missing, unsupported=ios_unsupported),
+                    "untouched.bin": b"independent costume data",
+                    "modinstall.txt": (f"chara_id={owner!r}\ncostume_file='android-body'\n"
+                                       "costume_file_ios='ios-body'\n").encode()}
+        path = self.root / "dual-platform.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in original.items():
+                archive.writestr(name, raw)
+            archive.comment = b"same declared costume; keep both native platforms"
+        return path, original
+
+    def test_non_rina_dual_platform_transplant_maps_node_and_mesh_to_own_ios_baseline(self):
+        path, original = self.platform_zip()
+        original_zip = path.read_bytes()
+        self.assertEqual(sources._model_facts(original["ios-body"])["owner"], 209)
+        def requested(nodes):
+            return self.state(
+                {"node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.4, .8, 1.1],
+                 "position": [.2, .9, .3], "rotation": [51., 17., -8.]},
+                {"node": nodes["LeftUpLeg"]["node"], "method": "mesh", "scale": [1.69, .99, 1.05],
+                 "compensate": True, "compensationTargets": [nodes["BreastSize"]["node"]]},
+                compensationReference=[{"node": row["node"], **copy.deepcopy(row["baseline"])}
+                                       for row in nodes.values()])
+        context, result, state, _ = self.save(path, requested, archive=True, variant=None)
+        with zipfile.ZipFile(result["preview_paths"][0]) as saved:
+            selected_once = saved.read("android-body")
+        ios_source = self.write("manual-ios.unity", original["ios-body"])
+        token, nodes = self.register(ios_source)
+        rotation = edits._matrix_euler(edits._euler_matrix([51., 17., -8.]) @
+            edits._euler_matrix([30., -15., 25.]).T @ edits._euler_matrix([12., 19., -23.]))
+        manual = self.state(
+            {"node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.4*1.15, .8*.95, 1.1*1.05],
+             # Public authoring X is opposite Unity's serialized X. The
+             # source/target public baselines are -.1/-.2, so -.2+.2-(-.1)=.1.
+             "position": [.1, 1.1, .2], "rotation": rotation},
+            {"node": nodes["LeftUpLeg"]["node"], "method": "mesh",
+             "scale": [1.69/1.2999999523162842*.8, .99/.8999999761581421*1.1, 1.05*.95],
+             "compensate": True, "compensationTargets": [nodes["BreastSize"]["node"]]},
+            compensationReference=[{"node": row["node"], **copy.deepcopy(row["baseline"])}
+                                   for row in nodes.values() if row["name"] in ("Move", "LeftUpLeg", "BreastSize")])
+        expected = edits.export(token, manual, self.root / "expected-ios")
+        expected_info = edits._inspect(Path(expected["preview_paths"][0]).read_bytes())
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        self.assertIsNone(output["pair"])
+        self.assertEqual(len(output["summary"]), 1)
+        with zipfile.ZipFile(output["result"]["preview_paths"][0]) as saved:
+            self.assertEqual(saved.read("android-body"), selected_once)
+            ios_raw = saved.read("ios-body")
+            self.assertNotEqual(ios_raw, original["ios-body"])
+            self.assertEqual(sources._model_facts(ios_raw)["platform"], "ios")
+            self.assertEqual(sources._model_facts(saved.read("android-body"))["platform"], "android")
+            actual = edits._inspect(ios_raw)
+            self.assertNotEqual(self.key(actual, "BreastSize")[1], self.key(edits._inspect(original["android-body"]), "BreastSize")[1])
+            self.assertTrue(np.allclose(self.vertices(actual), self.vertices(expected_info), atol=2e-6))
+            self.assertFalse(np.allclose(self.vertices(actual), self.vertices(edits._inspect(original["ios-body"]))))
+            for kind in ("scale", "position", "rotation"):
+                actual_trs = actual["effective"][self.key(actual, "BreastSize")][kind]
+                expected_trs = expected_info["effective"][self.key(expected_info, "BreastSize")][kind]
+                self.assertTrue(np.allclose(actual_trs, expected_trs, atol=2e-5), kind)
+            mesh = lambda info: next(obj.read_typetree() for obj in info["env"].objects if obj.type.name == "Mesh")
+            actual_shapes, expected_shapes = copy.deepcopy(mesh(actual)["m_Shapes"]), copy.deepcopy(mesh(expected_info)["m_Shapes"])
+            actual_morphs, expected_morphs = actual_shapes.pop("vertices"), expected_shapes.pop("vertices")
+            self.assertEqual(actual_shapes, expected_shapes)
+            self.assertEqual(len(actual_morphs), len(expected_morphs))
+            for actual_morph, expected_morph in zip(actual_morphs, expected_morphs):
+                self.assertEqual(actual_morph["index"], expected_morph["index"])
+                for kind in ("vertex", "normal", "tangent"):
+                    self.assertTrue(np.allclose([actual_morph[kind][axis] for axis in "xyz"],
+                                                [expected_morph[kind][axis] for axis in "xyz"], atol=2e-6), kind)
+            self.assertNotEqual(mesh(actual)["m_Shapes"], mesh(edits._inspect(original["ios-body"]))["m_Shapes"])
+            self.assertEqual(mesh(actual)["m_BindPose"], mesh(edits._inspect(original["ios-body"]))["m_BindPose"])
+            for name in ("modinstall.txt", "untouched.bin"):
+                self.assertEqual(saved.read(name), original[name])
+            self.assertEqual(saved.comment, b"same declared costume; keep both native platforms")
+        self.assertEqual(path.read_bytes(), original_zip)
+        self.assertEqual(ios_source.read_bytes(), original["ios-body"])
+        recipe = json.loads(Path(output["result"]["paired_recipe_paths"][0]).read_text())
+        preserved = Path(output["result"]["paired_original_paths"][0])
+        token, _ = self.register(preserved)
+        restored = edits.restore(token, recipe)
+        rebuilt = edits.export(token, restored, self.root / "rebuilt-ios")
+        self.assertEqual(Path(rebuilt["preview_paths"][0]).read_bytes(), ios_raw)
+
+    def test_dual_platform_manifest_refuses_unknown_owner_wrong_platform_missing_and_unsupported_rig_atomically(self):
+        for flags in ({"owner": True}, {"owner": 9998}, {"ios_platform": 13}, {"ios_platform": 8},
+                      {"ios_missing": True}, {"ios_unsupported": True}):
+            with self.subTest(flags=flags):
+                path, _ = self.platform_zip(**flags)
+                source_raw = path.read_bytes()
+                context, result, state, _ = self.save(path, lambda nodes: self.state({
+                    "node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.4, .8, 1.1]}), archive=True, variant=None)
+                saved_before = Path(result["preview_paths"][0]).read_bytes()
+                with self.assertRaises(ValueError):
+                    paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+                self.assertEqual(path.read_bytes(), source_raw)
+                self.assertEqual(Path(result["preview_paths"][0]).read_bytes(), saved_before)
+                self.assertEqual(list(Path(result["recipe_path"]).parent.glob("*paired-body-*")), [])
+
+    def test_legacy_ios_only_rina_pair_in_main_fields_preserves_native_platform(self):
+        path, original = self.paired_zip()
+        original.update(board=self.fixture(platform=9), bare=self.fixture(other=True, offset=1000, platform=9))
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in original.items():
+                archive.writestr(name, raw)
+        original_zip = path.read_bytes()
+        context, result, state, _ = self.save(path, lambda nodes: self.state({
+            "node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.4, .8, 1.1]}), archive=True)
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        with zipfile.ZipFile(output["result"]["preview_paths"][0]) as saved:
+            for member in ("board", "bare"):
+                self.assertEqual(sources._model_facts(saved.read(member))["platform"], "ios")
+                self.assertNotEqual(saved.read(member), original[member])
+        self.assertEqual(path.read_bytes(), original_zip)
+
+    def test_explicit_rina_four_variant_transplant_resolves_before_donor_identity_and_edits_all_members(self):
+        path, original = self.paired_zip(four=True)
+        members = ("board", "bare", "iphoneboard", "iphonebare")
+        for member in members:
+            environment = UnityPy.load(original[member])
+            for obj in environment.objects:
+                if obj.type.name == "Texture2D":
+                    tree = obj.read_typetree()
+                    tree["m_Name"] = "ch0006_co0123"
+                    obj.save_typetree(tree)
+            original[member] = environment.file.save()
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, raw in original.items():
+                archive.writestr(name, raw)
+        original_zip = path.read_bytes()
+        context, result, state, _ = self.save(path, lambda nodes: self.state({
+            "node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.4, .8, 1.1]}), archive=True)
+        self.assertTrue(all(sources._model_facts(original[member])["owner"] == 6 for member in members))
+        # The raw/donor-only helper keeps its strict identity checks. The
+        # public resolver must first honor the explicit validated ZIP family.
+        with self.assertRaisesRegex(ValueError, "same character"):
+            sources._complete_rina_zip(original_zip, "board")
+        self.assertIsNone(sources.resolve_pair(context, result, repo_root=self.root,
+            output_root=self.root / "pair-discovery", job=self.job))
+        with zipfile.ZipFile(result["preview_paths"][0]) as saved:
+            selected_once = saved.read("board")
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        self.assertEqual(len(output["summary"]), 3)
+        with zipfile.ZipFile(output["result"]["preview_paths"][0]) as saved:
+            self.assertEqual(saved.read("board"), selected_once)
+            for member in members:
+                actual = saved.read(member)
+                self.assertNotEqual(actual, original[member])
+                self.assertEqual(sources._model_facts(actual)["platform"], "ios" if member.startswith("iphone") else "android")
+                info = edits._inspect(actual)
+                expected = [1.4*1.15, .8*.95, 1.1*1.05] if "bare" in member else [1.4, .8, 1.1]
+                self.assertTrue(np.allclose(info["effective"][self.key(info, "BreastSize")]["scale"], expected, atol=1e-6))
+            self.assertEqual(saved.read("modinstall.txt"), original["modinstall.txt"])
+            self.assertEqual(saved.read("untouched.bin"), original["untouched.bin"])
+        self.assertEqual(path.read_bytes(), original_zip)
+
+    def test_raw_save_without_declared_owner_or_platform_family_is_an_unchanged_noop(self):
+        legacy, original = self.paired_zip()
+        original["modinstall.txt"] = b"costume_file='board'\nrina_unmask_costume_file='bare'\n"
+        with zipfile.ZipFile(legacy, "w") as archive:
+            for name, raw in original.items():
+                archive.writestr(name, raw)
+        context, result, state, _ = self.save(legacy, lambda nodes: self.state({
+            "node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.2, 1., 1.]}), archive=True)
+        saved = Path(result["preview_paths"][0]).read_bytes()
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        self.assertIs(output["result"], result)
+        self.assertEqual(output["summary"], [])
+        self.assertEqual(Path(result["preview_paths"][0]).read_bytes(), saved)
+        for manifest in (b"chara_id=6\ncostume_file='only'\n", b"this is opaque legacy metadata !",
+                         b"chara_id=int('6')\ncostume_file='only'\n",
+                         b"chara_id=6\ncostume_file=str('only')\n"):
+            ordinary = self.root / "ordinary.zip"
+            with zipfile.ZipFile(ordinary, "w") as archive:
+                archive.writestr("only", self.raw)
+                archive.writestr("modinstall.txt", manifest)
+            context, result, state, _ = self.save(ordinary, lambda nodes: self.state({
+                "node": nodes["BreastSize"]["node"], "method": "node", "scale": [1.2, 1., 1.]}),
+                archive=True, variant=None)
+            self.assertIs(paired.apply_pair_edits(context, result, state, pair=None, job=self.job)["result"], result)
 
     def test_missing_or_unsupported_counterpart_rejects_without_publishing_partial_pair(self):
         primary = self.write("board.unity", self.fixture())

@@ -1,4 +1,4 @@
-"""Apply source-relative body edits to each declared Rina costume variant.
+"""Apply source-relative body edits to declared costume/platform variants.
 
 Pairs use their own immutable sources and writable rigs. Numeric Unity IDs,
 preview animation and filenames never establish correspondence between rigs.
@@ -27,6 +27,7 @@ def _zip_declarations(raw):
     if not zipfile.is_zipfile(io.BytesIO(raw)):
         return []
     from .viewer_archive import _entry_path, MAX_ENTRIES, MAX_MANIFEST_BYTES
+    from .charinfo import NAMES
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         entries = archive.infolist()
         if len(entries) > MAX_ENTRIES:
@@ -49,33 +50,89 @@ def _zip_declarations(raw):
             values = {}
             try:
                 tree = ast.parse(archive.read(info).decode("utf-8-sig"))
+            except (SyntaxError, UnicodeError):
+                # Opaque legacy metadata is not a declared family. Ordinary
+                # raw export preserves it; installer packaging validates it.
+                continue
+            try:
+                # Raw save also passes through this mapper. A legacy/generic
+                # manifest without an explicit owner declares no trusted family
+                # here; preserve its existing raw-save behavior unchanged.
+                if not any(isinstance(node, ast.Assign) and len(node.targets) == 1 and
+                           isinstance(node.targets[0], ast.Name) and node.targets[0].id == "chara_id"
+                           for node in tree.body):
+                    continue
+                literal = True
                 for node in tree.body:
                     if (isinstance(node, ast.Assign) and len(node.targets) == 1 and
                             isinstance(node.targets[0], ast.Name) and node.targets[0].id in fields):
-                        name, value = node.targets[0].id, ast.literal_eval(node.value)
+                        name = node.targets[0].id
+                        try:
+                            value = ast.literal_eval(node.value)
+                        except (ValueError, TypeError, RecursionError):
+                            literal = False
+                            break
                         if name in values and values[name] != value:
                             raise ValueError("The paired costume manifest has conflicting values.")
                         values[name] = value
-            except (SyntaxError, UnicodeError, TypeError, RecursionError) as error:
-                raise ValueError("The paired costume manifest is not a safe literal declaration.") from error
-            if values.get("chara_id") != 209:
-                continue
-            selected = []
-            for field in ("costume_file", "rina_unmask_costume_file", "costume_file_ios", "rina_unmask_costume_file_ios"):
-                value = values.get(field)
-                if not value:
+                if not literal:
                     continue
-                if not isinstance(value, str):
-                    raise ValueError("The paired costume has an invalid model reference.")
-                relative = PurePosixPath(value.replace("\\", "/"))
-                if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
-                    raise ValueError("The paired costume has an unsafe model reference.")
-                member = members.get(str(PurePosixPath(key).parent / relative).casefold())
-                if member is None or member.is_dir():
-                    raise ValueError("A declared Rina variant is missing from its original ZIP.")
-                selected.append(member.filename)
+            except (TypeError, RecursionError) as error:
+                raise ValueError("The paired costume manifest is not a safe literal declaration.") from error
+            owner = values.get("chara_id")
+            if owner is None:
+                continue
+            rina = owner == 209
+            # One explicit installer manifest establishes the costume family.
+            # A lone ordinary model has no counterpart to edit, and unrelated
+            # files never become partners merely because their rigs match.
+            if not rina and not (values.get("costume_file") and values.get("costume_file_ios")):
+                continue
+            if isinstance(owner, bool) or not isinstance(owner, int) or owner not in NAMES:
+                raise ValueError("The paired costume manifest must declare a known character.")
+            if not rina and any(values.get(field) for field in
+                                ("rina_unmask_costume_file", "rina_unmask_costume_file_ios")):
+                raise ValueError("Only Rina may declare board and unmasked costume variants.")
+            selected = []
+            digests = set()
+            explicit_ios = bool(values.get("costume_file_ios") or values.get("rina_unmask_costume_file_ios"))
+            for platform, main, other in (("android", "costume_file", "rina_unmask_costume_file"),
+                                          ("ios", "costume_file_ios", "rina_unmask_costume_file_ios")):
+                if not values.get(main) and not values.get(other):
+                    continue
+                # Legacy iOS-only installers put their iOS model in the main
+                # fields. An explicit *_ios alternative makes the main fields
+                # Android; without it, preserve a concrete same-platform pair.
+                expected_platform = platform if explicit_ios else None
+                role_platform = None
+                for field in (main, other) if rina else (main,):
+                    value = values.get(field)
+                    if not isinstance(value, str) or not value:
+                        raise ValueError("Each declared platform must include its complete costume variants.")
+                    relative = PurePosixPath(value.replace("\\", "/"))
+                    if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
+                        raise ValueError("The paired costume has an unsafe model reference.")
+                    member = members.get(str(PurePosixPath(key).parent / relative).casefold())
+                    if member is None or member.is_dir():
+                        raise ValueError("A declared costume variant is missing from its original ZIP.")
+                    model_raw = archive.read(member)
+                    facts, digest = sources._model_facts(model_raw), sources._sha(model_raw)
+                    # A known literal manifest owner is the user's explicit
+                    # family declaration. Costume transplants may retain donor
+                    # texture names, so those cannot override that declaration.
+                    # Platform identity still comes from each original Unity
+                    # asset; no platform is copied or converted from another.
+                    if (not facts["platform"] or
+                            expected_platform is not None and facts["platform"] != expected_platform or
+                            role_platform is not None and facts["platform"] != role_platform):
+                        raise ValueError("The declared costume variants must match their Android/iOS platform.")
+                    role_platform = facts["platform"]
+                    if digest in digests:
+                        raise ValueError("One model cannot stand in for distinct costume/platform variants.")
+                    digests.add(digest)
+                    selected.append(member.filename)
             if len(selected) not in (2, 4) or len(set(selected)) != len(selected):
-                raise ValueError("A Rina Mod ZIP must declare two or four distinct costume variants.")
+                raise ValueError("A paired Mod ZIP must declare two or four distinct costume variants.")
             output.append(selected)
         return output
 
@@ -282,7 +339,7 @@ def _replace_zip(saved_path, destination, replacements):
         for entry in incoming.infolist():
             outgoing.writestr(copy.copy(entry), pending.pop(entry.filename, incoming.read(entry)))
         if pending:
-            raise ValueError("A saved Rina ZIP is missing a declared variant.")
+            raise ValueError("A saved costume ZIP is missing a declared variant.")
     with zipfile.ZipFile(io.BytesIO(saved_raw)) as incoming, zipfile.ZipFile(destination) as checked:
         if incoming.namelist() != checked.namelist() or incoming.comment != checked.comment:
             raise ValueError("The paired ZIP changed unrelated archive structure.")
@@ -297,7 +354,7 @@ def _apply(context, result, state, *, pair, declarations, job):
     containers, _ = sources._snapshots(context)
     if (not isinstance(result, dict) or not isinstance(result.get("preview_paths"), list) or
             len(result["preview_paths"]) != len(containers)):
-        raise ValueError("The saved Rina model lost its original container identity.")
+        raise ValueError("The saved costume model lost its original container identity.")
     root = Path(result["recipe_path"]).resolve().parent
     temporary = Path(tempfile.mkdtemp(prefix=".paired-body-", dir=root))
     final = root / ("paired-body-" + secrets.token_hex(8))
@@ -344,16 +401,14 @@ def _apply(context, result, state, *, pair, declarations, job):
                     if not selected:
                         continue
                     if len(selected) != 1:
-                        raise ValueError("Multiple edited Rina variants would conflict in one paired ZIP.")
+                        raise ValueError("Multiple edited costume variants would conflict in one paired ZIP.")
                     index, source = selected[0]
-                    if not sources._complete_rina_zip(containers[ci]["raw"], source["member"]):
-                        raise ValueError("The original Rina ZIP has no verified complete variant family.")
                     with zipfile.ZipFile(io.BytesIO(containers[ci]["raw"])) as archive:
                         for member in members:
                             if member == source["member"]:
                                 continue
                             if member in claimed:
-                                raise ValueError("Two paired declarations target the same Rina member.")
+                                raise ValueError("Two paired declarations target the same costume member.")
                             claimed.add(member)
                             raw = archive.read(member)
                             edited = _edit_partner(context, state, index, raw, temporary / f"variant-{count}", job)
@@ -373,7 +428,7 @@ def _apply(context, result, state, *, pair, declarations, job):
         _check(job)
         for path, digest in initial.items():
             if sources._sha(sources._read(path)) != digest:
-                raise ValueError("A Rina input changed while paired edits were being saved.")
+                raise ValueError("A costume input changed while paired edits were being saved.")
         receipt = {"format": "elichika-paired-body-edit", "version": 1,
                    "sourceOriginals": [{"name": row["name"], "sha256": row["sha256"]} for row in containers],
                    "targets": summaries}

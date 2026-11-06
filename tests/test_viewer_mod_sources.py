@@ -219,7 +219,7 @@ class ViewerModSourceTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_incomplete_or_cross_platform_archive_cannot_silently_package_partial_rina(self):
-        for options in ({"missing": True}, {"unmask": self.ios}, {"unmask": self.other},
+        for options in ({"missing": True}, {"unmask": self.ios},
                         {"unmask": self.primary},
                         {"manifest_extra": "rina_unmask_costume_file='board'\n"}):
             with self.subTest(options=list(options)):
@@ -227,6 +227,14 @@ class ViewerModSourceTests(unittest.TestCase):
                 with patch.object(game, "run_import", side_effect=AssertionError("must not guess")):
                     with self.assertRaises(ValueError):
                         self.resolve(context, Path(context["containers"][0]["path"]))
+
+    def test_explicit_complete_manifest_family_can_retain_donor_texture_identity(self):
+        context = self.zip_context(unmask=self.other)
+        path = Path(context["containers"][0]["path"])
+        original = path.read_bytes()
+        with patch.object(game, "run_import", side_effect=AssertionError("Declared ZIP family must not fetch a guessed partner")):
+            self.assertIsNone(self.resolve(context, path))
+        self.assertEqual(path.read_bytes(), original)
 
     def test_explicit_copy_cannot_fake_a_missing_partner(self):
         path = self.write("selected.unity", self.primary)

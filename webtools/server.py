@@ -391,8 +391,9 @@ class Handler(BaseHTTPRequestHandler):
             # Validate before creating a background job so expired sessions and
             # invalid input remain actionable errors beside the save control.
             validator = getattr(model_edits, "validate_state", None)
+            validated_state = params["state"]
             if validator is not None:
-                validator(params["token"], params["state"])
+                validated_state = validator(params["token"], params["state"])
             output_dir = os.path.realpath(default_sukusta_dir("modded/viewer"))
             if not filebrowser.is_within_allowed(output_dir):
                 raise PermissionError("The model output folder is outside the allowed folders.")
@@ -402,15 +403,28 @@ class Handler(BaseHTTPRequestHandler):
                 if current.should_stop():
                     return "Model saving was cancelled."
                 current.progress(0, 1)
+                from webtools.core import viewer_mod_pair_edits, viewer_mod_flow
+                context = model_edits.mod_source_context(params["token"])
                 result = model_edits.export(
                     params["token"], params["state"], output_dir, log=current.log)
+                # A declared costume family includes the platform alternatives
+                # stored in the same ZIP. Apply the edit intent to each original
+                # rig before exposing the saved copy, regardless of host OS.
+                try:
+                    paired = viewer_mod_pair_edits.apply_pair_edits(
+                        context, result, validated_state, pair=None, job=current)
+                except Exception:
+                    viewer_mod_flow.discard_failed_export(result, output_dir)
+                    raise
+                result = paired["result"]
+                if paired.get("summary"):
+                    result["paired_edits"] = paired["summary"]
                 # Re-editing opens these immutable original copies, so retain
                 # their verified game selection without relying on filenames.
-                from webtools.core import viewer_mod_flow
                 source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
                 if filebrowser.is_within_allowed(source_cache):
                     try:
-                        viewer_mod_flow.remember_export_sources(model_edits.mod_source_context(params["token"]), result,
+                        viewer_mod_flow.remember_export_sources(context, result,
                             repo_root=Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve(), cache_root=source_cache)
                     except (OSError, ValueError, TypeError):
                         current.log("The model was saved, but its automatic game-pairing receipt could not be retained.")
