@@ -22,7 +22,9 @@ Unity 에셋번들에 직접 수행한다. 본에 변형(스케일/회전/이동
   노멀/탄젠트도 같은 블렌드 행렬로 변환 후 재정규화.
 
 UI 언어는 영어. 실행 환경 자동 감지: 데스크톱 → Tkinter GUI / Termux·헤드리스 → 텍스트 메뉴(+CLI).
-의존성: UnityPy, numpy. 검증: Unity 2018.4 비압축 메시(SIFAS 모델팩). 압축 메시 미지원.
+의존성: UnityPy, numpy 및 같은 폴더의 sifas_body_profiles.py(공유 체형 데이터).
+별도로 배포할 때도 이 두 Python 파일을 함께 유지한다.
+검증: Unity 2018.4 비압축 메시(SIFAS 모델팩). 압축 메시 미지원.
 """
 
 import os
@@ -32,6 +34,9 @@ import argparse
 import importlib
 import subprocess
 from pathlib import Path
+
+from sifas_body_profiles import (THIGH_STATES, THIGH_BONES,
+                                 THIGH_TRANSITIONS, thigh_factor)
 
 # --- self-contained multi-language support (English default; 한국어 / 日本語) ---
 # Translations are embedded so this single file works on its own; the chosen
@@ -379,22 +384,6 @@ class Target:
 #   thick : Nozomi, Mari, Karin, Emma  = (1.0, 1.03884,  1.0577)
 #   default(표준 체형)                  = (1.0, 1.0,      1.0)
 # 상태 A→B 전환 배율 = B/A(성분별). X는 1.0 고정(다리 길이 유지), Y/Z가 굵기.
-THIGH_STATES = {
-    "slim":    (1.0, 0.941748, 0.932695),
-    "default": (1.0, 1.0, 1.0),
-    "thick":   (1.0, 1.03884, 1.0577),
-}
-THIGH_BONES = ("LeftUpLeg", "RightUpLeg")
-THIGH_TRANSITIONS = [("slim", "default"), ("slim", "thick"),
-                     ("default", "slim"), ("default", "thick"),
-                     ("thick", "slim"), ("thick", "default")]
-
-
-def thigh_factor(src, dst):
-    """허벅지 상태 src→dst 전환 배율(성분별 B/A)."""
-    return tuple(b / a for a, b in zip(THIGH_STATES[src], THIGH_STATES[dst]))
-
-
 def thigh_targets(src, dst, compensate=True):
     """src→dst 허벅지 프리셋을 양쪽 UpLeg 타깃으로."""
     f = thigh_factor(src, dst)

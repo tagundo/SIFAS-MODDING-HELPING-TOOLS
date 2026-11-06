@@ -326,7 +326,7 @@ if(require.main===module)(async()=>{
     await page.locator('#viewer-breast-reset').click();
     assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());await page.locator('#viewer-info').evaluate(element=>element.open=true);assert(await page.locator('#viewer-pose-help').isVisible());await page.locator('#viewer-info').evaluate(element=>element.open=false);
     const probe=await page.evaluate(()=>ModelViewer.renderProbe());assert(probe.ready&&probe.nonBackgroundSamples>0&&probe.glError===0);
-    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
+    await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
     await inputNode(6,'rotation','Z',45);await inputNode(7,'rotation','X',30);
     const headBeforeProfile=await world('Head'),hairBeforeProfile=await world('Neck_Hair'),moveBeforeProfile=await world('Move');
@@ -387,7 +387,7 @@ if(require.main===module)(async()=>{
     await page.waitForFunction(()=>ModelViewer.getState().contextLost);assert(await page.locator('#viewer-breast-preset').isDisabled());
     await page.waitForTimeout(250);await page.evaluate(()=>window.__testLostContext.restoreContext());
     await page.waitForFunction(()=>!ModelViewer.getState().contextLost);assert.equal(await page.locator('#viewer-breast-preset').isDisabled(),false);assert((await page.evaluate(()=>ModelViewer.renderProbe())).glError===0);
-    for(const lang of ['ko','ja','en']){await page.locator('#lang-select').selectOption(lang);assert((await page.locator('#viewer-adjustments > summary').innerText()).length>0);}
+    for(const lang of ['ko','ja','en']){await page.locator('#lang-select').selectOption(lang);assert((await page.locator('#viewer-body-adjustments > summary').innerText()).length>0);}
     for(const viewport of [{width:320,height:900},{width:720,height:400},{width:1366,height:900}]){await page.setViewportSize(viewport);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
     await page.locator('#viewer-motion').selectOption('Synthetic motion visibility');
     const hiddenAtStart=await page.evaluate(()=>ModelViewer.renderProbe());assert.equal(hiddenAtStart.triangles,0);assert.equal((await state()).rig.visibilityTracks,1);
@@ -409,7 +409,7 @@ if(require.main===module)(async()=>{
     for(const id of ['viewer-node','viewer-breast-preset','viewer-saved-nodes'])assert(await page.locator('#'+id).isDisabled(),'Unsupported rig control must be disabled: '+id);
     assert.equal(await page.locator('#viewer-expression').isDisabled(),false,'Independent expression channels remain available');
     unsupported=false;generated=fixture({shifted:true,shader:true});await page.evaluate(()=>openModelViewer(['/synthetic/shifted-skin.unity']));
-    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-nodes').uncheck();await page.locator('#viewer-fit').click();
+    await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-nodes').uncheck();await page.locator('#viewer-fit').click();
     assert.equal((await state()).rig.bones.find(b=>b.name==='Move').position[0],-50,'Skin must actually move geometry far from its raw bounds');
     const shiftedInitial=await page.evaluate(()=>ModelViewer.renderProbe(33));
     assert.equal(shiftedInitial.glError,0,JSON.stringify({shiftedInitial,gpuMessages}));
@@ -454,7 +454,7 @@ if(require.main===module)(async()=>{
     assert.equal(await page.locator('#viewer-motion option:checked').innerText(),'SIFAS costume preview');
     const previewProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));assert.equal(previewProbe.glError,0);assert(previewProbe.nonBackgroundSamples>0);
     await page.waitForTimeout(150);assert.equal((await state()).rig.time,0,'Default preview remains paused until Play');
-    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);
+    await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);
     await page.locator('#viewer-saved-nodes').uncheck();
     for(let n=0;n<2;n++)await profile('rin');
     const previewScaled=await state();assert.deepEqual(previewScaled.rig.bones.find(b=>b.name==='Move').scale,[1,1,1]);nearVector(previewScaled.rig.bones.find(b=>b.name==='BreastSize').scale,[.72,.95,.90],'A repeated profile retains absolute source values');
@@ -488,7 +488,7 @@ if(require.main===module)(async()=>{
     nearVector(bone(await state(),5).scale,[.6,.6,.6],'A skirt child must not get the root multiplier a second time');
     await page.locator('#viewer-skirt-reset').click();assert.equal((await state()).rig.body.skirtMode,'file');
     assert.equal((await capture(null,'all-saved-default')).changedPixels,0,'Skirt reset restores the complete imported file defaults');
-    await page.locator('#viewer-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-parts').evaluate(e=>e.open=true);
+    await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-parts').evaluate(e=>e.open=true);
     assert((await page.locator('#viewer-saved-status').innerText()).includes('5 / 5'));
     await page.locator('[data-viewer-saved-part="skirt"]').uncheck();const partial=await state();assert.equal(partial.rig.savedNodes.applied,1);assert((await page.locator('#viewer-saved-status').innerText()).includes('1 / 5'));
     assert.deepEqual(bone(partial,3).scale,[1,1,1]);assert.deepEqual(bone(partial,5).scale,[1,1,1]);assert.deepEqual(bone(partial,3).quaternion,[0,0,0,1]);
@@ -662,7 +662,7 @@ if(require.main===module)(async()=>{
     // The source skirt tool edits eight named local roots, including a nested
     // root, while sixteen ordinary descendants retain their saved identity.
     generated=fixture({skirtSet:true});await page.evaluate(()=>openModelViewer(['/synthetic/eight-absolute-skirt-roots.unity']));
-    await page.locator('#viewer-adjustments').evaluate(details=>details.open=true);
+    await page.locator('#viewer-body-adjustments').evaluate(details=>details.open=true);
     const skirtInitial=await state(),rootIds=skirtInitial.rig.skirtValues.targets.map(target=>target.node);
     const descendantIds=skirtInitial.rig.bones.filter(value=>/Skirt/.test(value.name)&&!rootIds.includes(value.node)).map(value=>value.node);
     assert.equal(rootIds.length,8);assert.equal(new Set(rootIds).size,8);assert.equal(descendantIds.length,16);

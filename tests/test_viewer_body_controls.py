@@ -11,6 +11,9 @@ try:
     from generate_viewer_body_fixture import BONES, fixture_bytes, local_matrix
     from webtools.core import model_edits as edits, model_scaling, model_viewer
     from sifas_mesh_baker import stream_layout, read_attr, ATTR_POS
+    import sifas_mesh_baker as mesh_tool
+    from sifas_body_profiles import (THIGH_STATES, THIGH_TRANSITIONS,
+                                     thigh_factor, thigh_profile_metadata)
     AVAILABLE = True
 except ImportError:
     AVAILABLE = False
@@ -90,6 +93,70 @@ class ViewerBodyControlTests(unittest.TestCase):
             selected = next(c for c in prepared["rig"]["scaling"]["controls"] if c["id"] == control)
             self.assertFalse(selected["available"], "Ambiguous/missing compensation boundaries must not be guessed")
             self.assertTrue(selected.get("unavailableReason"))
+
+    def test_thigh_presets_share_the_existing_tool_without_guessing_source_type(self):
+        from webtools.core import charinfo
+        control = self.controls["thighs"]
+        self.assertIs(mesh_tool.THIGH_STATES, THIGH_STATES)
+        self.assertIs(charinfo.THIGH_STATES, THIGH_STATES)
+        self.assertIs(mesh_tool.thigh_factor, thigh_factor)
+        self.assertEqual([(p["sourceState"], p["targetState"]) for p in control["presets"]], THIGH_TRANSITIONS)
+        self.assertTrue(control["presetSourceRequired"])
+        self.assertEqual(control["presetPercentagePolicy"], "replace_same_axes")
+        self.assertEqual(control["presetApplication"], "relative_to_original_static_scale")
+        self.assertNotIn("detectedSourceState", control, "A named bone cannot establish a costume's original body type")
+        for profile in control["presets"]:
+            old_targets = mesh_tool.thigh_targets(profile["sourceState"], profile["targetState"])
+            self.assertEqual([t.bone for t in old_targets], ["LeftUpLeg", "RightUpLeg"])
+            self.assertTrue(all(t.compensate for t in old_targets))
+            self.assertEqual(profile["scaleDelta"], list(old_targets[0].scale))
+            self.assertEqual(profile["scaleDelta"][0], 1)
+            self.assertNotEqual(profile["scaleDelta"][1], profile["scaleDelta"][2],
+                                "The existing body-type conversions are not uniform thickness percentages")
+        control["presets"][0]["scaleDelta"][1] = 999
+        self.assertEqual(thigh_profile_metadata()["presets"][0]["scaleDelta"],
+                         list(thigh_factor(*THIGH_TRANSITIONS[0])), "Metadata must not mutate the shared reference data")
+
+    def test_every_tool_thigh_profile_saves_exact_shape_and_preserves_calves(self):
+        before_mesh, before = self.positions(self.original)
+        worlds = self.worlds(self.original); names = [row[0] for row in BONES]
+        for src, dst in THIGH_TRANSITIONS:
+            with self.subTest(source=src, target=dst):
+                factor = np.asarray(mesh_tool.thigh_factor(src, dst))
+                operations = []
+                for name, child in (("LeftUpLeg", "LeftLeg"), ("RightUpLeg", "RightLeg")):
+                    base = np.asarray(self.nodes[name]["baseline"]["scale"])
+                    operations.append({"node": self.nodes[name]["node"], "method": "mesh",
+                        "scale": (base*factor).tolist(), "compensate": True,
+                        "compensationTargets": [self.nodes[child]["node"]]})
+                state = self.state(*operations)
+                result = edits.export(self.token, state, self.root / (src+"-"+dst))
+                checked = edits._inspect(Path(result["preview_paths"][0]).read_bytes())
+                after_mesh, after = self.positions(checked)
+                self.assertEqual(before_mesh["m_BindPose"], after_mesh["m_BindPose"])
+                for index, name in enumerate(names):
+                    points = before[index*3:index*3+3]; actual = after[index*3:index*3+3]
+                    if name not in ("LeftUpLeg", "RightUpLeg"):
+                        np.testing.assert_allclose(actual, points, atol=3e-6, rtol=0,
+                            err_msg=f"{src}->{dst} must preserve child/calf/foot geometry: {name}")
+                        continue
+                    world = worlds[self.key(name)]
+                    local = np.c_[points, np.ones(3)] @ np.linalg.inv(world).T
+                    expected_local = local.copy(); expected_local[:, :3] *= factor
+                    expected = (expected_local @ world.T)[:, :3]
+                    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=0,
+                        err_msg=f"{src}->{dst} must match the tool's unequal Y/Z factors on {name}")
+                    self.assertGreater(np.max(np.abs(actual-points)), .001)
+                    reloaded_local = np.c_[actual, np.ones(3)] @ np.linalg.inv(world).T
+                    np.testing.assert_allclose(reloaded_local[:, 0], local[:, 0], atol=3e-6, rtol=0,
+                        err_msg="Preset conversion must not change local bone length")
+                for name in names:
+                    self.assertEqual(self.original["transforms"][self.key(name)], checked["transforms"][self.key(name, checked)])
+                restored = edits.restore(self.token, result["recipe"])
+                rebuilt = edits.export(self.token, restored, self.root / (src+"-"+dst+"-rebuilt"))
+                np.testing.assert_array_equal(self.positions(edits._inspect(Path(rebuilt["preview_paths"][0]).read_bytes()))[1], after,
+                    "Recipe rebuild must not multiply a preset onto its previous baked output")
+        self.assertEqual(self.source.read_bytes(), self.raw)
 
     def test_virtual_character_parent_cannot_join_independent_thigh_armatures(self):
         # A virtual Character node joins exported models, but it is not a

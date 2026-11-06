@@ -173,14 +173,25 @@ repacking is unnecessary and the source files remain unchanged.
   not existing edits. Advanced selection can show all bones and choose either
   storage method explicitly. These recommendations cover observed clips, not
   every song or every original-game animation.
+- **Thigh thickness** also offers the existing tool's six explicit
+  **slim / standard / thick** source-to-target conversions. Choose the original
+  and target body types; the app does not guess the costume's source type.
+  These profiles retain their exact, unequal width/depth factors and preserve
+  bone length with child compensation. Profiles and the uniform percentage are
+  alternative adjustments of the same axes: the last applied choice replaces
+  the other, always from the loaded original shape. Repeated Apply does not
+  compound changes. Choosing no conversion leaves existing edits intact;
+  **Undo this size adjustment** explicitly resets those axes.
 - **Basic pose** shows the model's authored pose; **Posed view** switches to the
   verified original suit-preview pose. Both buttons pause at the first frame
   and preserve body adjustments, saved-setting choices and individual edits.
   The verified common suit-preview motion is included with the app and works
   offline without selecting a motion file. Posed view stays disabled for
   incompatible skeletons rather than applying partially bound tracks.
-- **Pose and body** selects available motion clips, plays/pauses or seeks them,
-  and adjusts expression channels. **Add custom motion** selects another Unity
+- **Pose and motion**, **Body and outfit**, and **Facial expression** are separate
+  collapsible panels. Closing one preserves its values and leaves the other
+  panels usable. **Pose and motion** selects available clips, plays/pauses or
+  seeks them. **Add custom motion** selects another Unity
   animation bundle. Same-character local eye-animation companions can also be
   discovered within the bounded trusted library search.
 - The verified **SIFAS costume preview** starts at its first frame, paused; press

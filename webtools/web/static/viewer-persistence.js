@@ -259,12 +259,14 @@
     }
     // Invalid number inputs intentionally do not update the last valid edit.
     // Observe their bubbled events as well, so Save cannot export stale values.
-    listen("viewer-adjustments", "input", function (event) {
-      // A select emits input before change. Refreshing its value here would
-      // overwrite the new save-method choice before its change handler runs.
-      if (event.target && event.target.matches("#viewer-node-fields input[type='number'], #viewer-skirt-number")) refresh();
+    ["viewer-adjustments", "viewer-body-adjustments"].forEach(function (id) {
+      listen(id, "input", function (event) {
+        // A select emits input before change. Refreshing its value here would
+        // overwrite the new save-method choice before its change handler runs.
+        if (event.target && event.target.matches("#viewer-node-fields input[type='number'], #viewer-skirt-number")) refresh();
+      });
+      listen(id, "change", refresh);
     });
-    listen("viewer-adjustments", "change", refresh);
     listen("viewer-save", "click", save);
     listen("viewer-recipe-open", "click", pickRecipe);
     listen("viewer-open-saved", "click", openSaved);

@@ -652,6 +652,75 @@
       });
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
+    function thighPresets() {
+      var control = rawControl("thighs"), seen = {};
+      if (!control || control.presetApplication !== "relative_to_original_static_scale" ||
+          control.presetPercentagePolicy !== "replace_same_axes" || control.presetSourceRequired !== true) return [];
+      var bounds = control.editBounds || { min: 20, max: 250 };
+      return (control.presets || []).filter(function (preset) {
+        var scale = preset.scaleDelta;
+        if (typeof preset.id !== "string" || !preset.id || seen[preset.id] ||
+            typeof preset.sourceLabel !== "string" || typeof preset.targetLabel !== "string" ||
+            !Array.isArray(scale) || scale.length !== 3 || Math.abs(scale[0] - 1) > 1e-12 ||
+            !scale.every(function (value) { return typeof value === "number" && isFinite(value) && value > 0; }) ||
+            !scale.slice(1).every(function (value) { return value * 100 >= bounds.min && value * 100 <= bounds.max; })) return false;
+        seen[preset.id] = true; return true;
+      });
+    }
+    function thighPresetLabel(preset) {
+      return translate(preset.sourceLabel) + " → " + translate(preset.targetLabel);
+    }
+    function thighProfileState() {
+      var state = percentageState("thighs"), original = storedFileMap(), presets = thighPresets();
+      var targets = state.targets.map(function (target) {
+        return { node: target.node, originalScale: original[target.node].scale.toArray(), currentScale: target.currentScale };
+      });
+      function matches(scale) {
+        return targets.length && targets.every(function (target) {
+          return [1, 2].every(function (axis) {
+            return Math.abs(target.currentScale[axis] / target.originalScale[axis] - scale[axis]) <= 1e-7;
+          });
+        });
+      }
+      var selected = matches([1, 1, 1]) ? "loaded" : "custom";
+      var compensated = targets.every(function (target) {
+        return effectiveMethod(target.node) === "mesh" && nodeCompensations[target.node] && nodeCompensations[target.node].enabled;
+      });
+      presets.forEach(function (preset) { if (compensated && matches(preset.scaleDelta)) selected = preset.id; });
+      var savedEnabled = !savedOperations.length || useSavedNodes && savedParts.every(function (part) { return part.enabled; });
+      return { available: state.available && !!presets.length && savedEnabled, selected: selected,
+        reason: !savedEnabled ? "Turn saved file settings on before saving body changes." : state.reason,
+        targets: targets, presets: presets };
+    }
+    function applyThighPreset() {
+      var state = thighProfileState(), selected = element("viewer-thighs-preset").value;
+      var preset = state.presets.filter(function (entry) { return entry.id === selected; })[0];
+      if (!state.available || !preset) return;
+      state.targets.forEach(function (target) {
+        var id = target.node, previous = adjustments[id];
+        var value = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
+        ["scale", "position", "rotation"].forEach(function (name) { if (previous && Array.isArray(previous[name])) value[name] = previous[name].slice(); });
+        [1, 2].forEach(function (axis) { value.scale[axis] = target.originalScale[axis] * preset.scaleDelta[axis]; });
+        adjustments[id] = value; editingMethods[id] = "mesh"; nodeCompensations[id] = { enabled: true, mode: "auto" };
+      });
+      // A preset replaces the percentage operation, including an unapplied
+      // invalid draft. Unequal Y/Z is a valid mixed display, not a Save error.
+      var input = element("viewer-thighs-number"); input.value = "";
+      input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
+      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function refreshThighPresets() {
+      var select = element("viewer-thighs-preset"); if (!select) return;
+      var state = thighProfileState(), enabled = interactive && authoringEnabled && !disposed && state.available;
+      select.textContent = ""; appendOption(select, "", translate("Choose source → target"));
+      if (state.selected === "custom") { appendOption(select, "custom", translate("Custom adjustment")); select.lastChild.disabled = true; }
+      state.presets.forEach(function (preset) { appendOption(select, preset.id, thighPresetLabel(preset)); });
+      select.value = state.selected === "loaded" ? "" : state.selected; select.disabled = !enabled;
+      element("viewer-thighs-preset-apply").disabled = !enabled || !state.presets.some(function (preset) { return preset.id === select.value; });
+      var selected = state.presets.filter(function (preset) { return preset.id === state.selected; })[0];
+      element("viewer-thighs-preset-status").textContent = !state.available && state.reason ? translate(state.reason) :
+        translate("Current thigh preset") + ": " + (selected ? thighPresetLabel(selected) : translate(state.selected === "loaded" ? "No extra edits" : "Custom adjustment"));
+    }
     function undoPercentage(kind) {
       var input = element("viewer-" + kind + "-number"), raw = rawControl(kind);
       if (!raw || !raw.available) return;
@@ -750,6 +819,7 @@
     }
     function refreshBodyControls() {
       refreshPercentages();
+      refreshThighPresets();
       var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && authoringEnabled && !disposed && skirt.available, input = element("viewer-skirt-number");
       input.disabled = !enabled; input.min = String(skirt.editBounds.min); input.max = String(skirt.editBounds.max);
       if (noSkirt || document.activeElement !== input) input.value = skirt.currentUniform === null ? "" : numberText(skirt.currentUniform);
@@ -974,6 +1044,12 @@
       });
       listen("viewer-" + kind + "-reset", "click", function () { if (!this.disabled) undoPercentage(kind); });
     });
+    listen("viewer-thighs-preset", "change", function () {
+      var state = thighProfileState(), selected = this.value;
+      element("viewer-thighs-preset-apply").disabled = !interactive || !authoringEnabled || disposed || !state.available ||
+        !state.presets.some(function (preset) { return preset.id === selected; });
+    });
+    listen("viewer-thighs-preset-apply", "click", function () { if (!this.disabled) applyThighPreset(); });
     listen("viewer-skirt-apply", "click", function () { if (!this.disabled) setSkirt(); });
     listen("viewer-skirt-number", "input", function () { this.setCustomValidity(""); });
     listen("viewer-skirt-reset", "click", function () { if (!this.disabled) undoSkirt(); });
@@ -1163,7 +1239,7 @@
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
-          bodyControls: { hips: percentageState("hips"), thighs: percentageState("thighs"), waist: percentageState("waist") },
+          bodyControls: { hips: percentageState("hips"), thighs: percentageState("thighs"), waist: percentageState("waist") }, thighProfile: thighProfileState(),
           body: { breastPreset: body.breastPreset, skirtMode: Object.keys(skirtOverrides).length ? "absolute" : "file" }, skirtValues: skirtValues(), breastProfile: breastProfile(), heightMode: "saved_settings_only", scaling: scaling,
           nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), selectedNode: selectedNode,
           nodeCompensations: JSON.parse(JSON.stringify(nodeCompensations)),

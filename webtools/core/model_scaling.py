@@ -10,6 +10,8 @@ initialization formula is not inferred from these records.
 import math
 import re
 
+from sifas_body_profiles import thigh_profile_metadata
+
 
 MAX_COMPONENTS = 32
 MAX_ENTRIES = 1024
@@ -265,6 +267,8 @@ def _body_card_controls(authored_nodes, parents, source_by_node):
                    "exactRootNames": list(names), "targetSelection": "unique_exact_named_nodes",
                    "axesMeaning": "uniform_size" if method == "node" else "thickness_without_length",
                    "source": "hips_size_changer.py:HipsSize" if method == "node" else "webtools/tools/mesh.py:_build_body_targets"}
+        if identity == "thighs":
+            control.update(thigh_profile_metadata())
         if reason:
             control["unavailableReason"] = reason
         controls.append(control)

@@ -16,6 +16,8 @@ Sources:
                             scaled" (left at the default 1.0) for that costume.
 """
 
+from sifas_body_profiles import THIGH_STATES
+
 NAMES = {
     1: "Honoka Kousaka", 2: "Eli Ayase", 3: "Kotori Minami", 4: "Umi Sonoda",
     5: "Rin Hoshizora", 6: "Maki Nishikino", 7: "Nozomi Tojo", 8: "Hanayo Koizumi",
@@ -55,11 +57,6 @@ JIGGLE = {cid: n for n, ids in _JIGGLE_GROUPS.items() for cid in ids}
 
 # [Thigh Scale] per-character thigh body type (LeftUpLeg/RightUpLeg), from
 # sifas_mesh_baker.THIGH_STATES. X stays 1.0 (leg length); Y/Z are the thickness.
-THIGH_STATES = {
-    "slim":    (1.0, 0.941748, 0.932695),
-    "default": (1.0, 1.0, 1.0),
-    "thick":   (1.0, 1.03884, 1.0577),
-}
 _THIGH_SLIM = {9, 109, 209, 212}    # Nico, Ruby, Rina, Lanzhu
 _THIGH_THICK = {7, 108, 204, 208}   # Nozomi, Mari, Karin, Emma
 THIGH = {cid: ("slim" if cid in _THIGH_SLIM

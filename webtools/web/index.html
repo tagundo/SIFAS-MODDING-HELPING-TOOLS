@@ -139,13 +139,16 @@
             </details>
           </details>
           <details id="viewer-adjustments" class="viewer-adjustments" open>
-            <summary data-i18n="Pose and body">Pose and body</summary>
+            <summary data-i18n="Pose and motion">Pose and motion</summary>
             <div class="viewer-motion-row">
               <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
             <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
+          </details>
+          <details id="viewer-body-adjustments" class="viewer-adjustments viewer-body-adjustments" open>
+            <summary data-i18n="Body and outfit">Body and outfit</summary>
             <div id="viewer-editor-tabs" class="viewer-editor-tabs" role="tablist" aria-label="Body editing tools">
               <button id="viewer-editor-node-tab" type="button" role="tab" aria-selected="true" aria-controls="viewer-editor-node-panel" tabindex="0"><span data-i18n="Node Scaling">Node Scaling</span><output id="viewer-editor-node-count" aria-label="Node edits">0</output></button>
               <button id="viewer-editor-mesh-tab" type="button" role="tab" aria-selected="false" aria-controls="viewer-editor-mesh-panel" tabindex="-1"><span data-i18n="Mesh Baker">Mesh Baker</span><output id="viewer-editor-mesh-count" aria-label="Mesh edits">0</output></button>
@@ -153,7 +156,7 @@
             <section id="viewer-editor-node-panel" class="viewer-editor-panel" role="tabpanel" aria-labelledby="viewer-editor-node-tab">
               <p class="viewer-render-note" data-i18n="New edits here use node settings. Existing edits keep their save method.">New edits here use node settings. Existing edits keep their save method.</p>
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
-              <h3 id="viewer-body-title" data-i18n="Body and outfit">Body and outfit</h3>
+              <h3 id="viewer-body-title" class="sr-only" data-i18n="Node Scaling">Node Scaling</h3>
               <div class="viewer-body-controls">
                 <details id="viewer-breast-card" class="viewer-body-card viewer-profile-card" open>
                   <summary><span id="viewer-breast-title" data-i18n="Breast size">Breast size</span></summary>
@@ -255,7 +258,7 @@
             <section id="viewer-editor-mesh-panel" class="viewer-editor-panel" role="tabpanel" aria-labelledby="viewer-editor-mesh-tab" hidden>
               <p class="viewer-render-note" data-i18n="New edits here are baked into a costume copy. Existing edits keep their save method.">New edits here are baked into a costume copy. Existing edits keep their save method.</p>
               <section class="viewer-control-section" aria-labelledby="viewer-mesh-body-title">
-                <h3 id="viewer-mesh-body-title" data-i18n="Body and outfit">Body and outfit</h3>
+                <h3 id="viewer-mesh-body-title" class="sr-only" data-i18n="Mesh Baker">Mesh Baker</h3>
                 <div class="viewer-body-controls">
                 <details id="viewer-thighs-card" class="viewer-body-card viewer-percentage-control" open>
                   <summary><span data-i18n="Thigh thickness">Thigh thickness</span></summary>
@@ -264,6 +267,10 @@
                       <div><dt data-i18n="File values">File values</dt><dd id="viewer-thighs-file-values" class="viewer-factor-values">—</dd></div>
                       <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-thighs-current-values" class="viewer-factor-values">—</dd></div>
                     </dl>
+                    <label for="viewer-thighs-preset" data-i18n="Thigh preset">Thigh preset</label>
+                    <div class="viewer-absolute-entry viewer-preset-entry"><select id="viewer-thighs-preset" aria-describedby="viewer-thighs-preset-note viewer-thighs-preset-status" disabled><option value="" data-i18n="Choose source → target">Choose source → target</option></select><button id="viewer-thighs-preset-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
+                    <p id="viewer-thighs-preset-note" class="viewer-control-note" data-i18n="Choose the original and target body types. Presets and percentage replace each other; repeated Apply does not compound changes.">Choose the original and target body types. Presets and percentage replace each other; repeated Apply does not compound changes.</p>
+                    <p id="viewer-thighs-preset-status" class="viewer-control-note" role="status" aria-live="polite"></p>
                     <label for="viewer-thighs-number" data-i18n="Percent of loaded shape">Percent of loaded shape</label>
                     <div class="viewer-absolute-entry"><input id="viewer-thighs-number" type="number" min="20" max="250" step="1" value="100" inputmode="decimal" aria-describedby="viewer-thighs-note viewer-thighs-status" disabled><button id="viewer-thighs-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
                     <button id="viewer-thighs-reset" type="button" data-i18n="Undo this size adjustment" disabled>Undo this size adjustment</button>

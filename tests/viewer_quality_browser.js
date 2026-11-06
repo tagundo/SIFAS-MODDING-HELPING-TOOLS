@@ -235,7 +235,7 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
     assert.equal(initial.quality.nativePixelRatio, 2.5);
     assert.equal(initial.quality.effectivePixelRatio, 1.75);
     assert.equal(initial.rig.savedNodes.applied, 5);
-    await page.locator('#viewer-adjustments').evaluate(element => { element.open = true; });
+    await page.locator('#viewer-body-adjustments').evaluate(element => { element.open = true; });
     assert.equal(await page.locator('#viewer-height,#viewer-height-number,#viewer-breast,#viewer-breast-number').count(), 0,
       'Quality tests use discrete source profiles, without arbitrary height or breast percentages');
     await page.locator('#viewer-breast-preset').selectOption('emma');

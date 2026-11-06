@@ -1365,6 +1365,7 @@ _VIEWER_TRANSLATIONS.update({
 })
 _VIEWER_TRANSLATIONS.update({
     "Pose and body": ["포즈·체형 조절", "ポーズ・体型調整"],
+    "Pose and motion": ["포즈·모션", "ポーズ・モーション"],
     "Reset pose, body and expressions": ["포즈·체형·표정 초기화", "ポーズ・体型・表情をリセット"],
     "Add custom motion": ["다른 모션 추가", "別のモーションを追加"],
     "The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.": ["SIFAS 미리보기 포즈를 자동으로 불러옵니다. 다른 모션·표정은 Unity 번들로 추가할 수 있습니다. FBX 모션은 지원하지 않습니다.", "SIFASプレビュー姿勢を自動で読み込みます。別のモーション・表情はUnityバンドルで追加できます。FBXモーションには対応していません。"],
@@ -2149,6 +2150,18 @@ _VIEWER_TRANSLATIONS.update({
         "선택한 게임 버전의 데이터가 없습니다.",
         "選択したゲーム版のデータがありません。"
     ]
+})
+_VIEWER_TRANSLATIONS.update({
+    "Choose source → target": ["원본 체형 → 목표 체형 선택", "元の体型 → 変更先を選択"],
+    "Slim": ["가느다란 체형", "細めの体型"],
+    "Standard": ["표준 체형", "標準の体型"],
+    "Thick": ["굵은 체형", "太めの体型"],
+    "Custom adjustment": ["직접 조절한 값", "手動調整値"],
+    "Current thigh preset": ["현재 허벅지 프리셋", "現在の太ももプリセット"],
+    "Choose the original and target body types. Presets and percentage replace each other; repeated Apply does not compound changes.": [
+        "원본 체형과 목표 체형을 직접 선택하세요. 프리셋과 %는 나중에 적용한 값으로 대체되며, 반복 적용해도 누적되지 않습니다.",
+        "元の体型と変更先を選択してください。プリセットと%は後から適用した値に置き換わり、繰り返し適用しても累積しません。"
+    ],
 })
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]

@@ -16,7 +16,7 @@ const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(
 fs.mkdirSync(evidence, { recursive: true });
 const report = { status: 'RUNNING', scope: 'Host Chromium and real serialized neutral models; not original game playback', cases: [] };
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
-const files = ['webtools/core/model_scaling.py', 'webtools/core/model_edits.py', 'webtools/web/index.html',
+const files = ['sifas_body_profiles.py', 'sifas_mesh_baker.py', 'webtools/core/charinfo.py', 'webtools/core/model_scaling.py', 'webtools/core/model_edits.py', 'webtools/web/index.html',
   'webtools/i18n.py', 'webtools/web/static/viewer-rig.js', 'webtools/web/static/viewer-editing.js',
   'webtools/web/static/style.css'];
 const sourceHashes = () => Object.fromEntries(files.map(name => [name, sha(fs.readFileSync(path.join(product, name)))]));
@@ -129,6 +129,95 @@ async function selectAdvanced(page, name) {
   await group(page, node.recommendedMethod === 'mesh' ? 'mesh' : 'node');
   await (await show(page, 'viewer-node-filter')).selectOption('all');
   await (await show(page, 'viewer-node')).selectOption(String(node.node)); return node;
+}
+
+async function exerciseThighPresets(browser, url, archive, original, hashBefore) {
+  const sample = await pageFor(browser, url, 'ko'), { page } = sample;
+  try {
+    await openModel(page, archive); await group(page, 'mesh');
+    const metadata = await page.evaluate(() => ModelViewer.getEditingMetadata());
+    const control = (await state(page)).rig.scaling.controls.find(c => c.id === 'thighs');
+    assert.equal(control.presets.length, 6, 'All existing explicit source/target transitions are available');
+    assert.equal(control.presetSourceRequired, true);
+    assert.equal((await state(page)).rig.thighProfile.selected, 'loaded');
+    const before = await skinPoints(page), framesBefore = await boneMatrices(page), cases = [];
+    const apply = async id => {
+      await group(page, 'mesh'); await (await show(page, 'viewer-thighs-preset')).selectOption(id);
+      const button = await show(page, 'viewer-thighs-preset-apply'); assert.equal(await button.isDisabled(), false);
+      await button.click(); await frames(page);
+    };
+    for (const profile of control.presets) {
+      await apply(profile.id);
+      const current = await state(page), authored = await authoring(page), currentFrames = await boneMatrices(page);
+      assert.equal(current.rig.thighProfile.selected, profile.id, 'Actual values identify the selected canonical transition');
+      assert.equal(current.rig.bodyControls.thighs.currentPercent, null, 'Unequal Y/Z is honestly shown as mixed');
+      assert.equal(await page.locator('#viewer-thighs-number').inputValue(), '');
+      assert.deepEqual(authored.unsupported, [], 'A mixed preset must remain saveable');
+      for (const name of ['LeftUpLeg', 'RightUpLeg']) {
+        const node = metadata.nodes.find(n => n.name === name), edit = authored.edits.find(e => e.node === node.node);
+        const expected = node.baseline.scale.map((value, axis) => value * profile.scaleDelta[axis]);
+        assert(maximumDifference(edit.scale, expected) < 1e-7, 'Canonical unequal factors apply from the original loaded scale');
+        assert.equal(current.rig.nodeAdjustments[String(node.node)].scale[0], null, 'Presets do not author X');
+        assert.equal(edit.method, 'mesh'); assert.equal(edit.compensate, true); assert(!edit.position && !edit.rotation);
+      }
+      for (const name of ['LeftLeg', 'LeftFoot', 'RightLeg', 'RightFoot'])
+        assert(maximumDifference(currentFrames[name], framesBefore[name]) < 1e-6, 'Full-affine preset compensation preserves '+name);
+      const points = await skinPoints(page); assert(maximumDifference(points, before) > .001, 'The transition deforms actual weighted vertices');
+      await apply(profile.id); assertStateNear(await authoring(page), authored);
+      comparePoints(await skinPoints(page), points, 'Repeated preset Apply does not compound');
+      cases.push(profile.id);
+    }
+    await selectAdvanced(page, 'LeftUpLeg'); await (await show(page, 'bone-compensate-children')).uncheck();
+    assert.equal((await state(page)).rig.thighProfile.selected, 'custom', 'Canonical ratios without child compensation are not the complete preset');
+    await apply('default:thick');
+    const selectedState = await authoring(page);
+    await (await show(page, 'viewer-thighs-preset')).selectOption('');
+    assert.equal(await page.locator('#viewer-thighs-preset-apply').isDisabled(), true);
+    assertStateNear(await authoring(page), selectedState, 'Choosing no transition does not reset edits');
+    await setCard(page, 'thighs', 125);
+    assert.equal((await state(page)).rig.thighProfile.selected, 'custom', 'Uniform percentage replaces a nonuniform preset');
+    const uniform = await authoring(page); await page.locator('#viewer-thighs-preset').selectOption('');
+    assertStateNear(await authoring(page), uniform, 'Leaving custom values alone does not reset them');
+    const number = await show(page, 'viewer-thighs-number'); await number.fill('0'); await number.dispatchEvent('input');
+    assert((await authoring(page)).unsupported.some(text => text.includes('invalid')));
+    await apply('default:thick'); assert.deepEqual((await authoring(page)).unsupported, [], 'The replacing preset clears an invalid percentage draft');
+    const left = await selectAdvanced(page, 'LeftUpLeg');
+    await (await show(page, 'viewer-save-method')).selectOption('node'); await group(page, 'mesh');
+    assert.equal(await page.locator('#viewer-thighs-preset').isDisabled(), true, 'Preset must not silently convert an explicit Node edit');
+    await selectAdvanced(page, 'LeftUpLeg'); await (await show(page, 'viewer-save-method')).selectOption('mesh');
+    await show(page, 'viewer-node');
+    await page.locator('input[data-viewer-node-kind="scale"][data-axis="X"]').fill(String(left.baseline.scale[0]*1.1));
+    await page.locator('input[data-viewer-node-kind="scale"][data-axis="X"]').dispatchEvent('input');
+    assert.equal(await page.locator('#viewer-thighs-preset').isDisabled(), true, 'An advanced length edit must not be silently overwritten');
+    await (await show(page, 'viewer-node-reset')).click();
+    await selectAdvanced(page, 'LeftUpLeg');
+    for (const [kind,axis,value] of [['position','Y','.1234567'],['rotation','Z','12.34567']]) {
+      await show(page, 'viewer-node-fields');
+      const field = page.locator('input[data-viewer-node-kind="'+kind+'"][data-axis="'+axis+'"]');
+      await field.fill(value); await field.dispatchEvent('input');
+    }
+    const manual = (await authoring(page)).edits.find(e => e.node === left.node);
+    await apply('slim:thick');
+    const edited = (await authoring(page)).edits.find(e => e.node === left.node);
+    assert.deepEqual(edited.position, manual.position); assert.deepEqual(edited.rotation, manual.rotation);
+    const expected = await skinPoints(page), firstState = await authoring(page), first = await save(page);
+    const output = inspect(first.previewPaths[0]);
+    assert.deepEqual(output.transforms, original.transforms, 'Preset saves preserve authored Transform TRS');
+    assert.deepEqual(output.archive_entries['notes.txt'], original.archive_entries['notes.txt']);
+    await (await show(page, 'viewer-open-saved')).click();
+    await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().persistence.reviewingSaved);
+    const reloadError = comparePoints(await skinPoints(page), expected, 'Actual saved preset geometry reloads');
+    await (await show(page, 'viewer-reedit-original')).click();
+    await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && !ModelViewer.getState().persistence.busy && !ModelViewer.getState().persistence.reviewingSaved);
+    assert.equal((await state(page)).rig.thighProfile.selected, 'slim:thick', 'Recipe re-edit identifies the preset from actual ratios');
+    assertStateNear(await authoring(page), firstState); assert.deepEqual((await authoring(page)).unsupported, []);
+    const second = await save(page);
+    assert.equal(sha(fs.readFileSync(first.previewPaths[0])), sha(fs.readFileSync(second.previewPaths[0])), 'Preset recipe rebuild is byte-identical');
+    assert.equal(sha(fs.readFileSync(archive)), hashBefore); assert.deepEqual(sample.errors, []);
+    return { label:'exact-tool-thigh-presets', transitions:cases, repeatApplyNoncumulative:true, noneAndCustomPreserveEdits:true,
+      percentageAndPresetReplaceEachOther:true, staleInvalidDraftCleared:true, methodAndLengthConflictsBlocked:true,
+      positionAndRotationPreserved:true, calfAndFootFramesPreserved:true, sourcePreserved:true, reloadError, recipePresetRestored:true };
+  } finally { await sample.context.close(); }
 }
 
 (async () => {
@@ -274,10 +363,13 @@ async function selectAdvanced(page, name) {
     report.cases.push({label:'real-card-hybrid-zip-roundtrip',controls,sourceSha256:hashBefore,fixtureSha256:originalFixture.sha256,reloadMaximumError:reloadError,sourcePreserved:true,repeatExportByteIdentical:true,childFramesPreserved:true,lengthAxisUnedited:true,
       ownershipAndSafety:{invalidValuesBlocked:true,fractionalPercentAccepted:true,fractionalStepMismatch,methodConflictBlocked:true,nodeCompensationOffExit:true,hipsResetKeepsPositionAndRotation:true,waistResetKeepsAdvancedLengthAxis:true,mixedAdvancedValuesRemainSaveable:true,explicitEmptyDraftRejected:true,blankApplyRejected:true,advancedOutsideCardBoundsRemainsSaveable:true}});
     await opened.context.close();
+    report.cases.push(await exerciseThighPresets(browser, server.url, archive, original, hashBefore));
     for (const [locale,width] of [['en',1280],['ja',360]]) {
       const sample=await pageFor(browser,server.url,locale,width);await openModel(sample.page,source);
       const visible={};
       for(const kind of ['hips','thighs','waist']) {await group(sample.page,kind==='hips'?'node':'mesh');visible[kind]=await targetGeometry(sample.page,'viewer-'+kind+'-apply');assert(visible[kind].visible&&visible[kind].hit&&visible[kind].within&&visible[kind].height>=44);}
+      await group(sample.page,'mesh');
+      for(const id of ['viewer-thighs-preset','viewer-thighs-preset-apply']) { visible[id]=await targetGeometry(sample.page,id);assert(visible[id].visible&&visible[id].hit&&visible[id].within&&visible[id].height>=44); }
       assert.equal(await sample.page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
       assert.deepEqual(sample.errors,[]);report.cases.push({label:'translated-card-layout',locale,width,visible});await sample.context.close();
     }

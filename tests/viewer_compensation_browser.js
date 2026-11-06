@@ -39,7 +39,7 @@ print(json.dumps({'deltas':{str(k):m.T.reshape(-1).tolist()for k,m in d.items()}
  await page.goto(process.env.VIEWER_URL||'http://127.0.0.1:8898');await page.waitForFunction(()=>typeof openModelViewer==='function');await page.evaluate(()=>{const parse=THREE.GLTFLoader.prototype.parse;THREE.GLTFLoader.prototype.parse=function(data,p,onLoad,onError){return parse.call(this,data,p,function(g){window.__compModel=g.scene;return onLoad.apply(this,arguments);},onError);};window.__compNode=id=>{let found;__compModel.traverse(o=>{if(!(o.userData&&o.userData.viewerHelper)&&String(o.userData&&o.userData.elichika_node)===String(id))found=o;});if(!found)throw Error('Missing real source node '+id);return found;};});
  const open=async()=>{
   await page.evaluate(()=>openModelViewer(['/original/comp-chain.unity']));await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
-  await page.locator('#viewer-adjustments').evaluate(n=>n.open=true);await page.locator('#viewer-editor-mesh-tab').click();
+  await page.locator('#viewer-body-adjustments').evaluate(n=>n.open=true);await page.locator('#viewer-editor-mesh-tab').click();
   await page.locator('#viewer-node-editor').evaluate(n=>n.open=true);await page.locator('#viewer-node-filter').selectOption('all');await page.locator('#viewer-node').selectOption('2');
   assert(await page.locator('#bone-compensate-children').isDisabled(),'An unchosen save method must not enable inverse compensation');
   await page.locator('#viewer-save-method').selectOption('mesh');

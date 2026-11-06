@@ -828,9 +828,11 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
   .viewer-panel-resizer > span, .viewer-files-resizer > span { background: var(--muted); }
 }
 
-/* Shared body cards use one percentage; the length axis is never exposed. */
+/* Body cards keep the length axis fixed; thigh profiles also preserve unequal Y/Z. */
 .viewer-percentage-control .viewer-absolute-entry { grid-column: 1 / -1; min-width: 0; }
 .viewer-percentage-control .viewer-control-note { grid-column: 1 / -1; }
+.viewer-preset-entry { grid-template-columns: minmax(0, 1fr) auto; }
+.viewer-preset-entry > select { width: 100%; min-width: 0; }
 .viewer-game-assets-dialog { width: min(720px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: var(--panel); color: var(--text); }
 .viewer-game-assets-dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .viewer-game-assets-fields { display: grid; gap: 12px; }

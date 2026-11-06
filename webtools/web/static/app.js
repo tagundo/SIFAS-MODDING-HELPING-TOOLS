@@ -158,10 +158,14 @@ async function init() {
     },
     saveModel: () => {
       if (!$("#tab-viewer").classList.contains("active")) return;
-      const focused = document.activeElement;
-      if (focused && $("#viewer-adjustments").contains(focused) && focused.blur) focused.blur();
       const save = $("#viewer-save");
-      if (save && !save.disabled) save.click();
+      // Blurring a numeric field restores its last valid display value. Check
+      // Save first so a native shortcut cannot discard an invalid draft and
+      // silently export the earlier valid edit instead.
+      if (!save || save.disabled) return;
+      const focused = document.activeElement;
+      if (focused && ["#viewer-adjustments", "#viewer-body-adjustments"].some(selector => $(selector).contains(focused)) && focused.blur) focused.blur();
+      if (!save.disabled) save.click();
     },
   });
   window.addEventListener("keydown", (event) => {
