@@ -14,7 +14,11 @@ function chainFixture(ambiguous=false,singular=false,missing=false){
  for(const n of rig.scaling.nodes){if(names[n.node])n.name=n.label=names[n.node];n.parent=doc.nodes.findIndex(p=>(p.children||[]).includes(n.node));}
  rig.scaling.controls.find(c=>c.id==='skirt').available=false;rig.scaling.controls.find(c=>c.id==='skirt').nodes=[];
  const json=Buffer.from(JSON.stringify(doc)),jp=Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]),header=Buffer.alloc(20),bh=Buffer.alloc(8);header.writeUInt32LE(0x46546c67);header.writeUInt32LE(2,4);header.writeUInt32LE(20+jp.length+8+bin.length,8);header.writeUInt32LE(jp.length,12);header.writeUInt32LE(0x4e4f534a,16);bh.writeUInt32LE(bin.length);bh.writeUInt32LE(0x004e4942,4);
- return{glb:Buffer.concat([header,jp,bh,bin]),rig,parents:doc.nodes.map((_,id)=>doc.nodes.findIndex(n=>(n.children||[]).includes(id))),names:doc.nodes.map(n=>n.name)};
+ // Per-node capabilities belong to this generated GLB. The affine observer
+ // does not publish an export; real serialized persistence is tested separately.
+ const editing={available:true,token:'00000000000000000000000000000000',version:1,
+  nodes:rig.bones.map(bone=>({node:bone.node,name:bone.name,methods:['node','mesh'],recommendedMethod:'choose',positionWritable:true}))};
+ return{glb:Buffer.concat([header,jp,bh,bin]),rig,editing,parents:doc.nodes.map((_,id)=>doc.nodes.findIndex(n=>(n.children||[]).includes(id))),names:doc.nodes.map(n=>n.name)};
 }
 const near=(actual,expected,message,tolerance=2e-6)=>{assert.equal(actual.length,expected.length);actual.forEach((v,i)=>assert(Math.abs(v-expected[i])<=tolerance,message+' ['+i+'] '+v+' vs '+expected[i]));};
 const difference=(a,b)=>Math.max(...a.map((v,i)=>Math.abs(v-b[i])));
@@ -31,9 +35,16 @@ print(json.dumps({'deltas':{str(k):m.T.reshape(-1).tolist()for k,m in d.items()}
 `],{cwd:path.resolve(__dirname,'..'),input:JSON.stringify(input),encoding:'utf8'}));
 (async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE||'/usr/bin/chromium',args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});const report={status:'RUNNING',scope:'Generated rotated/nonuniform skinned hierarchy; actual product worlds and independent Mesh Baker oracle',references:[],modes:[]};let made=chainFixture();try{
  const page=await browser.newPage({viewport:{width:1024,height:768}}),errors=[];page.on('pageerror',e=>errors.push(String(e)));await page.addInitScript(()=>localStorage.setItem('sifas_lang','en'));
- await page.route('**/api/viewer/prepare',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'comp-original',url:'/api/viewer/model/comp-original.glb',warnings:[],stats:{meshes:1,vertices:3,triangles:1,textures:0,materials:1},rig:made.rig})}));await page.route('**/api/viewer/model/*.glb',r=>r.fulfill({status:200,contentType:'model/gltf-binary',body:made.glb}));
+ await page.route('**/api/viewer/prepare',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'comp-original',url:'/api/viewer/model/comp-original.glb',warnings:[],stats:{meshes:1,vertices:3,triangles:1,textures:0,materials:1},rig:made.rig,editing:made.editing})}));await page.route('**/api/viewer/model/*.glb',r=>r.fulfill({status:200,contentType:'model/gltf-binary',body:made.glb}));
  await page.goto(process.env.VIEWER_URL||'http://127.0.0.1:8898');await page.waitForFunction(()=>typeof openModelViewer==='function');await page.evaluate(()=>{const parse=THREE.GLTFLoader.prototype.parse;THREE.GLTFLoader.prototype.parse=function(data,p,onLoad,onError){return parse.call(this,data,p,function(g){window.__compModel=g.scene;return onLoad.apply(this,arguments);},onError);};window.__compNode=id=>{let found;__compModel.traverse(o=>{if(!(o.userData&&o.userData.viewerHelper)&&String(o.userData&&o.userData.elichika_node)===String(id))found=o;});if(!found)throw Error('Missing real source node '+id);return found;};});
- const open=async()=>{await page.evaluate(()=>openModelViewer(['/original/comp-chain.unity']));await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);await page.locator('#viewer-node-editor').evaluate(n=>n.open=true);};await open();
+ const open=async()=>{
+  await page.evaluate(()=>openModelViewer(['/original/comp-chain.unity']));await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
+  await page.locator('#viewer-adjustments').evaluate(n=>n.open=true);await page.locator('#viewer-editor-mesh-tab').click();
+  await page.locator('#viewer-node-editor').evaluate(n=>n.open=true);await page.locator('#viewer-node-filter').selectOption('all');await page.locator('#viewer-node').selectOption('2');
+  assert(await page.locator('#bone-compensate-children').isDisabled(),'An unchosen save method must not enable inverse compensation');
+  await page.locator('#viewer-save-method').selectOption('mesh');
+  assert.equal(await page.locator('#bone-compensate-children').isDisabled(),false,'Choosing the real Mesh Baker save method enables inverse compensation');
+ };await open();
  const state=()=>page.evaluate(()=>ModelViewer.getState()),select=async id=>{await page.locator('#viewer-node-filter').selectOption('all');await page.locator('#viewer-node').selectOption(String(id));},input=async(id,kind,axis,value)=>{await select(id);await page.locator(`[data-viewer-node-kind="${kind}"][data-axis="${axis}"]`).fill(String(value));};
  const snap=id=>page.evaluate(id=>{__compModel.updateMatrixWorld(true);const n=__compNode(id);return{world:n.matrixWorld.toArray(),local:n.matrix.toArray(),position:n.position.toArray(),quaternion:n.quaternion.toArray(),scale:n.scale.toArray(),auto:n.matrixAutoUpdate};},id);
  const parentScale=async scale=>{for(const [axis,i]of [['X',0],['Y',1],['Z',2]])await input(2,'scale',axis,scale[i]);};

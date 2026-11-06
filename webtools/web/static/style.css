@@ -820,3 +820,19 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
   #tab-tools .multi-list button { min-width: 44px; min-height: 44px; }
   .viewer-panel-resizer > span, .viewer-files-resizer > span { background: var(--muted); }
 }
+
+/* Shared body cards use one percentage; the length axis is never exposed. */
+.viewer-percentage-control .viewer-absolute-entry { grid-column: 1 / -1; min-width: 0; }
+.viewer-percentage-control .viewer-control-note { grid-column: 1 / -1; }
+.viewer-game-assets-dialog { width: min(720px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: var(--panel); color: var(--text); }
+.viewer-game-assets-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+.viewer-game-assets-fields { display: grid; gap: 12px; }
+.viewer-game-assets-fields label { display: grid; gap: 6px; min-width: 0; }
+.viewer-game-assets-fields select, .viewer-game-assets-fields input:not([type=checkbox]) { width: 100%; min-width: 0; }
+.viewer-game-assets-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.viewer-game-assets-dialog button { min-height: 44px; }
+#viewer-game-assets-log { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (min-width: 640px) { .viewer-game-assets-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.viewer-game-assets-download { display: flex; align-items: center; gap: 8px; }
+.viewer-game-assets-download input[type=checkbox] { flex: 0 0 auto; width: 18px; height: 18px; }

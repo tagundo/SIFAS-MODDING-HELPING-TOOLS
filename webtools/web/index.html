@@ -36,6 +36,7 @@
           <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
           <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Its preview pose and missing face parts load automatically.">Open a costume model or ZIP. Its preview pose and missing face parts load automatically.</p>
           <div class="viewer-file-actions">
+            <button id="viewer-game-assets" type="button" data-i18n="Load from game assets">Load from game assets</button>
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
             <button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
@@ -172,6 +173,20 @@
                   <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
                   </div>
                 </details>
+                <details id="viewer-hips-card" class="viewer-body-card viewer-percentage-control" open>
+                  <summary><span data-i18n="Hip size">Hip size</span></summary>
+                  <div class="viewer-card-content">
+                    <dl class="viewer-profile-values viewer-actual-values">
+                      <div><dt data-i18n="File values">File values</dt><dd id="viewer-hips-file-values" class="viewer-factor-values">—</dd></div>
+                      <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-hips-current-values" class="viewer-factor-values">—</dd></div>
+                    </dl>
+                    <label for="viewer-hips-number" data-i18n="Percent of loaded shape">Percent of loaded shape</label>
+                    <div class="viewer-absolute-entry"><input id="viewer-hips-number" type="number" min="20" max="250" step="1" value="100" inputmode="decimal" aria-describedby="viewer-hips-note viewer-hips-status" disabled><button id="viewer-hips-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
+                    <button id="viewer-hips-reset" type="button" data-i18n="Undo this size adjustment" disabled>Undo this size adjustment</button>
+                    <p id="viewer-hips-note" class="viewer-control-note" data-i18n="100% keeps the loaded shape. This adjustment scales the verified HipsSize node, not the pelvis root.">100% keeps the loaded shape. This adjustment scales the verified HipsSize node, not the pelvis root.</p>
+                    <p id="viewer-hips-status" class="viewer-control-note" role="status" aria-live="polite"></p>
+                  </div>
+                </details>
                 <details id="viewer-skirt-card" class="viewer-body-card viewer-scale-card" open>
                   <summary><span id="viewer-skirt-title" data-i18n="Skirt length and flare">Skirt length and flare</span></summary>
                   <div class="viewer-card-content">
@@ -203,7 +218,8 @@
             </section>
               <div id="viewer-node-tool-slot"><div id="viewer-shared-bone-editor" class="viewer-shared-bone-editor">
             <details id="viewer-common-adjustments" class="viewer-control-section viewer-node-quick" open>
-              <summary><span id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</span></summary>
+              <summary><span id="viewer-node-quick-title" data-i18n="Detail body parts">Detail body parts</span></summary>
+              <p class="viewer-control-note" data-i18n="Size cards handle hips, breast, skirt, waist and thighs. Other bones remain available in advanced controls.">Size cards handle hips, breast, skirt, waist and thighs. Other bones remain available in advanced controls.</p>
               <div id="viewer-node-shortcuts" class="viewer-node-choice"><select id="viewer-node" aria-labelledby="viewer-node-quick-title" disabled></select></div>
             </details>
             <details id="viewer-node-editor" class="viewer-node-editor">
@@ -217,7 +233,7 @@
               <p id="viewer-save-method-status" class="viewer-render-note" role="status"></p>
               <div class="viewer-node-browser">
                 <label><span data-i18n="Find a bone">Find a bone</span><input id="viewer-node-search" type="search" data-i18n-ph="Search by body part or bone name" placeholder="Search by body part or bone name" autocomplete="off" disabled></label>
-                <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="tool" data-i18n="Recommended for this tool">Recommended for this tool</option><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option><option value="frequent" data-i18n="Frequently adjusted">Frequently adjusted</option></select></label>
+                <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="tool" data-i18n="Recommended detail parts">Recommended detail parts</option><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option></select></label>
               </div>
               <div id="viewer-node-change-list" class="viewer-node-change-list" role="group" aria-labelledby="viewer-node-editor-title"></div>
               <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
@@ -238,6 +254,39 @@
             </section>
             <section id="viewer-editor-mesh-panel" class="viewer-editor-panel" role="tabpanel" aria-labelledby="viewer-editor-mesh-tab" hidden>
               <p class="viewer-render-note" data-i18n="New edits here are baked into a costume copy. Existing edits keep their save method.">New edits here are baked into a costume copy. Existing edits keep their save method.</p>
+              <section class="viewer-control-section" aria-labelledby="viewer-mesh-body-title">
+                <h3 id="viewer-mesh-body-title" data-i18n="Body and outfit">Body and outfit</h3>
+                <div class="viewer-body-controls">
+                <details id="viewer-thighs-card" class="viewer-body-card viewer-percentage-control" open>
+                  <summary><span data-i18n="Thigh thickness">Thigh thickness</span></summary>
+                  <div class="viewer-card-content">
+                    <dl class="viewer-profile-values viewer-actual-values">
+                      <div><dt data-i18n="File values">File values</dt><dd id="viewer-thighs-file-values" class="viewer-factor-values">—</dd></div>
+                      <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-thighs-current-values" class="viewer-factor-values">—</dd></div>
+                    </dl>
+                    <label for="viewer-thighs-number" data-i18n="Percent of loaded shape">Percent of loaded shape</label>
+                    <div class="viewer-absolute-entry"><input id="viewer-thighs-number" type="number" min="20" max="250" step="1" value="100" inputmode="decimal" aria-describedby="viewer-thighs-note viewer-thighs-status" disabled><button id="viewer-thighs-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
+                    <button id="viewer-thighs-reset" type="button" data-i18n="Undo this size adjustment" disabled>Undo this size adjustment</button>
+                    <p id="viewer-thighs-note" class="viewer-control-note" data-i18n="100% keeps the loaded shape. Only thickness changes; bone length is preserved.">100% keeps the loaded shape. Only thickness changes; bone length is preserved.</p>
+                    <p id="viewer-thighs-status" class="viewer-control-note" role="status" aria-live="polite"></p>
+                  </div>
+                </details>
+                <details id="viewer-waist-card" class="viewer-body-card viewer-percentage-control" open>
+                  <summary><span data-i18n="Waist thickness">Waist thickness</span></summary>
+                  <div class="viewer-card-content">
+                    <dl class="viewer-profile-values viewer-actual-values">
+                      <div><dt data-i18n="File values">File values</dt><dd id="viewer-waist-file-values" class="viewer-factor-values">—</dd></div>
+                      <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-waist-current-values" class="viewer-factor-values">—</dd></div>
+                    </dl>
+                    <label for="viewer-waist-number" data-i18n="Percent of loaded shape">Percent of loaded shape</label>
+                    <div class="viewer-absolute-entry"><input id="viewer-waist-number" type="number" min="20" max="250" step="1" value="100" inputmode="decimal" aria-describedby="viewer-waist-note viewer-waist-status" disabled><button id="viewer-waist-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
+                    <button id="viewer-waist-reset" type="button" data-i18n="Undo this size adjustment" disabled>Undo this size adjustment</button>
+                    <p id="viewer-waist-note" class="viewer-control-note" data-i18n="100% keeps the loaded shape. Only thickness changes; bone length is preserved.">100% keeps the loaded shape. Only thickness changes; bone length is preserved.</p>
+                    <p id="viewer-waist-status" class="viewer-control-note" role="status" aria-live="polite"></p>
+                  </div>
+                </details>
+                </div>
+              </section>
               <div id="viewer-mesh-tool-slot"></div>
             </section>
             <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
@@ -312,6 +361,8 @@
   </div>
   </div>
 
+  <dialog id="viewer-game-assets-dialog" class="viewer-game-assets-dialog" aria-labelledby="viewer-game-assets-title"></dialog>
+
   <!-- file picker modal -->
   <div id="picker" class="modal hidden">
     <div class="modal-box">
@@ -340,5 +391,6 @@
   <script src="/static/viewer-persistence.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/viewer-game-assets.js"></script>
 </body>
 </html>

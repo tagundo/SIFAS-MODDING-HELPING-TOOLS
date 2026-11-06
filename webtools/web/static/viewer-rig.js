@@ -345,7 +345,7 @@
     function bodyControl(kind) {
       if (!rigEditable) return null;
       var control = rawControl(kind);
-      var mode = { breast: "breast_tool_presets", skirt: "absolute_skirt_root_scale" }[kind];
+      var mode = { breast: "breast_tool_presets", skirt: "absolute_skirt_root_scale", hips: "relative_body_scale", thighs: "compensated_thickness", waist: "compensated_thickness" }[kind];
       return control && control.available === true && control.mode === mode &&
         control.nodes && control.nodes.length && control.nodes.every(function (target) { return !!nodes[String(target.node)]; }) ? control : null;
     }
@@ -591,6 +591,103 @@
         edited: Object.keys(skirtOverrides).length > 0 || targets.some(function (target) { return adjustments[target.node] && (adjustments[target.node].scale || []).some(function (value) { return value !== null; }); }),
         overrides: JSON.parse(JSON.stringify(skirtOverrides)), editBounds: control && control.editBounds || { min: .01, max: 10 } };
     }
+    function effectiveMethod(id) {
+      var explicit = editingMethods[id];
+      if (explicit && explicit !== "auto") return explicit;
+      var target = ((options.editing || {}).nodes || []).filter(function (entry) { return String(entry.node) === String(id); })[0];
+      return target ? target.recommendedMethod : "choose";
+    }
+    var percentageKinds = ["hips", "thighs", "waist"];
+    function percentageState(kind) {
+      var raw = rawControl(kind), control = bodyControl(kind), baseline = fileMap(), current = staticMap(true);
+      var axes = kind === "hips" ? [0, 1, 2] : [1, 2], ratios = [], reason = "";
+      var targets = (raw && raw.nodes || []).filter(function (target) { return baseline[String(target.node)] && current[String(target.node)]; }).map(function (target) {
+        var id = String(target.node), manual = adjustments[id], original = baseline[id].scale.toArray(), value = current[id].scale.toArray();
+        var file = fileValues(id).scale;
+        var writable = options.editing && options.editing.available && (options.editing.nodes || []).filter(function (entry) { return String(entry.node) === id; })[0];
+        if (!writable || !Array.isArray(writable.methods) || writable.methods.indexOf(raw.method) < 0) reason = "This model cannot save this adjustment with its required method.";
+        if (kind !== "hips") {
+          var bone = bones.filter(function (entry) { return entry.id === id; })[0];
+          var resolved = bone && compensationTargets({ bone: bone, enabled: true, mode: kind === "waist" ? "spine2" : "auto" });
+          var expected = (target.compensationTargets || []).map(String).sort();
+          var actual = resolved ? resolved.bones.map(function (entry) { return entry.id; }).sort() : [];
+          if (!resolved || resolved.reason || !expected.length || expected.join(",") !== actual.join(",")) reason = "The child hierarchy does not match this thickness adjustment. Use advanced controls.";
+        }
+        if (file.status === "conflict" || file.status === "unsupported") reason = "Resolve conflicting file values before using this control.";
+        if (original.some(function (part) { return !isFinite(part) || part <= 0; })) reason = "This control needs positive original scale values.";
+        if (editingMethods[id] && editingMethods[id] !== "auto" && editingMethods[id] !== raw.method) reason = "Change this bone's save method in advanced controls before using this adjustment.";
+        if (kind !== "hips" && manual && manual.scale && typeof manual.scale[0] === "number" && Math.abs(manual.scale[0] - original[0]) > 1e-7) reason = "Reset length-axis edits in advanced controls before adjusting thickness.";
+        if (kind === "hips" && nodeCompensations[id] && nodeCompensations[id].enabled) reason = "Turn child compensation off in advanced controls before using this node adjustment.";
+        axes.forEach(function (axis) { if (original[axis] > 0) ratios.push(value[axis] / original[axis] * 100); });
+        return { node: id, name: target.name || nodes[id].name, fileScale: file.value, fileStatus: file.status, baseScale: original, currentScale: value };
+      });
+      var available = !!control && !reason;
+      if (!control && !reason) reason = "This model has no unambiguous nodes for this adjustment.";
+      var percent = ratios.length && ratios.every(function (part) { return Math.abs(part - ratios[0]) <= 1e-5; }) ? ratios[0] : null;
+      return { available: available, reason: reason, targets: targets, currentPercent: percent, edited: targets.some(function (target) {
+        return axes.some(function (axis) { return Math.abs(target.currentScale[axis] - target.baseScale[axis]) > 1e-7; });
+      }), method: raw && raw.method || (kind === "hips" ? "node" : "mesh"), editedAxes: axes, lengthAxis: kind === "hips" ? null : 0,
+        compensate: kind !== "hips", compensationMode: kind === "waist" ? "spine2" : kind === "thighs" ? "auto" : "none",
+        editBounds: raw && raw.editBounds || { min: 20, max: 250 } };
+    }
+    function setPercentage(kind) {
+      var state = percentageState(kind), input = element("viewer-" + kind + "-number"), percent = Number(input.value);
+      if (!state.available || !input.value.trim() || !isFinite(percent) || percent < state.editBounds.min || percent > state.editBounds.max) {
+        input.dataset.viewerPercentageDirty = "true"; input.setAttribute("aria-invalid", "true");
+        input.setCustomValidity(translate("Enter a percentage between 20 and 250.")); input.reportValidity(); changed(); return;
+      }
+      input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
+      state.targets.forEach(function (target) {
+        var id = target.node, previous = adjustments[id], value = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
+        ["scale", "position", "rotation"].forEach(function (name) { if (previous && Array.isArray(previous[name])) value[name] = previous[name].slice(); });
+        state.editedAxes.forEach(function (axis) { value.scale[axis] = Math.abs(percent - 100) <= 1e-10 ? null : target.baseScale[axis] * percent / 100; });
+        if (editing.adjustmentEmpty(value)) delete adjustments[id]; else adjustments[id] = value;
+        if (Math.abs(percent - 100) > 1e-10) {
+          editingMethods[id] = state.method;
+          if (state.compensate) nodeCompensations[id] = { enabled: true, mode: state.compensationMode };
+        } else {
+          if (!(value.scale || []).some(function (part) { return typeof part === "number"; })) delete nodeCompensations[id];
+          clearUnusedMethod(id);
+        }
+      });
+      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function undoPercentage(kind) {
+      var input = element("viewer-" + kind + "-number"), raw = rawControl(kind);
+      if (!raw || !raw.available) return;
+      var axes = kind === "hips" ? [0, 1, 2] : [1, 2];
+      (raw.nodes || []).forEach(function (target) {
+        var id = String(target.node), value = adjustments[id];
+        if (value && Array.isArray(value.scale)) {
+          axes.forEach(function (axis) { value.scale[axis] = null; });
+          if (editing.adjustmentEmpty(value)) delete adjustments[id];
+        }
+        if (!adjustments[id] || !(adjustments[id].scale || []).some(function (part) { return typeof part === "number"; })) delete nodeCompensations[id];
+        clearUnusedMethod(id);
+      });
+      input.value = "100"; input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
+      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function refreshPercentages() {
+      percentageKinds.forEach(function (kind) {
+        var input = element("viewer-" + kind + "-number"); if (!input) return;
+        var state = percentageState(kind), enabled = interactive && authoringEnabled && !disposed && state.available;
+        input.disabled = !enabled; input.min = String(state.editBounds.min); input.max = String(state.editBounds.max);
+        if (document.activeElement !== input) {
+          // Mixed or out-of-card-range values can come from valid advanced
+          // edits. A display value is not an invalid user draft.
+          input.value = state.currentPercent === null ? "" : numberText(state.currentPercent);
+          input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
+        }
+        input.placeholder = translate(state.targets.length ? "Different values" : "Not available for this model.");
+        element("viewer-" + kind + "-apply").disabled = !enabled;
+        element("viewer-" + kind + "-reset").disabled = !interactive || !authoringEnabled || disposed || !state.edited || !rawControl(kind) || !rawControl(kind).available;
+        element("viewer-" + kind + "-file-values").textContent = state.targets.map(function (target) { return scaleText(target.fileScale, target.fileStatus); }).join("; ") || "—";
+        element("viewer-" + kind + "-current-values").textContent = state.targets.map(function (target) { return scaleText(target.currentScale); }).join("; ") || "—";
+        var status = element("viewer-" + kind + "-status"); status.textContent = state.available ? translate(kind === "hips" ? "Children follow this size adjustment; inverse compensation is not used." : kind === "waist" ? "Keeps bone length. Spine2 compensation preserves the chest, shoulders and head." : "Keeps bone length. Child compensation preserves the calves and feet.") : translate(state.reason);
+        status.classList.toggle("error", !state.available && !!rawControl(kind));
+      });
+    }
     function clearUnusedMethod(id) {
       if (!editing.adjustmentEmpty(adjustments[id]) || meshConversions[id] || skirtOverrides[id]) return;
       var breast = bodyControl("breast");
@@ -601,9 +698,10 @@
       if (!Object.prototype.hasOwnProperty.call(editingMethods, id)) editingMethods[id] = tool || editorGroup;
     }
     function toolAccepts(id) {
-      if (!(options.editing && options.editing.available)) return true;
-      var target = (options.editing.nodes || []).filter(function (entry) { return String(entry.node) === String(id); })[0];
-      return !!target && target.recommendedMethod === editorGroup;
+      var bone = bones.filter(function (entry) { return entry.id === String(id); })[0];
+      if (!bone) return false;
+      var names = editorGroup === "node" ? ["Move", "Head", "Head_Hair", "Neck_Hair"] : ["LeftArm", "RightArm", "LeftForeArm", "RightForeArm", "LeftLeg", "RightLeg"];
+      return names.indexOf(boneName(bone)) >= 0 && (!(options.editing && options.editing.available) || effectiveMethod(id) === editorGroup);
     }
     function setEditorGroup(group) {
       if (disposed || ["node", "mesh"].indexOf(group) < 0) return;
@@ -651,6 +749,7 @@
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
     }
     function refreshBodyControls() {
+      refreshPercentages();
       var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && authoringEnabled && !disposed && skirt.available, input = element("viewer-skirt-number");
       input.disabled = !enabled; input.min = String(skirt.editBounds.min); input.max = String(skirt.editBounds.max);
       if (noSkirt || document.activeElement !== input) input.value = skirt.currentUniform === null ? "" : numberText(skirt.currentUniform);
@@ -820,9 +919,9 @@
         });
       },
       adjustment: function (id) { return adjustments[id]; }, onSelect: function (id) { selectedNode = id; if (options.onSelection) options.onSelection(); },
-      compensation: function (id) { return { parent: compensationStatus(id), incoming: automaticTargets.filter(function (target) { return target.node === id; }) }; },
+      compensation: function (id) { return { parent: compensationStatus(id), canEdit: effectiveMethod(id) === "mesh", incoming: automaticTargets.filter(function (target) { return target.node === id; }) }; },
       changeCompensation: function (id, value) {
-        if (!compensationSelection(id) || !value || ["auto", "spine2", "spine1", "both"].indexOf(value.mode) < 0) return;
+        if (!compensationSelection(id) || !value || ["auto", "spine2", "spine1", "both"].indexOf(value.mode) < 0 || value.enabled && effectiveMethod(id) !== "mesh") return;
         nodeCompensations[id] = { enabled: !!value.enabled, mode: value.mode };
         evaluate(0); refreshNode(); changed();
       },
@@ -864,6 +963,17 @@
       else playhead = time;
       evaluate(0); updateTime(); refreshExpression(); changed();
     });
+    percentageKinds.forEach(function (kind) {
+      listen("viewer-" + kind + "-apply", "click", function () { if (!this.disabled) setPercentage(kind); });
+      listen("viewer-" + kind + "-number", "input", function () {
+        this.dataset.viewerPercentageDirty = "true";
+        var value = Number(this.value), invalid = !this.value.trim() || !isFinite(value) || value < Number(this.min) || value > Number(this.max);
+        this.setCustomValidity(invalid ? translate("Enter a percentage between 20 and 250.") : "");
+        if (invalid) this.setAttribute("aria-invalid", "true"); else this.removeAttribute("aria-invalid");
+        changed();
+      });
+      listen("viewer-" + kind + "-reset", "click", function () { if (!this.disabled) undoPercentage(kind); });
+    });
     listen("viewer-skirt-apply", "click", function () { if (!this.disabled) setSkirt(); });
     listen("viewer-skirt-number", "input", function () { this.setCustomValidity(""); });
     listen("viewer-skirt-reset", "click", function () { if (!this.disabled) undoSkirt(); });
@@ -883,8 +993,8 @@
       // Numeric steps control spinner increments, not the precision of Unity
       // file values or explicit edits. A fractional untouched TRS can be off
       // that grid while remaining a valid finite authoring value.
-      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number"), function (input) {
-        if (input.disabled) return false;
+      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input"), function (input) {
+        if (input.disabled || input.closest(".viewer-percentage-control") && input.dataset.viewerPercentageDirty !== "true") return false;
         var validity = input.validity;
         return input.getAttribute("aria-invalid") === "true" || validity &&
           (validity.badInput || validity.customError || validity.rangeOverflow || validity.rangeUnderflow || validity.typeMismatch || validity.valueMissing);
@@ -1010,7 +1120,7 @@
         if (!authoredNodes[id] || ["auto", "node", "mesh"].indexOf(method) < 0) throw new Error("Choose a valid body save method.");
         editingMethods[id] = method;
         if (method === "mesh") meshConversions[id] = true; else delete meshConversions[id];
-        refreshNode(); changed();
+        refreshNode(); refreshBodyControls(); changed();
       },
       setEditorGroup: setEditorGroup,
       setEvaluationMode: function (mode) {
@@ -1053,6 +1163,7 @@
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
+          bodyControls: { hips: percentageState("hips"), thighs: percentageState("thighs"), waist: percentageState("waist") },
           body: { breastPreset: body.breastPreset, skirtMode: Object.keys(skirtOverrides).length ? "absolute" : "file" }, skirtValues: skirtValues(), breastProfile: breastProfile(), heightMode: "saved_settings_only", scaling: scaling,
           nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), selectedNode: selectedNode,
           nodeCompensations: JSON.parse(JSON.stringify(nodeCompensations)),

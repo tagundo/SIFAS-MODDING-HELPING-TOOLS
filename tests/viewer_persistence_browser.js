@@ -95,6 +95,15 @@ async function selectBone(page, name) {
   assert(target, 'Real serialized target is available: ' + name);
   const groupTab = page.locator(target.recommendedMethod === 'mesh' ? '#viewer-editor-mesh-tab' : '#viewer-editor-node-tab');
   if (await groupTab.count()) { await showAncestors(groupTab); await groupTab.click(); }
+  const listed = await page.locator('#viewer-node').evaluate((select, id) =>
+    Array.from(select.options).some(option => option.value === id), String(target.node));
+  if (!listed) {
+    // Dedicated body cards do not repeat their bones in the compact list.
+    // These serialization checks intentionally use the real advanced editor.
+    await showAncestors(page.locator('#viewer-node-filter'));
+    await page.locator('#viewer-node-search').fill('');
+    await page.locator('#viewer-node-filter').selectOption('all');
+  }
   await showAncestors(page.locator('#viewer-node'));
   await page.locator('#viewer-node').selectOption(String(target.node));
   return target;
@@ -495,16 +504,27 @@ async function separateEditorGroups(page, source) {
     comparePoints(await skinPoints(page), expected, 'Group switching retains edited geometry');
     assert.equal(await page.locator('#viewer-stage').evaluate(element => element.getBoundingClientRect().height), stageHeight,
       'Editing areas do not reduce the canvas height');
+    assert.equal(await page.locator('#viewer-node-filter').inputValue(), 'tool', 'Changing areas restores the compact additional-parts list');
     const options = await page.locator('#viewer-node').evaluate(element => Array.from(element.options, option => option.value));
-    assert(options.includes(String(group === 'mesh' ? thigh.node : breast.node)), 'Active area offers its recommended bone');
-    assert(!options.includes(String(group === 'mesh' ? breast.node : thigh.node)), 'Default area filter separates the other tool’s bones');
+    for (const node of [thigh, breast]) assert(!options.includes(String(node.node)),
+      'Dedicated body-card bones do not repeat in the compact additional-parts list');
+    const cards = group === 'mesh' ? ['viewer-thighs-card', 'viewer-waist-card'] :
+      ['viewer-breast-card', 'viewer-hips-card', 'viewer-skirt-card'];
+    for (const id of cards) {
+      assert(await page.locator('#viewer-editor-' + group + '-panel').evaluate((panel, id) =>
+        panel.contains(document.getElementById(id)), id), 'The matching area owns its dedicated card: ' + id);
+    }
   }
   await page.locator('#viewer-node-filter').selectOption('all');
   await page.locator('#viewer-node').selectOption(String(thigh.node));
   assert.equal(await page.locator('#viewer-save-method').inputValue(), 'mesh', 'Advanced cross-group selection still shows its existing mesh route');
   assert.deepEqual(await page.evaluate(() => ModelViewer.getAuthoringState()), authored);
+  await page.locator('#viewer-node').selectOption(String(breast.node));
+  assert.equal(await page.locator('#viewer-save-method').inputValue(), 'node', 'Advanced selection retains the original NodeScaling route too');
+  assert.deepEqual(await page.evaluate(() => ModelViewer.getAuthoringState()), authored);
   return { label: 'separate-node-and-mesh-editing-areas', tabSwitchPreservesEdits: true,
-    recommendedBoneFilters: true, explicitRouteVisibleAcrossGroups: true, canvasHeightUnchanged: true };
+    compactListsExcludeDedicatedBones: true, dedicatedCardsOwnedByMatchingArea: true,
+    advancedOriginalBoneAccess: true, explicitRouteVisibleAcrossGroups: true, canvasHeightUnchanged: true };
 }
 
 async function convertExistingNodeScale(page, source) {

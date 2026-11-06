@@ -61,7 +61,7 @@
     }
     function flags(id) { return options.flags(id); }
     function isFrequent(bone) {
-      return (options.scaling.recommendedTargets || []).some(function (item) { return String(item.node) === bone.id; });
+      return ["Move", "Head", "Head_Hair", "Neck_Hair", "LeftArm", "RightArm", "LeftForeArm", "RightForeArm", "LeftLeg", "RightLeg"].indexOf(plainName(bone)) >= 0 && (!options.forTool || options.forTool(bone.id));
     }
     function optionLabel(bone) {
       var state = flags(bone.id), tags = [];
@@ -114,21 +114,21 @@
           mode === "frequent" && isFrequent(bone);
         return category && (!term || (friendly(bone) + " " + bone.name).toLowerCase().indexOf(term) >= 0);
       });
-      // A value can become unchanged halfway through typing. Do not silently
-      // retarget the still-focused XYZ input to the next filtered bone.
-      if (holder.contains(document.activeElement) && selected && !visible.some(function (bone) { return bone.id === selected; })) {
-        var pinned = bones.filter(function (bone) { return bone.id === selected; })[0];
-        if (pinned) visible.unshift(pinned);
-      }
+      // Filtering and switching tools must not retarget an existing edit.
+      // A dedicated/advanced selection remains selected internally, while the
+      // detail list asks for a new explicit choice rather than repeating it.
       list.textContent = "";
+      var matched = visible.some(function (bone) { return bone.id === selected; });
+      if (!matched) { var placeholder = document.createElement("option"); placeholder.value = ""; placeholder.disabled = true; placeholder.textContent = translate(visible.length ? "Choose a detail part" : "No matching bones"); list.appendChild(placeholder); }
+      var groups = {}, groupOrder = ["model", "head", "arms", "legs", "other"];
+      var groupLabels = { model: "Whole model", head: "Head and hair", arms: "Upper body and arms", legs: "Legs and feet", other: "Other bones" };
       visible.forEach(function (bone) {
-        var option = document.createElement("option"); option.value = bone.id; option.textContent = optionLabel(bone); list.appendChild(option);
+        var name = plainName(bone), group = name === "Move" ? "model" : /Head|Hair/.test(name) ? "head" : /Arm|Shoulder|Spine|Hand|Breast/.test(name) ? "arms" : /Leg|Foot|Toe|Thigh|Hips/.test(name) ? "legs" : "other";
+        if (!groups[group]) { groups[group] = document.createElement("optgroup"); groups[group].label = translate(groupLabels[group]); }
+        var option = document.createElement("option"); option.value = bone.id; option.textContent = optionLabel(bone); groups[group].appendChild(option);
       });
-      if (!visible.some(function (bone) { return bone.id === selected; })) {
-        selected = visible.length ? visible[0].id : ""; options.onSelect(selected);
-      }
-      if (!visible.length) { var empty = document.createElement("option"); empty.textContent = translate("No matching bones"); empty.value = ""; list.appendChild(empty); }
-      list.value = selected; list.disabled = !enabled || !visible.length;
+      groupOrder.forEach(function (group) { if (groups[group]) list.appendChild(groups[group]); });
+      list.value = matched ? selected : ""; list.disabled = !enabled || !visible.length;
       if (search) search.disabled = !enabled || !bones.length;
       if (filter) filter.disabled = !enabled || !bones.length;
       var changes = document.getElementById("viewer-node-change-list");
@@ -181,13 +181,15 @@
     }
     function refreshCompensation() {
       var value = selected && options.compensation ? options.compensation(selected) : null;
-      var state = value && value.parent, incoming = value && value.incoming || [];
-      if (compensationCheck) { compensationCheck.checked = !!(state && state.enabled); compensationCheck.disabled = !enabled || !state; }
-      if (compensationChoice) { compensationChoice.value = state ? state.mode : "auto"; compensationChoice.disabled = !enabled || !state; }
+      var state = value && value.parent, incoming = value && value.incoming || [], canEdit = !!(value && value.canEdit);
+      // An old invalid Node+compensation edit may still be turned off. New
+      // compensation is available only for the actual mesh save method.
+      if (compensationCheck) { compensationCheck.checked = !!(state && state.enabled); compensationCheck.disabled = !enabled || !state || !canEdit && !state.enabled; }
+      if (compensationChoice) { compensationChoice.value = state ? state.mode : "auto"; compensationChoice.disabled = !enabled || !state || !canEdit; }
       if (compensationStatus) {
         var labels = { off: "Child compensation is off.", ready: "Child compensation is ready; change this bone’s scale to activate it.",
           active: "Child compensation is active.", unavailable: "Child compensation is unavailable." };
-        var text = state ? translate(labels[state.state]) : translate("Choose a bone to edit.");
+        var text = state ? translate(!canEdit ? state.enabled ? "Child compensation needs mesh baking. Turn it off or choose Mesh Baker." : "The current Node save method does not support child compensation. Use Mesh Baker when compensation is needed." : labels[state.state]) : translate("Choose a bone to edit.");
         if (state && state.reason && state.enabled) text += " " + translate(state.reason);
         if (state && state.state === "unavailable") text += " " + translate("No compensation was applied.");
         if (state) text += " " + translate("Targets") + ": " + (state.targets.length ? state.targets.map(function (target) { return target.name + " [" + target.node + "]"; }).join(", ") : "—");
@@ -315,7 +317,7 @@
         fields[kind].push(input); label.appendChild(input); row.appendChild(label);
       }); holder.appendChild(row);
     });
-    listen(list, "change", function () { select(this.value, true); });
+    listen(list, "change", function () { if (this.value) select(this.value, true); });
     listen(search, "input", function () { refresh(true); });
     listen(filter, "change", function () { refresh(true); });
     function changeCompensation() {

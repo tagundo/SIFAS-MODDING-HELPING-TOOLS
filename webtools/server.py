@@ -92,6 +92,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_download()
             if path.startswith("/api/viewer/model/"):
                 return self._api_viewer_model(path[len("/api/viewer/model/"):])
+            if path == "/api/viewer/game/catalog":
+                return self._api_viewer_game_catalog()
             if path.startswith("/api/viewer/edit/result/"):
                 return self._api_viewer_edit_result(path[len("/api/viewer/edit/result/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
@@ -109,6 +111,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/viewer/prepare":
                 return self._api_viewer_prepare()
+            if path == "/api/viewer/game/import":
+                return self._api_viewer_game_import()
             if path == "/api/viewer/edit/export":
                 return self._api_viewer_edit_export()
             if path == "/api/viewer/edit/restore":
@@ -289,6 +293,58 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "Model preview expired. Load the model again."}, status=404)
         return self._send_bytes(data, "model/gltf-binary",
                                 extra_headers={"Cache-Control": "no-store"})
+
+    def _api_viewer_game_catalog(self):
+        from webtools.core import game_models
+        from sqlite3 import Error as SQLiteError
+        try:
+            query = self._query()
+            if len(urlsplit(self.path).query) > 2048 or set(query) - {"region", "character", "search", "lang"} or any(len(values) != 1 for values in query.values()):
+                raise ValueError("Unsupported game asset search.")
+            result = game_models.catalog(Path.cwd(), language=self._lang(),
+                region=(query.get("region") or [""])[0],
+                character=(query.get("character") or [""])[0],
+                search=(query.get("search") or [""])[0])
+            return self._send_json(result)
+        except (ValueError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except SQLiteError:
+            return self._send_json({"error": "Game assets are unavailable. Start or prepare the server data first."}, status=400)
+
+    def _api_viewer_game_import(self):
+        from webtools.core import game_models
+        from webtools.core.sukusta import default_sukusta_dir
+        from sqlite3 import Error as SQLiteError
+        try:
+            origins = self.headers.get_all("Origin", [])
+            if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                raise PermissionError("Open the editor from this app before loading game assets.")
+            if origins:
+                origin = urlsplit(origins[0])
+                if (origin.scheme not in ("http", "https") or origin.username or origin.password
+                        or origin.path not in ("", "/") or origin.query or origin.fragment
+                        or origin.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                    raise PermissionError("Open the editor from this app before loading game assets.")
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise ValueError("Invalid game asset request size.") from None
+            if self.headers.get("Transfer-Encoding") or not 0 < length <= 4096:
+                raise ValueError("The game asset request is too large or empty.")
+            record = game_models.validate_selection(Path.cwd(), self._read_json_body(), self._lang())
+            output_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            if output_root.is_symlink() or not filebrowser.is_within_allowed(output_root):
+                raise PermissionError("The game model cache is outside the allowed folders.")
+            job = MANAGER.create("viewer_game_assets")
+            MANAGER.run_async(job, lambda active: game_models.run_import(active,
+                repo_root=Path.cwd(), output_root=output_root, record=record))
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+        except SQLiteError:
+            return self._send_json({"error": "Game assets are unavailable. Start or prepare the server data first."}, status=400)
 
     def _viewer_edit_request(self, fields):
         """Bound writes to source-bound sessions, without caller output paths."""

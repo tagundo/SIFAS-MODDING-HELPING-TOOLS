@@ -22,7 +22,7 @@ progress bar, and can be cancelled mid-run.
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.11+ (already bundled in the Elichika apps)
 - `UnityPy` (the tools install this on first run)
 - `numpy` — needed for the **3D model** viewer and mesh editing
 - `Pillow` — needed for model textures, **Texture Importer** and thumbnails
@@ -110,6 +110,29 @@ members in costume ZIPs are supported. ZIP contents are read into a bounded
 temporary folder which is removed after conversion.
 The viewer keeps the original files unchanged. On Android the editing tabs
 prepare their local tools automatically; the game server can remain stopped.
+
+In an Elichika installation, **Load from game assets** opens a character and
+costume picker using the same game catalogs as **Server content → Asset
+extraction/decryption**. It reuses downloaded packs and metapacks, optionally
+downloads missing data, and opens a separate extracted copy directly in the
+viewer. Colour costumes follow their exact game attachment; Rina's unmasked
+variant is offered when the selected costume provides one.
+
+**Body and outfit** has a Node Scaling **Hip size** (`HipsSize`, not the parent
+`Hips`) card and Mesh Baker **Thigh thickness** and **Waist thickness** cards.
+100% restores the loaded shape. Thickness changes the local Y/Z cross-section
+and keeps the bone's original local X length; it does not add a height control.
+The thigh cards compensate their child bones, and the waist card compensates
+at `Spine2`, preserving the upper chest, shoulders and head. The shorter
+**Detail body parts** list excludes these dedicated controls; individual fingers,
+toes and other bones remain searchable under **All bones** in advanced editing.
+
+Child compensation can also be useful for Node Scaling, but the current Node
+exporter does not write it. Uniform or suitably aligned scaling can be expressed
+with compensating child position/scale endpoints; rotated nonuniform transforms
+can require shear, and game motion may overwrite either endpoint. Use the
+supported Mesh Baker compensation when descendants must retain their shape.
+The size, breast and skirt Node controls keep their ordinary inheritance.
 
 **Automatically add the original face** is on by default. The viewer identifies
 the character from the selected Unity data and validated costume metadata,

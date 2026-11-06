@@ -1544,7 +1544,7 @@ _VIEWER_TRANSLATIONS.update({
     "Nozomi": ["노조미", "希"],
     "Emma": ["엠마", "エマ"],
     "Back hair": ["뒷머리", "後ろ髪"],
-    "Hip size": ["골반 크기", "腰回りのサイズ"],
+    "Hip size": ["엉덩이 크기", "ヒップサイズ"],
     "Lower torso": ["몸통 아래", "胴体下部"],
     "Middle torso": ["몸통 가운데", "胴体中央"],
     "Upper torso": ["몸통 위", "胴体上部"],
@@ -1928,6 +1928,227 @@ _VIEWER_TRANSLATIONS.update({
     "This window was closed.": ["창이 닫혔습니다.", "ウィンドウが閉じられました。"],
     "Open at most eight model files at a time.": ["모델 파일은 한 번에 최대 8개까지 열 수 있습니다.", "モデルファイルは一度に8個まで開けます。"],
     "3D graphics are unavailable here. Update your system web view or use a current browser.": ["여기서는 3D 그래픽을 사용할 수 없습니다. 시스템 웹 뷰를 업데이트하거나 최신 브라우저를 사용하세요.", "ここでは3Dグラフィックスを利用できません。システムのWebビューを更新するか、新しいブラウザーを使用してください。"],
+})
+
+_VIEWER_TRANSLATIONS.update({
+    "Detail body parts": [
+        "부위별 세부 조절",
+        "部位別の詳細調整"
+    ],
+    "Recommended detail parts": [
+        "추천 세부 부위",
+        "推奨する詳細部位"
+    ],
+    "Choose a detail part": [
+        "조절할 세부 부위 선택",
+        "調整する部位を選択"
+    ],
+    "Head and hair": [
+        "머리·머리카락",
+        "頭・髪"
+    ],
+    "Upper body and arms": [
+        "상체·팔",
+        "上半身・腕"
+    ],
+    "Legs and feet": [
+        "다리·발",
+        "脚・足"
+    ],
+    "Other bones": [
+        "그 밖의 본",
+        "その他のボーン"
+    ],
+    "Size cards handle hips, breast, skirt, waist and thighs. Other bones remain available in advanced controls.": [
+        "엉덩이·가슴·치마·허리·허벅지는 전용 항목에서 조절하세요. 다른 본은 고급 조절에서 선택할 수 있습니다.",
+        "ヒップ・胸・スカート・腰・太ももは専用項目で調整できます。他のボーンは詳細設定から選択できます。"
+    ],
+    "Percent of loaded shape": [
+        "불러온 형태 기준 (%)",
+        "読み込んだ形状を基準 (%)"
+    ],
+    "Undo this size adjustment": [
+        "이 크기 조절 되돌리기",
+        "このサイズ調整を元に戻す"
+    ],
+    "100% keeps the loaded shape. This adjustment scales the verified HipsSize node, not the pelvis root.": [
+        "100%는 불러온 형태입니다. 원본에서 확인된 엉덩이 크기 조절 본(HipsSize)을 사용합니다.",
+        "100%は読み込んだ形状です。元モデルで確認されたヒップサイズ用ボーン（HipsSize）を使います。"
+    ],
+    "100% keeps the loaded shape. Only thickness changes; bone length is preserved.": [
+        "100%는 불러온 형태입니다. 본의 길이를 유지하면서 굵기만 바꿉니다.",
+        "100%は読み込んだ形状です。ボーンの長さを保ったまま太さだけを変えます。"
+    ],
+    "Children follow this size adjustment; inverse compensation is not used.": [
+        "하위 본도 함께 크기가 바뀝니다. 이 전용 조절 본에는 역보정을 적용하지 않습니다.",
+        "子ボーンにもサイズが反映されます。この専用ボーンには逆補正を適用しません。"
+    ],
+    "Keeps bone length. Spine2 compensation preserves the chest, shoulders and head.": [
+        "길이를 유지합니다. Spine2 경계를 보정해 가슴·어깨·머리 크기를 유지합니다.",
+        "長さを保ちます。Spine2の境界を補正して胸・肩・頭のサイズを保ちます。"
+    ],
+    "Keeps bone length. Child compensation preserves the calves and feet.": [
+        "길이를 유지합니다. 하위 본을 보정해 종아리·발 크기를 유지합니다.",
+        "長さを保ちます。子ボーンを補正してふくらはぎ・足のサイズを保ちます。"
+    ],
+    "Enter a percentage between 20 and 250.": [
+        "20~250 사이의 비율을 입력하세요.",
+        "20～250の範囲で割合を入力してください。"
+    ],
+    "Resolve conflicting file values before using this control.": [
+        "파일의 충돌하는 값을 먼저 해결하세요.",
+        "元ファイルの競合する値を先に解決してください。"
+    ],
+    "This control needs positive original scale values.": [
+        "이 항목은 원본 배율이 양수인 경우 사용할 수 있습니다.",
+        "この項目には正の元スケール値が必要です。"
+    ],
+    "Change this bone's save method in advanced controls before using this adjustment.": [
+        "고급 조절에서 이 본의 저장 방식을 맞춘 뒤 사용하세요.",
+        "詳細設定でこのボーンの保存方法を合わせてから使用してください。"
+    ],
+    "Reset length-axis edits in advanced controls before adjusting thickness.": [
+        "고급 조절에서 길이 축의 수동 편집을 되돌린 뒤 굵기를 조절하세요.",
+        "詳細設定で長さ軸の手動編集を元に戻してから太さを調整してください。"
+    ],
+    "Turn child compensation off in advanced controls before using this node adjustment.": [
+        "고급 조절에서 하위 본 보정을 끈 뒤 이 노드 크기를 조절하세요.",
+        "詳細設定で子ボーン補正をオフにしてからこのサイズを調整してください。"
+    ],
+    "This model has no unambiguous nodes for this adjustment.": [
+        "이 모델에는 이 항목을 조절할 본이 없거나 중복되어 있습니다.",
+        "この項目に必要なボーンがないか、重複しています。"
+    ],
+    "Child compensation needs mesh baking. Turn it off or choose Mesh Baker.": [
+        "하위 본 보정은 메시 베이커용입니다. 보정을 끄거나 저장 방식을 메시 베이커로 바꾸세요.",
+        "子ボーン補正にはメッシュベイクが必要です。補正をオフにするか、保存方法をMesh Bakerに変更してください。"
+    ],
+    "Node Scaling keeps the intended child-bone inheritance; inverse compensation is not used.": [
+        "노드 스케일링은 하위 본에 크기를 전달합니다. 역보정은 적용하지 않습니다.",
+        "Node Scalingでは子ボーンにサイズを引き継ぎます。逆補正は適用しません。"
+    ],
+    "Load from game assets": [
+        "게임 에셋에서 불러오기",
+        "ゲームアセットから読み込む"
+    ],
+    "Game assets": [
+        "게임 에셋",
+        "ゲームアセット"
+    ],
+    "Game region": [
+        "게임 버전",
+        "ゲーム版"
+    ],
+    "Global (GL)": [
+        "글로벌 (GL)",
+        "グローバル (GL)"
+    ],
+    "Japan (JP)": [
+        "일본 (JP)",
+        "日本 (JP)"
+    ],
+    "Character": [
+        "캐릭터",
+        "キャラクター"
+    ],
+    "Choose a character": [
+        "캐릭터 선택",
+        "キャラクターを選択"
+    ],
+    "Search costumes": [
+        "의상 검색",
+        "衣装を検索"
+    ],
+    "Costume": [
+        "의상",
+        "衣装"
+    ],
+    "Choose a costume": [
+        "의상 선택",
+        "衣装を選択"
+    ],
+    "Costume variant": [
+        "의상 종류",
+        "衣装の種類"
+    ],
+    "Default costume": [
+        "기본 의상",
+        "通常衣装"
+    ],
+    "Without mask": [
+        "마스크 없음",
+        "マスクなし"
+    ],
+    "Download missing assets": [
+        "부족한 에셋 다운로드",
+        "不足アセットをダウンロード"
+    ],
+    "Uses downloaded game packs first. Missing assets can be downloaded.": [
+        "받아 둔 게임 팩을 먼저 사용합니다. 부족한 에셋은 다운로드할 수 있습니다.",
+        "ダウンロード済みゲームパックを優先し、不足分を取得できます。"
+    ],
+    "Load model": [
+        "모델 불러오기",
+        "モデルを読み込む"
+    ],
+    "Loading costumes…": [
+        "의상 목록 불러오는 중…",
+        "衣装一覧を読み込み中…"
+    ],
+    "Preparing game assets…": [
+        "게임 에셋 준비 중…",
+        "ゲームアセットを準備中…"
+    ],
+    "No costumes found.": [
+        "의상을 찾지 못했습니다.",
+        "衣装が見つかりません。"
+    ],
+    "Game assets are unavailable. Start or prepare the server data first.": [
+        "게임 에셋을 사용할 수 없습니다. 서버 데이터를 먼저 준비하세요.",
+        "ゲームデータを先に準備してください。"
+    ]
+})
+_VIEWER_TRANSLATIONS["This model cannot save this adjustment with its required method."] = ["이 모델은 이 항목에 필요한 저장 방식을 지원하지 않습니다.", "このモデルは、この項目に必要な保存方法に対応していません。"]
+_VIEWER_TRANSLATIONS["The child hierarchy does not match this thickness adjustment. Use advanced controls."] = ["하위 본 구조가 이 굵기 조절과 맞지 않습니다. 고급 조절을 사용하세요.", "子ボーン構造がこの太さ調整に対応していません。詳細設定を使用してください。"]
+_VIEWER_TRANSLATIONS["The game model could not be loaded."] = ["게임 모델을 불러오지 못했습니다.", "ゲームモデルを読み込めませんでした。"]
+_VIEWER_TRANSLATIONS["The current Node save method does not support child compensation. Use Mesh Baker when compensation is needed."] = ["현재 Node 저장에서는 하위 본 보정을 지원하지 않습니다. 보정이 필요하면 메시 베이커를 사용하세요.", "現在のNode保存では子ボーン補正に対応していません。補正が必要な場合はMesh Bakerを使用してください。"]
+_VIEWER_TRANSLATIONS.update({
+    "Another game model is being prepared. Try again shortly.": [
+        "다른 게임 모델을 준비 중입니다. 잠시 후 다시 시도하세요.",
+        "別のゲームモデルを準備中です。少し待って再試行してください。"
+    ],
+    "Loading the game asset took too long. Try again.": [
+        "게임 에셋을 불러오는 데 시간이 오래 걸립니다. 다시 시도하세요.",
+        "ゲームアセットの読み込みがタイムアウトしました。再試行してください。"
+    ],
+    "The game pack is missing. Enable Download missing assets or download the game data first.": [
+        "게임 팩이 없습니다. 부족한 에셋 다운로드를 켜거나 게임 데이터를 먼저 받아 주세요.",
+        "ゲームパックがありません。不足アセットの取得を有効にするか、先にゲームデータを取得してください。"
+    ],
+    "The selected costume is no longer available. Refresh the list.": [
+        "선택한 의상이 더 이상 없습니다. 목록을 새로 불러오세요.",
+        "選択した衣装が見つかりません。一覧を更新してください。"
+    ],
+    "The selected costume colour assets are unavailable.": [
+        "선택한 의상의 색상 에셋을 찾을 수 없습니다.",
+        "選択した衣装の色アセットがありません。"
+    ],
+    "The selected costume colour could not be applied. The base colour was not substituted.": [
+        "선택한 의상 색상을 적용하지 못했습니다. 기본 색상으로 대체하지 않았습니다.",
+        "選択した衣装の色を適用できませんでした。基本色には置き換えていません。"
+    ],
+    "This costume has no unmasked model.": [
+        "이 의상에는 마스크 없는 모델이 없습니다.",
+        "この衣装にはマスクなしモデルがありません。"
+    ],
+    "This costume is missing from the Android asset catalog.": [
+        "이 의상의 Android 에셋 정보가 없습니다.",
+        "この衣装のAndroidアセット情報がありません。"
+    ],
+    "The selected game region is unavailable.": [
+        "선택한 게임 버전의 데이터가 없습니다.",
+        "選択したゲーム版のデータがありません。"
+    ]
 })
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]

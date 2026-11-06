@@ -40,6 +40,11 @@ _CONTROLS = (
     ("breast", "Breast size", ("BreastSize",), "breast_tool_presets"),
     ("skirt", "Skirt length and volume", _SKIRT_ROOTS, "absolute_skirt_root_scale"),
 )
+_BODY_CARD_CONTROLS = (
+    ("hips", "Hip size", ("HipsSize",), "node"),
+    ("thighs", "Thigh thickness", ("LeftUpLeg", "RightUpLeg"), "mesh"),
+    ("waist", "Waist thickness", ("Spine",), "mesh"),
+)
 _RECOMMENDED = {
     "Head": ("Head", "head"), "Head_Hair": ("Hair", "hair"),
     "Neck_Hair": ("Back hair", "hair"), "Move": ("Whole model", "model"),
@@ -154,6 +159,116 @@ def evaluate_saved_entry(entry, weight=1.0):
     if kind == "scale" and any(abs(value) < 1e-8 for value in result):
         raise ValueError("A preview scale cannot collapse a bone to zero.")
     return {"scale" if kind == "scale" else "translation": result}
+
+
+def _body_card_controls(authored_nodes, parents, source_by_node):
+    """Describe exact, source-bound size/thickness targets without editing them.
+
+    SIFAS' simple thickness tools keep the local X length axis and change Y/Z.
+    The parent inverse is applied at immediate child bones for thighs, or at
+    Spine2 for the waist so Spine1 remains part of the waist adjustment. These
+    are Mesh Baker operations: NodeScaling's HipsSize intentionally propagates
+    to its children and must not inherit the mesh compensation switch.
+    """
+    def lineage(node):
+        chain, seen = [], set()
+        while node is not None:
+            if node in seen or len(parents.get(node, [])) > 1:
+                return None
+            seen.add(node)
+            chain.append(node)
+            values = parents.get(node, [])
+            node = values[0] if values else None
+        return chain
+
+    def valid_scale(target):
+        return all(math.isfinite(value) and abs(value) >= 1e-8
+                   for value in target["baseScale"])
+
+    def source_root(node, path):
+        # The exported Character node joins independent source armatures. It
+        # cannot establish that a left/right pair belongs to the same rig.
+        source = source_by_node[node]
+        return next((ancestor for ancestor in reversed(path)
+                     if source_by_node.get(ancestor) == source), None)
+
+    def valid_compensation_path(parent, child):
+        path = lineage(child)
+        if path is None or parent not in path[1:]:
+            return False
+        for node in path[:path.index(parent)]:
+            entry = authored_nodes.get(node)
+            if entry is None or not valid_scale(entry) or source_by_node[node] != source_by_node[parent]:
+                return False
+        return True
+
+    controls = []
+    for identity, label, names, method in _BODY_CARD_CONTROLS:
+        named = {name: [entry for entry in authored_nodes.values()
+                        if entry["name"] == name] for name in names}
+        targets = [dict(entry) for name in names for entry in named[name]]
+        reason, compensation_targets = "", {}
+        if any(not named[name] for name in names):
+            reason = "missing_body_control_nodes"
+        elif any(len(named[name]) != 1 for name in names):
+            reason = "ambiguous_body_control_nodes"
+        elif any(not valid_scale(target) for target in targets):
+            reason = "invalid_body_control_scale"
+        else:
+            sources = {source_by_node[target["node"]] for target in targets}
+            paths = [lineage(target["node"]) for target in targets]
+            if len(sources) != 1:
+                reason = "body_control_source_mismatch"
+            elif any(path is None for path in paths) or len({
+                    source_root(target["node"], path)
+                    for target, path in zip(targets, paths)}) != 1:
+                reason = "ambiguous_body_control_hierarchy"
+            elif method == "mesh":
+                for target in targets:
+                    node = target["node"]
+                    if identity == "waist":
+                        descendants = [entry for entry in authored_nodes.values()
+                                       if entry["name"] == "Spine2" and
+                                       source_by_node[entry["node"]] == source_by_node[node] and
+                                       (lineage(entry["node"]) or [])[1:].count(node) == 1]
+                        if len(descendants) != 1:
+                            reason = ("missing_waist_compensation_target" if not descendants
+                                      else "ambiguous_waist_compensation_target")
+                            break
+                    else:
+                        # Authored rig nodes already include the Transform
+                        # hierarchy used by the viewer's immediate-bone rule.
+                        descendants = [entry for entry in authored_nodes.values()
+                                       if parents.get(entry["node"]) == [node] and
+                                       source_by_node[entry["node"]] == source_by_node[node]]
+                        if not descendants:
+                            reason = "missing_body_control_children"
+                            break
+                    if any(not valid_compensation_path(node, child["node"])
+                           for child in descendants):
+                        reason = "invalid_body_control_scale"
+                        break
+                    compensation_targets[node] = [child["node"] for child in descendants]
+        for target in targets:
+            target["compensationTargets"] = compensation_targets.get(target["node"], [])
+        control = {"id": identity, "label": label, "available": bool(targets) and not reason,
+                   "mode": "relative_body_scale" if method == "node" else "compensated_thickness",
+                   "method": method, "nodes": targets,
+                   "unit": "percent", "default": 100, "baseline": "loaded_static_shape",
+                   "application": "relative_to_original_static_scale",
+                   "editedAxes": [0, 1, 2] if method == "node" else [1, 2],
+                   "lengthAxis": None if method == "node" else 0,
+                   "compensate": method == "mesh",
+                   "compensationMode": "none" if method == "node" else "spine2" if identity == "waist" else "auto",
+                   "editBounds": {"min": 20., "max": 250., "source": "viewer_ui_bounds",
+                                  "appliesTo": "explicit_percentage_edits_only"},
+                   "exactRootNames": list(names), "targetSelection": "unique_exact_named_nodes",
+                   "axesMeaning": "uniform_size" if method == "node" else "thickness_without_length",
+                   "source": "hips_size_changer.py:HipsSize" if method == "node" else "webtools/tools/mesh.py:_build_body_targets"}
+        if reason:
+            control["unavailableReason"] = reason
+        controls.append(control)
+    return controls
 
 
 def describe_scaling(scene, glb, node_by_transform, *, sources=None):
@@ -374,6 +489,7 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
             if ambiguous:
                 control["unavailableReason"] = "ambiguous_skirt_roots"
         result["controls"].append(control)
+    result["controls"].extend(_body_card_controls(authored_nodes, parents, source_by_node))
     return result
 
 

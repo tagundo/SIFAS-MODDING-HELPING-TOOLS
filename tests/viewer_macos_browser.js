@@ -68,6 +68,15 @@ async function edit(page, name, z, method) {
   const node = await page.evaluate(name => ModelViewer.getEditingMetadata().nodes.find(node => node.name === name), name);
   const tab = page.locator(method === 'mesh' ? '#viewer-editor-mesh-tab' : '#viewer-editor-node-tab');
   await show(tab); await tab.click();
+  const listed = await page.locator('#viewer-node').evaluate((select, id) =>
+    Array.from(select.options).some(option => option.value === id), String(node.node));
+  if (!listed) {
+    // Precision/save coverage uses the advanced source bone even when its
+    // everyday control has moved into a dedicated body card.
+    await show(page.locator('#viewer-node-filter'));
+    await page.locator('#viewer-node-search').fill('');
+    await page.locator('#viewer-node-filter').selectOption('all');
+  }
   await show(page.locator('#viewer-node')); await page.locator('#viewer-node').selectOption(String(node.node));
   const input = page.locator('input[data-viewer-node-kind="scale"][data-axis="Z"]');
   await show(input); await input.fill(String(z)); await input.dispatchEvent('change');
