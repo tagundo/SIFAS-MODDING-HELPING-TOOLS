@@ -320,6 +320,8 @@ main { padding: 14px; }
 .viewer-icon-button::before { content: ""; display: block; width: 22px; height: 22px; margin: auto; background-position: center; background-size: 22px 22px; background-repeat: no-repeat; }
 #viewer-expand::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23253148' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 3l5 5m13-5-5 5M3 21l5-5m13 5-5-5'/%3E%3C/svg%3E"); }
 #viewer-fullscreen::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23253148' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5'/%3E%3C/svg%3E"); }
+#viewer-minimize::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23253148' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5h16M6 16l6-6 6 6'/%3E%3C/svg%3E"); }
+#tab-viewer[data-viewer-minimize-direction="width"] #viewer-minimize::before { transform: rotate(-90deg); }
 .viewer-camera-actions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); width: 340px; max-width: calc(100% - 52px); overflow: hidden; }
 .viewer-stage .viewer-camera-actions button { padding: 5px 4px; font-size: 11px; }
 .viewer-info { position: relative; flex: 0 0 46px; }
@@ -772,6 +774,30 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-save-advanced label { display: grid; gap: .3rem; margin: .6rem 0; }
 .viewer-save-advanced select { min-height: 44px; max-width: 100%; width: 100%; }
 .viewer-save-panel .viewer-save-error { color: var(--danger, #ff8a8a); }
+.viewer-mod-form { margin-top: .8rem; padding-top: .65rem; border-top: 1px solid var(--line); }
+.viewer-mod-form > label { display: block; margin-bottom: .3rem; }
+.viewer-mod-name-row, .viewer-mod-counterpart-row { display: flex; flex-wrap: wrap; gap: .4rem; min-width: 0; }
+.viewer-mod-name-row input, .viewer-mod-counterpart-row input { flex: 1 1 140px; min-width: 0; max-width: 100%; min-height: 44px; }
+.viewer-mod-name-row button, .viewer-mod-counterpart-row button { min-height: 44px; white-space: normal; }
+
+/* Hide only the retained model viewport; the existing editor stays usable. */
+.viewer-model-restore { display: none; }
+#tab-viewer.viewer-model-minimized .viewer-stage { display: none; }
+#tab-viewer.viewer-model-minimized .viewer-model-panel { display: block; position: sticky; top: calc(var(--viewer-sticky-top, 0px) + 8px); min-width: 0; z-index: 2; }
+#tab-viewer.viewer-model-minimized .viewer-model-restore { display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 44px; min-height: 44px; width: 100%; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+#tab-viewer.viewer-model-minimized .viewer-model-restore:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.viewer-model-restore-icon { flex: 0 0 20px; width: 20px; height: 20px; background: center / 20px 20px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23253148' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); }
+#tab-viewer.viewer-model-minimized:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { display: block; position: relative; top: auto; width: 100%; max-width: none; height: auto; max-height: none; min-width: 0; margin: 0; overflow: visible; scrollbar-gutter: auto; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { display: block; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-height .viewer-model-panel { margin-bottom: 10px; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; align-items: start; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width .viewer-model-panel { height: var(--viewer-minimized-height); }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width .viewer-model-restore { height: 100%; flex-direction: column; padding: 8px 4px; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width .viewer-model-restore-icon { transform: rotate(-90deg); }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width .viewer-model-restore > span:last-child { writing-mode: vertical-rl; text-orientation: mixed; }
+#tab-viewer.viewer-model-minimized.viewer-minimize-width:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { position: sticky; top: calc(var(--viewer-sticky-top, 0px) + 8px); height: var(--viewer-minimized-height); max-height: var(--viewer-minimized-height); overflow-y: auto; }
+#tab-viewer.viewer-model-minimized .viewer-control-panel input, #tab-viewer.viewer-model-minimized .viewer-control-panel select, #tab-viewer.viewer-model-minimized .viewer-control-panel button, #tab-viewer.viewer-model-minimized .viewer-control-panel summary { scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + 8px); }
+#tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel input, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel select, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel button, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel summary { scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + var(--viewer-minimize-bar-height, 44px) + 16px); }
 
 .viewer-editor-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; margin: .7rem 0; }
 .viewer-editor-tabs button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .3rem; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }

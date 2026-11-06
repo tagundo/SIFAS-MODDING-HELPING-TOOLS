@@ -263,9 +263,14 @@ if(require.main===module)(async()=>{
       }
       return page.locator('#'+id).evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
     };
-    const profile=id=>page.locator('#viewer-breast-preset').selectOption(id);
+    const cardControl=async selector=>{
+      const control=page.locator(selector);
+      await control.evaluate(element=>{for(let parent=element.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;});
+      return control;
+    };
+    const profile=async id=>(await cardControl('#viewer-breast-preset')).selectOption(id);
     const eyePreset=async()=>{await page.locator('[data-viewer-expression-group="eyes"]').click();await page.locator('[data-viewer-expression-preset="fixture-eyes-closed"]').click();};
-    const applySkirt=async value=>{await page.locator('#viewer-skirt-number').fill(String(value));await page.locator('#viewer-skirt-apply').click();};
+    const applySkirt=async value=>{await (await cardControl('#viewer-skirt-number')).fill(String(value));await page.locator('#viewer-skirt-apply').click();};
     const noContinuousControls=async()=>{for(const id of ['viewer-height','viewer-height-number','viewer-breast','viewer-breast-number','viewer-skirt'])assert.equal(await page.locator('#'+id).count(),0,'Unsupported continuous control must not exist: '+id);};
     const inputNode=async(node,kind,axis,value)=>{
       await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);
@@ -323,7 +328,7 @@ if(require.main===module)(async()=>{
     await profile('rin');await inputNode(2,'scale','X',1.3);
     nearVector((await state()).rig.bones.find(b=>b.node==='2').scale,[1.3,.95,.9],'Typing a file-equal value while a profile differs still pins the requested endpoint');
     assert.deepEqual((await state()).rig.nodeAdjustments['2'].scale,[1.3,null,null]);
-    await page.locator('#viewer-breast-reset').click();
+    await (await cardControl('#viewer-breast-reset')).click();
     assert.deepEqual(await pressed(),['true','false']);assert(await page.locator('#viewer-pose-preview').isDisabled());await page.locator('#viewer-info').evaluate(element=>element.open=true);assert(await page.locator('#viewer-pose-help').isVisible());await page.locator('#viewer-info').evaluate(element=>element.open=false);
     const probe=await page.evaluate(()=>ModelViewer.renderProbe());assert(probe.ready&&probe.nonBackgroundSamples>0&&probe.glError===0);
     await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);
@@ -486,7 +491,7 @@ if(require.main===module)(async()=>{
     assert.deepEqual((await state()).rig.nodeAdjustments,{},'Inspecting saved scale, position and rotation must not create overrides');
     await applySkirt(.85);nearVector(bone(await state(),3).scale,[.85,.85,.85],'Skirt apply sets an absolute source-tool value');
     nearVector(bone(await state(),5).scale,[.6,.6,.6],'A skirt child must not get the root multiplier a second time');
-    await page.locator('#viewer-skirt-reset').click();assert.equal((await state()).rig.body.skirtMode,'file');
+    await (await cardControl('#viewer-skirt-reset')).click();assert.equal((await state()).rig.body.skirtMode,'file');
     assert.equal((await capture(null,'all-saved-default')).changedPixels,0,'Skirt reset restores the complete imported file defaults');
     await page.locator('#viewer-body-adjustments').evaluate(e=>e.open=true);await page.locator('#viewer-saved-parts').evaluate(e=>e.open=true);
     assert((await page.locator('#viewer-saved-status').innerText()).includes('5 / 5'));
@@ -605,17 +610,17 @@ if(require.main===module)(async()=>{
     nearVector(bone(replacedProfile,2).position,bone(manualProfile,2).position,'Reference selection retains breast placement',1e-12);
     nearVector(bone(replacedProfile,2).quaternion,bone(manualProfile,2).quaternion,'Reference selection retains breast rotation',1e-12);
     for(const id of ['6','7'])assert.deepEqual(replacedProfile.rig.nodeAdjustments[id],manualProfile.rig.nodeAdjustments[id],'Reference selection retains other bones');
-    await page.locator('#viewer-breast-reset').click();const restoredProfile=await state();nearVector(bone(restoredProfile,2).scale,[1.3,.9,1],'Reset restores this custom file shape, not Stock');
+    await (await cardControl('#viewer-breast-reset')).click();const restoredProfile=await state();nearVector(bone(restoredProfile,2).scale,[1.3,.9,1],'Reset restores this custom file shape, not Stock');
     nearVector(bone(restoredProfile,2).position,bone(manualProfile,2).position,'Profile reset retains manual placement',1e-12);
     nearVector(bone(restoredProfile,2).quaternion,bone(manualProfile,2).quaternion,'Profile reset retains manual rotation',1e-12);
     await page.locator('#viewer-node-reset').click();
     await profile('stock');nearVector(bone(await state(),2).scale,[1,1,1],'Stock is an explicit absolute reference distinct from the custom file');
-    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[1.3,.9,1],'Loaded shape is recoverable independently from Stock');
+    await (await cardControl('#viewer-breast-reset')).click();nearVector(bone(await state(),2).scale,[1.3,.9,1],'Loaded shape is recoverable independently from Stock');
     await page.locator('#viewer-saved-parts').evaluate(details=>details.open=true);
     await page.locator('[data-viewer-saved-part="breast"]').uncheck();nearVector(bone(await state(),2).scale,[1,1,1],'Loaded follows the active authored baseline when its saved part is off');
     await profile('emma');await page.locator('[data-viewer-saved-part="breast"]').check();nearVector(bone(await state(),2).scale,[1.3,1.18,1.3],'An explicit source profile survives saved-part changes');
     await page.locator('#viewer-saved-nodes').uncheck();nearVector(bone(await state(),2).scale,[1.3,1.18,1.3],'An explicit source profile survives global saved-settings opt-out');
-    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[1,1,1],'Loaded reset respects the active authored baseline');
+    await (await cardControl('#viewer-breast-reset')).click();nearVector(bone(await state(),2).scale,[1,1,1],'Loaded reset respects the active authored baseline');
     await page.locator('#viewer-saved-nodes').check();nearVector(bone(await state(),2).scale,[1.3,.9,1],'Re-enabling saved settings recovers the exact custom file shape');
     await page.locator('#viewer-motion').selectOption('Synthetic test motion');await slider('viewer-time',.5);await slider('viewer-expression-value',75);
     const beforeProfileSwitch=await state();await profile('rin');const afterProfileSwitch=await state();
@@ -640,7 +645,7 @@ if(require.main===module)(async()=>{
     await inputNode(2,'scale','X',.55);nearVector(bone(await state(),2).scale,[.55,.8,.9],'Advanced editing retains custom source axes');
     assert.equal((await state()).rig.breastProfile.custom,true);
     await profile('rina');nearVector(bone(await state(),2).scale,[.61,.91,.85],'A small custom file still receives the exact selected reference');
-    await page.locator('#viewer-breast-reset').click();nearVector(bone(await state(),2).scale,[.5,.8,.9],'Reset never replaces a custom loaded file with a reference');
+    await (await cardControl('#viewer-breast-reset')).click();nearVector(bone(await state(),2).scale,[.5,.8,.9],'Reset never replaces a custom loaded file with a reference');
     const customProfileState=await state();
     generated=fixture({semanticExpressions:true});await page.evaluate(()=>openModelViewer(['/synthetic/named-expression-controls.unity']));
     await profile('rin');const beforeExpressionBody=(await state()).rig.body;
@@ -676,7 +681,7 @@ if(require.main===module)(async()=>{
       rootIds.forEach(id=>nearVector(bone(current,id).scale,[.85,.85,.85],'Every exact named root receives .85 once, including nested roots'));
       descendantIds.forEach(id=>nearVector(bone(current,id).scale,[1,1,1],'Ordinary descendants receive no additional local scale'));
     }
-    await page.locator('#viewer-skirt-reset').click();
+    await (await cardControl('#viewer-skirt-reset')).click();
     await page.locator('#viewer-saved-nodes').uncheck();let skirtOff=await state();
     assert.equal(skirtOff.rig.skirtValues.fileUniform,.85);assert.equal(skirtOff.rig.skirtValues.currentUniform,1);
     assert.equal(await page.locator('#viewer-skirt-file').innerText(),'0.85');assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'1');
@@ -686,7 +691,7 @@ if(require.main===module)(async()=>{
     assert.deepEqual(skirtApplied.rig.nodeAdjustments['3'].scale,[null,null,null],'Absolute skirt Apply replaces manual root scale only');
     for(const kind of ['position','quaternion'])nearVector(bone(skirtApplied,3)[kind],bone(rootManual,3)[kind],'Absolute skirt Apply preserves root '+kind);
     assert.equal(skirtApplied.rig.savedNodes.enabled,false);
-    await inputNode(3,'scale','Z',.65);await page.locator('#viewer-skirt-reset').click();let skirtUndo=await state();
+    await inputNode(3,'scale','Z',.65);await (await cardControl('#viewer-skirt-reset')).click();let skirtUndo=await state();
     assert.equal(skirtUndo.rig.body.skirtMode,'file');assert.equal(skirtUndo.rig.skirtValues.edited,false);assert.equal(skirtUndo.rig.skirtValues.currentUniform,1);
     assert.deepEqual(skirtUndo.rig.nodeAdjustments['3'].scale,[null,null,null]);
     for(const kind of ['position','quaternion'])nearVector(bone(skirtUndo,3)[kind],bone(rootManual,3)[kind],'Undo skirt edits preserves manual root '+kind);
@@ -699,7 +704,7 @@ if(require.main===module)(async()=>{
     let rootPartOff=await state();assert.equal(rootPartOff.rig.skirtValues.fileUniform,.85);assert.equal(rootPartOff.rig.skirtValues.currentUniform,1);
     nearVector(bone(rootPartOff,3).position,[-.2,1,0],'Per-part opt-out inherits authored Y without rebasing manual X');
     nearVector(quaternionMatrix(bone(rootPartOff,3).quaternion),expectedUnityMatrix([0,45,0]),'Per-part opt-out inherits authored X/Z without rebasing manual rotation Y');
-    await applySkirt(.9);assert.equal((await state()).rig.skirtValues.currentUniform,.9);await page.locator('#viewer-skirt-reset').click();
+    await applySkirt(.9);assert.equal((await state()).rig.skirtValues.currentUniform,.9);await (await cardControl('#viewer-skirt-reset')).click();
     assert.equal((await state()).rig.skirtValues.currentUniform,1);assert.equal(await page.locator('[data-viewer-saved-part="skirt"]').isChecked(),false);
     await page.locator('[data-viewer-saved-part="breast"]').uncheck();
     const breastFileReadout=await page.locator('#viewer-breast-file-values').innerText();
@@ -730,7 +735,7 @@ if(require.main===module)(async()=>{
     const rootRow=page.locator('#viewer-skirt-nodes tr[data-viewer-skirt-node="3"]');
     assert.equal(await rootRow.locator('td').nth(1).innerText(),'0.85 / 0.9 / 0.95');assert.equal(await rootRow.locator('td').nth(2).innerText(),'0.85 / 0.9 / 0.95');
     await applySkirt(.85);assert.equal((await state()).rig.skirtValues.currentUniform,.85);assert.equal((await state()).rig.skirtValues.fileUniform,null);
-    await page.locator('#viewer-skirt-reset').click();assert.equal((await state()).rig.skirtValues.currentUniform,null);assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'');
+    await (await cardControl('#viewer-skirt-reset')).click();assert.equal((await state()).rig.skirtValues.currentUniform,null);assert.equal(await page.locator('#viewer-skirt-number').inputValue(),'');
 
     generated=fixture({semanticExpressions:true,expressionBone:true});await page.evaluate(()=>openModelViewer(['/synthetic/manual-axis-expression-baseline.unity']));
     await inputNode(2,'scale','X',1.4);await eyePreset();

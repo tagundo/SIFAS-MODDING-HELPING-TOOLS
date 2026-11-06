@@ -38,6 +38,12 @@
   var resizeObserver = null;
   var bounds = null;
   var expanded = false;
+  var minimized = false;
+  var minimizedControlsEnabled = true;
+  var minimizeDirection = "height";
+  var minimizeAfterFullscreen = false;
+  var minimizeExitWait = "";
+  var minimizeExitTimer = 0;
   var expandedSnapshot = null;
   var fullscreenMode = "none";
   var fullscreenPending = "";
@@ -224,6 +230,7 @@
   }
 
   function focusViewportControl() {
+    if (minimized) { focusElement(node("viewer-model-restore")); return; }
     [node("viewer-fullscreen"), node("viewer-expand"), node("viewer-view-menu") && node("viewer-view-menu").querySelector("summary")].some(function (element) {
       if (!element) return false;
       var rect = element.getBoundingClientRect();
@@ -252,7 +259,7 @@
     // inputs here: testing the current stage height would alternate between
     // normal and workspace layouts after moving those rows into the drawer.
     var largeText = parseFloat(window.getComputedStyle(document.documentElement).fontSize) >= 24;
-    var next = !!(viewport && active && model && (viewport.height <= 320 ||
+    var next = !!(viewport && active && model && !minimized && (viewport.height <= 320 ||
       viewport.width < 720 && viewport.height <= 560 && largeText));
     var narrow = next && viewport.width < 720;
     var tab = node("tab-viewer"), changed = next !== shortHeight;
@@ -421,6 +428,7 @@
     renderFiles();
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
+    refreshMinimizeButton();
   }
 
   function cancelLoading() {
@@ -433,13 +441,13 @@
   }
 
   function requestRender() {
-    if (frame || !active || document.hidden || !renderer || lost || destroyed) return;
+    if (frame || !active || minimized || document.hidden || !renderer || lost || destroyed) return;
     frame = window.requestAnimationFrame(draw);
   }
 
   function draw(time) {
     frame = 0;
-    if (!active || document.hidden || !renderer || lost || destroyed) return;
+    if (!active || minimized || document.hidden || !renderer || lost || destroyed) return;
     var delta = lastFrameTime ? Math.min(.1, Math.max(0, (time - lastFrameTime) / 1000)) : 0;
     lastFrameTime = time;
     var moving = rigController ? rigController.update(delta) : false;
@@ -556,7 +564,7 @@
     var tab = node("tab-viewer"), inspect = tab.querySelector(".viewer-inspect-layout");
     var panel = node("viewer-control-panel"), handle = node("viewer-panel-resizer");
     var limits = panelWidthLimits();
-    var enabled = active && window.innerWidth >= 720 && limits.max >= limits.min && !shortHeight && !expanded &&
+    var enabled = active && window.innerWidth >= 720 && limits.max >= limits.min && !shortHeight && !expanded && !minimized &&
       !fullscreenWanted && !fullscreenPending && fullscreenMode === "none" && panel.parentNode === inspect;
     if (!enabled && panelDrag && !panelDrag.files) finishPanelDrag(true);
     tab.classList.toggle("viewer-panel-resizable", enabled);
@@ -642,6 +650,16 @@
       (headerStyle.position === "sticky" || headerStyle.position === "fixed");
     var headerBottom = pinnedHeader ? Math.max(viewport.top, header.getBoundingClientRect().bottom) : viewport.top;
     document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
+    var safeInsets = measureSafeInsets();
+    updateMinimizedLayout(viewport, headerBottom, safeInsets);
+    if (minimized) {
+      node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
+      updatePanelWidth(viewport, layoutState.stage && layoutState.stage.height || 1);
+      // Keep the last positive stage/buffer dimensions and camera aspect.
+      // The editor can resize independently while the retained canvas is hidden.
+      layoutState = { viewport: viewport, stage: layoutState.stage, safeInsets: safeInsets };
+      return;
+    }
     var stage = node("viewer-stage");
     var sideBySide = window.innerWidth >= 720;
     // In the stacked page, scrolling into the editor must not grow the model
@@ -665,7 +683,6 @@
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
-    var safeInsets = measureSafeInsets();
     // Popovers occupy the gap between corner columns, leaving every viewport
     // action reachable while a panel scrolls. These limits do not shrink the
     // model's fit; only explicit fitting tests the individual control boxes.
@@ -832,7 +849,8 @@
     // A view preset must also clear the previous drag's damping and pan.
     var damping = controls.enableDamping;
     controls.enableDamping = false; controls.update(); controls.enableDamping = damping;
-    var stage = node("viewer-stage"), width = Math.max(1, stage.clientWidth), height = Math.max(1, stage.clientHeight);
+    var stage = node("viewer-stage"), previous = minimized && layoutState.stage;
+    var width = Math.max(1, previous ? previous.width : stage.clientWidth), height = Math.max(1, previous ? previous.height : stage.clientHeight);
     var view = direction || camera.position.clone().sub(controls.target);
     if (!view.lengthSq()) view = new window.THREE.Vector3(0, 0, 1);
     view = view.clone().normalize();
@@ -1363,6 +1381,7 @@
   function setExpanded(value) {
     value = !!value;
     if (value && (destroyed || !active)) return;
+    if (value && minimized) applyMinimized(false);
     if (expanded === value) { scheduleResize(); return; }
     if (value) {
       lastFullscreenExit = 0;
@@ -1385,11 +1404,86 @@
       isolateViewer(false);
       if (snapshot) window.requestAnimationFrame(function () {
         if (expanded) return;
-        if (!destroyed && active) focusElement(snapshot.focus);
+        if (!destroyed && active) focusElement(minimized ? node("viewer-model-restore") : snapshot.focus);
         window.scrollTo(snapshot.x, snapshot.y);
         if (!destroyed) scheduleResize();
       });
     }
+  }
+
+  function refreshMinimizeButton() {
+    var button = node("viewer-minimize"), restore = node("viewer-model-restore");
+    if (!button || !restore) return;
+    var label = t(minimizeAfterFullscreen ? "Closing full screen…" : minimized ? "Show model" : "Minimize model");
+    button.textContent = label; button.title = label; button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(minimized));
+    button.setAttribute("aria-busy", String(minimizeAfterFullscreen));
+    button.disabled = !model || loading || minimizeAfterFullscreen;
+    restore.hidden = !minimized;
+    restore.title = t("Show model"); restore.setAttribute("aria-label", t("Show model"));
+    restore.setAttribute("aria-pressed", String(minimized));
+    var text = restore.querySelector("[data-i18n]"); if (text) text.textContent = t("Show model");
+  }
+
+  function updateMinimizedLayout(viewport, headerBottom, safeInsets) {
+    var width = Math.max(1, viewport.width - safeInsets.left - safeInsets.right);
+    var height = Math.max(1, viewport.top + viewport.height - headerBottom - safeInsets.top - safeInsets.bottom);
+    minimizeDirection = width > height ? "width" : "height";
+    var tab = node("tab-viewer"), inspect = tab.querySelector(".viewer-inspect-layout");
+    tab.dataset.viewerMinimizeDirection = minimizeDirection;
+    tab.classList.toggle("viewer-minimize-width", minimized && minimizeDirection === "width");
+    tab.classList.toggle("viewer-minimize-height", minimized && minimizeDirection === "height");
+    var top = Math.max(headerBottom + 8, inspect.getBoundingClientRect().top);
+    var available = Math.max(44, viewport.top + viewport.height - top - safeInsets.bottom);
+    tab.style.setProperty("--viewer-minimized-height", Math.floor(available) + "px");
+    refreshMinimizeButton();
+    if (minimized && minimizeDirection === "height") tab.style.setProperty("--viewer-minimize-bar-height", node("viewer-model-restore").getBoundingClientRect().height + "px");
+  }
+
+  function clearMinimizeExit() {
+    if (minimizeExitTimer) window.clearTimeout(minimizeExitTimer);
+    minimizeExitTimer = 0;
+  }
+
+  function applyMinimized(value) {
+    if (destroyed || !active) return;
+    if (minimized === !!value) { refreshMinimizeButton(); scheduleResize(); return; }
+    clearMinimizeExit(); minimizeAfterFullscreen = false; minimizeExitWait = "";
+    finishPanelDrag(true);
+    ["viewer-view-menu", "viewer-info", "viewer-workspace-menu"].forEach(function (id) { if (node(id)) node(id).open = false; });
+    infoAutoOpened = false; refreshPopoverStack(null);
+    minimized = !!value;
+    if (controls) {
+      if (minimized) { minimizedControlsEnabled = controls.enabled; controls.enabled = false; }
+      else controls.enabled = minimizedControlsEnabled;
+    }
+    node("tab-viewer").classList.toggle("viewer-model-minimized", minimized);
+    node("viewer-stage").setAttribute("aria-hidden", String(minimized));
+    pauseRender(); refreshMinimizeButton(); resize();
+    focusElement(node(minimized ? "viewer-model-restore" : "viewer-minimize"));
+    if (!minimized) requestRender();
+  }
+
+  function completePendingMinimize() {
+    if (!minimizeAfterFullscreen || destroyed || !active || minimizeExitWait || browserFullscreenElement() === node("tab-viewer")) return;
+    applyMinimized(true);
+  }
+
+  function minimizeModel() {
+    if (!model || loading || destroyed || !active || minimizeAfterFullscreen) return;
+    if (minimized) { applyMinimized(false); return; }
+    if (fullscreenWanted || fullscreenMode !== "none" || fullscreenPending || browserFullscreenElement() === node("tab-viewer")) {
+      minimizeAfterFullscreen = true;
+      minimizeExitWait = fullscreenMode === "native" || nativeFullscreenBridge() && fullscreenPending ? "native" : browserFullscreenElement() === node("tab-viewer") || fullscreenPending === "enter" ? "browser" : "";
+      refreshMinimizeButton(); exitFullscreen(true); completePendingMinimize();
+      if (minimizeAfterFullscreen) minimizeExitTimer = window.setTimeout(function () {
+        minimizeAfterFullscreen = false; minimizeExitWait = ""; minimizeExitTimer = 0;
+        setLayoutNotice("Exit full screen before minimizing the model."); refreshMinimizeButton(); scheduleResize();
+      }, 4500);
+      return;
+    }
+    if (expanded) setExpanded(false);
+    applyMinimized(true);
   }
 
   function browserFullscreenElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
@@ -1458,7 +1552,10 @@
       var result = request.call(viewer, { navigationUI: "hide" });
       if (result && result.then) result.then(function () {
         if (browserFullscreenElement() === viewer) acceptFullscreen("browser");
-      }, fullscreenFailed);
+      }, function () {
+        if (minimizeAfterFullscreen && minimizeExitWait === "browser" && browserFullscreenElement() !== node("tab-viewer")) { minimizeExitWait = ""; completePendingMinimize(); }
+        else fullscreenFailed();
+      });
     } catch (_) { fullscreenFailed(); }
   }
   function exitFullscreen(forceCollapse) {
@@ -1480,6 +1577,9 @@
     finishFullscreenExit(!!forceCollapse);
   }
   function fullscreenChanged() {
+    if (minimizeAfterFullscreen && minimizeExitWait === "browser" && browserFullscreenElement() !== node("tab-viewer")) {
+      minimizeExitWait = ""; finishFullscreenExit(true); completePendingMinimize(); return;
+    }
     if (browserFullscreenElement() === node("tab-viewer")) acceptFullscreen("browser");
     else if (fullscreenMode === "browser" || fullscreenPending === "exit") finishFullscreenExit(false);
   }
@@ -1489,6 +1589,9 @@
     // Page-finished broadcasts describe initialization, not command settlement.
     // A delayed initial false must not cancel a newer pending/accepted entry.
     if (!detail.active && detail.settled === false) return;
+    if (!detail.active && minimizeAfterFullscreen && minimizeExitWait === "native") {
+      minimizeExitWait = ""; finishFullscreenExit(true); completePendingMinimize(); return;
+    }
     if (detail.active) {
       if (!fullscreenWanted || destroyed || !active) {
         var bridge = nativeFullscreenBridge();
@@ -1572,6 +1675,8 @@
       refreshQualityStatus();
     });
     node("viewer-fit").addEventListener("click", function () { fitModel(); });
+    listenLayout(node("viewer-minimize"), "click", minimizeModel);
+    listenLayout(node("viewer-model-restore"), "click", function () { applyMinimized(false); });
     node("viewer-expand").addEventListener("click", function () {
       if (expanded && (fullscreenWanted || fullscreenMode !== "none")) exitFullscreen(true);
       else setExpanded(!expanded);
@@ -1650,6 +1755,7 @@
     node("viewer-expand").textContent = expandLabel;
     node("viewer-expand").title = expandLabel; node("viewer-expand").setAttribute("aria-label", expandLabel);
     refreshFullscreenButton();
+    refreshMinimizeButton();
     node("viewer-panel-resizer").setAttribute("aria-label", t("Adjustment panel width"));
     node("viewer-files-resizer").setAttribute("aria-label", t("File panel width"));
     node("viewer-panel-width-reset").setAttribute("aria-label", t("Restore default layout"));
@@ -1675,6 +1781,7 @@
     if (!active) finishPanelDrag(true);
     document.body.classList.toggle("viewer-active-page", active);
     if (!active) {
+      clearMinimizeExit(); minimizeAfterFullscreen = false; minimizeExitWait = "";
       pauseRender();
       restoreViewerPicker();
       if (node("viewer-view-menu")) node("viewer-view-menu").open = false;
@@ -1722,6 +1829,7 @@
     if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
     resizeFrame = 0;
     clearFullscreenTimer();
+    clearMinimizeExit();
     layoutListeners.forEach(function (remove) { remove(); }); layoutListeners = [];
     if (resizeObserver) resizeObserver.disconnect();
     if (controls) controls.dispose();
@@ -1755,7 +1863,7 @@
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
-        layout: { expanded: expanded, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
+        layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
           compactControls: compactControls, shortHeight: shortHeight,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,
@@ -1768,7 +1876,7 @@
     // triangles/drawTriangles count actual GPU passes; sourceTriangles excludes
     // tagged preview helpers such as the separate SIFAS outline pass.
     renderProbe: function (gridSize) {
-      if (!renderer || !model || lost) return { ready: false };
+      if (!renderer || !model || lost || minimized) return { ready: false };
       renderScene();
       renderedFrames += 1;
       var gl = renderer.getContext();

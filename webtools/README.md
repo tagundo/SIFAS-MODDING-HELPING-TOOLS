@@ -205,6 +205,16 @@ repacking is unnecessary and the source files remain unchanged.
   toggles. Choosing a profile clears earlier manual scale edits to `BreastSize`,
   while keeping its placement and rotation. Custom XYZ editing remains available
   under **Individual bones**.
+- Node Scaling's breast, hip and skirt cards initially collapse when every
+  controlled current XYZ scale is exactly `1 / 1 / 1`. Non-unit or unavailable
+  values stay open. Your fold choices remain during editing; opening another
+  model or restoring a recipe sets these initial folds from its actual values.
+- **Minimize model**, beside the expanded/full-screen controls, gives the
+  editing panel more room without unloading the model. Tall windows keep a
+  horizontal **Show model** bar; wide windows keep a narrow restore rail.
+  Animation drawing pauses at its current time while hidden. Restoring keeps
+  the camera, body values, selection and playback choice, without fitting the
+  model again. Body editing and saving remain available while minimized.
 - **Height** shows the file's original settings for reference. A natural stature
   formula has not been verified, so there is no extra height slider or vertical
   stretching. The original model and head corrections remain intact. `Move` is
@@ -258,6 +268,26 @@ repacking is unnecessary and the source files remain unchanged.
   the recipe rebuilds from those originals rather than repeatedly baking a
   previous result. Camera, animation playhead, expression preview and part
   visibility are viewing choices and are not silently written as body edits.
+- **Save mod ZIP** creates a package for the costume mod installer. **Add to
+  game** packages the current valid edits and installs that package in one
+  action; it does not reuse an older download after you change the model or
+  its body values. Once installation starts, its progress stays attached to
+  that saved package until completion; changing the preview does not retarget
+  the installation. After success, **Add to game** stays disabled for the same
+  edits and mod name; editing them enables a new copy. **Save edited copy** and
+  the native Save shortcut
+  still create editable model copies and a recipe.
+  The **Mod ZIP** download appears first; the edited preview copy and recipe
+  keep separate labels. Use the Mod ZIP for the installer.
+  **Mod name** starts with the costume name and the actual edited parts,
+  relative factors or selected thigh conversion. You can change it; **Automatic
+  name** restores the suggestion. The ZIP, installer manifest and game costume
+  share that name. The optional target settings let you identify an otherwise
+  unknown character or supply the other Rina model and the edited variant.
+  Rina mod packages apply the same source-relative body changes to both board
+  and unmasked models, including when you edit only one variant. Each variant
+  uses its own original transforms and validated editing session. Missing or mismatched counterpart data prevents
+  packaging instead of producing an incomplete installable costume.
 - **Open saved result** inspects the actual serialized output. Persistent body
   controls stay locked while inspecting it; pose, motion, camera and expressions
   remain available. **Re-edit from original** restores the saved editing recipe

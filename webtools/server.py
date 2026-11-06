@@ -115,6 +115,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_game_import()
             if path == "/api/viewer/edit/export":
                 return self._api_viewer_edit_export()
+            if path == "/api/viewer/edit/package":
+                return self._api_viewer_edit_package()
+            if path == "/api/viewer/edit/install":
+                return self._api_viewer_edit_install()
             if path == "/api/viewer/edit/restore":
                 return self._api_viewer_edit_restore()
             if path.startswith("/api/run/"):
@@ -270,6 +274,13 @@ class Handler(BaseHTTPRequestHandler):
                             variants={item["source_path"]: item["selected"]
                                       for item in expanded.variants},
                             cache_dir=cache_dir)
+                        if result["editing"].get("available"):
+                            from webtools.core import viewer_mod_flow
+                            result["editing"]["modPackaging"] = viewer_mod_flow.metadata(
+                                model_edits.mod_source_context(result["editing"]["token"]),
+                                repo_root=Path.cwd(),
+                                cache_root=Path(default_sukusta_dir("extracted")) / "game-models",
+                                language=self._lang())
                     except (ValueError, OSError) as exc:
                         # A bounded editing-cache failure must not prevent
                         # opening an otherwise valid read-only model.
@@ -393,6 +404,16 @@ class Handler(BaseHTTPRequestHandler):
                 current.progress(0, 1)
                 result = model_edits.export(
                     params["token"], params["state"], output_dir, log=current.log)
+                # Re-editing opens these immutable original copies, so retain
+                # their verified game selection without relying on filenames.
+                from webtools.core import viewer_mod_flow
+                source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+                if filebrowser.is_within_allowed(source_cache):
+                    try:
+                        viewer_mod_flow.remember_export_sources(model_edits.mod_source_context(params["token"]), result,
+                            repo_root=Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve(), cache_root=source_cache)
+                    except (OSError, ValueError, TypeError):
+                        current.log("The model was saved, but its automatic game-pairing receipt could not be retained.")
                 # Only fully written copies are exposed. The source files are
                 # never replaced, and each export owns a distinct directory.
                 current._viewer_edit_result = result
@@ -415,6 +436,132 @@ class Handler(BaseHTTPRequestHandler):
         except TimeoutError:
             return self._send_json({"error": "Another model is saving. Try again shortly."}, status=503)
 
+    def _viewer_mod_request(self, fields):
+        """Validate app-origin writes; Mod installation accepts an opaque token."""
+        import ipaddress
+        import re
+        try:
+            if len(self.headers.get_all("Host", [])) != 1:
+                raise ValueError()
+            host = urlsplit("//" + (self.headers.get("Host") or ""))
+            address, port = self.server.server_address[:2]
+            bound = ipaddress.ip_address(address)
+            hostname = host.hostname or ""
+            if host.username or host.password or host.path or host.query or host.fragment or (host.port or 80) != port:
+                raise ValueError()
+            if hostname.lower() == "localhost":
+                allowed_host = bound.is_loopback or bound.is_unspecified
+            else:
+                literal = ipaddress.ip_address(hostname)
+                allowed_host = bound.is_unspecified or literal == bound or bound.is_loopback and literal.is_loopback
+            if not allowed_host:
+                raise ValueError()
+        except ValueError:
+            raise PermissionError("Open the editor at its local app address before creating or adding a Mod ZIP.") from None
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise PermissionError("Open the editor from this app before creating or adding a Mod ZIP.")
+        if origins:
+            origin = urlsplit(origins[0])
+            if (origin.scheme not in ("http", "https") or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment
+                    or origin.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                raise PermissionError("Open the editor from this app before creating or adding a Mod ZIP.")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid Mod ZIP request size.") from None
+        if self.headers.get("Transfer-Encoding") or not 0 < length <= 512 * 1024:
+            raise ValueError("The Mod ZIP request is too large or empty.")
+        params = self._read_json_body()
+        if not isinstance(params, dict) or set(params) != set(fields):
+            raise ValueError("Unsupported Mod ZIP request.")
+        key = "token" if "token" in fields else "package_token"
+        if not isinstance(params.get(key), str) or not re.fullmatch(r"[a-f0-9]{32}", params[key]):
+            raise ValueError("Open the original model or create a fresh Mod ZIP first.")
+        return params
+
+    def _api_viewer_edit_package(self):
+        try:
+            from webtools.core import model_edits, viewer_mod_flow
+            from webtools.core.sukusta import default_sukusta_dir
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"})
+            viewer_mod_flow.validate_options(params["display_name"], params["character_id"], params["counterpart_path"], params["selected_variant"])
+            model_edits.validate_state(params["token"], params["state"])
+            counterpart = params["counterpart_path"]
+            if counterpart:
+                if len(counterpart) > 4096:
+                    raise ValueError("Choose a valid Rina counterpart file.")
+                counterpart = os.path.realpath(counterpart)
+                if not filebrowser.is_within_allowed(counterpart) or not os.path.isfile(counterpart):
+                    raise PermissionError("The Rina counterpart is outside the allowed model folders.")
+            output_root = Path(default_sukusta_dir("modded/viewer")).resolve()
+            cache_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            if not filebrowser.is_within_allowed(output_root) or not filebrowser.is_within_allowed(cache_root):
+                raise PermissionError("The Mod ZIP output folder is outside the allowed folders.")
+            runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+            job = MANAGER.create("viewer_body_mod")
+
+            def package(current):
+                current.progress(0, 3)
+                result = viewer_mod_flow.create_package(params["token"], params["state"],
+                    output_root=output_root, repo_root=runtime_root, cache_root=cache_root,
+                    display_name=params["display_name"], character_id=params["character_id"],
+                    counterpart_path=counterpart, selected_variant=params["selected_variant"], job=current)
+                current._viewer_edit_result = result
+                for path in result["output_paths"]:
+                    current.add_output(path)
+                current.progress(3, 3)
+                return "Mod ZIP and editing recipe saved."
+
+            MANAGER.run_async(job, package)
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_edit_install(self):
+        try:
+            from webtools.core import viewer_mod_flow
+            from webtools.core.sukusta import default_sukusta_dir
+            params = self._viewer_mod_request({"package_token"})
+            viewer_mod_flow.validate_install(params["package_token"])
+            runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+            library_root = Path(default_sukusta_dir("")).resolve()
+            if not filebrowser.is_within_allowed(library_root):
+                raise PermissionError("The costume library is outside the allowed folders.")
+            job = MANAGER.create("viewer_mod_install")
+
+            def install(current):
+                result = viewer_mod_flow.install_package(params["package_token"],
+                    repo_root=runtime_root, library_root=library_root, job=current)
+                current._viewer_edit_result = result
+                current.add_output(result["mod_package"]["package_path"])
+                return result["summary"]
+
+            from adminui.jobs import JobManager as GuardedJobManager
+            if isinstance(MANAGER, GuardedJobManager):
+                MANAGER.run_async(job, install)
+            else:
+                # The standalone editor normally has a lighter job manager.
+                # Give this database mutation the same lifecycle/lease order
+                # as the native apps, including deferred restart after unlock.
+                def guarded_install(current):
+                    from adminui.serverctl import whole_job_server
+                    from database_maintenance import guard
+                    with whole_job_server(current.log) as lifecycle:
+                        with guard(runtime_root):
+                            summary = install(current)
+                            lifecycle.successful = not current.should_stop()
+                    return summary
+                MANAGER.run_async(job, guarded_install)
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
     def _api_viewer_edit_restore(self):
         try:
             params = self._viewer_edit_request({"token", "recipe"})
@@ -435,7 +582,7 @@ class Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"[a-f0-9]{12}", job_id):
             return self._send_json({"error": "The saved model was not found."}, status=404)
         job = MANAGER.get(job_id)
-        if job is None or job.tool_id != "viewer_body_edit":
+        if job is None or job.tool_id not in ("viewer_body_edit", "viewer_body_mod", "viewer_mod_install"):
             return self._send_json({"error": "The saved model was not found."}, status=404)
         if not job.is_done:
             return self._send_json({"status": job.status}, status=202)

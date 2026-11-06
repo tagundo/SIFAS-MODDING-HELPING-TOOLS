@@ -434,6 +434,19 @@ def run_import(job, *, repo_root, output_root, record):
         cached = _cache_hit(root, identity, signatures)
         if cached:
             _check(job, deadline)
+            from webtools.core.viewer_mod_sources import register_game_import
+            # Upgrade an existing cache receipt without changing the model.
+            receipt_path = root / (".selection-" + identity + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            register_game_import(cached, record, expected_sha256=receipt["sha256"])
+            receipt["selection_record"] = record
+            fd, receipt_name = tempfile.mkstemp(prefix=".selection-", suffix=".part", dir=root)
+            temporary_manifest = Path(receipt_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(receipt, handle, allow_nan=False)
+            _check(job, deadline)
+            os.replace(temporary_manifest, receipt_path)
+            temporary_manifest = None
             job.log("Using the previously extracted game model.")
             job.add_output(cached)
             return "Game model ready."
@@ -473,7 +486,8 @@ def run_import(job, *, repo_root, output_root, record):
         _check(job, deadline)
         from webtools.core.model_viewer import _preflight_bundle
         _preflight_bundle(output.read_bytes())
-        manifest = {"model": str(output.relative_to(root)), "sha256": _sha(output), "source": signatures}
+        manifest = {"model": str(output.relative_to(root)), "sha256": _sha(output),
+                    "source": signatures, "selection_record": record}
         descriptor, temporary_name = tempfile.mkstemp(prefix=".selection-", suffix=".part", dir=root)
         temporary_manifest = Path(temporary_name)
         destination_manifest = root / (".selection-" + identity + ".json")
@@ -485,6 +499,8 @@ def run_import(job, *, repo_root, output_root, record):
         _check(job, deadline)
         os.replace(temporary_manifest, destination_manifest)
         temporary_manifest = None
+        from webtools.core.viewer_mod_sources import register_game_import
+        register_game_import(output, record, expected_sha256=manifest["sha256"])
         job.progress(total, total)
         job.add_output(output)
         temporary = None

@@ -817,6 +817,22 @@
       if (!value) return translate(status === "conflict" ? "Conflicting file values" : "Unsupported file value");
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
     }
+    function initializeNodeCards() {
+      var states = { breast: breastProfile(), hips: percentageState("hips"), skirt: skirtValues() };
+      Object.keys(states).forEach(function (kind) {
+        var card = element("viewer-" + kind + "-card"), state = states[kind];
+        if (!card) return;
+        // The default is the actual XYZ endpoint, including saved settings,
+        // rather than 100% of a possibly non-unit loaded shape. Unknown values
+        // stay open so their explanation is visible.
+        var unit = state.available && state.targets.length && state.targets.every(function (target) {
+          return target.fileStatus !== "conflict" && target.fileStatus !== "unsupported" &&
+            Array.isArray(target.currentScale) && target.currentScale.length === 3 &&
+            target.currentScale.every(function (value) { return value === 1; });
+        });
+        card.open = !unit;
+      });
+    }
     function refreshBodyControls() {
       refreshPercentages();
       refreshThighPresets();
@@ -1057,7 +1073,7 @@
       useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
     });
     listen("viewer-preview-reset", "click", reset);
-    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
+    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression(); initializeNodeCards();
 
     function getAuthoringState() {
       // Source-authoring TRS comes from immutable file values and explicit
@@ -1175,7 +1191,7 @@
       body = { breastPreset: "loaded" }; skirtOverrides = {};
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
-      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); initializeNodeCards(); changed();
     }
     function motionScaleTargets() {
       if (!currentClip || !currentClip.animation) return [];

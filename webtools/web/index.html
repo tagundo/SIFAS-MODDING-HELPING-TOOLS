@@ -57,6 +57,7 @@
         <div class="viewer-main">
           <div class="viewer-inspect-layout">
           <div class="viewer-model-panel">
+          <button id="viewer-model-restore" class="viewer-model-restore" type="button" aria-controls="viewer-stage" aria-pressed="false" hidden><span class="viewer-model-restore-icon" aria-hidden="true"></span><span data-i18n="Show model">Show model</span></button>
           <div id="viewer-stage" class="viewer-stage" aria-label="3D model">
             <div id="viewer-empty" class="viewer-empty" data-i18n="Your model will appear here.">Your model will appear here.</div>
             <div id="viewer-busy" class="viewer-busy" hidden><span class="viewer-spinner" aria-hidden="true"></span><span data-i18n="Preparing model…">Preparing model…</span><button id="viewer-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button></div>
@@ -79,6 +80,7 @@
                 <label class="viewer-quality-choice viewer-toolbar-segment" data-viewer-hud-control><input id="viewer-high-quality" type="checkbox" aria-describedby="viewer-quality-help"><span data-i18n="High-quality 3D">High-quality 3D</span></label>
               </div>
               <div class="viewer-screen-actions viewer-toolbar-segment">
+                <button id="viewer-minimize" data-viewer-hud-control class="viewer-icon-button" type="button" data-i18n="Minimize model" aria-controls="viewer-stage" aria-pressed="false" disabled>Minimize model</button>
                 <button id="viewer-expand" data-viewer-hud-control class="viewer-icon-button" type="button" data-i18n="Expand view">Expand view</button>
                 <button id="viewer-fullscreen" data-viewer-hud-control class="viewer-icon-button" type="button" data-i18n="Full screen">Full screen</button>
               </div>
@@ -121,6 +123,37 @@
               <button id="viewer-recipe-open" type="button" data-i18n="Load edit recipe" disabled>Load edit recipe</button>
               <button id="viewer-save-cancel" type="button" data-i18n="Cancel" hidden>Cancel</button>
             </div>
+            <div class="viewer-mod-form">
+              <label for="viewer-mod-name" data-i18n="Mod name">Mod name</label>
+              <div class="viewer-mod-name-row">
+                <input id="viewer-mod-name" type="text" maxlength="120" autocomplete="off" disabled aria-describedby="viewer-mod-name-help">
+                <button id="viewer-mod-name-auto" type="button" data-i18n="Automatic name" disabled>Automatic name</button>
+              </div>
+              <p id="viewer-mod-name-help" class="viewer-render-note" data-i18n="The same name is used for the mod ZIP and the game costume. You can edit the suggested name.">The same name is used for the mod ZIP and the game costume. You can edit the suggested name.</p>
+              <div class="viewer-save-actions">
+                <button id="viewer-save-mod" type="button" data-i18n="Save mod ZIP" disabled>Save mod ZIP</button>
+                <button id="viewer-add-to-game" type="button" class="viewer-primary" data-i18n="Add to game" disabled>Add to game</button>
+              </div>
+              <p class="viewer-render-note" data-i18n="Add to game saves your current body edits as a mod and installs it. Rina's board and unmasked models receive the same body edits.">Add to game saves your current body edits as a mod and installs it. Rina's board and unmasked models receive the same body edits.</p>
+              <details id="viewer-mod-target" class="viewer-save-advanced">
+                <summary data-i18n="Mod target and Rina variants">Mod target and Rina variants</summary>
+                <label id="viewer-mod-character-field"><span data-i18n="Costume character">Costume character</span><select id="viewer-mod-character" disabled><option value="" data-i18n="Automatic">Automatic</option></select></label>
+                <div id="viewer-mod-rina-fields">
+                <label><span data-i18n="Edited Rina variant">Edited Rina variant</span><select id="viewer-mod-variant" disabled>
+                  <option value="" data-i18n="Automatic">Automatic</option>
+                  <option value="primary" data-i18n="With Rina board">With Rina board</option>
+                  <option value="unmasked" data-i18n="Without Rina board">Without Rina board</option>
+                </select></label>
+                <label for="viewer-mod-counterpart" data-i18n="Other Rina model">Other Rina model</label>
+                <div class="viewer-mod-counterpart-row">
+                  <input id="viewer-mod-counterpart" type="text" readonly disabled aria-describedby="viewer-mod-counterpart-help">
+                  <button id="viewer-mod-counterpart-pick" type="button" data-i18n="Browse" disabled>Browse</button>
+                  <button id="viewer-mod-counterpart-clear" type="button" data-i18n="Clear" disabled>Clear</button>
+                </div>
+                <p id="viewer-mod-counterpart-help" class="viewer-render-note" data-i18n="Game assets and paired costume ZIPs are detected automatically. For a separate Rina model, choose its other variant and identify the version you edited.">Game assets and paired costume ZIPs are detected automatically. For a separate Rina model, choose its other variant and identify the version you edited.</p>
+                </div>
+              </details>
+            </div>
             <p id="viewer-save-status" class="viewer-render-note" role="status" aria-live="polite"></p>
             <p id="viewer-save-result-note" class="viewer-render-note" hidden></p>
             <progress id="viewer-save-progress" aria-label="Save progress" hidden></progress>
@@ -158,7 +191,7 @@
             <section class="viewer-control-section" aria-labelledby="viewer-body-title">
               <h3 id="viewer-body-title" class="sr-only" data-i18n="Node Scaling">Node Scaling</h3>
               <div class="viewer-body-controls">
-                <details id="viewer-breast-card" class="viewer-body-card viewer-profile-card" open>
+                <details id="viewer-breast-card" class="viewer-body-card viewer-profile-card">
                   <summary><span id="viewer-breast-title" data-i18n="Breast size">Breast size</span></summary>
                   <div class="viewer-card-content">
                   <p class="viewer-control-note" data-i18n="XYZ scale factors">XYZ scale factors</p>
@@ -176,7 +209,7 @@
                   <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
                   </div>
                 </details>
-                <details id="viewer-hips-card" class="viewer-body-card viewer-percentage-control" open>
+                <details id="viewer-hips-card" class="viewer-body-card viewer-percentage-control">
                   <summary><span data-i18n="Hip size">Hip size</span></summary>
                   <div class="viewer-card-content">
                     <dl class="viewer-profile-values viewer-actual-values">
@@ -190,7 +223,7 @@
                     <p id="viewer-hips-status" class="viewer-control-note" role="status" aria-live="polite"></p>
                   </div>
                 </details>
-                <details id="viewer-skirt-card" class="viewer-body-card viewer-scale-card" open>
+                <details id="viewer-skirt-card" class="viewer-body-card viewer-scale-card">
                   <summary><span id="viewer-skirt-title" data-i18n="Skirt length and flare">Skirt length and flare</span></summary>
                   <div class="viewer-card-content">
                   <dl class="viewer-profile-values viewer-actual-values">

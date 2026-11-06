@@ -361,6 +361,27 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry"]}
 
 
+def mod_source_context(token):
+    """Return immutable source identities for server-side mod packaging only.
+
+    Raw bytes stay in this process; this structure must never be sent to HTTP
+    clients. Automatically discovered preview companions are not included.
+    """
+    with _LOCK:
+        session = _session(token)
+        return {
+            "model_id": token,
+            "containers": [{key: container[key] for key in ("path", "name", "raw", "sha256")}
+                           for container in session["containers"]],
+            "sources": [{key: source[key] for key in ("name", "container", "member", "sha256")}
+                        for source in session["sources"]],
+            "variants": dict(session["variants"]),
+            "nodes": [{key: copy.deepcopy(target[key]) for key in
+                       ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
+                      for target in session["targets"].values()],
+        }
+
+
 def _node(session, value):
     if isinstance(value, bool) or not isinstance(value, int) or value not in session["targets"]:
         _fail("An edit refers to a node outside the original writable models.")
