@@ -320,6 +320,11 @@ main { padding: 14px; }
 .viewer-adjustments button:focus-visible, .viewer-adjustments input:focus-visible, .viewer-adjustments select:focus-visible, .viewer-adjustments summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .viewer-adjustments input:disabled, .viewer-adjustments select:disabled, .viewer-main button:disabled { opacity: .5; cursor: default; }
 .viewer-control-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.viewer-node-choice > select { width: 100%; }
+.viewer-expression-adjustments > .viewer-control-section { margin-top: 0; padding-top: 0; border-top: 0; }
+.viewer-expression-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.viewer-preview-actions { margin-top: 10px; }
+.viewer-preview-actions > button { width: 100%; }
 .viewer-control-section h3 { margin: 0 0 8px; font-size: 14px; line-height: 1.5; }
 .viewer-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .viewer-section-heading h3 { margin: 0; }

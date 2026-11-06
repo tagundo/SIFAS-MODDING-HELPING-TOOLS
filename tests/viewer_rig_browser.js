@@ -565,8 +565,9 @@ if(require.main===module)(async()=>{
       inspectorLayouts.push({viewport,normal,expanded});
     }
     await page.setViewportSize({width:1024,height:768});await twoFrames();
-    assert.equal(await page.locator('#viewer-node-shortcuts [data-viewer-bone="6"]').count(),1,'Opening successive models must not retain stale frequent-bone buttons');
-    await page.locator('#viewer-node-shortcuts [data-viewer-bone="6"]').click();
+    assert.equal(await page.locator('#viewer-node-shortcuts #viewer-node').count(),1,'Opening successive models reuses the single body-part selector');
+    assert.equal(await page.locator('#viewer-node-shortcuts [data-viewer-bone]').count(),0,'Common body parts do not create a wall of buttons');
+    await page.locator('#viewer-node').selectOption('6');
     assert.equal(await page.locator('#viewer-node').inputValue(),'6','A frequent-bone shortcut selects its real node');
     assert(await page.locator('#viewer-node-editor').evaluate(details=>details.open));
     const beforeBoneSearch=(await state()).rig.nodeAdjustments;

@@ -1365,6 +1365,7 @@ _VIEWER_TRANSLATIONS.update({
 })
 _VIEWER_TRANSLATIONS.update({
     "Pose and body": ["포즈·체형 조절", "ポーズ・体型調整"],
+    "Reset pose, body and expressions": ["포즈·체형·표정 초기화", "ポーズ・体型・表情をリセット"],
     "Add custom motion": ["다른 모션 추가", "別のモーションを追加"],
     "The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.": ["SIFAS 미리보기 포즈를 자동으로 불러옵니다. 다른 모션·표정은 Unity 번들로 추가할 수 있습니다. FBX 모션은 지원하지 않습니다.", "SIFASプレビュー姿勢を自動で読み込みます。別のモーション・表情はUnityバンドルで追加できます。FBXモーションには対応していません。"],
     "Use saved node settings": ["파일의 노드 설정 적용", "ファイルのノード設定を適用"],

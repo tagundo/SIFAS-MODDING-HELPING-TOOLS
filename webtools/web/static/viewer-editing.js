@@ -41,11 +41,11 @@
     var THREE = options.THREE, translate = options.translate, bones = options.bones;
     var selected = "", enabled = true, disposed = false, events = [], fields = {}, list = document.getElementById("viewer-node");
     var search = document.getElementById("viewer-node-search"), filter = document.getElementById("viewer-node-filter");
-    var shortcutButtons = {}, changeButtons = {};
+    var changeButtons = {};
     var poseCache = null;
     var compensationCheck = document.getElementById("bone-compensate-children"), compensationChoice = document.getElementById("bone-compensate-target");
     var compensationStatus = document.getElementById("bone-compensation-status"), automaticRow = null;
-    var ownedLists = [document.getElementById("viewer-node-shortcuts"), document.getElementById("viewer-node-change-list")];
+    var ownedLists = [document.getElementById("viewer-node-change-list")];
     ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
     if (search) search.value = "";
     if (filter) filter.value = options.defaultFilter || "all";
@@ -131,8 +131,7 @@
       list.value = selected; list.disabled = !enabled || !visible.length;
       if (search) search.disabled = !enabled || !bones.length;
       if (filter) filter.disabled = !enabled || !bones.length;
-      var shortcuts = document.getElementById("viewer-node-shortcuts"), changes = document.getElementById("viewer-node-change-list");
-      updateButtons(shortcuts, shortcutButtons, bones.filter(isFrequent).filter(function (bone) { return !options.forTool || options.forTool(bone.id); }), "No recommended bones in this model.");
+      var changes = document.getElementById("viewer-node-change-list");
       updateButtons(changes, changeButtons, bones.filter(function (bone) {
         var value = flags(bone.id); return value.modified || value.body || value.expression;
       }), "No changed bones.");
@@ -316,7 +315,7 @@
         fields[kind].push(input); label.appendChild(input); row.appendChild(label);
       }); holder.appendChild(row);
     });
-    listen(list, "change", function () { select(this.value, false); });
+    listen(list, "change", function () { select(this.value, true); });
     listen(search, "input", function () { refresh(true); });
     listen(filter, "change", function () { refresh(true); });
     function changeCompensation() {
@@ -351,7 +350,7 @@
         events.forEach(function (remove) { remove(); }); holder.textContent = "";
         if (validation.parentNode) validation.parentNode.removeChild(validation);
         ownedLists.forEach(function (container) { if (container) container.textContent = ""; });
-        shortcutButtons = {}; changeButtons = {};
+        changeButtons = {};
       }
     };
   }

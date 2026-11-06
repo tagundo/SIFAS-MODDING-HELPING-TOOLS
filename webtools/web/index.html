@@ -198,7 +198,7 @@
               <div id="viewer-node-tool-slot"><div id="viewer-shared-bone-editor" class="viewer-shared-bone-editor">
             <details id="viewer-common-adjustments" class="viewer-control-section viewer-node-quick" open>
               <summary><span id="viewer-node-quick-title" data-i18n="Common adjustments">Common adjustments</span></summary>
-              <div id="viewer-node-shortcuts" class="viewer-chip-list" role="group" aria-labelledby="viewer-node-quick-title"></div>
+              <div id="viewer-node-shortcuts" class="viewer-node-choice"><select id="viewer-node" aria-labelledby="viewer-node-quick-title" disabled></select></div>
             </details>
             <details id="viewer-node-editor" class="viewer-node-editor">
               <summary id="viewer-node-editor-title" data-i18n="Individual bones (advanced)">Individual bones (advanced)</summary>
@@ -214,7 +214,6 @@
                 <label><span data-i18n="Show bones">Show bones</span><select id="viewer-node-filter" disabled><option value="tool" data-i18n="Recommended for this tool">Recommended for this tool</option><option value="all" data-i18n="All bones">All bones</option><option value="saved" data-i18n="With saved settings">With saved settings</option><option value="changed" data-i18n="My changes">My changes</option><option value="frequent" data-i18n="Frequently adjusted">Frequently adjusted</option></select></label>
               </div>
               <div id="viewer-node-change-list" class="viewer-node-change-list" role="group" aria-labelledby="viewer-node-editor-title"></div>
-              <label><span data-i18n="Bone">Bone</span><select id="viewer-node" disabled></select></label>
               <p id="viewer-node-status" class="viewer-render-note" role="status" aria-live="polite"></p>
               <div id="viewer-node-baseline" class="viewer-node-baseline"></div>
               <p class="viewer-render-note" data-i18n="Current values are editing values before animation.">Current values are editing values before animation.</p>
@@ -242,8 +241,11 @@
               <summary data-i18n="Parts in saved settings">Parts in saved settings</summary>
               <div id="viewer-saved-part-list"></div>
             </details>
+          </details>
+          <details id="viewer-expression-adjustments" class="viewer-adjustments viewer-expression-adjustments" open>
+            <summary><span id="viewer-expression-title" data-i18n="Facial expression">Facial expression</span></summary>
             <section id="viewer-expression-panel" class="viewer-control-section" aria-labelledby="viewer-expression-title">
-              <div class="viewer-section-heading"><h3 id="viewer-expression-title" data-i18n="Facial expression">Facial expression</h3><button id="viewer-expression-reset" type="button" data-i18n="Reset expression" disabled>Reset expression</button></div>
+              <div class="viewer-expression-actions"><button id="viewer-expression-reset" type="button" data-i18n="Reset expression" disabled>Reset expression</button></div>
               <div id="viewer-expression-groups" class="viewer-chip-list" role="group" aria-labelledby="viewer-expression-title"></div>
               <div id="viewer-expression-presets" class="viewer-expression-presets" role="group" aria-labelledby="viewer-expression-title"></div>
               <p id="viewer-expression-selection" class="viewer-render-note" role="status" aria-live="polite"></p>
@@ -257,8 +259,8 @@
               </details>
             </section>
             <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
-            <button id="viewer-preview-reset" type="button" data-i18n="Reset preview adjustments" disabled>Reset preview adjustments</button>
           </details>
+          <div class="viewer-preview-actions"><button id="viewer-preview-reset" type="button" data-i18n="Reset pose, body and expressions" disabled>Reset pose, body and expressions</button></div>
           <details class="viewer-options">
             <summary data-i18n="Display options">Display options</summary>
             <div class="viewer-option-row">
