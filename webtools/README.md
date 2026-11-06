@@ -160,6 +160,9 @@ repacking is unnecessary and the source files remain unchanged.
   chrome and system bars, or uses browser fullscreen when available. Exit with
   the viewport control, Escape or Android Back. Changing view size preserves
   the current pose, edits and camera.
+- In the single-column layout, the model scrolls with the page so the editor
+  can use the screen below the header. Scrolling does not resize the model or
+  change the camera. Wider layouts keep the independent model column visible.
 - **Breast size**, **Skirt scale** and **Common adjustments** can be collapsed
   independently. Collapsing a section keeps its selected profile, selected bone,
   saved-setting choices and edited values.

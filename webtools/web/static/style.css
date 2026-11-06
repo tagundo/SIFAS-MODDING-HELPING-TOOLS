@@ -515,9 +515,16 @@ main { padding: 14px; }
   .viewer-files h2, .viewer-intro { display: none; }
   .viewer-file-actions { flex-basis: 220px; max-width: none; }
   .viewer-model-panel { display: contents; }
-  .viewer-stage { position: sticky; top: var(--viewer-sticky-top, 0px); z-index: 3; }
+  /* A stacked editor needs the full page height after the model scrolls away. */
+  .viewer-stage { position: relative; top: auto; }
   .viewer-control-panel input, .viewer-control-panel select, .viewer-control-panel button, .viewer-control-panel summary {
     scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + var(--viewer-stage-height, 60vh) + 8px);
+  }
+  #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel input,
+  #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel select,
+  #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel button,
+  #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel summary {
+    scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + 8px);
   }
   .viewer-node-browser { grid-template-columns: minmax(0, 1fr); }
   .viewer-node-vector { grid-template-columns: repeat(3, minmax(0, 1fr)); }

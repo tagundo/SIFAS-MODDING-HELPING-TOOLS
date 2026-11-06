@@ -643,9 +643,13 @@
     var headerBottom = pinnedHeader ? Math.max(viewport.top, header.getBoundingClientRect().bottom) : viewport.top;
     document.documentElement.style.setProperty("--viewer-sticky-top", headerBottom + "px");
     var stage = node("viewer-stage");
-    var stageTop = Math.max(viewport.top, headerBottom, stage.getBoundingClientRect().top);
-    var available = Math.max(1, viewport.top + viewport.height - stageTop - 10);
     var sideBySide = window.innerWidth >= 720;
+    // In the stacked page, scrolling into the editor must not grow the model
+    // behind it. Its document origin stays stable while its screen top moves.
+    var stageOrigin = stage.getBoundingClientRect().top;
+    if (!sideBySide && !expanded && !shortHeight) stageOrigin += window.scrollY || 0;
+    var stageTop = Math.max(viewport.top, headerBottom, stageOrigin);
+    var available = Math.max(1, viewport.top + viewport.height - stageTop - 10);
     var desired = expanded || shortHeight ? viewport.height : Math.min(available, sideBySide ? viewport.height : viewport.height * .76);
     node("tab-viewer").style.setProperty("--viewer-stage-height", Math.round(desired) + "px");
     node("tab-viewer").style.setProperty("--viewer-viewport-height", Math.round(viewport.height) + "px");
