@@ -136,6 +136,11 @@
         var transforms = values.map(function (value) {
           var edit = value.edit, baseline = value.target.baseline || {}, tags = [];
           if (edit.scale && baseline.scale) {
+            if (kind === "hips") {
+              // The dedicated hip fields author actual XYZ endpoints. Keep
+              // their name hint in those same values for non-unit originals.
+              tags.push(edit.scale.map(function (part, axis) { return "XYZ"[axis] + format(part); }).join("/"));
+            } else {
             var ratios = edit.scale.map(function (part, axis) { return baseline.scale[axis] ? part / baseline.scale[axis] : null; });
             var axes = ratios.map(function (part, axis) { return part !== null && Math.abs(part - 1) > 1e-7 ? axis : -1; }).filter(function (axis) { return axis >= 0; });
             if (axes.length) {
@@ -143,6 +148,7 @@
                 (kind === "thighs" || kind === "waist") && axes.join(",") === "1,2" && Math.abs(ratios[1] - ratios[2]) < 1e-7;
               tags.push(uniform ? format(ratios[axes[0]]) + "×" : axes.map(function (axis) { return "XYZ"[axis] + format(ratios[axis]); }).join("/"));
             } else tags.push(translate("Bake into mesh"));
+            }
           }
           if (edit.position) tags.push(translate("Position"));
           if (edit.rotation) tags.push(translate("Rotation"));

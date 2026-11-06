@@ -33,8 +33,7 @@
     <section id="tab-viewer" class="tab-panel" aria-labelledby="viewer-title">
       <div class="viewer-workspace">
         <aside id="viewer-files-panel" class="viewer-files">
-          <h2 id="viewer-title" data-i18n="3D model">3D model</h2>
-          <p class="viewer-intro" data-i18n="Open a costume model or ZIP. Its preview pose and missing face parts load automatically.">Open a costume model or ZIP. Its preview pose and missing face parts load automatically.</p>
+          <h2 id="viewer-title" class="sr-only" data-i18n="3D model">3D model</h2>
           <div class="viewer-file-actions">
             <button id="viewer-game-assets" type="button" data-i18n="Load from game assets">Load from game assets</button>
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
@@ -43,8 +42,9 @@
           </div>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
           <details id="viewer-file-options" class="viewer-file-options">
-            <summary><span aria-hidden="true">⚙</span><span class="sr-only" data-i18n="Model options">Model options</span></summary>
+            <summary aria-describedby="viewer-file-help"><span aria-hidden="true">⚙</span><span class="sr-only" data-i18n="Model options">Model options</span></summary>
             <div class="viewer-file-options-panel">
+              <p id="viewer-file-help" class="viewer-intro" data-i18n="Open a costume model or ZIP. Its preview pose and missing face parts load automatically.">Open a costume model or ZIP. Its preview pose and missing face parts load automatically.</p>
               <div class="viewer-option-row"><label><input id="viewer-auto-face" type="checkbox" checked aria-describedby="viewer-auto-face-help"><span data-i18n="Complete face automatically">Complete face automatically</span></label></div>
               <p id="viewer-auto-face-help" class="viewer-render-note" data-i18n="Missing face parts are found locally or downloaded automatically.">Missing face parts are found locally or downloaded automatically.</p>
               <p class="viewer-render-note" data-i18n="The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.">The SIFAS preview pose loads automatically. You can add custom Unity motion/expression bundles. FBX motion files are not supported.</p>
@@ -210,17 +210,21 @@
                   <p id="viewer-breast-note" class="viewer-control-note" data-i18n="Character names identify the breast tool's reference settings. They do not change the character.">Character names identify the breast tool's reference settings. They do not change the character.</p>
                   </div>
                 </details>
-                <details id="viewer-hips-card" class="viewer-body-card viewer-percentage-control">
-                  <summary><span data-i18n="Hip size">Hip size</span></summary>
+                <details id="viewer-hips-card" class="viewer-body-card viewer-scale-card viewer-hips-control">
+                  <summary><span id="viewer-hips-title" data-i18n="Hip size">Hip size</span></summary>
                   <div class="viewer-card-content">
                     <dl class="viewer-profile-values viewer-actual-values">
                       <div><dt data-i18n="File values">File values</dt><dd id="viewer-hips-file-values" class="viewer-factor-values">—</dd></div>
                       <div><dt data-i18n="Current values">Current values</dt><dd id="viewer-hips-current-values" class="viewer-factor-values">—</dd></div>
                     </dl>
-                    <label for="viewer-hips-number" data-i18n="Percent of loaded shape">Percent of loaded shape</label>
-                    <div class="viewer-absolute-entry"><input id="viewer-hips-number" type="number" min="20" max="250" step="1" value="100" inputmode="decimal" aria-describedby="viewer-hips-note viewer-hips-status" disabled><button id="viewer-hips-apply" type="button" data-i18n="Apply" disabled>Apply</button></div>
+                    <div class="viewer-hips-axes" role="group" aria-labelledby="viewer-hips-title">
+                      <label for="viewer-hips-scale-x">X<input id="viewer-hips-scale-x" data-viewer-hips-axis="0" type="number" min="0.00000001" max="1000000" step="0.001" inputmode="decimal" aria-describedby="viewer-hips-note viewer-hips-status" disabled></label>
+                      <label for="viewer-hips-scale-y">Y<input id="viewer-hips-scale-y" data-viewer-hips-axis="1" type="number" min="0.00000001" max="1000000" step="0.001" inputmode="decimal" aria-describedby="viewer-hips-note viewer-hips-status" disabled></label>
+                      <label for="viewer-hips-scale-z">Z<input id="viewer-hips-scale-z" data-viewer-hips-axis="2" type="number" min="0.00000001" max="1000000" step="0.001" inputmode="decimal" aria-describedby="viewer-hips-note viewer-hips-status" disabled></label>
+                    </div>
+                    <button id="viewer-hips-apply" type="button" data-i18n="Apply changed axes" disabled>Apply changed axes</button>
                     <button id="viewer-hips-reset" type="button" data-i18n="Undo this size adjustment" disabled>Undo this size adjustment</button>
-                    <p id="viewer-hips-note" class="viewer-control-note" data-i18n="100% keeps the loaded shape. This adjustment scales the verified HipsSize node, not the pelvis root.">100% keeps the loaded shape. This adjustment scales the verified HipsSize node, not the pelvis root.</p>
+                    <p id="viewer-hips-note" class="viewer-control-note" data-i18n="Actual HipsSize scale values. Apply only the axes you change; other axes stay unchanged.">Actual HipsSize scale values. Apply only the axes you change; other axes stay unchanged.</p>
                     <p id="viewer-hips-status" class="viewer-control-note" role="status" aria-live="polite"></p>
                   </div>
                 </details>

@@ -1992,6 +1992,18 @@ _VIEWER_TRANSLATIONS.update({
         "길이를 유지합니다. 하위 본을 보정해 종아리·발 크기를 유지합니다.",
         "長さを保ちます。子ボーンを補正してふくらはぎ・足のサイズを保ちます。"
     ],
+    "Apply changed axes": [
+        "수정한 축 적용",
+        "変更した軸を適用"
+    ],
+    "Actual HipsSize scale values. Apply only the axes you change; other axes stay unchanged.": [
+        "현재 모델의 HipsSize 배율입니다. 수정한 축만 적용하며 다른 축은 유지됩니다.",
+        "現在のモデルのHipsSizeスケールです。変更した軸だけを適用し、他の軸は維持します。"
+    ],
+    "Enter a positive finite scale between 0.00000001 and 1000000.": [
+        "0.00000001~1000000 사이의 양수 배율을 입력하세요.",
+        "0.00000001～1000000の範囲で正の有限スケールを入力してください。"
+    ],
     "Enter a percentage between 20 and 250.": [
         "20~250 사이의 비율을 입력하세요.",
         "20～250の範囲で割合を入力してください。"

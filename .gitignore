@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Cooperative runtime lock keeps a stable inode; never commit or delete it.
+/.database-maintenance.lock

@@ -106,13 +106,13 @@ async function downloads(page, modPath, locale) {
       await context.addInitScript(() => localStorage.setItem('sifas_lang', 'ko'));
       const page = await context.newPage(); await page.goto(server.url); await page.waitForFunction(() => typeof openModelViewer === 'function');
       await open(page, bodyPath); await (await show(page, '#viewer-editor-node-tab')).click();
-      await (await show(page, '#viewer-hips-number')).fill('117'); await page.locator('#viewer-hips-apply').click();
-      assert((await page.locator('#viewer-mod-name').inputValue()).includes('1.17×'));
+      await (await show(page, '#viewer-hips-scale-x')).fill('1.17'); await page.locator('#viewer-hips-apply').click();
+      assert((await page.locator('#viewer-mod-name').inputValue()).includes('X1.17/Y1.07/Z0.96'));
       await (await show(page, '#viewer-mod-name')).fill('Keep my name');
       await (await show(page, '#viewer-editor-mesh-tab')).click(); await (await show(page, '#viewer-thighs-preset')).selectOption('slim:thick');
       await page.locator('#viewer-thighs-preset-apply').click(); assert.equal(await page.locator('#viewer-mod-name').inputValue(), 'Keep my name');
       await (await show(page, '#viewer-mod-name-auto')).click();
-      const automatic = await page.locator('#viewer-mod-name').inputValue(); assert(automatic.includes('1.17×') && automatic.includes('가느다란 체형→굵은 체형'), automatic);
+      const automatic = await page.locator('#viewer-mod-name').inputValue(); assert(automatic.includes('X1.17/Y1.07/Z0.96') && automatic.includes('가느다란 체형→굵은 체형'), automatic);
       await page.locator('#viewer-mod-name').fill(''); assert(await page.locator('#viewer-save-mod').isDisabled()); assert(await page.locator('#viewer-add-to-game').isDisabled());
       assert.equal(await page.locator('#viewer-save').isDisabled(), false, 'An empty mod name does not disable raw model export');
       await page.locator('#viewer-mod-name-auto').click(); const hits = {};

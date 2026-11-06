@@ -234,8 +234,7 @@ main { padding: 14px; }
 .viewer-files { position: relative; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 10px; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
 .viewer-files h2 { flex: 1 1 100%; margin: 2px 0; font-size: 16px; }
 .viewer-intro { flex: 1 1 100%; margin: 0 0 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.viewer-has-model .viewer-files h2, .viewer-has-model .viewer-intro { display: none; }
-.viewer-file-actions { display: flex; flex: 1 1 280px; max-width: 350px; min-width: 0; gap: 4px; }
+.viewer-file-actions { display: flex; flex: 1 1 280px; max-width: none; min-width: 0; gap: 4px; }
 .viewer-file-actions button { flex: 1 1 0; min-width: 0; }
 .viewer-files button, .viewer-main button, .viewer-options select { min-height: 44px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; }
 .viewer-files .viewer-primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
@@ -403,6 +402,9 @@ main { padding: 14px; }
 .viewer-absolute-entry { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(72px, .6fr) minmax(0, 1.4fr); gap: 6px; align-items: stretch; }
 .viewer-absolute-entry > input { width: 100%; min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .viewer-absolute-entry > button { min-width: 0; margin: 0; padding: 6px; line-height: 1.4; overflow-wrap: anywhere; }
+.viewer-hips-axes { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: 100%; min-width: 0; }
+.viewer-hips-axes > label { display: grid; gap: 3px; min-width: 0; font-weight: 400; }
+.viewer-hips-axes input { width: 100%; min-width: 0; max-width: 100%; text-align: right; }
 .viewer-scale-details { grid-column: 1 / -1; min-width: 0; }
 .viewer-scale-details > summary { min-height: 44px; padding: 10px 0; cursor: pointer; line-height: 1.5; }
 .viewer-value-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; line-height: 1.5; }
@@ -514,7 +516,6 @@ main { padding: 14px; }
   #tab-viewer:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel input[type=search] { max-width: 380px; }
 }
 @media (max-width: 719px) {
-  .viewer-files h2, .viewer-intro { display: none; }
   .viewer-file-actions { flex-basis: 220px; max-width: none; }
   .viewer-model-panel { display: contents; }
   /* A stacked editor needs the full page height after the model scrolls away. */
@@ -625,7 +626,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-vertical-controls .viewer-files { gap: 4px; padding: 3px; margin-bottom: 6px; }
 .viewer-vertical-controls .viewer-files h2 { font-size: 1rem; }
 .viewer-vertical-controls .viewer-intro { font-size: .75rem; }
-.viewer-vertical-controls .viewer-file-actions { flex: 1 1 208px; max-width: 350px; flex-wrap: wrap; gap: 3px; }
+.viewer-vertical-controls .viewer-file-actions { flex: 1 1 calc(14rem + 9px); max-width: none; flex-wrap: wrap; gap: 3px; }
 .viewer-vertical-controls .viewer-file-actions button { flex: 1 1 3.5rem; min-width: 3.5rem; min-height: 32px; padding: 4px; font-size: .6875rem; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .viewer-vertical-controls .viewer-file-list { flex: 1 1 90px; max-height: 36px; }
 .viewer-vertical-controls .viewer-file-list li { min-height: 32px; gap: 3px; font-size: .6875rem; }
@@ -633,7 +634,17 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-vertical-controls .viewer-file-options { flex: 0 0 32px; }
 .viewer-vertical-controls .viewer-file-options > summary { width: 32px; height: 32px; font-size: 18px; }
 .viewer-vertical-controls.viewer-has-model .viewer-files { flex-wrap: nowrap; }
-.viewer-vertical-controls.viewer-has-model .viewer-file-actions { flex: 1 1 208px; max-width: 350px; }
+.viewer-vertical-controls.viewer-has-model .viewer-file-actions { flex: 1 1 calc(14rem + 9px); max-width: none; }
+@media (pointer: coarse), (any-pointer: coarse) {
+  #viewer-files-panel .viewer-file-actions button,
+  #viewer-files-panel .viewer-panel-width-tools > button { min-height: 44px; }
+  #viewer-files-panel .viewer-file-list { min-width: 88px; max-height: 44px; }
+  #viewer-files-panel .viewer-file-list li { min-height: 44px; }
+  #viewer-files-panel .viewer-remove { flex: 0 0 44px; min-width: 44px; min-height: 44px; }
+  #viewer-files-panel .viewer-file-options { flex-basis: 44px; }
+  #viewer-files-panel .viewer-file-options > summary { width: 44px; height: 44px; min-height: 44px; }
+  #viewer-files-panel .viewer-file-options-panel .viewer-file-list { max-height: 132px; }
+}
 .viewer-vertical-controls .viewer-stage { border-radius: 8px; }
 .viewer-vertical-controls .viewer-stage-tools { right: 6px; left: 6px; display: block; height: 34px; }
 .viewer-vertical-controls .viewer-stage-tools-top { top: 6px; }
@@ -700,8 +711,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
     max-height: calc(var(--viewer-viewport-height, 100vh) - var(--viewer-sticky-top, 0px) - 24px);
     margin: 0; padding: 10px; overflow-y: auto; scrollbar-gutter: stable;
   }
-  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-files h2 { display: block; margin: 0 0 10px; }
-  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-intro { display: none; }
+  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-files h2 { display: block; position: static; width: auto; height: auto; overflow: visible; clip: auto; margin: 0 0 10px; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-actions { flex-direction: column; max-width: none; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list { margin-top: 10px; max-height: 352px; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list:empty { margin: 0; }
@@ -744,6 +754,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-files-resizer:hover > span, .viewer-files-resizer:focus-visible > span, .viewer-files-resizer.viewer-panel-dragging > span { background: var(--accent2); }
 .viewer-panel-resizer:focus-visible, .viewer-files-resizer:focus-visible { outline: 2px solid var(--accent2); outline-offset: -4px; border-radius: 5px; }
 .viewer-panel-width-tools { display: flex; align-items: center; margin-top: 8px; }
+#tab-viewer:not(.viewer-files-resizable) #viewer-panel-width-tools { margin-top: 0; }
 .viewer-panel-width-tools > button { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; min-width: 0; margin: 0; padding: 5px 8px; border-radius: 7px; font-size: 12px; line-height: 1.5; }
 .viewer-panel-width-tools > button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
 .viewer-expanded .viewer-panel-resizer, .viewer-fullscreen .viewer-panel-resizer, .viewer-short-height .viewer-panel-resizer,
@@ -798,6 +809,12 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 #tab-viewer.viewer-model-minimized.viewer-minimize-width:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel { position: sticky; top: calc(var(--viewer-sticky-top, 0px) + 8px); height: var(--viewer-minimized-height); max-height: var(--viewer-minimized-height); overflow-y: auto; }
 #tab-viewer.viewer-model-minimized .viewer-control-panel input, #tab-viewer.viewer-model-minimized .viewer-control-panel select, #tab-viewer.viewer-model-minimized .viewer-control-panel button, #tab-viewer.viewer-model-minimized .viewer-control-panel summary { scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + 8px); }
 #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel input, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel select, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel button, #tab-viewer.viewer-model-minimized.viewer-minimize-height:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-control-panel summary { scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + var(--viewer-minimize-bar-height, 44px) + 16px); }
+#tab-viewer.viewer-model-minimized:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-body-controls {
+  display: grid; width: 100%; max-width: none; margin-left: 0; margin-right: 0; align-items: start;
+  /* One card in narrow panes, at most two equal cards using the freed width. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(260px, calc(50% - 4px))), 1fr));
+}
+#tab-viewer.viewer-model-minimized:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-body-card { width: 100%; max-width: none; }
 
 .viewer-editor-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; margin: .7rem 0; }
 .viewer-editor-tabs button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .3rem; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }

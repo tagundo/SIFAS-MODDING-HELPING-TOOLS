@@ -597,7 +597,7 @@
       var target = ((options.editing || {}).nodes || []).filter(function (entry) { return String(entry.node) === String(id); })[0];
       return target ? target.recommendedMethod : "choose";
     }
-    var percentageKinds = ["hips", "thighs", "waist"];
+    var percentageKinds = ["thighs", "waist"];
     function percentageState(kind) {
       var raw = rawControl(kind), control = bodyControl(kind), baseline = fileMap(), current = staticMap(true);
       var axes = kind === "hips" ? [0, 1, 2] : [1, 2], ratios = [], reason = "";
@@ -651,6 +651,77 @@
         }
       });
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function hipsInputs() {
+      return ["x", "y", "z"].map(function (axis) { return element("viewer-hips-scale-" + axis); });
+    }
+    function hipsState() {
+      var state = percentageState("hips");
+      state.axisValues = [0, 1, 2].map(function (axis) {
+        var values = state.targets.map(function (target) { return target.currentScale[axis]; });
+        return values.length && values.every(function (value) { return Math.abs(value - values[0]) <= 1e-7; }) ? values[0] : null;
+      });
+      state.mode = "absolute_axes";
+      state.editBounds = { min: 1e-8, max: 1000000 };
+      return state;
+    }
+    function validateHipInput(input) {
+      var value = Number(input.value), invalid = !input.value.trim() || !isFinite(value) || value < 1e-8 || value > 1000000;
+      input.setCustomValidity(invalid ? translate("Enter a positive finite scale between 0.00000001 and 1000000.") : "");
+      if (invalid) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid");
+      return !invalid;
+    }
+    function clearHipDrafts() {
+      hipsInputs().forEach(function (input) {
+        delete input.dataset.viewerHipsDirty; input.setCustomValidity(""); input.removeAttribute("aria-invalid");
+      });
+    }
+    function applyHipAxes() {
+      var state = hipsState(), inputs = hipsInputs(), dirty = inputs.filter(function (input) { return input.dataset.viewerHipsDirty === "true"; });
+      if (!state.available || !dirty.length) return;
+      var invalid = dirty.filter(function (input) { return !validateHipInput(input); });
+      if (invalid.length) { invalid[0].reportValidity(); changed(); return; }
+      state.targets.forEach(function (target) {
+        var id = target.node, previous = adjustments[id];
+        var value = { mode: "absolute_axes", scale: [null, null, null], position: [null, null, null], rotation: [null, null, null] };
+        ["scale", "position", "rotation"].forEach(function (kind) { if (previous && Array.isArray(previous[kind])) value[kind] = previous[kind].slice(); });
+        // Display rounding never becomes an edit to an untouched axis. Typed
+        // values are absolute endpoints on each original, not baseline ratios.
+        dirty.forEach(function (input) { value.scale[Number(input.dataset.viewerHipsAxis)] = Number(input.value); });
+        adjustments[id] = value; methodForNewEdit(id, "node");
+      });
+      clearHipDrafts(); evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function undoHipAxes() {
+      var control = rawControl("hips"); if (!control || !control.available) return;
+      (control.nodes || []).forEach(function (target) {
+        var id = String(target.node), value = adjustments[id];
+        if (value && Array.isArray(value.scale)) {
+          value.scale = [null, null, null];
+          if (editing.adjustmentEmpty(value)) delete adjustments[id];
+        }
+        delete meshConversions[id]; delete nodeCompensations[id]; clearUnusedMethod(id);
+      });
+      clearHipDrafts(); evaluate(0); refreshBodyControls(); refreshNode(); changed();
+    }
+    function refreshHipAxes() {
+      var state = hipsState(), enabled = interactive && authoringEnabled && !disposed && state.available;
+      hipsInputs().forEach(function (input, axis) {
+        input.disabled = !enabled;
+        if (input.dataset.viewerHipsDirty !== "true") {
+          input.value = state.axisValues[axis] === null ? "" : numberText(state.axisValues[axis]);
+          input.setCustomValidity(""); input.removeAttribute("aria-invalid");
+        }
+        input.placeholder = translate(state.targets.length ? "Different values" : "Not available for this model.");
+      });
+      element("viewer-hips-apply").disabled = !enabled;
+      element("viewer-hips-reset").disabled = !interactive || !authoringEnabled || disposed ||
+        (!state.edited && !hipsInputs().some(function (input) { return input.dataset.viewerHipsDirty === "true"; })) || !rawControl("hips") || !rawControl("hips").available;
+      element("viewer-hips-file-values").textContent = state.targets.map(function (target) { return scaleText(target.fileScale, target.fileStatus); }).join("; ") || "—";
+      element("viewer-hips-current-values").textContent = state.targets.map(function (target) { return scaleText(target.currentScale); }).join("; ") || "—";
+      var status = element("viewer-hips-status");
+      status.textContent = state.available ? translate("Children follow this size adjustment; inverse compensation is not used.") : translate(state.reason);
+      status.classList.toggle("error", !state.available && !!rawControl("hips"));
     }
     function thighPresets() {
       var control = rawControl("thighs"), seen = {};
@@ -818,7 +889,7 @@
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
     }
     function initializeNodeCards() {
-      var states = { breast: breastProfile(), hips: percentageState("hips"), skirt: skirtValues() };
+      var states = { breast: breastProfile(), hips: hipsState(), skirt: skirtValues() };
       Object.keys(states).forEach(function (kind) {
         var card = element("viewer-" + kind + "-card"), state = states[kind];
         if (!card) return;
@@ -834,6 +905,7 @@
       });
     }
     function refreshBodyControls() {
+      refreshHipAxes();
       refreshPercentages();
       refreshThighPresets();
       var skirt = skirtValues(), noSkirt = !skirt.targets.length, enabled = interactive && authoringEnabled && !disposed && skirt.available, input = element("viewer-skirt-number");
@@ -889,6 +961,7 @@
     }
     function reset() {
       adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
+      clearHipDrafts();
       if (expressionPanel) expressionPanel.reset(true);
       parts.forEach(function (part) { part.visible = part.fileVisible; part.userVisible = undefined; part.userChanged = false; });
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
@@ -1060,6 +1133,14 @@
       });
       listen("viewer-" + kind + "-reset", "click", function () { if (!this.disabled) undoPercentage(kind); });
     });
+    hipsInputs().forEach(function (input) {
+      listen(input.id, "input", function () {
+        if (this.disabled) return;
+        this.dataset.viewerHipsDirty = "true"; validateHipInput(this); refreshHipAxes(); changed();
+      });
+    });
+    listen("viewer-hips-apply", "click", function () { if (!this.disabled) applyHipAxes(); });
+    listen("viewer-hips-reset", "click", function () { if (!this.disabled) undoHipAxes(); });
     listen("viewer-thighs-preset", "change", function () {
       var state = thighProfileState(), selected = this.value;
       element("viewer-thighs-preset-apply").disabled = !interactive || !authoringEnabled || disposed || !state.available ||
@@ -1073,7 +1154,7 @@
       useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
     });
     listen("viewer-preview-reset", "click", reset);
-    updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
+    clearHipDrafts(); updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
     if (options.initializeNodeCards !== false) initializeNodeCards();
 
     function getAuthoringState() {
@@ -1086,8 +1167,13 @@
       // Numeric steps control spinner increments, not the precision of Unity
       // file values or explicit edits. A fractional untouched TRS can be off
       // that grid while remaining a valid finite authoring value.
-      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input"), function (input) {
-        if (input.disabled || input.closest(".viewer-percentage-control") && input.dataset.viewerPercentageDirty !== "true") return false;
+      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input, #viewer-hips-card input"), function (input) {
+        if (input.closest(".viewer-hips-control")) {
+          // An invalid draft remains unresolved if an advanced method change
+          // disables the dedicated fields. Only reset or an explicit valid
+          // replacement clears it; untouched file values are never drafts.
+          if (input.dataset.viewerHipsDirty !== "true") return false;
+        } else if (input.disabled || input.closest(".viewer-percentage-control") && input.dataset.viewerPercentageDirty !== "true") return false;
         var validity = input.validity;
         return input.getAttribute("aria-invalid") === "true" || validity &&
           (validity.badInput || validity.customError || validity.rangeOverflow || validity.rangeUnderflow || validity.typeMismatch || validity.valueMissing);
@@ -1184,6 +1270,7 @@
         references[id] = { scale: new THREE.Vector3().fromArray(entry.scale), position: new THREE.Vector3().fromArray(entry.position), quaternion: editing.uiQuaternion(THREE, entry.rotation) };
       });
       adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
+      clearHipDrafts();
       var baseline = storedFileMap();
       state.edits.forEach(function (edit) {
         var id = String(edit.node);
@@ -1256,7 +1343,7 @@
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),
-          bodyControls: { hips: percentageState("hips"), thighs: percentageState("thighs"), waist: percentageState("waist") }, thighProfile: thighProfileState(),
+          bodyControls: { hips: hipsState(), thighs: percentageState("thighs"), waist: percentageState("waist") }, thighProfile: thighProfileState(),
           body: { breastPreset: body.breastPreset, skirtMode: Object.keys(skirtOverrides).length ? "absolute" : "file" }, skirtValues: skirtValues(), breastProfile: breastProfile(), heightMode: "saved_settings_only", scaling: scaling,
           nodeAdjustments: JSON.parse(JSON.stringify(adjustments)), selectedNode: selectedNode,
           nodeCompensations: JSON.parse(JSON.stringify(nodeCompensations)),
