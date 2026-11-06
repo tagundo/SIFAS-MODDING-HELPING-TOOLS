@@ -510,7 +510,9 @@ class RigTests(unittest.TestCase):
         self.assertFalse(metadata["rig"]["available"])
         self.assertEqual(metadata["faces"]["status"], "added")
         self.assertEqual(len(deadlines), 2)
-        self.assertLessEqual(deadlines[1] - deadlines[0], 40.)
+        # Compare the actual cap directly; subtracting monotonic floats can
+        # round an exact forty-second allowance slightly above forty.
+        self.assertLessEqual(deadlines[1], deadlines[0] + 40.)
 
     def test_rina_board_placeholder_uses_validated_costume_metadata_for_motion_owner(self):
         from webtools.core import model_motion

@@ -117,7 +117,9 @@ async function viewportMetrics(page) {
       if (Math.abs(pixels[i] - bg[0]) + Math.abs(pixels[i + 1] - bg[1]) + Math.abs(pixels[i + 2] - bg[2]) > 24) { minY = Math.min(minY, y); maxY = Math.max(maxY, y); count++; }
     }
     return { viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio }, stage: rect('#viewer-stage'), inspector: rect('.viewer-control-panel'),
-      files: rect('.viewer-files'), overflow: document.documentElement.scrollWidth - innerWidth,
+      files: rect('.viewer-files'), workspace: rect('.viewer-workspace'),
+      filesResizable: !document.getElementById('viewer-files-resizer').hidden,
+      overflow: document.documentElement.scrollWidth - innerWidth,
       layout: s.layout, sourceTriangles: s.sourceTriangles, pixelCount: count,
       foregroundHeight: count ? (maxY - minY + 1) / h * canvas.getBoundingClientRect().height : 0,
       glError: gl.getError(), probe };
@@ -617,16 +619,31 @@ async function pickerTransportRegressions(browser) {
           assert(test.normal.inspector.x >= test.normal.stage.right - 1 && test.normal.inspector.y <= test.normal.stage.y + 2, 'Editing stays beside the model');
           assert(test.normal.inspector.width >= 239 && test.normal.inspector.width <= 301, 'Fold inspector is narrow and bounded');
         }
-        if (profile.id === 'wide-tablet') {
+        if (profile.id === 'wide-tablet' || profile.id === 'tall-wide-boundary') {
           const cards = await page.evaluate(() => { const rect = id => { const r = document.getElementById(id).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, right: r.right }; }; return { breast: rect('viewer-breast-card'), skirt: rect('viewer-skirt-card') }; });
-          assert(test.normal.stage.width <= test.normal.stage.height * 1.27, 'Normal wide preview avoids unbounded empty horizontal space');
-          assert(cards.breast.width <= 361 && cards.skirt.width <= 361 && cards.skirt.x > cards.breast.x && Math.abs(cards.breast.y - cards.skirt.y) <= 2, 'Freed wide space holds two compact independent editing cards beside one another');
-          assert(test.normal.inspector.right >= profile.width - 24, 'Normal wide editing uses freed width rather than leaving an empty outer gutter'); test.wideCards = cards;
-        }
-        if (profile.id === 'tall-wide-boundary') {
-          const cards = await page.evaluate(() => { const rect = id => { const r = document.getElementById(id).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, right: r.right }; }; return { breast: rect('viewer-breast-card'), skirt: rect('viewer-skirt-card') }; });
-          assert(test.normal.inspector.width >= 319 && test.normal.inspector.width <= 321, 'Tall1200 viewport retains the bounded320px editor');
-          assert(cards.breast.width >= 259 && cards.skirt.width >= 259 && Math.abs(cards.skirt.x - cards.breast.x) <= 2 && cards.skirt.y > cards.breast.y, 'A bounded320px editor uses usable single-column cards rather than two tiny forced columns'); test.tallCards = cards;
+          if (test.normal.filesResizable) {
+            const { files, stage, inspector, workspace } = test.normal;
+            assert(files.width >= 159.5 && files.width <= 360.5 && inspector.width >= 239.5 && inspector.width <= 640.5 && stage.width >= 319.5,
+              'Three-pane layouts retain bounded file and adjustment columns and at least320px for the real model');
+            assert(Math.abs(stage.x - files.right - 12) < 1 && Math.abs(inspector.x - stage.right - 12) < 1,
+              'Both twelve-pixel resize boundaries separate the real model from its side panels');
+            assert(Math.abs(stage.width - (workspace.width - files.width - inspector.width - 24)) < 1 && Math.abs(inspector.right - workspace.right) < 1,
+              'The model uses the actual remaining workspace width without an empty outer gutter');
+            assert(cards.breast.width >= 240 && cards.skirt.width >= 240 && cards.breast.width <= inspector.width && cards.skirt.width <= inspector.width &&
+              Math.abs(cards.skirt.x - cards.breast.x) <= 2 && cards.skirt.y > cards.breast.y,
+              'The bounded three-pane editor retains usable independent cards in one column');
+          } else if (profile.id === 'wide-tablet') {
+            assert(test.normal.stage.width <= test.normal.stage.height * 1.27 || Math.abs(test.normal.inspector.width - 640) < 1,
+              'Two-pane wide previews retain portrait proportions until the editor reaches its width limit');
+            assert(cards.breast.width <= 361 && cards.skirt.width <= 361 && cards.skirt.x > cards.breast.x && Math.abs(cards.breast.y - cards.skirt.y) <= 2,
+              'Freed wide space holds two compact independent editing cards beside one another');
+          } else {
+            assert(test.normal.inspector.width >= 319 && test.normal.inspector.width <= 321, 'Tall1200 two-pane viewport retains the bounded320px editor');
+            assert(cards.breast.width >= 259 && cards.skirt.width >= 259 && Math.abs(cards.skirt.x - cards.breast.x) <= 2 && cards.skirt.y > cards.breast.y,
+              'A bounded320px editor uses usable single-column cards rather than two tiny forced columns');
+          }
+          assert(test.normal.inspector.right >= profile.width - 24, 'Wide editing uses the available width rather than leaving an empty outer gutter');
+          if (profile.id === 'wide-tablet') test.wideCards = cards; else test.tallCards = cards;
         }
         test.hud = await assertHud(page, !!profile.short, { profile: profile.id, locale: 'ko', mode: 'normal' }); assert.deepEqual(retained(await state(page)), edited);
         test.cards = await collapseCards(page); test.normalImage = await capture(page, cdp, profile.id + '-normal.png');
