@@ -8,6 +8,7 @@ import struct
 import UnityPy
 from UnityPy.enums import ClassIDType
 from UnityPy.helpers.Tpk import get_typetree_node
+from UnityPy.helpers.TypeTreeNode import TypeTreeNode
 
 
 def _defaults(node):
@@ -18,6 +19,13 @@ def _defaults(node):
     if node.m_Type in ("float", "double"): return 0.0
     if node.m_Children: return {child.m_Name: _defaults(child) for child in node.m_Children}
     return 0
+
+
+def _copy_typetree(node):
+    # Native Boost nodes cannot be pickled/deepcopied. from_list creates new
+    # nodes, but each dictionary must omit the original cached child list.
+    return TypeTreeNode.from_list([{key: value for key, value in row.items() if key != "m_Children"}
+                                   for row in node.to_dict_list()])
 
 
 def bundle_fixture(platform=13, variant="primary", *, unit_breast=False):
@@ -47,7 +55,7 @@ def bundle_fixture(platform=13, variant="primary", *, unit_breast=False):
                             "scaledValue": transforms[name].read_typetree()["m_LocalScale"]}
                            for name in ("BreastSize", "HipsSize")]
     component.save_typetree(tree)
-    node = copy.deepcopy(get_typetree_node(142, asset.version))
+    node = _copy_typetree(get_typetree_node(142, asset.version))
     for index, part in enumerate(node.traverse()):
         for field in ("m_TypeFlags", "m_MetaFlag", "m_RefTypeHash"):
             if getattr(part, field, None) is None: setattr(part, field, 0)

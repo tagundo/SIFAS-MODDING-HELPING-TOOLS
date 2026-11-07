@@ -9,7 +9,25 @@ import zipfile
 from webtools.core import model_edits as edits, model_viewer, viewer_archive
 from webtools.core import viewer_mod_flow as flow, viewer_scene_format as fmt, viewer_scene_roles as roles
 from webtools.jobs import Job
-from viewer_scene_fixture import bundle_fixture
+from viewer_scene_fixture import bundle_fixture, _copy_typetree
+from UnityPy.helpers.Tpk import get_typetree_node
+
+
+class SceneFixtureTests(unittest.TestCase):
+    def test_typetree_clone_does_not_pickle_or_mutate_the_shared_cache(self):
+        cached = get_typetree_node(142, (2018, 4, 36, 0))
+        snapshot = [{key: value for key, value in row.items() if key != "m_Children"}
+                    for row in cached.to_dict_list()]
+        original_nodes = list(cached.traverse())
+        cloned = _copy_typetree(cached)
+        self.assertEqual(snapshot, [{key: value for key, value in row.items() if key != "m_Children"}
+                                    for row in cloned.to_dict_list()])
+        self.assertFalse({id(node) for node in original_nodes} & {id(node) for node in cloned.traverse()})
+        cloned.m_Children[0].m_Name = "owned_fixture_name"
+        cloned.m_Children.clear()
+        self.assertEqual(snapshot, [{key: value for key, value in row.items() if key != "m_Children"}
+                                    for row in cached.to_dict_list()])
+        self.assertEqual([id(node) for node in original_nodes], [id(node) for node in cached.traverse()])
 
 
 class SceneRolesTests(unittest.TestCase):
