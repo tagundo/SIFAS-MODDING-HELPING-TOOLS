@@ -183,10 +183,10 @@ function switchTab(name) {
   if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
 }
 
-function openModelViewer(paths) {
+function openModelViewer(paths, variants) {
   switchTab("viewer");
   $("#console").classList.add("hidden");
-  return window.ModelViewer ? window.ModelViewer.open(paths) : Promise.resolve();
+  return window.ModelViewer ? window.ModelViewer.open(paths, variants) : Promise.resolve();
 }
 
 // ------------------------------------------------------------------- tools

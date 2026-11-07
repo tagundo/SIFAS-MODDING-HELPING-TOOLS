@@ -58,7 +58,7 @@
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) lastPackage = null;
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
-      element("viewer-save").disabled = !authoring || !authored.edits.length || !!(authored.unsupported && authored.unsupported.length);
+      element("viewer-save").disabled = !authoring || (!authored.edits.length && !metadata.allowEmptySceneReset) || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : "";
       refreshModForm(c, rigState, authored, authoring);
       element("viewer-recipe-open").disabled = !authoring;
@@ -199,7 +199,7 @@
       element("viewer-mod-counterpart-clear").disabled = !authoring || !counterpartPath;
       var owner = characters.value || metadata.characterId;
       element("viewer-mod-rina-fields").hidden = !!owner && Number(owner) !== 209;
-      var enabled = authoring && validName && authored.edits.length && !(authored.unsupported || []).length;
+      var enabled = authoring && validName && (authored.edits.length || (c.editing || {}).allowEmptySceneReset || (c.editing || {}).allowEmptyScenePackage) && !(authored.unsupported || []).length;
       ["viewer-save-mod", "viewer-add-to-game"].forEach(function (id) { element(id).disabled = !enabled; element(id).title = element("viewer-save").title; });
       var body = Object.assign({}, authored); delete body.unsupported;
       alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions())]);
@@ -284,11 +284,11 @@
       }).sort(function (a, b) { return a.node - b.node; });
       return JSON.stringify(canonical);
     }
-    function captureSave() {
+    function captureSave(forPackage) {
       var c = context(), authored = editingState();
       if (!c.current || !c.editing || !c.editing.available || reviewingSaved) throw new Error("Open the original model before saving body edits.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
-      if (!authored.edits.length) throw new Error("Change a body value before saving.");
+      if (!authored.edits.length && !c.editing.allowEmptySceneReset && !(forPackage && c.editing.allowEmptyScenePackage)) throw new Error("Change a body value before saving.");
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
       return { body: body, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
@@ -349,7 +349,7 @@
       if (busy || disposed) return;
       var snapshot, parameters = modOptions(), name = parameters.display_name;
       try {
-        snapshot = captureSave();
+        snapshot = captureSave(true);
         if (!name || name.length > 120) throw new Error("Enter a mod name of 1 to 120 characters.");
       } catch (failure) { say(failure.message, "error"); return; }
       snapshot.modOptions = JSON.stringify(parameters);

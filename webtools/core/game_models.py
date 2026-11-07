@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -40,6 +41,18 @@ def _extractor():
 
 def _readonly(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def _installed_scene(root, suit_id):
+    """The application owns this resolver; requests never provide its path."""
+    root = Path(root).resolve()
+    if (root / "costume_scene_installer.py").is_file() and str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from costume_scene_installer import installed_scene_source
+    except ImportError:
+        return None
+    return installed_scene_source(suit_id, root=root)
 
 
 def _regions(root):
@@ -218,6 +231,18 @@ def validate_selection(root, params, language="en"):
         if not row or not row[2] or not isinstance(row[0], int):
             raise ValueError("The selected costume is no longer available. Refresh the list.")
         owner, name, model = row
+        if owner == 209:
+            scene = _installed_scene(root, suit_id)
+            if scene is not None:
+                return {"region": region, "suit_id": suit_id, "owner": owner, "variant": params["variant"],
+                        "download": params["download"], "scene_source": scene, "model": model,
+                        "attach_key": None, "recolours": []}
+            try:
+                board = db.execute("SELECT model_asset_path FROM m_suit_view WHERE suit_master_id=? AND view_status=1", (suit_id,)).fetchone()
+            except sqlite3.Error:
+                board = None
+            if board and board[0] != model:
+                raise ValueError("This costume has separate Navi/MV models but no verified canonical archive. Open its original scene Mod ZIP to edit it.")
         original_id, attach_key = _attachment(db, suit_id, owner, model)
         base_model = model
         if params["variant"] == "unmasked":
@@ -424,9 +449,30 @@ def run_import(job, *, repo_root, output_root, record):
     temporary, temporary_manifest = None, None
     try:
         deadline = time.monotonic() + IMPORT_SECONDS
-        extractor = _extractor()
         root = _safe_directory(Path(output_root))
         _check(job, deadline)
+        if record.get("scene_source") is not None:
+            scene = _installed_scene(repo_root, record["suit_id"])
+            if scene is None or scene != record["scene_source"]:
+                raise ValueError("The installed scene costume changed. Refresh the game asset list.")
+            source = Path(scene["archive_path"])
+            destination = root / ("scene-" + scene["sha256"] + "-" + record["variant"] + ".zip")
+            if destination.is_symlink():
+                raise ValueError("The canonical scene cache cannot be a symbolic link.")
+            if destination.exists():
+                if _sha(destination) != scene["sha256"]:
+                    raise ValueError("The cached canonical scene package changed.")
+            else:
+                with source.open("rb") as incoming, destination.open("xb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            if _sha(destination) != scene["sha256"]:
+                destination.unlink(missing_ok=True)
+                raise ValueError("The canonical scene package changed while copying.")
+            _check(job, deadline)
+            job.add_output(str(destination))
+            job.progress(1, 1)
+            return "Canonical Rina scene costume prepared for re-editing."
+        extractor = _extractor()
         resources = [record] + record["recolours"]
         found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]

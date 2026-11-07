@@ -114,6 +114,7 @@
     async function runImport() {
       if (busy || !costume.value) return;
       var token = ++generation;
+      var importedVariant = variant.value || "primary";
       clearTimeout(timer); stopRequest(); setBusy(true); setStatus("Preparing game assets…"); log.textContent = ""; log.hidden = false; progress.hidden = false; progress.removeAttribute("value");
       try {
         var response = await fetch("/api/viewer/game/import?lang=" + encodeURIComponent(language()), {
@@ -140,7 +141,8 @@
               var paths = item.output_paths;
               if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string" || !paths[0]) throw new Error("The game model could not be loaded.");
               dialog.close(); button.focus();
-              if (typeof window.openModelViewer === "function") await window.openModelViewer(paths);
+              if (typeof window.openModelViewer === "function") await window.openModelViewer(paths,
+                /\.zip$/i.test(paths[0]) ? { 0: importedVariant } : null);
             }
           } catch (error) { completed = true; finishEvents(); cancelJob(); setBusy(false); progress.hidden = true; setStatus(error.message || "The game model could not be loaded.", true); }
         };

@@ -226,7 +226,7 @@ def validate_options(display_name, character_id, counterpart_path, selected_vari
 
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
                    character_id=None, counterpart_path=None, selected_variant=None, job):
-    from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits
+    from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
     if not _PACKAGE_SLOT.acquire(blocking=False):
         raise ValueError("Another Mod ZIP is being prepared. Try again shortly.")
@@ -242,11 +242,17 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         selection = {"counterpart_path": counterpart_path, "selected_variant": selected_variant} if counterpart_path else None
         pair = viewer_mod_sources.resolve_pair(context, result, repo_root=repo_root,
             output_root=cache_root, job=job, selection=selection, receipts=cached_receipts(context, cache_root))
-        paired = viewer_mod_pair_edits.apply_pair_edits(context, result, normalized, pair=pair, job=job)
+        paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, normalized, pair=pair, job=job)
+                  if normalized["edits"] else {"result": result, "pair": pair, "summary": []})
         result, pair = paired["result"], paired["pair"]
+        if paired.get("summary"):
+            result["paired_edits"] = paired["summary"]
         _check(job)
         packed = viewer_mod_package.package_saved_export(result, Path(result["recipe_path"]).parent / "mod",
             display_name=name, chara_id=character_id, pair=pair, log=job.log, should_stop=job.should_stop)
+        if viewer_scene_roles.should_package(context, normalized, packed, token):
+            packed = viewer_scene_roles.package_scene(context, result, normalized, pair=pair, packed=packed,
+                token=token, repo_root=repo_root, receipts=cached_receipts(context, cache_root), log=job.log)
         _check(job)
         path = str(Path(packed["package_path"]).resolve())
         digest, size = _hash_file(path)
@@ -258,6 +264,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
                   "platform": packed.get("platform"),
                   "variants": [{"id": key, "label": value} for key, value in packed.get("variant_labels", {}).items()],
                   "display_name": name, "installable": True}
+        if packed.get("format"):
+            public.update(format=packed["format"], version=packed["version"])
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
         receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized,

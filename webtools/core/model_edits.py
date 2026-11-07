@@ -406,7 +406,7 @@ def validate_state(token, state):
     if not isinstance(unsupported, list) or unsupported:
         _fail("Reset unsupported preview-only changes before exporting body edits.")
     edits = state.get("edits")
-    if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_EDITS:
+    if not isinstance(edits, list) or not (0 if session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:

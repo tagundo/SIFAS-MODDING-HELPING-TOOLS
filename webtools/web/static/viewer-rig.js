@@ -1228,7 +1228,7 @@
       }
       return state;
     }
-    function restoreAuthoringState(state) {
+    function restoreAuthoringState(state, restoreOptions) {
       if (!state || state.version !== 1 || !Array.isArray(state.edits) || state.edits.length > bones.length || state.savedSettingsEnabled !== true) {
         throw new Error("The body edit recipe is invalid.");
       }
@@ -1279,7 +1279,9 @@
       body = { breastPreset: "loaded" }; skirtOverrides = {};
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
-      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); initializeNodeCards(); changed();
+      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode();
+      if (!restoreOptions || restoreOptions.initializeNodeCards !== false) initializeNodeCards();
+      changed();
     }
     function motionScaleTargets() {
       if (!currentClip || !currentClip.animation) return [];

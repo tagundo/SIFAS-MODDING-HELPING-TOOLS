@@ -292,6 +292,17 @@ repacking is unnecessary and the source files remain unchanged.
   and unmasked models, including when you edit only one variant. Each variant
   uses its own original transforms and validated editing session. Missing or mismatched counterpart data prevents
   packaging instead of producing an incomplete installable costume.
+  Rina **BreastSize/HipsSize Node Scaling** packages also include a separate
+  board model for Home/outfit preview, alongside the two MV models. The MV
+  body edits are not applied again. Supplied Android/iOS versions each keep
+  their native format; missing versions are not generated. Canonical originals,
+  source-bound recipes and exact source ZIP metadata stay inside the package
+  for later editing, so reopening, changing Node to Mesh, or resetting starts
+  from the original shape. Other Node controls retain their existing behavior.
+  Previously installed Rina mods are not rewritten automatically. Reopen the
+  original ZIP or saved edited source, choose **Save mod ZIP** or **Add to game**,
+  then select the newly installed costume. Old app versions cannot install
+  these scene-aware ZIPs.
 - **Open saved result** inspects the actual serialized output. Persistent body
   controls stay locked while inspecting it; pose, motion, camera and expressions
   remain available. **Re-edit from original** restores the saved editing recipe

@@ -1321,6 +1321,9 @@
           initializeNodeCards: !keepView,
           onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
         restoreVariantPose(previousPose);
+        if (prepared.editing && prepared.editing.initialState) {
+          rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
+        }
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -1746,7 +1749,7 @@
     if (pendingOpen) {
       var pending = pendingOpen;
       pendingOpen = null;
-      Promise.resolve(open(pending.paths)).then(pending.resolve, pending.resolve);
+      Promise.resolve(open(pending.paths, pending.variants)).then(pending.resolve, pending.resolve);
     }
   }
 
@@ -1796,10 +1799,10 @@
     window.requestAnimationFrame(function () { resize(); requestRender(); });
   }
 
-  function open(nextPaths) {
+  function open(nextPaths, nextVariants) {
     if (!mounted) return new Promise(function (resolve) {
       if (pendingOpen) pendingOpen.resolve();
-      pendingOpen = { paths: nextPaths, resolve: resolve };
+      pendingOpen = { paths: nextPaths, variants: nextVariants, resolve: resolve };
     });
     var unique = [];
     (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).forEach(function (path) {
@@ -1807,6 +1810,11 @@
     });
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
     paths = unique;
+    if (nextVariants && typeof nextVariants === "object") {
+      paths.forEach(function (path, index) {
+        if (["primary", "unmasked"].indexOf(nextVariants[index]) >= 0) variantChoices[path] = nextVariants[index];
+      });
+    }
     Object.keys(variantChoices).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantChoices[path]; });
     Object.keys(variantOptions).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantOptions[path]; });
     renderFiles();
