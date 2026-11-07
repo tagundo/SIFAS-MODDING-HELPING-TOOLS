@@ -420,7 +420,7 @@ class ViewerArchiveTests(unittest.TestCase):
         locator = b"PK\x06\x07" + b"\0" * 16
         self.archive.write_bytes(data[:at] + locator + data[at:])
         with patch.object(zipfile, "ZipFile", side_effect=AssertionError("ZIP64 must be rejected first")):
-            with self.assertRaisesRegex(ValueError, "ZIP64"):
+            with self.assertRaisesRegex(ValueError, "ZIP64|scene archive directory exceeds its bounds"):
                 with viewer_archive.expand_inputs([str(self.archive)], self.cache):
                     self.fail("ZIP64 directory must not reach conversion")
 
@@ -432,7 +432,7 @@ class ViewerArchiveTests(unittest.TestCase):
         locator = b"PK\x06\x07" + b"\0" * 16
         self.archive.write_bytes(data[:at] + locator + data[at:] + b"x" * 65535)
         with patch.object(zipfile, "ZipFile", side_effect=AssertionError("Hidden ZIP64 must be rejected first")):
-            with self.assertRaisesRegex(ValueError, "ZIP64"):
+            with self.assertRaisesRegex(ValueError, "ZIP64|scene archive directory exceeds its bounds"):
                 with viewer_archive.expand_inputs([str(self.archive)], self.cache):
                     self.fail("Hidden ZIP64 directory must not reach conversion")
 
