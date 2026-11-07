@@ -92,8 +92,8 @@
       JSON.stringify(variantsFor(paths)) === JSON.stringify(variants);
   }
   function variantsLoaded() { return JSON.stringify(variantsFor(paths)) === JSON.stringify(loadedVariants); }
-  function readVariantOptions(records, selected, variants) {
-    var result = Object.create(null), indices = Object.create(null);
+  function readVariantOptions(records, selected, variants, requested) {
+    var result = Object.create(null), indices = Object.create(null), resolved = variants.slice();
     if (records === undefined) records = [];
     if (!Array.isArray(records) || records.length > selected.length) throw new Error(t("The costume variant could not be selected."));
     records.forEach(function (record) {
@@ -101,14 +101,20 @@
       if (typeof index !== "number" || Math.floor(index) !== index || index < 0 || index >= selected.length ||
           indices[index] || !Array.isArray(record.choices) || record.choices.length !== 2 ||
           record.choices.indexOf("primary") < 0 || record.choices.indexOf("unmasked") < 0 ||
-          record.selected !== variants[index]) throw new Error(t("The costume variant could not be selected."));
+          ["primary", "unmasked"].indexOf(record.selected) < 0 ||
+          Object.prototype.hasOwnProperty.call(requested, index) && record.selected !== variants[index]) {
+        throw new Error(t("The costume variant could not be selected."));
+      }
       indices[index] = true;
+      resolved[index] = record.selected;
       result[selected[index]] = { selected: record.selected, choices: ["primary", "unmasked"] };
     });
     selected.forEach(function (path, index) {
-      if (variants[index] !== "primary" && !result[path]) throw new Error(t("The costume variant could not be selected."));
+      if ((variants[index] !== "primary" || Object.prototype.hasOwnProperty.call(requested, index)) && !result[path]) {
+        throw new Error(t("The costume variant could not be selected."));
+      }
     });
-    return result;
+    return { options: result, variants: resolved };
   }
 
   function renderVariantOptions() {
@@ -1237,12 +1243,13 @@
     var selectedVariants = variantsFor(selected);
     var archiveVariants = {};
     selected.forEach(function (path, index) {
-      if (variantOptions[path] || selectedVariants[index] !== "primary") archiveVariants[index] = selectedVariants[index];
+      if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) archiveVariants[index] = selectedVariants[index];
     });
     var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
     if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
     var pendingModel = null;
     var pendingMaterials = null;
+    var committedVariants = null;
     function discard() {
       if (pendingMaterials) pendingMaterials.dispose();
       if (pendingModel) disposeObject(pendingModel);
@@ -1259,7 +1266,10 @@
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
-      var nextVariantOptions = readVariantOptions(prepared.variants, selected, selectedVariants);
+      // Omitted archive choices may use the server's declared default. Keep
+      // that resolution local until every asynchronous stale-result guard passes.
+      var resolved = readVariantOptions(prepared.variants, selected, selectedVariants, archiveVariants);
+      var nextVariantOptions = resolved.options, resolvedVariants = resolved.variants;
       if (typeof prepared.url !== "string" || !/^\/api\/viewer\/model\/[a-zA-Z0-9_-]+\.glb$/.test(prepared.url)) {
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
@@ -1297,7 +1307,7 @@
       }
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
       var keepView = !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
-        selectedAutoFace === loadedAutoFace && JSON.stringify(selectedVariants) !== JSON.stringify(loadedVariants);
+        selectedAutoFace === loadedAutoFace && JSON.stringify(resolvedVariants) !== JSON.stringify(loadedVariants);
       var previousPose = keepView && rigController ? rigController.getState() : null;
       disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
@@ -1307,7 +1317,9 @@
       metadata = prepared;
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
-      loadedVariants = selectedVariants;
+      Object.keys(nextVariantOptions).forEach(function (path) { variantChoices[path] = nextVariantOptions[path].selected; });
+      loadedVariants = resolvedVariants.slice();
+      committedVariants = loadedVariants;
       variantOptions = nextVariantOptions;
       node("tab-viewer").classList.add("viewer-has-model");
       scene.add(model);
@@ -1344,7 +1356,7 @@
       if (current === generation) {
         controller = null;
         setLoading(false);
-        if (!sameSelection(selected, selectedAutoFace, selectedVariants)) filesChanged();
+        if (!sameSelection(selected, selectedAutoFace, committedVariants || selectedVariants)) filesChanged();
       }
     }
   }
@@ -1638,7 +1650,11 @@
           if (Array.isArray(nextVariants) && nextVariants.length !== nextPaths.length || Object.keys(nextVariants).some(function (key) {
             return !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= nextPaths.length || ["primary", "unmasked"].indexOf(nextVariants[key]) < 0;
           })) throw new Error("The saved costume variant choices are invalid.");
-          nextPaths.forEach(function (path, index) { variantChoices[path] = nextVariants[index] || "primary"; });
+          nextPaths.forEach(function (path, index) {
+            // Raw export results supply an empty map, not an explicit archive
+            // choice. Do not turn their fallback primary into a ZIP-only option.
+            if (Object.prototype.hasOwnProperty.call(nextVariants, index)) variantChoices[path] = nextVariants[index];
+          });
         }
         await open(nextPaths);
         if (destroyed || loading || JSON.stringify(loadedPaths) !== JSON.stringify(nextPaths)) return;
@@ -1812,7 +1828,8 @@
     paths = unique;
     if (nextVariants && typeof nextVariants === "object") {
       paths.forEach(function (path, index) {
-        if (["primary", "unmasked"].indexOf(nextVariants[index]) >= 0) variantChoices[path] = nextVariants[index];
+        if (Object.prototype.hasOwnProperty.call(nextVariants, index) &&
+            ["primary", "unmasked"].indexOf(nextVariants[index]) >= 0) variantChoices[path] = nextVariants[index];
       });
     }
     Object.keys(variantChoices).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantChoices[path]; });

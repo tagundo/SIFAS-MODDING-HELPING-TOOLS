@@ -104,7 +104,7 @@ def _dictionary(root, region, language):
     return None
 
 
-def _views(db, suit_id, owner):
+def _views(db, suit_id, owner, canonical_candidates=()):
     result = [{"value": "primary", "label": "Default costume"}]
     if owner == 209:
         try:
@@ -115,6 +115,13 @@ def _views(db, suit_id, owner):
                 result.append({"value": "unmasked", "label": "Without mask"})
         except sqlite3.Error:
             pass
+    elif suit_id in canonical_candidates:
+        try:
+            row = db.execute("SELECT model_asset_path FROM m_suit_view WHERE suit_master_id=? AND view_status=2", (suit_id,)).fetchone()
+            if row and row[0]:
+                result.append({"value": "unmasked", "label": "Without mask"})
+        except sqlite3.Error:
+            pass  # Selection still verifies and reports invalid provenance.
     return result
 
 
@@ -127,6 +134,15 @@ def catalog(root, *, language="en", region="", character="", search=""):
     region, regions = _region(root, region, language)
     extractor = _extractor()
     names = _names(extractor)
+    source_root = Path(root).resolve()
+    if (source_root / "costume_scene_clones.py").is_file() and str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    try:
+        from costume_scene_clones import canonical_clone_candidates
+    except ImportError:
+        canonical_candidates = set()
+    else:
+        canonical_candidates = canonical_clone_candidates(root=source_root)
     with closing(_readonly(Path(root) / "assets/db" / region / "masterdata.db")) as db:
         members = [int(row[0]) for row in db.execute("SELECT DISTINCT member_m_id FROM m_suit WHERE model_asset_path IS NOT NULL AND model_asset_path<>'' ORDER BY member_m_id") if isinstance(row[0], int) and 0 < row[0] < 10000]
         try:
@@ -149,7 +165,7 @@ def catalog(root, *, language="en", region="", character="", search=""):
                 if query and query not in name.casefold() and query not in member.casefold():
                     continue
                 options.append({"value": f"suit:{suit}", "label": f"{member} — {name}" if query else name,
-                                "variants": _views(db, suit, owner)})
+                                "variants": _views(db, suit, owner, canonical_candidates)})
                 if len(options) >= MAX_OPTIONS:
                     break
         finally:
@@ -231,12 +247,14 @@ def validate_selection(root, params, language="en"):
         if not row or not row[2] or not isinstance(row[0], int):
             raise ValueError("The selected costume is no longer available. Refresh the list.")
         owner, name, model = row
+        scene = _installed_scene(root, suit_id)
+        if scene is not None:
+            if scene.get("target_member_id", 209) != owner:
+                raise ValueError("The canonical costume owner does not match its installed archive.")
+            return {"region": region, "suit_id": suit_id, "owner": owner, "variant": params["variant"],
+                    "download": params["download"], "scene_source": scene, "model": model,
+                    "attach_key": None, "recolours": []}
         if owner == 209:
-            scene = _installed_scene(root, suit_id)
-            if scene is not None:
-                return {"region": region, "suit_id": suit_id, "owner": owner, "variant": params["variant"],
-                        "download": params["download"], "scene_source": scene, "model": model,
-                        "attach_key": None, "recolours": []}
             try:
                 board = db.execute("SELECT model_asset_path FROM m_suit_view WHERE suit_master_id=? AND view_status=1", (suit_id,)).fetchone()
             except sqlite3.Error:

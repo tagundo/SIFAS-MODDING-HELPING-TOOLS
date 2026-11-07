@@ -2,6 +2,7 @@
 import copy
 import io
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,6 +44,16 @@ def fixture(platforms=("android",)):
     return manifest, files
 
 
+def shared_fixture(platforms=("android",)):
+    manifest, files = fixture(platforms)
+    manifest.update(version=scene.SHARED_VERSION, requires=[scene.SHARED_CAPABILITY],
+                    target_member_id=209, default_variant="primary")
+    for family in manifest["platforms"].values():
+        del files[family["navi_board"]["member"]]
+        family["navi_board"] = copy.deepcopy(family["mv_board"])
+    return manifest, files
+
+
 def zip_bytes(entries):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -64,6 +75,80 @@ class SceneFormatTests(unittest.TestCase):
                 data = scene.encode_package(manifest, files, native_validator=native)
                 self.assertEqual(scene.read_package(data, native_validator=native), {"manifest": manifest, "files": files})
                 self.assertEqual(sum(len(roles) for roles in manifest["platforms"].values()), len(platforms) * 3)
+
+    def test_shared_v2_native_families_use_exactly_two_execution_resources(self):
+        for platforms in (("android",), ("ios",), ("android", "ios")):
+            with self.subTest(platforms=platforms):
+                manifest, files = shared_fixture(platforms)
+                encoded = scene.encode_package(manifest, files, native_validator=native)
+                self.assertEqual(scene.read_package(encoded, native_validator=native), {"manifest": manifest, "files": files})
+                for family in manifest["platforms"].values():
+                    self.assertEqual(family["navi_board"], family["mv_board"])
+                    self.assertEqual(len({ref["member"] for ref in family.values()}), 2)
+        self.assertEqual((scene.VERSION, scene.CAPABILITY), (1, "rina-scene-routing-v1"))
+
+    def test_shared_v2_requires_explicit_target_and_default_variant(self):
+        original, files = shared_fixture()
+        for key in ("target_member_id", "default_variant"):
+            changed = copy.deepcopy(original); del changed[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                scene.validate(changed, files, native_validator=native)
+        for target, variant in ((1, "primary"), (6, "unmasked"), (209, "primary")):
+            scene.validate({**original, "target_member_id": target, "default_variant": variant}, files, native_validator=native)
+        for target, variant in ((True, "primary"), (0, "primary"), (-1, "primary"), (2 ** 31, "primary"),
+                                (1.0, "primary"), (209, "unmasked"), (6, None), (6, "board")):
+            with self.subTest(target=target, variant=variant), self.assertRaises(ValueError):
+                scene.validate({**original, "target_member_id": target, "default_variant": variant}, files, native_validator=native)
+
+    def test_shared_capability_is_versioned_without_weakening_v1(self):
+        for producer in (fixture, shared_fixture):
+            original, files = producer()
+            for version, requires in ((1, [scene.SHARED_CAPABILITY]), (2, [scene.CAPABILITY]),
+                                      (3, [scene.SHARED_CAPABILITY]), (True, [scene.SHARED_CAPABILITY])):
+                with self.subTest(producer=producer.__name__, version=version, requires=requires), self.assertRaises(ValueError):
+                    scene.validate({**original, "version": version, "requires": requires}, files, native_validator=native)
+
+    def test_shared_v2_rejects_distinct_board_and_bare_alias(self):
+        manifest, files = shared_fixture()
+        changed = copy.deepcopy(manifest)
+        new_ref = scene.reference("android/not-shared.unity", b"13:independent-board", "android")
+        changed["platforms"]["android"]["navi_board"] = new_ref
+        with self.assertRaisesRegex(ValueError, "alias"):
+            scene.validate(changed, {**files, new_ref["member"]: b"13:independent-board"}, native_validator=native)
+        changed = copy.deepcopy(manifest)
+        changed["platforms"]["android"]["mv_unmasked"] = copy.deepcopy(changed["platforms"]["android"]["mv_board"])
+        with self.assertRaisesRegex(ValueError, "separate bare"):
+            scene.validate(changed, files, native_validator=native)
+
+    def test_shared_bare_cannot_be_duplicate_board_bytes_under_another_name(self):
+        manifest, files = shared_fixture()
+        reference = manifest["platforms"]["android"]["mv_unmasked"]
+        board = files[manifest["platforms"]["android"]["mv_board"]["member"]]
+        files[reference["member"]] = board
+        manifest["platforms"]["android"]["mv_unmasked"] = scene.reference(reference["member"], board, "android")
+        with self.assertRaisesRegex(ValueError, "separate bare"):
+            scene.validate(manifest, files, native_validator=native)
+
+    def test_claimed_resource_cache_never_bypasses_a_second_native_family(self):
+        for producer in (fixture, shared_fixture):
+            manifest, files = producer()
+            for key in ("platforms", "canonical_goldens", "authoring", "dependencies", "navi_sync"):
+                manifest[key]["ios"] = copy.deepcopy(manifest[key]["android"])
+            with self.subTest(producer=producer.__name__), self.assertRaisesRegex(ValueError, "native Android/iOS"):
+                scene.validate(manifest, files, native_validator=native)
+
+    def test_shared_sync_limits_are_positive_persisted_float32_endpoints(self):
+        manifest, files = shared_fixture()
+        low = struct.unpack("<f", struct.pack("<f", .2))[0]
+        for value in (low, 1, 2.5):
+            changed = copy.deepcopy(manifest); changed["navi_sync"]["android"] = {"BreastSize": [value] * 3}
+            scene.validate(changed, files, native_validator=native)
+        for value in (.199999, 0, -.8, 2.500001, float("nan"), True):
+            changed = copy.deepcopy(manifest); changed["navi_sync"]["android"] = {"BreastSize": [value] * 3}
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                scene.validate(changed, files, native_validator=native)
+        old, old_files = fixture(); old["navi_sync"]["android"] = {"BreastSize": [-.5] * 3}
+        scene.validate(old, old_files, native_validator=native)
 
     def test_old_version_guard_and_magic_are_exact_not_executable_metadata(self):
         manifest, files = fixture()

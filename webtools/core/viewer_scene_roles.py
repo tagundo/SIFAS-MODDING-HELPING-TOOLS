@@ -1,7 +1,8 @@
-"""Derive isolated Rina execution roles after canonical body editing completes.
+"""Derive shared Rina board execution after canonical body editing completes.
 
-Canonical originals and recipes remain the only editing authority. This module
-does not apply another NodeScaling or mesh operation to an MV golden.
+Canonical originals, recipes and MV goldens remain unchanged. The shared
+board copy synchronizes only its supported authored scale defaults, followed
+by identity isolation; it never reapplies NodeScaling or bakes another mesh.
 """
 from collections import OrderedDict
 from contextlib import closing
@@ -9,6 +10,8 @@ import ast
 import copy
 import io
 import json
+import math
+import struct
 from pathlib import Path
 import secrets
 import sqlite3
@@ -62,6 +65,39 @@ def _literal_models(raw):
             _require(platform is not None and (platform, variant) not in result, "The scene original family is ambiguous.")
             result[platform, variant] = data
     return result
+
+
+def _literal_faces(raw):
+    """Read declared canonical face companions without executing metadata."""
+    from . import viewer_mod_pair_edits
+    _require(viewer_mod_pair_edits._zip_declarations(raw), "The preserved source has no verified costume family.")
+    fields = {"costume_facedynamic_file", "costume_facedynamic_file_ios"}
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        manifests = [info for info in archive.infolist() if Path(info.filename).name.lower() == "modinstall.txt"]
+        _require(len(manifests) == 1, "The preserved source face declarations are ambiguous.")
+        values = {}
+        for node in ast.parse(archive.read(manifests[0]).decode("utf-8-sig")).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in fields):
+                key, value = node.targets[0].id, ast.literal_eval(node.value)
+                _require(key not in values or values[key] == value, "The preserved source face declarations conflict.")
+                values[key] = value
+        faces = {}
+        for field, value in values.items():
+            if value in (None, ""):
+                continue
+            _require(isinstance(value, str), "The preserved source face reference is invalid.")
+            relative = fmt._path(value.replace("\\", "/"))
+            member = (Path(manifests[0].filename).parent / relative).as_posix()
+            _require(member in archive.namelist(), "The preserved source face companion is missing.")
+            data = archive.read(member)
+            platform = next((key for key, target in fmt.PLATFORMS.items() if target == fmt._native_platform(data)), None)
+            _require(platform is not None and platform not in faces and
+                     (not field.endswith("_ios") or platform == "ios") and
+                     (field.endswith("_ios") or not values.get("costume_facedynamic_file_ios") or platform == "android"),
+                     "The preserved source face platform is invalid or ambiguous.")
+            faces[platform] = data
+        return faces
 
 
 def _normalize_recipe(recipe, original, name):
@@ -134,26 +170,66 @@ def _originals_and_recipes(context, result, pair, goldens, state):
 
 def _sync_navi(golden, recipe):
     info = edits._inspect(golden)
+    _require(not info["conflicts"], "Conflicting saved Node settings cannot form a shared Rina board.")
     by_identity = {(row["serializedFile"], int(row["transformId"])): row["node"] for row in recipe["nodeIdentities"]}
     allowed = {row["node"] for row in recipe["state"]["edits"] if row["method"] == "node" and "scale" in row}
+    named = {node: info["names"].get(key) for key, node in by_identity.items()}
+    for row in recipe["state"]["edits"]:
+        if row["method"] == "node":
+            _require(named.get(row["node"]) in fmt.SUPPORTED_SCALES and "scale" in row and
+                     not any(kind in row for kind in ("position", "rotation")),
+                     "Shared Rina board export supports only BreastSize/HipsSize scale-only Node edits; reset other Node changes or use mesh baking.")
+    # HOME skips the board scaler. Only the two scale-only targets whose
+    # Common/MV behavior was validated can share an authored execution model.
+    # In particular, explicit inverse-child Node edits must not silently remain
+    # MV-only. Mesh compensation is already baked into the canonical golden.
+    for key, kind in info["records"]:
+        if not edits._close(info["effective"][key][kind], info["authored"][key][kind]):
+            _require(kind == "scale" and info["names"].get(key) in fmt.SUPPORTED_SCALES,
+                     "Shared Rina board export supports only BreastSize/HipsSize Node scales; reset other saved Node changes or use mesh baking.")
     sync, changed = {}, set()
-    before = {(id(obj.assets_file), obj.path_id): obj.get_raw_data() for obj in info["env"].objects}
+    before = {key: obj.get_raw_data() for key, obj in info["objects"].items()}
+    streams = {name: bytes(value.bytes) for name, value in info["env"].file.files.items() if not hasattr(value, "objects")}
     for key, name in info["names"].items():
         if name not in fmt.SUPPORTED_SCALES or (by_identity.get(key) not in allowed and
                 edits._close(info["effective"][key]["scale"], info["authored"][key]["scale"])):
             continue
-        _require(name not in sync and (key, "scale") in info["records"], "The Navi scale target is ambiguous or has no Node setting.")
+        _require(name not in sync and sum(other == name for other in info["names"].values()) == 1 and
+                 (key, "scale") in info["records"], "The Navi scale target is ambiguous or has no Node setting.")
         value = list(info["effective"][key]["scale"])
         tree = info["transforms"][key]
         tree["m_LocalScale"] = edits._d3(value)
         obj = info["objects"][key]
         obj.save_typetree(tree)
-        changed.add((id(obj.assets_file), obj.path_id))
+        changed.add(key)
         sync[name] = value
-    _require(all(obj.get_raw_data() == before[id(obj.assets_file), obj.path_id]
-                 for obj in info["env"].objects if (id(obj.assets_file), obj.path_id) not in changed),
-             "Deriving Navi changed an unrelated object.")
-    return info["env"].file.save(packer="original"), sync
+    result = info["env"].file.save(packer="original")
+    # Check the persisted float32 defaults, including every directly bound
+    # skin bone, against the original client's IllegalSkinMesh limits.
+    checked = edits._inspect(result)
+    _require(set(checked["objects"]) == set(before) and
+             all(obj.get_raw_data() == before[key] for key, obj in checked["objects"].items() if key not in changed),
+             "Deriving the shared Rina board changed an unrelated object.")
+    _require(streams == {name: bytes(value.bytes) for name, value in checked["env"].file.files.items()
+                        if not hasattr(value, "objects")}, "Deriving the shared Rina board changed streamed resources.")
+    low = struct.unpack("<f", struct.pack("<f", .2))[0]
+    skin_bones = set()
+    for obj in checked["env"].objects:
+        if obj.type.name != "SkinnedMeshRenderer":
+            continue
+        file_index = checked["file_indices"][id(obj.assets_file)]
+        for pointer in obj.read_typetree().get("m_Bones", []):
+            key = (file_index, pointer.get("m_PathID")) if pointer.get("m_FileID") == 0 else None
+            skin_bones.add(key)
+            _require(key in checked["authored"] and all(math.isfinite(v) and low <= v <= 2.5
+                     for v in checked["authored"][key]["scale"]),
+                     "A shared Rina board skin bone scale is outside the game's 0.2–2.5 limits.")
+    for key, name in checked["names"].items():
+        if name in sync:
+            _require(key in skin_bones, "The shared Rina scale target is not a directly bound skin bone.")
+            _require(checked["authored"][key]["scale"] == checked["effective"][key]["scale"],
+                     "The shared Rina board endpoint changed while serializing.")
+    return result, sync
 
 
 def _provenance(context, token, repo_root, receipts):
@@ -210,10 +286,12 @@ def _fill_source_provenance(manifest, repo_root):
     manifest["source_provenance"] = proof
 
 
-def expand_scene(path, directory, variant="primary"):
+def expand_scene(path, directory, variant=None):
     """Recover only canonical originals into a deterministic legacy input ZIP."""
     decoded = fmt.read_package(path)
     manifest, files = decoded["manifest"], decoded["files"]
+    if variant is None:
+        variant = manifest.get("default_variant", "primary")
     _require(variant in fmt.VARIANTS, "Choose a valid Rina costume variant.")
     platform = "android" if "android" in manifest["platforms"] else "ios"
     members, values = {}, {"chara_id": 209}
@@ -247,6 +325,10 @@ def expand_scene(path, directory, variant="primary"):
     for source in manifest.get("source_archives", []):
         raw = files[source["file"]["member"]]
         if _literal_models(raw) == originals:
+            canonical_faces = {native: files[dependencies["facedynamic"]["member"]]
+                               for native, dependencies in manifest["dependencies"].items() if dependencies["facedynamic"]}
+            _require(_literal_faces(raw) == canonical_faces,
+                     "The preserved source ZIP's declared face companion does not match the canonical original face. Open the original complete costume ZIP.")
             preserved = raw
             break
     if preserved is not None:
@@ -259,7 +341,9 @@ def expand_scene(path, directory, variant="primary"):
                 archive.writestr(info, raw)
     recipe = _json(files[manifest["authoring"][platform][variant]["recipe"]["member"]])
     return {"path": str(original_zip), "variant": variant, "recipe": recipe,
-            "metadata": {key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")}}
+            "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
+                         "target_member_id": manifest.get("target_member_id", 209),
+                         "default_variant": manifest.get("default_variant", "primary")}}
 
 
 def register_reopened(token, scene):
@@ -284,9 +368,11 @@ def register_reopened(token, scene):
 
 
 def should_package(context, state, packed, token):
+    if session_metadata(token):
+        return True
     if packed.get("chara_id") != 209:
         return False
-    if session_metadata(token) or pending_supported_nodes(context):
+    if pending_supported_nodes(context):
         return True
     names = {node["node"]: node["name"] for node in context["nodes"]}
     return any(row["method"] == "node" and "scale" in row and names.get(row["node"]) in fmt.SUPPORTED_SCALES
@@ -300,7 +386,7 @@ def pending_supported_nodes(context):
 
 
 def package_scene(context, result, state, *, pair, packed, token, repo_root, receipts=(), log=lambda value: None):
-    """Wrap completed canonical MV files; execution copies change identity only."""
+    """Preserve MV goldens and sync/isolate one board copy shared by HOME/MV."""
     from . import bundle_identity
     legacy = Path(packed["package_path"])
     files, goldens, extras = {}, {}, {}
@@ -321,8 +407,11 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
              "A Rina scene costume needs a complete native board/bare family.")
     originals, recipes = _originals_and_recipes(context, result, pair, goldens, state)
     source_id, provenance = _provenance(context, token, repo_root, receipts)
-    manifest = {"format": fmt.FORMAT, "version": fmt.VERSION, "requires": [fmt.CAPABILITY],
-                "character_id": 209, "display_name": packed["display_name"], "platforms": {}, "canonical_goldens": {},
+    previous = session_metadata(token) or {}
+    manifest = {"format": fmt.FORMAT, "version": fmt.SHARED_VERSION, "requires": [fmt.SHARED_CAPABILITY],
+                "character_id": 209, "target_member_id": previous.get("target_member_id", 209),
+                "default_variant": previous.get("default_variant", "primary"),
+                "display_name": packed["display_name"], "platforms": {}, "canonical_goldens": {},
                 "authoring": {}, "thumbnail": None, "dependencies": {}, "navi_sync": {},
                 "source_suit_id": source_id, "source_provenance": provenance}
     def store(member, raw, platform=None):
@@ -336,16 +425,20 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
             role = "mv_board" if variant == "primary" else "mv_unmasked"
             golden = goldens[platform, variant]
             manifest["canonical_goldens"][platform][role] = store(f"goldens/{platform}_{role}.unity", golden, platform)
-            execution, proof = bundle_identity.isolate_verified_bundle(golden, namespace + ":" + platform + ":" + role)
-            manifest["platforms"][platform][role] = store(f"models/{platform}_{role}.unity", execution, platform)
-            proofs[platform + ":" + role] = proof
+            if variant == "unmasked":
+                execution, proof = bundle_identity.isolate_verified_bundle(golden, namespace + ":" + platform + ":" + role)
+                manifest["platforms"][platform][role] = store(f"models/{platform}_{role}.unity", execution, platform)
+                proofs[platform + ":" + role] = proof
             manifest["authoring"][platform][variant] = {
                 "original": store(f"originals/{platform}_{variant}.unity", originals[platform, variant], platform),
                 "recipe": store(f"recipes/{platform}_{variant}.json", json.dumps(recipes[platform, variant], allow_nan=False).encode())}
         navi, sync = _sync_navi(goldens[platform, "primary"], recipes[platform, "primary"])
         navi, proof = bundle_identity.isolate_verified_bundle(navi, namespace + ":" + platform + ":navi_board")
-        manifest["platforms"][platform]["navi_board"] = store(f"models/{platform}_navi_board.unity", navi, platform)
+        shared_board = store(f"models/{platform}_shared_board.unity", navi, platform)
+        manifest["platforms"][platform]["navi_board"] = shared_board
+        manifest["platforms"][platform]["mv_board"] = copy.deepcopy(shared_board)
         proofs[platform + ":navi_board"] = proof
+        proofs[platform + ":mv_board"] = copy.deepcopy(proof)
         manifest["navi_sync"][platform] = sync
         face = extras.get("costume_facedynamic_file_ios" if platform == "ios" and "android" in platforms else "costume_facedynamic_file")
         manifest["dependencies"][platform] = {"facedynamic": store(f"dependencies/{platform}_face.unity", face, platform) if face else None}
@@ -374,5 +467,6 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
         temporary.unlink(missing_ok=True)
     log("Prepared Rina Navi/MV scene-role Mod ZIP: " + destination.name)
     return {**packed, "package_path": str(destination), "sha256": fmt.sha(data), "bytes": len(data),
-            "format": fmt.FORMAT, "version": fmt.VERSION, "scene_roles": manifest["platforms"],
+            "format": fmt.FORMAT, "version": fmt.SHARED_VERSION, "scene_roles": manifest["platforms"],
+            "target_member_id": manifest["target_member_id"], "default_variant": manifest["default_variant"],
             "identity_proofs": proofs, "canonical_goldens": manifest["canonical_goldens"]}

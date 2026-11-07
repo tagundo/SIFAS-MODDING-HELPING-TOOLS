@@ -349,7 +349,7 @@ def expand_inputs(paths, cache_root, variant_choices=None):
         raise ValueError("The model preview cache cannot be a symbolic link.")
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="viewer-scene-", dir=root) as temporary:
-        scene = viewer_scene_roles.expand_scene(paths[0], temporary, choices.get(paths[0], "primary"))
+        scene = viewer_scene_roles.expand_scene(paths[0], temporary, choices.get(paths[0]))
         raw = Path(scene["path"]).read_bytes()
         saved = root / "scene-originals"
         if saved.is_symlink():

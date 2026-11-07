@@ -16,6 +16,8 @@ import zipfile
 FORMAT = "elichika-scene-costume"
 VERSION = 1
 CAPABILITY = "rina-scene-routing-v1"
+SHARED_VERSION = 2
+SHARED_CAPABILITY = "rina-shared-board-v2"
 MANIFEST = "elichika-scene-mod.json"
 PAYLOAD = "resources.payload"
 MAGIC = b"ELICHIKA-SCENE-RESOURCES\x00\x01\n"
@@ -29,6 +31,8 @@ MAX_BYTES = 96 * 1024 * 1024
 MAX_ENTRIES = 128
 MAX_JSON = 512 * 1024
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
+_NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
+MAX_GRAPH_NODES = 32
 
 
 def _require(value, message):
@@ -151,24 +155,91 @@ def _ref(value, files, claimed, *, platform=None, extension=None, native_validat
              "The scene resource is missing or has invalid metadata.")
     raw = files[member]
     _require(len(raw) == value["bytes"] and sha(raw) == value["sha256"], "The scene resource checksum does not match.")
+    if platform is not None:
+        # Aliases may reuse the expensive native read, never the expected
+        # platform constraint of the current role/family.
+        _require(type(value["target_platform"]) is int and value["target_platform"] == PLATFORMS[platform],
+                 "The scene resource does not match its native Android/iOS platform.")
     if member in claimed:
         _require(claimed[member] == value, "The scene resource has conflicting references.")
     else:
         if platform is not None:
-            _require(type(value["target_platform"]) is int and value["target_platform"] == PLATFORMS[platform] and
-                     (native_validator or _native_platform)(raw) == PLATFORMS[platform],
+            _require((native_validator or _native_platform)(raw) == PLATFORMS[platform],
                      "The scene resource does not match its native Android/iOS platform.")
         claimed[member] = value
     return raw
 
 
+def _execution_graph(graph, platforms, files, claimed, native_validator):
+    """Validate transport closure; canonical authoring never reads this graph."""
+    _require(type(graph) is dict and set(graph) == set(platforms),
+             "The execution model graph has incomplete native platforms.")
+    for platform, family in graph.items():
+        _require(type(family) is dict and set(family) == {"nodes", "role_bindings"},
+                 "The execution model graph family is invalid.")
+        nodes, bindings = family["nodes"], family["role_bindings"]
+        _require(type(nodes) is dict and 2 <= len(nodes) <= MAX_GRAPH_NODES and
+                 all(isinstance(key, str) and _NODE_ID.fullmatch(key) for key in nodes),
+                 "The execution model graph node identities exceed their bounds.")
+        _require(type(bindings) is dict and set(bindings) == set(ROLES) and
+                 all(isinstance(value, str) and value in nodes for value in bindings.values()) and
+                 bindings["navi_board"] == bindings["mv_board"] != bindings["mv_unmasked"],
+                 "The execution graph role bindings are invalid.")
+        members, digests = set(), set()
+        for node in nodes.values():
+            _require(type(node) is dict and set(node) == {"resource", "model_dependencies", "shared_shader_dependencies"},
+                     "The execution model graph node is invalid.")
+            ref = node["resource"]
+            _ref(ref, files, claimed, platform=platform, extension=".unity", native_validator=native_validator)
+            _require(ref["member"] not in members and ref["sha256"] not in digests,
+                     "The execution graph has duplicate physical model resources.")
+            members.add(ref["member"]); digests.add(ref["sha256"])
+            dependencies, shaders = node["model_dependencies"], node["shared_shader_dependencies"]
+            _require(type(dependencies) is list and len(dependencies) <= MAX_GRAPH_NODES and
+                     all(isinstance(key, str) and key in nodes for key in dependencies) and
+                     len(set(dependencies)) == len(dependencies),
+                     "An execution model dependency is missing or duplicated.")
+            _require(type(shaders) is list and len(shaders) <= 32 and
+                     all(isinstance(key, str) and 0 < len(key) <= 512 and
+                         not any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in key) for key in shaders) and
+                     len(set(shaders)) == len(shaders),
+                     "An execution shared shader dependency exceeds its bounds.")
+        for role, key in bindings.items():
+            _require(nodes[key]["resource"] == platforms[platform][role],
+                     "An execution graph root does not match its scene role resource.")
+        visiting, visited = set(), set()
+        def visit(key):
+            _require(key not in visiting, "The execution model graph is cyclic.")
+            if key in visited:
+                return
+            visiting.add(key)
+            for dependency in nodes[key]["model_dependencies"]:
+                visit(dependency)
+            visiting.remove(key); visited.add(key)
+        for key in bindings.values():
+            visit(key)
+        _require(visited == set(nodes), "The execution model graph contains unreachable orphan resources.")
+
+
 def validate(manifest, files, *, native_validator=None):
     required = {"format", "version", "requires", "character_id", "display_name", "platforms", "canonical_goldens", "authoring",
                 "thumbnail", "dependencies", "navi_sync", "source_suit_id", "source_provenance"}
-    _require(type(manifest) is dict and required <= set(manifest) <= required | {"source_archives"} and manifest["format"] == FORMAT and
-             type(manifest["version"]) is int and manifest["version"] == VERSION and
-             manifest["requires"] == [CAPABILITY] and type(manifest["character_id"]) is int and
-             manifest["character_id"] == 209, "This scene costume format or capability is unsupported.")
+    _require(type(manifest) is dict and type(manifest.get("version")) is int,
+             "This scene costume format or capability is unsupported.")
+    shared = manifest["version"] == SHARED_VERSION
+    if shared:
+        required |= {"target_member_id", "default_variant"}
+    optional = {"source_archives"} | ({"execution_model_graph"} if shared else set())
+    _require(required <= set(manifest) <= required | optional and manifest["format"] == FORMAT and
+             manifest["version"] == (SHARED_VERSION if shared else VERSION) and
+             manifest["requires"] == [SHARED_CAPABILITY if shared else CAPABILITY] and
+             type(manifest["character_id"]) is int and manifest["character_id"] == 209,
+             "This scene costume format or capability is unsupported.")
+    if shared:
+        target = manifest["target_member_id"]
+        _require(type(target) is int and 0 < target < 2 ** 31 and manifest["default_variant"] in VARIANTS and
+                 (target != 209 or manifest["default_variant"] == "primary"),
+                 "The shared-board costume target or default variant is invalid.")
     name = manifest["display_name"]
     _require(isinstance(name, str) and name == name.strip() and 0 < len(name) <= 120 and
              not any(ord(char) < 32 for char in name), "The scene costume name is invalid.")
@@ -201,7 +272,13 @@ def validate(manifest, files, *, native_validator=None):
         _require(type(roles) is dict and set(roles) == set(ROLES), "Each native platform needs all three scene roles.")
         for value in roles.values():
             _ref(value, files, claimed, platform=platform, extension=".unity", native_validator=native_validator)
-        _require(len({row["member"] for row in roles.values()}) == 3, "Scene roles must refer to distinct model members.")
+        if shared:
+            _require(roles["navi_board"] == roles["mv_board"] and
+                     roles["mv_unmasked"]["member"] != roles["mv_board"]["member"] and
+                     roles["mv_unmasked"]["sha256"] != roles["mv_board"]["sha256"],
+                     "Shared-board roles must alias the same board resource and a separate bare resource.")
+        else:
+            _require(len({row["member"] for row in roles.values()}) == 3, "Scene roles must refer to distinct model members.")
         goldens = manifest["canonical_goldens"][platform]
         _require(type(goldens) is dict and set(goldens) == {"mv_board", "mv_unmasked"},
                  "The canonical MV golden family is incomplete.")
@@ -233,7 +310,10 @@ def validate(manifest, files, *, native_validator=None):
         _require(type(sync) is dict and set(sync) <= SUPPORTED_SCALES, "The scene costume requests an unsupported Navi change.")
         for value in sync.values():
             _require(type(value) is list and len(value) == 3 and all(type(v) in (int, float) and math.isfinite(v) and
-                     1e-8 <= abs(v) <= 1000000 for v in value), "The Navi scale endpoint is invalid.")
+                     (struct.unpack("<f", struct.pack("<f", .2))[0] <= v <= 2.5 if shared else
+                      1e-8 <= abs(v) <= 1000000) for v in value), "The Navi scale endpoint is invalid.")
+    if "execution_model_graph" in manifest:
+        _execution_graph(manifest["execution_model_graph"], platforms, files, claimed, native_validator)
     if manifest["thumbnail"] is not None:
         raw = _ref(manifest["thumbnail"], files, claimed, extension=".png")
         _require(raw.startswith(b"\x89PNG\r\n\x1a\n"), "The scene thumbnail is not a PNG.")

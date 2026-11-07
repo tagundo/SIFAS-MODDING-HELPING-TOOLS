@@ -33,7 +33,7 @@ const state = page => page.evaluate(() => ModelViewer.getState());
     fs.mkdirSync(library, { recursive: true });
     temporary = fs.mkdtempSync(path.join(library, 'viewer-variant-qa-'));
     const first = path.join(temporary, 'first.zip'), second = path.join(temporary, 'second.zip');
-    const companion = path.join(temporary, 'companion.unity');
+    const companion = path.join(temporary, 'companion.unity'), single = path.join(temporary, 'single-model.zip');
     fs.copyFileSync(source, companion);
     execFileSync(process.env.PYTHON_EXECUTABLE || 'python3', ['-c',
       'import pathlib,sys,zipfile;data=pathlib.Path(sys.argv[1]).read_bytes();' +
@@ -41,7 +41,27 @@ const state = page => page.evaluate(() => ModelViewer.getState());
       '\n  z.writestr("board.unity",data);z.writestr("normal.unity",data);' +
       '\n  z.writestr("modinstall.txt","costume_file=\\\"board.unity\\\"\\nrina_unmask_costume_file=\\\"normal.unity\\\"\\n")',
       source, first, second]);
-    const originals = [first, second, companion].map(file => ({ file, hash: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
+    execFileSync(process.env.PYTHON_EXECUTABLE || 'python3', ['-c',
+      'import sys,zipfile\nwith zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED) as z:z.write(sys.argv[1],"single.unity")', companion, single]);
+    const sceneDefault = path.join(temporary, 'default-unmasked.zip');
+    const sceneExplicit = path.join(temporary, 'explicit-board-without-extension');
+    const sceneStale = path.join(temporary, 'stale-default-unmasked.zip');
+    const sceneMalformed = path.join(temporary, 'malformed-selection.zip');
+    // Generate a real production v2 packet with original-bound recipes. The
+    // browser still uses the actual HTTP preparation, parser and GL renderer.
+    execFileSync(process.env.PYTHON_EXECUTABLE || 'python3', ['-c',
+      'import copy,json,pathlib,sys\nsys.path.insert(0,sys.argv[1])\n' +
+      'from test_viewer_scene_roles import SceneRolesTests\n' +
+      'from webtools.core import viewer_scene_format as fmt\n' +
+      'case=SceneRolesTests();case.setUp()\n' +
+      'try:\n token,nodes,_=case.prepare(case.source());_,decoded=case.package(token,case.state(nodes))\n' +
+      ' decoded["manifest"].update(target_member_id=109,default_variant="unmasked")\n' +
+      ' raw=fmt.encode_package(decoded["manifest"],decoded["files"])\n' +
+      ' for name in sys.argv[2:]:pathlib.Path(name).write_bytes(raw)\n' +
+      'finally:case.doCleanups()\n',
+      __dirname, sceneDefault, sceneExplicit, sceneStale, sceneMalformed], { cwd: path.resolve(__dirname, '..') });
+    const originals = [first, second, companion, single, sceneDefault, sceneExplicit, sceneStale, sceneMalformed]
+      .map(file => ({ file, hash: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') }));
     await page.locator('.tab[data-tab="viewer"]').click();
     await page.locator('#viewer-file-options').evaluate(element => { element.open = true; });
     await page.locator('#viewer-auto-face').uncheck();
@@ -159,12 +179,155 @@ const state = page => page.evaluate(() => ModelViewer.getState());
       await page.screenshot({ path: path.join(evidence, 'variant-' + viewport.width + 'x' + viewport.height + '.png') });
     }
     const probe = await page.evaluate(() => ModelViewer.renderProbe()); assert(probe.ready && probe.nonBackgroundSamples > 0 && probe.glError === 0);
+    const defaults = {};
+    async function ready() {
+      await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && !ModelViewer.getState().error);
+      return state(page);
+    }
+    await page.evaluate(file => openModelViewer([file]), sceneDefault);
+    defaults.implicit = await ready();
+    assert.deepEqual(defaults.implicit.archiveVariants, ['unmasked']);
+    assert.deepEqual(defaults.implicit.loadedArchiveVariants, ['unmasked']);
+    assert.equal(await page.locator('#viewer-variant-0').inputValue(), 'unmasked');
+    assert(!requests[requests.length - 1].archive_variants, 'A first file-picker open leaves the server default unspecified');
+    const afterDefaultRequests = requests.length;
+    await frames(page); await frames(page);
+    assert.equal(requests.length, afterDefaultRequests, 'Resolving the declared default must not reload the model');
+    assert(!defaults.implicit.error && defaults.implicit.persistence.available);
+    await page.locator('#viewer-load').click();
+    await ready();
+    assert.deepEqual(requests[requests.length - 1].archive_variants, { '0': 'unmasked' }, 'A committed default is stable on refresh');
+    // A fresh explicit board request must survive even when the valid ZIP has
+    // no .zip suffix. Game Assets uses this same openModelViewer choice API.
+    await page.evaluate(file => openModelViewer([file], { 0: 'primary' }), sceneExplicit);
+    defaults.explicit = await ready();
+    assert.deepEqual(defaults.explicit.loadedArchiveVariants, ['primary']);
+    assert.deepEqual(requests[requests.length - 1].archive_variants, { '0': 'primary' });
+    const retained = await page.evaluate(() => ({ modelId: ModelViewer.getState().modelId,
+      camera: ModelViewer.getState().camera, body: ModelViewer.getAuthoringState() }));
+    // Corrupt only an actual response for negative validation. No successful
+    // model or metadata response is fabricated by the test.
+    const refusals = [];
+    for (const fault of ['unknown', 'mismatched-explicit', 'missing-explicit']) {
+      await page.route('**/api/viewer/prepare', async route => {
+        const response = await route.fetch(), body = await response.json();
+        assert.equal(response.status(), 200);
+        if (fault === 'unknown') body.variants[0].selected = 'other';
+        else if (fault === 'mismatched-explicit') body.variants[0].selected = 'unmasked';
+        else body.variants = [];
+        await route.fulfill({ response, json: body });
+      });
+      try {
+        await page.evaluate(({ file, explicit }) => openModelViewer([file], explicit ? { 0: 'primary' } : undefined),
+          { file: sceneMalformed, explicit: fault !== 'unknown' });
+        await page.waitForFunction(() => !ModelViewer.getState().loading && !!ModelViewer.getState().error);
+        const actual = await state(page);
+        assert.equal(actual.modelId, retained.modelId, 'Rejected metadata must leave the prior model intact');
+        assert.deepEqual(actual.camera, retained.camera);
+        assert.deepEqual(await page.evaluate(() => ModelViewer.getAuthoringState()), retained.body);
+        assert.deepEqual(actual.loadedArchiveVariants, ['primary']);
+        refusals.push({ fault, error: actual.error });
+      } finally { await page.unroute('**/api/viewer/prepare'); }
+    }
+    // Hold an actual prepare response independently of AbortSignal, modeling
+    // a transport that completes after cancellation. Its data stays unchanged.
+    await page.evaluate(() => {
+      const real = window.fetch; window.__variantDefaultHold = true;
+      window.fetch = async function (url, options) {
+        if (window.__variantDefaultHold && String(url) === '/api/viewer/prepare') {
+          window.__variantDefaultHold = false;
+          const response = await real.call(this, url, Object.assign({}, options, { signal: undefined }));
+          const metadata = await response.clone().json();
+          window.__variantDefaultMetadata = metadata.variants;
+          return new Promise(resolve => { window.__variantDefaultRelease = () => resolve(response); });
+        }
+        return real.apply(this, arguments);
+      };
+      window.__variantRestoreFetch = () => { window.fetch = real; };
+    });
+    await page.evaluate(file => { window.__variantDefaultOldLoad = openModelViewer([file]); }, sceneStale);
+    await page.waitForFunction(() => !!window.__variantDefaultRelease);
+    assert.deepEqual(await page.evaluate(() => __variantDefaultMetadata.map(record => record.selected)), ['unmasked']);
+    assert.deepEqual((await state(page)).archiveVariants, ['primary'], 'Pending implicit defaults are local until commit');
+    await page.evaluate(file => openModelViewer([file], { 0: 'primary' }), sceneExplicit);
+    const beforeLateDefault = await ready();
+    await page.evaluate(async () => { __variantDefaultRelease(); await __variantDefaultOldLoad; __variantRestoreFetch(); });
+    await frames(page);
+    const afterLateDefault = await state(page);
+    assert.equal(afterLateDefault.modelId, beforeLateDefault.modelId);
+    assert.deepEqual(afterLateDefault.archiveVariants, ['primary']);
+    assert.deepEqual(afterLateDefault.loadedArchiveVariants, ['primary']);
+    assert(!afterLateDefault.loading && !afterLateDefault.error);
+    // Exercise the distinct post-admission/precommit window too: prepare has
+    // already selected unmasked, but the real parser completion is still held.
+    await page.evaluate(() => { window.__variantHoldNext = true; });
+    await page.evaluate(file => { window.__variantDefaultParserLoad = openModelViewer([file]); }, sceneStale);
+    await page.waitForFunction(() => !!window.__variantHeld);
+    const admittedPending = await state(page);
+    assert(admittedPending.loading);
+    assert.deepEqual(admittedPending.archiveVariants, ['primary'], 'An admitted default must not mutate selection before GLTF commit');
+    assert.deepEqual(admittedPending.loadedArchiveVariants, ['primary'], 'An admitted default must not mutate loaded variants before GLTF commit');
+    await page.evaluate(file => openModelViewer([file], { 0: 'primary' }), sceneStale);
+    const beforeLateParser = await ready();
+    const parserBody = await page.evaluate(() => ModelViewer.getAuthoringState());
+    await page.evaluate(async () => { __variantHeld.loaded(__variantHeld.gltf); delete window.__variantHeld; await __variantDefaultParserLoad; });
+    await frames(page);
+    const afterLateParser = await state(page);
+    assert.equal(afterLateParser.modelId, beforeLateParser.modelId);
+    assert.deepEqual(afterLateParser.archiveVariants, ['primary']);
+    assert.deepEqual(afterLateParser.loadedArchiveVariants, ['primary']);
+    assert.deepEqual(afterLateParser.camera, beforeLateParser.camera);
+    assert.deepEqual(await page.evaluate(() => ModelViewer.getAuthoringState()), parserBody);
+    assert(!afterLateParser.loading && !afterLateParser.error);
+    defaults.staleAfterAdmission = { modelId: afterLateParser.modelId, variants: afterLateParser.loadedArchiveVariants };
+    await page.evaluate(file => openModelViewer([file]), single);
+    const ordinarySingle = await ready();
+    assert.deepEqual(ordinarySingle.loadedArchiveVariants, ['primary']);
+    assert.equal(await page.locator('[data-viewer-variant-index]').count(), 0);
+    assert(!requests[requests.length - 1].archive_variants, 'A single-model ZIP without alternatives keeps its ordinary request shape');
+    // Raw source refresh must never become an explicit ZIP choice merely
+    // because its nonvariant fallback is primary.
+    await page.evaluate(file => openModelViewer([file]), companion);
+    await ready();
+    assert(!requests[requests.length - 1].archive_variants);
+    await page.locator('#viewer-load').click(); await ready();
+    assert(!requests[requests.length - 1].archive_variants);
+    await page.evaluate(() => {
+      const target = ModelViewer.getEditingMetadata().nodes.find(node => node.name === 'Move' && node.methods.includes('mesh'));
+      if (!target) throw Error('The neutral raw fixture has no writable Move bone');
+      ModelViewer.restoreAuthoringState({ version: 1, savedSettingsEnabled: true,
+        edits: [{ node: target.node, method: 'mesh', scale: [1.2, 1.05, 1] }], unsupported: [] });
+    });
+    async function reveal(selector) {
+      await page.locator(selector).evaluate(element => {
+        for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+        }
+      });
+      await page.locator(selector).scrollIntoViewIfNeeded();
+    }
+    await reveal('#viewer-save'); await page.locator('#viewer-save').click();
+    await page.waitForFunction(() => {
+      const persistence = ModelViewer.getState().persistence;
+      return !persistence.busy && (persistence.status === 'done' || !!persistence.error);
+    });
+    assert.equal((await state(page)).persistence.error, '');
+    await reveal('#viewer-open-saved'); await page.locator('#viewer-open-saved').click();
+    await page.waitForFunction(() => !ModelViewer.getState().loading && ModelViewer.getState().persistence.reviewingSaved);
+    assert(!requests[requests.length - 1].archive_variants, 'Raw saved-result {} must not become an explicit archive primary');
+    await reveal('#viewer-reedit-original'); await page.locator('#viewer-reedit-original').click();
+    await page.waitForFunction(() => !ModelViewer.getState().loading && ModelViewer.getState().persistence.status === 'restored');
+    assert(!requests[requests.length - 1].archive_variants, 'Raw original/recipe reopening keeps its empty archive choices');
+    defaults.rawReopen = { variants: (await state(page)).loadedArchiveVariants, request: requests[requests.length - 1] };
+    defaults.refusals = refusals;
+    defaults.stale = { modelId: afterLateDefault.modelId, variants: afterLateDefault.loadedArchiveVariants };
+    const rawProbe = await page.evaluate(() => ModelViewer.renderProbe()); assert(rawProbe.ready && rawProbe.nonBackgroundSamples > 0 && rawProbe.glError === 0);
     for (const { file, hash } of originals) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), hash);
     assert.equal(crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex'), sourceHash);
     assert.deepEqual(errors, []);
     const report = { status: 'PASS', scope: 'Real local API/GL/DOM with neutral serialized Unity rigs; actual browser fullscreen; delegated parser callback delay only for stale-result regression',
-      hit, initial: { stats: initial.stats, variants: initial.loadedArchiveVariants }, unmasked: { stats: unmasked.stats, variants: unmasked.loadedArchiveVariants },
-      locales, stale: { latestId: latest.modelId, retainedId: afterStale.modelId }, multiple: { stats: multiple.stats, variants: multiple.loadedArchiveVariants }, layouts, probe, requests, errors };
+      rawProbe, hit, initial: { stats: initial.stats, variants: initial.loadedArchiveVariants }, unmasked: { stats: unmasked.stats, variants: unmasked.loadedArchiveVariants },
+      defaults, locales, stale: { latestId: latest.modelId, retainedId: afterStale.modelId }, multiple: { stats: multiple.stats, variants: multiple.loadedArchiveVariants }, layouts, probe, requests, errors };
     fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ status: 'PASS', evidence, requests: requests.length, layouts, errors }));
   } finally { await browser.close(); if (temporary) fs.rmSync(temporary, { recursive: true, force: true }); }
