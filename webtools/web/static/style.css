@@ -94,6 +94,9 @@ main { padding: 14px; }
 .vec3-row { display: flex; gap: 8px; }
 .vec3-row input { flex: 1; min-width: 0; text-align: center; }
 .path-row > input, .path-row > select { min-width: 0; }
+.path-row.game-asset-row { flex-wrap: wrap; }
+.path-row.game-asset-row > input { flex: 1 1 180px; }
+.path-row .game-asset-pick { min-height: 44px; white-space: normal; }
 .bone-actions { flex-wrap: wrap; margin-top: 8px; }
 .bone-actions input { flex-basis: 180px; }
 .bone-target { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }

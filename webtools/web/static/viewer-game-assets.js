@@ -1,12 +1,13 @@
-/* Same-origin game costume selection: existing packs -> decrypt -> 3D viewer. */
+/* Shared same-origin costume picker: viewer scenes or one native transplant body. */
 (function () {
   "use strict";
   function install() {
     var button = document.getElementById("viewer-game-assets"), dialog = document.getElementById("viewer-game-assets-dialog");
-    if (!button || !dialog || button.dataset.gameAssetsBound) return;
-    button.dataset.gameAssetsBound = "true";
+    if (!dialog || window.GameAssetPicker) return;
+    if (button) button.dataset.gameAssetsBound = "true";
     var generation = 0, request = null, events = null, jobId = null, busy = false, timer = null, choices = [];
-    var region, character, search, costume, variant, download, status, log, progress, submit, closeButton, cancel;
+    var consumer = null;
+    var region, platform, character, search, costume, variant, download, status, log, progress, submit, closeButton, cancel;
     function t(value) { return typeof window.T === "function" ? window.T(value) : value; }
     function language() { return document.documentElement.lang || "en"; }
     function element(tag, attributes, children) {
@@ -28,7 +29,7 @@
     }
     function setBusy(value) {
       busy = value;
-      [region, character, search, costume, variant, download].forEach(function (node) { if (node) node.disabled = value; });
+      [region, platform, character, search, costume, variant, download].forEach(function (node) { if (node) node.disabled = value; });
       submit.disabled = value || !costume.value;
       cancel.textContent = t(value ? "Cancel" : "Close");
       dialog.setAttribute("aria-busy", String(value));
@@ -40,10 +41,22 @@
       var id = jobId; jobId = null;
       if (id) fetch("/api/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" }).catch(function () {});
     }
-    function close() {
+    function current(selection) {
+      if (!selection || consumer !== selection || !dialog.open || selection.language !== language()) return false;
+      try { return selection.isCurrent() === true; } catch (_) { return false; }
+    }
+    function restoreFocus(selection) {
+      var trigger = selection && selection.trigger;
+      if (trigger && trigger.isConnected && !trigger.disabled && trigger.getClientRects().length) trigger.focus();
+    }
+    function close(options) {
+      var previous = consumer; consumer = null;
       generation += 1; clearTimeout(timer); stopRequest(); finishEvents(); cancelJob();
       if (dialog.open) dialog.close();
-      button.focus();
+      if (!options || options.restoreFocus !== false) restoreFocus(previous);
+    }
+    function invalidate() {
+      if (consumer && !current(consumer)) close({ restoreFocus: false });
     }
     function variants() {
       var selected = choices.filter(function (choice) { return choice.value === costume.value; })[0];
@@ -53,7 +66,7 @@
     }
     async function loadCatalog(resetCharacter) {
       stopRequest();
-      var token = ++generation, controller = new AbortController(); request = controller;
+      var token = ++generation, controller = new AbortController(), selection = consumer; request = controller;
       var currentCharacter = resetCharacter ? "" : character.value;
       var currentCostume = costume.value;
       fill(costume, [], "Choose a costume"); submit.disabled = true; setStatus("Loading costumes…");
@@ -61,7 +74,8 @@
       try {
         var response = await fetch("/api/viewer/game/catalog?" + params, { signal: controller.signal });
         var data = await response.json();
-        if (token !== generation || !dialog.open) return;
+        if (token !== generation || consumer !== selection) return;
+        if (!current(selection)) { invalidate(); return; }
         if (!response.ok || data.error) throw new Error(data.error || "Game assets are unavailable. Start or prepare the server data first.");
         fill(region, data.regions, null, data.region);
         fill(character, data.characters, "Choose a character", currentCharacter);
@@ -71,14 +85,14 @@
         variants();
         setStatus(choices.length ? "" : search.value.trim() || currentCharacter ? "No costumes found." : "Choose a character");
       } catch (error) {
-        if (error.name !== "AbortError" && token === generation) setStatus(error.message || "Game assets are unavailable. Start or prepare the server data first.", true);
+        if (error.name !== "AbortError" && token === generation && current(selection)) setStatus(error.message || "Game assets are unavailable. Start or prepare the server data first.", true);
       } finally {
         if (token === generation) request = null;
       }
     }
     function build() {
       dialog.replaceChildren();
-      var heading = element("h2", { id: "viewer-game-assets-title", text: t("Game assets") });
+      var heading = element("h2", { id: "viewer-game-assets-title", text: t("Game assets") + (consumer.label ? " · " + consumer.label : "") });
       closeButton = element("button", { type: "button", text: "×", "aria-label": t("Close") });
       closeButton.addEventListener("click", close);
       var header = element("div", { className: "modal-head" }, [heading, closeButton]);
@@ -91,16 +105,25 @@
       fill(character, [], "Choose a character"); fill(costume, [], "Choose a costume");
       var fields = element("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Search costumes", search), label("Costume", costume), label("Costume variant", variant)]);
       variant.parentNode.hidden = true;
+      platform = null;
+      if (consumer.purpose === "transplant") {
+        platform = element("select", { id: "viewer-game-platform" });
+        fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, consumer.platform);
+        fields.insertBefore(label("Bundle platform", platform), character.parentNode);
+      }
       download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = true;
       var downloadLabel = element("label", { className: "viewer-game-assets-download" }, [download, element("span", { text: t("Download missing assets") })]);
       status = element("p", { id: "viewer-game-assets-status", role: "status", "aria-live": "polite" });
       log = element("pre", { id: "viewer-game-assets-log", hidden: "", "aria-label": t("Console") });
       progress = element("progress", { id: "viewer-game-assets-progress", hidden: "", "aria-label": t("Progress") });
-      submit = element("button", { id: "viewer-game-import", type: "button", className: "viewer-primary", text: t("Load model"), disabled: "" });
+      submit = element("button", { id: "viewer-game-import", type: "button", className: "viewer-primary", text: t(consumer.purpose === "transplant" ? "Use this model" : "Load model"), disabled: "" });
       cancel = element("button", { type: "button", text: t("Close") });
       submit.addEventListener("click", runImport); cancel.addEventListener("click", close);
+      var purposeHint = element("p", { className: "viewer-render-note", text: t("Fills this model field with one body bundle. Your 3D preview stays open as it is.") });
+      purposeHint.hidden = consumer.purpose !== "transplant";
       dialog.append(header, fields, downloadLabel,
         element("p", { className: "viewer-render-note", text: t("Uses downloaded game packs first. Missing assets can be downloaded.") }),
+        purposeHint,
         status, progress, log, element("div", { className: "viewer-game-assets-actions" }, [submit, cancel]));
       region.addEventListener("change", function () { loadCatalog(true); });
       character.addEventListener("change", function () { search.value = ""; loadCatalog(false); });
@@ -112,22 +135,33 @@
       costume.addEventListener("change", variants);
     }
     async function runImport() {
+      var selection = consumer;
       if (busy || !costume.value) return;
+      if (!current(selection)) { invalidate(); return; }
       var token = ++generation;
       var importedVariant = variant.value || "primary";
+      var importedPlatform = platform ? platform.value : null;
+      if (selection.purpose === "transplant" && ["android", "ios"].indexOf(importedPlatform) < 0) return;
+      var payload = { region: region.value, suit: costume.value, variant: importedVariant, download: download.checked };
+      if (selection.purpose === "transplant") { payload.purpose = "transplant"; payload.platform = importedPlatform; }
       clearTimeout(timer); stopRequest(); setBusy(true); setStatus("Preparing game assets…"); log.textContent = ""; log.hidden = false; progress.hidden = false; progress.removeAttribute("value");
       try {
         var response = await fetch("/api/viewer/game/import?lang=" + encodeURIComponent(language()), {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ region: region.value, suit: costume.value, variant: variant.value || "primary", download: download.checked })
+          body: JSON.stringify(payload)
         });
         var data = await response.json();
         if (!response.ok || data.error || !/^[a-f0-9]{12}$/.test(data.job_id || "")) throw new Error(data.error || "The game model could not be loaded.");
-        if (token !== generation || !dialog.open) { fetch("/api/jobs/" + data.job_id + "/cancel", { method: "POST" }).catch(function () {}); return; }
+        if (token !== generation || !current(selection)) {
+          fetch("/api/jobs/" + data.job_id + "/cancel", { method: "POST" }).catch(function () {});
+          if (consumer === selection) invalidate();
+          return;
+        }
         jobId = data.job_id;
         var stream = new EventSource("/api/jobs/" + data.job_id + "/events"), completed = false; events = stream;
         stream.onmessage = async function (message) {
-          if (completed || token !== generation || !dialog.open) return;
+          if (completed || token !== generation || consumer !== selection) return;
+          if (!current(selection)) { invalidate(); return; }
           try {
             var item = JSON.parse(message.data);
             if (item.type === "log") {
@@ -140,24 +174,46 @@
               if (item.status !== "done") throw new Error(item.summary || "The game model could not be loaded.");
               var paths = item.output_paths;
               if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string" || !paths[0]) throw new Error("The game model could not be loaded.");
-              dialog.close(); button.focus();
-              if (typeof window.openModelViewer === "function") await window.openModelViewer(paths,
-                /\.zip$/i.test(paths[0]) ? { 0: importedVariant } : null);
+              if (selection.purpose === "transplant" && (!/\.unity$/i.test(paths[0]) || paths[0].charAt(0) !== "/" || paths[0].indexOf("\0") >= 0 || paths[0].length > 8192)) throw new Error("The selected game asset is not a body bundle.");
+              var result = selection.onSelect(paths[0], { variant: importedVariant, platform: importedPlatform });
+              close();
+              if (result && typeof result.then === "function") await result;
             }
-          } catch (error) { completed = true; finishEvents(); cancelJob(); setBusy(false); progress.hidden = true; setStatus(error.message || "The game model could not be loaded.", true); }
+          } catch (error) {
+            completed = true;
+            if (token !== generation || consumer !== selection) return;
+            finishEvents(); cancelJob(); setBusy(false); progress.hidden = true;
+            setStatus(error.message || "The game model could not be loaded.", true);
+          }
         };
         stream.onerror = function () {
-          if (token === generation && stream.readyState === EventSource.CLOSED && !completed) {
+          if (token === generation && consumer === selection && !current(selection)) { invalidate(); return; }
+          if (token === generation && current(selection) && stream.readyState === EventSource.CLOSED && !completed) {
             completed = true; finishEvents(); cancelJob(); progress.hidden = true; setBusy(false); setStatus("The game model could not be loaded.", true);
           }
         };
       } catch (error) {
-        if (token === generation) { progress.hidden = true; setBusy(false); setStatus(error.message || "The game model could not be loaded.", true); }
+        if (token === generation && current(selection)) { progress.hidden = true; setBusy(false); setStatus(error.message || "The game model could not be loaded.", true); }
       }
     }
-    button.addEventListener("click", function () {
-      if (dialog.open) return;
+    function open(options) {
+      options = options || {};
+      var purpose = options.purpose || "viewer";
+      if (dialog.open || ["viewer", "transplant"].indexOf(purpose) < 0 || typeof options.onSelect !== "function" || typeof options.isCurrent !== "function") return false;
+      try { if (options.isCurrent() !== true) return false; } catch (_) { return false; }
+      consumer = { purpose: purpose, trigger: options.trigger, label: String(options.label || ""),
+        platform: options.platform === "ios" ? "ios" : "android", language: language(),
+        onSelect: options.onSelect, isCurrent: options.isCurrent };
       generation += 1; choices = []; busy = false; build(); dialog.showModal(); loadCatalog(false);
+      return true;
+    }
+    window.GameAssetPicker = Object.freeze({ open: open, close: close, invalidate: invalidate });
+    if (button) button.addEventListener("click", function () {
+      open({ trigger: button, purpose: "viewer", isCurrent: function () {
+        return document.getElementById("tab-viewer").classList.contains("active");
+      }, onSelect: function (path, info) {
+        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], /\.zip$/i.test(path) ? { 0: info.variant } : null);
+      } });
     });
     dialog.addEventListener("cancel", function (event) { event.preventDefault(); close(); });
     dialog.addEventListener("keydown", function (event) {
@@ -166,7 +222,11 @@
       event.stopPropagation();
       if (event.key === "Escape") { event.preventDefault(); close(); }
     });
-    dialog.addEventListener("close", function () { generation += 1; clearTimeout(timer); stopRequest(); finishEvents(); cancelJob(); });
+    dialog.addEventListener("close", function () {
+      // A queued close event from the previous use must not cancel a newer
+      // consumer which has already reopened the same shared dialog.
+      if (!dialog.open) close({ restoreFocus: false });
+    });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install);
   else install();

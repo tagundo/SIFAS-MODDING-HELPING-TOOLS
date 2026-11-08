@@ -361,6 +361,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("The game asset request is too large or empty.")
             record = game_models.validate_selection(Path.cwd(), self._read_json_body(), self._lang())
             output_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            if record.get("purpose") == "transplant":
+                output_root = output_root / "transplant-bodies"
             if output_root.is_symlink() or not filebrowser.is_within_allowed(output_root):
                 raise PermissionError("The game model cache is outside the allowed folders.")
             job = MANAGER.create("viewer_game_assets")

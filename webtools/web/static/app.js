@@ -18,6 +18,7 @@ const state = {
   jobLabel: "",
   savedModelPaths: [],
   formLanguage: "",
+  gameAssetPlatform: "android",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -64,6 +65,7 @@ function showSection(name, options) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
   if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
   // Replace only the known fragment. Selecting native tabs must not create
   // navigation entries, reload the document, or discard current form fields.
   if (window.location.hash !== "#" + name) {
@@ -125,6 +127,7 @@ function buildLangSelect() {
 
 async function changeLang(code) {
   if (!SUPPORTED_LANGS.includes(code) || state.lang === code) return;
+  if (window.GameAssetPicker) GameAssetPicker.close({ restoreFocus: false });
   state.lang = code;
   localStorage.setItem("sifas_lang", code);
   await reloadForLang();
@@ -272,6 +275,7 @@ function selectTool(id) {
   const tool = state.tools.find((t) => t.id === id);
   if (!tool) return false;
   state.currentTool = tool;
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
   if (id !== TEXTURE_PREVIEWS_TOOL) {
     // The texture preview is a retained tool panel, so returning to the same
     // edit form keeps its in-progress input and mode exactly as entered.
@@ -308,6 +312,7 @@ function renderForm() {
   $("#tab-gallery").hidden = true;
   const panel = $("#tool-panel");
   panel.innerHTML = "";
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
   panel.appendChild(el("h2", { text: tool.label }));
   panel.appendChild(el("p", { class: "desc", text: tool.description || "" }));
 
@@ -804,7 +809,33 @@ function renderField(field) {
       }, field.root, field.type === "path" && input.value
         ? input.value.replace(/\/[^/]*$/, "") : input.value),
     });
-    wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
+    const row = el("div", { class: "path-row" }, [input, browse]);
+    if (field.type === "path" && field.game_asset === true) {
+      row.classList.add("game-asset-row");
+      const ownerTool = state.currentTool.id;
+      const gameAssets = el("button", { type: "button", class: "game-asset-pick", text: T("Load from game assets"),
+        title: T("Load from game assets") + " · " + field.label,
+        "aria-label": T("Load from game assets") + " · " + field.label,
+        onclick: () => {
+          if (!window.GameAssetPicker) return;
+          const form = input.closest("#tool-form"), originalValue = input.value, originalLanguage = state.lang;
+          const isCurrent = () => input.isConnected && gameAssets.isConnected && form === input.closest("#tool-form") &&
+            state.currentTool && state.currentTool.id === ownerTool && state.lang === originalLanguage &&
+            sectionNavigation.section === "tools" && input.value === originalValue;
+          GameAssetPicker.open({ trigger: gameAssets, purpose: "transplant", label: field.label,
+            platform: state.gameAssetPlatform, isCurrent,
+            onSelect: (path, selection) => {
+              if (!isCurrent()) return;
+              input.value = path;
+              state.gameAssetPlatform = selection.platform;
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            } });
+        } });
+      gameAssets.dataset.gameAssetField = field.name;
+      row.appendChild(gameAssets);
+    }
+    wrap.appendChild(row);
   } else if (field.type === "paths") {
     // multi-select: a hidden newline-joined value (collected as the param) plus a
     // visible removable list; "Add file" opens the picker and appends each pick.

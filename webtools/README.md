@@ -126,6 +126,15 @@ downloads missing data, and opens a separate extracted copy directly in the
 viewer. Colour costumes follow their exact game attachment; Rina's unmasked
 variant is offered when the selected costume provides one.
 
+**Costume Transplant** offers the same picker beside its **Donor (costume)** and
+**Target (wearer)** inputs. Choose the game region, character, costume, Rina
+variant and Android or iOS platform to fill that input with one extracted body
+bundle. Each button updates its own field while retaining the other input and
+the current 3D preview. The last successfully selected platform becomes the
+next picker's default; each input can still use the regular file picker. Packs
+and databases are read as sources, and transplantation starts only when you
+press the tool's Run button.
+
 **Body and outfit** has a Node Scaling **Hip size** (`HipsSize`, not the parent
 `Hips`) card and Mesh Baker **Thigh thickness** and **Waist thickness** cards.
 100% restores the loaded shape. Thickness changes the local Y/Z cross-section

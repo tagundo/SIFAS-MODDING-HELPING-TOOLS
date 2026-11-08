@@ -2106,6 +2106,50 @@ _VIEWER_TRANSLATIONS.update({
         "모델 불러오기",
         "モデルを読み込む"
     ],
+    "Bundle platform": [
+        "번들 플랫폼",
+        "バンドルのプラットフォーム"
+    ],
+    "Use this model": [
+        "이 모델 사용",
+        "このモデルを使用"
+    ],
+    "Fills this model field with one body bundle. Your 3D preview stays open as it is.": [
+        "선택한 본체 번들을 이 모델 칸에 입력합니다. 현재 3D 미리보기는 유지됩니다.",
+        "選択した本体バンドルをこのモデル欄に入力します。現在の3Dプレビューはそのままです。"
+    ],
+    "The selected game asset is not a body bundle.": [
+        "선택한 게임 에셋은 코스튬 본체 번들이 아닙니다.",
+        "選択したゲームアセットは衣装の本体バンドルではありません。"
+    ],
+    "Transplanting requires an original UnityFS costume bundle.": [
+        "이식에는 원본 UnityFS 코스튬 번들이 필요합니다.",
+        "移植には元のUnityFS衣装バンドルが必要です。"
+    ],
+    "Choose Android or iOS game assets.": [
+        "Android 또는 iOS 게임 에셋을 선택하세요.",
+        "AndroidまたはiOSのゲームアセットを選択してください。"
+    ],
+    "The selected costume body does not match its requested native platform.": [
+        "선택한 코스튬 본체의 플랫폼이 요청한 플랫폼과 다릅니다.",
+        "選択した衣装本体のプラットフォームが要求されたものと一致しません。"
+    ],
+    "The selected asset is not a skinned costume body for transplanting.": [
+        "선택한 에셋은 이식할 수 있는 스킨 메시 코스튬 본체가 아닙니다.",
+        "選択したアセットは移植可能なスキンメッシュの衣装本体ではありません。"
+    ],
+    "The selected costume has no canonical body for that platform.": [
+        "이 플랫폼용으로 확인된 코스튬 본체가 없습니다.",
+        "このプラットフォーム用の確認済み衣装本体がありません。"
+    ],
+    "The costume catalog changed. Select the game costume again.": [
+        "코스튬 목록이 변경되었습니다. 게임 코스튬을 다시 선택하세요.",
+        "衣装一覧が変更されました。ゲームの衣装を選び直してください。"
+    ],
+    "Native costume body ready for transplanting.": [
+        "이식에 사용할 코스튬 본체를 준비했습니다.",
+        "移植に使う衣装本体を準備しました。"
+    ],
     "Loading costumes…": [
         "의상 목록 불러오는 중…",
         "衣装一覧を読み込み中…"
