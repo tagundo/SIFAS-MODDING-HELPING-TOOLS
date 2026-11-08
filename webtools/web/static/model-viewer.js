@@ -36,6 +36,8 @@
   var materialPreference = "sifas";
   var frame = 0;
   var resizeObserver = null;
+  var stageObserver = null;
+  var stageVisible = true;
   var bounds = null;
   var expanded = false;
   var minimized = false;
@@ -460,8 +462,13 @@
     syncPartVisibility();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
-    renderScene();
-    renderedFrames += 1;
+    // Keep evaluating the pose, material clock, timeline and editable state
+    // while scrolling through the controls. Only the invisible GPU submission
+    // is omitted; returning to the viewport must show the current pose.
+    if (stageVisible || fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) {
+      renderScene();
+      renderedFrames += 1;
+    }
     if (changed || moving) requestRender();
     else lastFrameTime = 0;
   }
@@ -476,7 +483,7 @@
     var status = node("viewer-quality-status");
     var quality = qualityController ? qualityController.getState() : null;
     var limited = !!(quality && quality.enabled && quality.ready && quality.effectiveSamples < 2);
-    status.hidden = !limited;
+    if (status.hidden !== !limited) status.hidden = !limited;
     var text = limited ? t("Device-resolution rendering is enabled; edge smoothing is unavailable on this device.") : "";
     if (status.textContent !== text) status.textContent = text;
     if (qualityFailure !== limited) { qualityFailure = limited; refreshInfoVisibility(); }
@@ -689,6 +696,8 @@
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
+    if (!stageObserver) stageVisible = box.bottom > viewport.top && box.top < viewport.top + viewport.height &&
+      box.right > viewport.left && box.left < viewport.left + viewport.width;
     // Popovers occupy the gap between corner columns, leaving every viewport
     // action reachable while a panel scrolls. These limits do not shrink the
     // model's fit; only explicit fitting tests the individual control boxes.
@@ -1760,6 +1769,19 @@
       if (files) resizeObserver.observe(files);
       node("viewer-stage").querySelectorAll("[data-viewer-hud-edge], .viewer-primary-tools, .viewer-camera-actions, .viewer-info, .viewer-screen-actions").forEach(function (hud) { resizeObserver.observe(hud); });
     }
+    if (window.IntersectionObserver) {
+      stageObserver = new window.IntersectionObserver(function (entries) {
+        if (destroyed) return;
+        entries.forEach(function (entry) {
+          if (entry.target !== node("viewer-stage")) return;
+          var visible = !!entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
+          var changed = stageVisible !== visible;
+          stageVisible = visible;
+          if (changed && visible) requestRender();
+        });
+      }, { threshold: 0 });
+      stageObserver.observe(node("viewer-stage"));
+    }
     window.addEventListener("pagehide", function (event) { if (!event.persisted) dispose(); });
     updateLanguage();
     if (pendingOpen) {
@@ -1860,6 +1882,8 @@
     clearMinimizeExit();
     layoutListeners.forEach(function (remove) { remove(); }); layoutListeners = [];
     if (resizeObserver) resizeObserver.disconnect();
+    if (stageObserver) stageObserver.disconnect();
+    stageObserver = null;
     if (controls) controls.dispose();
     disposePreviewControllers();
     disposeObject(model);
@@ -1891,7 +1915,7 @@
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
-        layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
+        layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,

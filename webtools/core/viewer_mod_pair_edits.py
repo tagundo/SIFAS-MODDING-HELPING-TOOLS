@@ -337,14 +337,15 @@ def _replace_zip(saved_path, destination, replacements):
         outgoing.comment = incoming.comment
         pending = dict(replacements)
         for entry in incoming.infolist():
-            outgoing.writestr(copy.copy(entry), pending.pop(entry.filename, incoming.read(entry)))
+            value = pending.pop(entry.filename) if entry.filename in pending else incoming.read(entry)
+            outgoing.writestr(copy.copy(entry), value)
         if pending:
             raise ValueError("A saved costume ZIP is missing a declared variant.")
     with zipfile.ZipFile(io.BytesIO(saved_raw)) as incoming, zipfile.ZipFile(destination) as checked:
         if incoming.namelist() != checked.namelist() or incoming.comment != checked.comment:
             raise ValueError("The paired ZIP changed unrelated archive structure.")
         for entry in incoming.infolist():
-            expected = replacements.get(entry.filename, incoming.read(entry))
+            expected = replacements[entry.filename] if entry.filename in replacements else incoming.read(entry)
             if checked.read(entry.filename) != expected:
                 raise ValueError("A paired ZIP failed its completed-member reload check.")
     return sources._sha(saved_raw)

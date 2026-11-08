@@ -319,13 +319,19 @@ def _source(root, record, extractor, job, deadline):
     for directory in extractor.build_pack_roots(str(root), None, game):
         _check(job, deadline)
         real_root = Path(directory).resolve()
-        index = extractor.build_pack_index(str(real_root))
         candidates = [(record["pack_name"], 0, record.get("pack_size"), False)]
         meta = record.get("metapack")
         if meta:
             candidates.append((meta["name"], meta["offset"], None, True))
         for name, offset, exact_size, is_meta in candidates:
-            candidate = index.get(name)
+            find = getattr(extractor, "indexed_pack_file", None)
+            if find is not None:
+                candidate = find(str(real_root), name)
+            else:
+                # Standalone webtools can also meet an older extractor. Keep
+                # its index fallback while still preferring fresh flat packs.
+                flat = real_root / name
+                candidate = flat if flat.is_file() else extractor.build_pack_index(str(real_root)).get(name)
             if not candidate:
                 continue
             candidate = Path(candidate).resolve()

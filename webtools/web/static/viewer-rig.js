@@ -522,9 +522,12 @@
     function currentTime() { return action ? action.time : playhead; }
     function updateTime() {
       var seconds = currentTime();
-      element("viewer-time").value = String(seconds);
-      element("viewer-time-value").textContent = seconds.toFixed(2) + " / " + duration().toFixed(2) + " s";
-      element("viewer-play").textContent = translate(playing ? "Pause" : "Play");
+      var slider = element("viewer-time"), value = String(seconds);
+      if (slider.value !== value) slider.value = value;
+      var output = element("viewer-time-value"), text = seconds.toFixed(2) + " / " + duration().toFixed(2) + " s";
+      if (output.textContent !== text) output.textContent = text;
+      var button = element("viewer-play"), label = translate(playing ? "Pause" : "Play");
+      if (button.textContent !== label) button.textContent = label;
     }
     function refreshAvailability() {
       var enabled = interactive && !disposed;
