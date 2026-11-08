@@ -148,7 +148,7 @@ def _originals_and_recipes(context, result, pair, goldens, state):
                           if fmt.sha(Path(path).read_bytes()) == summary["original_sha256"]]
             _require(len(candidates) == 1, "A paired canonical original is missing.")
             originals[platform, summary["variant"]] = candidates[0]
-        if not state["edits"]:
+        if not edits.has_changes(state):
             for variant in fmt.VARIANTS:
                 originals.setdefault((platform, variant), Path(pair[variant]["path"]).read_bytes())
     _require(set(originals) == set(goldens), "The scene costume has no complete native original family.")
@@ -160,7 +160,7 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     normalized = {}
     for key, original in originals.items():
         candidates = [recipe for recipe in recipes if any(source["sha256"] == fmt.sha(original) for source in recipe["sources"])]
-        if not state["edits"]:
+        if not edits.has_changes(state):
             normalized[key] = _empty_recipe(original, "_".join(key) + ".unity")
         else:
             _require(len(candidates) == 1, "The scene costume has no unique original-bound variant recipe.")

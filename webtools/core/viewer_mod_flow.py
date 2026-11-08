@@ -243,7 +243,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         pair = viewer_mod_sources.resolve_pair(context, result, repo_root=repo_root,
             output_root=cache_root, job=job, selection=selection, receipts=cached_receipts(context, cache_root))
         paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, normalized, pair=pair, job=job)
-                  if normalized["edits"] else {"result": result, "pair": pair, "summary": []})
+                  if model_edits.has_changes(normalized) else {"result": result, "pair": pair, "summary": []})
         result, pair = paired["result"], paired["pair"]
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]

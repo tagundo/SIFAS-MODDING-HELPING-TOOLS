@@ -121,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_edit_install()
             if path == "/api/viewer/edit/restore":
                 return self._api_viewer_edit_restore()
+            if path == "/api/viewer/edit/accessories":
+                return self._api_viewer_edit_accessories()
             if path.startswith("/api/run/"):
                 return self._api_run(path[len("/api/run/"):])
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
@@ -359,6 +361,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("The game asset request is too large or empty.")
             record = game_models.validate_selection(Path.cwd(), self._read_json_body(), self._lang())
             output_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            if record.get("purpose") == "transplant":
+                output_root = output_root / "transplant-bodies"
             if output_root.is_symlink() or not filebrowser.is_within_allowed(output_root):
                 raise PermissionError("The game model cache is outside the allowed folders.")
             job = MANAGER.create("viewer_game_assets")
@@ -586,6 +590,20 @@ class Handler(BaseHTTPRequestHandler):
                     return summary
                 MANAGER.run_async(job, guarded_install)
             return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_edit_accessories(self):
+        """Read-only, original-bound accessory corrections for the live preview."""
+        try:
+            params = self._viewer_edit_request({"token", "state"})
+            if not isinstance(params["state"], dict):
+                raise ValueError("Invalid model editing values.")
+            from webtools.core import model_edits
+            result = model_edits.accessory_preview(params["token"], params["state"])
+            return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
         except (ValueError, TypeError, KeyError, OSError) as exc:

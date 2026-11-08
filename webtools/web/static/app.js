@@ -17,17 +17,72 @@ const state = {
   jobToolId: null,
   jobLabel: "",
   savedModelPaths: [],
+  formLanguage: "",
+  gameAssetPlatform: "android",
 };
 
 const $ = (sel) => document.querySelector(sel);
 
 // ------------------------------------------------------------------ i18n
 const SUPPORTED_LANGS = ["en", "ko", "ja"];
+const TEXTURE_PREVIEWS_TOOL = "texture_previews";
+const sectionNavigation = { ready: false, section: "tools", pending: null };
+
+function routeFromLocation() {
+  const hash = window.location.hash.slice(1);
+  if (hash === "viewer") return { section: "viewer" };
+  if (hash === "gallery" || hash === "textures") return { section: "tools", gallery: true };
+  return { section: "tools" };
+}
+
+// A host keeps one live page for both native tabs. Calls made while i18n or
+// tools load are queued rather than recreating the viewer or dropping edits.
+sectionNavigation.section = routeFromLocation().section;
+const embedded = new URLSearchParams(window.location.search).get("embedded") === "1";
+if (embedded) document.documentElement.classList.add("elichika-embedded");
+
+function notifyHostSection(event) {
+  if (!embedded) return;
+  const message = { event, section: sectionNavigation.section };
+  const android = window.ElichikaNavigationNative;
+  if (android && typeof android.postMessage === "function") {
+    try { android.postMessage(JSON.stringify(message)); }
+    catch (error) { console.warn(String(error.message || error)); }
+  } else if (window.ElichikaPlatform && ElichikaPlatform.supports("setSection")) {
+    ElichikaPlatform.request("setSection", message).catch((error) => console.warn(String(error.message || error)));
+  }
+}
+
+function showSection(name, options) {
+  if (name !== "tools" && name !== "viewer") return false;
+  const notify = !options || options.notify !== false;
+  const changed = sectionNavigation.section !== name;
+  sectionNavigation.section = name;
+  if (!sectionNavigation.ready) {
+    sectionNavigation.pending = { section: name, notify };
+    return true;
+  }
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
+  if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
+  // Replace only the known fragment. Selecting native tabs must not create
+  // navigation entries, reload the document, or discard current form fields.
+  if (window.location.hash !== "#" + name) {
+    window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search + "#" + name);
+  }
+  if (notify && changed) notifyHostSection("change");
+  return true;
+}
+
+window.ElichikaNavigation = Object.freeze({ showSection, currentSection: () => sectionNavigation.section });
 
 function detectLang() {
   const platform = window.ElichikaPlatform;
   const nativeLanguage = platform && platform.info().language;
   if (nativeLanguage && SUPPORTED_LANGS.includes(nativeLanguage)) return nativeLanguage;
+  const hostLanguage = embedded && new URLSearchParams(window.location.search).get("lang");
+  if (hostLanguage && SUPPORTED_LANGS.includes(hostLanguage)) return hostLanguage;
   const saved = localStorage.getItem("sifas_lang");
   if (saved && SUPPORTED_LANGS.includes(saved)) return saved;
   const nav = (navigator.language || "en").slice(0, 2).toLowerCase();
@@ -72,6 +127,7 @@ function buildLangSelect() {
 
 async function changeLang(code) {
   if (!SUPPORTED_LANGS.includes(code) || state.lang === code) return;
+  if (window.GameAssetPicker) GameAssetPicker.close({ restoreFocus: false });
   state.lang = code;
   localStorage.setItem("sifas_lang", code);
   await reloadForLang();
@@ -97,7 +153,7 @@ async function reloadForLang() {
 async function loadTools() {
   try {
     const data = await (await fetch("/api/tools?lang=" + encodeURIComponent(state.lang))).json();
-    state.tools = data.tools || [];
+    state.tools = [{ id: TEXTURE_PREVIEWS_TOOL, label: T("Texture previews") }].concat(data.tools || []);
     state.roots = data.roots || {};
     renderToolList();
   } catch (e) {
@@ -146,6 +202,11 @@ async function init() {
     pickFile: (onPick) => openPicker("path", onPick, "models"),
     nativeFilePicker: !!(window.ElichikaPlatform && ElichikaPlatform.supports("openFiles")),
   });
+  const initial = sectionNavigation.pending || routeFromLocation();
+  sectionNavigation.ready = true;
+  if (initial.gallery) selectTool(TEXTURE_PREVIEWS_TOOL);
+  showSection(initial.section, { notify: false });
+  sectionNavigation.pending = null;
   if (window.ElichikaPlatform) ElichikaPlatform.bind({
     showViewer: () => switchTab("viewer"),
     openModel: async (args) => {
@@ -174,13 +235,20 @@ async function init() {
       if (command) { event.preventDefault(); ElichikaPlatform.perform(command); }
     }
   });
+  window.addEventListener("hashchange", () => {
+    const route = routeFromLocation();
+    if (route.gallery) selectTool(TEXTURE_PREVIEWS_TOOL);
+    showSection(route.section);
+  });
+  notifyHostSection("ready");
 }
 
 function switchTab(name) {
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-  $("#tab-" + name).classList.add("active");
-  if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+  if (name === "gallery") {
+    selectTool(TEXTURE_PREVIEWS_TOOL);
+    return showSection("tools");
+  }
+  return showSection(name);
 }
 
 function openModelViewer(paths, variants) {
@@ -198,16 +266,29 @@ function renderToolList() {
     const b = el("button", { onclick: () => selectTool(tool.id) },
       [el("span", { text: tool.label })]);
     b.dataset.id = tool.id;
+    b.classList.toggle("active", !!state.currentTool && state.currentTool.id === tool.id);
     list.appendChild(b);
   }
 }
 
 function selectTool(id) {
-  state.currentTool = state.tools.find((t) => t.id === id);
-  state.currentMode = (state.currentTool.modes || ["single"])[0];
+  const tool = state.tools.find((t) => t.id === id);
+  if (!tool) return false;
+  state.currentTool = tool;
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
+  if (id !== TEXTURE_PREVIEWS_TOOL) {
+    // The texture preview is a retained tool panel, so returning to the same
+    // edit form keeps its in-progress input and mode exactly as entered.
+    if (state.formToolId !== id || state.formLanguage !== state.lang || !$("#tool-form")) {
+      state.currentMode = (tool.modes || ["single"])[0];
+      renderForm();
+    }
+  }
+  $("#tool-panel").hidden = id === TEXTURE_PREVIEWS_TOOL;
+  $("#tab-gallery").hidden = id !== TEXTURE_PREVIEWS_TOOL;
   document.querySelectorAll("#tool-list button").forEach((b) =>
     b.classList.toggle("active", b.dataset.id === id));
-  renderForm();
+  return true;
 }
 
 function renderForm() {
@@ -219,9 +300,19 @@ function renderForm() {
     if (previousExpert) state.meshExpertOpen = previousExpert.open;
   }
   const tool = state.currentTool;
+  if (!tool) return;
+  if (tool.id === TEXTURE_PREVIEWS_TOOL) {
+    $("#tool-panel").hidden = true;
+    $("#tab-gallery").hidden = false;
+    return;
+  }
   state.formToolId = tool.id;
+  state.formLanguage = state.lang;
+  $("#tool-panel").hidden = false;
+  $("#tab-gallery").hidden = true;
   const panel = $("#tool-panel");
   panel.innerHTML = "";
+  if (window.GameAssetPicker) GameAssetPicker.invalidate();
   panel.appendChild(el("h2", { text: tool.label }));
   panel.appendChild(el("p", { class: "desc", text: tool.description || "" }));
 
@@ -718,7 +809,33 @@ function renderField(field) {
       }, field.root, field.type === "path" && input.value
         ? input.value.replace(/\/[^/]*$/, "") : input.value),
     });
-    wrap.appendChild(el("div", { class: "path-row" }, [input, browse]));
+    const row = el("div", { class: "path-row" }, [input, browse]);
+    if (field.type === "path" && field.game_asset === true) {
+      row.classList.add("game-asset-row");
+      const ownerTool = state.currentTool.id;
+      const gameAssets = el("button", { type: "button", class: "game-asset-pick", text: T("Load from game assets"),
+        title: T("Load from game assets") + " · " + field.label,
+        "aria-label": T("Load from game assets") + " · " + field.label,
+        onclick: () => {
+          if (!window.GameAssetPicker) return;
+          const form = input.closest("#tool-form"), originalValue = input.value, originalLanguage = state.lang;
+          const isCurrent = () => input.isConnected && gameAssets.isConnected && form === input.closest("#tool-form") &&
+            state.currentTool && state.currentTool.id === ownerTool && state.lang === originalLanguage &&
+            sectionNavigation.section === "tools" && input.value === originalValue;
+          GameAssetPicker.open({ trigger: gameAssets, purpose: "transplant", label: field.label,
+            platform: state.gameAssetPlatform, isCurrent,
+            onSelect: (path, selection) => {
+              if (!isCurrent()) return;
+              input.value = path;
+              state.gameAssetPlatform = selection.platform;
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            } });
+        } });
+      gameAssets.dataset.gameAssetField = field.name;
+      row.appendChild(gameAssets);
+    }
+    wrap.appendChild(row);
   } else if (field.type === "paths") {
     // multi-select: a hidden newline-joined value (collected as the param) plus a
     // visible removable list; "Add file" opens the picker and appends each pick.
@@ -808,8 +925,9 @@ function collectParams() {
 
 // -------------------------------------------------------------------- run
 async function runTool() {
-  const params = collectParams();
   const tool = state.currentTool;
+  if (!tool || tool.id === TEXTURE_PREVIEWS_TOOL) return;
+  const params = collectParams();
 
   // generic required-field validation (respects the current single/batch mode)
   const missing = [];

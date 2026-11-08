@@ -388,9 +388,9 @@ def _node(session, value):
     return session["targets"][value]
 
 
-def validate_state(token, state):
+def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
-    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference"}:
+    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "accessoryUnclip"}:
         _fail("The body edit state contains unsupported settings.")
     try:
         encoded = json.dumps(state, allow_nan=False).encode()
@@ -405,8 +405,15 @@ def validate_state(token, state):
     unsupported = state.get("unsupported", [])
     if not isinstance(unsupported, list) or unsupported:
         _fail("Reset unsupported preview-only changes before exporting body edits.")
+    accessory = None
+    if "accessoryUnclip" in state:
+        from .model_accessory_unclip import options, AccessoryUnclipError
+        try:
+            accessory = options(state["accessoryUnclip"])
+        except AccessoryUnclipError as error:
+            _fail(str(error))
     edits = state.get("edits")
-    if not isinstance(edits, list) or not (0 if session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
+    if not isinstance(edits, list) or not (0 if allow_empty or session.get("allowEmptySceneReset") or accessory is not None else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:
@@ -467,8 +474,16 @@ def validate_state(token, state):
         seen.add(target["node"])
         reference.append({"node": target["node"], "scale": _vector(row["scale"], scale=True),
                           "position": _vector(row["position"]), "rotation": _vector(row["rotation"])})
-    return {"version": VERSION, "edits": sorted(out, key=lambda e: e["node"]),
-            "savedSettingsEnabled": True, "unsupported": [], "compensationReference": reference}
+    normalized = {"version": VERSION, "edits": sorted(out, key=lambda e: e["node"]),
+                  "savedSettingsEnabled": True, "unsupported": [], "compensationReference": reference}
+    if accessory is not None:
+        normalized["accessoryUnclip"] = accessory
+    return normalized
+
+
+def has_changes(state):
+    """Accessory-only recipes are real edits even without explicit body nodes."""
+    return bool(state.get("edits")) or "accessoryUnclip" in state
 
 
 def _worlds(local, parents):
@@ -710,9 +725,8 @@ def _mesh_delta(info, current, desired):
     return changed
 
 
-def _edit_source(raw, edits, targets, reference, read_only_keys=()):
+def _edit_frames(info, edits, targets, reference):
     import numpy as np
-    info = _inspect(raw)
     if info["conflicts"]:
         _fail("Resolve conflicting saved NodeScaling records before exporting this model.")
     desired_values = copy.deepcopy(info["effective"])
@@ -771,16 +785,55 @@ def _edit_source(raw, edits, targets, reference, read_only_keys=()):
     for child, correction in corrections.items():
         baseline = ref_local[child]
         local_desired[child] = baseline @ correction @ np.linalg.solve(baseline, local_desired[child])
+    return runtime_values, local_runtime, local_desired, desired_values, mesh_edits
+
+
+def _accessory_plan(info, edits, targets, frames, settings, read_only_keys=()):
+    from .model_accessory_unclip import plan, AccessoryUnclipError
+    _, runtime, desired, values, _ = frames
+    writable = {target["key"] for target in targets.values()} - set(read_only_keys)
+    try:
+        result = plan(info, runtime, desired, values, settings, writable_keys=writable)
+    except AccessoryUnclipError as error:
+        _fail(str(error))
+    except ModelEditError:
+        raise
+    except (ValueError, KeyError, IndexError, TypeError, OverflowError) as error:
+        _fail("The accessory skin cannot be analyzed safely: " + str(error))
+    if any(targets[edit["node"]]["key"] in result["corrections"] and "position" in edit for edit in edits):
+        _fail("Reset explicit accessory-anchor position edits before applying automatic unclipping.")
+    return result
+
+
+def _edit_source(raw, edits, targets, reference, read_only_keys=(), *, accessory_unclip=None):
+    import numpy as np
+    info = _inspect(raw)
+    frames = _edit_frames(info, edits, targets, reference)
+    runtime_values, local_runtime, local_desired, _, mesh_edits = frames
     runtime_world, desired_world = _worlds(local_runtime, info["parents"]), _worlds(local_desired, info["parents"])
     for key in read_only_keys:
         if not np.allclose(runtime_world[key], desired_world[key], atol=1e-9, rtol=1e-9):
             _fail("This mesh edit would omit automatically attached model parts. Use saved node settings or open those parts as explicit source files.")
+    accessory = (_accessory_plan(info, edits, targets, frames, accessory_unclip, read_only_keys)
+                 if accessory_unclip is not None else {"corrections": {}})
+    if accessory.get("summary", {}).get("status") == "no_skin":
+        _fail("This model's skinning cannot be checked safely. Turn accessory correction off before saving.")
+    if not edits and not accessory["corrections"]:
+        return raw, []
     meshes = _mesh_delta(info, runtime_world, desired_world) if mesh_edits else []
+    for key, correction in accessory["corrections"].items():
+        value = np.asarray(info["authored"][key]["position"]) + correction["export"]
+        info["transforms"][key]["m_LocalPosition"] = _d3(value)
+        info["objects"][key].save_typetree(info["transforms"][key])
     for obj, tree in info["components"]:
         obj.save_typetree(tree)
     result = info["env"].file.save(packer="original")
     # Re-read the real serialized bundle before exposing any completed output.
     checked = _inspect(result)
+    for key, correction in accessory["corrections"].items():
+        expected = np.asarray(info["authored"][key]["position"]) + correction["export"]
+        if not np.allclose(checked["authored"][key]["position"], expected, atol=1e-5):
+            _fail("The accessory anchor failed its saved-position reload check.")
     for edit in edits:
         target = targets[edit["node"]]; key = target["key"]
         for kind in _KINDS:
@@ -794,6 +847,42 @@ def _edit_source(raw, edits, targets, reference, read_only_keys=()):
             elif not np.allclose(expected, actual, atol=1e-5):
                 _fail("The saved body endpoint failed reload validation.")
     return result, meshes
+
+
+def accessory_preview(token, state):
+    """Derive an overlay from immutable originals, never from an earlier overlay."""
+    with _LOCK:
+        session = _session(token)
+        if not session["busy"].acquire(blocking=False):
+            _fail("This model is busy. Wait for its current edit to finish.")
+    if not _EXPORT_SLOT.acquire(blocking=False):
+        session["busy"].release()
+        _fail("Another model is being processed. Wait for it to finish.")
+    try:
+        state = validate_state(token, state, allow_empty=True)
+        if "accessoryUnclip" not in state:
+            return {"corrections": [], "summary": {"status": "disabled", "changed": 0}}
+        output, summaries = [], []
+        for index, source in enumerate(session["sources"]):
+            targets = {node: row for node, row in session["targets"].items() if row["sourceIndex"] == index}
+            selected = [row for row in state["edits"] if row["node"] in targets]
+            reference = [row for row in state.get("compensationReference", []) if row["node"] in targets]
+            info = _inspect(source["raw"])
+            frames = _edit_frames(info, selected, targets, reference)
+            read_only = [targets[node]["key"] for node in session["readOnlySkinJoints"] if node in targets]
+            result = _accessory_plan(info, selected, targets, frames, state["accessoryUnclip"], read_only)
+            inverse = {row["key"]: node for node, row in targets.items()}
+            for key, correction in result["corrections"].items():
+                delta = correction["preview"]
+                output.append({"node": inverse[key], "delta": [-delta[0], *delta[1:]]})
+            summaries.append({"source": index, **result["summary"]})
+        statuses = {row["status"] for row in summaries}
+        status = ("applied" if output else "nothing" if "nothing" in statuses else
+                  "no_skin" if "no_skin" in statuses else "no_scaling")
+        return {"corrections": output, "summary": {"status": status, "changed": len(output), "sources": summaries}}
+    finally:
+        _EXPORT_SLOT.release()
+        session["busy"].release()
 
 
 def _source_signature(session):
@@ -891,13 +980,18 @@ def export(token, state, output_dir, *, log=lambda message: None):
         replacements, summaries = {}, []
         for index, source in enumerate(session["sources"]):
             selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
-            if not selected:
+            if not selected and "accessoryUnclip" not in state:
                 continue
             reference = [row for row in state.get("compensationReference", []) if session["targets"][row["node"]]["sourceIndex"] == index]
             log("Saving body edits: " + source["name"])
             read_only = [session["targets"][node]["key"] for node in session["readOnlySkinJoints"]
                          if session["targets"][node]["sourceIndex"] == index]
-            blob, meshes = _edit_source(source["raw"], selected, session["targets"], reference, read_only)
+            if "accessoryUnclip" in state:
+                targets = {node: row for node, row in session["targets"].items() if row["sourceIndex"] == index}
+                blob, meshes = _edit_source(source["raw"], selected, targets, reference, read_only,
+                                            accessory_unclip=state["accessoryUnclip"])
+            else:
+                blob, meshes = _edit_source(source["raw"], selected, session["targets"], reference, read_only)
             replacements[(source["container"], source["member"])] = blob
             summaries.append({"source": index, "nodes": len(selected), "meshes": meshes})
         recipe = _recipe(session, state)

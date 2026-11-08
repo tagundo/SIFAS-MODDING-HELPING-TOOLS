@@ -313,7 +313,7 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
   await openDetails(page, 'viewer-workspace-menu');
   assert(await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(__resolutionIdentity.header)));
   assert(await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(__resolutionIdentity.files)));
-  for (const selector of ['#viewer-add', '#viewer-add-motion', '#viewer-load', '.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) {
+  for (const selector of ['#viewer-add', '#viewer-add-motion', '#viewer-load', '.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) {
     const c = await target(page, selector, '#viewer-workspace-menu-content'); assertTarget(c, selector); controls.push(c);
   }
   for (const id of ['viewer-add', 'viewer-add-motion']) {
@@ -503,7 +503,11 @@ async function pickerTransportRegressions(browser) {
     return expectDirectory(root, null, false);
   }
   async function openGallery(root) {
-    await page.locator('.tab[data-tab="gallery"]').click(); await page.locator('#gallery-browse').click();
+    await page.locator('.tab[data-tab="tools"]').click();
+    await page.locator('#tool-list button[data-id="texture_previews"]').click();
+    assert(await page.locator('#tab-tools').evaluate(n => n.classList.contains('active')));
+    assert(await page.locator('#tab-gallery').isVisible(), 'Texture previews opens inside Tools');
+    await page.locator('#gallery-browse').click();
     return expectDirectory(root, null, true);
   }
   async function folder(name) {
@@ -567,7 +571,11 @@ async function pickerTransportRegressions(browser) {
     });
     await attempt('directory-open-clears-stale-ui-and-disables-unvalidated-folder-use', async test => {
       const pending = arm(modded, 'pending-directory-picker-before-validated-cwd');
-      await page.locator('.tab[data-tab="gallery"]').click(); await page.locator('#gallery-browse').click(); await pending.ready.promise;
+      await page.locator('.tab[data-tab="tools"]').click();
+      await page.locator('#tool-list button[data-id="texture_previews"]').click();
+      assert(await page.locator('#tab-tools').evaluate(n => n.classList.contains('active')));
+      assert(await page.locator('#tab-gallery').isVisible(), 'Texture previews opens inside Tools');
+      await page.locator('#gallery-browse').click(); await pending.ready.promise;
       test.pending = await snapshot(); assert.equal(test.pending.folderVisible, true); assert.equal(test.pending.folderDisabled, true, 'Use folder is disabled until the current directory has been validated');
       assert.equal(test.pending.crumb, '', 'Reopening clears the old displayed directory immediately'); assert.deepEqual(test.pending.names, [], 'Reopening clears old selectable entries immediately');
       await release(pending); test.loaded = await expectDirectory(modded, pending.record, true);

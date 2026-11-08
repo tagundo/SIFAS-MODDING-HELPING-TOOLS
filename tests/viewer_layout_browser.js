@@ -200,13 +200,26 @@ async function primaryNavigationTargets(browser) {
       const workspace = page.locator('#viewer-workspace-menu');
       if (await page.locator('#viewer-workspace-menu > summary').isVisible() && !(await workspace.evaluate(n => n.open))) await workspace.locator('summary').first().click();
       const controls = [];
-      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) controls.push(await target(selector));
+      assert.equal(await page.locator('header .tab').count(), 2, 'Standalone tools and models have exactly two primary destinations');
+      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) controls.push(await target(selector));
       await page.locator('.tab[data-tab="tools"]').click(); await frames(page);
       assert(await page.locator('#tab-tools').evaluate(n => n.classList.contains('active')));
       const toolButtons = await page.locator('#tool-list button').evaluateAll(buttons => buttons.map(button => ({ id: button.dataset.id, width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })));
       assert(toolButtons.length > 0 && toolButtons.every(button => button.height >= 44), 'Every tool-list entry keeps its44px height: ' + JSON.stringify(toolButtons));
       controls.push(await target('#tool-list button[data-id="mesh_baker"]'));
-      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Tools navigation must not overflow the page');
+      const textureTarget = await target('#tool-list button[data-id="texture_previews"]');
+      assert(textureTarget.height >= 43.5 && textureTarget.width >= 43.5,
+        'Texture previews retains a full44px tool-list target');
+      controls.push(textureTarget);
+      await page.locator('#tool-list button[data-id="texture_previews"]').click();
+      assert(await page.locator('#tab-gallery').isVisible(), 'Texture previews is reached through the real Tools list');
+      assert.equal(await page.locator('.tab[data-tab="gallery"]').count(), 0, 'Texture previews does not retain a duplicate top-level tab');
+      const toolsOverflow = await page.evaluate(() => ({ viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        offenders: Array.from(document.querySelectorAll('#tab-tools *')).map(element => {
+          const r = element.getBoundingClientRect(); return { id: element.id, className: element.className, right: r.right, width: r.width };
+        }).filter(element => element.width > 0 && element.right > innerWidth + 1).slice(0, 12) }));
+      assert(toolsOverflow.scrollWidth <= toolsOverflow.viewport + 1,
+        'Tools navigation must not overflow the page: ' + JSON.stringify({ profile, ...toolsOverflow }));
       await page.locator('.tab[data-tab="viewer"]').click(); await frames(page);
       await page.evaluate(() => { const workspace = document.getElementById('viewer-workspace-menu'); if (workspace.open) workspace.querySelector('summary').click(); scrollTo(0, 0); });
       const normal = await geometry();
@@ -333,7 +346,7 @@ async function motionChoiceReadability(browser) {
           return { selector, ...control };
         }
         const primaryNavigation = [];
-        for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) primaryNavigation.push(await assertReachable(selector));
+        for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) primaryNavigation.push(await assertReachable(selector));
         assert(Math.max(...primaryNavigation.map(value => value.y + value.height / 2)) - Math.min(...primaryNavigation.map(value => value.y + value.height / 2)) <= 1,
           'Short-phone primary navigation and language selection share one reachable row: ' + JSON.stringify(primaryNavigation));
         assert.equal(await page.getByRole('heading', { level: 1 }).count(), 1, 'The visually compact brand remains an accessible heading');

@@ -20,6 +20,14 @@ anywhere.
 Each tool runs in **Single file** or **Batch folder** mode, shows a live log and
 progress bar, and can be cancelled mid-run.
 
+The main sections are **Asset editing tools** and **3D model**. **Texture
+previews** is an item in the tools list. In the Android and macOS apps the native
+navigation selects these sections in one retained page, so switching sections
+keeps the loaded model, edits, camera, tool form and texture-preview results.
+The duplicate web header is hidden in the apps; their global language setting
+controls the interface. A standalone browser retains the two section buttons
+and its language picker. Existing `#gallery` links open the texture-preview tool.
+
 ## Requirements
 
 - Python 3.11+ (already bundled in the Elichika apps)
@@ -118,6 +126,15 @@ downloads missing data, and opens a separate extracted copy directly in the
 viewer. Colour costumes follow their exact game attachment; Rina's unmasked
 variant is offered when the selected costume provides one.
 
+**Costume Transplant** offers the same picker beside its **Donor (costume)** and
+**Target (wearer)** inputs. Choose the game region, character, costume, Rina
+variant and Android or iOS platform to fill that input with one extracted body
+bundle. Each button updates its own field while retaining the other input and
+the current 3D preview. The last successfully selected platform becomes the
+next picker's default; each input can still use the regular file picker. Packs
+and databases are read as sources, and transplantation starts only when you
+press the tool's Run button.
+
 **Body and outfit** has a Node Scaling **Hip size** (`HipsSize`, not the parent
 `Hips`) card and Mesh Baker **Thigh thickness** and **Waist thickness** cards.
 100% restores the loaded shape. Thickness changes the local Y/Z cross-section
@@ -133,6 +150,18 @@ with compensating child position/scale endpoints; rotated nonuniform transforms
 can require shear, and game motion may overwrite either endpoint. Use the
 supported Mesh Baker compensation when descendants must retain their shape.
 The size, breast and skirt Node controls keep their ordinary inheritance.
+
+**Accessory Un-clip** in **Body and outfit** moves detected ornament anchors
+onto the scaled body regions defined by the original costume. Enable it after
+adjusting the body, check the affected-anchor count, then use the usual edited
+copy, Mod ZIP or game-install action. **Advanced options** exposes strength,
+minimum overlap and closing gaps after shrinking. Ambiguous skin or unsupported
+bindings report a reason and require disabling this option before saving.
+Preview and export calculate the correction from the session's preserved source
+for Node Scaling and Mesh Baker; paired platforms and Rina variants use their
+own original geometry. For further edits, use the saved recipe or **Edit from
+original**. Opening an already corrected bundle as a fresh original cannot
+identify corrections previously applied outside that recipe.
 
 **Automatically add the original face** is on by default. The viewer identifies
 the character from the selected Unity data and validated costume metadata,
