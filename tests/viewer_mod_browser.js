@@ -28,10 +28,41 @@ function py(code, args = []) {
   assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
 }
 function fixtures() {
-  return py(`import json,sys,zipfile\nfrom pathlib import Path\nimport UnityPy\nimport unity_costumemod_packer as p\nroot=Path(sys.argv[1]); source=Path(sys.argv[2]).read_bytes()\nfor filename,texture in [('board.unity','ch9999_co0001_body'),('unmasked.unity','ch0209_co0001_body')]:\n env=UnityPy.load(source)\n for obj in env.objects:\n  if obj.type.name=='Texture2D':\n   tree=obj.read_typetree();tree['m_Name']=texture;obj.save_typetree(tree)\n (root/filename).write_bytes(next(iter(env.files.values())).save())\nwith zipfile.ZipFile(root/'rina.zip','w',compression=zipfile.ZIP_DEFLATED) as z:\n z.write(root/'board.unity','board.unity');z.write(root/'unmasked.unity','unmasked.unity')\n z.writestr('thumbnail.png',p.make_name_thumbnail_png('Neutral costume',64,209))\n z.writestr('modinstall.txt',p.generate_modinstall_txt('Neutral costume','board.unity','thumbnail.png',209,'unmasked.unity'))\n z.writestr('notes.txt',b'Keep this companion exactly.');z.comment=b'Original neutral fixture'\nprint(json.dumps({'archive':str(root/'rina.zip'),'board':str(root/'board.unity'),'unmasked':str(root/'unmasked.unity')}))`, [inputs, path.join(product, 'tests/fixtures/viewer_persistence.unity')]);
+  return py(`import json,sys,zipfile
+from pathlib import Path
+sys.path.insert(0,str(Path.cwd()/'tests'))
+from viewer_scene_fixture import bundle_fixture
+import unity_costumemod_packer as p
+root=Path(sys.argv[1])
+for filename,variant in [('board.unity','primary'),('unmasked.unity','unmasked')]:
+ (root/filename).write_bytes(bundle_fixture(13,variant,unit_breast=True))
+with zipfile.ZipFile(root/'rina.zip','w',compression=zipfile.ZIP_DEFLATED) as z:
+ z.write(root/'board.unity','board.unity');z.write(root/'unmasked.unity','unmasked.unity')
+ z.writestr('thumbnail.png',p.make_name_thumbnail_png('Neutral costume',64,209))
+ z.writestr('modinstall.txt',p.generate_modinstall_txt('Neutral costume','board.unity','thumbnail.png',209,'unmasked.unity'))
+ z.writestr('notes.txt',b'Keep this companion exactly.');z.comment=b'Original neutral fixture'
+print(json.dumps({'archive':str(root/'rina.zip'),'board':str(root/'board.unity'),'unmasked':str(root/'unmasked.unity')}))`, [inputs]);
 }
 function inspectPackage(file) {
-  return py(`import ast,hashlib,json,sys,zipfile\nfrom webtools.core import model_edits\nwith zipfile.ZipFile(sys.argv[1]) as z:\n config={n.targets[0].id:ast.literal_eval(n.value) for n in ast.parse(z.read('modinstall.txt').decode('utf-8')).body if isinstance(n,ast.Assign)}\n models={}\n for role,key in [('primary','costume_file'),('unmasked','rina_unmask_costume_file')]:\n  raw=z.read(config[key]);info=model_edits._inspect(raw)\n  models[role]={'sha256':hashlib.sha256(raw).hexdigest(),'scales':{name:info['effective'][node]['scale'] for node,name in info['names'].items() if name in ['BreastSize','LeftUpLeg']}}\n print(json.dumps({'config':config,'models':models,'members':z.namelist(),'notes':z.read('notes.txt' if 'notes.txt' in z.namelist() else 'notes.txt.data').decode(),'comment':z.comment.decode()}))`, [file]);
+  return py(`import ast,hashlib,io,json,sys,zipfile
+from webtools.core import model_edits,viewer_scene_format as scene
+with zipfile.ZipFile(sys.argv[1]) as z:
+ models={}
+ if scene.is_scene_package(sys.argv[1]):
+  decoded=scene.read_package(sys.argv[1]);manifest,files=decoded['manifest'],decoded['files']
+  config={'costume_name_en':manifest['display_name'],'chara_id':manifest['character_id']}
+  rolebytes={variant:files[manifest['canonical_goldens']['android'][role]['member']] for variant,role in [('primary','mv_board'),('unmasked','mv_unmasked')]}
+  assert len(manifest['source_archives'])==1
+  with zipfile.ZipFile(io.BytesIO(files[manifest['source_archives'][0]['file']['member']])) as original:
+   notes=original.read('notes.txt').decode();comment=original.comment.decode()
+ else:
+  config={n.targets[0].id:ast.literal_eval(n.value) for n in ast.parse(z.read('modinstall.txt').decode('utf-8')).body if isinstance(n,ast.Assign)}
+  rolebytes={role:z.read(config[key]) for role,key in [('primary','costume_file'),('unmasked','rina_unmask_costume_file')]}
+  notes=z.read('notes.txt' if 'notes.txt' in z.namelist() else 'notes.txt.data').decode();comment=z.comment.decode()
+ for role,raw in rolebytes.items():
+  info=model_edits._inspect(raw)
+  models[role]={'sha256':hashlib.sha256(raw).hexdigest(),'scales':{name:info['effective'][node]['scale'] for node,name in info['names'].items() if name in ['BreastSize','LeftUpLeg']}}
+ print(json.dumps({'config':config,'models':models,'members':z.namelist(),'notes':notes,'comment':comment}))`, [file]);
 }
 async function startServer() {
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
@@ -221,6 +252,20 @@ async function downloads(page, modPath, locale) {
       const previousResult = await (await fetch(server.url + '/api/viewer/edit/result/' + encodeURIComponent(stale.jobId))).json();
       const staleDownloads = await downloads(page, previousResult.mod_package.package_path, profile.locale);
       assert.equal(await page.locator('#viewer-mod-name').inputValue(), 'board', 'A new source resets manual name to its own suggestion');
+      // Reopen the actual saved scene envelope; restoring its canonical
+      // recipe during variant reload must preserve a user's manual folds.
+      await open(page, oldPackagePath);
+      const recipeBefore = await page.evaluate(() => ModelViewer.getAuthoringState());
+      const sceneCamera = await page.evaluate(() => ModelViewer.getState().camera);
+      const summary = await show(page, '#viewer-breast-card > summary');
+      if (await page.locator('#viewer-breast-card').evaluate(element => element.open)) await summary.click();
+      for (const variant of ['unmasked', 'primary']) {
+        await (await show(page, '#viewer-variant-0')).selectOption(variant);
+        await page.waitForFunction(v => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().loadedArchiveVariants[0] === v, variant);
+        assert.equal(await page.locator('#viewer-breast-card').evaluate(element => element.open), false, 'Scene recipe restore preserves a manual card fold');
+        assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().camera), sceneCamera);
+      }
+      assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState()), recipeBefore, 'Canonical recipe survives the two-variant roundtrip');
       assert.deepStrictEqual(errors, []); assert.equal(sha(fs.readFileSync(fixture.archive)), sourceHash);
       await page.screenshot({ path: path.join(evidence, profile.name + '.png') });
       report.cases.push({ profile, suggested, package: inspected, savedDownloads, staleDownloads, rawExports: raw.length, packageRequests: packages.length,

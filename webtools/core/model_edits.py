@@ -406,7 +406,7 @@ def validate_state(token, state):
     if not isinstance(unsupported, list) or unsupported:
         _fail("Reset unsupported preview-only changes before exporting body edits.")
     edits = state.get("edits")
-    if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_EDITS:
+    if not isinstance(edits, list) or not (0 if session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:
@@ -936,7 +936,8 @@ def export(token, state, output_dir, *, log=lambda message: None):
                     if incoming.namelist() != reloaded.namelist() or incoming.comment != reloaded.comment:
                         _fail("The edited costume archive failed reload validation.")
                     for entry in incoming.infolist():
-                        expected = replacements.get((index, entry.filename), incoming.read(entry))
+                        key = (index, entry.filename)
+                        expected = replacements[key] if key in replacements else incoming.read(entry)
                         if reloaded.read(entry.filename) != expected:
                             _fail("A costume archive member changed unexpectedly.")
             else:

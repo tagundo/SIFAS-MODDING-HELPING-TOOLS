@@ -269,10 +269,10 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         result["editing"] = model_edits.register_session(
                             result["id"], expanded.paths, result["rig"],
-                            originals=resolved, origins=expanded.origins,
+                            originals=getattr(expanded, "editing_originals", None) or resolved, origins=expanded.origins,
                             archive_members=getattr(expanded, "archive_members", {}),
-                            variants={item["source_path"]: item["selected"]
-                                      for item in expanded.variants},
+                            variants=(expanded.editing_variants if getattr(expanded, "editing_variants", None) is not None else
+                                      {item["source_path"]: item["selected"] for item in expanded.variants}),
                             cache_dir=cache_dir)
                         if result["editing"].get("available"):
                             from webtools.core import viewer_mod_flow
@@ -281,7 +281,22 @@ class Handler(BaseHTTPRequestHandler):
                                 repo_root=Path.cwd(),
                                 cache_root=Path(default_sukusta_dir("extracted")) / "game-models",
                                 language=self._lang())
+                            from webtools.core import viewer_scene_roles
+                            if (result["editing"]["modPackaging"].get("characterId") == 209 and
+                                    viewer_scene_roles.pending_supported_nodes(model_edits.mod_source_context(result["id"]))):
+                                model_edits._session(result["id"])["allowEmptySceneReset"] = True
+                                result["editing"]["allowEmptyScenePackage"] = True
+                            if getattr(expanded, "scene_context", None):
+                                from webtools.core import viewer_scene_roles
+                                result["editing"]["initialState"] = viewer_scene_roles.register_reopened(
+                                    result["id"], expanded.scene_context)
+                                result["editing"]["allowEmptySceneReset"] = True
+                                result["editing"]["modPackaging"].update(
+                                    nameBase=expanded.scene_context["metadata"]["display_name"], characterId=209,
+                                    requiresCounterpart=False, sceneRoles=True)
                     except (ValueError, OSError) as exc:
+                        if getattr(expanded, "scene_context", None):
+                            raise
                         # A bounded editing-cache failure must not prevent
                         # opening an otherwise valid read-only model.
                         result["editing"] = {"available": False, "reason": str(exc)}

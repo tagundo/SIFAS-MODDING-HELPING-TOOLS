@@ -27,6 +27,9 @@ class ExpandedInputs:
     origins: dict
     variants: list = field(default_factory=list)
     archive_members: dict = field(default_factory=dict)
+    editing_originals: list | None = None
+    editing_variants: dict | None = None
+    scene_context: dict | None = None
 
 
 def _entry_path(info):
@@ -223,7 +226,7 @@ def _preflight_zip(path):
 
 
 @contextmanager
-def expand_inputs(paths, cache_root, variant_choices=None):
+def _expand_legacy_inputs(paths, cache_root, variant_choices=None):
     """Yield selected files plus isolated ZIP members for one conversion.
 
     Only Unity model bytes and bounded modinstall.txt data are extracted. All
@@ -326,3 +329,53 @@ def expand_inputs(paths, cache_root, variant_choices=None):
         raise ValueError("The costume ZIP could not be read. Check the archive and try again.") from error
     finally:
         _SLOTS.release()
+
+
+@contextmanager
+def expand_inputs(paths, cache_root, variant_choices=None):
+    from . import viewer_scene_format, viewer_scene_roles
+    scenes = [path for path in paths if viewer_scene_format.is_scene_package(path)]
+    if not scenes:
+        with _expand_legacy_inputs(paths, cache_root, variant_choices) as expanded:
+            yield expanded
+        return
+    if len(paths) != 1:
+        raise ValueError("Open one Rina scene costume at a time so its canonical originals stay unambiguous.")
+    choices = variant_choices or {}
+    if any(path not in paths for path in choices):
+        raise ValueError("Costume variant choices must refer to selected costume ZIPs.")
+    root = Path(cache_root)
+    if root.is_symlink():
+        raise ValueError("The model preview cache cannot be a symbolic link.")
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="viewer-scene-", dir=root) as temporary:
+        scene = viewer_scene_roles.expand_scene(paths[0], temporary, choices.get(paths[0]))
+        raw = Path(scene["path"]).read_bytes()
+        saved = root / "scene-originals"
+        if saved.is_symlink():
+            raise ValueError("The canonical scene cache cannot be a symbolic link.")
+        saved.mkdir(exist_ok=True)
+        canonical_path = saved / (viewer_scene_format.sha(raw) + ".zip")
+        if canonical_path.is_symlink():
+            raise ValueError("The canonical scene source cannot be a symbolic link.")
+        if canonical_path.exists():
+            if canonical_path.read_bytes() != raw:
+                raise ValueError("The canonical scene cache no longer matches its source.")
+        else:
+            try:
+                with canonical_path.open("xb") as output:
+                    output.write(raw)
+            except FileExistsError:
+                if canonical_path.read_bytes() != raw:
+                    raise ValueError("The canonical scene cache changed while opening.")
+        canonical = str(canonical_path)
+        canonical_choices = {canonical: scene["variant"]}
+        with _expand_legacy_inputs([canonical], cache_root, canonical_choices) as expanded:
+            expanded.editing_originals = [canonical]
+            expanded.editing_variants = canonical_choices
+            expanded.scene_context = scene
+            expanded.source_names = [Path(paths[0]).name]
+            for variant in expanded.variants:
+                variant["source_path"] = paths[0]
+                variant["source_name"] = Path(paths[0]).name
+            yield expanded

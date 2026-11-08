@@ -184,8 +184,16 @@
       var state = value && value.parent, incoming = value && value.incoming || [], canEdit = !!(value && value.canEdit);
       // An old invalid Node+compensation edit may still be turned off. New
       // compensation is available only for the actual mesh save method.
-      if (compensationCheck) { compensationCheck.checked = !!(state && state.enabled); compensationCheck.disabled = !enabled || !state || !canEdit && !state.enabled; }
-      if (compensationChoice) { compensationChoice.value = state ? state.mode : "auto"; compensationChoice.disabled = !enabled || !state || !canEdit; }
+      if (compensationCheck) {
+        var checked = !!(state && state.enabled), checkDisabled = !enabled || !state || !canEdit && !state.enabled;
+        if (compensationCheck.checked !== checked) compensationCheck.checked = checked;
+        if (compensationCheck.disabled !== checkDisabled) compensationCheck.disabled = checkDisabled;
+      }
+      if (compensationChoice) {
+        var mode = state ? state.mode : "auto", choiceDisabled = !enabled || !state || !canEdit;
+        if (compensationChoice.value !== mode) compensationChoice.value = mode;
+        if (compensationChoice.disabled !== choiceDisabled) compensationChoice.disabled = choiceDisabled;
+      }
       if (compensationStatus) {
         var labels = { off: "Child compensation is off.", ready: "Child compensation is ready; change this bone’s scale to activate it.",
           active: "Child compensation is active.", unavailable: "Child compensation is unavailable." };
@@ -195,7 +203,8 @@
         if (state) text += " " + translate("Targets") + ": " + (state.targets.length ? state.targets.map(function (target) { return target.name + " [" + target.node + "]"; }).join(", ") : "—");
         if (state && state.mode === "both") text += ". " + translate("Each target boundary is corrected separately; corrections accumulate farther down the hierarchy.");
         if (compensationStatus.textContent !== text) compensationStatus.textContent = text;
-        compensationStatus.dataset.viewerCompensationState = state ? state.state : "off";
+        var compensationState = state ? state.state : "off";
+        if (compensationStatus.dataset.viewerCompensationState !== compensationState) compensationStatus.dataset.viewerCompensationState = compensationState;
         compensationStatus.classList.toggle("error", !!state && state.state === "unavailable");
       }
       var baseline = document.getElementById("viewer-node-baseline");

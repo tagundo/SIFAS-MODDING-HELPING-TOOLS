@@ -36,6 +36,8 @@
   var materialPreference = "sifas";
   var frame = 0;
   var resizeObserver = null;
+  var stageObserver = null;
+  var stageVisible = true;
   var bounds = null;
   var expanded = false;
   var minimized = false;
@@ -92,8 +94,8 @@
       JSON.stringify(variantsFor(paths)) === JSON.stringify(variants);
   }
   function variantsLoaded() { return JSON.stringify(variantsFor(paths)) === JSON.stringify(loadedVariants); }
-  function readVariantOptions(records, selected, variants) {
-    var result = Object.create(null), indices = Object.create(null);
+  function readVariantOptions(records, selected, variants, requested) {
+    var result = Object.create(null), indices = Object.create(null), resolved = variants.slice();
     if (records === undefined) records = [];
     if (!Array.isArray(records) || records.length > selected.length) throw new Error(t("The costume variant could not be selected."));
     records.forEach(function (record) {
@@ -101,14 +103,20 @@
       if (typeof index !== "number" || Math.floor(index) !== index || index < 0 || index >= selected.length ||
           indices[index] || !Array.isArray(record.choices) || record.choices.length !== 2 ||
           record.choices.indexOf("primary") < 0 || record.choices.indexOf("unmasked") < 0 ||
-          record.selected !== variants[index]) throw new Error(t("The costume variant could not be selected."));
+          ["primary", "unmasked"].indexOf(record.selected) < 0 ||
+          Object.prototype.hasOwnProperty.call(requested, index) && record.selected !== variants[index]) {
+        throw new Error(t("The costume variant could not be selected."));
+      }
       indices[index] = true;
+      resolved[index] = record.selected;
       result[selected[index]] = { selected: record.selected, choices: ["primary", "unmasked"] };
     });
     selected.forEach(function (path, index) {
-      if (variants[index] !== "primary" && !result[path]) throw new Error(t("The costume variant could not be selected."));
+      if ((variants[index] !== "primary" || Object.prototype.hasOwnProperty.call(requested, index)) && !result[path]) {
+        throw new Error(t("The costume variant could not be selected."));
+      }
     });
-    return result;
+    return { options: result, variants: resolved };
   }
 
   function renderVariantOptions() {
@@ -454,8 +462,13 @@
     syncPartVisibility();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
-    renderScene();
-    renderedFrames += 1;
+    // Keep evaluating the pose, material clock, timeline and editable state
+    // while scrolling through the controls. Only the invisible GPU submission
+    // is omitted; returning to the viewport must show the current pose.
+    if (stageVisible || fullscreenWanted || fullscreenMode !== "none" || fullscreenPending) {
+      renderScene();
+      renderedFrames += 1;
+    }
     if (changed || moving) requestRender();
     else lastFrameTime = 0;
   }
@@ -470,7 +483,7 @@
     var status = node("viewer-quality-status");
     var quality = qualityController ? qualityController.getState() : null;
     var limited = !!(quality && quality.enabled && quality.ready && quality.effectiveSamples < 2);
-    status.hidden = !limited;
+    if (status.hidden !== !limited) status.hidden = !limited;
     var text = limited ? t("Device-resolution rendering is enabled; edge smoothing is unavailable on this device.") : "";
     if (status.textContent !== text) status.textContent = text;
     if (qualityFailure !== limited) { qualityFailure = limited; refreshInfoVisibility(); }
@@ -683,6 +696,8 @@
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
+    if (!stageObserver) stageVisible = box.bottom > viewport.top && box.top < viewport.top + viewport.height &&
+      box.right > viewport.left && box.left < viewport.left + viewport.width;
     // Popovers occupy the gap between corner columns, leaving every viewport
     // action reachable while a panel scrolls. These limits do not shrink the
     // model's fit; only explicit fitting tests the individual control boxes.
@@ -1237,12 +1252,13 @@
     var selectedVariants = variantsFor(selected);
     var archiveVariants = {};
     selected.forEach(function (path, index) {
-      if (variantOptions[path] || selectedVariants[index] !== "primary") archiveVariants[index] = selectedVariants[index];
+      if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) archiveVariants[index] = selectedVariants[index];
     });
     var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
     if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
     var pendingModel = null;
     var pendingMaterials = null;
+    var committedVariants = null;
     function discard() {
       if (pendingMaterials) pendingMaterials.dispose();
       if (pendingModel) disposeObject(pendingModel);
@@ -1259,7 +1275,10 @@
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
-      var nextVariantOptions = readVariantOptions(prepared.variants, selected, selectedVariants);
+      // Omitted archive choices may use the server's declared default. Keep
+      // that resolution local until every asynchronous stale-result guard passes.
+      var resolved = readVariantOptions(prepared.variants, selected, selectedVariants, archiveVariants);
+      var nextVariantOptions = resolved.options, resolvedVariants = resolved.variants;
       if (typeof prepared.url !== "string" || !/^\/api\/viewer\/model\/[a-zA-Z0-9_-]+\.glb$/.test(prepared.url)) {
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
@@ -1297,7 +1316,7 @@
       }
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
       var keepView = !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
-        selectedAutoFace === loadedAutoFace && JSON.stringify(selectedVariants) !== JSON.stringify(loadedVariants);
+        selectedAutoFace === loadedAutoFace && JSON.stringify(resolvedVariants) !== JSON.stringify(loadedVariants);
       var previousPose = keepView && rigController ? rigController.getState() : null;
       disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
@@ -1307,7 +1326,9 @@
       metadata = prepared;
       loadedPaths = selected;
       loadedAutoFace = selectedAutoFace;
-      loadedVariants = selectedVariants;
+      Object.keys(nextVariantOptions).forEach(function (path) { variantChoices[path] = nextVariantOptions[path].selected; });
+      loadedVariants = resolvedVariants.slice();
+      committedVariants = loadedVariants;
       variantOptions = nextVariantOptions;
       node("tab-viewer").classList.add("viewer-has-model");
       scene.add(model);
@@ -1321,6 +1342,9 @@
           initializeNodeCards: !keepView,
           onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
         restoreVariantPose(previousPose);
+        if (prepared.editing && prepared.editing.initialState) {
+          rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
+        }
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -1341,7 +1365,7 @@
       if (current === generation) {
         controller = null;
         setLoading(false);
-        if (!sameSelection(selected, selectedAutoFace, selectedVariants)) filesChanged();
+        if (!sameSelection(selected, selectedAutoFace, committedVariants || selectedVariants)) filesChanged();
       }
     }
   }
@@ -1635,7 +1659,11 @@
           if (Array.isArray(nextVariants) && nextVariants.length !== nextPaths.length || Object.keys(nextVariants).some(function (key) {
             return !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= nextPaths.length || ["primary", "unmasked"].indexOf(nextVariants[key]) < 0;
           })) throw new Error("The saved costume variant choices are invalid.");
-          nextPaths.forEach(function (path, index) { variantChoices[path] = nextVariants[index] || "primary"; });
+          nextPaths.forEach(function (path, index) {
+            // Raw export results supply an empty map, not an explicit archive
+            // choice. Do not turn their fallback primary into a ZIP-only option.
+            if (Object.prototype.hasOwnProperty.call(nextVariants, index)) variantChoices[path] = nextVariants[index];
+          });
         }
         await open(nextPaths);
         if (destroyed || loading || JSON.stringify(loadedPaths) !== JSON.stringify(nextPaths)) return;
@@ -1741,12 +1769,25 @@
       if (files) resizeObserver.observe(files);
       node("viewer-stage").querySelectorAll("[data-viewer-hud-edge], .viewer-primary-tools, .viewer-camera-actions, .viewer-info, .viewer-screen-actions").forEach(function (hud) { resizeObserver.observe(hud); });
     }
+    if (window.IntersectionObserver) {
+      stageObserver = new window.IntersectionObserver(function (entries) {
+        if (destroyed) return;
+        entries.forEach(function (entry) {
+          if (entry.target !== node("viewer-stage")) return;
+          var visible = !!entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
+          var changed = stageVisible !== visible;
+          stageVisible = visible;
+          if (changed && visible) requestRender();
+        });
+      }, { threshold: 0 });
+      stageObserver.observe(node("viewer-stage"));
+    }
     window.addEventListener("pagehide", function (event) { if (!event.persisted) dispose(); });
     updateLanguage();
     if (pendingOpen) {
       var pending = pendingOpen;
       pendingOpen = null;
-      Promise.resolve(open(pending.paths)).then(pending.resolve, pending.resolve);
+      Promise.resolve(open(pending.paths, pending.variants)).then(pending.resolve, pending.resolve);
     }
   }
 
@@ -1796,10 +1837,10 @@
     window.requestAnimationFrame(function () { resize(); requestRender(); });
   }
 
-  function open(nextPaths) {
+  function open(nextPaths, nextVariants) {
     if (!mounted) return new Promise(function (resolve) {
       if (pendingOpen) pendingOpen.resolve();
-      pendingOpen = { paths: nextPaths, resolve: resolve };
+      pendingOpen = { paths: nextPaths, variants: nextVariants, resolve: resolve };
     });
     var unique = [];
     (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).forEach(function (path) {
@@ -1807,6 +1848,12 @@
     });
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
     paths = unique;
+    if (nextVariants && typeof nextVariants === "object") {
+      paths.forEach(function (path, index) {
+        if (Object.prototype.hasOwnProperty.call(nextVariants, index) &&
+            ["primary", "unmasked"].indexOf(nextVariants[index]) >= 0) variantChoices[path] = nextVariants[index];
+      });
+    }
     Object.keys(variantChoices).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantChoices[path]; });
     Object.keys(variantOptions).forEach(function (path) { if (paths.indexOf(path) < 0) delete variantOptions[path]; });
     renderFiles();
@@ -1835,6 +1882,8 @@
     clearMinimizeExit();
     layoutListeners.forEach(function (remove) { remove(); }); layoutListeners = [];
     if (resizeObserver) resizeObserver.disconnect();
+    if (stageObserver) stageObserver.disconnect();
+    stageObserver = null;
     if (controls) controls.dispose();
     disposePreviewControllers();
     disposeObject(model);
@@ -1866,7 +1915,7 @@
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
-        layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending,
+        layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,
           viewport: layoutState.viewport, stage: layoutState.stage, safeInsets: layoutState.safeInsets },
         camera: camera ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null,

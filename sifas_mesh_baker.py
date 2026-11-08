@@ -823,6 +823,9 @@ def bone_table(bone_names, tree, buf_u8=None):
     return rows
 
 
+_BAKE_CHUNK_VERTICES = 8192
+
+
 def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarchical=True):
     """제자리에서 tree 의 m_VertexData/m_LocalAABB 수정. stats 반환.
     bone_names/parent 는 resolve_bones() 결과(길이 = m_BindPose 수)."""
@@ -862,11 +865,16 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
                 "error": "could not read vertex/skin data"}
     bidx = np.clip(bidx, 0, nb - 1)
 
-    Mb = M[bidx]
-    Bv = (Mb * w[..., None, None]).sum(axis=1)
+    def blended(begin, end):
+        # Keep the four weighted 4x4 matrices bounded even for large meshes.
+        # Retain the original multiplication/summation order for each vertex.
+        return (M[bidx[begin:end]] * w[begin:end, :, None, None]).sum(axis=1)
 
-    ph = np.concatenate([pos, np.ones((vc, 1))], axis=1)
-    newpos = np.einsum("vij,vj->vi", Bv, ph)[:, :3]
+    newpos = np.empty((vc, 3), dtype=np.float64)
+    for begin in range(0, vc, _BAKE_CHUNK_VERTICES):
+        end = min(vc, begin + _BAKE_CHUNK_VERTICES)
+        ph = np.concatenate([pos[begin:end], np.ones((end-begin, 1))], axis=1)
+        newpos[begin:end] = np.einsum("vij,vj->vi", blended(begin, end), ph)[:, :3]
     write_attr(u8, newpos, ATTR_POS, chans, stride, start, vc)
 
     moved_idx = set(deltas.keys())
@@ -876,24 +884,46 @@ def bake_mesh(tree, bone_names, parent, targets, recompute_normals=True, hierarc
     disp = np.linalg.norm(newpos - pos, axis=1)
 
     if recompute_normals:
-        R3 = Bv[:, :3, :3]
         n = read_attr(u8, ATTR_NORMAL, chans, stride, start, vc)
         if n is not None:
-            try:
-                NIT = np.linalg.inv(R3).transpose(0, 2, 1)
-            except np.linalg.LinAlgError:
-                NIT = R3.copy()
-                dets = np.linalg.det(R3)
-                ok = np.abs(dets) > 1e-12
-                NIT[ok] = np.linalg.inv(R3[ok]).transpose(0, 2, 1)
-            newn = np.einsum("vij,vj->vi", NIT, n)
-            ln = np.linalg.norm(newn, axis=1, keepdims=True); ln[ln == 0] = 1
-            write_attr(u8, newn / ln, ATTR_NORMAL, chans, stride, start, vc)
+            newn = np.empty_like(n)
+            singular = False
+
+            def normal_chunk(begin, end, inverse):
+                values = np.einsum("vij,vj->vi", inverse, n[begin:end])
+                lengths = np.linalg.norm(values, axis=1, keepdims=True)
+                lengths[lengths == 0] = 1
+                newn[begin:end] = values / lengths
+
+            for begin in range(0, vc, _BAKE_CHUNK_VERTICES):
+                end = min(vc, begin + _BAKE_CHUNK_VERTICES)
+                try:
+                    inverse = np.linalg.inv(blended(begin, end)[:, :3, :3]).transpose(0, 2, 1)
+                except np.linalg.LinAlgError:
+                    singular = True
+                    break
+                normal_chunk(begin, end, inverse)
+            if singular:
+                # The legacy whole-mesh inverse falls back for EVERY vertex
+                # when any frame is singular. Preserve that global decision,
+                # including near-singular frames in other chunks.
+                for begin in range(0, vc, _BAKE_CHUNK_VERTICES):
+                    end = min(vc, begin + _BAKE_CHUNK_VERTICES)
+                    linear = blended(begin, end)[:, :3, :3]
+                    inverse = linear.copy()
+                    ok = np.abs(np.linalg.det(linear)) > 1e-12
+                    inverse[ok] = np.linalg.inv(linear[ok]).transpose(0, 2, 1)
+                    normal_chunk(begin, end, inverse)
+            write_attr(u8, newn, ATTR_NORMAL, chans, stride, start, vc)
+            del newn, n
         t = read_attr(u8, ATTR_TANGENT, chans, stride, start, vc)
         if t is not None:
-            txyz = np.einsum("vij,vj->vi", R3, t[:, :3])
-            lt = np.linalg.norm(txyz, axis=1, keepdims=True); lt[lt == 0] = 1
-            t[:, :3] = txyz / lt
+            for begin in range(0, vc, _BAKE_CHUNK_VERTICES):
+                end = min(vc, begin + _BAKE_CHUNK_VERTICES)
+                txyz = np.einsum("vij,vj->vi", blended(begin, end)[:, :3, :3], t[begin:end, :3])
+                lt = np.linalg.norm(txyz, axis=1, keepdims=True)
+                lt[lt == 0] = 1
+                t[begin:end, :3] = txyz / lt
             write_attr(u8, t, ATTR_TANGENT, chans, stride, start, vc)
 
     mn, mx = newpos.min(0), newpos.max(0)

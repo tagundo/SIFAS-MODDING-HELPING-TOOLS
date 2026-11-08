@@ -522,9 +522,12 @@
     function currentTime() { return action ? action.time : playhead; }
     function updateTime() {
       var seconds = currentTime();
-      element("viewer-time").value = String(seconds);
-      element("viewer-time-value").textContent = seconds.toFixed(2) + " / " + duration().toFixed(2) + " s";
-      element("viewer-play").textContent = translate(playing ? "Pause" : "Play");
+      var slider = element("viewer-time"), value = String(seconds);
+      if (slider.value !== value) slider.value = value;
+      var output = element("viewer-time-value"), text = seconds.toFixed(2) + " / " + duration().toFixed(2) + " s";
+      if (output.textContent !== text) output.textContent = text;
+      var button = element("viewer-play"), label = translate(playing ? "Pause" : "Play");
+      if (button.textContent !== label) button.textContent = label;
     }
     function refreshAvailability() {
       var enabled = interactive && !disposed;
@@ -1228,7 +1231,7 @@
       }
       return state;
     }
-    function restoreAuthoringState(state) {
+    function restoreAuthoringState(state, restoreOptions) {
       if (!state || state.version !== 1 || !Array.isArray(state.edits) || state.edits.length > bones.length || state.savedSettingsEnabled !== true) {
         throw new Error("The body edit recipe is invalid.");
       }
@@ -1279,7 +1282,9 @@
       body = { breastPreset: "loaded" }; skirtOverrides = {};
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
-      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); initializeNodeCards(); changed();
+      evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode();
+      if (!restoreOptions || restoreOptions.initializeNodeCards !== false) initializeNodeCards();
+      changed();
     }
     function motionScaleTargets() {
       if (!currentClip || !currentClip.animation) return [];

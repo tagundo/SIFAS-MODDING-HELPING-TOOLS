@@ -482,9 +482,24 @@ def _prune_cache(root, protected=(), deadline=None):
                 if deadline is not None:
                     _check(deadline)
                 owned = bool(_PACK.fullmatch(entry.name)) if name == "packs" else bool(re.fullmatch(r"ch\d{4}_[0-9a-f]{24}\.unity", entry.name))
-                if owned and entry.is_file() and not entry.is_symlink() and _cached(entry) is not None:
-                    stat = entry.stat()
+                if owned and entry.is_file() and not entry.is_symlink():
+                    try:
+                        stat = entry.stat()
+                    except OSError:
+                        continue
                     files.append((stat.st_mtime, stat.st_size, entry))
+    # These sizes are an upper bound for the valid owned subset. Below budget
+    # nothing can be evicted, so do not read/hash every cached bundle merely to
+    # prove that. Loading a selected pack/model still always calls _cached.
+    if sum(row[1] for row in files) <= MAX_CACHE_BYTES:
+        return
+    valid = []
+    for row in files:
+        if deadline is not None:
+            _check(deadline)
+        if _cached(row[2]) is not None:
+            valid.append(row)
+    files = valid
     total = sum(row[1] for row in files)
     for _, size, path in sorted(files):
         if total <= MAX_CACHE_BYTES:

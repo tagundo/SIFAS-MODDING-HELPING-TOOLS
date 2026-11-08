@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -40,6 +41,18 @@ def _extractor():
 
 def _readonly(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def _installed_scene(root, suit_id):
+    """The application owns this resolver; requests never provide its path."""
+    root = Path(root).resolve()
+    if (root / "costume_scene_installer.py").is_file() and str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from costume_scene_installer import installed_scene_source
+    except ImportError:
+        return None
+    return installed_scene_source(suit_id, root=root)
 
 
 def _regions(root):
@@ -91,7 +104,7 @@ def _dictionary(root, region, language):
     return None
 
 
-def _views(db, suit_id, owner):
+def _views(db, suit_id, owner, canonical_candidates=()):
     result = [{"value": "primary", "label": "Default costume"}]
     if owner == 209:
         try:
@@ -102,6 +115,13 @@ def _views(db, suit_id, owner):
                 result.append({"value": "unmasked", "label": "Without mask"})
         except sqlite3.Error:
             pass
+    elif suit_id in canonical_candidates:
+        try:
+            row = db.execute("SELECT model_asset_path FROM m_suit_view WHERE suit_master_id=? AND view_status=2", (suit_id,)).fetchone()
+            if row and row[0]:
+                result.append({"value": "unmasked", "label": "Without mask"})
+        except sqlite3.Error:
+            pass  # Selection still verifies and reports invalid provenance.
     return result
 
 
@@ -114,6 +134,15 @@ def catalog(root, *, language="en", region="", character="", search=""):
     region, regions = _region(root, region, language)
     extractor = _extractor()
     names = _names(extractor)
+    source_root = Path(root).resolve()
+    if (source_root / "costume_scene_clones.py").is_file() and str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    try:
+        from costume_scene_clones import canonical_clone_candidates
+    except ImportError:
+        canonical_candidates = set()
+    else:
+        canonical_candidates = canonical_clone_candidates(root=source_root)
     with closing(_readonly(Path(root) / "assets/db" / region / "masterdata.db")) as db:
         members = [int(row[0]) for row in db.execute("SELECT DISTINCT member_m_id FROM m_suit WHERE model_asset_path IS NOT NULL AND model_asset_path<>'' ORDER BY member_m_id") if isinstance(row[0], int) and 0 < row[0] < 10000]
         try:
@@ -136,7 +165,7 @@ def catalog(root, *, language="en", region="", character="", search=""):
                 if query and query not in name.casefold() and query not in member.casefold():
                     continue
                 options.append({"value": f"suit:{suit}", "label": f"{member} — {name}" if query else name,
-                                "variants": _views(db, suit, owner)})
+                                "variants": _views(db, suit, owner, canonical_candidates)})
                 if len(options) >= MAX_OPTIONS:
                     break
         finally:
@@ -218,6 +247,20 @@ def validate_selection(root, params, language="en"):
         if not row or not row[2] or not isinstance(row[0], int):
             raise ValueError("The selected costume is no longer available. Refresh the list.")
         owner, name, model = row
+        scene = _installed_scene(root, suit_id)
+        if scene is not None:
+            if scene.get("target_member_id", 209) != owner:
+                raise ValueError("The canonical costume owner does not match its installed archive.")
+            return {"region": region, "suit_id": suit_id, "owner": owner, "variant": params["variant"],
+                    "download": params["download"], "scene_source": scene, "model": model,
+                    "attach_key": None, "recolours": []}
+        if owner == 209:
+            try:
+                board = db.execute("SELECT model_asset_path FROM m_suit_view WHERE suit_master_id=? AND view_status=1", (suit_id,)).fetchone()
+            except sqlite3.Error:
+                board = None
+            if board and board[0] != model:
+                raise ValueError("This costume has separate Navi/MV models but no verified canonical archive. Open its original scene Mod ZIP to edit it.")
         original_id, attach_key = _attachment(db, suit_id, owner, model)
         base_model = model
         if params["variant"] == "unmasked":
@@ -276,13 +319,19 @@ def _source(root, record, extractor, job, deadline):
     for directory in extractor.build_pack_roots(str(root), None, game):
         _check(job, deadline)
         real_root = Path(directory).resolve()
-        index = extractor.build_pack_index(str(real_root))
         candidates = [(record["pack_name"], 0, record.get("pack_size"), False)]
         meta = record.get("metapack")
         if meta:
             candidates.append((meta["name"], meta["offset"], None, True))
         for name, offset, exact_size, is_meta in candidates:
-            candidate = index.get(name)
+            find = getattr(extractor, "indexed_pack_file", None)
+            if find is not None:
+                candidate = find(str(real_root), name)
+            else:
+                # Standalone webtools can also meet an older extractor. Keep
+                # its index fallback while still preferring fresh flat packs.
+                flat = real_root / name
+                candidate = flat if flat.is_file() else extractor.build_pack_index(str(real_root)).get(name)
             if not candidate:
                 continue
             candidate = Path(candidate).resolve()
@@ -424,9 +473,30 @@ def run_import(job, *, repo_root, output_root, record):
     temporary, temporary_manifest = None, None
     try:
         deadline = time.monotonic() + IMPORT_SECONDS
-        extractor = _extractor()
         root = _safe_directory(Path(output_root))
         _check(job, deadline)
+        if record.get("scene_source") is not None:
+            scene = _installed_scene(repo_root, record["suit_id"])
+            if scene is None or scene != record["scene_source"]:
+                raise ValueError("The installed scene costume changed. Refresh the game asset list.")
+            source = Path(scene["archive_path"])
+            destination = root / ("scene-" + scene["sha256"] + "-" + record["variant"] + ".zip")
+            if destination.is_symlink():
+                raise ValueError("The canonical scene cache cannot be a symbolic link.")
+            if destination.exists():
+                if _sha(destination) != scene["sha256"]:
+                    raise ValueError("The cached canonical scene package changed.")
+            else:
+                with source.open("rb") as incoming, destination.open("xb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            if _sha(destination) != scene["sha256"]:
+                destination.unlink(missing_ok=True)
+                raise ValueError("The canonical scene package changed while copying.")
+            _check(job, deadline)
+            job.add_output(str(destination))
+            job.progress(1, 1)
+            return "Canonical Rina scene costume prepared for re-editing."
+        extractor = _extractor()
         resources = [record] + record["recolours"]
         found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]

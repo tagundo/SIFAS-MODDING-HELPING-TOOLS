@@ -21,6 +21,8 @@
     function finite(value) { return typeof value === "number" && isFinite(value); }
     function percent(value) { return finite(value) ? String(value * 100) + "%" : "—"; }
     function own(object, key) { return Object.prototype.hasOwnProperty.call(object, key); }
+    function property(target, name, value) { if (target[name] !== value) target[name] = value; }
+    function attribute(target, name, value) { if (target.getAttribute(name) !== value) target.setAttribute(name, value); }
     function family(group) {
       if (group === "all") return "all";
       if (/^(?:eyes?|brows?)(?:[-_].*)?$/.test(String(group))) return "eyes";
@@ -280,11 +282,11 @@
     function refresh() {
       if (disposed) return;
       var enabled = interactive && channels.length > 0;
-      if (ui.panel) ui.panel.hidden = !channels.length;
-      groupButtons.forEach(function (entry) { entry.element.disabled = !enabled; entry.element.setAttribute("aria-pressed", String(entry.group === currentGroup)); });
+      if (ui.panel) property(ui.panel, "hidden", !channels.length);
+      groupButtons.forEach(function (entry) { property(entry.element, "disabled", !enabled); attribute(entry.element, "aria-pressed", String(entry.group === currentGroup)); });
       presetButtons.forEach(function (entry) {
-        entry.element.disabled = !enabled;
-        entry.element.setAttribute("aria-pressed", String(selectedPresets[family(entry.preset.group)] === entry.preset.id));
+        property(entry.element, "disabled", !enabled);
+        attribute(entry.element, "aria-pressed", String(selectedPresets[family(entry.preset.group)] === entry.preset.id));
       });
       controlElements.forEach(function (entry) {
         var values = weightsFor(entry.control), value = values.length ? values[0] : 0;
@@ -292,43 +294,43 @@
         var outside = !finite(value) || value < 0 || value > 1;
         // A range has no indeterminate state. Do not give its first target a
         // precise-looking thumb when the grouped renderer weights differ.
-        entry.input.hidden = mixed || outside;
-        entry.input.disabled = !enabled || mixed || outside;
-        if (!mixed && !outside) entry.input.value = String(value * 100);
-        entry.input.setAttribute("aria-valuetext", mixed ? translate("Mixed values") : percent(value));
-        entry.output.textContent = mixed ? translate("Mixed values") : percent(value);
-        entry.output.title = translate("Current weight") + ": " + values.map(percent).join(", ");
-        entry.mixedButton.hidden = !mixed && !outside;
-        entry.mixedButton.disabled = !enabled;
+        property(entry.input, "hidden", mixed || outside);
+        property(entry.input, "disabled", !enabled || mixed || outside);
+        if (!mixed && !outside) property(entry.input, "value", String(value * 100));
+        attribute(entry.input, "aria-valuetext", mixed ? translate("Mixed values") : percent(value));
+        property(entry.output, "textContent", mixed ? translate("Mixed values") : percent(value));
+        property(entry.output, "title", translate("Current weight") + ": " + values.map(percent).join(", "));
+        property(entry.mixedButton, "hidden", !mixed && !outside);
+        property(entry.mixedButton, "disabled", !enabled);
       });
-      if (ui.raw) ui.raw.disabled = !enabled;
+      if (ui.raw) property(ui.raw, "disabled", !enabled);
       var channel = channelByKey[selectedRaw], value = channel ? channel.object.morphTargetInfluences[channel.index] : null;
       if (ui.strength) {
-        ui.strength.disabled = !enabled || !channel || !finite(value);
+        property(ui.strength, "disabled", !enabled || !channel || !finite(value));
         if (channel) {
-          var range = rawRange(channel); ui.strength.min = String(range.min); ui.strength.max = String(range.max); ui.strength.step = "any";
-          if (finite(value)) ui.strength.value = String(value * 100);
-          ui.strength.setAttribute("aria-valuetext", percent(value));
+          var range = rawRange(channel); property(ui.strength, "min", String(range.min)); property(ui.strength, "max", String(range.max)); property(ui.strength, "step", "any");
+          if (finite(value)) property(ui.strength, "value", String(value * 100));
+          attribute(ui.strength, "aria-valuetext", percent(value));
         }
       }
       if (ui.number) {
-        ui.number.min = "-10000"; ui.number.max = "10000"; ui.number.step = "any";
-        ui.number.disabled = !enabled || !channel;
+        property(ui.number, "min", "-10000"); property(ui.number, "max", "10000"); property(ui.number, "step", "any");
+        property(ui.number, "disabled", !enabled || !channel);
         var typed = rawInputValues[selectedRaw];
-        if (document.activeElement !== ui.number && !rawError) ui.number.value = channel && finite(value) ?
-          typed && typed.weight === value ? typed.text : String(value * 100) : "";
+        if (document.activeElement !== ui.number && !rawError) property(ui.number, "value", channel && finite(value) ?
+          typed && typed.weight === value ? typed.text : String(value * 100) : "");
         ui.number.setCustomValidity(rawError ? translate(rawError) : "");
       }
-      if (ui.output) ui.output.textContent = percent(value);
+      if (ui.output) property(ui.output, "textContent", percent(value));
       if (ui.source) {
-        ui.source.hidden = !channel;
-        ui.source.textContent = channel ? translate("File weight") + ": " + percent(authoredWeights[selectedRaw]) +
-          " · " + translate("Current weight") + ": " + percent(value) : "";
+        property(ui.source, "hidden", !channel);
+        property(ui.source, "textContent", channel ? translate("File weight") + ": " + percent(authoredWeights[selectedRaw]) +
+          " · " + translate("Current weight") + ": " + percent(value) : "");
       }
-      if (ui.reset) ui.reset.disabled = !enabled || !(Object.keys(overrides).length || Object.keys(boneOperations).length || Object.keys(visibilityOperations).length);
+      if (ui.reset) property(ui.reset, "disabled", !enabled || !(Object.keys(overrides).length || Object.keys(boneOperations).length || Object.keys(visibilityOperations).length));
       if (ui.selection) {
-        ui.selection.textContent = lastSelection ? translate(lastSelection.label) + (lastSelection.note ? " — " + translate(lastSelection.note) : "") :
-          !controls.length && !presets.length && channels.length ? translate("Only original channel names are available for this model.") : "";
+        property(ui.selection, "textContent", lastSelection ? translate(lastSelection.label) + (lastSelection.note ? " — " + translate(lastSelection.note) : "") :
+          !controls.length && !presets.length && channels.length ? translate("Only original channel names are available for this model.") : "");
       }
       if (ui.status) {
         var seen = [], exceeded = channels.some(function (item) {
@@ -341,7 +343,7 @@
         if (rawError) notices.push(translate(rawError));
         if (exceeded) notices.push(translate("Too many expression channels are active. Some may be omitted by the viewer."));
         if (unavailable) notices.push(translate("Some expression presets are unavailable for this model."));
-        ui.status.hidden = !notices.length; ui.status.textContent = notices.join(" ");
+        property(ui.status, "hidden", !notices.length); property(ui.status, "textContent", notices.join(" "));
       }
     }
     function getBoneOperations() {
