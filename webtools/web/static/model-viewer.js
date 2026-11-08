@@ -29,6 +29,7 @@
   var model = null;
   var rigController = null;
   var persistenceController = null;
+  var accessoryController = null;
   var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
@@ -423,6 +424,7 @@
     else if (!loading) setStatus("Model ready.");
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
+    if (accessoryController) accessoryController.refresh();
   }
 
   function setLoading(value) {
@@ -433,6 +435,7 @@
     node("viewer-auto-face").disabled = value;
     node("viewer-high-quality").disabled = value || lost;
     if (rigController) rigController.setInteractive(!value && !lost && !(persistenceController && persistenceController.getState().busy));
+    if (accessoryController) accessoryController.refresh();
     renderFiles();
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
@@ -1050,6 +1053,7 @@
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
+    if (accessoryController) accessoryController.refresh();
     materialController = null;
     lastFrameTime = 0;
   }
@@ -1187,6 +1191,7 @@
     syncPartVisibility();
     requestRender();
     if (persistenceController) persistenceController.refresh();
+    if (accessoryController) accessoryController.refresh();
   }
 
   function showWarnings(warnings) {
@@ -1637,11 +1642,25 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    if (window.ViewerAccessories) accessoryController = window.ViewerAccessories.create({
+      translate: t,
+      context: function () {
+        var saved = persistenceController && persistenceController.getState();
+        return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+          busy: !!(saved && saved.busy), reviewingSaved: !!(saved && saved.reviewingSaved),
+          current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) };
+      },
+      onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); }
+    });
     if (window.ViewerPersistence && node("viewer-save")) persistenceController = window.ViewerPersistence.create({
       translate: t,
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+        accessories: accessoryController && accessoryController.getState(),
         loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
-      busyChanged: function (busy) { if (rigController) rigController.setInteractive(!busy && !loading && !lost); },
+      busyChanged: function (busy) {
+        if (rigController) rigController.setInteractive(!busy && !loading && !lost);
+        if (accessoryController) accessoryController.refresh();
+      },
       pickFile: function (callback) {
         containViewerPicker();
         try { config.pickFile(function (path) { if (!destroyed) callback(path); }); }
@@ -1813,6 +1832,7 @@
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
     if (persistenceController) persistenceController.updateLanguage();
+    if (accessoryController) accessoryController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -1872,6 +1892,7 @@
     updateShortLayout(null);
     destroyed = true;
     if (persistenceController) persistenceController.dispose();
+    if (accessoryController) accessoryController.dispose();
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
@@ -1914,6 +1935,7 @@
         framing: framingState, renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
+        accessories: accessoryController ? accessoryController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,

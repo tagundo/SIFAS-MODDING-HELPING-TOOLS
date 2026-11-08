@@ -217,7 +217,7 @@ function assertFrame(value, label) {
       await page.keyboard.press('Escape');
       await page.locator('#viewer-workspace-menu > summary').click();
       const workspaceTargets = [];
-      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select',
+      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select',
         '#viewer-add', '#viewer-add-motion', '#viewer-load', '#viewer-file-options > summary']) {
         const control = page.locator(selector); await control.scrollIntoViewIfNeeded(); await frames(page);
         const target = await control.evaluate(element => {
@@ -231,6 +231,24 @@ function assertFrame(value, label) {
       }
       await page.keyboard.press('Escape'); await frames(page);
       assert.deepEqual(await retained(), fitted, language + ': drawer scrolling and popups retain model/camera/pose/edits');
+      await page.locator('#viewer-workspace-menu > summary').click();
+      await page.locator('.tab[data-tab="tools"]').click();
+      const textureButton = page.locator('#tool-list button[data-id="texture_previews"]');
+      await textureButton.scrollIntoViewIfNeeded(); await frames(page);
+      const textureTarget = await textureButton.evaluate(element => {
+        const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+          hit: !!hit && (hit === element || element.contains(hit)) };
+      });
+      assert(textureTarget.width >= 43.5 && textureTarget.height >= 43.5 && textureTarget.hit &&
+        textureTarget.x >= 0 && textureTarget.y >= 0 && textureTarget.right <= 361 && textureTarget.bottom <= 457,
+        language + ': Texture previews remains a reachable44px Tools entry at200% text: ' + JSON.stringify(textureTarget));
+      await textureButton.click();
+      assert(await page.locator('#tab-gallery').isVisible(), 'Texture previews opens inside the Tools workspace');
+      assert(await page.locator('#tab-tools').evaluate(element => element.classList.contains('active')));
+      await page.locator('.tab[data-tab="viewer"]').click(); await page.evaluate(() => scrollTo(0, 0)); await frames(page);
+      assert.deepEqual(await retained(), fitted, language + ': texture-tool navigation retains the loaded model, camera, pose and edits');
+      workspaceTargets.push({ selector: '#tool-list button[data-id="texture_previews"]', ...textureTarget });
       await style.evaluate(element => { element.disabled = true; });
       await page.waitForFunction(() => !ModelViewer.getState().layout.shortHeight); await frames(page);
       assert.deepEqual(await retained(), fitted, language + ': restoring normal text does not auto-fit');

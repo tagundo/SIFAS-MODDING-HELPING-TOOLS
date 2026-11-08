@@ -17,6 +17,9 @@
     var bones = [];
     var expressions = [];
     var adjustments = {};
+    // Accessory corrections are derived from immutable originals. They are
+    // never folded into manual body edits or the next animation baseline.
+    var accessoryUnclip = null, accessoryCorrections = {};
     var nodeCompensations = {}, compensationStatuses = {}, automaticTargets = [];
     var automaticMatrices = [];
     var body = { breastPreset: "loaded" };
@@ -466,6 +469,20 @@
       // needs this frame's restored TRS rather than the last affine matrix.
       (released || []).forEach(function (object) { object.updateMatrix(); });
       if (!beforeAnimation) applyCompensations();
+      Object.keys(accessoryCorrections).forEach(function (id) {
+        var target = nodes[id], delta = accessoryCorrections[id];
+        if (!target) return;
+        // The server derives this in the final compensated parent's frame.
+        // A directly compensated anchor may have an affine/sheared matrix;
+        // translate that finished matrix, not a TRS that C will scale again.
+        target.position.add(delta);
+        if (target.matrixAutoUpdate === false) {
+          target.matrix.elements[12] += delta.x;
+          target.matrix.elements[13] += delta.y;
+          target.matrix.elements[14] += delta.z;
+          target.matrixWorldNeedsUpdate = true;
+        }
+      });
       parts.forEach(function (part) { part.object.visible = part.visible; });
       if (currentClip) currentClip.visibility.forEach(function (track) {
         var time = currentTime(), value = track.values[0];
@@ -964,6 +981,7 @@
     }
     function reset() {
       adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
+      accessoryUnclip = null; accessoryCorrections = {};
       clearHipDrafts();
       if (expressionPanel) expressionPanel.reset(true);
       parts.forEach(function (part) { part.visible = part.fileVisible; part.userVisible = undefined; part.userChanged = false; });
@@ -1218,6 +1236,7 @@
       }
       var state = { version: 1, edits: edits, savedSettingsEnabled: savedEnabled,
         unsupported: unsupported.filter(function (message, index, values) { return values.indexOf(message) === index; }) };
+      if (accessoryUnclip) state.accessoryUnclip = Object.assign({}, accessoryUnclip);
       if (edits.some(function (edit) { return edit.compensate; })) {
         var reference = fileMap(), writable = {};
         applyBodyPreset(function (id) { return reference[id]; });
@@ -1236,6 +1255,7 @@
         throw new Error("The body edit recipe is invalid.");
       }
       var next = {}, methods = {}, compensations = {}, seen = {};
+      var restoredAccessory = checkedAccessory(state.accessoryUnclip);
       state.edits.forEach(function (edit) {
         var id = String(edit.node);
         if (!Number.isInteger(edit.node) || !authoredNodes[id] || seen[id] || ["auto", "node", "mesh"].indexOf(edit.method) < 0) throw new Error("The body edit recipe is invalid.");
@@ -1273,6 +1293,7 @@
         references[id] = { scale: new THREE.Vector3().fromArray(entry.scale), position: new THREE.Vector3().fromArray(entry.position), quaternion: editing.uiQuaternion(THREE, entry.rotation) };
       });
       adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
+      accessoryUnclip = restoredAccessory; accessoryCorrections = {};
       clearHipDrafts();
       var baseline = storedFileMap();
       state.edits.forEach(function (edit) {
@@ -1297,9 +1318,46 @@
       });
       return result;
     }
+    function checkedAccessory(value) {
+      if (value === undefined || value === null) return null;
+      if (typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(function (key) {
+        return ["strength", "overlap", "closeGaps"].indexOf(key) < 0;
+      })) throw new Error("The accessory correction settings are invalid.");
+      var result = { strength: value.strength === undefined ? 1 : value.strength,
+        overlap: value.overlap === undefined ? .15 : value.overlap,
+        closeGaps: value.closeGaps === undefined ? false : value.closeGaps };
+      if (typeof result.strength !== "number" || !isFinite(result.strength) || result.strength < 0 || result.strength > 3 ||
+          typeof result.overlap !== "number" || !isFinite(result.overlap) || result.overlap < 0 || result.overlap > 1 ||
+          typeof result.closeGaps !== "boolean") throw new Error("The accessory correction settings are invalid.");
+      return result;
+    }
     return {
       getAuthoringState: getAuthoringState,
       restoreAuthoringState: restoreAuthoringState,
+      getAccessoryUnclip: function () { return accessoryUnclip && Object.assign({}, accessoryUnclip); },
+      setAccessoryUnclip: function (value) {
+        var next = checkedAccessory(value);
+        if (JSON.stringify(next) === JSON.stringify(accessoryUnclip)) return;
+        accessoryUnclip = next; accessoryCorrections = {}; evaluate(0); changed();
+      },
+      setAccessoryCorrections: function (values) {
+        if (!Array.isArray(values) || values.length > bones.length) throw new Error("The accessory preview response is invalid.");
+        var next = {};
+        values.forEach(function (value) {
+          var id = value && String(value.node);
+          if (!value || !Number.isInteger(value.node) || !authoredNodes[id] || next[id] ||
+              !Array.isArray(value.delta) || value.delta.length !== 3 || !value.delta.every(function (number) {
+                return typeof number === "number" && isFinite(number) && Math.abs(number) <= 1000000;
+              })) throw new Error("The accessory preview response is invalid.");
+          next[id] = new THREE.Vector3().fromArray(value.delta);
+        });
+        if (!accessoryUnclip) next = {};
+        var ids = Object.keys(next), previousIds = Object.keys(accessoryCorrections);
+        if (ids.length === previousIds.length && ids.every(function (id) {
+          return accessoryCorrections[id] && next[id].equals(accessoryCorrections[id]);
+        })) return;
+        accessoryCorrections = next; evaluate(0); changed();
+      },
       setEditingMethod: function (id, method) {
         id = String(id);
         if (!authoredNodes[id] || ["auto", "node", "mesh"].indexOf(method) < 0) throw new Error("Choose a valid body save method.");
@@ -1344,6 +1402,7 @@
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
+          accessoryUnclip: accessoryUnclip && Object.assign({}, accessoryUnclip), accessoryCorrectedAnchors: Object.keys(accessoryCorrections).length,
           playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),

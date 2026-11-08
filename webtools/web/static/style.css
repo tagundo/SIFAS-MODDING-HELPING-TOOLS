@@ -59,6 +59,8 @@ main { padding: 14px; }
 .tab-panel.active { display: block; }
 
 #tab-tools.active { display: grid; grid-template-columns: 230px 1fr; gap: 14px; }
+.tools-workspace { min-width: 0; }
+#tool-panel[hidden], #tab-gallery[hidden] { display: none; }
 
 .tool-list { display: flex; flex-direction: column; gap: 8px; }
 .tool-list button {
@@ -217,8 +219,8 @@ main { padding: 14px; }
 .entries li .sz { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 /* gallery */
-.gallery-bar { display: flex; gap: 8px; margin-bottom: 12px; }
-.gallery-bar input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+.gallery-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.gallery-bar input { flex: 1 1 160px; min-width: 0; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .gcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .gcard img, .gcard .noimg { width: 100%; aspect-ratio: 1; object-fit: contain; background: #0e1014; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
@@ -701,6 +703,13 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .elichika-desktop body > header .tabs { margin-left: 0; }
 .elichika-desktop body > header .lang-pick { margin-left: auto; }
 .elichika-desktop body > header .tab, .elichika-desktop body > header select { min-height: 36px; }
+/* Native shells already own Tools / 3D navigation and their language setting.
+   Keep no duplicate header row, including when short-view controls move it. */
+.elichika-embedded #asset-tools-header { display: none; }
+@media (min-width: 1200px) {
+  .elichika-embedded #tab-tools .tool-list { top: 8px; max-height: calc(100vh - 16px); }
+  .elichika-embedded .tools-console-layout:has(#tab-tools.active) > .console { top: 8px; max-height: calc(100vh - 28px); }
+}
 .viewer-save-output-list .viewer-reveal { margin-left: 8px; }
 @media (min-width: 1080px) and (min-height: 480px) {
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-workspace {

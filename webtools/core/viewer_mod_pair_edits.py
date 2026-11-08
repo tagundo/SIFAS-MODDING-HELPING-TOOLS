@@ -257,7 +257,7 @@ def _map_state(context, state, source_index, source_info, target_context, target
                     required_references.add(key)
                     key = source_info["parents"].get(key)
         converted.append(change)
-    if not converted:
+    if not converted and "accessoryUnclip" not in state:
         raise ValueError("There are no source-bound body edits to apply to the counterpart.")
     references = []
     for row in state.get("compensationReference", []):
@@ -279,6 +279,8 @@ def _map_state(context, state, source_index, source_info, target_context, target
             for kind in ("scale", "position", "rotation")}})
     translated = {"version": edits.VERSION, "savedSettingsEnabled": True, "unsupported": [],
                   "edits": converted, "compensationReference": references}
+    if "accessoryUnclip" in state:
+        translated["accessoryUnclip"] = copy.deepcopy(state["accessoryUnclip"])
     proof = [{"sourceNode": ident, "targetNode": row[1]["node"], "hierarchy": list(row[4]),
               "sourceUnity": list(_key(row[0])), "targetUnity": list(_key(row[1]))}
              for ident, row in mapping.items()]
@@ -397,16 +399,23 @@ def _apply(context, result, state, *, pair, declarations, job):
                 for members in groups:
                     selected = [(index, source) for index, source in enumerate(context["sources"])
                                 if source["container"] == ci and source["member"] in members and
-                                any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
-                                    for row in state["edits"])]
+                                ("accessoryUnclip" in state or
+                                 any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
+                                     for row in state["edits"]))]
                     if not selected:
                         continue
+                    # With no authored node changes, every opened counterpart
+                    # already received its own original-bound accessory pass.
+                    # Only unopened family members need separate derivation.
+                    already_selected = {row[1]["member"] for row in selected} if not state["edits"] else set()
+                    if already_selected:
+                        selected = selected[:1]
                     if len(selected) != 1:
                         raise ValueError("Multiple edited costume variants would conflict in one paired ZIP.")
                     index, source = selected[0]
                     with zipfile.ZipFile(io.BytesIO(containers[ci]["raw"])) as archive:
                         for member in members:
-                            if member == source["member"]:
+                            if member == source["member"] or member in already_selected:
                                 continue
                             if member in claimed:
                                 raise ValueError("Two paired declarations target the same costume member.")
