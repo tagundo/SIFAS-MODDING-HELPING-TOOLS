@@ -428,13 +428,17 @@ class RigBuilder:
         return copy.deepcopy(result)
 
     def finalize(self, animations=True):
-        from .model_animation import append_animations
+        from .model_animation import append_animations, animation_candidate, _check
         from .model_scaling import describe_scaling
-        # Rebind after optional facial nodes arrive. Older animation accessors
-        # remain bounded unused buffers; the playable animation list is replaced.
-        self.scaling = describe_scaling(self.scene, self.glb, self.nodes, sources=self.selected)
+        scaling = describe_scaling(self.scene, self.glb, self.nodes, sources=self.selected)
         if animations:
-            self.glb.doc.pop("animations", None)
-            result = append_animations(self.scene, self.glb, self.node_bindings, self.morph_bindings,
+            candidate = animation_candidate(self.glb, self.deadline)
+            result = append_animations(self.scene, candidate, self.node_bindings, self.morph_bindings,
                                        deadline=self.deadline, visibility_bindings=self.visibility_bindings)
+            # Verify the full candidate before replacing the previous buffers.
+            # Optional face/motion recovery can still retain the old references.
+            candidate.finish()
+            _check(self.deadline)
+            self.glb.doc, self.glb.data = candidate.doc, candidate.data
             self.clips, self.animation_warnings = result["clips"], result["warnings"]
+        self.scaling = scaling

@@ -192,6 +192,49 @@ class FaceTests(unittest.TestCase):
         for path, digest in before.items():
             self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), digest)
 
+    def test_eight_selected_inputs_still_complete_original_face_from_offline_cache(self):
+        donor = self.donor()
+        cached = Path(self.context["cache_dir"]) / "models" / ("ch0207_" + hashlib.sha256(donor).hexdigest()[:24] + ".unity")
+        cached.parent.mkdir(parents=True)
+        faces._save(cached, donor, 207)
+        selected = [str(self.body)]
+        for index in range(7):
+            env = self.UnityPy.load(FIXTURE.with_name("viewer_rig.unity").read_bytes())
+            for obj in list(env.objects):
+                if obj.type.name == "AnimationClip":
+                    tree = obj.read_typetree(); tree["m_Name"] = "User motion " + str(index); obj.save_typetree(tree)
+                else:
+                    del obj.assets_file.objects[obj.path_id]
+            path = self.selected / ("motion-" + str(index) + ".unity")
+            path.write_bytes(env.file.save()); selected.append(str(path))
+        originals = {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in [*selected, str(cached)]}
+        def geometry(metadata):
+            raw = viewer.get_model(metadata["id"]); length, = struct.unpack_from("<I", raw, 12)
+            document, binary = json.loads(raw[20:20 + length]), raw[28 + length:]
+            result = []
+            for mesh in document["meshes"]:
+                for primitive in mesh["primitives"]:
+                    for name, ident in sorted({**primitive["attributes"], "indices": primitive["indices"]}.items()):
+                        accessor = document["accessors"][ident]; view = document["bufferViews"][accessor["bufferView"]]
+                        start = view.get("byteOffset", 0)
+                        result.append((mesh["name"], name, binary[start:start + view["byteLength"]]))
+            return result
+        with patch.object(faces.FacePlan, "_descriptor_iter", side_effect=AssertionError("Offline face completion must not query a catalog")) as catalog, \
+                patch.object(faces, "_download_with_deadline", side_effect=AssertionError("Offline cached face must not download")) as download:
+            initial = viewer.prepare([str(self.body)], face_context=self.context)
+            expected = geometry(initial)
+            full = viewer.prepare(selected, face_context=self.context)
+        self.assertEqual(full["source_names"], [Path(path).name for path in selected])
+        self.assertEqual(full["faces"], initial["faces"])
+        self.assertEqual(full["faces"]["status"], "added")
+        self.assertEqual(glb_names(full), ["Body", "Face", "Eyes"])
+        self.assertEqual(full["stats"], initial["stats"])
+        self.assertEqual(geometry(full), expected)
+        catalog.assert_not_called(); download.assert_not_called()
+        self.assertEqual(originals, {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in originals})
+        with self.assertRaisesRegex(viewer.ModelViewerError, "between one and eight"):
+            viewer.prepare([*selected, str(cached)], face_context=self.context)
+
     def test_other_character_and_filename_spoof_do_not_supply_face(self):
         (self.library / "ch0207_original.unity").write_bytes(self.donor(owner=101))
         metadata = viewer.prepare([str(self.body)], face_context=self.context)

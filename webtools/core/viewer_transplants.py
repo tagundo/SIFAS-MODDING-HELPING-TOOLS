@@ -19,6 +19,24 @@ from webtools.core import model_edits, viewer_archive
 
 MAX_DONOR_BYTES = 96 * 1024 * 1024
 OPERATIONS = {"costume", "part", "lower"}
+OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer"}
+
+
+def _geometry(model, renderer=None):
+    import UnityPy
+    import numpy as np
+    import lower_body_swap as lower
+    body = lower.BodyMesh(UnityPy.load(model), model, renderer)
+    if body.n > 100000 or len(body.tris()) > 200000:
+        raise ValueError("The donor mesh exceeds the transplant preview limits.")
+    _, positions = lower.band_selection(body, -10, 10, "central", False, "mesh")
+    triangles = body.tris()
+    names = body.dom_names()
+    return {"renderer": str(body.smr_obj.path_id), "mesh": str(body.mesh_obj.path_id),
+            "positions": positions.tolist(), "triangles": triangles.tolist(),
+            "anatomy": np.isin(names, list(lower.ANATOMY)).tolist(),
+            "regions": {key: np.isin(names, list(value)).tolist() for key, value in lower.REGIONS.items()},
+            "components": lower._components(body.pos, triangles, body.n).tolist()}
 
 
 def _read_donor(path):
@@ -57,7 +75,7 @@ def _donor_model(expanded):
     return candidates[0]
 
 
-def inspect_donor(path, variant="primary", *, cache_root):
+def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
     """Return verified part-root choices; inspection never writes to a model."""
     if variant not in ("primary", "unmasked"):
         raise ValueError("Choose a valid donor costume variant.")
@@ -71,19 +89,45 @@ def inspect_donor(path, variant="primary", *, cache_root):
             model = _donor_model(expanded)
             from webtools.tools.costume import part_root_options
             parts = part_root_options({"donor": model})
-            return {"name": donor.name, "parts": parts, "platform": _platform(model),
+            import UnityPy
+            env = UnityPy.load(model)
+            renderers = []
+            for obj in env.objects:
+                if obj.type.name != "SkinnedMeshRenderer": continue
+                tree = obj.read_typetree()
+                if len(tree.get("m_Bones", [])) < 2: continue
+                mesh = obj.assets_file.objects.get(tree.get("m_Mesh", {}).get("m_PathID"))
+                if mesh is not None:
+                    renderers.append({"value": str(obj.path_id), "label": mesh.read_typetree().get("m_Name", "Mesh")})
+            if renderer is not None and renderer not in {row["value"] for row in renderers}:
+                raise ValueError("Choose a valid skinned donor mesh.")
+            geometry = _geometry(model, renderer)
+            return {"name": donor.name, "parts": parts, "platform": _platform(model), "geometry": geometry,
+                    "renderers": renderers,
                     "sha256": hashlib.sha256(raw).hexdigest(),
                     "cutPresets": [
                         {"value": "hip_fix", "label": "Knee to waist", "low": .5, "high": .96},
                         {"value": "calf", "label": "Calf to waist", "low": .3, "high": .96},
                         {"value": "ankle", "label": "Ankle to waist", "low": .11, "high": .96},
+                        {"value": "whole", "label": "Whole lower body", "low": -.05, "high": 1.06},
                         {"value": "custom", "label": "Custom range"}]}
 
 
 def validate_request(params):
-    if not isinstance(params, dict) or set(params) != {
-            "token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"}:
+    required = {
+            "token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"}
+    if not isinstance(params, dict) or not required <= set(params) or set(params) - required - OPTIONAL_FIELDS:
         raise ValueError("Unsupported costume transplant request.")
+    params = {"matchSkin": False, "skinOnly": True, "excludeAccessories": True,
+              "selectionScope": "skin", "donorRenderer": "", "targetRenderer": "", **params}
+    for key in ("matchSkin", "skinOnly", "excludeAccessories"):
+        if not isinstance(params[key], bool): raise ValueError("Transplant options must be true or false.")
+    if params["selectionScope"] not in ("skin", "mesh"):
+        raise ValueError("Choose body skin or the selected whole mesh.")
+    for key in ("donorRenderer", "targetRenderer"):
+        value = params[key]
+        if not isinstance(value, str) or value and (len(value) > 21 or not value.lstrip("-").isdigit()):
+            raise ValueError("Choose a valid donor or wearer mesh.")
     operation = params.get("operation")
     if operation not in OPERATIONS:
         raise ValueError("Choose a costume transplant operation.")
@@ -171,7 +215,8 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
             params = {"mode": "single", "donor": donor_model, "target": str(wearer),
                       "out_dir": str(models), "suffix": "_transplant", "preserve_physics": True,
                       "restore_collision": True, "worldspace": True, "fix_nodescaling": True,
-                      "match_skin": True, "match_thigh": False}
+                      "match_skin": request["matchSkin"], "skin_only": request["skinOnly"],
+                      "skin_colour_guard": request["skinOnly"], "match_thigh": False}
             if operation == "costume":
                 costume.run_costume_transplant(job, params)
             elif operation == "part":
@@ -182,7 +227,9 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
                     "part_root": request["partRoot"], "new_submesh": True})
             else:
                 costume.run_lower_body_swap(job, {**params, "cut": "custom", "region": request["region"],
-                    "cut_low": request["cutLow"], "cut_high": request["cutHigh"], "exclude_accessories": True})
+                    "cut_low": request["cutLow"], "cut_high": request["cutHigh"],
+                    "exclude_accessories": request["excludeAccessories"], "selection_scope": request["selectionScope"],
+                    "donor_renderer": request["donorRenderer"] or None, "target_renderer": request["targetRenderer"] or None})
         changed = models / "wearer_transplant.unity"
         if not changed.is_file() or not changed.stat().st_size:
             raise ValueError("The costume operation did not create a model.")

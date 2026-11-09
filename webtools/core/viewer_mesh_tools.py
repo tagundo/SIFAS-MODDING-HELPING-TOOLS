@@ -416,7 +416,7 @@ def export(token, state, output_dir, *, body_state=None):
         size = len(json.dumps(state, allow_nan=False).encode())
     except (TypeError, ValueError):
         _fail('The mesh edit state contains invalid values.')
-    if size > MAX_REQUEST_BYTES or not isinstance(state['meshes'], list) or not 1 <= len(state['meshes']) <= 128:
+    if size > MAX_REQUEST_BYTES or not isinstance(state['meshes'], list) or not 0 <= len(state['meshes']) <= 128:
         _fail('The mesh edit request exceeds the supported limit.')
     _check_archive_scope(session)
     operations, seen = {}, set()
@@ -446,9 +446,9 @@ def export(token, state, output_dir, *, body_state=None):
         replacements, summary = {}, []
         for index, source in enumerate(session['sources']):
             raw = source['raw']
-            if validated_body:
-                raw, _ = model_edits.edit_source_state(session, index, validated_body)
             if index not in operations:
+                if validated_body:
+                    raw, _ = model_edits.edit_source_state(session, index, validated_body)
                 if raw != source['raw']:
                     replacements[(source['container'], source['member'])] = raw
                 continue
@@ -475,6 +475,14 @@ def export(token, state, output_dir, *, body_state=None):
                                 renderer.save_typetree(render_tree)
                 summary.append({'mesh': identity, **result})
             changed = env.file.save(packer='original')
+            if validated_body:
+                # Vertex positions and weights are source-local inputs to the
+                # body bake. Apply them before evaluating the body transforms,
+                # matching the live skinning preview and avoiding overwriting
+                # baked positions with unscaled source-local coordinates.
+                context = dict(session); context['sources'] = list(session['sources'])
+                context['sources'][index] = dict(source, raw=changed)
+                changed, _ = model_edits.edit_source_state(context, index, validated_body)
             # Parse each actual serialized output before publishing it.
             _, reloaded = _mesh_records(changed, index)
             checked = {(r[0]['file'], r[0]['id']): r for r in reloaded}

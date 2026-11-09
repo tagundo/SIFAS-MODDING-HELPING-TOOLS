@@ -13,6 +13,7 @@ from webtools.jobs import Job
 
 try:
     import llas_asset_extractor as extractor
+    import UnityPy
 except ImportError:
     extractor = None
 
@@ -116,10 +117,10 @@ class GameMotionTests(unittest.TestCase):
                 self.select(*args)
 
     def test_import_decrypts_all_clips_without_changing_sources_and_reuses_cache(self):
-        record = self.select("voice", "voice:100")
+        record = self.select()
         paths = self.run_import(record).output_paths()
-        self.assertEqual(len(paths), 2)
-        self.assertTrue(all(Path(path).read_bytes() == self.payload for path in paths))
+        self.assertEqual(len(paths), 1)
+        self.assert_motion_only(paths[0])
         self.assertEqual(self.run_import(record).output_paths(), paths)
         for path, digest in self.originals.items():
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
@@ -130,7 +131,7 @@ class GameMotionTests(unittest.TestCase):
         second = Path(self.run_import().output_paths()[0])
         self.assertNotEqual(original, second)
         self.assertEqual(original.read_bytes(), b"user edited")
-        self.assertEqual(second.read_bytes(), self.payload)
+        self.assert_motion_only(second)
 
     def test_missing_pack_does_not_download_without_option_and_cleans_partial_output(self):
         (self.packs / "pack0").unlink()
@@ -143,7 +144,7 @@ class GameMotionTests(unittest.TestCase):
     def test_downloaded_motion_uses_bounded_existing_decryptor(self):
         (self.packs / "pack0").unlink()
         with patch.object(motion.game, "_remote_pack", return_value=self.encrypted) as remote:
-            self.assertEqual(Path(self.run_import(self.select(download=True)).output_paths()[0]).read_bytes(), self.payload)
+            self.assert_motion_only(self.run_import(self.select(download=True)).output_paths()[0])
             remote.assert_called_once()
 
     def test_cancelled_job_publishes_nothing(self):
@@ -164,11 +165,52 @@ class GameMotionTests(unittest.TestCase):
 
     def test_missing_or_too_many_dependencies_are_reported(self):
         with sqlite3.connect(self.assets) as db:
-            for i in range(7):
+            for i in range(motion.MAX_RESOURCES + 1):
                 db.execute("INSERT INTO navi_motion VALUES(?,?,0,?,7,11)", (f"extra{i}", "pack0", len(self.payload)))
                 db.execute("INSERT INTO navi_timeline_dependency VALUES('special-timeline',?)", (f"extra{i}",))
         with self.assertRaisesRegex(ValueError, "limit"):
             self.select("special", "auto:2")
+
+    def assert_motion_only(self, path):
+        env = UnityPy.load(Path(path).read_bytes())
+        objects = list(env.objects)
+        self.assertEqual([obj.type.name for obj in objects], ["AnimationClip"])
+        self.assertEqual(objects[0].peek_name(), "Neutral swing")
+
+    def test_missing_action_timeline_is_not_replaced_by_unsynchronized_clips(self):
+        with self.assertRaisesRegex(ValueError, "timeline is missing"):
+            self.run_import(self.select("voice", "voice:100"))
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_solo_and_mv_stage_only_assets_and_all_catalog_pages_are_accessible(self):
+        with sqlite3.connect(self.master) as db:
+            db.executescript("""
+              ALTER TABLE m_live ADD COLUMN live_member_mapping_id;
+              CREATE TABLE m_live_member_mapping(mapping_id,position,member_master_id,is_center);
+              CREATE TABLE m_live_mv(live_id,live_3d_asset_master_id);
+              UPDATE m_live SET live_member_mapping_id=1;
+              INSERT INTO m_live_member_mapping VALUES(1,1,1,1);
+              INSERT INTO m_live_member_mapping VALUES(1,3,2,0);
+              INSERT INTO m_live_member_mapping VALUES(2,1,1,1);
+              INSERT INTO m_live VALUES(2,'Solo song','music_0002',0,2);
+              INSERT INTO m_live_3d_asset VALUES(2,'mv-solo-timeline');
+              INSERT INTO m_live_mv VALUES(2,2);
+            """)
+            for live in range(3, 452):
+                db.execute("INSERT INTO m_live VALUES(?,?,?,0,1)", (live, f"Group {live}", f"music_{live}"))
+                db.execute("INSERT INTO m_live_difficulty VALUES(?,1)", (live,))
+        solo = motion.catalog(self.root, category="mv", song_type="solo")
+        self.assertEqual([entry["value"] for entry in solo["motions"]], ["mv:2:2"])
+        self.assertEqual(solo["motions"][0]["performers"][0]["member_id"], 1)
+        pages = [motion.catalog(self.root, category="mv", offset=str(offset)) for offset in (0, 200, 400)]
+        keys = [entry["value"] for page in pages for entry in page["motions"]]
+        self.assertEqual(len(keys), 451)
+        self.assertEqual(len(set(keys)), 451)
+        self.assertFalse(pages[-1]["more"])
+        self.assertEqual(pages[-1]["total"], 451)
+        self.assertEqual(self.select("mv", "mv:1:1", performer="3")["performer_position"], 3)
+        with self.assertRaisesRegex(ValueError, "performer"):
+            self.select("mv", "mv:1:1", performer="2")
 
 
 if __name__ == "__main__":

@@ -329,6 +329,9 @@ main { padding: 14px; }
 .viewer-info-alert { border-color: #ca8540; background: #fff1dc; box-shadow: 0 0 0 2px rgba(202,133,64,.2); }
 .viewer-info-panel { position: absolute; right: 0; bottom: calc(100% + 8px); width: 300px; max-width: calc(100vw - 32px); max-height: var(--viewer-popup-height, calc(var(--viewer-stage-height, 60vh) - 128px)); max-height: min(50vh, var(--viewer-popup-height, calc(var(--viewer-stage-height, 60vh) - 128px))); overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 28px rgba(20,30,50,.18); touch-action: pan-y; }
 .viewer-info-panel > p + p { margin-top: 8px; }
+.viewer-info-automatic-alert #viewer-status:not(.error),
+.viewer-info-automatic-alert .viewer-render-note:not(#viewer-quality-status),
+.viewer-info-automatic-alert .viewer-gesture-help { display: none; }
 .viewer-info-panel .viewer-status { font-size: 12px; }
 .viewer-compact-controls .viewer-stage-tools-top { flex-wrap: nowrap; align-items: flex-start; }
 .viewer-compact-controls .viewer-view-menu { display: block; }
@@ -888,3 +891,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 
 .viewer-game-assets-download { display: flex; align-items: center; gap: 8px; }
 .viewer-game-assets-download input[type=checkbox] { flex: 0 0 auto; width: 18px; height: 18px; }
+
+/* The macOS sidebar owns editor navigation; keep one shared document alive. */
+.elichika-native-editor-navigation body > header { display: none; }
+#tool-gallery-panel[hidden], #tool-form-panel[hidden] { display: none; }

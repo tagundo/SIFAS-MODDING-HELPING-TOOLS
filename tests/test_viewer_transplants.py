@@ -104,7 +104,7 @@ class ViewerTransplantTests(unittest.TestCase):
     def test_real_lower_body_swap_replaces_only_the_selected_vertical_band(self):
         output = self.run_graft(self.request(operation="lower", cutLow=.5, cutHigh=.96))
         logs = "\n".join(event.get("line", "") for event in self.last_job._events)
-        self.assertIn("target drop: 1 tris   donor take: 1 tris", logs)
+        self.assertIn("donor UVs, materials and texture bytes preserved", logs)
         self.assertGreater(output.stat().st_size, 0)
 
     def test_inspection_returns_real_donor_part_roots(self):
@@ -119,6 +119,15 @@ class ViewerTransplantTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 viewer_transplants.validate_request(self.request(**changes))
         self.assertFalse((self.root / "modded").exists())
+
+    def test_colour_matching_is_opt_in_and_options_are_strict(self):
+        defaults = viewer_transplants.validate_request(self.request())
+        self.assertFalse(defaults["matchSkin"])
+        self.assertTrue(defaults["skinOnly"])
+        for changes in ({"matchSkin": "false"}, {"skinOnly": 1}, {"selectionScope": "all"},
+                        {"donorRenderer": "not-a-renderer"}, {"excludeAccessories": None}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                viewer_transplants.validate_request(self.request(**changes))
 
     def test_donor_bytes_are_snapshotted_before_the_background_job(self):
         validated = viewer_transplants.validate_request(self.request())

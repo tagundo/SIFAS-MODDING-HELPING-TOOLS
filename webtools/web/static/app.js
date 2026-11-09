@@ -17,6 +17,7 @@ const state = {
   jobToolId: null,
   jobLabel: "",
   savedModelPaths: [],
+  nativeSurface: "",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -98,10 +99,13 @@ async function loadTools() {
   try {
     const data = await (await fetch("/api/tools?lang=" + encodeURIComponent(state.lang))).json();
     state.tools = data.tools || [];
+    const galleryTool = { id: "texture_previews", label: T("Texture previews"), modes: ["single"], builtIn: "gallery" };
+    const textureIndex = state.tools.findIndex((tool) => tool.id === "texture");
+    state.tools.splice(textureIndex < 0 ? state.tools.length : textureIndex + 1, 0, galleryTool);
     state.roots = data.roots || {};
     renderToolList();
   } catch (e) {
-    $("#tool-panel").innerHTML = "<p class='hint'>" + T("Failed to load tools: ") + e + "</p>";
+    $("#tool-form-panel").innerHTML = "<p class='hint'>" + T("Failed to load tools: ") + e + "</p>";
   }
 }
 const el = (tag, attrs = {}, children = []) => {
@@ -146,8 +150,12 @@ async function init() {
     pickFile: (onPick) => openPicker("path", onPick, "models"),
     nativeFilePicker: !!(window.ElichikaPlatform && ElichikaPlatform.supports("openFiles")),
   });
+  if (window.ElichikaPlatform && ElichikaPlatform.supports("editorNavigation")) {
+    switchTab(ElichikaPlatform.info().editorSurface, { native: true });
+  }
   if (window.ElichikaPlatform) ElichikaPlatform.bind({
-    showViewer: () => switchTab("viewer"),
+    showViewer: () => switchTab("viewer", { native: true }),
+    showTools: () => switchTab("tools", { native: true }),
     openModel: async (args) => {
       const result = args.paths ? { paths: args.paths } : await ElichikaPlatform.request("openFiles", {
         multiple: true, extensions: ["unity", "zip", "bundle", "asset", "bytes"], title: T("Choose costume file"),
@@ -158,6 +166,7 @@ async function init() {
     },
     saveModel: () => {
       if (!$("#tab-viewer").classList.contains("active")) return;
+      if (window.ModelViewer && typeof ModelViewer.saveMeshIfPending === "function" && ModelViewer.saveMeshIfPending()) return;
       const save = $("#viewer-save");
       // Blurring a numeric field restores its last valid display value. Check
       // Save first so a native shortcut cannot discard an invalid draft and
@@ -176,11 +185,21 @@ async function init() {
   });
 }
 
-function switchTab(name) {
+function switchTab(name, options = {}) {
+  if (name === "gallery") { switchTab("tools", options); selectTool("texture_previews"); return; }
+  if (!["tools", "viewer"].includes(name)) return;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
   $("#tab-" + name).classList.add("active");
   if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+  if (window.ElichikaPlatform && ElichikaPlatform.supports("editorNavigation")) {
+    const previous = state.nativeSurface;
+    state.nativeSurface = name;
+    if (window.ElichikaDesktop) window.ElichikaDesktop.editorSurface = name;
+    if (!options.native && previous !== name) {
+      ElichikaPlatform.request("setEditorSurface", { editorSurface: name }).catch((error) => console.warn(String(error.message || error)));
+    }
+  }
 }
 
 function openModelViewer(paths, variants) {
@@ -198,6 +217,7 @@ function renderToolList() {
     const b = el("button", { onclick: () => selectTool(tool.id) },
       [el("span", { text: tool.label })]);
     b.dataset.id = tool.id;
+    b.classList.toggle("active", !!state.currentTool && state.currentTool.id === tool.id);
     list.appendChild(b);
   }
 }
@@ -220,9 +240,14 @@ function renderForm() {
   }
   const tool = state.currentTool;
   state.formToolId = tool.id;
-  const panel = $("#tool-panel");
+  const panel = $("#tool-form-panel");
+  const gallery = $("#tool-gallery-panel");
+  const title = $("#tool-title");
+  title.textContent = tool.label; title.hidden = false;
+  panel.hidden = tool.builtIn === "gallery";
+  gallery.hidden = tool.builtIn !== "gallery";
+  if (tool.builtIn === "gallery") return;
   panel.innerHTML = "";
-  panel.appendChild(el("h2", { text: tool.label }));
   panel.appendChild(el("p", { class: "desc", text: tool.description || "" }));
 
   const modes = tool.modes || ["single"];

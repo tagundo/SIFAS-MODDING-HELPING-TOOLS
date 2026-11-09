@@ -13,7 +13,6 @@
     <nav class="tabs">
       <button class="tab active" data-tab="tools" data-i18n="Tools">Tools</button>
       <button class="tab" data-tab="viewer" data-i18n="3D model">3D model</button>
-      <button class="tab" data-tab="gallery" data-i18n="Texture previews">Texture previews</button>
     </nav>
     <label class="lang-pick">
       <span data-i18n="Language">Language</span>
@@ -27,7 +26,19 @@
     <section id="tab-tools" class="tab-panel active">
       <aside id="tool-list" class="tool-list"></aside>
       <div id="tool-panel" class="tool-panel">
-        <p class="hint" data-i18n="Pick a tool on the left to begin.">Pick a tool on the left to begin.</p>
+        <h2 id="tool-title" hidden></h2>
+        <div id="tool-form-panel">
+          <p class="hint" data-i18n="Pick a tool on the left to begin.">Pick a tool on the left to begin.</p>
+        </div>
+        <section id="tool-gallery-panel" class="gallery-tool" hidden>
+          <p class="hint" data-i18n="View representative textures here, or open the costume in 3D model to inspect its shape.">View representative textures here, or open the costume in 3D model to inspect its shape.</p>
+          <div class="gallery-bar">
+            <input id="gallery-path" type="text" data-i18n-ph="folder of bundles..." placeholder="folder of bundles..." readonly/>
+            <button id="gallery-browse" data-i18n="Browse">Browse</button>
+            <button id="gallery-load" data-i18n="Load">Load</button>
+          </div>
+          <div id="gallery-grid" class="gallery-grid"></div>
+        </section>
       </div>
     </section>
 
@@ -382,16 +393,6 @@
       </div>
     </section>
 
-    <!-- GALLERY TAB -->
-    <section id="tab-gallery" class="tab-panel">
-      <p class="hint" data-i18n="View representative textures here, or open the costume in 3D model to inspect its shape.">View representative textures here, or open the costume in 3D model to inspect its shape.</p>
-      <div class="gallery-bar">
-        <input id="gallery-path" type="text" data-i18n-ph="folder of bundles..." placeholder="folder of bundles..." readonly/>
-        <button id="gallery-browse" data-i18n="Browse">Browse</button>
-        <button id="gallery-load" data-i18n="Load">Load</button>
-      </div>
-      <div id="gallery-grid" class="gallery-grid"></div>
-    </section>
   </main>
 
   <!-- run console (shared) -->
@@ -434,14 +435,17 @@
   <script src="/static/viewer-editing.js"></script>
   <script src="/static/viewer-expressions.js"></script>
   <script src="/static/viewer-physics.js"></script>
+  <script src="/static/viewer-motion-timeline.js"></script>
   <script src="/static/viewer-rig.js"></script>
   <script src="/static/viewer-quality.js"></script>
   <script src="/static/viewer-persistence.js"></script>
+  <script src="/static/viewer-mesh-runtime.js"></script>
   <script src="/static/viewer-mesh-tools.js"></script>
   <script src="/static/viewer-transplants.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>
+  <script src="/static/viewer-motion-audio.js"></script>
   <script src="/static/viewer-game-motions.js"></script>
   <script src="/static/panel-settings.js"></script>
 </body>

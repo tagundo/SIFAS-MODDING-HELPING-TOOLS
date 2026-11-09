@@ -322,7 +322,7 @@ def _chan_locs(tt):
 
 class BodyMesh:
     """Decoded body skinned mesh + its renderer / material / textures."""
-    def __init__(self, env, path):
+    def __init__(self, env, path, renderer=None):
         self.env = env; self.path = path
         objs = list(env.objects); self.by_pid = {o.path_id: o for o in objs}
         self.mesh_obj = None; self.tt = None
@@ -338,6 +338,13 @@ class BodyMesh:
                     best = (vc, o, t)
         if self.tt is None and best:
             _, self.mesh_obj, self.tt = best
+        if renderer is not None:
+            selected = self.by_pid.get(int(renderer))
+            if selected is None or selected.type.name != "SkinnedMeshRenderer":
+                raise ValueError("Choose a valid skinned mesh.")
+            self.mesh_obj = self.by_pid.get(selected.read_typetree()["m_Mesh"]["m_PathID"])
+            if self.mesh_obj is None: raise ValueError("The selected renderer has no local mesh.")
+            self.tt = self.mesh_obj.read_typetree()
         if self.tt is None:
             raise ValueError(_tr("no body mesh found in %s") % os.path.basename(path))
         # renderer that uses this mesh
@@ -369,6 +376,7 @@ class BodyMesh:
 
     def _decode(self):
         import numpy as np
+        import costume_part_transplant as cpt
         tt = self.tt
         n, st, off, order = _layout(tt)
         data = bytes(tt["m_VertexData"]["m_DataSize"])
@@ -379,26 +387,21 @@ class BodyMesh:
         self.recs = {s: [data[off[s]+i*st[s]: off[s]+i*st[s]+st[s]] for i in range(n)]
                      for s in order}
         uv_s, uv_o = _uv_channel(tt)
-        b0, s0 = off[0], st[0]
         self.uv_s, self.uv_o = uv_s, uv_o
-        ub, us = off[uv_s], st[uv_s]
-        b2, s2 = off[2], st[2]
-        pos = np.zeros((n,3), np.float32); uv = np.zeros((n,2), np.float32)
-        bw  = np.zeros((n,4), np.float32); bi = np.zeros((n,4), np.int32)
-        for i in range(n):
-            pos[i] = struct.unpack_from('<3f', data, b0+i*s0)
-            uv[i]  = struct.unpack_from('<2f', data, ub+i*us+uv_o)
-            bw[i]  = struct.unpack_from('<4f', data, b2+i*s2)
-            bi[i]  = struct.unpack_from('<4i', data, b2+i*s2+16)
+        _, channels, stride, start, _ = cpt.stream_layout(tt)
+        u8 = np.frombuffer(data, np.uint8)
+        pos = cpt.read_attr(u8, 0, channels, stride, start, n)
+        uv = cpt.read_attr(u8, 4, channels, stride, start, n)
+        bw, bi = cpt.get_skin(u8, tt, channels, stride, start, n)
+        if pos is None or uv is None or bw is None:
+            raise ValueError("The selected body needs positions, UVs and skin weights.")
         self.pos, self.uv, self.bw, self.bi = pos, uv, bw, bi
 
     def tris(self):
         import numpy as np
-        tt = self.tt
-        ib = bytes(tt["m_IndexBuffer"])
-        cnt = tt["m_SubMeshes"][0]["indexCount"]
-        fmt = tt.get("m_IndexFormat", 0)
-        return np.frombuffer(ib, '<u2' if fmt == 0 else '<u4', cnt).reshape(-1,3).astype(np.int64)
+        import costume_part_transplant as cpt
+        groups = cpt.submesh_triangles(self.tt)
+        return np.concatenate(groups) if groups else np.empty((0, 3), np.int64)
 
     def dom_names(self):
         import numpy as np
@@ -596,12 +599,105 @@ def _open_cap(pos, tris, dom_names, lift, edge_front=0.0, edge_back=0.0,
 # --------------------------------------------------------------------------- #
 #  Core graft                                                                  #
 # --------------------------------------------------------------------------- #
+def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=True,
+                   selection_scope="skin"):
+    """One deterministic face selection shared by preview and export.
+
+    Islands are assessed inside the requested band. The largest island of an
+    entire costume can be its upper torso, with no legs at all.
+    """
+    import numpy as np
+    tris = body.tris()
+    names = body.dom_names()
+    anatomy = np.isin(names, list(ANATOMY))
+    region_mask = np.isin(names, list(REGIONS.get(region, LOWER)))
+    positions = body.pos
+    # Use the same effective saved transforms as the rigged viewer.
+    from webtools.core import model_edits
+    import costume_part_transplant as cpt
+    info = model_edits._inspect(open(body.path, "rb").read())
+    worlds = model_edits._worlds({key: model_edits._matrix(value) for key, value in info["effective"].items()}, info["parents"])
+    file_ordinal = info["file_indices"].get(id(body.mesh_obj.assets_file))
+    # _inspect owns a separate Unity environment; asset ordinals are stable.
+    file_ordinal = list(dict.fromkeys(id(o.assets_file) for o in body.env.objects)).index(id(body.mesh_obj.assets_file))
+    posed = np.zeros_like(positions, dtype=float)
+    homogeneous = np.column_stack([positions, np.ones(len(positions))])
+    bindposes = body.tt.get("m_BindPose", [])
+    for index, pointer in enumerate(body.smr.get("m_Bones", [])):
+        matrix = worlds.get((file_ordinal, pointer.get("m_PathID")))
+        if matrix is None or index >= len(bindposes): continue
+        weights = np.where(body.bi == index, body.bw, 0).sum(axis=1)
+        posed += (homogeneous @ (matrix @ cpt.mat_from(bindposes[index])).T)[:, :3] * weights[:, None]
+    if len(bindposes): positions = posed
+    centroids = positions[tris, 1].mean(axis=1)
+    selected = (centroids >= cut_low) & (centroids <= cut_high)
+    if selection_scope == "skin":
+        selected &= anatomy[tris].all(axis=1) & (region_mask[tris].sum(axis=1) >= 2)
+        if exclude_accessories and np.any(selected):
+            components = _components(body.pos, tris, body.n)
+            # Keep all substantial selected anatomical islands (both legs can
+            # be disconnected). Tiny isolated jewellery remains excluded.
+            scores = {}
+            for face in tris[selected]:
+                component = int(components[face[0]])
+                scores[component] = scores.get(component, 0) + 1
+            threshold = max(1, max(scores.values()) * .04)
+            keep = [key for key, count in scores.items() if count >= threshold]
+            selected &= np.isin(components[tris[:, 0]], keep)
+    elif selection_scope != "mesh":
+        raise ValueError("Choose body skin or the selected whole mesh.")
+    return selected, positions
+
+
+def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
+                     exclude_accessories, selection_scope, donor_renderer, target_renderer,
+                     dry_run, log):
+    """Keep original UVs/textures and append each donor material independently."""
+    import copy
+    import tempfile
+    import numpy as np
+    import costume_part_transplant as cpt
+    up = _require_unitypy()
+    target = BodyMesh(up.load(target_path), target_path, target_renderer)
+    donor = BodyMesh(up.load(donor_path), donor_path, donor_renderer)
+    drop, _ = band_selection(target, cut_low, cut_high, region, exclude_accessories, selection_scope)
+    take, _ = band_selection(donor, cut_low, cut_high, region, exclude_accessories, selection_scope)
+    if not np.any(take):
+        raise ValueError("No donor triangles are selected in this band. Choose a wider band or select Whole mesh to include clothing/accessories.")
+    log("  band %.3f–%.3f: target remove %d triangles; donor insert %d triangles (%s)" %
+        (cut_low, cut_high, int(drop.sum()), int(take.sum()), selection_scope))
+    log("  target drop: %d tris   donor take: %d tris" % (int(drop.sum()), int(take.sum())))
+    if dry_run: return None
+    groups = cpt.submesh_triangles(target.tt)
+    width = 2 if target.tt.get("m_IndexFormat", 0) == 0 else 4
+    data = bytearray(); offset = 0
+    for sub, faces in zip(target.tt["m_SubMeshes"], groups):
+        kept = faces[~drop[offset:offset + len(faces)]]
+        offset += len(faces)
+        sub.update(firstByte=len(data), indexCount=int(kept.size), baseVertex=0,
+                   firstVertex=0, vertexCount=target.n)
+        data.extend(kept.astype("<u2" if width == 2 else "<u4").tobytes())
+    target.tt["m_IndexBuffer"] = bytes(data)
+    target.mesh_obj.save_typetree(target.tt)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lower-graft-") as temporary:
+        removed = os.path.join(temporary, "wearer.unity")
+        with open(removed, "wb") as stream: stream.write(target.env.file.save(packer="original"))
+        cpt.transplant_part(donor_path, removed, out_path,
+            triangle_indices=np.flatnonzero(take), new_submesh=True,
+            donor_renderer=donor.smr_obj.path_id, target_renderer=target.smr_obj.path_id,
+            worldspace=False, fix_nodescaling=False, verbose=False)
+    log("  donor UVs, materials and texture bytes preserved; original wearer materials retained")
+    return out_path
+
+
 def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               region="lower", weld=True, open_cap_lift=0.0, open_cap_edge=0.0,
               open_cap_edge_front=None, open_cap_edge_back=None,
               open_cap_edge_left=None, open_cap_edge_right=None,
               exclude_accessories=True, merge_rim=True, mipmaps=True,
-              dry_run=False, log=print):
+              dry_run=False, log=print, selection_scope="skin", donor_renderer=None,
+              target_renderer=None, preserve_materials=True):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
     target.  `region` ("lower" / "lower_belly" / "central") bounds which bones
     may be replaced so arms/head are never touched.  When `weld` is on, cut_low
@@ -615,6 +711,11 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     # if the output is a folder, write into it using the target's filename
     if os.path.isdir(out_path):
         out_path = os.path.join(out_path, os.path.basename(target_path))
+
+    if preserve_materials and not any((open_cap_lift, open_cap_edge, open_cap_edge_front,
+                                      open_cap_edge_back, open_cap_edge_left, open_cap_edge_right)):
+        return _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
+            exclude_accessories, selection_scope, donor_renderer, target_renderer, dry_run, log)
 
     bones = REGIONS.get(region, LOWER)
     T = BodyMesh(up.load(target_path), target_path)

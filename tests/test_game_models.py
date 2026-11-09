@@ -82,9 +82,14 @@ class GameModelTests(unittest.TestCase):
         self.assertEqual([r["value"] for r in result["costumes"]], ["suit:2"])
         self.assertEqual([v["value"] for v in result["costumes"][0]["variants"]], ["primary", "unmasked"])
 
-    def test_server_game_locale_precedes_ui_locale(self):
+    def test_ui_language_sets_default_region_independent_of_server_locale(self):
         (self.root / "config.json").write_text('{"locales":"ko"}')
-        self.assertEqual(game.catalog(self.root, language="ja")["region"], "gl")
+        self.assertEqual(game.catalog(self.root, language="ja")["region"], "jp")
+        (self.root / "config.json").write_text('{"locales":"ja"}')
+        for language in ("en", "ko", "zh", "jp"):
+            self.assertEqual(game.catalog(self.root, language=language)["region"], "gl")
+        self.assertEqual(game.catalog(self.root, language="ja", region="gl")["region"], "gl")
+        self.assertEqual(game.catalog(self.root, language="ko", region="jp")["region"], "jp")
 
     def test_local_decrypt_cache_and_all_original_files_unchanged(self):
         first = self.run_import().output_paths()

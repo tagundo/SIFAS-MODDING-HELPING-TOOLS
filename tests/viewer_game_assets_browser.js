@@ -11,7 +11,7 @@ let child,browser;
  const ready=await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(new Error('Server did not start')),15000);child.stdout.on('data',chunk=>{text+=chunk;if(text.includes('\n')){try{clearTimeout(timer);resolve(JSON.parse(text.split('\n')[0]));}catch(e){reject(e);}}});child.once('exit',code=>reject(new Error('Server exited '+code)));});
  child.stdout.on('data',()=>{});const logs=fs.createWriteStream(path.join(evidence,'server.log'));child.stderr.pipe(logs);
  browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||undefined,headless:true,args:['--no-sandbox','--enable-webgl','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
- for(const profile of [{name:'phone-ko',width:448,height:998,touch:true,lang:'ko'},{name:'wide-en',width:1600,height:1000,touch:false,lang:'en'}]){
+ for(const profile of [{name:'phone-ko',width:448,height:998,touch:true,lang:'ko'},{name:'wide-en',width:1600,height:1000,touch:false,lang:'en'},{name:'wide-ja',width:1360,height:900,touch:false,lang:'ja'}]){
   const context=await browser.newContext({viewport:{width:profile.width,height:profile.height},hasTouch:profile.touch});
   const page=await context.newPage(),errors=[];page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(String(e)));
   await page.addInitScript(lang=>localStorage.setItem('sifas_lang',lang),profile.lang);await page.goto(ready.url);
@@ -19,6 +19,16 @@ let child,browser;
   await page.locator('.tab[data-tab="viewer"]').click();
   await page.locator('#viewer-file-options').evaluate(n=>n.open=true);await page.locator('#viewer-auto-face').uncheck();await page.locator('#viewer-file-options').evaluate(n=>n.open=false);
   await page.locator('#viewer-game-assets').click();await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
+  const defaultRegion=profile.lang==='ja'?'jp':'gl';
+  assert.equal(await page.locator('#viewer-game-region').inputValue(),defaultRegion,'Initial region follows app language');
+  const chosenRegion=defaultRegion==='jp'?'gl':'jp';
+  await page.locator('#viewer-game-region').selectOption(chosenRegion);
+  await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
+  await page.keyboard.press('Escape');await page.locator('#viewer-game-assets').click();
+  await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
+  assert.equal(await page.locator('#viewer-game-region').inputValue(),chosenRegion,'Reopening preserves an explicit region selection');
+  await page.locator('#viewer-game-region').selectOption(defaultRegion);
+  await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
   const initial=await page.locator('#viewer-game-assets-dialog').evaluate(d=>({open:d.open,width:d.getBoundingClientRect().width,height:d.getBoundingClientRect().height,within:d.getBoundingClientRect().left>=0&&d.getBoundingClientRect().right<=innerWidth&&d.getBoundingClientRect().top>=0&&d.getBoundingClientRect().bottom<=innerHeight}));assert(initial.open&&initial.within);await page.screenshot({path:path.join(evidence,profile.name+'-dialog.png')});
   await page.locator('#viewer-game-character').selectOption('101');await page.waitForFunction(()=>Array.from(document.getElementById('viewer-game-costume').options).some(n=>n.value==='suit:1'));
   await page.locator('#viewer-game-costume').selectOption('suit:1');await page.locator('#viewer-game-download').uncheck();await page.locator('#viewer-game-import').click();
@@ -50,7 +60,7 @@ let child,browser;
   await page.unroute('**/api/viewer/game/import?**');
   assert.equal(await page.locator('#viewer-game-assets-dialog').evaluate(d=>d.open),false);assert.equal((await page.evaluate(()=>ModelViewer.getState())).modelId,opened.state.modelId);
   await page.screenshot({path:path.join(evidence,profile.name+'.png')});assert.deepEqual(errors,[]);
-  report.cases.push({profile,dialog:initial,loadedPaths:opened.state.loadedPaths,probe:opened.probe,donorGameSelectionKeepsWearer:true,exactRinaVariantListed:true,escapePreservesModel:true,lateCancelledImportPreservesModel:true,pageErrors:errors});
+  report.cases.push({profile,defaultRegion,explicitRegionRetained:true,dialog:initial,loadedPaths:opened.state.loadedPaths,probe:opened.probe,donorGameSelectionKeepsWearer:true,exactRinaVariantListed:true,escapePreservesModel:true,lateCancelledImportPreservesModel:true,pageErrors:errors});
   await context.close();
  }
  report.sourceAfter=hashes();assert.deepEqual(report.sourceAfter,report.sourceBefore);report.status='PASS';

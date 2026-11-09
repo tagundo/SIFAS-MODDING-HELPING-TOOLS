@@ -217,7 +217,7 @@ function assertFrame(value, label) {
       await page.keyboard.press('Escape');
       await page.locator('#viewer-workspace-menu > summary').click();
       const workspaceTargets = [];
-      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select',
+      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select',
         '#viewer-add', '#viewer-add-motion', '#viewer-load', '#viewer-file-options > summary']) {
         const control = page.locator(selector); await control.scrollIntoViewIfNeeded(); await frames(page);
         const target = await control.evaluate(element => {

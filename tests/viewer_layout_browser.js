@@ -200,7 +200,7 @@ async function primaryNavigationTargets(browser) {
       const workspace = page.locator('#viewer-workspace-menu');
       if (await page.locator('#viewer-workspace-menu > summary').isVisible() && !(await workspace.evaluate(n => n.open))) await workspace.locator('summary').first().click();
       const controls = [];
-      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) controls.push(await target(selector));
+      for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) controls.push(await target(selector));
       await page.locator('.tab[data-tab="tools"]').click(); await frames(page);
       assert(await page.locator('#tab-tools').evaluate(n => n.classList.contains('active')));
       const toolButtons = await page.locator('#tool-list button').evaluateAll(buttons => buttons.map(button => ({ id: button.dataset.id, width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })));
@@ -333,7 +333,7 @@ async function motionChoiceReadability(browser) {
           return { selector, ...control };
         }
         const primaryNavigation = [];
-        for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '.tab[data-tab="gallery"]', '#lang-select']) primaryNavigation.push(await assertReachable(selector));
+        for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) primaryNavigation.push(await assertReachable(selector));
         assert(Math.max(...primaryNavigation.map(value => value.y + value.height / 2)) - Math.min(...primaryNavigation.map(value => value.y + value.height / 2)) <= 1,
           'Short-phone primary navigation and language selection share one reachable row: ' + JSON.stringify(primaryNavigation));
         assert.equal(await page.getByRole('heading', { level: 1 }).count(), 1, 'The visually compact brand remains an accessible heading');

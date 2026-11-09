@@ -54,17 +54,16 @@ def _in_multi(root="extracted"):
 
 def _match_fields():
     """Optional 'match the donor's costume to the target character' fields, shared
-    by the costume transplant and lower body swap. 'Recolour skin only' defaults
-    on for the phone app and off on desktop."""
+    by full/part/lower costume tools. Matching is explicitly opt-in."""
     return [
         {"name": "match_thigh", "label": "Match thigh to target character", "type": "checkbox",
          "default": False,
          "help": "Scale the costume's thighs from the donor's body type to the target's (mesh baker)."},
         {"name": "match_skin", "label": "Match skin tone to target character", "type": "checkbox",
-         "default": True,
+         "default": False,
          "help": "Recolour the body skin from the donor's tone to the wearer's, so the "
          "transplanted costume shows the target character's skin (skin tone changer). "
-         "On by default — turn it off to keep the donor's original skin. It covers the "
+         "Off by default to preserve the donor's original colours. It covers the "
          "whole skin now; the shift lands on the target's official tone class (same as "
          "the standalone Skin Tone Changer)."},
         {"name": "donor_tone", "label": "Donor skin tone", "type": "select",
@@ -74,15 +73,15 @@ def _match_fields():
          "when that is unknown). Set explicitly if the donor bundle was already "
          "recoloured."},
         {"name": "skin_only", "label": "Recolour skin only", "type": "checkbox",
-         "default": _is_android(),
+         "default": True,
          "help": "Restrict the recolour to the skin region, using the mesh's bone "
          "weights when available (excludes skirt / sleeves / ribbon / accessories) "
          "and never dropping real skin. NOTE: torso-tight clothing on body bones "
          "(a bodice) can't be told from chest skin, so its colour may still shift. "
          "For an exact result, export the texture and edit it with the Skin Tone "
-         "Changer. On by default on the phone app, off on desktop."},
+         "Changer. Enabled by default when matching is requested."},
         {"name": "skin_colour_guard", "label": "Also restrict by skin colour", "type": "checkbox",
-         "default": False,
+         "default": True,
          "help": "Additionally require skin-like colour, so non-skin-coloured "
          "body-bone clothing (e.g. a blue bodice) is left alone. May drop deeply "
          "shadowed skin — leave off if any real skin gets missed."},
@@ -608,6 +607,7 @@ TOOLS = [
             {"name": "fix_nodescaling", "label": "Re-anchor NodeScaling (keep the wearer's body shaping)",
              "type": "checkbox", "default": True},
             {"name": "patch_texture", "label": "Patch part texture onto target atlas", "type": "checkbox", "default": False},
+            *_match_fields(),
         ],
     },
     {

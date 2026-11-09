@@ -70,20 +70,9 @@ def _region(root, requested, language):
         if requested not in regions:
             raise ValueError("The selected game region is unavailable.")
         return requested, regions
-    # Match the running server's game-data locale before the independent UI locale.
-    locale = language
-    config = Path(root) / "config.json"
-    try:
-        if config.stat().st_size <= 1024 * 1024:
-            value = json.loads(config.read_text(encoding="utf-8"))
-            configured = value.get("locales") if isinstance(value, dict) else None
-            if isinstance(configured, str) and configured.strip():
-                locale = configured.strip().split(",")[0].strip()
-            elif isinstance(configured, list) and configured and isinstance(configured[0], str):
-                locale = configured[0]
-    except (OSError, ValueError):
-        pass
-    preferred = "jp" if locale in ("ja", "jp") else "gl"
+    # The app language controls the initial picker, independently of the game
+    # server's configured data locale. Explicit choices above always win.
+    preferred = "jp" if language == "ja" else "gl"
     return preferred if preferred in regions else regions[0], regions
 
 

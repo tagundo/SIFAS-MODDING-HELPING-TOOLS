@@ -59,12 +59,13 @@ const snapshot = page => page.evaluate(() => {
       const after = await snapshot(page);
       assert.deepStrictEqual(after.camera, before.camera, 'Import preserves camera exactly');
       assert.deepStrictEqual(after.authoring, before.authoring, 'Import preserves existing body edits');
-      assert.equal(after.selected, before.selected, 'Import preserves selected pose');
+      assert.equal(after.selected, 'game-timeline:home:idle:1:1', 'Import selects its complete original timeline');
       assert.equal(after.triangles, before.triangles, 'Animation import adds no geometry');
       assert(after.clips.includes('Imported motion fixture'), 'Imported encrypted clip is present in the real converted rig');
       const output = after.paths.find(value => value.includes('/game-motions/'));
       assert(output, 'Imported output is the motion cache');
-      assert.equal(crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex'), ready.motion_sha256, 'Decrypted bytes exactly match original fixture');
+      const decryptedSource = path.join(path.dirname(output), 'source-1.unity');
+      assert.equal(crypto.createHash('sha256').update(fs.readFileSync(decryptedSource)).digest('hex'), ready.motion_sha256, 'Decrypted source bytes exactly match original fixture before clips-only normalization');
       await page.locator('#viewer-motion').selectOption('Imported motion fixture');
       await page.locator('#viewer-play').click();
       await page.waitForFunction(() => ModelViewer.getState().rig.playing && ModelViewer.getState().rig.time > .1);
@@ -92,7 +93,7 @@ const snapshot = page => page.evaluate(() => {
       await page.unroute('**/api/viewer/prepare');
       await page.screenshot({ path: path.join(evidence, profile.name + '.png') });
       assert.deepStrictEqual(errors, []);
-      report.cases.push({ profile, dialog, before, after, probe, raced, exactEncryptedImport: true, preservesBodyCameraAndPose: true, newerModelSurvivesOlderMotion: true, pageErrors: errors });
+      report.cases.push({ profile, dialog, before, after, probe, raced, exactEncryptedImport: true, preservesBodyAndCamera: true, newerModelSurvivesOlderMotion: true, pageErrors: errors });
       await context.close();
     }
     report.status = 'PASS';

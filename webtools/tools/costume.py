@@ -33,9 +33,26 @@ def part_root_options(params):
             continue
         out.append({
             "value": root,
+            "bones": list(p.get("bones", [])),
             "label": "%s  (%d v, %d t, %d bones)" % (
                 root, p.get("verts", 0), p.get("tris", 0), len(p.get("bones", []) or [])),
         })
+    # Also offer explicit anatomical subtrees for direct 3D part selection.
+    import UnityPy
+    env = UnityPy.load(donor)
+    objects, index = cpt._index(env)
+    renderer = cpt._body_smr(objects)
+    if renderer is not None:
+        tree = renderer.read_typetree()
+        names = cpt._smr_bone_names(index, tree)
+        parents = cpt._bone_parent_array(index, tree)
+        roots = {item["value"] for item in out}
+        for name in ("BreastSize", "LeftShoulder", "RightShoulder", "LeftArm", "RightArm",
+                     "LeftForeArm", "RightForeArm", "LeftHand", "RightHand",
+                     "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg", "LeftFoot", "RightFoot"):
+            if name not in names or name in roots: continue
+            bones = [names[i] for i in sorted(cpt._descendants(parents, names.index(name)))]
+            out.append({"value": name, "label": name, "bones": bones})
     return out
 
 
@@ -198,6 +215,7 @@ def run_costume_part_transplant(job, params):
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,
     )
+    _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
     job.log(f"OK -> {out_path.name}")
     return f"part transplanted -> {out_path}"
@@ -216,7 +234,9 @@ def run_lower_body_swap(job, params):
     out_dir = params.get("out_dir") or os.path.join(m.sukusta_dir(), "modded")
     suffix = params.get("suffix") or "_lower"
     exclude_acc = bool(params.get("exclude_accessories", True))
-    kw = dict(exclude_accessories=exclude_acc, log=job.log)
+    kw = dict(exclude_accessories=exclude_acc, log=job.log,
+              selection_scope=params.get("selection_scope", "skin"),
+              donor_renderer=params.get("donor_renderer"), target_renderer=params.get("target_renderer"))
 
     # Band: a named preset (like the desktop tool), unless 'custom', in which case
     # the raw Cut low/high Y + Region fields are used. Presets always graft the

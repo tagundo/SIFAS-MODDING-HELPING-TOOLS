@@ -472,6 +472,7 @@
         for (var index = 1; index < track.times.length && track.times[index] <= time; index += 1) value = track.values[index];
         track.targets.forEach(function (target) { target.visible = target.visible && value; });
       });
+      if (currentClip && currentClip.timeline) currentClip.timeline.applyVisibility(currentTime());
       if (expressionPanel) expressionPanel.applyVisibility(parts);
       parts.forEach(function (part) { if (part.userChanged && typeof part.userVisible === "boolean") part.object.visible = part.userVisible; });
       root.updateMatrixWorld(true);
@@ -498,14 +499,16 @@
         applyAdjustments(released, true);
         if (mixer) mixer.update(delta || 0);
         replayAnimationTracks();
+        if (currentClip && currentClip.timeline) currentClip.timeline.evaluate(currentTime());
         // Facial choices remain render-only inspection controls in both modes;
         // changing the body's evaluation order must not disable face review.
         if (expressionPanel) { expressionPanel.applyBonesAndMorphs(); expressionPanel.applyVisibility(parts); }
         root.updateMatrixWorld(true);
         root.traverse(function (object) { if (object.isSkinnedMesh) object.skeleton.update(); });
       } else {
-        all.forEach(function (record) { restore(record.object, record.base); });
+        all.forEach(function (record) { restore(record.object, currentClip && currentClip.timeline ? record.authored : record.base); });
         if (mixer) mixer.update(delta || 0);
+        if (currentClip && currentClip.timeline) currentClip.timeline.evaluate(currentTime());
         all.forEach(function (record) { capture(record.object, record.base); });
         applyAdjustments(released);
       }
@@ -1319,6 +1322,21 @@
         refreshNode(); refreshBodyControls(); changed();
       },
       setEditorGroup: setEditorGroup,
+      setMotionTimeline: function (descriptor) {
+        if (!window.ViewerMotionTimeline || !descriptor || descriptor.version !== 2) throw new Error("The game motion timeline is unavailable.");
+        var name = "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1);
+        var existing = clipEntries.filter(function (entry) { return entry.name === name; })[0];
+        if (!existing) {
+          all.forEach(function (record) { restore(record.object, record.authored); });
+          var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor);
+          if (!timeline.compatibleSegments) { evaluate(0); throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions.")); }
+          existing = { name: name, label: descriptor.label || name, animation: null, timeline: timeline,
+            duration: timeline.duration, loop: descriptor.category !== "voice", partial: timeline.warnings.length > 0, visibility: [] };
+          clipEntries.push(existing);
+        }
+        updateLanguage(); setClip(name);
+        return { clipName: name, warnings: existing.timeline.warnings.slice() };
+      },
       setEvaluationMode: function (mode) {
         if (["authoring", "animation"].indexOf(mode) < 0 || mode === evaluationMode) return;
         if (mode === "authoring") {
@@ -1349,6 +1367,7 @@
       setAuthoringEnabled: function (value) { if (!!value !== authoringEnabled) { authoringEnabled = !!value; refreshAvailability(); } },
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
+      getPlaybackState: function () { return { selectedClip: selectedClip, playing: playing, time: currentTime(), duration: duration() }; },
       getPartVisibility: function (object) { var part = parts.filter(function (item) { return item.object === object; })[0]; return part ? { fileVisible: part.fileVisible, selected: part.visible, userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible } : null; },
       reset: reset,
       dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (physicsController) physicsController.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },

@@ -15,12 +15,14 @@ import time
 import zlib
 
 
-MAX_CLIPS = 32
+MAX_CLIPS = 96
 MAX_CURVES = 2048
-MAX_STREAM_WORDS = 1_000_000
-MAX_STREAM_KEYS = 32768
-MAX_KEYFRAMES = 32768
-MAX_VALUES = 1_000_000
+MAX_STREAM_WORDS = 8_000_000
+MAX_STREAM_KEYS = 1_500_000
+# Full-length game dances plus the original eye/mouth pose bank need more
+# samples than short preview clips. Keep a fixed combined numeric budget.
+MAX_KEYFRAMES = 2_000_000
+MAX_VALUES = 8_000_000
 MAX_SECONDS = 600
 MAX_MORPHS = 128
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
@@ -290,13 +292,60 @@ def _editor_curves(tree, deadline=None):
     return tracks
 
 
+def _sample_times(start, stop, rate, tracks, deadline):
+    """Keep authored boundaries while removing Float32 echoes of the grid.
+
+    Unity stream stamps are Float32 while a nominal 60 Hz grid uses Python
+    doubles. Prefer an authored stamp near a grid point; never merge distinct
+    authored keys merely because they are close to one another.
+    """
+    count = max(1, int(math.ceil((stop - start) * rate)) + 1)
+    if count > MAX_KEYFRAMES:
+        raise AnimationError("The animation has too many sampled frames.")
+    original = {start, stop}
+    for track in tracks:
+        for mode, keys in track["curves"]:
+            if mode != "constant":
+                for index, (stamp, _) in enumerate(keys):
+                    if index % 1024 == 0:
+                        _check(deadline)
+                    if start <= stamp <= stop:
+                        original.add(stamp)
+                if len(original) > MAX_KEYFRAMES:
+                    raise AnimationError("The animation has too many sampled frames.")
+    boundaries = sorted(original)
+    stamps = set(original)
+    for index in range(count):
+        if index % 1024 == 0:
+            _check(deadline)
+        stamp = min(stop, start + index / rate)
+        neighbor = bisect.bisect_left(boundaries, stamp)
+        if ((neighbor < len(boundaries) and abs(boundaries[neighbor] - stamp) <= 1e-5) or
+                (neighbor and abs(boundaries[neighbor - 1] - stamp) <= 1e-5)):
+            continue
+        stamps.add(stamp)
+    ordered, encoded = [], None
+    for stamp in sorted(stamps):
+        relative = struct.unpack("<f", struct.pack("<f", stamp - start))[0]
+        if encoded is not None and relative == encoded:
+            # glTF inputs cannot distinguish these Float32 times. Preserve the
+            # authored/right-hand endpoint instead of duplicate sampler inputs.
+            if stamp in original:
+                ordered[-1] = stamp
+            continue
+        ordered.append(stamp); encoded = relative
+    if len(ordered) > MAX_KEYFRAMES:
+        raise AnimationError("The animation has too many sampled frames.")
+    return ordered
+
+
 def decode_clip(tree, deadline=None):
     """Decode curve declarations, retaining Unity path/attribute hashes."""
     _check(deadline)
     muscle = tree.get("m_MuscleClip") or {}
     start = _finite(muscle.get("m_StartTime", 0))
     stop = _finite(muscle.get("m_StopTime", start))
-    tracks, unsupported = [], 0
+    tracks, unsupported, unsupported_kinds = [], 0, {}
     bindings = (tree.get("m_ClipBindingConstant") or {}).get("genericBindings", [])
     if len(bindings) > MAX_CURVES:
         raise AnimationError("The animation has too many bindings.")
@@ -323,6 +372,8 @@ def decode_clip(tree, deadline=None):
                                "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected})
             else:
                 unsupported += 1
+                key = typ, attribute, int(binding.get("customType", 0))
+                unsupported_kinds[key] = unsupported_kinds.get(key, 0) + 1
         if offset != len(curves):
             raise AnimationError("Packed animation curves are not fully described by their bindings.")
     else:
@@ -333,26 +384,13 @@ def decode_clip(tree, deadline=None):
     if not 0 <= duration <= MAX_SECONDS:
         raise AnimationError("The animation duration exceeds the preview limit.")
     rate = min(60., max(1., _finite(tree.get("m_SampleRate", 60))))
-    count = max(1, int(math.ceil(duration * rate)) + 1)
-    if count > MAX_KEYFRAMES:
-        raise AnimationError("The animation has too many sampled frames.")
-    stamps = [start + min(duration, index / rate) for index in range(count)]
-    stamps[-1] = stop
-    # Keep original finite key boundaries too, especially terminal visibility-
-    # adjacent facial shape changes that need their exact authored endpoint.
-    for track in tracks:
-        for mode, keys in track["curves"]:
-            if mode != "constant":
-                stamps.extend(stamp for stamp, _ in keys if start <= stamp <= stop)
-    ordered = []
-    for stamp in sorted(set(stamps)):
-        if not ordered or stamp - ordered[-1] > 1e-7:
-            ordered.append(stamp)
-    if len(ordered) > MAX_KEYFRAMES:
-        raise AnimationError("The animation has too many sampled frames.")
+    ordered = _sample_times(start, stop, rate, tracks, deadline)
     return {"name": str(tree.get("m_Name") or "Animation")[:160], "start": start, "duration": duration,
             "times": ordered, "tracks": tracks, "loop": bool(muscle.get("m_LoopTime", False)),
-            "unsupported": unsupported, "sampling": "source_curves_at_most_60_hz"}
+            "unsupported": unsupported,
+            "unsupportedKinds": [{"typeID": key[0], "attribute": key[1], "customType": key[2], "count": count}
+                                 for key, count in sorted(unsupported_kinds.items())],
+            "sampling": "source_curves_at_most_60_hz"}
 
 
 def _nodes(bindings, path):
@@ -443,6 +481,92 @@ def _attribute(glb, values, kind, bounds=False):
     return index
 
 
+def animation_candidate(glb, deadline=None):
+    """Copy live geometry/images to a new builder, discarding old animations.
+
+    Geometry may have been appended after an earlier animation pass. Mark
+    typed references rather than truncating a binary tail or rewriting extras.
+    The original document/data remain available for transactional recovery.
+    """
+    import copy
+    candidate = glb.__class__()
+    candidate.doc = copy.deepcopy(glb.doc)
+    candidate.doc.pop("animations", None)
+    accessors = glb.doc.get("accessors", [])
+    views = glb.doc.get("bufferViews", [])
+    live_accessors, live_views = set(), set()
+    def accessor(value):
+        if type(value) is not int or not 0 <= value < len(accessors):
+            raise AnimationError("A geometry attribute references an unavailable accessor.")
+        live_accessors.add(value)
+    def view(value):
+        if type(value) is not int or not 0 <= value < len(views):
+            raise AnimationError("A model buffer view is unavailable.")
+        live_views.add(value)
+    for mesh in candidate.doc.get("meshes", []):
+        _check(deadline)
+        for primitive in mesh.get("primitives", []):
+            for value in primitive.get("attributes", {}).values():
+                accessor(value)
+            if "indices" in primitive:
+                accessor(primitive["indices"])
+            for target in primitive.get("targets", []):
+                for value in target.values():
+                    accessor(value)
+    for skin in candidate.doc.get("skins", []):
+        if "inverseBindMatrices" in skin:
+            accessor(skin["inverseBindMatrices"])
+    for index in live_accessors:
+        item = accessors[index]
+        if "bufferView" in item:
+            view(item["bufferView"])
+        sparse = item.get("sparse", {})
+        for key in ("indices", "values"):
+            if key in sparse:
+                view(sparse[key]["bufferView"])
+    for image in candidate.doc.get("images", []):
+        if "bufferView" in image:
+            view(image["bufferView"])
+    view_map = {}
+    candidate.doc["bufferViews"] = []
+    for index in sorted(live_views):
+        _check(deadline)
+        item = views[index]
+        offset, length = item.get("byteOffset", 0), item["byteLength"]
+        if item.get("buffer", 0) != 0 or type(offset) is not int or type(length) is not int or offset < 0 or length < 0 or offset + length > len(glb.data):
+            raise AnimationError("A model buffer view has invalid binary bounds.")
+        mapped = candidate.view(glb.data[offset:offset + length], item.get("target"))
+        position = candidate.doc["bufferViews"][mapped]["byteOffset"]
+        candidate.doc["bufferViews"][mapped] = {**copy.deepcopy(item), "buffer": 0, "byteOffset": position}
+        view_map[index] = mapped
+    accessor_map = {old: new for new, old in enumerate(sorted(live_accessors))}
+    candidate.doc["accessors"] = [copy.deepcopy(accessors[index]) for index in sorted(live_accessors)]
+    for item in candidate.doc["accessors"]:
+        if "bufferView" in item:
+            item["bufferView"] = view_map[item["bufferView"]]
+        for entry in item.get("sparse", {}).values():
+            if isinstance(entry, dict) and "bufferView" in entry:
+                entry["bufferView"] = view_map[entry["bufferView"]]
+    for mesh in candidate.doc.get("meshes", []):
+        for primitive in mesh.get("primitives", []):
+            # Submeshes can share these containers. Replace them so a shared
+            # accessor dictionary is never remapped twice through its alias.
+            primitive["attributes"] = {key: accessor_map[value] for key, value in primitive.get("attributes", {}).items()}
+            if "indices" in primitive:
+                primitive["indices"] = accessor_map[primitive["indices"]]
+            if "targets" in primitive:
+                primitive["targets"] = [{key: accessor_map[value] for key, value in target.items()} for target in primitive["targets"]]
+    for skin in candidate.doc.get("skins", []):
+        if "inverseBindMatrices" in skin:
+            skin["inverseBindMatrices"] = accessor_map[skin["inverseBindMatrices"]]
+    for image in candidate.doc.get("images", []):
+        if "bufferView" in image:
+            image["bufferView"] = view_map[image["bufferView"]]
+    if candidate.doc.get("buffers"):
+        candidate.doc["buffers"][0]["byteLength"] = len(candidate.data)
+    return candidate
+
+
 def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadline=None, visibility_bindings=None):
     """Append supplied clips; bindings refer only to already exported rig nodes."""
     warnings, metadata, used_frames, used_values = [], [], 0, 0
@@ -457,7 +581,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
 
     clips = [obj for obj in scene.env.objects if obj.type.name == "AnimationClip"]
     if len(clips) > MAX_CLIPS:
-        warn("animation_limit", "", "Only the first 32 supplied animation clips are available in this preview.")
+        warn("animation_limit", "", "Only the first 96 supplied animation clips are available in this preview.")
     for obj in clips[:MAX_CLIPS]:
         _check(deadline)
         name = scene.name(obj)
@@ -585,11 +709,21 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             metadata.append({"index": index, "name": exported_name, "sourceName": clip["name"], "duration": clip["duration"],
                              "channels": len(outputs), "loop": clip["loop"], "visibility": visibility_tracks,
                              "sourceId": source_identifier, "sourceHash": source_hash, "sourceTracks": len(clip["tracks"]),
+                             "unsupportedTracks": clip["unsupported"], "unboundTracks": unbound,
+                             "unsupportedKinds": clip["unsupportedKinds"],
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})
             used_frames += frames
             used_values += values
             if clip["unsupported"] or unbound:
-                warn("animation_partial", name, "Some visibility, material, humanoid or unmatched animation channels are unavailable.")
+                animator = sum(row["count"] for row in clip["unsupportedKinds"] if row["typeID"] == 95)
+                details = []
+                if animator:
+                    details.append(f"{animator} Animator parameter curves are not rendered.")
+                if clip["unsupported"] > animator:
+                    details.append(f"{clip['unsupported'] - animator} other animation channels are unsupported.")
+                if unbound:
+                    details.append(f"{unbound} animation channels could not bind to this model.")
+                warn("animation_partial", name, " ".join(details))
             if rebound:
                 warn("animation_morph_path_rebound", name, "A facial curve used its unique original morph name because its legacy transform path differs.")
         except Exception as error:

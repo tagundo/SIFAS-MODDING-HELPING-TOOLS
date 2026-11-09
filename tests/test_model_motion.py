@@ -237,6 +237,22 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(metadata["rig"]["previewMotion"]["origin"], "bundled")
         self.assertEqual(metadata["rig"]["previewMotion"]["name"], "Neutral swing__2")
         self.assertEqual(metadata["rig"]["previewMotion"]["sourceName"], bundled.name)
+
+    def test_eight_selected_inputs_leave_a_separate_offline_preview_slot(self):
+        bundled = self.root / "bundled.unity"; bundled.write_bytes(self.plain)
+        selected = [FIXTURE]
+        for index in range(7):
+            env = self.UnityPy.load(self.plain)
+            obj = next(obj for obj in env.objects if obj.type.name == "AnimationClip")
+            tree = obj.read_typetree(); tree["m_Name"] = "Selected custom motion " + str(index); obj.save_typetree(tree)
+            path = self.root / ("motion-" + str(index) + ".unity"); path.write_bytes(env.file.save()); selected.append(path)
+        before = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in selected}
+        with patch.object(motion, "BUNDLED_PREVIEW", bundled), patch.object(motion.MotionInputs, "descriptors", side_effect=AssertionError("The packaged preview is available offline")):
+            metadata = self.prepare(selected)
+        self.assertEqual(len(metadata["source_names"]), 8)
+        self.assertTrue(metadata["rig"]["previewMotion"]["verified"])
+        self.assertEqual(metadata["rig"]["previewMotion"]["origin"], "bundled")
+        self.assertEqual(before, {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in selected})
         self.assertEqual(metadata["faces"]["status"], "not_needed")
         self.assertEqual(list(self.cache.iterdir()), [])
 

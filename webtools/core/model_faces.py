@@ -956,8 +956,7 @@ class FacePlan:
         return list(self.auto_paths)
 
     def _accept(self, path):
-        from .model_viewer import MAX_FILES
-        if path in self.paths or path in self.auto_paths or len(self.paths) + len(self.auto_paths) >= MAX_FILES:
+        if path in self.paths or path in self.auto_paths or len(self.auto_paths) >= MAX_AUTO_FILES:
             return False
         try:
             inspected = self._inspect(path)

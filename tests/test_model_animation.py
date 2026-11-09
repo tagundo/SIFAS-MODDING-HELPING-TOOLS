@@ -57,6 +57,50 @@ def values(glb, index):
 
 
 class AnimationTests(unittest.TestCase):
+    def test_full_song_float32_keys_do_not_duplicate_the_nominal_60hz_grid(self):
+        duration = 125.5
+        stamps = [struct.unpack("<f", struct.pack("<f", frame / 60))[0] for frame in range(7531)]
+        stream = words([(stamp, [(0, (0., 0., 0., math.sin(stamp)))]) for stamp in stamps] + [(math.inf, [])])
+        original = clip([binding(7, 123, 137, 20)], stream={"curveCount": 1, "data": stream}, duration=duration)
+        decoded = animation.decode_clip(original)
+        self.assertEqual(decoded["times"], stamps)
+        self.assertEqual(decoded["times"][-1], duration)
+        self.assertTrue(all(a < b for a, b in zip(decoded["times"], decoded["times"][1:])))
+
+    def test_near_grid_authored_morph_boundaries_and_terminal_value_are_retained(self):
+        name = "OriginalMouthShape"
+        times = [struct.unpack("<f", struct.pack("<f", stamp))[0] for stamp in (.123456, .500004, .500008)]
+        frames = [(0., [(0, (0., 0., 0., 0.))]),
+                  (times[0], [(0, (0., 0., 0., 25.))]),
+                  (times[1], [(0, (0., 0., 0., 100.))]),
+                  (times[2], [(0, (0., 0., 0., 50.))]),
+                  (1., [(0, (0., 0., 0., 0.))]), (math.inf, [])]
+        tree = clip([binding(99, animation.path_hash(name), 137, 20)], stream={"curveCount": 1, "data": words(frames)})
+        glb = builder()
+        result = animation.append_animations(scene([tree]), glb, {}, {99: {"node": 1, "names": [name], "weights": [0.]}})
+        self.assertEqual(result["warnings"], [])
+        sampler = glb.doc["animations"][0]["samplers"][0]
+        stamps = [row[0] for row in values(glb, sampler["input"])]
+        weights = [row[0] for row in values(glb, sampler["output"])]
+        for stamp, weight in zip(times, (.25, 1., .5)):
+            self.assertIn(stamp, stamps)
+            self.assertAlmostEqual(weights[stamps.index(stamp)], weight)
+        self.assertNotIn(.5, stamps)
+        self.assertEqual(stamps[-1], 1.)
+        self.assertEqual(weights[-1], 0.)
+
+    def test_unsupported_animator_parameters_are_counted_separately_from_bound_body(self):
+        tree = clip([binding(1, 1), binding(1, 3431781216, 95), binding(1, 1893911870, 95)],
+                    constant=[1., 2., 3., .4, .5], duration=.1)
+        glb = builder()
+        result = animation.append_animations(scene([tree]), glb, {1: 1})
+        metadata = result["clips"][0]
+        self.assertEqual(metadata["channels"], 1)
+        self.assertEqual(metadata["unsupportedTracks"], 2)
+        self.assertEqual(metadata["unboundTracks"], 0)
+        self.assertEqual({row["attribute"] for row in metadata["unsupportedKinds"]}, {3431781216, 1893911870})
+        self.assertIn("2 Animator parameter curves", result["warnings"][0]["message"])
+
     def test_discovery_deduplicates_real_paths_across_overlapping_roots(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -9,6 +9,7 @@
   var pendingOpen = null;
   var paths = [];
   var loadedPaths = [];
+  var importedGameMotionPaths = [];
   var loadedAutoFace = true;
   var variantChoices = Object.create(null);
   var variantOptions = Object.create(null);
@@ -69,6 +70,8 @@
   var pickerObserver = null;
   var outsideFocus = [];
   var infoAutoOpened = false;
+  var shownInfoAlerts = Object.create(null);
+  var warningAlertKeys = [];
   var seriousWarning = false;
   var materialFailure = false;
   var qualityFailure = false;
@@ -193,9 +196,20 @@
     var info = node("viewer-info");
     if (!info) return;
     var alert = statusError || seriousWarning || materialFailure || qualityFailure || !!layoutNotice;
+    var keys = seriousWarning ? warningAlertKeys.slice() : [];
+    if (statusError) keys.push("error:" + statusKey + ":" + statusDetail);
+    if (materialFailure) keys.push("material:" + node("viewer-material-warning").textContent);
+    if (qualityFailure) keys.push("quality:edge-smoothing-unavailable");
+    if (layoutNotice) keys.push("layout:" + layoutNotice);
     info.classList.toggle("viewer-info-alert", !!alert);
-    if (alert && !info.open) { infoAutoOpened = true; info.open = true; }
+    // Loading another motion refreshes the same costume diagnostics. A warning
+    // already presented to the user must not reopen the full help popover.
+    if (keys.some(function (key) { return !shownInfoAlerts[key]; })) {
+      keys.forEach(function (key) { shownInfoAlerts[key] = true; });
+      if (!info.open) { infoAutoOpened = true; info.open = true; }
+    }
     else if (!alert && infoAutoOpened) { info.open = false; infoAutoOpened = false; }
+    info.classList.toggle("viewer-info-automatic-alert", info.open && infoAutoOpened);
     refreshPopoverStack(info.open ? info : null);
   }
 
@@ -224,7 +238,10 @@
       // details' toggle event is deferred. Update stacking during this actual
       // activation so another control can be hit-tested in the same turn.
       event.preventDefault();
-      if (details === node("viewer-info")) infoAutoOpened = false;
+      if (details === node("viewer-info")) {
+        infoAutoOpened = false;
+        details.classList.remove("viewer-info-automatic-alert");
+      }
       details.open = !details.open;
       refreshPopoverStack(details.open ? details : null);
     });
@@ -477,6 +494,7 @@
     lastFrameTime = time;
     var moving = rigController ? rigController.update(delta) : false;
     syncPartVisibility();
+    if (meshToolsController && meshToolsController.beforeRender) meshToolsController.beforeRender();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
     // Keep evaluating the pose, material clock, timeline and editable state
@@ -799,6 +817,7 @@
         // cannot delete handles from the old context generation. Keep CPU data
         // and decoded source images for the restored renderer to upload again.
         if (materialController && materialController.invalidateGPU) materialController.invalidateGPU();
+        if (meshToolsController && meshToolsController.beforeModelDispose) meshToolsController.beforeModelDispose();
         disposeObject(model, true);
         if (rigController) rigController.setInteractive(false);
         // Abort the client load as well. A late preparation response must not
@@ -1064,6 +1083,7 @@
 
   function disposePreviewControllers() {
     partInputs = [];
+    if (meshToolsController && meshToolsController.beforeModelDispose) meshToolsController.beforeModelDispose();
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
@@ -1218,6 +1238,11 @@
     seriousWarning = !!messages.length && (warnings || []).some(function (warning) {
       return typeof warning === "string" || warning && /missing|unavailable|failed|invalid|unsupported|partial|incomplete|limit|timeout|unmatched|conflict/i.test(warning.code || "");
     });
+    warningAlertKeys = (warnings || []).filter(function (warning) {
+      return typeof warning === "string" || warning && warning.message && /missing|unavailable|failed|invalid|unsupported|partial|incomplete|limit|timeout|unmatched|conflict/i.test(warning.code || "");
+    }).map(function (warning) {
+      return "warning:" + (typeof warning === "string" ? warning : warning.code + ":" + warning.message);
+    });
     refreshInfoVisibility();
   }
 
@@ -1294,6 +1319,9 @@
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      if (retain && retain.priorCompleteFace && (!prepared.faces || ["added", "already_present"].indexOf(prepared.faces.status) < 0)) {
+        throw new Error(t("The motion could not be added without losing the current face. The current model was kept."));
+      }
       // Omitted archive choices may use the server's declared default. Keep
       // that resolution local until every asynchronous stale-result guard passes.
       var resolved = readVariantOptions(prepared.variants, selected, selectedVariants, archiveVariants);
@@ -1716,6 +1744,9 @@
       translate: t,
       getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
       getBodyState: function () { return rigController && rigController.getAuthoringState(); },
+      getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
+        controls: controls, rig: rigController, stage: node("viewer-stage"),
+        domElement: renderer && renderer.domElement, requestRender: requestRender }; },
       isInteractive: function () { return !!model && !loading && !lost &&
         !(persistenceController && persistenceController.getState().busy) &&
         !(transplantController && transplantController.getState().busy) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants); },
@@ -1723,14 +1754,23 @@
       onSaved: async function (result, sourceToken) {
         if (loading || !metadata || !metadata.editing || sourceToken && metadata.editing.token !== sourceToken ||
             !sameSelection(loadedPaths, loadedAutoFace, loadedVariants)) return false;
-        await open(result.preview_paths);
-        if (statusError) throw new Error(statusDetail || statusKey);
+        // The live preview already contains these edits. Keep its immutable
+        // source session and history so Undo also works after saving a copy.
         return true;
       }
     });
     if (window.ViewerTransplants) transplantController = window.ViewerTransplants.create({
       translate: t,
-      context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing,
+      context: function () {
+        var targetMeshes = [], rendererIds = {};
+        if (model) model.traverse(function (mesh) {
+          if (!mesh.isSkinnedMesh || isViewerHelper(mesh)) return;
+          var mapping = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh;
+          if (!mapping || !mapping.writable || rendererIds[String(mapping.renderer)]) return;
+          rendererIds[String(mapping.renderer)] = true;
+          targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh });
+        });
+        return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, targetMeshes: targetMeshes,
         authoring: rigController && rigController.getAuthoringState(), loadedPaths: loadedPaths.slice(),
         persistence: persistenceController && persistenceController.getState(),
         meshTools: meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()),
@@ -1916,6 +1956,7 @@
     });
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
     paths = unique;
+    importedGameMotionPaths = [];
     if (nextVariants && typeof nextVariants === "object") {
       paths.forEach(function (path, index) {
         if (Object.prototype.hasOwnProperty.call(nextVariants, index) &&
@@ -1928,17 +1969,20 @@
     return loadSelected();
   }
 
-  async function addMotion(nextPaths) {
+  async function addMotion(nextPaths, options) {
     if (!model || !rigController || loading || lost) throw new Error(t("Open a model before adding motion."));
     if (workbenchBusy() || persistenceController && persistenceController.getState().busy) throw new Error(t("Wait for model saving to finish."));
     if (meshDraftPending()) throw new Error(t("Save mesh edits before adding motion."));
+    var replaceGame = options && options.replaceGame === true;
+    var basePaths = replaceGame ? loadedPaths.filter(function (path) { return importedGameMotionPaths.indexOf(path) < 0; }) : loadedPaths;
     var additions = (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).filter(function (path) {
-      return typeof path === "string" && path.trim() && loadedPaths.indexOf(path) < 0;
+      return typeof path === "string" && path.trim() && basePaths.indexOf(path) < 0;
     });
-    var selected = loadedPaths.concat(additions.filter(function (path, index, all) { return all.indexOf(path) === index; }));
+    var selected = basePaths.concat(additions.filter(function (path, index, all) { return all.indexOf(path) === index; }));
     if (selected.length > MAX_FILES) throw new Error(t("Choose up to eight costume files at a time."));
-    if (selected.length === loadedPaths.length) return;
+    if (JSON.stringify(selected) === JSON.stringify(loadedPaths)) return;
     var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: rigController.getAuthoringState(),
+      priorCompleteFace: !!(metadata && metadata.faces && metadata.faces.enabled && ["added", "already_present"].indexOf(metadata.faces.status) >= 0),
       camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
     var oldPaths = loadedPaths.slice();
     paths = selected; renderFiles();
@@ -1951,6 +1995,7 @@
       paths = oldPaths; renderFiles(); filesChanged();
       throw new Error(statusDetail || t("The motion could not be loaded."));
     }
+    if (replaceGame) importedGameMotionPaths = additions.slice();
   }
 
   function dispose() {
@@ -1996,9 +2041,22 @@
       if (persistenceController) persistenceController.refresh();
     },
     getEditingMetadata: function () { return metadata && metadata.editing || null; },
+    projectMeshVertex: function (identity, index) { return meshToolsController && meshToolsController.projectVertex ? meshToolsController.projectVertex(identity, index) : null; },
+    executeMeshShortcut: function (event) { return meshToolsController && meshToolsController.handleShortcut ? meshToolsController.handleShortcut(event) : false; },
+    saveMeshIfPending: function () {
+      var state = meshToolsController && meshToolsController.getStatus();
+      if (!state || !state.canSave) return false;
+      Promise.resolve(meshToolsController.save()).catch(function (error) { setStatus(error.message || "Mesh edits could not be saved.", true); });
+      return true;
+    },
+    setMotionTimeline: function (descriptor) {
+      if (!rigController || !rigController.setMotionTimeline) throw new Error(t("Open a model before adding motion."));
+      var result = rigController.setMotionTimeline(descriptor);
+      requestRender(); return result;
+    },
     getMotionState: function () {
-      return { visible: active, loading: loading, contextLost: lost, layout: { minimized: minimized },
-        rig: rigController ? rigController.getState() : null };
+      return { modelId: metadata && metadata.id, visible: active, loading: loading, contextLost: lost, layout: { minimized: minimized },
+        rig: rigController ? (rigController.getPlaybackState ? rigController.getPlaybackState() : rigController.getState()) : null };
     },
     getState: function () {
       var names = [];

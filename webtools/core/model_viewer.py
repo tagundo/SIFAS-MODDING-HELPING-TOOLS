@@ -23,6 +23,10 @@ from . import decode
 
 
 MAX_FILES = 8
+# Public selections and trusted dependencies have separate bounded slots.
+# Four original face donors, plus preview/discovered motion companions, must
+# remain available when all eight user-selected inputs are already occupied.
+MAX_INTERNAL_FILES = MAX_FILES + 4 + 4
 MAX_SOURCE_BYTES = 96 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 192 * 1024 * 1024
 MAX_UNPACKED_BYTES = 192 * 1024 * 1024
@@ -56,9 +60,10 @@ def _remaining(deadline):
         raise ModelViewerError("Model preview took too long. Try opening fewer model files.")
 
 
-def _paths(paths):
-    if not isinstance(paths, (list, tuple)) or not 1 <= len(paths) <= MAX_FILES:
-        raise ModelViewerError("Choose between one and eight extracted Unity model files.")
+def _paths(paths, *, internal=False):
+    limit = MAX_INTERNAL_FILES if internal else MAX_FILES
+    if not isinstance(paths, (list, tuple)) or not 1 <= len(paths) <= limit:
+        raise ModelViewerError("The model has too many automatic dependencies." if internal else "Choose between one and eight extracted Unity model files.")
     result, total = [], 0
     for raw in paths:
         if not isinstance(raw, str) or not raw.strip():
@@ -889,6 +894,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             scene.warn("facial_assets_missing")
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
+    # Match the serialized-file ordinals used by the editor's _inspect(raw).
+    # A CAB's ordinal belongs to its selected input, not the combined scene.
+    source_files = {}
+    for source_object in scene.env.objects:
+        files = source_files.setdefault(_source_path(source_object), {})
+        files.setdefault(id(source_object.assets_file), len(files))
     for renderer, tree, game_object in scene.renderers:
         if auto_only and _source_path(renderer) not in faces.auto_paths:
             continue
@@ -969,7 +980,19 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
-        primitives, refs = [], tree.get("m_Materials", [])
+        source = _source_path(mesh_obj)
+        source_index = rig.source_indices.get(source) if rig is not None else None
+        writable = source_index is not None and not auto_face
+        import numpy as np
+        position_matrix = np.diag([-1., 1., 1., 1.])
+        if skin is None:
+            if bones:
+                writable = False  # Rest-skin baking is not one invertible affine map.
+            else:
+                position_matrix = position_matrix @ arguments[1]
+        mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_obj.assets_file), 0),
+                         "id": str(mesh_obj.path_id)}
+        primitives, refs, first_face = [], tree.get("m_Materials", []), 0
         for index, triangles in enumerate(submeshes):
             if not len(triangles):
                 continue
@@ -984,7 +1007,14 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             component = 5123 if len(positions) <= 65535 else 5125
             primitives.append({"attributes": attributes,
                                "indices": glb.attribute(triangles.reshape(-1), "SCALAR", component),
-                               "material": material, "mode": 4})
+                               "material": material, "mode": 4,
+                               "extras": {"viewerMesh": {"version": 1, "mesh": mesh_identity,
+                                   "renderer": str(renderer.path_id), "submesh": index,
+                                   "firstFace": first_face, "faceCount": len(triangles),
+                                   "vertexCount": len(positions), "vertexOrder": "identity",
+                                   "positionMatrix": position_matrix.T.reshape(-1).tolist(),
+                                   "boneOrder": "identity", "writable": writable}}})
+            first_face += len(triangles)
             if targets:
                 primitives[-1]["targets"] = targets
         mesh_index = len(glb.doc["meshes"])
@@ -1026,6 +1056,7 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
         return result
     base_rig = rig.metadata()
     if any(obj.type.name == "AnimationClip" for obj in scene.env.objects):
+        checkpoint = (glb.doc, glb.data, rig.clips, rig.animation_warnings, rig.scaling)
         try:
             rig.finalize()
             # A later optional append must not erase a complete, playable clip
@@ -1042,6 +1073,7 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
             _remaining(deadline)
             return (animated,) + result[1:] + (rig.metadata(),)
         except Exception:
+            glb.doc, glb.data, rig.clips, rig.animation_warnings, rig.scaling = checkpoint
             if require_existing_clips:
                 raise
             base_rig["animationWarnings"].append({"code": "animation_unavailable", "message": "Animation loading exceeded its remaining preview budget. The completed model is still shown."})
@@ -1093,7 +1125,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             _remaining(motion_deadline)
             early_motion = stage.bundled(rig, paths, motion_deadline)
             if early_motion:
-                _paths(paths + early_motion)
+                _paths(paths + early_motion, internal=True)
                 env = _environment(early_motion, motion_deadline, base_env=env)
                 expanded = _Scene(env, motion_deadline, trees=scene.trees)
                 expanded.stats, expanded.warnings = dict(base[1]), list(scene.warnings)
@@ -1131,7 +1163,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 # Facial geometry keeps the original cap. Only a fully
                 # completed append may enter the reserved finishing phase.
                 render_deadline = geometry_deadline if rig is not None else face_deadline
-                _paths(paths + early_motion + extra)
+                _paths(paths + early_motion + extra, internal=True)
                 face_append_started = True
                 env = _environment(extra, render_deadline, base_env=env)
                 expanded = _Scene(env, render_deadline, trees=scene.trees)
@@ -1198,7 +1230,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         def append_motion(additions):
             nonlocal env, scene
             _remaining(motion_deadline)
-            _paths(loaded + additions)
+            _paths(loaded + additions, internal=True)
             env = _environment(additions, motion_deadline, base_env=env)
             expanded = _Scene(env, motion_deadline, trees=scene.trees)
             expanded.stats, expanded.warnings = dict(completed[1]), list(scene.warnings)
@@ -1212,12 +1244,12 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             # discovery. A missing or broken companion cannot remove this pose.
             completed = append_motion(animation_paths)
             loaded += animation_paths
-        if len(loaded) >= 8:
+        if len(loaded) >= MAX_INTERNAL_FILES:
             return completed
         companions = discover_animation_paths(loaded, face_context, faces.owner or rig.owner, motion_deadline)
         if not companions:
             return completed
-        return append_motion(companions[:8 - len(loaded)])
+        return append_motion(companions[:min(2, MAX_INTERNAL_FILES - len(loaded))])
     except Exception:
         metadata = dict(completed[4])
         metadata["animationWarnings"] = list(metadata.get("animationWarnings", [])) + [{

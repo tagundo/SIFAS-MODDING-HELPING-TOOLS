@@ -96,6 +96,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_game_catalog()
             if path == "/api/viewer/game/motions/catalog":
                 return self._api_viewer_motion_catalog()
+            if path.startswith("/api/viewer/game/motions/audio/"):
+                return self._api_viewer_motion_audio(path.rsplit("/", 1)[1])
             if path.startswith("/api/viewer/edit/result/"):
                 return self._api_viewer_edit_result(path[len("/api/viewer/edit/result/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
@@ -140,6 +142,60 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(exc)}, status=500)
 
     # --------------------------------------------------------------- handlers
+    def _api_viewer_motion_audio(self, name):
+        import re
+        from webtools.core.game_motion_audio import get_audio
+        if not re.fullmatch(r"[0-9a-f]{32}\.wav", name):
+            return self._send_json({"error": "not found"}, status=404)
+        try:
+            result = get_audio(name[:-4])
+        except (ValueError, FileNotFoundError):
+            result = None
+        if not result:
+            return self._send_json({"error": "audio expired"}, status=404)
+        path, content_type = result
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
+            if not match or not any(match.groups()):
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            left, right = match.groups()
+            if left:
+                start = int(left)
+                end = min(int(right), size - 1) if right else size - 1
+            else:
+                start = max(0, size - int(right))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status = 206
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, max-age=3600")
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        with path.open("rb") as stream:
+            stream.seek(start)
+            remaining = end - start + 1
+            while remaining:
+                chunk = stream.read(min(remaining, 128 * 1024))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def _serve_file(self, fpath: Path, content_type=None):
         if not fpath.is_file():
             return self._send_json({"error": "not found"}, status=404)
@@ -204,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
-        if set(params) - {"paths", "auto_face", "rigged", "archive_variants"}:
+        if set(params) - {"paths", "auto_face", "rigged", "archive_variants", "preview_only"}:
             return self._send_json({"error": "Unsupported model viewer option."}, status=400)
         auto_face = params.get("auto_face", True)
         if not isinstance(auto_face, bool):
@@ -212,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
         rigged = params.get("rigged", False)
         if not isinstance(rigged, bool):
             return self._send_json({"error": "Interactive model loading must be on or off."}, status=400)
+        preview_only = params.get("preview_only", False)
+        if not isinstance(preview_only, bool):
+            return self._send_json({"error": "Preview-only loading must be on or off."}, status=400)
         paths = params.get("paths")
         if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or not path.strip() for path in paths)):
@@ -272,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The editable inputs must be captured while ZIP members still
                 # exist. Auto-discovered faces and motions are deliberately not
                 # writable sources, even though they appear in the preview.
-                if rigged and result.get("rig", {}).get("available"):
+                if rigged and not preview_only and result.get("rig", {}).get("available"):
                     from webtools.core import model_edits
                     try:
                         result["editing"] = model_edits.register_session(
@@ -380,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
         except SQLiteError:
             return self._send_json({"error": "Game assets are unavailable. Start or prepare the server data first."}, status=400)
 
-    def _viewer_feature_request(self, fields, *, max_bytes=512 * 1024, token=True):
+    def _viewer_feature_request(self, fields, *, max_bytes=512 * 1024, token=True, optional_fields=()):
         """Validate same-origin feature requests before doing work or starting jobs."""
         origins = self.headers.get_all("Origin", [])
         if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
@@ -398,7 +457,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") or not 0 < length <= max_bytes:
             raise ValueError("The editing request is too large or empty.")
         params = self._read_json_body()
-        if not isinstance(params, dict) or set(params) != set(fields):
+        if (not isinstance(params, dict) or not set(fields).issubset(params)
+                or set(params) - set(fields) - set(optional_fields)):
             raise ValueError("Unsupported editing request.")
         if token:
             import re
@@ -419,12 +479,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             query = self._query()
             if (len(urlsplit(self.path).query) > 2048 or
-                    set(query) - {"region", "character", "category", "search", "lang"} or
+                    set(query) - {"region", "character", "category", "search", "lang", "offset", "song_type"} or
                     any(len(values) != 1 for values in query.values())):
                 raise ValueError("Unsupported game motion search.")
             return self._send_json(game_motions.catalog(Path.cwd(), language=self._lang(),
                 **{key: (query.get(key) or [default])[0] for key, default in
-                   (("region", ""), ("character", ""), ("category", "home"), ("search", ""))}))
+                   (("region", ""), ("character", ""), ("category", "home"), ("search", ""),
+                    ("offset", "0"), ("song_type", "all"))}))
         except (ValueError, OSError, SQLiteError) as exc:
             return self._send_json({"error": str(exc)}, status=400)
 
@@ -432,7 +493,8 @@ class Handler(BaseHTTPRequestHandler):
         from webtools.core import game_motions
         from sqlite3 import Error as SQLiteError
         try:
-            params = self._viewer_feature_request({"region", "character", "category", "motion", "download"}, max_bytes=4096, token=False)
+            params = self._viewer_feature_request({"region", "character", "category", "motion", "download"},
+                optional_fields={"performer", "audio", "target_character"}, max_bytes=4096, token=False)
             record = game_motions.validate_selection(Path.cwd(), params, self._lang())
             output = self._viewer_feature_output("extracted/game-motions")
             job = MANAGER.create("viewer_game_motions")
@@ -469,10 +531,12 @@ class Handler(BaseHTTPRequestHandler):
         from webtools.core import viewer_transplants
         try:
             if operation == "inspect":
-                params = self._viewer_feature_request({"donor", "variant"}, token=False)
-                return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"],
-                    cache_root=self._viewer_feature_output(".viewer-cache")))
-            params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"})
+                params = self._viewer_feature_request({"donor", "variant"}, token=False, optional_fields={"renderer"})
+                arguments = {"cache_root": self._viewer_feature_output(".viewer-cache")}
+                if "renderer" in params: arguments["renderer"] = params["renderer"]
+                return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"], **arguments))
+            params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"},
+                optional_fields=viewer_transplants.OPTIONAL_FIELDS)
             request = viewer_transplants.validate_request(params)
             output = self._viewer_feature_output("modded/viewer")
             cache = self._viewer_feature_output(".viewer-cache")

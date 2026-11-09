@@ -133,6 +133,39 @@ class MeshRoundtripTests(unittest.TestCase):
             mesh.export(token, self.state(deleteFaces=[0]), self.base / 'out')
         self.assertFalse((self.base / 'out').exists())
 
+    def test_undo_can_save_a_restored_original_copy(self):
+        edited = self.save(self.state(deleteFaces=[0]))
+        restored = self.save({'version': 1, 'meshes': []})
+        self.assertEqual(Path(restored['preview_paths'][0]).read_bytes(), self.raw)
+        self.assertNotEqual(Path(edited['preview_paths'][0]).read_bytes(), self.raw)
+        self.assertEqual(Path(edited['preview_paths'][0]).read_bytes(), Path(edited['output_paths'][0]).read_bytes())
+
+    def test_vertex_and_new_weights_are_inputs_to_body_mesh_bake(self):
+        import numpy as np
+        from sifas_mesh_baker import mat_from
+        vertex = [.2, .8, -.1]
+        body_node = next(row for row in self.editing['nodes'] if row['name'] == 'LeftUpLeg')
+        body = {'version': 1, 'savedSettingsEnabled': True, 'edits': [
+            {'node': body_node['node'], 'method': 'mesh', 'scale': [1.6, 1.2, .8]}]}
+        state = self.state(positions=[{'vertex': 2, 'position': vertex}],
+            weights=[{'vertex': 2, 'influences': [[1, .6], [2, .4]]}])
+        result = self.save(state, body_state=body)
+        original = model_edits._inspect(self.raw)
+        desired = copy.deepcopy(original['effective'])
+        target = next(key for key, name in original['names'].items() if name == 'LeftUpLeg')
+        desired[target]['scale'] = [1.6, 1.2, .8]
+        wanted_world = model_edits._worlds({key: model_edits._matrix(value) for key, value in desired.items()}, original['parents'])
+        saved_raw = Path(result['preview_paths'][0]).read_bytes(); saved = model_edits._inspect(saved_raw)
+        actual_world = model_edits._worlds({key: model_edits._matrix(value) for key, value in saved['effective'].items()}, saved['parents'])
+        record = self.output(result); positions, _, weights, indices = mesh._arrays(record[1], record[2])
+        renderer = record[4][0].read_typetree()
+        bones = [(0, pointer['m_PathID']) for pointer in renderer['m_Bones']]
+        poses = [mat_from(value) for value in record[2]['m_BindPose']]
+        wanted = sum(w * (wanted_world[bones[i]] @ poses[i] @ np.asarray([*vertex, 1.])) for i, w in ((1, .6), (2, .4)))
+        actual = sum(w * (actual_world[bones[int(i)]] @ poses[int(i)] @ np.asarray([*positions[2], 1.]))
+                     for i, w in zip(indices[2], weights[2]) if w > 0)
+        self.assertTrue(np.allclose(actual, wanted, atol=1e-5), (actual, wanted))
+
     def test_malformed_body_state_is_rejected_even_without_body_edits(self):
         for body in ('invalid', True, [], {}, {'version': 1, 'edits': [], 'unsupported': ['unsaved']}):
             with self.subTest(body=body), self.assertRaises((mesh.MeshToolError, model_edits.ModelEditError)):

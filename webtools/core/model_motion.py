@@ -210,7 +210,8 @@ class MotionInputs:
         An incompatible rig must not leave an unbound registration that makes
         ``automatic`` believe a playable preview has already been supplied.
         """
-        if self.verified or len(loaded) >= 8:
+        from .model_viewer import MAX_INTERNAL_FILES
+        if self.verified or len(loaded) >= MAX_INTERNAL_FILES:
             return []
         previous = list(self.verified)
         bundled = []
@@ -222,7 +223,8 @@ class MotionInputs:
                 self.verified[:] = previous
 
     def automatic(self, rig, loaded, deadline):
-        if self.verified or len(loaded) >= 8:
+        from .model_viewer import MAX_INTERNAL_FILES
+        if self.verified or len(loaded) >= MAX_INTERNAL_FILES:
             return []
         bundled = self.bundled(rig, loaded, deadline)
         if bundled:

@@ -33,6 +33,14 @@
     'This model uses a position format that cannot be edited.': ['이 모델의 정점 위치 형식은 편집을 지원하지 않습니다.', 'この頂点位置形式は編集できません。'],
     'Restore mesh changes': ['메시 변경 초기화', 'メッシュ変更をリセット'],
     'Changes are temporary until saved. Original files are preserved.': ['저장 전까지 변경은 임시 상태이며 원본 파일은 보존됩니다.', '保存するまで変更は一時的です。元ファイルは保持されます。'],
+    '3D editing': ['3D 편집', '3D編集'], 'Orbit model': ['모델 회전', 'モデルを回転'], 'Paint on model': ['모델에 칠하기', 'モデルに塗る'],
+    'Pick vertices': ['정점 선택', '頂点を選択'], 'Move vertices in 3D': ['3D에서 정점 이동', '3Dで頂点を移動'],
+    'Show selection on model': ['모델에 선택 영역 표시', 'モデルに選択範囲を表示'], 'Show vertex targets': ['정점 선택점 표시', '頂点の選択点を表示'],
+    'Delete selected faces': ['선택한 면 삭제', '選択面を削除'], 'Save mesh copy': ['메시 사본 저장', 'メッシュコピーを保存'],
+    'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.': ['저장한 사본은 해당 버전을 유지합니다. 실행 취소로 화면의 메시를 복구한 후 다시 저장하면 복구한 사본이 만들어집니다.', '保存コピーはそのバージョンを保持します。元に戻すと表示中のメッシュが復元され、再保存で復元コピーを作成できます。'],
+    'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.': ['칠하면 면이 선택됩니다. 선택한 면 삭제를 누르면 모델에서도 삭제됩니다. Ctrl/Cmd+Z로 메시를 복구할 수 있습니다.', '塗ると面を選択します。「選択面を削除」でモデルから削除します。Ctrl/Cmd+Zでメッシュを復元します。'],
+    'Use Alt or right-drag to orbit while editing. Shift-click adds or removes vertices.': ['편집 중 Alt 또는 오른쪽 드래그로 모델을 회전합니다. Shift+클릭으로 정점을 추가하거나 해제합니다.', '編集中はAltまたは右ドラッグで回転できます。Shift+クリックで頂点の選択を追加・解除します。'],
+    'Deleted faces': ['삭제한 면', '削除面'], '3D mapping unavailable for this mesh. UV editing remains available.': ['이 메시의 정확한 3D 편집 연결을 사용할 수 없습니다. UV 편집은 사용할 수 있습니다.', 'このメッシュの正確な3D編集対応がありません。UV編集は利用できます。'],
     'Mesh editing failed.': ['메시 편집에 실패했습니다.', 'メッシュ編集に失敗しました。']
   };
   function language() { try { return localStorage.getItem('sifas_lang') || document.documentElement.lang || 'en'; } catch (_) { return document.documentElement.lang || 'en'; } }
@@ -91,7 +99,7 @@
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
     var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null;
-    var listeners = [], labels = [], history = [], future = [], historyBytes = 0;
+    var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, savedToken = null, savedFingerprint = null, uvCursor = null;
     function t(key) { return translated(key, options.translate); }
     function interactive() { return !options.isInteractive || options.isInteractive(); }
     function el(tag, parent, key) { var e = document.createElement(tag); if (key) { e.textContent = t(key); labels.push([e, key]); } if (parent) parent.appendChild(e); return e; }
@@ -106,11 +114,11 @@
     }
     function key(mesh) { return JSON.stringify(mesh); }
     function current(panel) { return cache[panel.mesh.value] || null; }
-    function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
+    function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember() { var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; }); changed(); }
-    function undo() { if (!history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
-    function redo() { if (!future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; }); changed(); }
+    function undo() { if (busy || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
+    function redo() { if (busy || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
     function changed() { Object.keys(cache).forEach(function (id) { var m = cache[id]; m.positionCount = Object.keys(m.positions).length; m.weightCount = Object.keys(m.weights).length; }); redraw(); if (options.onChange) options.onChange(); }
     async function inspectMeshes(panel) {
@@ -126,11 +134,11 @@
     }
     async function chooseMesh(panel) {
       var id = panel.mesh.value; if (!id || busy || !interactive()) { redraw(); return; }
-      if (cache[id]) { fillBones(panel); fillSubmeshes(panel); redraw(); return; }
+      activePanel = panel; if (cache[id]) { fillBones(panel); fillSubmeshes(panel); redraw(); return; }
       var ticket = ++request; busy = true; status(panel, t('Loading…')); redraw(); if (options.onChange) options.onChange();
       try {
         var data = await api('data', { token: token, mesh: JSON.parse(id) }); if (disposed || ticket !== request) return;
-        var m = { data: data, deleted: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -181,7 +189,8 @@
         }); panel.baseKey = baseKey;
       }
       ctx.drawImage(panel.base, 0, 0);
-      m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
+      m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
+      m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
       if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
     }
     function operationState() {
@@ -189,14 +198,15 @@
       Object.keys(cache).forEach(function (id) { var m = cache[id], positions = Object.keys(m.positions).map(function (i) { return { vertex: +i, position: m.positions[i] }; }), weights = Object.keys(m.weights).map(function (i) { return { vertex: +i, influences: m.weights[i] }; }); if (m.deleted.size || positions.length || weights.length) result.push({ mesh: m.data.mesh, deleteFaces: Array.from(m.deleted).sort(function (a, b) { return a - b; }), positions: positions, weights: weights }); });
       return { version: 1, meshes: result };
     }
-    function quickStatus() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.positionCount || m.weightCount) count++; }); return { busy: busy, dirty: count > 0, dirtyCount: count }; }
+    function quickStatus() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.marked.size || m.positionCount || m.weightCount) count++; }); return { busy: busy, dirty: count > 0, dirtyCount: count, canSave: canSaveCopy(), hasHistory: history.length > 0, redoAvailable: future.length > 0, active: !!activePanel };  }
     function redraw() {
       var changes = quickStatus().dirtyCount;
       panels.forEach(function (p) {
-        var m = current(p); p.load.disabled = !token || busy || !interactive(); p.mesh.disabled = !token || busy || !interactive(); p.save.disabled = !token || busy || !changes || !interactive();
+        var m = current(p); p.load.disabled = !token || busy || !interactive(); p.mesh.disabled = !token || busy || !interactive(); p.save.disabled = !token || busy || !canSaveCopy() || !interactive();
         p.undo.disabled = busy || !history.length; p.redo.disabled = busy || !future.length;
+        if (p.deleteFaces) p.deleteFaces.disabled = busy || !m || !m.marked.size || !interactive();
         p.canvas.style.opacity = busy ? '.5' : '1';
-        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.deleted.size : 0);
+        p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
         p.actions.forEach(function (b) { b.disabled = busy || !m || !interactive(); });
         if (p.vertex) {
           p.vertex.max = m ? m.data.positions.length - 1 : 0;
@@ -208,23 +218,24 @@
         }
         draw(p);
       });
+      syncRuntime();
     }
-    function selection(panel, mode) { var m = current(panel); if (!m || busy) return; remember(); var set = panel.modify ? m.selected : m.deleted, count = panel.modify ? m.data.positions.length : m.data.triangles.length, visible = panel.modify ? visibleVertices(panel, m) : null; for (var i = 0; i < count; i++) { if (visible ? !visible.has(i) : !visibleFace(panel, m, i)) continue; if (mode === 'clear') set.delete(i); else if (mode === 'all' || !set.has(i)) set.add(i); else set.delete(i); } changed(); }
+    function selection(panel, mode) { var m = current(panel); if (!m || busy) return; remember(); var set = panel.modify ? m.selected : m.marked, count = panel.modify ? m.data.positions.length : m.data.triangles.length, visible = panel.modify ? visibleVertices(panel, m) : null; for (var i = 0; i < count; i++) { if (visible ? !visible.has(i) : !visibleFace(panel, m, i)) continue; if (mode === 'clear') set.delete(i); else if (mode === 'all' || !set.has(i)) set.add(i); else set.delete(i); } changed(); }
     function stamp(panel, x, y) {
       var m = current(panel); if (!m || !m.data.uv) return;
-      var radius = +panel.radius.value / 1000, add = panel.mode.value === 'paint', uv = m.data.uv;
+      var radius = Math.max(2, Math.min(200, +panel.radius.value || 20)) / Math.max(1, panel.canvas.getBoundingClientRect().width), add = panel.mode.value === 'paint', uv = m.data.uv;
       if (panel.modify) { var visible = visibleVertices(panel, m); uv.forEach(function (p, i) { if (visible.has(i) && Math.hypot(p[0] - x, p[1] - y) <= radius) { if (add) m.selected.add(i); else m.selected.delete(i); } }); }
       else {
         var candidates = null;
         if (m.grid) { candidates = new Set(); for (var gx = Math.max(0, Math.floor((x - radius) * 16)); gx <= Math.min(15, Math.floor((x + radius) * 16)); gx++) for (var gy = Math.max(0, Math.floor((y - radius) * 16)); gy <= Math.min(15, Math.floor((y + radius) * 16)); gy++) (m.grid[gx + gy * 16] || []).forEach(function (i) { candidates.add(i); }); }
-        function paint(i) { if (!visibleFace(panel, m, i)) return; var face = m.data.triangles[i]; if (intersects(x, y, radius, uv[face[0]], uv[face[1]], uv[face[2]])) { if (add) m.deleted.add(i); else m.deleted.delete(i); } }
+        function paint(i) { if (!visibleFace(panel, m, i)) return; var face = m.data.triangles[i]; if (intersects(x, y, radius, uv[face[0]], uv[face[1]], uv[face[2]])) { if (!m.deleted.has(i)) { if (add) m.marked.add(i); else m.marked.delete(i); } } }
         if (candidates) candidates.forEach(paint); else m.data.triangles.forEach(function (_, i) { paint(i); });
       }
     }
     function attachCanvas(panel) {
       var down = false, previous = null;
       function position(event) { var r = panel.canvas.getBoundingClientRect(); return [(event.clientX - r.left) / r.width, 1 - (event.clientY - r.top) / r.height]; }
-      on(panel.canvas, 'pointerdown', function (event) { if (busy || !interactive() || !current(panel) || !current(panel).data.uv || event.button > 0) return; event.preventDefault(); remember(); down = true; previous = position(event); panel.canvas.setPointerCapture(event.pointerId); stamp(panel, previous[0], previous[1]); redraw(); });
+      on(panel.canvas, 'pointerdown', function (event) { if (busy || !interactive() || !current(panel) || !current(panel).data.uv || event.button > 0) return; event.preventDefault(); activePanel = panel; panel.canvas.focus({ preventScroll: true }); remember(); down = true; previous = position(event); panel.canvas.setPointerCapture(event.pointerId); stamp(panel, previous[0], previous[1]); redraw(); });
       on(panel.canvas, 'pointermove', function (event) { if (!down) return; event.preventDefault(); var next = position(event), distance = Math.hypot(next[0] - previous[0], next[1] - previous[1]), step = Math.max(.002, +panel.radius.value / 2000), steps = Math.min(100, Math.ceil(distance / step)); for (var i = 1; i <= steps; i++) stamp(panel, previous[0] + (next[0] - previous[0]) * i / steps, previous[1] + (next[1] - previous[1]) * i / steps); previous = next; redraw(); });
       function end() { if (down) { down = false; previous = null; changed(); } }
       on(panel.canvas, 'pointerup', end); on(panel.canvas, 'pointercancel', end); on(panel.canvas, 'lostpointercapture', end);
@@ -255,12 +266,12 @@
       remember(); Object.keys(updates).forEach(function (v) { if (updates[v].length) m.weights[v] = updates[v]; }); m.weightRevision++; changed();
     }
     async function save(panel) {
-      var state = operationState(); if (!token || busy || !interactive() || !state.meshes.length) return;
+      var state = operationState(); if (!token || busy || !interactive() || !canSaveCopy()) return;
       var ticket = ++request, selectedToken = token; busy = true; status(panel, t('Saving…')); redraw(); if (options.onChange) options.onChange();
       try {
         var response = await api('export', { token: selectedToken, state: state, bodyState: options.getBodyState ? options.getBodyState() : null });
         if (disposed || ticket !== request) return;
-        lastSaved = response;
+        lastSaved = response; savedToken = selectedToken; savedFingerprint = JSON.stringify(state);
         panels.forEach(function (p) { p.result.textContent = ''; (response.output_paths || []).forEach(function (path) { var item = el('li', p.result), link = el('a', item); link.textContent = String(path).split('/').pop(); link.href = '/api/download?path=' + encodeURIComponent(path); link.download = link.textContent; }); });
         status(panel, (response.output_paths || []).join('\n'));
         if (options.onSaved) await options.onSaved(response, selectedToken);
@@ -270,11 +281,19 @@
     function build(modify) {
       var box = el('details', holder); box.id = modify ? 'viewer-mesh-modify' : 'viewer-mesh-deleter'; box.className = 'viewer-adjustments viewer-mesh-tools';
       el('summary', box, modify ? 'Mesh modify' : 'Mesh deleter');
-      el('p', box, modify ? 'Paint to select vertices, then edit positions or normalized weights.' : 'Paint texture areas to remove their triangles. Overlapping UVs select all matching faces.').className = 'viewer-render-note';
+      el('p', box, modify ? 'Paint to select vertices, then edit positions or normalized weights.' : 'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.').className = 'viewer-render-note';
       var p = { root: box, modify: modify, actions: [] }, row = el('div', box); row.className = 'mesh-row';
       p.load = button(row, 'Load meshes', function () { inspectMeshes(p); }); p.mesh = select(row, 'Mesh', [['', 'Choose a mesh']]); on(p.mesh, 'change', function () { chooseMesh(p); });
-      p.submesh = select(box, 'Material / submesh'); on(p.submesh, 'change', function () { var m = current(p); if (m && p.modify) m.selected.clear(); p.baseKey = ''; changed(); });
+      p.submesh = select(box, 'Material / submesh'); on(p.submesh, 'change', function () { activePanel = p; var m = current(p); if (m && p.modify) m.selected.clear(); p.baseKey = ''; changed(); });
       row = el('div', box); row.className = 'mesh-row'; p.mode = select(row, 'Paint', [['paint', 'Paint'], ['erase', 'Erase']]); p.radius = numeric(row, 'Brush radius', 30, 2, 200, 1);
+      row = el('div', box); row.className = 'mesh-row';
+      p.sceneMode = select(row, '3D editing', modify ? [['orbit', 'Orbit model'], ['paint', 'Paint on model'], ['pick', 'Pick vertices'], ['drag', 'Move vertices in 3D']] : [['orbit', 'Orbit model'], ['paint', 'Paint on model']]);
+      on(p.sceneMode, 'change', function () { activePanel = p; changed(); });
+      function check3d(title, initial) { var label = el('label', row), input = el('input', label); input.type = 'checkbox'; input.checked = initial; el('span', label, title); on(input, 'change', function () { activePanel = p; changed(); }); return input; }
+      p.show3d = check3d('Show selection on model', true); p.showVertices = check3d('Show vertex targets', modify); p.liveStatus = el('p', box); p.liveStatus.className = 'viewer-render-note';
+      el('p', box, 'Use Alt or right-drag to orbit while editing. Shift-click adds or removes vertices.').className = 'viewer-render-note';
+      on(box, 'focusin', function () { activePanel = p; syncRuntime(); });
+
       var linesLabel = el('label', row); p.lines = el('input', linesLabel); p.lines.type = 'checkbox'; p.lines.checked = true; el('span', linesLabel, 'Show UV lines'); on(p.lines, 'change', redraw);
       p.canvas = el('canvas', box); p.canvas.width = 640; p.canvas.height = 640; p.canvas.setAttribute('aria-label', t(modify ? 'Selected vertices' : 'Selected faces')); p.canvas.tabIndex = 0;
       var imageLabel = el('label', box); el('span', imageLabel, 'Texture image'); var imageInput = el('input', imageLabel); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp';
@@ -282,6 +301,7 @@
       row = el('div', box); row.className = 'mesh-row'; p.undo = button(row, 'Undo', undo); p.redo = button(row, 'Redo', redo);
       ['clear', 'invert', 'all'].forEach(function (mode) { p.actions.push(button(row, { clear: 'Clear selection', invert: 'Invert selection', all: 'Select all' }[mode], function () { selection(p, mode); })); });
       p.count = el('p', box); p.count.className = 'viewer-render-note';
+      if (!modify) p.deleteFaces = button(box, 'Delete selected faces', function () { deleteMarked(p); });
       if (modify) {
         row = el('div', box); row.className = 'mesh-row'; p.vertex = numeric(row, 'Vertex index', 0, 0, 0, 1);
         var selectVertexButton = button(row, 'Select vertex', function () { var m = current(p), v = +p.vertex.value; if (!m || !Number.isInteger(v) || v < 0 || v >= m.data.positions.length) return; remember(); m.selected.clear(); m.selected.add(v); var value = m.positions[v] || m.data.positions[v]; p.xyz.forEach(function (field, axis) { field.value = value[axis]; }); changed(); }); selectVertexButton.id = box.id + '-select-vertex'; p.actions.push(selectVertexButton);
@@ -296,27 +316,82 @@
         var lock = el('details', weight); el('summary', lock, 'Lock bone weights'); p.locks = el('div', lock); p.locks.className = 'mesh-weights';
         el('p', weight, 'Locked bones retain their current weights. Remaining weights normalize to a total of 1, with at most four influences.').className = 'viewer-render-note';
       }
-      p.actions.push(button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; changed(); }));
-      p.save = button(box, 'Save mesh edits and open copy', function () { save(p); }); p.save.className = 'mesh-save'; p.result = el('ul', box);
+      p.actions.push(button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; changed(); }));
+      p.save = button(box, 'Save mesh copy', function () { save(p); }); p.save.className = 'mesh-save'; el('p', box, 'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.').className = 'viewer-render-note'; p.result = el('ul', box);
       p.status = el('p', box, 'Open a model first.'); p.status.className = 'viewer-render-note'; p.status.setAttribute('role', 'status'); p.status.setAttribute('aria-live', 'polite');
       var prefix = box.id;
-      ['load', 'mesh', 'submesh', 'canvas', 'save', 'undo', 'redo', 'count', 'status', 'vertex', 'weight', 'weightMode', 'bone', 'positionSet', 'translate', 'weightApply'].forEach(function (name) {
-        if (p[name]) p[name].id = prefix + '-' + ({ mesh: 'select', weight: 'weight-value', weightMode: 'weight-mode', bone: 'weight-bone', positionSet: 'position-set', weightApply: 'weight-apply' }[name] || name);
+      ['load', 'mesh', 'submesh', 'sceneMode', 'show3d', 'showVertices', 'deleteFaces', 'canvas', 'save', 'undo', 'redo', 'count', 'status', 'vertex', 'weight', 'weightMode', 'bone', 'positionSet', 'translate', 'weightApply'].forEach(function (name) {
+        if (p[name]) p[name].id = prefix + '-' + ({ mesh: 'select', sceneMode: 'scene-mode', show3d: 'show-selection', showVertices: 'show-vertices', deleteFaces: 'delete', weight: 'weight-value', weightMode: 'weight-mode', bone: 'weight-bone', positionSet: 'position-set', weightApply: 'weight-apply' }[name] || name);
       });
-      if (p.xyz) p.xyz.forEach(function (field, axis) { field.dataset.meshPositionAxis = 'XYZ'[axis]; });
-      if (p.delta) p.delta.forEach(function (field, axis) { field.dataset.meshDeltaAxis = 'XYZ'[axis]; });
+      if (p.xyz) p.xyz.forEach(function (field, axis) { field.dataset.meshPositionAxis = 'XYZ'[axis]; field.step = 'any'; });
+      if (p.delta) p.delta.forEach(function (field, axis) { field.dataset.meshDeltaAxis = 'XYZ'[axis]; field.step = 'any'; });
+      if (p.weight) p.weight.step = 'any';
       panels.push(p); attachCanvas(p);
+    }
+    function persistentChangeCount() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.positionCount || m.weightCount) count++; }); return count; }
+    function canSaveCopy() { return persistentChangeCount() > 0 || savedToken === token && !!savedFingerprint; }
+    function deleteMarked(panel) { var m = current(panel); if (!m || !m.marked.size || busy) return; activePanel = panel; remember(); m.marked.forEach(function (face) { m.deleted.add(face); }); m.marked.clear(); changed(); }
+    function runtimeContext() {
+      var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
+      return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
+        radius: +p.radius.value || 20, erase: p.mode.value === 'erase', showSelection: p.show3d.checked,
+        showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy };
+    }
+    function syncRuntime() {
+      if (!runtimeEngine) return;
+      runtimeEngine.sync(Object.keys(cache).map(function (id) { return cache[id]; }));
+      var state = runtimeEngine.getState(); panels.forEach(function (p) { var m = current(p), mapped = m && state.bindings.some(function (binding) { return key(binding.mesh) === key(m.data.mesh); });
+        p.sceneMode.disabled = !mapped || busy || !interactive();
+        p.liveStatus.textContent = m && !mapped ? t('3D mapping unavailable for this mesh. UV editing remains available.') : '';
+      });
+    }
+    function chooseVertex(vertex, additive, dragging) {
+      var p = activePanel, m = p && current(p); if (!m) return;
+      if (additive) { if (m.selected.has(vertex)) m.selected.delete(vertex); else m.selected.add(vertex); }
+      else if (!dragging || !m.selected.has(vertex)) { m.selected.clear(); m.selected.add(vertex); }
+      if (p.vertex) { p.vertex.value = vertex; var value = m.positions[vertex] || m.data.positions[vertex]; p.xyz.forEach(function (field, axis) { field.value = value[axis]; }); }
+      changed();
+    }
+    function initializeRuntime() {
+      if (!window.ViewerMeshRuntime || !options.getRuntime) return;
+      runtimeEngine = window.ViewerMeshRuntime.create({ getRuntime: options.getRuntime, getContext: runtimeContext,
+        onBegin: remember,
+        onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked; indices.forEach(function (index) { if (erase) set.delete(index); else if (modify || !m.deleted.has(index)) set.add(index); }); redraw(); },
+        onSelect: chooseVertex,
+        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); changed(); },
+        onEnd: function () { changed(); }
+      });
+    }
+    function handleShortcut(event) {
+      if (disposed || busy || !interactive() || !activePanel || (!event.ctrlKey && !event.metaKey) || event.altKey) return false;
+      var target = event.target || document.activeElement;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return false;
+      var name = String(event.key || '').toLowerCase(), action = null;
+      if (name === 'z') action = event.shiftKey ? (future.length ? redo : null) : (history.length ? undo : null);
+      else if (name === 'y') action = future.length ? redo : null;
+      else if (name === 's' && canSaveCopy()) action = function () { save(activePanel); };
+      if (!action) return false;
+      event.preventDefault(); if (event.stopImmediatePropagation) event.stopImmediatePropagation(); action(); return true;
+    }
+    function initializeShortcuts() {
+      document.addEventListener('keydown', handleShortcut, true); listeners.push(function () { document.removeEventListener('keydown', handleShortcut, true); });
+      uvCursor = el('div', document.body); uvCursor.id = 'viewer-mesh-uv-cursor'; uvCursor.hidden = true; uvCursor.setAttribute('aria-hidden', 'true'); uvCursor.style.cssText = 'position:fixed;z-index:12000;pointer-events:none;border:2px solid #ffdb52;box-shadow:0 0 0 1px #17202b;border-radius:50%;box-sizing:border-box;';
+      panels.forEach(function (p) {
+        on(p.canvas, 'pointermove', function (event) { var radius = Math.max(2, Math.min(200, +p.radius.value || 20)); uvCursor.hidden = !current(p); uvCursor.style.width = radius * 2 + 'px'; uvCursor.style.height = radius * 2 + 'px'; uvCursor.style.left = event.clientX - radius + 'px'; uvCursor.style.top = event.clientY - radius + 'px'; });
+        on(p.canvas, 'pointerleave', function () { uvCursor.hidden = true; });
+      });
     }
     function refresh() {
       var next = options.getToken ? options.getToken() : null;
-      if (next !== token) { token = next; request++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0;
+      if (next !== token) { token = next; request++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
         panels.forEach(function (p) { p.baseKey = ''; p.mesh.textContent = ''; var o = el('option', p.mesh, 'Choose a mesh'); o.value = ''; fillBones(p); fillSubmeshes(p); status(p, t(token ? 'Changes are temporary until saved. Original files are preserved.' : 'Open a model first.')); }); }
       redraw();
     }
-    build(false); build(true); refresh();
-    return { refresh: refresh, getStatus: quickStatus, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); redraw(); },
-      getState: function () { var state = operationState(); return { token: token, busy: busy, dirty: !!state.meshes.length, dirtyCount: state.meshes.length, edits: state, history: history.length, lastSaved: lastSaved }; },
-      dispose: function () { disposed = true; request++; listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { p.root.remove(); }); style.remove(); cache = {}; } };
+    build(false); build(true);
+    initializeRuntime(); initializeShortcuts(); refresh();
+    return { refresh: refresh, getStatus: quickStatus, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); redraw(); },
+      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
+      dispose: function () { disposed = true; request++; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects };
 })();

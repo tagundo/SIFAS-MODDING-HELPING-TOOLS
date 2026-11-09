@@ -410,6 +410,22 @@ def read_indices(tree):
     return np.frombuffer(buf, "<u2" if fmt == 0 else "<u4").astype(np.int64)
 
 
+def submesh_triangles(tree):
+    """Triangle indices in renderer material order, including Unity baseVertex."""
+    raw = read_indices(tree)
+    width = 2 if tree.get("m_IndexFormat", 0) == 0 else 4
+    result = []
+    for sub in tree.get("m_SubMeshes", []):
+        if sub.get("topology", 0) != 0:
+            raise ValueError("Only triangle submeshes can be transplanted.")
+        start = int(sub.get("firstByte", 0)) // width
+        count = int(sub.get("indexCount", 0))
+        if count % 3 or start < 0 or start + count > len(raw):
+            raise ValueError("The source submesh index range is invalid.")
+        result.append(raw[start:start + count].reshape(-1, 3) + int(sub.get("baseVertex", 0)))
+    return result
+
+
 def get_skin(u8, tree, chans, stride, start, vc):
     """(weights[vc,4] float, bone_indices[vc,4] int) from vertex channels or m_Skin."""
     w = read_attr(u8, ATTR_BLENDWEIGHT, chans, stride, start, vc)
@@ -687,12 +703,16 @@ def splice_mesh(target_tree, donor_tree, part_tris_donor, used, new_BI, new_W,
     # 3) index buffer + sub-meshes
     old_idx = read_indices(target_tree)
     idx_fmt = target_tree.get("m_IndexFormat", 0)
+    old_width = 2 if idx_fmt == 0 else 4
     if new_vc > 65535 and idx_fmt == 0:
         idx_fmt = 1
         target_tree["m_IndexFormat"] = 1
     dtype = "<u2" if idx_fmt == 0 else "<u4"
     part_flat = part_tris_target.reshape(-1)
     submeshes = target_tree.get("m_SubMeshes", [])
+    if old_width == 2 and idx_fmt == 1:
+        for sub in submeshes:
+            sub["firstByte"] = int(sub.get("firstByte", 0)) * 2
     if new_submesh and submeshes:
         combined = np.concatenate([old_idx, part_flat]).astype(dtype)
         target_tree["m_IndexBuffer"] = combined.tobytes()
@@ -1025,6 +1045,14 @@ _BASE_RIG = {
     "LeftToeBase", "RightToeBase", "Breast_L", "Breast_R", "Breast_Offset",
     "HipsSize", "Skirt", "Skirt_Offset",
 }
+# Anatomical scaling/roll/finger joints occur in real costume bundles too.
+# They are shared body parts, not automatically detected costume accessories.
+_BASE_RIG |= {"BreastSize", "LeftBreast", "RightBreast", "LeftArmRoll", "RightArmRoll",
+              "LeftForeArmRoll", "RightForeArmRoll", "LeftUpLegRoll", "RightUpLegRoll",
+              "LeftLegRoll", "RightLegRoll", "Root", "Move", "All", "Center"}
+_BASE_RIG |= {side + "Hand" + finger + str(joint)
+              for side in ("Left", "Right") for finger in ("Thumb", "Index", "Middle", "Ring", "Pinky")
+              for joint in (1, 2, 3)}
 # common costume-part name stems, used to label auto-detected groups
 _PART_HINTS = ("wing", "tsubasa", "tail", "shippo", "cape", "manto", "ribbon",
                "feather", "horn", "tsuno", "ear", "mimi", "halo", "wear")
@@ -1280,7 +1308,18 @@ def inject_bone_chain(donor, target, inject_names, name2tf_target,
     want_phys = preserve_physics and have_phys
 
     used = set(t_sf.objects.keys())
-    inject_names = [n for n in inject_names if n in d_go_by_name]
+    d_parent = _transform_parent_byname(did)
+    # A weighted child often has an unweighted offset/root parent. Omitting it
+    # attaches the child to world zero, although every PPtr still validates.
+    expanded = set(n for n in inject_names if n in d_go_by_name and n not in name2tf_target)
+    for name in list(expanded):
+        parent, seen = d_parent.get(name), set()
+        while parent and parent not in name2tf_target:
+            if parent in seen: raise ValueError("The donor part hierarchy is circular.")
+            seen.add(parent)
+            if parent not in d_go_by_name: raise ValueError("A donor part ancestor is unavailable.")
+            expanded.add(parent); parent = d_parent.get(parent)
+    inject_names = sorted(expanded)
     go_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
     used |= set(go_pid.values())
     tf_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
@@ -1857,7 +1896,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
                     tri_mode="all", preserve_physics=True, restore_collision=True,
                     new_submesh="auto", patch_texture=False, worldspace=True,
                     fix_nodescaling=True, mask_handling="auto", scale_swing_physics=True,
-                    dry_run=False, verbose=True):
+                    dry_run=False, verbose=True, triangle_indices=None,
+                    donor_renderer=None, target_renderer=None):
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target."""
     def log(*a):
@@ -1884,6 +1924,12 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
 
     d_smr = _body_smr(do)
     t_smr = _body_smr(to)
+    if donor_renderer is not None:
+        d_smr = did.get(int(donor_renderer))
+    if target_renderer is not None:
+        t_smr = tid.get(int(target_renderer))
+    if any(o is not None and o.type.name != "SkinnedMeshRenderer" for o in (d_smr, t_smr)):
+        raise ValueError("Choose a skinned donor and target mesh.")
     if d_smr is None or t_smr is None:
         raise RuntimeError("donor or target has no skinned body renderer")
     d_smr_tt = _safe_tt(d_smr)
@@ -1900,7 +1946,9 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     # ---- decide which donor bones make up the part ----
     parts, _meta = detect_parts(do, did, target_bone_names=t_names)
     chosen = None
-    if part_bones:
+    if triangle_indices is not None:
+        chosen = {"root": "selected geometry", "bone_ids": list(range(len(d_names))), "bones": d_names}
+    elif part_bones:
         want = set(part_bones)
         ids = [i for i, n in enumerate(d_names) if n in want]
         if not ids:
@@ -1934,8 +1982,17 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         raise RuntimeError("donor body mesh has no skin weights")
     bis = bone_membership(len(d_names), part_bone_ids)
     vmask = part_vertex_mask(W, BI, bis, weight_threshold)
-    tris = read_indices(d_mesh_tt).reshape(-1, 3)
-    ptris = part_triangles(tris, vmask, tri_mode)
+    source_groups = submesh_triangles(d_mesh_tt)
+    tris = np.concatenate(source_groups) if source_groups else np.empty((0, 3), np.int64)
+    selected = np.zeros(len(tris), dtype=bool)
+    if triangle_indices is not None:
+        indices = np.asarray(triangle_indices, dtype=np.int64)
+        if indices.ndim != 1 or np.any(indices < 0) or np.any(indices >= len(tris)):
+            raise ValueError("The selected donor triangles are invalid.")
+        selected[indices] = True
+    else:
+        selected = vmask[tris].all(axis=1) if tri_mode == "all" else vmask[tris].any(axis=1)
+    ptris = tris[selected]
     used, local_tris = extract_subgeometry(ptris)
     if len(used) == 0:
         raise RuntimeError("no part vertices selected — try a lower --weight-threshold "
@@ -2001,14 +2058,37 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     name2tf = _name2transform(tid)
     child_adds = {}
     if inject_names:
+        chain_names = list(inject_names)
+        if triangle_indices is None:
+            chain_names += [name for name in chosen["bones"] if name and name not in name2tf]
         new_map, child_adds = inject_bone_chain(
-            donor, target, inject_names, name2tf,
+            donor, target, chain_names, name2tf,
             preserve_physics=preserve_physics, restore_collision=restore_collision, log=log)
         name2tf.update(new_map)
 
     # ---- splice geometry into the target body mesh ----
-    stats = splice_mesh(t_mesh_tt, d_mesh_tt, ptris, used, new_BI, part_W,
+    selected_groups = []
+    offset = 0
+    for material_index, group in enumerate(source_groups):
+        picked = group[selected[offset:offset + len(group)]]
+        if len(picked): selected_groups.append((material_index, picked))
+        offset += len(group)
+    # Each donor material gets its own submesh. Picking vertices shared by two
+    # submeshes must never accidentally assign their faces to one material.
+    first_group = selected_groups[0][1] if use_new_submesh else ptris
+    stats = splice_mesh(t_mesh_tt, d_mesh_tt, first_group, used, new_BI, part_W,
                         appended_bp, mesh_root_delta=delta, new_submesh=use_new_submesh)
+    if use_new_submesh and len(selected_groups) > 1:
+        order = {int(v): stats["new_vc"] - len(used) + i for i, v in enumerate(used)}
+        width = 2 if t_mesh_tt.get("m_IndexFormat", 0) == 0 else 4
+        data = bytearray(t_mesh_tt["m_IndexBuffer"])
+        for _, faces in selected_groups[1:]:
+            remapped = np.array([[order[int(v)] for v in face] for face in faces], dtype="<u2" if width == 2 else "<u4")
+            sub = copy.deepcopy(t_mesh_tt["m_SubMeshes"][-1])
+            sub.update(firstByte=len(data), indexCount=int(remapped.size))
+            t_mesh_tt["m_SubMeshes"].append(sub)
+            data.extend(remapped.tobytes())
+        t_mesh_tt["m_IndexBuffer"] = bytes(data)
     t_mesh.save_typetree(t_mesh_tt)
     log(f"[ok] spliced part: body mesh now {stats['new_vc']} verts "
         f"(+{stats['added_verts']}), +{stats['added_tris']} tris")
@@ -2029,12 +2109,11 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     if isinstance(bnh, list) and bnh:
         parents = _transform_parent_byname(tid)   # native child name -> parent name
         d_parent_byname = _transform_parent_byname(did)
-        injected_set = {d_names[di] for di in injected_ids}
+        injected_set = set(new_map) if inject_names else set()
         # an injected bone's real target parent mirrors inject_bone_chain's tf_of():
         # its donor parent if that parent is itself injected or already native, else
         # the root (father 0) — so the hash path never invents a missing ancestor.
-        for di in injected_ids:
-            nm = d_names[di]
+        for nm in injected_set:
             p = d_parent_byname.get(nm)
             parents[nm] = p if (p in injected_set or p in parents) else None
         for di in injected_ids:
@@ -2044,11 +2123,13 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
 
     # add the part material to the SMR if a new sub-mesh was created
     if use_new_submesh:
-        new_mat = None
-        if part_submesh is not None and part_submesh < len(d_mats):
-            new_mat = copy_material_with_textures(donor, target, d_mats[part_submesh]["m_PathID"], log)
         mats = t_smr_tt.get("m_Materials", [])
-        mats.append({"m_FileID": 0, "m_PathID": new_mat or (mats[-1]["m_PathID"] if mats else 0)})
+        for material_index, _ in selected_groups:
+            if material_index >= len(d_mats):
+                raise ValueError("The selected donor submesh has no material.")
+            new_mat = copy_material_with_textures(donor, target, d_mats[material_index]["m_PathID"], log)
+            if not new_mat: raise ValueError("The selected donor material could not be copied.")
+            mats.append({"m_FileID": 0, "m_PathID": new_mat})
         t_smr_tt["m_Materials"] = mats
     # refresh the renderer bounds
     if t_mesh_tt.get("m_LocalAABB"):

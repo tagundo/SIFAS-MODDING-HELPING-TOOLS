@@ -101,7 +101,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         catalog = self.backend_patch(game_motions, 'catalog', return_value={'motions': []})
         status, response = self.request('/api/viewer/game/motions/catalog?region=gl&character=101&category=voice&search=hello&lang=ko')
         self.assertEqual(status, 200, response)
-        catalog.assert_called_once_with(Path.cwd(), language='ko', region='gl', character='101', category='voice', search='hello')
+        catalog.assert_called_once_with(Path.cwd(), language='ko', region='gl', character='101', category='voice', search='hello', offset='0', song_type='all')
         catalog.reset_mock()
         for query in ('category=home&category=mv', 'output_dir=/tmp', 'search=' + 'x' * 2049):
             self.assertEqual(self.request('/api/viewer/game/motions/catalog?' + query)[0], 400)

@@ -11,7 +11,7 @@
     handler && typeof handler.postMessage === "function" && global.location.protocol === "http:" &&
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
-  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings" };
+  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings", setEditorSurface: "editorNavigation" };
   function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
   function validFilesWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 160 && width <= 360); }
   function validPanelSettings(value) {
@@ -77,6 +77,10 @@
       if (!validFilesWidth(args.width)) return Promise.reject(new Error("The panel width is invalid."));
       message.width = args.width;
     }
+    if (action === "setEditorSurface") {
+      if (["tools", "viewer"].indexOf(args.editorSurface) < 0) return Promise.reject(new Error("Choose a valid editor view."));
+      message.editorSurface = args.editorSurface;
+    }
     if (action === "setPanelSettings") {
       if (["viewer", "tools", "content"].indexOf(args.panelScope) < 0 || !validPanelSettings(args.panelSettings)) {
         return Promise.reject(new Error("The panel settings are invalid."));
@@ -94,7 +98,7 @@
     });
   }
   function perform(action, args) {
-    if (["openModel", "saveModel", "showViewer"].indexOf(action) < 0 || !native || unloading) return false;
+    if (["openModel", "saveModel", "showViewer", "showTools"].indexOf(action) < 0 || !native || unloading) return false;
     if (!bindings) { if (queued.length < 8) queued.push({ action: action, args: args }); return true; }
     if (typeof bindings[action] !== "function") return false;
     try {
@@ -109,6 +113,8 @@
   }
   function info() {
     return { platform: native ? "macos" : "browser", native: native,
+      editorNavigation: supports("editorNavigation"),
+      editorSurface: native && ["tools", "viewer"].indexOf(description.editorSurface) >= 0 ? description.editorSurface : "tools",
       language: native && ["en", "ko", "ja"].indexOf(description.language) >= 0 ? description.language : "",
       viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0,
       viewerFilesWidth: native && validFilesWidth(description.viewerFilesWidth) ? description.viewerFilesWidth : 0 };
@@ -116,6 +122,7 @@
   global.ElichikaPlatform = Object.freeze({ supports: supports, request: request, receive: receive,
     perform: perform, bind: bind, info: info, chosenPaths: chosenPaths });
   if (native) document.documentElement.classList.add("elichika-desktop", "elichika-macos");
+  if (supports("editorNavigation")) document.documentElement.classList.add("elichika-native-editor-navigation");
 
   if (supports("fullscreen") && !global.ElichikaViewerFullscreen) {
     global.ElichikaViewerFullscreen = { postMessage: function (command) {

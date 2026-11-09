@@ -7,6 +7,9 @@
     button.dataset.gameAssetsBound = "true";
     var generation = 0, request = null, events = null, jobId = null, busy = false, timer = null, choices = [];
     var selectionCallback = null, returnFocus = button;
+    var preferredRegion = "";
+    try { preferredRegion = localStorage.getItem("elichika.game-assets.region.v1") || ""; } catch (_) {}
+    if (["gl", "jp"].indexOf(preferredRegion) < 0) preferredRegion = "";
     var region, character, search, costume, variant, download, status, log, progress, submit, closeButton, cancel;
     function t(value) { return typeof window.T === "function" ? window.T(value) : value; }
     function language() { return document.documentElement.lang || "en"; }
@@ -58,7 +61,8 @@
       var currentCharacter = resetCharacter ? "" : character.value;
       var currentCostume = costume.value;
       fill(costume, [], "Choose a costume"); submit.disabled = true; setStatus("Loading costumes…");
-      var params = new URLSearchParams({ lang: language(), region: region.value || "", character: currentCharacter, search: search.value.trim() });
+      var defaultRegion = language().split("-")[0] === "ja" ? "jp" : "gl";
+      var params = new URLSearchParams({ lang: language(), region: preferredRegion || defaultRegion, character: currentCharacter, search: search.value.trim() });
       try {
         var response = await fetch("/api/viewer/game/catalog?" + params, { signal: controller.signal });
         var data = await response.json();
@@ -88,7 +92,7 @@
       search = element("input", { id: "viewer-game-search", type: "search", maxlength: "120", placeholder: t("Search costumes") });
       costume = element("select", { id: "viewer-game-costume" });
       variant = element("select", { id: "viewer-game-variant" });
-      fill(region, [{ value: "", label: "Game region" }]);
+      fill(region, preferredRegion ? [{ value: preferredRegion, label: preferredRegion === "jp" ? "Japan (JP)" : "Global (GL)" }] : [{ value: "", label: "Game region" }]);
       fill(character, [], "Choose a character"); fill(costume, [], "Choose a costume");
       var fields = element("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Search costumes", search), label("Costume", costume), label("Costume variant", variant)]);
       variant.parentNode.hidden = true;
@@ -103,7 +107,11 @@
       dialog.append(header, fields, downloadLabel,
         element("p", { className: "viewer-render-note", text: t("Uses downloaded game packs first. Missing assets can be downloaded.") }),
         status, progress, log, element("div", { className: "viewer-game-assets-actions" }, [submit, cancel]));
-      region.addEventListener("change", function () { loadCatalog(true); });
+      region.addEventListener("change", function () {
+        preferredRegion = region.value;
+        try { localStorage.setItem("elichika.game-assets.region.v1", preferredRegion); } catch (_) {}
+        loadCatalog(true);
+      });
       character.addEventListener("change", function () { search.value = ""; loadCatalog(false); });
       search.addEventListener("input", function () {
         clearTimeout(timer); costume.value = ""; submit.disabled = true;

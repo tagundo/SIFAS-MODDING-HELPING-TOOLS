@@ -137,15 +137,16 @@ async function checkMeshUI(page) {
   const canvas = page.locator('#viewer-mesh-deleter-canvas'); await canvas.scrollIntoViewIfNeeded();
   const bounds = await canvas.boundingBox();
   await page.mouse.click(bounds.x + centre[0] * bounds.width, bounds.y + (1 - centre[1]) * bounds.height);
-  const painted = await page.evaluate(() => ModelViewer.getState().meshTools.edits.meshes[0].deleteFaces);
+  const painted = await page.evaluate(() => ModelViewer.getState().meshTools.selectedFaces);
   assert(painted.length > 0 && painted.length < original.triangles.length, 'Texture brush selects a bounded region');
   assert(await page.locator('#viewer-save').isDisabled(), 'Pending mesh edits disable the separate body save');
   await page.locator('#viewer-mesh-deleter-undo').click();
   assert.equal(await page.evaluate(() => ModelViewer.getState().meshTools.dirty), false, 'Undo reverses the brush');
   assert(!await page.locator('#viewer-save').isDisabled(), 'Undoing the only mesh edit restores body save availability');
   await page.locator('#viewer-mesh-deleter-redo').click();
-  assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().meshTools.edits.meshes[0].deleteFaces), painted);
+  assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().meshTools.selectedFaces), painted);
   assert(await page.locator('#viewer-save').isDisabled(), 'Redo blocks separate body save again');
+  await page.locator('#viewer-mesh-deleter-delete').click();
   await page.locator('#viewer-mesh-modify').evaluate(element => { element.open = true; });
   await page.locator('#viewer-mesh-modify-select').selectOption(identityValue);
   await page.locator('#viewer-mesh-modify-vertex').fill('2');
@@ -170,8 +171,10 @@ async function checkMeshUI(page) {
   assert(savedBreast, 'Mesh output retains a serialized breast adjustment');
   savedBreast.scaled.forEach((value, axis) => near(value, breastEdit.scale[axis], 'Body change preserved in mesh export ' + axis));
   assert.equal(sha(fs.readFileSync(source)), sha(raw), 'The source model remains unchanged');
-  await page.waitForFunction(paths => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().loadedPaths[0] === paths[0] && ModelViewer.getEditingMetadata().available, saved.preview_paths);
-  const secondToken = await page.evaluate(() => ModelViewer.getEditingMetadata().token);
+  await page.waitForFunction(() => !ModelViewer.getState().meshTools.busy);
+  assert.equal(await page.evaluate(() => ModelViewer.getEditingMetadata().token), token, 'Saving keeps the live original session and undo history');
+  const preparedCopy = await post(page, '/api/viewer/prepare', { paths: saved.preview_paths, rigged: true, auto_face: false });
+  const secondToken = preparedCopy.editing.token;
   const afterInspect = await post(page, '/api/viewer/mesh/inspect', { token: secondToken });
   const after = await post(page, '/api/viewer/mesh/data', { token: secondToken, mesh: afterInspect.meshes.find(mesh => mesh.available).mesh });
   assert.equal(after.triangles.length, original.triangles.length - painted.length);
@@ -182,6 +185,7 @@ async function checkMeshUI(page) {
 }
 
 async function checkMeshSaveRace(page) {
+  await openSource(page);
   await page.locator('#viewer-mesh-modify').evaluate(element => { element.open = true; });
   const inspectedResponse = page.waitForResponse(response => response.url().endsWith('/api/viewer/mesh/inspect'));
   await page.locator('#viewer-mesh-modify-load').click();
@@ -267,7 +271,7 @@ async function checkMaterialScope(page) {
   async function paint() {
     await canvas.scrollIntoViewIfNeeded(); const bounds = await canvas.boundingBox();
     await page.mouse.click(bounds.x + centre[0] * bounds.width, bounds.y + (1 - centre[1]) * bounds.height);
-    return page.evaluate(() => ModelViewer.getState().meshTools.edits.meshes[0].deleteFaces);
+    return page.evaluate(() => ModelViewer.getState().meshTools.selectedFaces);
   }
   const firstPaint = await paint();
   assert(firstPaint.length > 0 && firstPaint.every(index => index < 4), 'Painting material 0 leaves overlapping material 1 untouched');
@@ -276,13 +280,15 @@ async function checkMaterialScope(page) {
   const bothPaint = await paint();
   assert(bothPaint.some(index => index >= 4), 'Painting material 1 selects its own overlapping faces');
   await page.locator('#viewer-mesh-deleter-undo').click();
-  assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().meshTools.edits.meshes[0].deleteFaces), firstPaint, 'Undo restores just the first material selection');
+  assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().meshTools.selectedFaces), firstPaint, 'Undo restores just the first material selection');
+  await page.locator('#viewer-mesh-deleter-delete').click();
   const exportResponse = page.waitForResponse(response => response.url().endsWith('/api/viewer/mesh/export'));
   await page.locator('#viewer-mesh-deleter-save').click();
   const result = await exportResponse; assert.equal(result.status(), 200, await result.text());
   const saved = await result.json();
-  await page.waitForFunction(path => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().loadedPaths[0] === path, saved.preview_paths[0]);
-  const token = await page.evaluate(() => ModelViewer.getEditingMetadata().token);
+  await page.waitForFunction(() => !ModelViewer.getState().meshTools.busy);
+  const preparedCopy = await post(page, '/api/viewer/prepare', { paths: saved.preview_paths, rigged: true, auto_face: false });
+  const token = preparedCopy.editing.token;
   const afterInspect = await post(page, '/api/viewer/mesh/inspect', { token });
   const after = await post(page, '/api/viewer/mesh/data', { token, mesh: afterInspect.meshes.find(mesh => mesh.available).mesh });
   assert.deepStrictEqual(after.submeshes.map(material => material.faceCount), [4 - firstPaint.length, 4]);

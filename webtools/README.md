@@ -72,6 +72,18 @@ The file browser is limited to your sukusta library and home folder:
 - `modded` — `~/sukusta/modded`
 - override the base with the `SUKUSTA_DIR` environment variable
 
+## Editor navigation
+
+The browser and Android use **Tools** and **3D model** tabs. **Texture previews**
+is an entry in the Tools list, beside Texture Importer; its folder and thumbnails
+remain available when switching tools. On macOS, the native sidebar provides
+**Asset editing tools** and **3D model** instead of duplicating those controls in
+the web header. Both native destinations share the same model session.
+
+Game asset pickers initially use Japan for a Japanese app language and Global
+for the other app languages. An explicit region choice is retained when the
+picker opens again; the server's game-data locale does not override this choice.
+
 ## Notes
 
 - The WebUI calls the **same** functions the command-line tools use, so output is
@@ -117,9 +129,13 @@ The game picker uses the installed region's catalog relationships for home/idle,
 click, member voice, MV, and dated/login actions. Availability dates are shown
 when the catalog supplies them; login actions include their bonus type. Missing
 packs can be downloaded with the existing game asset connection. Adding a clip
-retains the current body edits, camera and pose. Under **Accompanying voice or
-music**, select a browser-compatible audio file to follow motion play, pause and
-seek. CRI ACB/AWB game audio needs conversion before selecting it.
+retains the current body edits and camera. MV selection follows the original
+formation's performer binding and imports its dance together with authored
+mouth/eye tracks and the target character's original facial pose banks. Solo
+songs have their own filter, and page controls expose the complete catalog.
+**Load linked game voice or music** decodes the catalog's original ACB/AWB cues
+locally and follows the authored timing, play, pause and seek. A local audio file
+can also be selected under **Accompanying voice or music**.
 
 **Physics preview** optionally applies SwingBone and SwingCollider simulation
 and shows collision volumes. This browser simulation is approximate. **Breast

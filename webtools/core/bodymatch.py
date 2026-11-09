@@ -197,7 +197,9 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
     # to land, the game loads it fine). On desktop keep the source's compressed
     # format when a native encoder exists so output stays small.
     force_rgba32 = None
-    if not native_astc or is_android():
+    # Skin-only means unchanged costume pixels stay exact. Recompressing the
+    # whole ASTC image would change neighbouring cloth pixels too.
+    if skin_only or not native_astc or is_android():
         try:
             from UnityPy.enums import TextureFormat
             force_rgba32 = TextureFormat.RGBA32
@@ -265,6 +267,12 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
             else:
                 out = stc.convert_array(rgb, tone, dst_tone,
                                         skin_only=skin_only, strength=strength)
+            if skin_only:
+                # The tone converter feathers masks by four pixels. Clamp its
+                # result back to the explicit skin condition so that feathering
+                # cannot spill onto neighbouring costume pixels.
+                allowed = region > 0 if uv is not None else stc._skin_mask(rgb, alpha)
+                out[~allowed] = rgb[~allowed]
             u8 = np.clip(out, 0, 255).astype(np.uint8)
             newpil = Image.fromarray(np.dstack([u8, alpha.astype(np.uint8)]), "RGBA")
             if force_rgba32 is not None:
