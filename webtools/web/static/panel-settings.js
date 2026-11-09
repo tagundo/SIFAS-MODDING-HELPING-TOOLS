@@ -32,7 +32,7 @@
   function installStyle() {
     var style = element("style");
     style.textContent = ".panel-setting-hidden{display:none!important}" +
-      ".panel-settings-toolbar{flex:0 0 auto}.panel-settings-toolbar>button{width:100%;min-height:44px}" +
+      ".panel-settings-toolbar{flex:0 0 auto}.panel-settings-toolbar>button{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--accent,#3b6fd4);border-radius:8px;background:var(--panel2,#eee);color:var(--text,#222);font:inherit;font-size:14px;cursor:pointer}.panel-settings-toolbar>button:focus-visible{outline:2px solid var(--accent,#3b6fd4);outline-offset:2px}" +
       ".panel-settings-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 24px));max-height:min(760px,calc(100dvh - 32px));overflow:auto;background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:14px;padding:18px}" +
       ".panel-settings-dialog::backdrop{background:rgba(0,0,0,.5)}.panel-settings-dialog h2{font-size:18px;margin:0 0 10px}.panel-settings-dialog p{font-size:14px;line-height:1.5;margin:8px 0;color:var(--muted,#666)}" +
       ".panel-settings-dialog h3{font-size:13px;margin:18px 0 6px;color:var(--muted,#666)}.panel-settings-dialog ul{list-style:none;padding:0;margin:0}" +
@@ -90,8 +90,13 @@
     }
     function collect() {
       items = options.items(); groups = [];
-      items.forEach(function (item) {
-        if (!defaults.has(item.id)) defaults.set(item.id, nextDefault++);
+      items.forEach(function (item, index) {
+        if (!defaults.has(item.id)) {
+          var following = items.slice(index + 1).find(function (next) { return next.node.parentNode === item.node.parentNode && defaults.has(next.id); });
+          var previous = items.slice(0, index).reverse().find(function (next) { return next.node.parentNode === item.node.parentNode && defaults.has(next.id); });
+          var before = previous && defaults.get(previous.id), after = following && defaults.get(following.id);
+          defaults.set(item.id, following ? previous && before < after ? (before + after) / 2 : after - .5 : nextDefault++);
+        }
         var group = groups.find(function (value) { return value.parent === item.node.parentNode; });
         if (!group) {
           group = { parent: item.node.parentNode, label: item.group || options.label, items: [] };
@@ -128,7 +133,7 @@
       if (refreshing) return;
       refreshing = true;
       if (observer) observer.disconnect();
-      if (options.toolbar && !options.toolbar.isConnected) options.root.insertBefore(options.toolbar, options.root.firstChild);
+      if (options.toolbar && !options.toolbar.isConnected) options.toolbarHome.insertBefore(options.toolbar, options.toolbarHome.firstChild);
       collect(); apply();
       options.button.textContent = text("Panel settings");
       options.button.setAttribute("aria-label", text("Panel settings") + " · " + text(options.label));
@@ -242,11 +247,23 @@
     });
     var list = document.getElementById("tool-list");
     if (list) {
-      var toolbar = element("div", "panel-settings-toolbar"), button = element("button", "panel-settings-button");
-      button.type = "button"; toolbar.appendChild(button);
+      var navigation = list.closest(".tool-navigation"), toolbar = document.getElementById("tools-panel-settings-toolbar");
+      if (!navigation) {
+        navigation = element("aside", "tool-navigation"); list.parentNode.replaceChild(navigation, list); navigation.appendChild(list);
+      }
+      if (!toolbar) { toolbar = element("div", "panel-settings-toolbar"); toolbar.id = "tools-panel-settings-toolbar"; navigation.insertBefore(toolbar, list); }
+      var button = document.getElementById("tools-panel-settings");
+      if (!button) { button = element("button", "panel-settings-button"); button.id = "tools-panel-settings"; toolbar.appendChild(button); }
+      button.type = "button";
+      function toolbarTop() {
+        var header = document.querySelector("body > header"), bottom = header ? header.getBoundingClientRect().bottom : 0;
+        navigation.style.setProperty("--tool-navigation-top", Math.max(8, bottom + 8) + "px");
+      }
+      toolbarTop(); window.addEventListener("resize", toolbarTop, { passive: true });
+      if (window.ResizeObserver) { var header = document.querySelector("body > header"); if (header) new ResizeObserver(toolbarTop).observe(header); }
       var content = !document.getElementById("tab-tools");
       attach({ key: "elichika.panels." + (content ? "content" : "tools") + ".v1", label: content ? "Server content" : "Tools",
-        root: list, button: button, toolbar: toolbar, dialogId: "tools-panel-settings-dialog",
+        root: list, button: button, toolbar: toolbar, toolbarHome: navigation, dialogId: "tools-panel-settings-dialog",
         items: function () {
           return Array.prototype.map.call(list.querySelectorAll(":scope > button[data-id]"), function (node) {
             return { id: node.dataset.id, node: node, label: node.textContent.trim() };

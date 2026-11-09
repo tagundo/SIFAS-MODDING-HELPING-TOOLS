@@ -71,6 +71,92 @@ def _clean(value):
     return value
 
 
+def describe_clip_roles(scene, deadline=None):
+    """Identify original camera/body/facial clips through serialized references.
+
+    Camera AnimationClips often animate path zero, which can also bind a
+    character root. Their actual Timeline binding is authoritative; neither
+    curve target names nor clip filenames can distinguish that case safely.
+    """
+    from .model_viewer import _remaining
+    objects = list(scene.env.objects)
+    if len(objects) > MAX_OBJECTS:
+        raise ValueError("The animation sources contain too many objects.")
+    scripts, mono = {}, {}
+    for obj in objects:
+        if deadline is not None:
+            _remaining(deadline)
+        if not hasattr(obj, "assets_file"):
+            continue
+        if obj.type.name == "MonoScript":
+            try:
+                scripts[_object_key(obj)] = scene.tree(obj).get("m_ClassName", "")
+            except (ValueError, TypeError):
+                continue
+    source = {"scripts": scripts}
+    for obj in objects:
+        if deadline is not None:
+            _remaining(deadline)
+        if obj.type.name == "MonoBehaviour" and hasattr(obj, "assets_file"):
+            try:
+                tree = scene.tree(obj)
+            except (ValueError, TypeError):
+                continue
+            mono[_object_key(obj)] = (obj, tree, _class(source, obj, tree))
+
+    def track_path(key):
+        parts, seen = [], set()
+        while key in mono and key not in seen and len(seen) < 256:
+            seen.add(key)
+            obj, tree, kind = mono[key]
+            if kind == "TimelineAsset":
+                return "/" + "/".join(reversed(parts))
+            parts.append(str(tree.get("m_Name", "")))
+            try:
+                key = _pointer_key(obj, tree.get("m_Parent", {}))
+            except ValueError:
+                break
+        return "/" + "/".join(reversed(parts))
+
+    bindings, roles = {}, {}
+
+    def mark(key, role):
+        roles.setdefault(key, set()).add(role)
+
+    for key, (obj, tree, kind) in mono.items():
+        if kind == "TimelineAssetBindingInfo":
+            for binding in tree.get("bindingInfos", [])[:MAX_SEGMENTS]:
+                if binding.get("playableAssetTypeName", "").split(",", 1)[0] != "UnityEngine.Timeline.AnimationTrack":
+                    continue
+                target = binding.get("bindObjectPath", "")
+                role = "body" if _MEMBER_MODEL.fullmatch(target) else "camera" if re.fullmatch(r"/EntryPoint/Live/Cameras/[^/]+", target) else None
+                if role:
+                    bindings.setdefault((key[0], binding.get("playableAssetPath")), set()).add(role)
+        elif kind == "MemberFacialAnimationDataTable":
+            for entry in tree.get("datas", [])[:256]:
+                try:
+                    mark(_pointer_key(obj, entry.get("clip", {})), "facial")
+                except ValueError:
+                    continue
+    for key, (obj, tree, kind) in mono.items():
+        if kind != "AnimationTrack":
+            continue
+        bound_roles = bindings.get((key[0], track_path(key)), ())
+        if not bound_roles:
+            continue
+        for clip in tree.get("m_Clips", [])[:MAX_SEGMENTS]:
+            try:
+                playable = mono.get(_pointer_key(obj, clip.get("m_Asset", {})))
+                if not playable or playable[2] != "AnimationPlayableAsset":
+                    continue
+                animation = _pointer_key(playable[0], playable[1].get("m_Clip", {}))
+                for role in bound_roles:
+                    mark(animation, role)
+            except ValueError:
+                continue
+    return {key: next(iter(value)) if len(value) == 1 else "mixed" for key, value in roles.items()}
+
+
 def select(timeline_path, candidate_paths, *, performer=1, category="mv", deadline):
     """Return exact selected source clips and authored timeline segments.
 

@@ -216,6 +216,74 @@ class PairedBodyEditTests(unittest.TestCase):
             archive.comment = b"keep archive comment"
         return path, values
 
+    @staticmethod
+    def outline_red(raw, *, values=None):
+        env = UnityPy.load(raw)
+        obj = next(item for item in env.objects if item.type.name == "Mesh")
+        tree = obj.read_typetree()
+        count, channels, strides, starts, _ = stream_layout(tree)
+        channel = channels[3]
+        data = bytearray(tree["m_VertexData"]["m_DataSize"])
+        offsets = [starts[channel["stream"]] + index * strides[channel["stream"]] + channel["offset"] for index in range(count)]
+        if values is None:
+            return [data[offset] for offset in offsets]
+        for index, offset in enumerate(offsets):
+            data[offset] = values[index % len(values)]
+        tree["m_VertexData"]["m_DataSize"] = bytes(data)
+        obj.save_typetree(tree)
+        return env.file.save()
+
+    def test_outline_only_pair_uses_semantic_mesh_and_each_native_mask(self):
+        primary = self.write("board.unity", self.outline_red(self.fixture(), values=[0, 80, 255, 190, 30, 1]))
+        other_raw = self.outline_red(self.fixture(other=True, offset=1000), values=[20, 140, 0, 180, 255, 37])
+        other = self.write("bare.unity", other_raw)
+        token, _ = self.register(primary)
+        context = edits.mod_source_context(token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(token, self.state(outlines=[{"id": identity, "factor": .5}]))
+        result = edits.export(token, state, self.root / "outline-source")
+        output = self.apply_raw(context, result, state, other)
+        actual_raw = Path(output["pair"]["unmasked"]["path"]).read_bytes()
+        self.assertEqual(self.outline_red(actual_raw), [10, 70, 0, 90, 128, 19])
+        before, after = edits._inspect(other_raw), edits._inspect(actual_raw)
+        for key, obj in before["objects"].items():
+            if obj.type.name != "Mesh":
+                self.assertEqual(obj.get_raw_data(), after["objects"][key].get_raw_data())
+        self.assertEqual(other.read_bytes(), other_raw)
+        proof = output["summary"][0]["mapping"]
+        self.assertTrue(any("sourceOutline" in row and row["sourceOutline"] != row["targetOutline"] for row in proof))
+        recipe = json.loads(Path(output["result"]["paired_recipe_paths"][0]).read_text())
+        self.assertEqual(recipe["state"]["outlines"][0]["factor"], .5)
+
+    def test_outline_only_paired_mod_zip_propagates_all_platform_variants(self):
+        path, original = self.paired_zip(four=True)
+        token, _ = self.register(path, archive=True)
+        context = edits.mod_source_context(token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(token, self.state(outlines=[{"id": identity, "factor": 0}]))
+        result = edits.export(token, state, self.root / "outline-zip")
+        output = paired.apply_pair_edits(context, result, state, pair=None, job=self.job)
+        self.assertEqual(len(output["summary"]), 3)
+        with zipfile.ZipFile(output["result"]["preview_paths"][0]) as archive:
+            for name in ("board", "bare", "iphoneboard", "iphonebare"):
+                self.assertTrue(all(red == 0 for red in self.outline_red(archive.read(name))))
+            self.assertEqual(archive.read("untouched.bin"), original["untouched.bin"])
+            self.assertEqual(archive.read("modinstall.txt"), original["modinstall.txt"])
+
+    def test_outline_pair_rejects_missing_and_ambiguous_semantic_mesh(self):
+        primary = self.write("board.unity", self.fixture())
+        other = self.write("bare.unity", self.fixture(other=True, offset=1000))
+        source_token, _ = self.register(primary)
+        target_token, _ = self.register(other)
+        context, target = edits.mod_source_context(source_token), edits.mod_source_context(target_token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(source_token, self.state(outlines=[{"id": identity, "factor": .5}]))
+        for entries in ([], target["outlines"]["meshes"] * 2):
+            altered = copy.deepcopy(target)
+            altered["outlines"]["meshes"] = entries
+            with self.subTest(count=len(entries)), self.assertRaisesRegex(ValueError, "unique matching outline"):
+                paired._map_state(context, state, 0, edits._inspect(primary.read_bytes()), altered, edits._inspect(other.read_bytes()))
+
     def test_complete_zip_updates_all_declared_variants_preserves_selected_once_and_unrelated_bytes(self):
         for four in (False, True):
             with self.subTest(four=four):

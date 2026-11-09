@@ -481,10 +481,10 @@ function renderBodyParts(field) {
       const number = Math.max(50, Math.min(150, Number(value) || 100));
       percent.value = range.value = String(number);
       summary.textContent = number === 100 ? T("Original size")
-        : (number > 100 ? "+" : "") + (number - 100) + "%";
+        : (number > 100 ? "+" : "") + Number((number - 100).toFixed(2)) + "%";
       card.classList.toggle("changed", number !== 100);
       partButton.classList.toggle("changed", number !== 100);
-      badge.textContent = number + "%";
+      badge.textContent = Number(number.toFixed(2)) + "%";
     }
     range.addEventListener("input", () => setValue(range.value));
     percent.addEventListener("change", () => setValue(percent.value));

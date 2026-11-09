@@ -75,7 +75,11 @@ def inspect_info(info, source_index, bones):
         active.remove(key)
         paths[key] = value
         return value
-    records = []
+    records, managers = [], []
+    def reference(key, pointer):
+        if isinstance(pointer, dict) and pointer.get("m_FileID", 0) == 0 and pointer.get("m_PathID"):
+            return f"{source_index}:{key[0]}:{pointer['m_PathID']}"
+        return None
     for key, obj in info["objects"].items():
         if obj.type.name != "MonoBehaviour":
             continue
@@ -83,9 +87,13 @@ def inspect_info(info, source_index, bones):
             tree = obj.read_typetree()
             script = _local(obj, _field(tree, "m_Script"))
             cls = script.read_typetree().get("m_ClassName", "") if script and script.type.name == "MonoScript" else ""
-            if cls.rsplit(".", 1)[-1] == "SwingBone":
+            cls = cls.rsplit(".", 1)[-1]
+            if cls == "SwingBoneManager":
+                managers.append((key, tree))
+                continue
+            if cls == "SwingBone":
                 kind = "bone"
-            elif cls.rsplit(".", 1)[-1] == "SwingCollider":
+            elif cls == "SwingCollider":
                 kind = "collider"
             else:
                 continue
@@ -112,14 +120,75 @@ def inspect_info(info, source_index, bones):
                 if sibling.get("m_FileID", 0) == 0 and sibling.get("m_PathID"):
                     record["sibling"] = f"{source_index}:{key[0]}:{sibling['m_PathID']}"
             else:
-                gravity = _vector(_field(tree, "gravity"))
-                if gravity is not None:
-                    record["gravity"] = gravity
+                # These fields determine the actual contact geometry and graph.
+                # In particular, a skirt's endpoint is the explicit Transform
+                # PPtr, not the first child in arbitrary glTF node order.
+                simulation = {}
+                for field in ("radius", "skirtLimitDotMin", "skirtLimitDotMax", "skirtRotDegMax",
+                              "kneeSpaceOffsetFront", "kneeSpaceOffsetOther", "kneeSpaceOffsetForce"):
+                    value = _field(tree, field)
+                    if _finite(value):
+                        simulation[field] = float(value)
+                for field in ("boneAxis", "externalForce", "gravity"):
+                    value = _vector(_field(tree, field))
+                    if value is not None:
+                        simulation[field] = value
+                for field in ("parentIndex", "childIndex", "siblingIndex", "colliderBits", "skirtData"):
+                    value = _field(tree, field)
+                    if type(value) is int:
+                        simulation[field] = value
+                simulation["skirtSafeEnable"] = bool(_field(tree, "skirtSafeEnable"))
+                child = _field(tree, "child") or {}
+                if child.get("m_FileID", 0) == 0 and child.get("m_PathID"):
+                    child_key = key[0], child["m_PathID"]
+                    simulation["childNode"] = nodes.get((key[0], str(child["m_PathID"])))
+                    child_tree = info["transforms"].get(child_key)
+                    if child_tree is not None and info["parents"].get(child_key) == transform_key:
+                        simulation["childOffset"] = _vector(child_tree.get("m_LocalPosition"))
+                sibling = reference(key, _field(tree, "sibling"))
+                if sibling:
+                    simulation["sibling"] = sibling
+                colliders = _field(tree, "colliders")
+                if isinstance(colliders, list):
+                    simulation["colliders"] = [value for p in colliders[:MAX_COMPONENTS]
+                                               if (value := reference(key, p)) is not None]
+                ids = _field(tree, "colliderIds")
+                if isinstance(ids, list) and len(ids) <= MAX_COMPONENTS and all(type(v) is int for v in ids):
+                    simulation["colliderIds"] = ids
+                record["simulation"] = simulation
             records.append(record)
             if len(records) > MAX_COMPONENTS:
                 raise ValueError("The model has too many physics components for preview editing.")
         except (KeyError, TypeError, AttributeError):
             continue
+    by_id = {record["id"]: record for record in records}
+    for key, tree in managers:
+        bone_ids = [reference(key, pointer) for pointer in (_field(tree, "bones") or [])[:MAX_COMPONENTS]]
+        collider_ids = [reference(key, pointer) for pointer in (_field(tree, "colliders") or [])[:MAX_COMPONENTS]]
+        for ident in collider_ids:
+            record = by_id.get(ident)
+            if record is not None and record["kind"] == "collider" and "sibling" not in record:
+                slot = record.get("siblingIndex", -1)
+                if 0 <= slot < len(collider_ids) and collider_ids[slot] != ident:
+                    record["sibling"] = collider_ids[slot]
+        for index, ident in enumerate(bone_ids):
+            record = by_id.get(ident)
+            if record is None or record["kind"] != "bone":
+                continue
+            simulation = record["simulation"]
+            simulation.update(manager=f"{source_index}:{key[0]}:{key[1]}", order=index)
+            for field, target in (("parentIndex", "parent"), ("childIndex", "child")):
+                slot = simulation.get(field, -1)
+                if 0 <= slot < len(bone_ids) and bone_ids[slot] in by_id:
+                    simulation[target] = bone_ids[slot]
+            # References are authoritative. Packed manager indices are a
+            # fallback for serialized variants which omit the PPtr array.
+            if "colliders" not in simulation:
+                selected = simulation.get("colliderIds", [])
+                if not selected and simulation.get("colliderBits", 0) > 0:
+                    selected = [slot + 1 for slot in range(len(collider_ids)) if simulation["colliderBits"] & (1 << slot)]
+                simulation["colliders"] = [collider_ids[v - 1] for v in selected
+                                           if 0 < v <= len(collider_ids) and collider_ids[v - 1] in by_id]
     return records
 
 
@@ -132,7 +201,7 @@ def catalog_sources(sources, bones):
             raise ValueError("The selected models have too many physics components.")
     return {"available": bool(records), "components": records, "presets": recommendations(),
             "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
-            "preview": "approximate_spring_sphere_capsule"}
+            "preview": "ordered_swing_capsule_constraints"}
 
 
 def validate_edits(catalog, edits):

@@ -414,10 +414,13 @@ class RigBuilder:
     def metadata(self):
         import copy
         from .model_expressions import describe_expressions
+        from .model_motion import source_id
+        selected_sources = {source_id(path) for path in self.selected}
+        public_clips = [dict(clip, userSelected=clip.get("sourceId") in selected_sources) for clip in self.clips]
         bounds = {"min": self.bounds[0].tolist(), "max": self.bounds[1].tolist()} if self.bounds is not None else None
         result = {"enabled": True, "available": self.skinned > 0, "root": self.root,
                 "bones": self.bones, "bounds": bounds, "morphs": self.morphs,
-                "clips": self.clips, "animationWarnings": self.animation_warnings,
+                "clips": public_clips, "animationWarnings": self.animation_warnings,
                 "expressionCatalog": describe_expressions(self.morphs, self.bones, self.glb.doc,
                                                           owner=self.owner, sources=self.expression_sources,
                                                           clips=self.clips),

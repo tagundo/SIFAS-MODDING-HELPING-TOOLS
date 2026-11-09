@@ -2,6 +2,8 @@
 import copy
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -40,6 +42,30 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(self.colliders[0]["sibling"], self.colliders[1]["id"])
         self.assertNotIn(str(self.base), json.dumps(self.metadata))
         self.assertEqual(viewer_physics.recommendations()[1]["stiffnessForce"], .02)
+        simulation = self.bone["simulation"]
+        self.assertAlmostEqual(simulation["radius"], .02)
+        self.assertEqual(simulation["boneAxis"], [-1., 0., 0.])
+        self.assertAlmostEqual(simulation["childOffset"][0], -.08)
+        self.assertEqual(simulation["colliders"], ["0:0:224"])
+        self.assertNotEqual(simulation["childNode"], self.bone["node"])
+        self.assertEqual(simulation["manager"], "0:0:228")
+        self.assertEqual(simulation["order"], 0)
+
+    def test_manager_bits_resolve_when_variant_omits_pointer_membership(self):
+        records = viewer_physics.inspect_info(edits._inspect(fixture_bytes(manager_membership=True)), 0, [])
+        bone = next(r for r in records if r["kind"] == "bone")
+        self.assertEqual(bone["simulation"]["colliders"], ["0:0:224"])
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required for the real Three.js solver regression")
+    def test_production_solver_constrained_surfaces_and_live_mesh_edits(self):
+        result = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("viewer_physics_solver_node.js"))],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PHYSICS_COUPLED_AND_EDIT_INVALIDATION_PASS", result.stdout)
+        timing = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("viewer_physics_timing_node.js"))],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual(timing.returncode, 0, timing.stdout)
+        self.assertIn("PHYSICS_TIMING_PASS", timing.stdout)
 
     def test_physics_only_export_roundtrips_fields_and_preserves_geometry_originals(self):
         state = self.state({"id": self.bone["id"], "values": {"stiffnessForce": .05, "dragForce": .5}},
@@ -52,6 +78,8 @@ class PhysicsTests(unittest.TestCase):
         self.assertAlmostEqual(by_id[self.bone["id"]]["values"]["dragForce"], .5)
         self.assertAlmostEqual(by_id[self.colliders[0]["id"]]["values"]["radius"], .12)
         self.assertEqual(by_id[self.colliders[1]["id"]]["values"], self.colliders[1]["values"])
+        self.assertEqual({k: v for k, v in by_id[self.bone["id"]]["simulation"].items() if k != "childNode"},
+                         {k: v for k, v in self.bone["simulation"].items() if k != "childNode"})
         original = edits._inspect(self.raw)
         for key, obj in original["objects"].items():
             if obj.type.name in ("Mesh", "Transform", "Texture2D", "SkinnedMeshRenderer"):

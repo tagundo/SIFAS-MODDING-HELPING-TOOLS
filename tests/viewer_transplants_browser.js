@@ -62,8 +62,14 @@ async function start() {
       let previewSelectedTriangles = 0;
       await page.evaluate(source => openModelViewer([source]), source);
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);
+      await page.evaluate(() => {
+        const fov = document.getElementById('viewer-fov'); fov.value = '47'; fov.dispatchEvent(new Event('input', { bubbles: true }));
+        const metadata = ModelViewer.getEditingMetadata(), state = ModelViewer.getAuthoringState();
+        const breast = metadata.nodes.find(entry => entry.name === 'BreastSize');
+        if (breast) { state.edits.push({ node: breast.node, method: 'node', scale: [1.08, 1.04, .98] }); ModelViewer.restoreAuthoringState(state); }
+      });
       const before = await page.evaluate(() => ({ state: ModelViewer.getState(), edits: ModelViewer.getAuthoringState() }));
-      assert.equal(before.edits.edits.length, 0, 'An unedited wearer must be transplantable');
+      assert(before.edits.edits.length > 0, 'The pre-transplant body draft must be restored by Undo');
       const panel = page.locator('#' + operation.id);
       if (realModels) { fs.copyFileSync(operation.value === 'part' ? realModels.part : realModels.donor, donor); donorOriginal = hash(donor); }
       await page.evaluate(() => {
@@ -146,7 +152,7 @@ async function start() {
       const output = after.loadedPaths[0]; assert(fs.existsSync(output)); assert.notEqual(output, source);
       assert.equal(hash(source), original, 'The original wearer remains byte-identical');
       assert.equal(hash(donor), donorOriginal, 'The original donor remains byte-identical');
-      assert.equal(requests.at(-1).state.edits.length, 0, 'The real endpoint supports unchanged source snapshots');
+      assert.equal(requests.at(-1).state.edits.length, before.edits.edits.length);
       assert.equal(requests.at(-1).operation, operation.value);
       assert.equal(requests.at(-1).matchSkin, false, 'Colour correction is opt-in');
       assert.equal(requests.at(-1).skinOnly, true);
@@ -158,7 +164,72 @@ async function start() {
         assert(selected); assert.equal(Number(selected[1]), previewSelectedTriangles, 'Preview and written donor triangle counts match');
       }
       await page.screenshot({ path: path.join(evidence, operation.value + '-result.png') });
-      report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, originalUnchanged: true, donorUnchanged: true });
+      await page.waitForFunction(() => ModelViewer.getState().transplants.undoCount === 1 && !ModelViewer.getState().transplants.busy);
+      await panel.getByRole('button', { name: 'Undo transplant', exact: true }).click();
+      await page.waitForFunction(source => ModelViewer.getState().loadedPaths[0] === source && !ModelViewer.getState().loading && !ModelViewer.getState().transplants.busy, source);
+      const undone = await page.evaluate(() => ({ state: ModelViewer.getState(), edits: ModelViewer.getAuthoringState() }));
+      assert.deepEqual(undone.state.loadedPaths, before.state.loadedPaths, 'Undo restores original inputs');
+      assert.deepEqual(undone.state.loadedArchiveVariants, before.state.loadedArchiveVariants, 'Undo restores costume variant');
+      assert.equal(undone.state.loadedAutoFace, before.state.loadedAutoFace, 'Undo restores automatic face selection');
+      assert.equal(undone.state.stats.triangles, before.state.stats.triangles);
+      assert.deepEqual(undone.edits, before.edits, 'Undo restores unsaved body authoring');
+      assert.deepEqual(undone.state.rig.bones, before.state.rig.bones, 'Undo restores actual live bone transforms');
+      assert.deepEqual(undone.state.camera, before.state.camera, 'Undo restores camera');
+      assert.equal(undone.state.transplants.undoCount, 0); assert.equal(undone.state.transplants.redoCount, 1);
+      assert.equal(hash(source), original); assert.equal(hash(donor), donorOriginal);
+      await page.screenshot({ path: path.join(evidence, operation.value + '-undo.png') });
+      await panel.getByRole('button', { name: 'Redo transplant', exact: true }).click();
+      await page.waitForFunction(output => ModelViewer.getState().loadedPaths[0] === output && !ModelViewer.getState().loading && !ModelViewer.getState().transplants.busy, output);
+      assert.equal((await page.evaluate(() => ModelViewer.getState())).stats.triangles, after.stats.triangles);
+      report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, undoRestoredOriginal: true, authoringRestored: true, cameraRestored: true, redoRestoredOutput: true, originalUnchanged: true, donorUnchanged: true });
+    }
+    if (!realModels) {
+      await page.evaluate(source => openModelViewer([source]), source);
+      await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
+      assert.equal((await page.evaluate(() => ModelViewer.getState())).transplants.undoCount, 0, 'External model open resets transplant history');
+      const panel = page.locator('#viewer-costume-transplant'); await panel.evaluate(node => { node.open = true; });
+      const chain = [];
+      for (let index = 0; index < 9; index++) {
+        const previous = await page.evaluate(() => ModelViewer.getState().modelId);
+        await panel.getByRole('button', { name: 'Transplant', exact: true }).click();
+        await page.waitForFunction(previous => { const s = ModelViewer.getState(); return s.loaded && !s.loading && !s.transplants.busy && s.modelId !== previous; }, previous);
+        chain.push((await page.evaluate(() => ModelViewer.getState())).loadedPaths[0]);
+      }
+      assert.equal((await page.evaluate(() => ModelViewer.getState())).transplants.undoCount, 8);
+      // Fail one actual restore request. It must keep both displayed geometry
+      // and the history entry so the user can retry.
+      const originalResult = chain.at(-1);
+      await page.route('**/api/viewer/prepare', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Injected restore transport failure' }) }), { times: 1 });
+      await panel.getByRole('button', { name: 'Undo transplant', exact: true }).click();
+      await page.waitForFunction(() => !ModelViewer.getState().loading && !ModelViewer.getState().transplants.busy);
+      const failed = await page.evaluate(() => ModelViewer.getState());
+      assert.equal(failed.loadedPaths[0], originalResult); assert.equal(failed.transplants.undoCount, 8);
+      const changedSource = chain.at(-2), unchangedSource = fs.readFileSync(changedSource);
+      const altered = spawnSync(python, ['-c', 'import sys,UnityPy;env=UnityPy.load(sys.argv[1]);o=next(o for o in env.objects if o.type.name=="GameObject");t=o.read_typetree();t["m_Name"]+="_changed";o.save_typetree(t);open(sys.argv[1],"wb").write(env.file.save(packer="original"))', changedSource], { encoding: 'utf8' });
+      assert.equal(altered.status, 0, altered.stderr);
+      await panel.getByRole('button', { name: 'Undo transplant', exact: true }).click();
+      await page.waitForFunction(() => !ModelViewer.getState().loading && !ModelViewer.getState().transplants.busy);
+      const mismatched = await page.evaluate(() => ModelViewer.getState());
+      assert.equal(mismatched.loadedPaths[0], originalResult); assert.equal(mismatched.transplants.undoCount, 8);
+      assert((await panel.locator('[role="status"]').innerText()).includes('original model files changed'));
+      fs.writeFileSync(changedSource, unchangedSource);
+      for (let index = 0; index < 8; index++) {
+        const previous = await page.evaluate(() => ModelViewer.getState().loadedPaths[0]);
+        await panel.getByRole('button', { name: 'Undo transplant', exact: true }).click();
+        await page.waitForFunction(previous => { const s = ModelViewer.getState(); return !s.loading && !s.transplants.busy && s.loadedPaths[0] !== previous; }, previous);
+      }
+      const bounded = await page.evaluate(() => ModelViewer.getState());
+      assert.equal(bounded.loadedPaths[0], chain[0]); assert.equal(bounded.transplants.undoCount, 0); assert.equal(bounded.transplants.redoCount, 8);
+      // A job completing after a separate source was opened stays a saved file.
+      await page.evaluate(source => openModelViewer([source]), source);
+      await page.waitForFunction(() => !ModelViewer.getState().loading);
+      const started = page.waitForRequest(request => request.url().endsWith('/api/viewer/transplant/run'));
+      await panel.getByRole('button', { name: 'Transplant', exact: true }).click(); await started;
+      await page.evaluate(donor => openModelViewer([donor]), donor);
+      await page.waitForFunction(donor => { const s = ModelViewer.getState(); return !s.loading && !s.transplants.busy && s.loadedPaths[0] === donor; }, donor);
+      const stale = await page.evaluate(() => ModelViewer.getState());
+      assert.equal(stale.transplants.undoCount, 0);
+      report.history = { limit: 8, repeatedGrafts: 9, undid: 8, failedRestoreRetainedModelAndHistory: true, changedSourceRefusedBeforeCommit: true, externalOpenClearedHistory: true, staleJobKeptNewSelection: true };
     }
     assert.deepEqual(errors, []); report.pageErrors = errors; report.status = 'PASS';
   } catch (error) {

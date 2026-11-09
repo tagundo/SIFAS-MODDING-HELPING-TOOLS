@@ -51,9 +51,39 @@
     "The highlighted donor triangles will be inserted. Cut boundaries follow triangle centres.": ["강조된 Donor 삼각형을 이식합니다. 절단 범위는 삼각형 중심을 기준으로 선택합니다.", "強調されたドナーの三角形を移植します。切断範囲は三角形の中心で選択します。"],
     "No selectable costume part at this point.": ["이 지점에서 선택할 수 있는 의상 부분이 없습니다.", "この位置に選択可能な衣装パーツがありません。"]
   });
+  Object.assign(TEXT, {
+    "Undo transplant": ["이식 되돌리기", "移植を元に戻す"],
+    "Redo transplant": ["이식 다시 실행", "移植をやり直す"],
+    "Restoring model…": ["이전 모델 복원 중…", "モデルを復元中…"],
+    "Transplant undone.": ["이식 전 모델로 되돌렸습니다.", "移植前のモデルに戻しました。"],
+    "Transplant redone.": ["이식 결과를 다시 표시합니다.", "移植結果を再表示しました。"],
+    "The viewer changed. The saved result was kept.": ["표시 모델이 변경되어 저장된 결과를 유지했습니다.", "表示モデルが変更されたため、保存済みの結果を保持しました。"],
+    "This model cannot be restored safely.": ["이 모델의 이전 상태를 안전하게 복원할 수 없습니다.", "このモデルの以前の状態を安全に復元できません。"],
+    "The original model files changed. The displayed model was kept.": ["원본 모델 파일이 변경되어 현재 표시 모델을 유지했습니다.", "元のモデルファイルが変更されたため、表示中のモデルを保持しました。"],
+    "The original face could not be restored. The displayed model was kept.": ["원래 얼굴을 복원할 수 없어 현재 표시 모델을 유지했습니다.", "元の顔を復元できないため、表示中のモデルを保持しました。"]
+  });
   function create(options) {
     options = options || {};
     var disposed = false, busy = false, jobId = "", events = null, entries = [];
+    var undoHistory = [], redoHistory = [], historyIdentity = "", historySwitch = false, MAX_HISTORY = 8;
+    function identity(c) {
+      return JSON.stringify([c.modelId || "", c.loadedPaths || [], c.loadedVariants || [], c.autoFace, c.loadEpoch]);
+    }
+    function copy(value) { return JSON.parse(JSON.stringify(value)); }
+    function viewerChanged() { var error = new Error("The viewer changed. The saved result was kept."); error.viewerStale = true; return error; }
+    function checkpoint() {
+      if (!options.captureCheckpoint || !options.restoreCheckpoint) throw new Error("This model cannot be restored safely.");
+      var value = options.captureCheckpoint();
+      if (!value) throw new Error("This model cannot be restored safely.");
+      return copy(value);
+    }
+    function pushHistory(stack, item) { stack.push(item); if (stack.length > MAX_HISTORY) stack.shift(); }
+    function synchronizeHistory(c) {
+      if (historySwitch) return;
+      var current = identity(c);
+      if (historyIdentity && current !== historyIdentity) { undoHistory = []; redoHistory = []; }
+      if (c.current || undoHistory.length || redoHistory.length) historyIdentity = current;
+    }
     function t(key) {
       var lang = (document.documentElement.lang || "en").split("-")[0], value = TEXT[key];
       return value && (lang === "ko" || lang === "ja") ? value[lang === "ko" ? 0 : 1] : options.translate ? options.translate(key) : key;
@@ -84,6 +114,7 @@
     function refresh() {
       if (disposed) return;
       var c = context(), body = authoring(c), locked = busy || !!(c.persistence && c.persistence.busy) || !!(c.meshTools && c.meshTools.busy);
+      synchronizeHistory(c);
       var ready = c.current && c.editing && c.editing.available && body && !(body.unsupported || []).length;
       var meshDirty = !!(c.meshTools && c.meshTools.dirty);
       ready = ready && !meshDirty;
@@ -100,7 +131,16 @@
         if (entry.game.disabled !== locked) entry.game.disabled = locked;
         var disabled = !!(locked || !ready || !entry.donor || entry.inspecting || entry.operation === "part" && !entry.parts.value);
         if (entry.run.disabled !== disabled) entry.run.disabled = disabled;
-        if (entry.cancel.hidden !== !entry.running) entry.cancel.hidden = !entry.running;
+        var cancelHidden = !entry.running || !!entry.opening;
+        if (entry.cancel.hidden !== cancelHidden) entry.cancel.hidden = cancelHidden;
+        var undoDisabled = !!(locked || !c.current || meshDirty || !undoHistory.length || !options.restoreCheckpoint);
+        var redoDisabled = !!(locked || !c.current || meshDirty || !redoHistory.length || !options.restoreCheckpoint);
+        if (entry.undo.disabled !== undoDisabled) entry.undo.disabled = undoDisabled;
+        if (entry.redo.disabled !== redoDisabled) entry.redo.disabled = redoDisabled;
+        var undoTitle = undoHistory.length ? t(undoHistory[undoHistory.length - 1].title) : "";
+        var redoTitle = redoHistory.length ? t(redoHistory[redoHistory.length - 1].title) : "";
+        if (entry.undo.title !== undoTitle) entry.undo.title = undoTitle;
+        if (entry.redo.title !== redoTitle) entry.redo.title = redoTitle;
         if (meshDirty && !entry.running) status(entry, "Save mesh edits before transplanting.");
         if (!meshDirty && entry.statusKey === "Save mesh edits before transplanting.") status(entry, "");
         if (!meshDirty && !entry.donor && !entry.running && !entry.status.classList.contains("viewer-warning")) status(entry, ready ? "No donor selected." : "Open a wearer model first.");
@@ -276,7 +316,7 @@
       } finally { if (token === entry.generation) { entry.inspecting = false; entry.request = null; refresh(); } }
     }
     function finish(entry) {
-      if (events) events.close(); events = null; jobId = ""; busy = false; entry.running = false;
+      if (events) events.close(); events = null; jobId = ""; busy = false; entry.running = false; entry.opening = false;
       entry.progress.hidden = true; if (options.busyChanged) options.busyChanged(false); refresh();
     }
     async function run(entry) {
@@ -292,7 +332,8 @@
         partRoot: entry.operation === "part" ? entry.parts.value : "", cutLow: low, cutHigh: high, region: entry.region.value,
         matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, excludeAccessories: entry.exclude.checked,
         selectionScope: entry.scope.value, donorRenderer: entry.geometry && entry.geometry.renderer || "", targetRenderer: entry.targetMesh.value };
-      var fingerprint = JSON.stringify(authored), modelId = c.modelId;
+      var fingerprint = JSON.stringify(authored), modelId = c.modelId, sourceIdentity = identity(c), before;
+      try { before = checkpoint(); } catch (error) { status(entry, error.message, true); return; }
       busy = true; entry.running = true; entry.log.textContent = ""; entry.log.hidden = false; entry.progress.hidden = false; entry.progress.removeAttribute("value"); entry.result.hidden = true;
       if (options.busyChanged) options.busyChanged(true); status(entry, "Transplanting…"); refresh();
       try {
@@ -307,27 +348,60 @@
             if (item.type === "progress" && item.total > 0) { entry.progress.max = item.total; entry.progress.value = item.done; }
             if (item.type === "transplant") entry.resultVariant = item.variant || "primary";
             if (item.type !== "done") return;
-            finish(entry);
-            if (item.status !== "done") { status(entry, item.summary || "Cancelled", item.status === "error"); return; }
+            if (events) events.close(); events = null; jobId = "";
+            if (item.status !== "done") { finish(entry); status(entry, item.summary || "Cancelled", item.status === "error"); return; }
             var paths = item.output_paths;
             if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string") throw new Error("The costume operation did not publish a model.");
             entry.resultPaths = paths; entry.result.hidden = false;
             var now = context();
-            if (now.current && now.modelId === modelId && JSON.stringify(authoring(now)) === fingerprint) {
-              await openResult(entry); status(entry, "Transplanted. The result is now displayed.");
-            } else status(entry, "The result was saved. Open it to inspect the transplant.");
+            if (now.current && now.modelId === modelId && identity(now) === sourceIdentity && JSON.stringify(authoring(now)) === fingerprint) {
+              await openResult(entry, before, sourceIdentity); status(entry, "Transplanted. The result is now displayed.");
+            } else { finish(entry); status(entry, "The result was saved. Open it to inspect the transplant."); }
           } catch (error) { finish(entry); status(entry, error.message, true); }
         };
         events.onerror = function () { if (events && events.readyState === EventSource.CLOSED) { finish(entry); status(entry, "The costume operation connection closed. Check the server log.", true); } };
       } catch (error) { finish(entry); status(entry, error.message, true); }
     }
-    async function openResult(entry) {
+    async function openResult(entry, before, expectedIdentity) {
+      if (historySwitch || busy && !entry.running) return;
+      var c = context();
+      if (!entry.running && (!c.current || c.meshTools && (c.meshTools.dirty || c.meshTools.busy))) { status(entry, "Save mesh edits before transplanting.", true); return; }
+      before = before || checkpoint(); expectedIdentity = expectedIdentity || identity(c);
       var variants = /\.zip$/i.test(entry.resultPaths[0]) && entry.resultVariant === "unmasked" ? { 0: "unmasked" } : null;
-      if (options.openFiles) await options.openFiles(entry.resultPaths, variants);
-      else if (global.openModelViewer) await global.openModelViewer(entry.resultPaths, variants);
+      busy = true; historySwitch = true; entry.opening = true; if (options.busyChanged) options.busyChanged(true); refresh();
+      try {
+        if (identity(context()) !== expectedIdentity) throw viewerChanged();
+        var committed = options.openFiles ? await options.openFiles(entry.resultPaths, variants, before) : false;
+        var after = context();
+        if (committed === false || !after.current || JSON.stringify(after.loadedPaths || []) !== JSON.stringify(entry.resultPaths)) throw viewerChanged();
+        pushHistory(undoHistory, { checkpoint: before, title: entry.title }); redoHistory = [];
+        historyIdentity = identity(after);
+      } catch (error) {
+        if (!error.viewerStale && context().modelId === c.modelId && JSON.stringify(context().loadedPaths || []) === JSON.stringify(c.loadedPaths || [])) historyIdentity = identity(context());
+        throw error;
+      } finally { historySwitch = false; finish(entry); }
+    }
+    async function restoreHistory(entry, redo) {
+      var source = redo ? redoHistory : undoHistory, destination = redo ? undoHistory : redoHistory;
+      if (busy || !source.length || (redo ? entry.redo : entry.undo).disabled) return;
+      var current;
+      try { current = checkpoint(); } catch (error) { status(entry, error.message, true); return; }
+      var step = source[source.length - 1], origin = context(), expected = identity(origin);
+      busy = true; historySwitch = true; if (options.busyChanged) options.busyChanged(true); status(entry, "Restoring model…"); refresh();
+      try {
+        if (identity(context()) !== expected) throw viewerChanged();
+        var restored = await options.restoreCheckpoint(copy(step.checkpoint), current);
+        if (restored === false || !context().current) throw viewerChanged();
+        source.pop(); pushHistory(destination, { checkpoint: current, title: step.title }); historyIdentity = identity(context());
+        status(entry, redo ? "Transplant redone." : "Transplant undone.");
+      } catch (error) {
+        if (!error.viewerStale && context().modelId === origin.modelId && JSON.stringify(context().loadedPaths || []) === JSON.stringify(origin.loadedPaths || [])) historyIdentity = identity(context());
+        status(entry, error.message, true);
+      }
+      finally { historySwitch = false; busy = false; if (options.busyChanged) options.busyChanged(false); refresh(); }
     }
     function addPanel(operation, id, title) {
-      var entry = { operation: operation, generation: 0, donor: "", variant: "primary", inspecting: false, running: false, resultPaths: [] };
+      var entry = { operation: operation, title: title, generation: 0, donor: "", variant: "primary", inspecting: false, running: false, resultPaths: [] };
       entry.panel = element("details", { id: id, className: "viewer-adjustments viewer-transplant-panel", "data-panel-key": id });
       entry.panel.appendChild(element("summary", { "data-transplant-label": title, text: title }));
       entry.panel.appendChild(element("p", { className: "viewer-render-note", "data-transplant-label": "Uses the displayed wearer and preserves its current body edits in a new copy.", text: "Uses the displayed wearer and preserves its current body edits in a new copy." }));
@@ -363,9 +437,11 @@
       entry.run = element("button", { type: "button", className: "viewer-primary", "data-transplant-label": operation === "lower" ? "Replace lower body" : "Transplant", text: operation === "lower" ? "Replace lower body" : "Transplant", disabled: "" });
       entry.cancel = element("button", { type: "button", text: "Cancel", hidden: "" });
       entry.result = element("button", { type: "button", "data-transplant-label": "Open transplant result", text: "Open transplant result", hidden: "" });
+      entry.undo = element("button", { type: "button", "data-transplant-label": "Undo transplant", text: "Undo transplant", disabled: "" });
+      entry.redo = element("button", { type: "button", "data-transplant-label": "Redo transplant", text: "Redo transplant", disabled: "" });
       entry.status = element("p", { className: "viewer-render-note", role: "status", "aria-live": "polite" });
       entry.progress = element("progress", { hidden: "" }); entry.log = element("pre", { className: "viewer-transplant-log", hidden: "" });
-      entry.panel.append(element("div", { className: "viewer-transplant-actions" }, [entry.run, entry.cancel, entry.result]), entry.status, entry.progress, entry.log,
+      entry.panel.append(element("div", { className: "viewer-transplant-actions" }, [entry.run, entry.cancel, entry.result, entry.undo, entry.redo]), entry.status, entry.progress, entry.log,
         element("p", { className: "viewer-render-note", "data-transplant-label": "Use a single Unity model or a ZIP containing one model for transplanting.", text: "Use a single Unity model or a ZIP containing one model for transplanting." }));
       document.getElementById("viewer-control-panel").appendChild(entry.panel);
       entry.pick.addEventListener("click", function () {
@@ -385,7 +461,9 @@
         } catch (error) { status(entry, error.message, true); }
         finally { entry.inspecting = false; refresh(); }
       });
-      entry.result.addEventListener("click", function () { openResult(entry); });
+      entry.result.addEventListener("click", function () { openResult(entry).catch(function (error) { status(entry, error.message, true); }); });
+      entry.undo.addEventListener("click", function () { restoreHistory(entry, false); });
+      entry.redo.addEventListener("click", function () { restoreHistory(entry, true); });
       entry.cancel.addEventListener("click", function () { if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); });
       entry.preset.addEventListener("change", function () {
         var preset = { hip_fix: [.5, .96], calf: [.3, .96], ankle: [.11, .96], whole: [-.05, 1.06] }[entry.preset.value];
@@ -403,7 +481,7 @@
       updateLanguage: function () {
         entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); status(entry, entry.statusKey || ""); }); refresh();
       },
-      getState: function () { return { busy: busy, jobId: jobId, donors: entries.map(function (entry) { return { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 }; }) }; },
+      getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { return { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 }; }) }; },
       dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }

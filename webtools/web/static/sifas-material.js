@@ -118,6 +118,8 @@
     "uniform vec4 uTintColor;",
     "uniform vec4 uAmbientColor;",
     "uniform float uResolutionRatio;",
+    "uniform float uOutlineScale;",
+    "uniform float uOutlineEdited;",
     "varying vec4 vSifasOutlineColor;",
     "void main() {",
     "  #include <beginnormal_vertex>",
@@ -134,7 +136,8 @@
     "  distanceFactor /= max(abs(projectionMatrix[1][1]) * 0.267949194, 0.000001);",
     "  distanceFactor = distanceFactor < 0.9 ? distanceFactor * 1.11111116 : distanceFactor * 0.555555582 + 0.5;",
     "  distanceFactor *= projectionMatrix[3][3] == 0.0 ? 1.0 : 0.0;",
-    "  vec2 shift = vec2(projectionMatrix[0][0], projectionMatrix[1][1]) * outlineNormal.xy * _sifas_color.r;",
+    "  float outlineWidth = uOutlineEdited > 0.5 ? floor(clamp(_sifas_color.r * uOutlineScale, 0.0, 1.0) * 255.0 + 0.5) / 255.0 : _sifas_color.r;",
+    "  vec2 shift = vec2(projectionMatrix[0][0], projectionMatrix[1][1]) * outlineNormal.xy * outlineWidth;",
     "  gl_Position.xy += shift * distanceFactor * 0.001;",
     "  gl_Position.z += (1.0 - _sifas_color.g) * 0.0007;",
     "  vec4 texel = texture2D(uMainTex, uv);",
@@ -167,6 +170,7 @@
     var loading = true;
     var beat = 0;
     var entries = [];
+    var outlineFactors = {};
     var originalMaterials = new Map();
     var ownedMaterials = new Set();
     var ownedTextures = new Set();
@@ -318,6 +322,8 @@
         uEmissiveIntensity: { value: vector(T, colors._EmissiveIntensity, [1, 1, 1, 1]) },
         uEmissiveFlicker: { value: vector(T, colors._EmissiveFlicker, [.1, .1, 0, 0]) },
         uResolutionRatio: { value: finite(options.resolutionRatio, 1) },
+        uOutlineScale: { value: 1 },
+        uOutlineEdited: { value: 0 },
         uBeat: { value: 0 }
       };
       var defaults = { _RimglightIntensity: 1, _RimglightPower: 3, _MainTexMipmapBias: 0,
@@ -402,6 +408,13 @@
       mesh.add(helper);
       var entry = { mesh: mesh, original: mesh.material,
         custom: Array.isArray(mesh.material) ? main : main[0], helper: helper };
+      helper.onBeforeRender = function (renderer, scene, camera, geometry, material) {
+        if (material && material.uniforms && material.uniforms.uOutlineScale) {
+          material.uniforms.uOutlineScale.value = entry.outlineFactor === undefined ? 1 : entry.outlineFactor;
+          material.uniforms.uOutlineEdited.value = entry.outlineEdited ? 1 : 0;
+          material.uniformsNeedUpdate = true;
+        }
+      };
       entries.push(entry);
       mesh.material = enabled ? entry.custom : entry.original;
       helper.visible = enabled;
@@ -416,6 +429,27 @@
     });
     var controller = {
       ready: ready,
+      syncGeometry: function () {
+        if (disposed) return;
+        entries.forEach(function (entry) {
+          // Editing owns geometry copies. The outline borrows the same current
+          // object and never disposes a mesh editor's old or new geometry.
+          entry.helper.geometry = entry.mesh.geometry;
+          entry.helper.morphTargetInfluences = entry.mesh.morphTargetInfluences;
+          entry.helper.morphTargetDictionary = entry.mesh.morphTargetDictionary;
+          var mapping = entry.mesh.geometry && entry.mesh.geometry.userData && entry.mesh.geometry.userData.viewerMesh || entry.mesh.userData.viewerMesh;
+          var mesh = mapping && mapping.mesh;
+          var key = mesh && String(mesh.source) + ":" + String(mesh.file) + ":" + String(mesh.id);
+          entry.outlineEdited = !!(key && Object.prototype.hasOwnProperty.call(outlineFactors, key));
+          entry.outlineFactor = entry.outlineEdited ? outlineFactors[key] : 1;
+        });
+      },
+      setOutlineEdits: function (values) {
+        outlineFactors = {};
+        (values || []).forEach(function (value) { outlineFactors[value.id] = value.factor; });
+        controller.syncGeometry();
+        if (options.onChange) options.onChange();
+      },
       setEnabled: function (value) {
         if (disposed) return;
         enabled = !!value;
@@ -432,6 +466,7 @@
         return originalMaterials.has(mesh) ? originalMaterials.get(mesh) : mesh.material;
       },
       update: function (delta) {
+        controller.syncGeometry();
         if (disposed || !enabled || loading || !animated) return false;
         beat += Math.max(0, Math.min(.1, finite(delta, 0))) * finite(options.beatsPerSecond, 1);
         materialCache.forEach(function (pair) { pair.uniforms.uBeat.value = beat; });

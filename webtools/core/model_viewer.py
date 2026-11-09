@@ -1291,6 +1291,11 @@ def prepare(paths, *, face_context=None, rigged=False):
             data, stats, warnings = built[:3]
             faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
             rig = built[4] if len(built) > 4 else {"enabled": bool(rigged), "available": False}
+            if rigged:
+                from .game_motions import resolve_import
+                # Only server-issued imports whose current bytes still match
+                # their receipt may describe a playable composite timeline.
+                rig = dict(rig, motionTimelines=resolve_import(paths))
         except ModelViewerError:
             raise
         except Exception as error:

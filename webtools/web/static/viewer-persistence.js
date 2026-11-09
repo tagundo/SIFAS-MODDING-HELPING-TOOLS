@@ -6,7 +6,7 @@
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
-  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.accessoryUnclip ? 1 : 0); }
+  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.accessoryUnclip ? 1 : 0); }
   function create(options) {
     var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save body edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
@@ -287,6 +287,7 @@
         return { node: entry.node, scale: vector(entry.scale), position: vector(entry.position), rotation: vector(entry.rotation) };
       }).sort(function (a, b) { return a.node - b.node; });
       if (input.physics && input.physics.length) canonical.physics = input.physics;
+      if (input.outlines && input.outlines.length) canonical.outlines = input.outlines.map(function (value) { return { id: value.id, factor: numeric(value.factor) }; }).sort(function (a, b) { return a.id.localeCompare(b.id); });
       if (input.accessoryUnclip) canonical.accessoryUnclip = { strength: numeric(input.accessoryUnclip.strength), overlap: numeric(input.accessoryUnclip.overlap), closeGaps: input.accessoryUnclip.closeGaps };
       return JSON.stringify(canonical);
     }

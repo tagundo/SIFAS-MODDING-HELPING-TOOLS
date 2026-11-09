@@ -61,16 +61,30 @@ const snapshot = page => page.evaluate(() => {
       assert.deepStrictEqual(after.authoring, before.authoring, 'Import preserves existing body edits');
       assert.equal(after.selected, 'game-timeline:home:idle:1:1', 'Import selects its complete original timeline');
       assert.equal(after.triangles, before.triangles, 'Animation import adds no geometry');
-      assert(after.clips.includes('Imported motion fixture'), 'Imported encrypted clip is present in the real converted rig');
+      assert(!after.clips.includes('Imported motion fixture'), 'The imported raw segment stays internal to its complete timeline');
+      assert.deepStrictEqual(after.clips.filter(name => !before.clips.includes(name)), [after.selected], 'A game import adds exactly one user-facing motion');
       const output = after.paths.find(value => value.includes('/game-motions/'));
       assert(output, 'Imported output is the motion cache');
       const decryptedSource = path.join(path.dirname(output), 'source-1.unity');
       assert.equal(crypto.createHash('sha256').update(fs.readFileSync(decryptedSource)).digest('hex'), ready.motion_sha256, 'Decrypted source bytes exactly match original fixture before clips-only normalization');
-      await page.locator('#viewer-motion').selectOption('Imported motion fixture');
       await page.locator('#viewer-play').click();
       await page.waitForFunction(() => ModelViewer.getState().rig.playing && ModelViewer.getState().rig.time > .1);
       await page.locator('#viewer-play').click();
       const probe = await page.evaluate(() => ModelViewer.renderProbe(33)); assert(probe.ready && probe.glError === 0 && probe.nonBackgroundSamples > 0);
+      await page.locator('#viewer-motion').selectOption('');
+      await page.evaluate(manual => ModelViewer.addMotion([manual]), ready.manual);
+      const manual = await snapshot(page);
+      assert.equal(manual.selected, '', 'Manual bundle loading preserves the user-selected saved pose');
+      assert(manual.clips.includes(after.selected), 'A later manual import retains the complete game timeline');
+      assert.deepStrictEqual(manual.clips.filter(name => !after.clips.includes(name)), ['Manual body A', 'Manual body B'], 'A multi-body manual bundle offers each intentional compatible motion and excludes its camera helper');
+      for (const name of ['Manual body A', 'Manual body B']) {
+        await page.locator('#viewer-motion').selectOption(name);
+        await page.locator('#viewer-play').click();
+        await page.waitForFunction(() => ModelViewer.getState().rig.playing && ModelViewer.getState().rig.time > .1);
+        await page.locator('#viewer-play').click();
+      }
+      await page.evaluate(manual => ModelViewer.addMotion([manual]), ready.manual);
+      assert.deepStrictEqual((await snapshot(page)).clips, manual.clips, 'Adding the same raw bundle twice does not duplicate choices');
       // Hold the actual old preparation response, then let a newer Open finish.
       // Releasing or cancelling that response must never retarget the new model.
       let release, intercepted;
@@ -93,7 +107,7 @@ const snapshot = page => page.evaluate(() => {
       await page.unroute('**/api/viewer/prepare');
       await page.screenshot({ path: path.join(evidence, profile.name + '.png') });
       assert.deepStrictEqual(errors, []);
-      report.cases.push({ profile, dialog, before, after, probe, raced, exactEncryptedImport: true, preservesBodyAndCamera: true, newerModelSurvivesOlderMotion: true, pageErrors: errors });
+      report.cases.push({ profile, dialog, before, after, manual, probe, raced, exactEncryptedImport: true, preservesBodyAndCamera: true, newerModelSurvivesOlderMotion: true, pageErrors: errors });
       await context.close();
     }
     report.status = 'PASS';

@@ -1,5 +1,6 @@
 """Isolated encrypted original motion fixture for the real browser import flow."""
 import hashlib
+import copy
 import json
 import os
 from pathlib import Path
@@ -46,9 +47,25 @@ alternate = model.parent / "alternate-motion.unity"
 alternate.write_bytes(plain)
 replacement = model.parent / "replacement-model.unity"
 replacement.write_bytes(model.read_bytes())
+manual = model.parent / "manual-multiple-motions.unity"
+manual_env = UnityPy.load(plain)
+original_clip = next(obj for obj in manual_env.objects if obj.type.name == "AnimationClip")
+for index, name in enumerate(("Manual body A", "Manual body B", "Camera helper")):
+    obj = original_clip if index == 0 else copy.copy(original_clip)
+    if index:
+        obj.path_id = 1000 + index
+        obj.assets_file.objects[obj.path_id] = obj
+    tree = obj.read_typetree()
+    tree["m_Name"] = name
+    if index == 2:
+        for field in ("m_RotationCurves", "m_EulerCurves", "m_PositionCurves", "m_ScaleCurves"):
+            for curve in tree.get(field, []):
+                curve["path"] = "UnknownCamera"
+    obj.save_typetree(tree)
+manual.write_bytes(manual_env.file.save())
 os.chdir(fixture.root)
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-print(json.dumps({"url": "http://127.0.0.1:" + str(server.server_port), "root": str(fixture.root), "model": str(model), "alternate": str(alternate), "replacement": str(replacement), "motion_sha256": hashlib.sha256(plain).hexdigest()}), flush=True)
+print(json.dumps({"url": "http://127.0.0.1:" + str(server.server_port), "root": str(fixture.root), "model": str(model), "alternate": str(alternate), "replacement": str(replacement), "manual": str(manual), "motion_sha256": hashlib.sha256(plain).hexdigest()}), flush=True)
 try:
     server.serve_forever()
 finally:

@@ -24,7 +24,10 @@
   <main>
     <!-- TOOLS TAB -->
     <section id="tab-tools" class="tab-panel active">
-      <aside id="tool-list" class="tool-list"></aside>
+      <aside class="tool-navigation">
+        <div id="tools-panel-settings-toolbar" class="panel-settings-toolbar"><button id="tools-panel-settings" class="panel-settings-button" type="button">Panel settings</button></div>
+        <div id="tool-list" class="tool-list"></div>
+      </aside>
       <div id="tool-panel" class="tool-panel">
         <h2 id="tool-title" hidden></h2>
         <div id="tool-form-panel">
@@ -126,6 +129,19 @@
           <div id="viewer-panel-resizer" class="viewer-panel-resizer" role="separator" aria-orientation="vertical" aria-controls="viewer-control-panel" aria-label="Adjustment panel width" aria-describedby="viewer-panel-resize-help" tabindex="0" hidden><span aria-hidden="true"></span></div>
           <div id="viewer-control-panel" class="viewer-control-panel">
           <p id="viewer-panel-resize-help" class="sr-only" data-i18n="Drag to resize. Left and right arrows adjust the width; Home restores the default layout.">Drag to resize. Left and right arrows adjust the width; Home restores the default layout.</p>
+          <details id="viewer-display-options" class="viewer-options">
+            <summary data-i18n="Display options">Display options</summary>
+            <div class="viewer-option-row">
+              <label><input id="viewer-textures" type="checkbox" checked><span data-i18n="Show textures">Show textures</span></label>
+              <label><input id="viewer-wireframe" type="checkbox"><span data-i18n="Wireframe">Wireframe</span></label>
+              <label><span data-i18n="Background">Background</span><select id="viewer-background"><option value="light" data-i18n="Light">Light</option><option value="dark" data-i18n="Dark">Dark</option></select></label>
+              <label><span data-i18n="Materials">Materials</span><select id="viewer-shader" disabled><option value="sifas" data-i18n="SIFAS material preview">SIFAS material preview</option><option value="basic" data-i18n="Basic textures">Basic textures</option></select></label>
+              <label class="viewer-fov"><span data-i18n="Perspective">Perspective</span><input id="viewer-fov" type="range" min="10" max="80" step="1" value="35"><output id="viewer-fov-value">35°</output></label>
+            </div>
+            <p class="viewer-render-note" data-i18n="Game lighting and motion may look different. Available controls depend on the model's data.">Game lighting and motion may look different. Available controls depend on the model's data.</p>
+            <p id="viewer-material-status" class="viewer-render-note" role="status"></p>
+            <fieldset class="viewer-parts"><legend data-i18n="Visible parts">Visible parts</legend><div id="viewer-parts"></div></fieldset>
+          </details>
           <details id="viewer-save-panel" class="viewer-adjustments viewer-save-panel">
             <summary data-i18n="Save body edits">Save body edits</summary>
             <p class="viewer-render-note" data-i18n="Save a new costume copy and an edit recipe. Your original files stay unchanged.">Save a new costume copy and an edit recipe. Your original files stay unchanged.</p>
@@ -186,13 +202,31 @@
           </details>
           <details id="viewer-adjustments" class="viewer-adjustments">
             <summary data-i18n="Pose and motion">Pose and motion</summary>
-            <div class="viewer-motion-sources"><button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button></div>
+            <div class="viewer-motion-sources viewer-motion-import-actions"><button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button></div>
             <div class="viewer-motion-row">
               <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
               <label class="viewer-time"><span class="sr-only" data-i18n="Motion time">Motion time</span><input id="viewer-time" type="range" min="0" max="0" step="0.01" value="0" disabled><output id="viewer-time-value">0.00 / 0.00 s</output></label>
             </div>
             <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
+          </details>
+          <details id="viewer-expression-adjustments" class="viewer-adjustments viewer-expression-adjustments">
+            <summary><span id="viewer-expression-title" data-i18n="Facial expression">Facial expression</span></summary>
+            <section id="viewer-expression-panel" class="viewer-control-section" aria-labelledby="viewer-expression-title">
+              <div class="viewer-expression-actions"><button id="viewer-expression-reset" type="button" data-i18n="Reset expression" disabled>Reset expression</button></div>
+              <div id="viewer-expression-groups" class="viewer-chip-list" role="group" aria-labelledby="viewer-expression-title"></div>
+              <div id="viewer-expression-presets" class="viewer-expression-presets" role="group" aria-labelledby="viewer-expression-title"></div>
+              <p id="viewer-expression-selection" class="viewer-render-note" role="status" aria-live="polite"></p>
+              <div id="viewer-expression-source" class="viewer-expression-source" role="status" aria-live="polite"></div>
+              <details id="viewer-expression-advanced" class="viewer-expression-advanced">
+                <summary data-i18n="Fine-tune expression parts">Fine-tune expression parts</summary>
+                <div class="viewer-expression-row">
+                  <label><span data-i18n="Expression part">Expression part</span><select id="viewer-expression" disabled></select></label>
+                  <label><span id="viewer-expression-weight-label" data-i18n="Current expression weight (%)">Current expression weight (%)</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><span class="viewer-expression-weight-entry"><input id="viewer-expression-number" type="number" step="0.1" inputmode="decimal" aria-labelledby="viewer-expression-weight-label" disabled><output id="viewer-expression-output">—</output></span></label>
+                </div>
+              </details>
+            </section>
+            <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
           </details>
           <details id="viewer-body-adjustments" class="viewer-adjustments viewer-body-adjustments" open>
             <summary data-i18n="Body and outfit">Body and outfit</summary>
@@ -371,38 +405,7 @@
               <div id="viewer-saved-part-list"></div>
             </details>
           </details>
-          <details id="viewer-expression-adjustments" class="viewer-adjustments viewer-expression-adjustments" open>
-            <summary><span id="viewer-expression-title" data-i18n="Facial expression">Facial expression</span></summary>
-            <section id="viewer-expression-panel" class="viewer-control-section" aria-labelledby="viewer-expression-title">
-              <div class="viewer-expression-actions"><button id="viewer-expression-reset" type="button" data-i18n="Reset expression" disabled>Reset expression</button></div>
-              <div id="viewer-expression-groups" class="viewer-chip-list" role="group" aria-labelledby="viewer-expression-title"></div>
-              <div id="viewer-expression-presets" class="viewer-expression-presets" role="group" aria-labelledby="viewer-expression-title"></div>
-              <p id="viewer-expression-selection" class="viewer-render-note" role="status" aria-live="polite"></p>
-              <div id="viewer-expression-source" class="viewer-expression-source" role="status" aria-live="polite"></div>
-              <details id="viewer-expression-advanced" class="viewer-expression-advanced">
-                <summary data-i18n="Fine-tune expression parts">Fine-tune expression parts</summary>
-                <div class="viewer-expression-row">
-                  <label><span data-i18n="Expression part">Expression part</span><select id="viewer-expression" disabled></select></label>
-                  <label><span id="viewer-expression-weight-label" data-i18n="Current expression weight (%)">Current expression weight (%)</span><input id="viewer-expression-value" type="range" min="0" max="100" step="1" value="0" disabled><span class="viewer-expression-weight-entry"><input id="viewer-expression-number" type="number" step="0.1" inputmode="decimal" aria-labelledby="viewer-expression-weight-label" disabled><output id="viewer-expression-output">—</output></span></label>
-                </div>
-              </details>
-            </section>
-            <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
-          </details>
           <div class="viewer-preview-actions"><button id="viewer-preview-reset" type="button" data-i18n="Reset pose, body and expressions" disabled>Reset pose, body and expressions</button></div>
-          <details id="viewer-display-options" class="viewer-options">
-            <summary data-i18n="Display options">Display options</summary>
-            <div class="viewer-option-row">
-              <label><input id="viewer-textures" type="checkbox" checked><span data-i18n="Show textures">Show textures</span></label>
-              <label><input id="viewer-wireframe" type="checkbox"><span data-i18n="Wireframe">Wireframe</span></label>
-              <label><span data-i18n="Background">Background</span><select id="viewer-background"><option value="light" data-i18n="Light">Light</option><option value="dark" data-i18n="Dark">Dark</option></select></label>
-              <label><span data-i18n="Materials">Materials</span><select id="viewer-shader" disabled><option value="sifas" data-i18n="SIFAS material preview">SIFAS material preview</option><option value="basic" data-i18n="Basic textures">Basic textures</option></select></label>
-              <label class="viewer-fov"><span data-i18n="Perspective">Perspective</span><input id="viewer-fov" type="range" min="10" max="80" step="1" value="35"><output id="viewer-fov-value">35°</output></label>
-            </div>
-            <p class="viewer-render-note" data-i18n="Game lighting and motion may look different. Available controls depend on the model's data.">Game lighting and motion may look different. Available controls depend on the model's data.</p>
-            <p id="viewer-material-status" class="viewer-render-note" role="status"></p>
-            <fieldset class="viewer-parts"><legend data-i18n="Visible parts">Visible parts</legend><div id="viewer-parts"></div></fieldset>
-          </details>
           </div>
           </div>
         </div>
@@ -450,6 +453,7 @@
   <script src="/static/sifas-material.js"></script>
   <script src="/static/viewer-editing.js"></script>
   <script src="/static/viewer-expressions.js"></script>
+  <script src="/static/viewer-outlines.js"></script>
   <script src="/static/viewer-physics.js"></script>
   <script src="/static/viewer-motion-timeline.js"></script>
   <script src="/static/viewer-rig.js"></script>

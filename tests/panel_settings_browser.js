@@ -52,11 +52,11 @@ async function toggleAll(page, checked) {
 
 async function checkToolSettings(page, url, key) {
   await page.goto(url);
-  await page.waitForFunction(() => document.querySelectorAll('#tool-list button[data-id]').length > 2 && document.querySelector('#tool-list .panel-settings-button'));
+  await page.waitForFunction(() => document.querySelectorAll('#tool-list button[data-id]').length > 2 && document.querySelector('#tools-panel-settings'));
   const original = await toolIds(page), first = original[0], second = original[1];
   assert(original.length > 2);
   for (const id of original) assert(await page.locator('#tool-list button[data-id=' + JSON.stringify(id) + ']').isVisible(), 'Tools initially show ' + id);
-  await page.locator('#tool-list .panel-settings-button').click();
+  await page.locator('#tools-panel-settings').click();
   await row(page, first).locator('input[type=checkbox]').uncheck();
   assert(!await page.locator('#tool-list button[data-id=' + JSON.stringify(first) + ']').isVisible());
   await row(page, second).locator('button[data-move=up]').click();
@@ -68,19 +68,19 @@ async function checkToolSettings(page, url, key) {
     const buttons = [...document.querySelectorAll('#tool-list button[data-id]')];
     return buttons.length > 2 && buttons[0].dataset.id === second && buttons[1].dataset.id === first && !buttons[1].getClientRects().length;
   }, { first, second });
-  await page.locator('#tool-list .panel-settings-button').click();
+  await page.locator('#tools-panel-settings').click();
   await row(page, first).locator('input[type=checkbox]').check();
   assert(await page.locator('#tool-list button[data-id=' + JSON.stringify(first) + ']').isVisible(), 'The same row restores the hidden tool');
   await closeDialog(page);
-  await page.locator('#tool-list .panel-settings-button').click();
+  await page.locator('#tools-panel-settings').click();
   await toggleAll(page, false);
   await closeDialog(page);
-  assert(await page.locator('#tool-list .panel-settings-button').isVisible(), 'Settings remain reachable with every tool hidden');
+  assert(await page.locator('#tools-panel-settings').isVisible(), 'Settings remain reachable with every tool hidden');
   assert.equal(await page.locator('#tool-list button[data-id]:visible').count(), 0);
   await page.reload();
   await page.waitForFunction(() => document.querySelectorAll('#tool-list button[data-id]').length > 2);
   assert.equal(await page.locator('#tool-list button[data-id]:visible').count(), 0, 'All-hidden state persists');
-  await page.locator('#tool-list .panel-settings-button').click();
+  await page.locator('#tools-panel-settings').click();
   await toggleAll(page, true);
   await closeDialog(page);
   // UI settings cannot submit jobs or mutate any server content.
@@ -110,12 +110,15 @@ async function run() {
     assert.equal(await page.locator('.viewer-file-actions #viewer-add-motion').count(), 0);
     assert(await page.locator('#viewer-panel-settings').isVisible(), 'Settings occupy the file action position');
     const original = await viewerIds(page);
+    assert.equal(original[0], 'viewer-display-options', 'View settings are the first default inspector panel');
+    assert.equal(original[original.indexOf('viewer-adjustments') + 1], 'viewer-expression-adjustments');
+    assert.equal(await page.locator('#viewer-expression-adjustments').evaluate(element => element.open), false, 'Expression starts collapsed');
     await page.locator('#viewer-panel-settings').click();
     assert.match(await dialog(page).innerText(), /설정|칸|패널/, 'Settings carry Korean labels');
     await page.screenshot({ path: path.join(evidence, 'settings-ko-phone.png') });
     await row(page, 'viewer-adjustments').locator('input[type=checkbox]').uncheck();
     assert(!await page.locator('#viewer-adjustments').isVisible(), 'Hide Pose removes its panel');
-    await row(page, 'viewer-adjustments').locator('button[data-move=up]').click();
+    while (!await row(page, 'viewer-adjustments').locator('button[data-move=up]').isDisabled()) await row(page, 'viewer-adjustments').locator('button[data-move=up]').click();
     const reordered = await viewerIds(page);
     assert(reordered.indexOf('viewer-adjustments') < reordered.indexOf(original[0]), 'Pose moves before the previously first panel');
     await closeDialog(page);

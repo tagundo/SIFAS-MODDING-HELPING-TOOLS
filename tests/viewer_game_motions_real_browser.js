@@ -49,7 +49,7 @@ async function sample(page, time) {
     await page.goto(url); await page.waitForFunction(() => document.getElementById('viewer-mesh-deleter') && window.ViewerMotionAudio);
     await page.evaluate(paths => { document.getElementById('viewer-auto-face').checked = true; return openModelViewer(paths); }, [path.join(source, 'ayumu-body.unity')]);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
-    const before = await page.evaluate(() => ({ camera: ModelViewer.getState().camera, body: ModelViewer.getAuthoringState(), triangles: ModelViewer.getState().sourceTriangles, faces: ModelViewer.getState().faces }));
+    const before = await page.evaluate(() => ({ camera: ModelViewer.getState().camera, body: ModelViewer.getAuthoringState(), triangles: ModelViewer.getState().sourceTriangles, faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames }));
     assert.equal(before.faces.status, 'added', 'Body-only selection automatically completes the original face');
     await page.locator('#viewer-adjustments').evaluate(node => node.open = true);
     await page.locator('#viewer-game-motions').click();
@@ -66,11 +66,13 @@ async function sample(page, time) {
     await page.locator('#viewer-motion-linked-audio').check();
     await page.locator('#viewer-motion-import').click();
     await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && !ModelViewer.getState().loading && ModelViewer.getState().rig.selectedClip.startsWith('game-timeline:mv:mv:12002:1200201:1'));
-    const after = await page.evaluate(() => ({ camera: ModelViewer.getState().camera, body: ModelViewer.getAuthoringState(), triangles: ModelViewer.getState().sourceTriangles, faces: ModelViewer.getState().faces, paths: ModelViewer.getState().loadedPaths, audio: ViewerMotionAudio.getState(), clip: ModelViewer.getState().rig.selectedClip }));
+    const after = await page.evaluate(() => ({ camera: ModelViewer.getState().camera, body: ModelViewer.getAuthoringState(), triangles: ModelViewer.getState().sourceTriangles, faces: ModelViewer.getState().faces, paths: ModelViewer.getState().loadedPaths, clips: ModelViewer.getState().rig.clipNames, internalClipCount: ModelViewer.getState().rig.internalClipCount, audio: ViewerMotionAudio.getState(), clip: ModelViewer.getState().rig.selectedClip }));
     assert.deepStrictEqual(after.camera, before.camera, 'Real dance import preserves camera');
     assert.deepStrictEqual(after.body, before.body, 'Real dance import preserves body authoring values');
     assert.equal(after.triangles, before.triangles, 'Selected dancer and facial banks add no geometry');
     assert.equal(after.faces.status, 'added', 'MV reload retains automatically completed original face');
+    assert.deepStrictEqual(after.clips.filter(name => !before.clips.includes(name)), [after.clip], 'Original MV import exposes one composite and no raw dance or facial bank clips');
+    assert(after.internalClipCount >= 33, 'Actual body and facial sources remain internal for synchronization');
     assert(after.audio.loaded && after.audio.tracks.some(track => track.cue === 'music_2002'), 'Original linked solo music decoded and attached');
     for (const time of [0, 4, 5, 20]) report.samples.push(await sample(page, time));
     assert(report.samples.every(value => value.bones.length >= 6), 'Real inspected dance bones are present');
@@ -93,10 +95,11 @@ async function sample(page, time) {
     await page.locator('#viewer-game-motion-choice').selectOption('voice:1001014');
     await page.locator('#viewer-motion-import').click();
     await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && !ModelViewer.getState().loading && ModelViewer.getState().rig.selectedClip === 'game-timeline:voice:voice:1001014:1');
-    const voiceLoaded = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths, faces: ModelViewer.getState().faces, audio: ViewerMotionAudio.getState(), triangles: ModelViewer.getState().sourceTriangles }));
+    const voiceLoaded = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths, faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames, audio: ViewerMotionAudio.getState(), triangles: ModelViewer.getState().sourceTriangles }));
     assert(voiceLoaded.paths.length <= 8, 'A second game motion replaces prior game inputs within the real viewer limit');
     assert.equal(voiceLoaded.triangles, before.triangles, 'Navigation motion and pose banks add no geometry');
     assert.equal(voiceLoaded.faces.status, 'added', 'Six imported voice/face banks retain automatically completed original face');
+    assert.deepStrictEqual(voiceLoaded.clips.filter(name => !before.clips.includes(name)), ['game-timeline:voice:voice:1001014:1'], 'Four original voice segments and32facial poses add only one intentional motion choice');
     const cue = voiceLoaded.audio.tracks.find(track => track.cue === 'vo_ca_1000110014');
     assert(cue, 'The actual selected voice cue was decoded automatically');
     assert(Math.abs(cue.startTime - .7166666666666667) < 1e-8, 'The actual NaviVoiceTrack delay is preserved');
@@ -113,11 +116,17 @@ async function sample(page, time) {
     report.voiceLoaded = voiceLoaded;
     await page.evaluate(additional => ModelViewer.addMotion([additional]), path.join(source, 'ayumu-animations1.unity'));
     report.eightSelected = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths,
-      faces: ModelViewer.getState().faces, triangles: ModelViewer.getState().sourceTriangles, probe: ModelViewer.renderProbe(33) }));
+      faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames, selected: ModelViewer.getState().rig.selectedClip, triangles: ModelViewer.getState().sourceTriangles, probe: ModelViewer.renderProbe(33) }));
     assert.equal(report.eightSelected.paths.length, 8, 'Eight explicit body/animation inputs are supported');
     assert.equal(report.eightSelected.faces.status, 'added', 'Automatic face has a separate dependency budget at eight explicit inputs');
     assert.equal(report.eightSelected.triangles, before.triangles, 'Eight inputs retain the complete original face geometry');
+    assert.deepStrictEqual(report.eightSelected.clips, voiceLoaded.clips, 'Adding a raw original eye bank creates no stray motion choices');
+    assert.equal(report.eightSelected.selected, 'game-timeline:voice:voice:1001014:1', 'A manual auxiliary import preserves the selected complete voice motion');
     assert(report.eightSelected.probe.ready && report.eightSelected.probe.glError === 0 && report.eightSelected.probe.nonBackgroundSamples > 0);
+    await sample(page, 1); await page.locator('#viewer-play').click();
+    await page.waitForFunction(() => ModelViewer.getMotionState().rig.time > 1.4 && !ViewerMotionAudio.getState().paused && ViewerMotionAudio.getState().time > .1);
+    report.audioAfterManualReload = await page.evaluate(() => ({ rig: ModelViewer.getMotionState().rig, audio: ViewerMotionAudio.getState() }));
+    await page.locator('#viewer-play').click(); await page.waitForFunction(() => ViewerMotionAudio.getState().paused);
     // Failure injection is limited to this recovery check. The prior displayed
     // model and its complete automatic face are genuine converted assets.
     const recoveryBefore = await page.evaluate(() => ({ id: ModelViewer.getState().modelId, camera: ModelViewer.getState().camera,
@@ -137,6 +146,28 @@ async function sample(page, time) {
     assert.deepStrictEqual(recoveryAfter, recoveryBefore, 'Failed automatic-face reconstruction keeps actual model, face, camera and paths');
     await page.unroute('**/api/viewer/prepare');
     report.faceRecovery = { injectedFaceFailure: true, result: recoveryResult, before: recoveryBefore, after: recoveryAfter };
+    // Original raw bundles also go through the normal manual AddMotion path.
+    // A camera timeline or a facial pose bank must not masquerade as a dance.
+    await page.evaluate(body => openModelViewer([body]), path.join(source, 'ayumu-body.unity'));
+    const manualBase = await page.evaluate(() => ({ clips: ModelViewer.getState().rig.clipNames, triangles: ModelViewer.getState().sourceTriangles }));
+    report.manualOriginal = [];
+    for (const filename of ['group-main.unity', 'ayumu-animations1.unity', 'ayumu-animations2.unity']) {
+      await page.evaluate(additional => ModelViewer.addMotion([additional]), path.join(source, filename));
+      const state = await page.evaluate(() => ({ clips: ModelViewer.getState().rig.clipNames, triangles: ModelViewer.getState().sourceTriangles, selected: ModelViewer.getState().rig.selectedClip }));
+      assert.deepStrictEqual(state.clips, manualBase.clips, 'Original raw camera/facial bundle contributes no character motion choices: ' + filename);
+      assert.equal(state.triangles, manualBase.triangles, 'Raw camera/facial bundle changes no displayed geometry');
+      report.manualOriginal.push({ filename, ...state });
+    }
+    await page.locator('#viewer-motion').selectOption('');
+    await page.evaluate(additional => ModelViewer.addMotion([additional]), path.join(source, 'solo-dance.unity'));
+    const manualDance = await page.evaluate(() => ({ clips: ModelViewer.getState().rig.clipNames, selected: ModelViewer.getState().rig.selectedClip }));
+    const danceChoices = manualDance.clips.filter(name => !manualBase.clips.includes(name));
+    assert.deepStrictEqual(danceChoices, ['ch0201_so2002'], 'The original raw compatible character dance is an explicit selectable choice');
+    assert.equal(manualDance.selected, '', 'Loading raw body alternatives preserves the selected saved pose');
+    await page.locator('#viewer-motion').selectOption(danceChoices[0]);
+    const manualFrames = [await sample(page, 0), await sample(page, 20)];
+    assert.notDeepStrictEqual(manualFrames[0].bones, manualFrames[1].bones, 'Original manually selected raw character clip animates real model bones');
+    report.manualDance = manualDance;
     assert.deepStrictEqual(errors, []); report.before = before; report.after = after; report.responses = responses; report.status = 'PASS';
     await context.close();
   } catch (error) { report.status = 'FAIL'; report.error = error.stack || String(error); process.exitCode = 1; }

@@ -80,4 +80,13 @@ check('verified directional gaze uses iris bones and leaves lids/morphs untouche
   const player = factory.create(s.root, [s.body, gaze], s.metadata, s.descriptor); player.evaluate(.5);
   close(eye.position.y, .1, 'verified gaze target31 uses original eye008 pose'); close(lid.position.y, 0, 'gaze never overrides eyelid position'); close(s.face.morphTargetInfluences[0], .2, 'gaze never overrides mouth/eyelid morph');
 });
+check('identical source copies reuse one motion while conflicting same-name clips stay ambiguous', () => {
+  const s = setup(), duplicate = s.body.clone(); duplicate.name = 'body-copy';
+  s.metadata.clips.push({ name: duplicate.name, sourceHash: 'bodyhash', sourceName: 'body-source' });
+  const player = factory.create(s.root, [s.body, duplicate], s.metadata, s.descriptor);
+  assert.equal(player.compatibleSegments, 1); player.evaluate(.5); close(s.bone.position.x, .5, 'identical copy uses original motion');
+  duplicate.tracks[0].values[3] = 9;
+  const conflict = factory.create(s.root, [s.body, duplicate], s.metadata, s.descriptor);
+  assert.equal(conflict.compatibleSegments, 0, 'different actual tracks with the same source label must never be guessed');
+});
 if (failures.length) { console.error(JSON.stringify(failures, null, 2)); process.exitCode = 1; }

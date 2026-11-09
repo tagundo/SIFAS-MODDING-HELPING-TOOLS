@@ -573,6 +573,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
     morph_bindings = morph_bindings or {}
     visibility_bindings = visibility_bindings or {}
     used_names = {item.get("name", "") for item in glb.doc.get("animations", [])}
+    from .game_motion_selection import describe_clip_roles, _object_key
+    source_roles = describe_clip_roles(scene, deadline)
 
     def warn(code, name, message):
         item = {"code": code, "name": name, "message": message}
@@ -709,6 +711,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             metadata.append({"index": index, "name": exported_name, "sourceName": clip["name"], "duration": clip["duration"],
                              "channels": len(outputs), "loop": clip["loop"], "visibility": visibility_tracks,
                              "sourceId": source_identifier, "sourceHash": source_hash, "sourceTracks": len(clip["tracks"]),
+                             "sourceRole": source_roles.get(_object_key(obj), "unknown") if hasattr(obj, "assets_file") else "unknown",
                              "unsupportedTracks": clip["unsupported"], "unboundTracks": unbound,
                              "unsupportedKinds": clip["unsupportedKinds"],
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})

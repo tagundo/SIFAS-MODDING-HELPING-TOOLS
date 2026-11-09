@@ -73,6 +73,18 @@ class OriginalGameMotionSelectionTests(unittest.TestCase):
         self.assertTrue(resolved["mouth", 999].endswith("LiveFacial_mouth_007"))
         self.assertEqual(len(selected["selected"]), 32)
 
+    def test_original_camera_and_facial_roles_follow_exact_timeline_and_table_pointers(self):
+        from collections import Counter
+        from webtools.core import model_viewer as viewer
+        paths = [SAMPLES / "group-main.unity", SAMPLES / "ayumu-animations1.unity", SAMPLES / "ayumu-animations2.unity"]
+        deadline = self.deadline()
+        scene = viewer._Scene(viewer._environment([str(path) for path in paths], deadline), deadline)
+        roles = selection.describe_clip_roles(scene, deadline)
+        self.assertEqual(Counter(roles.values()), {"camera": 62, "body": 9, "facial": 32})
+        for obj in scene.env.objects:
+            if obj.type.name == "AnimationClip" and "camera" in obj.peek_name():
+                self.assertEqual(roles[selection._object_key(obj)], "camera")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@
   var meshToolsController = null;
   var transplantController = null;
   var accessoryController = null;
+  var outlineController = null;
   var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
@@ -101,6 +102,7 @@
       !(persistenceController && persistenceController.getState().busy));
     if (persistenceController) persistenceController.refresh();
     if (transplantController) transplantController.refresh();
+    if (outlineController) outlineController.refresh();
   }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
@@ -473,6 +475,7 @@
     if (persistenceController) persistenceController.refresh();
     if (meshToolsController) meshToolsController.refresh();
     if (transplantController) transplantController.refresh();
+    if (outlineController) outlineController.refresh();
     refreshMinimizeButton();
   }
 
@@ -528,6 +531,7 @@
   }
 
   function renderScene() {
+    if (materialController && materialController.syncGeometry) materialController.syncGeometry();
     modelRenderInfo = qualityController.render(scene, camera);
     refreshQualityStatus();
   }
@@ -1158,6 +1162,7 @@
     materialFailure = failures.length > 0;
     var warning = node("viewer-material-warning");
     if (warning) { warning.hidden = !materialFailure; warning.textContent = failures.map(t).join("\n"); }
+    if (outlineController) outlineController.refresh();
     refreshInfoVisibility();
   }
 
@@ -1230,6 +1235,7 @@
     if (persistenceController) persistenceController.refresh();
     if (transplantController) transplantController.refresh();
     if (accessoryController) accessoryController.refresh();
+    if (outlineController) outlineController.refresh();
   }
 
   function showWarnings(warnings) {
@@ -1287,6 +1293,100 @@
     }
   }
 
+  function cloneCheckpoint(value) { return JSON.parse(JSON.stringify(value)); }
+
+  function captureViewerCheckpoint() {
+    if (!model || loading || lost || !metadata || !metadata.editing || !metadata.editing.available ||
+        !sameSelection(loadedPaths, loadedAutoFace, loadedVariants) || meshDraftPending()) {
+      throw new Error(t("Save mesh edits and finish loading before restoring a transplant."));
+    }
+    var fingerprint = metadata.editing.sourceFingerprint;
+    if (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error(t("The model has no verified source identity."));
+    var authoring = rigController && rigController.getAuthoringState();
+    if (!authoring || (authoring.unsupported || []).length) throw new Error(t("Correct invalid body values before transplanting."));
+    var choices = {};
+    loadedPaths.forEach(function (path, index) {
+      if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) choices[index] = loadedVariants[index];
+    });
+    return cloneCheckpoint({ version: 1, modelId: metadata.id, loadEpoch: generation,
+      sourceFingerprint: fingerprint, paths: loadedPaths.slice(), variants: loadedVariants.slice(), archiveChoices: choices,
+      autoFace: loadedAutoFace, authoring: authoring, pose: rigController && rigController.getState(),
+      camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), up: camera.up.toArray(), fov: camera.fov } : null,
+      importedGameMotionPaths: importedGameMotionPaths.slice(),
+      completeFace: !!(metadata.faces && ["added", "already_present"].indexOf(metadata.faces.status) >= 0) });
+  }
+
+  function checkpointIsCurrent(value) {
+    return !!value && !!model && !loading && !lost && !destroyed && value.modelId === (metadata && metadata.id) &&
+      value.loadEpoch === generation && value.sourceFingerprint === (metadata && metadata.editing && metadata.editing.sourceFingerprint) &&
+      JSON.stringify(value.paths) === JSON.stringify(loadedPaths) && value.autoFace === loadedAutoFace &&
+      JSON.stringify(value.variants) === JSON.stringify(loadedVariants) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants);
+  }
+
+  function selectCheckpointInputs(value) {
+    if (!value || !Array.isArray(value.paths) || !value.paths.length || value.paths.length > MAX_FILES ||
+        value.paths.some(function (path) { return typeof path !== "string" || !path; }) || typeof value.autoFace !== "boolean") {
+      throw new Error(t("The model inspection snapshot is invalid."));
+    }
+    var nextChoices = {};
+    Object.keys(value.archiveChoices || {}).forEach(function (key) {
+      if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.paths.length || ["primary", "unmasked"].indexOf(value.archiveChoices[key]) < 0) {
+        throw new Error(t("The saved costume variant choices are invalid."));
+      }
+      nextChoices[value.paths[Number(key)]] = value.archiveChoices[key];
+    });
+    paths = value.paths.slice(); variantChoices = nextChoices; variantOptions = {};
+    node("viewer-auto-face").checked = value.autoFace;
+    importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return paths.indexOf(path) >= 0; });
+    renderFiles();
+  }
+
+  async function loadViewerCheckpoint(value, expectedCurrent, options) {
+    options = options || {};
+    if (expectedCurrent && !checkpointIsCurrent(expectedCurrent)) return false;
+    if (meshDraftPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Save mesh edits before transplanting."));
+    var before = expectedCurrent || captureViewerCheckpoint();
+    var oldSelection = { paths: paths.slice(), choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
+      autoFace: node("viewer-auto-face").checked, imported: importedGameMotionPaths.slice() };
+    selectCheckpointInputs(value);
+    var promise = loadSelected({ preserveMotionInputs: true, throwOnFailure: true,
+      expectedSourceFingerprint: options.graft ? null : value.sourceFingerprint,
+      priorCompleteFace: value.completeFace, authoring: options.graft ? null : value.authoring,
+      faceErrorMessage: "The original face could not be restored. The displayed model was kept.",
+      pose: value.pose, inspection: value.pose, strictInspection: !options.graft, camera: value.camera });
+    var requestEpoch = generation;
+    try {
+      var committed = await promise;
+      if (requestEpoch !== generation || destroyed || !sameSelection(value.paths, value.autoFace, value.variants)) return false;
+      if (committed !== true) throw new Error(statusDetail || t(statusKey) || t("The model could not be displayed."));
+      importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return loadedPaths.indexOf(path) >= 0; });
+      requestRender(); return true;
+    } catch (error) {
+      // A later user open owns the selection. Never roll it back when an old
+      // asynchronous operation fails or finishes after it.
+      if (requestEpoch !== generation || destroyed) return false;
+      if (metadata && metadata.id === before.modelId && metadata.editing && metadata.editing.sourceFingerprint === before.sourceFingerprint) {
+        paths = oldSelection.paths; variantChoices = oldSelection.choices; variantOptions = oldSelection.options;
+        node("viewer-auto-face").checked = oldSelection.autoFace; importedGameMotionPaths = oldSelection.imported;
+        renderFiles(); setLoading(false);
+      } else if (!options.rollback) {
+        // The usual failures occur before commit. If an inspection restore
+        // fails after a new rig was created, rebuild the previous checkpoint.
+        try { await loadViewerCheckpoint(before, null, { rollback: true }); }
+        catch (rollbackError) { error.message += " " + t("The previous model could not be reloaded.") + " " + rollbackError.message; }
+      }
+      throw error;
+    }
+  }
+
+  async function openTransplantFiles(nextPaths, nextVariants, before) {
+    before = before || captureViewerCheckpoint();
+    if (!checkpointIsCurrent(before)) return false;
+    var target = cloneCheckpoint(before); target.paths = nextPaths.slice(); target.archiveChoices = nextVariants || {};
+    target.variants = nextPaths.map(function (_, index) { return target.archiveChoices[index] || "primary"; });
+    return loadViewerCheckpoint(target, before, { graft: true });
+  }
+
   async function loadSelected(retain) {
     retain = retain && retain.preserveMotionInputs ? retain : null;
     if (!paths.length) { setStatus("Choose a costume file to begin.", true); return; }
@@ -1324,8 +1424,11 @@
       var prepared = await response.json();
       if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      if (retain && retain.expectedSourceFingerprint && (!prepared.editing || prepared.editing.sourceFingerprint !== retain.expectedSourceFingerprint)) {
+        throw new Error(t("The original model files changed. The displayed model was kept."));
+      }
       if (retain && retain.priorCompleteFace && (!prepared.faces || ["added", "already_present"].indexOf(prepared.faces.status) < 0)) {
-        throw new Error(t("The motion could not be added without losing the current face. The current model was kept."));
+        throw new Error(t(retain.faceErrorMessage || "The motion could not be added without losing the current face. The current model was kept."));
       }
       // Omitted archive choices may use the server's declared default. Keep
       // that resolution local until every asynchronous stale-result guard passes.
@@ -1398,6 +1501,7 @@
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }
         if (retain && retain.authoring) rigController.restoreAuthoringState(retain.authoring, { initializeNodeCards: false });
+        if (retain && retain.inspection && rigController.restoreInspectionState) rigController.restoreInspectionState(retain.inspection, { strict: retain.strictInspection !== false });
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -1410,14 +1514,25 @@
       if (!keepView) setView("front");
       if (retain && retain.camera && camera && controls) {
         camera.position.fromArray(retain.camera.position); controls.target.fromArray(retain.camera.target);
+        if (Array.isArray(retain.camera.up)) camera.up.fromArray(retain.camera.up);
         camera.fov = retain.camera.fov; camera.updateProjectionMatrix(); controls.update();
+        node("viewer-fov").value = String(camera.fov);
       }
       setStatus("Model ready.");
+      if (retain && window.ViewerMotionAudio && window.ViewerMotionAudio.getState().source === "game" && rigController) {
+        var playback = rigController.getPlaybackState();
+        var retainedMotion = (prepared.rig && prepared.rig.motionTimelines || []).filter(function (descriptor) {
+          return "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1) === playback.selectedClip;
+        })[0];
+        if (retainedMotion && retainedMotion.audio) window.ViewerMotionAudio.load(retainedMotion.audio, { modelId: prepared.id, clipNames: [playback.selectedClip] });
+      }
       document.dispatchEvent(new CustomEvent("viewer:model-loaded", { detail: { modelId: prepared.id } }));
+      return true;
     } catch (error) {
       if (current !== generation) return;
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
+      if (retain && retain.throwOnFailure) { error.viewerLoadEpoch = current; throw error; }
     } finally {
       discard();
       if (current === generation) {
@@ -1695,6 +1810,13 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    if (window.ViewerOutlines) outlineController = window.ViewerOutlines.create({
+      translate: t,
+      onChange: function () { if (persistenceController) persistenceController.refresh(); },
+      context: function () { return { rig: rigController, editing: metadata && metadata.editing,
+        materials: materialController, busy: workbenchBusy() || !!(persistenceController && persistenceController.getState().busy),
+        current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; }
+    });
     if (window.ViewerAccessories) accessoryController = window.ViewerAccessories.create({
       translate: t,
       context: function () {
@@ -1716,6 +1838,7 @@
         if (transplantController) transplantController.refresh();
         if (meshToolsController) meshToolsController.refresh();
         if (accessoryController) accessoryController.refresh();
+        if (outlineController) outlineController.refresh();
       },
       pickFile: function (callback) {
         containViewerPicker();
@@ -1789,15 +1912,15 @@
         });
         return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, targetMeshes: targetMeshes,
         authoring: rigController && rigController.getAuthoringState(), loadedPaths: loadedPaths.slice(),
+        loadedVariants: loadedVariants.slice(), autoFace: loadedAutoFace, loadEpoch: generation,
         persistence: persistenceController && persistenceController.getState(),
         meshTools: meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()),
         current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
       pickFile: function (callback) { containViewerPicker(); config.pickFile(callback); },
       busyChanged: workbenchChanged,
-      openFiles: async function (nextPaths, variants) {
-        await open(nextPaths, variants);
-        if (statusError) throw new Error(statusDetail || statusKey);
-      }
+      captureCheckpoint: captureViewerCheckpoint,
+      restoreCheckpoint: function (target, current) { return loadViewerCheckpoint(target, current); },
+      openFiles: openTransplantFiles
     });
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
@@ -1943,6 +2066,7 @@
     if (meshToolsController) meshToolsController.updateLanguage();
     if (transplantController) transplantController.updateLanguage();
     if (accessoryController) accessoryController.updateLanguage();
+    if (outlineController) outlineController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -2035,6 +2159,7 @@
     if (meshToolsController) meshToolsController.dispose();
     if (transplantController) transplantController.dispose();
     if (accessoryController) accessoryController.dispose();
+    if (outlineController) outlineController.dispose();
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
@@ -2057,6 +2182,8 @@
 
   window.ModelViewer = {
     mount: mount, open: open, addMotion: addMotion, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
+    captureCheckpoint: captureViewerCheckpoint,
+    restoreCheckpoint: function (target, expectedCurrent) { return loadViewerCheckpoint(target, expectedCurrent || captureViewerCheckpoint()); },
     getAuthoringState: function () { return rigController && rigController.getAuthoringState ? rigController.getAuthoringState() : null; },
     restoreAuthoringState: function (state) {
       if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
@@ -2097,6 +2224,7 @@
         meshTools: meshToolsController ? meshToolsController.getState() : null,
         transplants: transplantController ? transplantController.getState() : null,
         accessories: accessoryController ? accessoryController.getState() : null,
+        outlines: outlineController ? outlineController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,

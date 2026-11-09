@@ -63,10 +63,20 @@
       return true;
     }
     function warn(message) { if (warnings.indexOf(message) < 0) warnings.push(message); }
+    function identicalAnimation(left, right) {
+      if (left.duration !== right.duration || left.tracks.length !== right.tracks.length) return false;
+      return left.tracks.every(function (track, index) {
+        var other = right.tracks[index];
+        if (track.name !== other.name || track.ValueTypeName !== other.ValueTypeName || track.times.length !== other.times.length || track.values.length !== other.values.length) return false;
+        for (var key = 0; key < track.times.length; key += 1) if (track.times[key] !== other.times[key]) return false;
+        for (var value = 0; value < track.values.length; value += 1) if (track.values[value] !== other.values[value]) return false;
+        return true;
+      });
+    }
     function sourceClip(segment) {
       var matches = clips.filter(function (entry) { return entry.sourceHash === segment.sourceHash && entry.sourceName === segment.sourceName && animationByName[entry.name]; });
-      if (matches.length !== 1) return null;
-      if (matches[0].bindingComplete === false) warn("Some original Animator parameters or unmatched tracks are unavailable. The compatible character tracks are playing.");
+      if (!matches.length || matches.length > 1 && !matches.slice(1).every(function (entry) { return identicalAnimation(animationByName[matches[0].name], animationByName[entry.name]); })) return null;
+      if (matches.some(function (entry) { return entry.bindingComplete === false; })) warn("Some original Animator parameters or unmatched tracks are unavailable. The compatible character tracks are playing.");
       return animationByName[matches[0].name];
     }
     function register(collection, clip, segment, staticPose, gazeOnly) {

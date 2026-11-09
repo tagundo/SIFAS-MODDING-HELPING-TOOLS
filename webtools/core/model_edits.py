@@ -294,8 +294,8 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
     if (not isinstance(variants, dict) or any(path not in container_ids or choice not in ("primary", "unmasked")
                                             for path, choice in variants.items())):
         _fail("The selected costume variant is invalid.")
-    from . import viewer_physics
-    sources, targets, public, physics_records = [], {}, [], []
+    from . import viewer_physics, model_outlines
+    sources, targets, public, physics_records, outline_records = [], {}, [], [], []
     for index, path in enumerate(paths):
         origin = str(Path(origins.get(path, path)).resolve())
         if origin not in container_ids:
@@ -342,6 +342,9 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             targets[node] = {**target, "key": key}
             public.append({k: copy.deepcopy(v) for k, v in target.items() if k not in ("serializedFile",)})
         physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
+        outline_records.extend(model_outlines.catalogue(info, index)["meshes"])
+        if len(outline_records) > model_outlines.MAX_MESHES:
+            _fail("The selected models have too many outline meshes.")
         if len(physics_records) > viewer_physics.MAX_COMPONENTS:
             _fail("The selected models have too many physics components.")
     if not targets:
@@ -350,9 +353,10 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                "presets": viewer_physics.recommendations(),
                "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
                "preview": "approximate_spring_sphere_capsule"}
+    outlines = {"version": 1, "available": bool(outline_records), "meshes": outline_records}
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
                "containers": containers, "sources": sources, "targets": targets,
-               "physics": physics,
+               "physics": physics, "outlines": outlines,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
                "busy": threading.Lock()}
@@ -366,9 +370,15 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
         if model_id not in _SESSIONS:
             _fail("The body editor cache is busy. Finish saving another model first.")
     return {"available": True, "token": model_id, "version": VERSION, "nodes": public,
+            "sourceFingerprint": _sha(json.dumps({
+                "containers": [item["sha256"] for item in containers],
+                "sources": [[item["container"], item["member"], item["sha256"]] for item in sources],
+                "variants": session["variants"],
+            }, sort_keys=True, separators=(",", ":")).encode()),
             "scope": "Observed MV tracks guide recommendations; other songs may differ.",
             "physics": copy.deepcopy(physics),
-            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics"]}
+            "outlines": copy.deepcopy(outlines),
+            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics", "outline_mask"]}
 
 
 def mod_source_context(token):
@@ -387,6 +397,7 @@ def mod_source_context(token):
                         for source in session["sources"]],
             "variants": dict(session["variants"]),
             "physics": copy.deepcopy(session.get("physics", {})),
+            "outlines": copy.deepcopy(session.get("outlines", {})),
             "nodes": [{key: copy.deepcopy(target[key]) for key in
                        ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
                       for target in session["targets"].values()],
@@ -401,7 +412,7 @@ def _node(session, value):
 
 def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
-    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip"}:
+    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines"}:
         _fail("The body edit state contains unsupported settings.")
     try:
         encoded = json.dumps(state, allow_nan=False).encode()
@@ -427,9 +438,11 @@ def validate_state(token, state, *, allow_empty=False):
     from . import viewer_physics
     try:
         physics = viewer_physics.validate_edits(session.get("physics", {}), state.get("physics", []))
+        from . import model_outlines
+        outlines = model_outlines.validate(session.get("outlines", {}), state.get("outlines", []))
     except ValueError as error:
         _fail(str(error))
-    if not isinstance(edits, list) or not (0 if allow_empty or physics or accessory is not None or session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
+    if not isinstance(edits, list) or not (0 if allow_empty or physics or outlines or accessory is not None or session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:
@@ -496,12 +509,14 @@ def validate_state(token, state, *, allow_empty=False):
         result["physics"] = physics
     if accessory is not None:
         result["accessoryUnclip"] = accessory
+    if outlines:
+        result["outlines"] = outlines
     return result
 
 
 def has_changes(state):
-    """Node, physics and accessory-only recipes all carry saved changes."""
-    return bool(state.get("edits") or state.get("physics")) or "accessoryUnclip" in state
+    """Node, physics, outline and accessory-only recipes carry saved changes."""
+    return bool(state.get("edits") or state.get("physics") or state.get("outlines")) or "accessoryUnclip" in state
 
 
 def _worlds(local, parents):
@@ -979,7 +994,7 @@ def _safe_root(directory):
 
 
 def edit_source_state(session, index, state):
-    """Apply validated node, accessory and physics edits to one source."""
+    """Apply validated node, accessory, physics and outline edits to one source."""
     source = session["sources"][index]
     selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
     blob, meshes = source["raw"], 0
@@ -997,6 +1012,9 @@ def edit_source_state(session, index, state):
     if state.get("physics"):
         from . import viewer_physics
         blob = viewer_physics.apply_edits(blob, index, state["physics"], session["physics"])
+    if state.get("outlines"):
+        from . import model_outlines
+        blob = model_outlines.apply_edits(blob, index, state["outlines"], session["outlines"], original_raw=source["raw"])
     return blob, meshes
 
 
@@ -1024,12 +1042,13 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
         for index, source in enumerate(session["sources"]):
             selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
             physics = [row for row in state.get("physics", []) if row["id"].split(":", 1)[0] == str(index)]
-            if not selected and not physics and "accessoryUnclip" not in state:
+            outlines = [row for row in state.get("outlines", []) if row["id"].split(":", 1)[0] == str(index)]
+            if not selected and not physics and not outlines and "accessoryUnclip" not in state:
                 continue
             log("Saving body edits: " + source["name"])
             blob, meshes = edit_source_state(session, index, state)
             replacements[(source["container"], source["member"])] = blob
-            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics)})
+            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics), "outlines": len(outlines)})
         recipe = _recipe(session, state)
         root = _safe_root(output_dir)
         temporary = Path(tempfile.mkdtemp(prefix=".viewer-edit-", dir=root))

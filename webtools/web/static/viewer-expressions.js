@@ -19,7 +19,8 @@
       status: element("viewer-expression-status"), reset: element("viewer-expression-reset"),
       selection: element("viewer-expression-selection"), advanced: element("viewer-expression-advanced") };
     function finite(value) { return typeof value === "number" && isFinite(value); }
-    function percent(value) { return finite(value) ? String(value * 100) + "%" : "—"; }
+    function percentNumber(value) { return finite(value) ? String(Number((value * 100).toFixed(2))) : ""; }
+    function percent(value) { return finite(value) ? percentNumber(value) + "%" : "—"; }
     function own(object, key) { return Object.prototype.hasOwnProperty.call(object, key); }
     function property(target, name, value) { if (target[name] !== value) target[name] = value; }
     function attribute(target, name, value) { if (target.getAttribute(name) !== value) target.setAttribute(name, value); }
@@ -296,7 +297,7 @@
         // precise-looking thumb when the grouped renderer weights differ.
         property(entry.input, "hidden", mixed || outside);
         property(entry.input, "disabled", !enabled || mixed || outside);
-        if (!mixed && !outside) property(entry.input, "value", String(value * 100));
+        if (!mixed && !outside) property(entry.input, "value", percentNumber(value));
         attribute(entry.input, "aria-valuetext", mixed ? translate("Mixed values") : percent(value));
         property(entry.output, "textContent", mixed ? translate("Mixed values") : percent(value));
         property(entry.output, "title", translate("Current weight") + ": " + values.map(percent).join(", "));
@@ -309,16 +310,15 @@
         property(ui.strength, "disabled", !enabled || !channel || !finite(value));
         if (channel) {
           var range = rawRange(channel); property(ui.strength, "min", String(range.min)); property(ui.strength, "max", String(range.max)); property(ui.strength, "step", "any");
-          if (finite(value)) property(ui.strength, "value", String(value * 100));
+          if (finite(value)) property(ui.strength, "value", percentNumber(value));
           attribute(ui.strength, "aria-valuetext", percent(value));
         }
       }
       if (ui.number) {
         property(ui.number, "min", "-10000"); property(ui.number, "max", "10000"); property(ui.number, "step", "any");
         property(ui.number, "disabled", !enabled || !channel);
-        var typed = rawInputValues[selectedRaw];
         if (document.activeElement !== ui.number && !rawError) property(ui.number, "value", channel && finite(value) ?
-          typed && typed.weight === value ? typed.text : String(value * 100) : "");
+          percentNumber(value) : "");
         ui.number.setCustomValidity(rawError ? translate(rawError) : "");
       }
       if (ui.output) property(ui.output, "textContent", percent(value));
@@ -387,6 +387,56 @@
       if (ui.raw) ui.raw.value = "";
       if (!silent) changed(); else refresh();
     }
+    function restoreState(state) {
+      if (disposed || !state || typeof state !== "object" || Array.isArray(state) ||
+          !state.overrides || typeof state.overrides !== "object" || Array.isArray(state.overrides) ||
+          !Array.isArray(state.boneOperations) || !Array.isArray(state.visibility) ||
+          !state.selectedPresets || typeof state.selectedPresets !== "object" || Array.isArray(state.selectedPresets) ||
+          typeof state.group !== "string" || typeof state.selectedRaw !== "string" ||
+          !(groups.length ? groups.some(function (group) { return group.id === state.group; }) : state.group === "") ||
+          state.selectedRaw && !own(channelByKey, state.selectedRaw)) return false;
+      var nextOverrides = {}, nextBones = {}, nextVisibility = {}, nextPresets = {}, valid = true;
+      Object.keys(state.overrides).forEach(function (key) {
+        var value = state.overrides[key];
+        if (!own(channelByKey, key) || !finite(value) || Math.abs(value) > 100) valid = false;
+        else nextOverrides[key] = value;
+      });
+      state.boneOperations.forEach(function (operation) {
+        if (!boneValid(operation)) { valid = false; return; }
+        var key = token(operation.node, operation.kind);
+        if (own(nextBones, key)) { valid = false; return; }
+        nextBones[key] = { node: operation.node, kind: operation.kind, value: operation.value.slice(),
+          group: boneFamilies[String(operation.node)] || "all" };
+      });
+      state.visibility.forEach(function (operation) {
+        if (!visibilityValid(operation) || own(nextVisibility, String(operation.node))) { valid = false; return; }
+        nextVisibility[String(operation.node)] = { node: operation.node, visible: operation.visible,
+          group: visibilityFamilies[String(operation.node)] || "all" };
+      });
+      Object.keys(state.selectedPresets).forEach(function (group) {
+        var id = state.selectedPresets[group];
+        if (!presets.some(function (preset) { return preset.id === id && family(preset.group) === group; })) valid = false;
+        else nextPresets[group] = id;
+      });
+      if (!valid) return false;
+      // Commit only after validating the complete snapshot. Display rounding
+      // never feeds back into the restored morph weights or bone transforms.
+      overrides = nextOverrides; boneOperations = nextBones; visibilityOperations = nextVisibility;
+      selectedPresets = nextPresets; currentGroup = state.group; selectedRaw = state.selectedRaw;
+      rawInputValues = {}; partSelections = []; lastSelection = null; inputError(false);
+      var selection = state.lastSelection;
+      if (selection && selection.kind === "preset") {
+        var preset = presets.filter(function (entry) { return entry.id === selection.id; })[0];
+        if (preset) lastSelection = { label: preset.label, note: preset.note || "", kind: "preset", id: preset.id, group: family(preset.group) };
+      } else if (selection && selection.kind === "shape") {
+        var control = controls.filter(function (entry) { return entry.id === selection.id; })[0];
+        if (control) lastSelection = { label: control.label, note: control.note || "Shape control only.", kind: "shape", id: control.id, group: family(control.group) };
+      } else if (selectedRaw) {
+        var channel = channelByKey[selectedRaw], meta = metadataByTarget[token(channel.node, channel.index)];
+        lastSelection = { label: meta ? meta.label : "Original channel", note: "Original expression channel name is available in advanced controls.", kind: "raw", id: selectedRaw, group: channelFamily(channel) };
+      }
+      renderPanel(); changed(); return true;
+    }
     listen(ui.raw, "change", function () { selectedRaw = ui.raw.value; inputError(false); refresh(); });
     listen(ui.strength, "input", function () { setRaw(Number(ui.strength.value) / 100); });
     listen(ui.number, "input", function () { setRaw(ui.number.value.trim() ? Number(ui.number.value) / 100 : NaN, ui.number.value); });
@@ -396,10 +446,10 @@
     renderPanel(); refresh();
     return {
       applyBonesAndMorphs: applyBonesAndMorphs, applyVisibility: applyVisibility, getBoneOperations: getBoneOperations,
-      refresh: refresh, reset: reset,
+      refresh: refresh, reset: reset, restoreState: restoreState,
       setInteractive: function (value) { interactive = !!value; refresh(); },
       updateLanguage: function () { renderPanel(); refresh(); },
-      getState: function () { return { group: currentGroup, selectedRaw: selectedRaw, selectedPresets: Object.assign({}, selectedPresets),
+      getState: function () { return { group: currentGroup, selectedRaw: selectedRaw, selectedPresets: Object.assign({}, selectedPresets), lastSelection: lastSelection && Object.assign({}, lastSelection),
         rawWeights: channels.map(function (channel) { return { key: String(channel.key), sourceWeight: authoredWeights[String(channel.key)],
           currentWeight: channel.object.morphTargetInfluences[channel.index] }; }),
         rawRange: channelByKey[selectedRaw] ? rawRange(channelByKey[selectedRaw]) : null, rawInputError: rawError,

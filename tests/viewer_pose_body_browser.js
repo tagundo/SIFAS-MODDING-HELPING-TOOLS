@@ -88,7 +88,7 @@ async function run() {
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
       const initial = await snapshot(page);
       assert.equal(initial.panels['viewer-adjustments'], false, 'Pose starts collapsed');
-      assert(initial.panels['viewer-body-adjustments'] && initial.panels['viewer-expression-adjustments'], 'Body and Expression start independently open');
+      assert(initial.panels['viewer-body-adjustments'] && !initial.panels['viewer-expression-adjustments'], 'Body starts open and Expression starts independently collapsed');
       const structure = await page.evaluate(() => {
         const pose = document.getElementById('viewer-adjustments'), body = document.getElementById('viewer-body-adjustments'), expression = document.getElementById('viewer-expression-adjustments');
         return { siblings: pose.parentElement === body.parentElement && body.parentElement === expression.parentElement,

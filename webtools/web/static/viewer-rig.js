@@ -7,6 +7,71 @@
   function element(id) { return document.getElementById(id); }
   function isHelper(object) { return object.userData && object.userData.viewerHelper === true; }
 
+  function motionSourceKey(entry) { return String(entry.sourceHash || "") + "\u0000" + String(entry.sourceName || ""); }
+  function motionReferences(descriptors) {
+    var references = new Set();
+    (descriptors || []).forEach(function (descriptor) {
+      (descriptor.clipSources || []).concat(descriptor.bodySegments || [], descriptor.facialClips || []).forEach(function (entry) {
+        if (entry.sourceHash && entry.sourceName) references.add(motionSourceKey(entry));
+      });
+    });
+    return references;
+  }
+  // Decide which clips are useful choices by their actual displayed targets.
+  // The complete animation array remains available to the timeline compositor.
+  function describeMotionClips(root, animations, info) {
+    var THREE = window.THREE, metadata = {}, facialNodes = new Set(), affected = new Set(), nodeByIndex = {};
+    var references = motionReferences(info && info.motionTimelines);
+    (info && info.clips || []).forEach(function (entry) { metadata[entry.name] = entry; });
+    (info && info.expressionCatalog && info.expressionCatalog.rawChannels || []).forEach(function (entry) {
+      if (entry.group === "eyes" || entry.group === "mouth") facialNodes.add(String(entry.node));
+    });
+    function facial(node) {
+      if (facialNodes.has(String(node.userData && node.userData.elichika_node))) return true;
+      for (var current = node; current && current !== root; current = current.parent) {
+        var name = current.userData && current.userData.originalName || current.name.replace(/__\d+$/, "");
+        if (/^(?:Head_Face|Face_Root|Eye_Root|Mouth_Root|(?:Left|Right)Eye(?:[12]|_Root|_Lid))$/.test(name)) return true;
+      }
+      return false;
+    }
+    function include(node) { for (var current = node; current && current !== root; current = current.parent) affected.add(current); }
+    root.traverse(function (node) {
+      if (node.userData && node.userData.elichika_node !== undefined) nodeByIndex[String(node.userData.elichika_node)] = node;
+      if (!node.isMesh || isHelper(node)) return;
+      include(node);
+      if (node.skeleton) node.skeleton.bones.forEach(include);
+    });
+    var seen = new Set();
+    var candidates = (animations || []).slice();
+    (info && info.clips || []).forEach(function (entry) {
+      if (entry.visibility && entry.visibility.length && !candidates.some(function (clip) { return clip.name === entry.name; })) candidates.push({ name: entry.name, tracks: [] });
+    });
+    return candidates.map(function (clip) {
+      var entry = metadata[clip.name] || {}, key = motionSourceKey(entry);
+      if (references.has(key)) return { name: clip.name, visible: false, reason: "timeline-source" };
+      if (entry.userSelected === false) return { name: clip.name, visible: false, reason: "automatic-companion" };
+      if (["camera", "facial", "mixed"].indexOf(entry.sourceRole) >= 0) return { name: clip.name, visible: false, reason: entry.sourceRole };
+      if (entry.sourceHash && entry.sourceName && seen.has(key)) return { name: clip.name, visible: false, reason: "duplicate-source" };
+      if (entry.sourceHash && entry.sourceName) seen.add(key);
+      var body = false, face = false;
+      clip.tracks.forEach(function (track) {
+        try {
+          var parsed = THREE.PropertyBinding.parseTrackName(track.name), target = THREE.PropertyBinding.findNode(root, parsed.nodeName);
+          if (target && parsed.objectName === "bones" && target.skeleton) target = target.skeleton.getBoneByName(parsed.objectIndex);
+          if (!target || isHelper(target) || !affected.has(target)) return;
+          if (["position", "quaternion", "rotation", "scale", "morphTargetInfluences", "visible"].indexOf(parsed.propertyName) < 0) return;
+          if (facial(target)) face = true; else body = true;
+        } catch (_) { /* An unresolved helper cannot become a character choice. */ }
+      });
+      (entry.visibility || []).forEach(function (track) {
+        var target = nodeByIndex[String(track.node)];
+        if (!target || isHelper(target) || !affected.has(target)) return;
+        if (facial(target)) face = true; else body = true;
+      });
+      return { name: clip.name, visible: body, reason: body ? "character" : face ? "facial-pose" : "unrelated-target" };
+    });
+  }
+
   function create(root, animations, info, options) {
     var THREE = window.THREE;
     var editing = window.ViewerEditing;
@@ -26,6 +91,7 @@
     var skirtOverrides = {};
     var authoredNodes = {};
     var nodeEditor = null, expressionPanel = null, physicsController = null;
+    var outlineEdits = [];
     var selectedNode = "";
     var editingMethods = {}, meshConversions = {}, editorGroup = "node", editorSelections = {}, evaluationMode = "authoring", restoredCompensationReference = {};
     var selectedClip = "";
@@ -35,6 +101,7 @@
     var events = [];
     var clips = animations || [];
     var clipEntries = [];
+    var timelineDescriptors = (info && info.motionTimelines || []).slice(), timelineWarnings = [];
     var currentClip = null;
     var playhead = 0;
     var parts = [];
@@ -111,6 +178,17 @@
       var tracks = visibilityTracks(entry.visibility);
       if (tracks.length) clipEntries.push({ name: entry.name, animation: null, duration: Math.max(0, finite(entry.duration, 0)), loop: entry.loop === true, partial: entry.bindingComplete === false, visibility: tracks });
     });
+    function visibleClips() { return clipEntries.filter(function (entry) { return !entry.internal; }); }
+    function refreshClipPresentation() {
+      var described = {}, references = motionReferences(timelineDescriptors);
+      describeMotionClips(root, clips, Object.assign({}, info, { motionTimelines: timelineDescriptors })).forEach(function (entry) { described[entry.name] = entry; });
+      clipEntries.forEach(function (entry) {
+        if (entry.timeline) { entry.internal = false; return; }
+        var source = (info && info.clips || []).filter(function (value) { return value.name === entry.name; })[0] || {};
+        entry.internal = entry.name !== defaultClip && (references.has(motionSourceKey(source)) || !!(described[entry.name] && !described[entry.name].visible));
+      });
+    }
+    refreshClipPresentation();
     // A clip's internal name (including ch0301 or eye_900) never establishes a
     // default pose. Only the backend's verified game-resource mapping may do so.
     var previewMotion = info && info.previewMotion;
@@ -118,6 +196,7 @@
       previewMotion.kind === "sifas_suit_preview" && typeof previewMotion.name === "string" ?
       clipEntries.filter(function (clip) { return clip.name === previewMotion.name && !clip.partial && clip.animation && isFinite(clip.duration) && clip.duration > 0; }) : [];
     var defaultClip = rigEditable && previewMatches.length === 1 ? previewMatches[0].name : "";
+    if (defaultClip) previewMatches[0].internal = false;
     (rigEditable && info.bones || []).forEach(function (bone) {
       var object = nodes[String(bone.node)];
       if (object) bones.push({ id: String(bone.node), name: bone.path || bone.name || object.name, object: object });
@@ -557,7 +636,7 @@
       element("viewer-pose-basic").setAttribute("aria-pressed", String(!disposed && selectedClip === ""));
       element("viewer-pose-preview").setAttribute("aria-pressed", String(!disposed && !!defaultClip && selectedClip === defaultClip));
       element("viewer-pose-help").hidden = !disposed && !!defaultClip;
-      element("viewer-motion").disabled = !enabled || !clipEntries.length;
+      element("viewer-motion").disabled = !enabled || !visibleClips().length;
       element("viewer-play").disabled = !enabled || !currentClip || duration() <= 0;
       element("viewer-time").disabled = !enabled || !currentClip || duration() <= 0;
       if (expressionPanel) expressionPanel.setInteractive(enabled);
@@ -565,7 +644,7 @@
       if (physicsController) physicsController.setInteractive(enabled, authoringEnabled);
       element("viewer-saved-nodes").disabled = !enabled || !authoringEnabled || !savedOperations.length;
       savedParts.forEach(function (part) { if (part.input) part.input.disabled = !enabled || !authoringEnabled || !useSavedNodes; });
-      element("viewer-preview-reset").disabled = !enabled || !(bones.length || clipEntries.length || expressions.length);
+      element("viewer-preview-reset").disabled = !enabled || !(bones.length || visibleClips().length || expressions.length);
       ["node", "mesh"].forEach(function (tool) { var tab = element("viewer-editor-" + tool + "-tab"); if (tab) tab.disabled = !enabled || !rigEditable; });
       refreshBodyControls();
     }
@@ -841,7 +920,7 @@
         if (document.activeElement !== input) {
           // Mixed or out-of-card-range values can come from valid advanced
           // edits. A display value is not an invalid user draft.
-          input.value = state.currentPercent === null ? "" : numberText(state.currentPercent);
+          input.value = state.currentPercent === null ? "" : percentageText(state.currentPercent);
           input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
         }
         input.placeholder = translate(state.targets.length ? "Different values" : "Not available for this model.");
@@ -909,6 +988,7 @@
       evaluate(0); refreshBodyControls(); refreshNode(); changed();
     }
     function numberText(value) { return String(Number(value.toPrecision(7))); }
+    function percentageText(value) { return String(Number(value.toFixed(2))); }
     function scaleText(value, status) {
       if (!value) return translate(status === "conflict" ? "Conflicting file values" : "Unsupported file value");
       return value.map(numberText).join(" / ") + (status === "authored" ? " · " + translate("Authored fallback") : "");
@@ -970,8 +1050,8 @@
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.stopAllAction();
       all.forEach(function (record) { restore(record.object, record.authored); capture(record.object, record.base); });
-      selectedClip = name;
-      currentClip = clipEntries.filter(function (item) { return item.name === name; })[0] || null;
+      currentClip = visibleClips().filter(function (item) { return item.name === name; })[0] || null;
+      selectedClip = currentClip ? name : "";
       playhead = 0;
       action = currentClip && currentClip.animation && mixer ? mixer.clipAction(currentClip.animation).reset().play() : null;
       if (action) {
@@ -980,13 +1060,30 @@
       }
       if (action) { action.paused = false; evaluate(0); }
       else evaluate(0);
-      element("viewer-motion").value = name;
+      element("viewer-motion").value = selectedClip;
       element("viewer-time").max = String(duration());
       refreshAvailability(); refreshMotionStatus(); updateTime(); refreshExpression(); refreshNode(); changed();
+    }
+    function registerMotionTimeline(descriptor) {
+      if (!window.ViewerMotionTimeline || !descriptor || descriptor.version !== 2) throw new Error("The game motion timeline is unavailable.");
+      var name = "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1);
+      var existing = clipEntries.filter(function (entry) { return entry.name === name; })[0];
+      if (!existing) {
+        all.forEach(function (record) { restore(record.object, record.authored); });
+        var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor);
+        if (!timeline.compatibleSegments) throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions."));
+        existing = { name: name, label: descriptor.label || name, animation: null, timeline: timeline,
+          duration: timeline.duration, loop: descriptor.category !== "voice", partial: timeline.warnings.length > 0, visibility: [] };
+        clipEntries.push(existing);
+        if (!timelineDescriptors.some(function (value) { return value.category === descriptor.category && value.motion === descriptor.motion && value.performerPosition === descriptor.performerPosition; })) timelineDescriptors.push(descriptor);
+      }
+      refreshClipPresentation();
+      return existing;
     }
     function reset() {
       adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
       accessoryUnclip = null; accessoryCorrections = {};
+      outlineEdits = [];
       clearHipDrafts();
       if (expressionPanel) expressionPanel.reset(true);
       if (physicsController) physicsController.reset();
@@ -1006,8 +1103,9 @@
       savedParts.forEach(function (part) { if (part.title) part.title.textContent = translate(part.label) + " (" + part.operations.length + ")"; });
     }
     function refreshMotionStatus() {
-      var text = translate(clipEntries.length ? "Play or pause a motion to inspect the model's pose." : bones.length || expressions.length ? "No compatible motion is available. You can adjust this model's bones and expressions." : "This model supports a static preview only.");
+      var text = translate(visibleClips().length ? "Play or pause a motion to inspect the model's pose." : bones.length || expressions.length ? "No compatible motion is available. You can adjust this model's bones and expressions." : "This model supports a static preview only.");
       if (currentClip && currentClip.partial || (info && info.animationWarnings || []).length) text += " " + translate("Some animation tracks could not be applied.");
+      if (timelineWarnings.length) text += " " + timelineWarnings.map(translate).join(" ");
       element("viewer-rig-status").textContent = text;
     }
     function updateLanguage() {
@@ -1019,9 +1117,9 @@
       element("viewer-pose-help").textContent = translate("No compatible preview motion is available.");
       var motion = element("viewer-motion"); motion.textContent = "";
       appendOption(motion, "", translate("Saved pose"));
-      clipEntries.forEach(function (clip) {
+      visibleClips().forEach(function (clip) {
         var label = (info && info.expressionCatalog && info.expressionCatalog.clips || []).filter(function (value) { return value.name === clip.name; })[0];
-        appendOption(motion, clip.name, (clip.name === defaultClip ? translate("SIFAS costume preview") : label ? translate(label.label) : clip.name) + (clip.partial ? " · " + translate("Partially supported motion") : ""));
+        appendOption(motion, clip.name, (clip.name === defaultClip ? translate("SIFAS costume preview") : clip.label || (label ? translate(label.label) : clip.name)) + (clip.partial ? " · " + translate("Partially supported motion") : ""));
       }); motion.value = selectedClip;
       if (nodeEditor) nodeEditor.updateLanguage();
       if (expressionPanel) expressionPanel.updateLanguage();
@@ -1039,7 +1137,7 @@
         });
         preset.value = body.breastPreset;
       }
-      element("viewer-rig-status").textContent = translate(clipEntries.length ? "Play or pause a motion to inspect the model's pose." :
+      element("viewer-rig-status").textContent = translate(visibleClips().length ? "Play or pause a motion to inspect the model's pose." :
         bones.length || expressions.length ? "No compatible motion is available. You can adjust this model's bones and expressions." : "This model supports a static preview only.");
       refreshMotionStatus(); updateTime(); refreshSavedStatus(); refreshExpression(); refreshAvailability();
     }
@@ -1185,6 +1283,10 @@
     if (window.ViewerPhysics) physicsController = window.ViewerPhysics.create(root, options.editing && options.editing.physics || {}, {
       translate: translate, onChange: function () { evaluate(0); changed(); }
     });
+    timelineDescriptors.slice().forEach(function (descriptor) {
+      try { registerMotionTimeline(descriptor); }
+      catch (error) { timelineWarnings.push(error.message); }
+    });
     clearHipDrafts(); updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
     if (options.initializeNodeCards !== false) initializeNodeCards();
 
@@ -1198,7 +1300,7 @@
       // Numeric steps control spinner increments, not the precision of Unity
       // file values or explicit edits. A fractional untouched TRS can be off
       // that grid while remaining a valid finite authoring value.
-      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input, #viewer-hips-card input"), function (input) {
+      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input, #viewer-hips-card input, #viewer-outline-number"), function (input) {
         if (input.closest(".viewer-hips-control")) {
           // An invalid draft remains unresolved if an advanced method change
           // disables the dedicated fields. Only reset or an explicit valid
@@ -1249,6 +1351,7 @@
         unsupported: unsupported.filter(function (message, index, values) { return values.indexOf(message) === index; }) };
       if (physicsController && physicsController.getEdits().length) state.physics = physicsController.getEdits();
       if (accessoryUnclip) state.accessoryUnclip = Object.assign({}, accessoryUnclip);
+      if (outlineEdits.length) state.outlines = outlineEdits.map(function (value) { return { id: value.id, factor: value.factor }; });
       if (edits.some(function (edit) { return edit.compensate; })) {
         var reference = fileMap(), writable = {};
         applyBodyPreset(function (id) { return reference[id]; });
@@ -1268,6 +1371,8 @@
       }
       var next = {}, methods = {}, compensations = {}, seen = {};
       var restoredAccessory = checkedAccessory(state.accessoryUnclip);
+      var restoredOutlines = window.ViewerOutlines ? window.ViewerOutlines.checked(state.outlines || [], (options.editing || {}).outlines) : [];
+      if (!window.ViewerOutlines && state.outlines && state.outlines.length) throw new Error("The outline editor is unavailable.");
       state.edits.forEach(function (edit) {
         var id = String(edit.node);
         if (!Number.isInteger(edit.node) || !authoredNodes[id] || seen[id] || ["auto", "node", "mesh"].indexOf(edit.method) < 0) throw new Error("The body edit recipe is invalid.");
@@ -1308,6 +1413,7 @@
       else if (state.physics && state.physics.length) throw new Error("The model has no compatible physics editor.");
       adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
       accessoryUnclip = restoredAccessory; accessoryCorrections = {};
+      outlineEdits = restoredOutlines;
       clearHipDrafts();
       var baseline = storedFileMap();
       state.edits.forEach(function (edit) {
@@ -1347,6 +1453,13 @@
     }
     return {
       getAuthoringState: getAuthoringState,
+      getOutlineEdits: function () { return outlineEdits.map(function (value) { return { id: value.id, factor: value.factor }; }); },
+      setOutlineEdits: function (values) {
+        if (!window.ViewerOutlines) throw new Error("The outline editor is unavailable.");
+        var next = window.ViewerOutlines.checked(values, (options.editing || {}).outlines);
+        if (JSON.stringify(next) === JSON.stringify(outlineEdits)) return;
+        outlineEdits = next; changed();
+      },
       restoreAuthoringState: restoreAuthoringState,
       getAccessoryUnclip: function () { return accessoryUnclip && Object.assign({}, accessoryUnclip); },
       setAccessoryUnclip: function (value) {
@@ -1381,19 +1494,11 @@
       },
       setEditorGroup: setEditorGroup,
       setMotionTimeline: function (descriptor) {
-        if (!window.ViewerMotionTimeline || !descriptor || descriptor.version !== 2) throw new Error("The game motion timeline is unavailable.");
-        var name = "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1);
-        var existing = clipEntries.filter(function (entry) { return entry.name === name; })[0];
-        if (!existing) {
-          all.forEach(function (record) { restore(record.object, record.authored); });
-          var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor);
-          if (!timeline.compatibleSegments) { evaluate(0); throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions.")); }
-          existing = { name: name, label: descriptor.label || name, animation: null, timeline: timeline,
-            duration: timeline.duration, loop: descriptor.category !== "voice", partial: timeline.warnings.length > 0, visibility: [] };
-          clipEntries.push(existing);
-        }
-        updateLanguage(); setClip(name);
-        return { clipName: name, warnings: existing.timeline.warnings.slice() };
+        var existing;
+        try { existing = registerMotionTimeline(descriptor); }
+        catch (error) { evaluate(0); throw error; }
+        updateLanguage(); setClip(existing.name);
+        return { clipName: existing.name, warnings: existing.timeline.warnings.slice() };
       },
       setEvaluationMode: function (mode) {
         if (["authoring", "animation"].indexOf(mode) < 0 || mode === evaluationMode) return;
@@ -1413,7 +1518,9 @@
             playhead += delta;
             if (playhead >= duration()) { if (currentClip.loop && duration()) playhead %= duration(); else { playhead = duration(); playing = false; } }
           }
-          evaluate(action ? delta : 0); updateTime(); refreshExpression();
+          // Imported composite timelines advance the same physics clock even
+          // though they do not own a single top-level Three AnimationAction.
+          evaluate(delta); updateTime(); refreshExpression();
         }
         return playing && !!currentClip;
       },
@@ -1426,12 +1533,49 @@
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
       getPlaybackState: function () { return { selectedClip: selectedClip, playing: playing, time: currentTime(), duration: duration() }; },
+      restoreInspectionState: function (state, options) {
+        if (!state || typeof state !== "object") throw new Error("The model inspection snapshot is invalid.");
+        var strict = !options || options.strict !== false;
+        if (state.selectedClip && !visibleClips().some(function (clip) { return clip.name === state.selectedClip; })) {
+          if (strict) throw new Error("The original motion is no longer available.");
+        } else setClip(state.selectedClip || "");
+        if (state.expressionPanel && expressionPanel && !expressionPanel.restoreState(state.expressionPanel) && strict) throw new Error("The original expression state is no longer compatible.");
+        (state.parts || []).forEach(function (previous) {
+          var matches = parts.filter(function (part) {
+            return strict ? String(part.object.userData.elichika_node) === String(previous.node) && part.object.name === previous.name : part.object.name === previous.name;
+          });
+          if (matches.length !== 1) return;
+          var part = matches[0]; part.visible = !!previous.selected;
+          part.userVisible = typeof previous.userVisible === "boolean" ? previous.userVisible : undefined;
+          part.userChanged = !!previous.userChanged;
+        });
+        var mode = state.evaluationMode || state.evaluation && state.evaluation.mode;
+        if (mode === "authoring" || mode === "animation") this.setEvaluationMode(mode);
+        if (state.editorGroup) setEditorGroup(state.editorGroup);
+        var inspectedNode = state.selectedNode;
+        if (!strict && inspectedNode) {
+          var previousBone = (state.bones || []).filter(function (bone) { return String(bone.node) === String(inspectedNode); })[0];
+          var matches = previousBone ? bones.filter(function (bone) { return bone.name === previousBone.name; }) : [];
+          inspectedNode = matches.length === 1 ? matches[0].id : "";
+        }
+        if (inspectedNode && nodes[String(inspectedNode)]) {
+          selectedNode = String(inspectedNode); element("viewer-node").value = selectedNode;
+        }
+        if (currentClip && typeof state.time === "number" && isFinite(state.time)) {
+          var time = clamp(state.time, 0, Math.max(0, duration() - (action && currentClip.loop ? 1e-7 : 0)));
+          if (action) { action.paused = false; action.enabled = true; action.time = time; } else playhead = time;
+          playing = !!state.playing;
+        }
+        if (state.physics && physicsController && physicsController.restorePreviewState) physicsController.restorePreviewState(state.physics);
+        evaluate(0); updateTime(); refreshExpression(); refreshNode(); changed();
+        return true;
+      },
       getPartVisibility: function (object) { var part = parts.filter(function (item) { return item.object === object; })[0]; return part ? { fileVisible: part.fileVisible, selected: part.visible, userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible } : null; },
       reset: reset,
       dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (physicsController) physicsController.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
-        return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
+        return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: visibleClips().map(function (clip) { return clip.name; }), internalClipCount: clipEntries.length - visibleClips().length, selectedClip: selectedClip, defaultClip: defaultClip,
           accessoryUnclip: accessoryUnclip && Object.assign({}, accessoryUnclip), accessoryCorrectedAnchors: Object.keys(accessoryCorrections).length,
           playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
           physics: physicsController ? physicsController.getState() : null,
@@ -1453,5 +1597,5 @@
       }
     };
   }
-  window.ViewerRig = { create: create };
+  window.ViewerRig = { create: create, describeMotionClips: describeMotionClips };
 }());

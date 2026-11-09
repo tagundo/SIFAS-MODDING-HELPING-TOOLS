@@ -63,6 +63,7 @@ main { padding: 14px; }
 #tool-panel[hidden], #tab-gallery[hidden] { display: none; }
 
 .tool-list { display: flex; flex-direction: column; gap: 8px; }
+.tool-navigation { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
 .tool-list button {
   text-align: left; background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
@@ -158,7 +159,8 @@ main { padding: 14px; }
    The shared console keeps its original overlay outside this desktop scope. */
 @media (min-width: 1200px) {
   #tab-tools.active { align-items: start; }
-  #tab-tools .tool-list { position: sticky; top: 80px; align-self: start; max-height: calc(100vh - 96px); overflow-y: auto; scrollbar-gutter: stable; }
+  #tab-tools .tool-navigation { position: sticky; top: var(--tool-navigation-top, 80px); align-self: start; max-height: calc(100dvh - var(--tool-navigation-top, 80px) - 8px); }
+  #tab-tools .tool-list { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
   #tab-tools .tool-list button { flex-shrink: 0; }
   #tab-tools .tool-panel .desc { max-width: 100ch; line-height: 1.5; }
   #tab-tools #tool-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px 24px; align-items: start; }
@@ -377,6 +379,22 @@ main { padding: 14px; }
 .viewer-section-heading h3 { margin: 0; }
 .viewer-section-heading button { margin: 0; }
 .viewer-motion-row, .viewer-expression-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.viewer-motion-import-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.viewer-motion-import-actions > button { width: 100%; min-width: 0; margin: 0; padding: 7px 6px; min-height: 40px; font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: break-word; }
+.viewer-outline-card > div { display: grid; gap: 8px; margin-top: 8px; min-width: 0; }
+.viewer-outline-card:not([open]) > div { display: none; }
+.viewer-outline-card > div > label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; font-size: 12px; }
+.viewer-outline-card label:has(#viewer-outline-range) { grid-template-columns: minmax(30px, 1fr) minmax(56px, 78px) auto; align-items: center; }
+.viewer-outline-card label:has(#viewer-outline-range) > span { grid-column: 1 / -1; }
+#viewer-outline-range, #viewer-outline-number, #viewer-outline-mesh { width: 100%; min-width: 0; margin: 0; }
+#viewer-outline-number { text-align: right; }
+#viewer-outline-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.viewer-control-panel > details:not([open]) { padding: 0 10px; }
+.viewer-control-panel > details:not([open]) > summary { min-height: 36px; padding: 8px 0; }
+.viewer-body-card:not([open]) > summary { min-height: 34px; padding: 7px 10px; }
+@media (pointer: coarse) {
+  .viewer-control-panel > details:not([open]) > summary, .viewer-body-card:not([open]) > summary { min-height: 44px; }
+}
 .viewer-adjustments input[type=range] { min-height: 36px; }
 .viewer-motion-choice, .viewer-expression-row > label { display: flex; flex: 1 1 200px; min-width: 0; flex-direction: column; gap: 5px; font-size: 13px; }
 .viewer-motion-choice { flex: 1 1 160px; min-width: 0; }
@@ -713,7 +731,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
    Keep no duplicate header row, including when short-view controls move it. */
 .elichika-embedded #asset-tools-header { display: none; }
 @media (min-width: 1200px) {
-  .elichika-embedded #tab-tools .tool-list { top: 8px; max-height: calc(100vh - 16px); }
+  .elichika-embedded #tab-tools .tool-navigation { top: var(--tool-navigation-top, 8px); max-height: calc(100dvh - var(--tool-navigation-top, 8px) - 8px); }
   .elichika-embedded .tools-console-layout:has(#tab-tools.active) > .console { top: 8px; max-height: calc(100vh - 28px); }
 }
 .viewer-save-output-list .viewer-reveal { margin-left: 8px; }

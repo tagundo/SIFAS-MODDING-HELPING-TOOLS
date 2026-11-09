@@ -277,7 +277,24 @@ def _map_state(context, state, source_index, source_info, target_context, target
         # assigned to both native versions. No browser simulation is baked.
         physics.append({"id": matches[0]["id"], "values": copy.deepcopy(row["values"])})
         physics_proof.append({"sourcePhysics": row["id"], "targetPhysics": matches[0]["id"], "hierarchy": list(semantic)})
-    if not converted and not physics and "accessoryUnclip" not in state:
+    outline_changes, outline_proof = [], []
+    source_outlines = [row for row in context.get("outlines", {}).get("meshes", [])
+                       if row["sourceIndex"] == source_index]
+    target_outlines = target_context.get("outlines", {}).get("meshes", [])
+    by_outline_id = {row["id"]: row for row in source_outlines}
+    for row in state.get("outlines", []):
+        source_outline = by_outline_id.get(row["id"])
+        if source_outline is None:
+            continue
+        semantic = source_outline.get("semantic")
+        origins = [item for item in source_outlines if item.get("semantic") == semantic]
+        matches = [item for item in target_outlines if item.get("semantic") == semantic]
+        if semantic is None or len(origins) != 1 or len(matches) != 1:
+            raise ValueError("The counterpart has no unique matching outline mesh: " + source_outline["name"])
+        outline_changes.append({"id": matches[0]["id"], "factor": row["factor"]})
+        outline_proof.append({"sourceOutline": row["id"], "targetOutline": matches[0]["id"],
+                              "meshSemantic": copy.deepcopy(semantic)})
+    if not converted and not physics and not outline_changes and "accessoryUnclip" not in state:
         raise ValueError("There are no source-bound body edits to apply to the counterpart.")
     references = []
     for row in state.get("compensationReference", []):
@@ -303,10 +320,12 @@ def _map_state(context, state, source_index, source_info, target_context, target
         translated["physics"] = physics
     if "accessoryUnclip" in state:
         translated["accessoryUnclip"] = copy.deepcopy(state["accessoryUnclip"])
+    if outline_changes:
+        translated["outlines"] = outline_changes
     proof = [{"sourceNode": ident, "targetNode": row[1]["node"], "hierarchy": list(row[4]),
               "sourceUnity": list(_key(row[0])), "targetUnity": list(_key(row[1]))}
              for ident, row in mapping.items()]
-    return translated, proof + physics_proof
+    return translated, proof + physics_proof + outline_proof
 
 
 def _edit_partner(context, state, source_index, original_raw, folder, job):
@@ -424,7 +443,8 @@ def _apply(context, result, state, *, pair, declarations, job):
                     selected = [(index, source) for index, source in opened
                                 if (any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
                                         for row in state["edits"]) or
-                                    any(row["id"].split(":", 1)[0] == str(index) for row in state.get("physics", [])))]
+                                    any(row["id"].split(":", 1)[0] == str(index) for row in state.get("physics", [])) or
+                                    any(row["id"].split(":", 1)[0] == str(index) for row in state.get("outlines", [])))]
                     accessory_only = not selected and "accessoryUnclip" in state
                     if accessory_only:
                         selected = opened

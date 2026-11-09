@@ -72,7 +72,7 @@ const tools = page => page.locator('#tool-list > button[data-id]').evaluateAll(n
 const roots = page => page.locator('#viewer-control-panel > details[id]').evaluateAll(nodes => nodes.map(node => node.id));
 async function close(page) { await page.keyboard.press('Escape'); await page.locator('.panel-settings-dialog[open]').waitFor({ state: 'hidden' }); }
 async function ready(page, url) {
-  await page.goto(url); await page.waitForFunction(() => document.querySelector('#tool-list .panel-settings-button') && document.querySelectorAll('#tool-list > button[data-id]').length > 2);
+  await page.goto(url); await page.waitForFunction(() => document.querySelector('#tools-panel-settings') && document.querySelectorAll('#tool-list > button[data-id]').length > 2);
   assert.deepStrictEqual(await page.evaluate(() => window.__panelStorageAtStartup), [null, null, null], 'Fresh origin starts without localStorage preferences');
 }
 async function verifyWeb(page, expected) {
@@ -110,10 +110,15 @@ async function run() {
     await row(page, 'viewer-body-adjustments').locator('input[type=checkbox]').uncheck();
     await row(page, 'viewer-adjustments').locator('[data-move=down]').click(); await close(page);
     await until(() => nativeSettings.viewer.hidden.includes('viewer-body-adjustments') && nativeSettings.viewer.order[0] === 'viewer-save-panel', 'viewer native save ack');
-    await page.locator('[data-tab=tools]').click(); await page.locator('#tool-list .panel-settings-button').click();
+    await page.locator('[data-tab=tools]').click(); await page.locator('#tools-panel-settings').click();
     await row(page, 'character_info').locator('input[type=checkbox]').uncheck();
     await row(page, 'breast_size').locator('[data-move=down]').click(); await close(page);
     await until(() => nativeSettings.tools.hidden.includes('character_info') && nativeSettings.tools.order[0] === 'character_info', 'tools native save ack');
+    await page.locator('#tools-panel-settings').click();
+    for (const input of await page.locator('.panel-settings-dialog[open] input[type=checkbox]').all()) await input.uncheck();
+    await close(page);
+    await until(() => nativeSettings.tools.hidden.length === nativeSettings.tools.order.length, 'all-hidden tools native save');
+    assert(await page.locator('#tools-panel-settings').isVisible(), 'Native Tools keeps recovery control when all entries are hidden');
     const callsBefore = messages.length;
     const rejections = await page.evaluate(async () => Promise.all([
       { panelScope: 'arbitrary', panelSettings: { hidden: [], order: [] } },
@@ -123,10 +128,15 @@ async function run() {
     assert(rejections.every(value => value !== 'unexpected success'));
     assert.equal(messages.length, callsBefore, 'Adapter rejects invalid values without calling native host');
     await ready(page, contentA.url); await verifyContent(page, initial.content);
-    await page.locator('#tool-list .panel-settings-button').click();
+    await page.locator('#tools-panel-settings').click();
     await row(page, 'clear_packs').locator('input[type=checkbox]').uncheck();
     await row(page, 'restore').locator('[data-move=down]').click(); await close(page);
     await until(() => nativeSettings.content.hidden.includes('clear_packs') && nativeSettings.content.order[0] === 'clear_packs', 'direct content native save');
+    await page.locator('#tools-panel-settings').click();
+    for (const input of await page.locator('.panel-settings-dialog[open] input[type=checkbox]').all()) await input.uncheck();
+    await close(page);
+    await until(() => nativeSettings.content.hidden.length === nativeSettings.content.order.length, 'all-hidden content native save');
+    assert(await page.locator('#tools-panel-settings').isVisible(), 'Native Server content keeps recovery control when all entries are hidden');
     const persisted = copy(nativeSettings);
     assert(messages.some(message => message.panelScope === 'viewer') && messages.some(message => message.panelScope === 'tools') && messages.some(message => message.panelScope === 'content'));
     await context.close(); context = null;
@@ -135,6 +145,7 @@ async function run() {
     await page.locator('[data-tab=viewer]').click(); await page.locator('#viewer-panel-settings').click();
     await page.screenshot({ path: path.join(evidence, 'native-restored-viewer.png') }); await close(page);
     await ready(page, contentB.url); await verifyContent(page, persisted.content);
+    assert(await page.locator('#tools-panel-settings').isVisible(), 'Server content recovery control survives fresh native origin');
     assert.deepStrictEqual(errors, []);
     Object.assign(report, { status: 'PASS', initial, persisted, nativeWrites: messages.length, invalidRequestsRejected: rejections, changedOrigins: [webA.url, webB.url, contentA.url, contentB.url], freshLocalStorage: true });
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
