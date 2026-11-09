@@ -72,7 +72,7 @@ class ViewerEditRouteTests(unittest.TestCase):
             validate_state=Mock(return_value=self.state), export=Mock(side_effect=export),
             accessory_preview=Mock(return_value={"corrections": [], "summary": {"status": "nothing", "changed": 0}}),
             restore=Mock(return_value=self.state))
-        self.viewer = SimpleNamespace(prepare=Mock(return_value={
+        self.viewer = SimpleNamespace(MAX_MOTION_FILES=32, get_editing_companions=Mock(return_value=[]), prepare=Mock(return_value={
             "id": self.token, "rig": {"available": True, "bones": []}}))
         for name, value in (("model_edits", self.backend), ("model_viewer", self.viewer)):
             context = patch.dict(sys.modules, {"webtools.core." + name: value})
@@ -116,6 +116,8 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertEqual(args[:2], (self.token, [str(self.source)]))
         self.assertEqual(kwargs["originals"], [str(self.source)])
         self.assertIn("archive_members", kwargs)
+        self.assertEqual(kwargs["companions"], [])
+        self.viewer.get_editing_companions.assert_called_once_with(self.token)
         self.assertEqual(self.source.read_bytes(), b"UnityFS source must never change")
 
     def test_accessory_preview_is_read_only_and_source_bound(self):

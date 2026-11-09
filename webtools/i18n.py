@@ -2309,6 +2309,29 @@ _VIEWER_TRANSLATIONS.update({
     "The motion could not be loaded.": ["모션을 불러오지 못했습니다.", "モーションを読み込めませんでした。"],
 })
 
+_VIEWER_TRANSLATIONS.update({
+    "Clear imported motions": ["불러온 모션 목록 비우기", "読み込んだモーション一覧をクリア"],
+    "Open the selected model before adding motion.": ["선택한 모델을 먼저 연 뒤 모션을 추가하세요.", "選択したモデルを開いてからモーションを追加してください。"],
+    "Imported motions are kept when opening another model.": ["다른 모델을 열어도 불러온 모션 목록을 유지합니다.", "別のモデルを開いても読み込んだモーション一覧を保持します。"],
+    "The motion library is full. Clear imported motions before adding more.": ["모션 목록이 가득 찼습니다. 불러온 모션 목록을 비운 뒤 추가하세요.", "モーション一覧がいっぱいです。読み込んだモーションをクリアしてから追加してください。"],
+    "Gaze": ["시선", "視線"],
+    "Gaze control": ["시선 제어", "視線の制御"],
+    "Follow motion gaze": ["모션 시선 따르기", "モーションの視線に従う"],
+    "Look at the preview camera": ["미리보기 카메라 보기", "プレビューカメラを見る"],
+    "Look straight ahead": ["정면 보기", "正面を見る"],
+    "Adjust gaze direction": ["시선 방향 조절", "視線の方向を調整"],
+    "Horizontal gaze": ["좌우 시선", "左右の視線"],
+    "Vertical gaze": ["상하 시선", "上下の視線"],
+    "Gaze strength": ["시선 강도", "視線の強さ"],
+    "Enter a gaze value within the displayed range.": ["표시된 범위 안의 시선 값을 입력하세요.", "表示範囲内の視線の値を入力してください。"],
+    "Open the original face and its eye-pose animation bank to adjust gaze.": ["시선을 조절하려면 원본 얼굴과 눈 포즈 모션을 불러오세요.", "視線を調整するには元の顔と目のポーズアニメーションを読み込んでください。"],
+    "The original gaze target is unavailable in this preview.": ["이 미리보기에는 원본 시선 대상이 없습니다.", "このプレビューには元の視線対象がありません。"],
+    "Gaze uses the original eye poses without changing eyelids or mouth shapes.": ["원본 눈 포즈로 시선을 조절하며 눈꺼풀·입 모양은 유지합니다.", "元の目のポーズで視線を調整し、まぶたと口の形を保ちます。"],
+    "Some original gaze poses are ambiguous for this model.": ["일부 원본 시선 포즈를 구분할 수 없습니다.", "一部の元の視線ポーズを区別できません。"],
+    "Some original gaze poses are unavailable for this model.": ["이 모델에서 일부 원본 시선 포즈를 사용할 수 없습니다.", "このモデルでは一部の元の視線ポーズを使用できません。"],
+    "An original gaze target is unavailable in this single-model preview.": ["단일 모델 미리보기에는 일부 원본 시선 대상이 없습니다.", "単一モデルのプレビューには一部の元の視線対象がありません。"],
+})
+
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

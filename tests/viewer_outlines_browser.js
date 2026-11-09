@@ -22,6 +22,8 @@ for index,name in enumerate(sys.argv[1:]):
  Path(name).write_bytes(env.file.save())`, ...sources], { cwd: product, env: pythonEnv });
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const hashes = sources.map(sha), wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const actualSources = process.env.SIFAS_OUTLINE_BODY && process.env.SIFAS_OUTLINE_FACE ? ['ch0201_co0002.unity', 'ch0201_face.unity'].map((name, index) => { const file = path.join(models, name); fs.copyFileSync(process.env[index ? 'SIFAS_OUTLINE_FACE' : 'SIFAS_OUTLINE_BODY'], file); return file; }) : [];
+const actualHashes = actualSources.map(sha);
 async function show(locator) { await locator.evaluate(node => { for (let parent = node.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; }); await locator.scrollIntoViewIfNeeded(); return locator; }
 async function boot() {
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve)); const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
@@ -135,6 +137,30 @@ print(json.dumps(result))`, JSON.stringify(catalogue), JSON.stringify(sources), 
     assert.equal(await page.locator('#viewer-outline-number').inputValue(), '100'); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines || []), [], 'Reopened copy starts from its baked source red mask at100%');
     await page.screenshot({ path: path.join(evidence, '01-saved-outline-copy.png') });
     report.cases.push({ name: 'Per-mesh/all controls, invalid/reset, shader status, real outline-only Save, portable recipe and source100% reopen', catalogue, authored, saved, preservation, order });
+    await open(page, [sources[0]]); await page.locator('#viewer-outline-card').evaluate(node => node.open = true);
+    const detailCatalog = await page.evaluate(() => ModelViewer.getEditingMetadata().outlines), detailIdentity = detailCatalog.meshes[0].id;
+    await choose(page, '#viewer-outline-mesh', detailIdentity); await field(page, '#viewer-outline-vertex-width', 50); await field(page, '#viewer-outline-vertex-index', 0);
+    await page.locator('#viewer-outline-vertex-apply').click();
+    const exactDetail = await page.evaluate(() => ModelViewer.getAuthoringState().outlines);
+    assert.deepStrictEqual(exactDetail, [{ id: detailIdentity, factor: 1, vertices: [{ vertex: 0, value: .5 }] }]);
+    const detailGpu = await page.evaluate(() => { ModelViewer.renderProbe(); const mesh = window.__outlineRoot.children.find(mesh => mesh.isMesh && !mesh.userData.viewerHelper) || (() => { let found; window.__outlineRoot.traverse(mesh => { if (!found && mesh.isMesh && !mesh.userData.viewerHelper) found = mesh; }); return found; })(); return { sourceRed: mesh.geometry.attributes._sifas_color.getX(0), previewRed: mesh.geometry.attributes._sifas_outline_width.getX(0), borrowed: mesh.children.find(child => child.userData.sifasOutline).geometry === mesh.geometry }; });
+    assert.equal(detailGpu.sourceRed, 0, 'Preview never rewrites the authored color buffer'); assert(Math.abs(detailGpu.previewRed - 128 / 255) < 1e-7, 'Zero-red source vertex receives the actual final UNorm8 width'); assert(detailGpu.borrowed);
+    await page.locator('#viewer-outline-undo').click(); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines || []), []);
+    await page.locator('#viewer-outline-redo').click(); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines), exactDetail);
+    await field(page, '#viewer-outline-vertex-width', 25); await choose(page, '#viewer-outline-scene-mode', 'paint');
+    const paintPoint = await page.evaluate(identity => { const p = [0, 1, 2].map(index => ModelViewer.projectOutlineVertex(identity, index)); return { x: p[0].x * .9 + p[1].x * .05 + p[2].x * .05, y: p[0].y * .9 + p[1].y * .05 + p[2].y * .05 }; }, detailIdentity);
+    await page.mouse.move(paintPoint.x, paintPoint.y); await page.mouse.down(); await page.mouse.up();
+    const paintedDetail = await page.evaluate(() => ModelViewer.getAuthoringState().outlines);
+    assert(paintedDetail[0].vertices.some(row => row.value === .25), 'Trusted 3D pointer paints source-bound vertex width');
+    assert.equal(await page.locator('.viewer-outline-brush-cursor').evaluate(node => Number.parseFloat(node.style.width)), 48);
+    await page.keyboard.press('Control+z'); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines), exactDetail, 'Ctrl+Z restores one complete outline stroke');
+    await page.keyboard.press('Control+Shift+z'); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines), paintedDetail);
+    await choose(page, '#viewer-outline-scene-mode', 'orbit');
+    const detailExport = page.waitForResponse(response => response.url().endsWith('/api/viewer/edit/export')); await (await show(page.locator('#viewer-save'))).click(); assert.equal((await detailExport).status(), 200);
+    await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ModelViewer.getState().persistence.previewPaths.length);
+    const detailSaved = await page.evaluate(() => ModelViewer.getState().persistence), detailRecipe = JSON.parse(fs.readFileSync(detailSaved.recipePath, 'utf8'));
+    assert.deepStrictEqual(detailRecipe.state.outlines, paintedDetail, 'Sparse detailed edits survive the actual Save recipe');
+    report.cases.push({ name: 'Sparse zero-mask vertex width, actual GPU override, 3D brush/cursor, Ctrl+Z/Redo and real detail export', exactDetail, detailGpu, paintedDetail, detailSaved });
     await open(page, [sources[0]]); const before = await geometry(page); assert(before.length && before.every(value => value.same));
     await page.locator('#viewer-mesh-deleter').evaluate(node => node.open = true);
     const inspectResponse = page.waitForResponse(r => r.url().endsWith('/api/viewer/mesh/inspect')); await page.locator('#viewer-mesh-deleter-load').click();
@@ -155,6 +181,20 @@ print(json.dumps(result))`, JSON.stringify(catalogue), JSON.stringify(sources), 
     await page.locator('#viewer-mesh-modify').getByRole('button', { name: 'Undo', exact: true }).click(); await page.evaluate(() => ModelViewer.renderProbe());
     const undo = await geometry(page); assert(undo.every(value => value.same)); assert.deepStrictEqual(undo[0].positions, bound[0].positions);
     report.cases.push({ name: 'Actual live outline shares editor geometry through binding, deletion, vertex move and Undo', before, bound, deleted, restored, moved, undo });
+    if (actualSources.length) {
+      await page.evaluate(paths => { document.getElementById('viewer-auto-face').checked = true; return openModelViewer(paths); }, [actualSources[0]]);
+      await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().outlines.meshes.some(mesh => mesh.sourceIndex === 1 && mesh.name === 'Mouth'));
+      const actualCatalogue = await page.evaluate(() => ModelViewer.getEditingMetadata().outlines), jaw = actualCatalogue.meshes.find(mesh => mesh.sourceIndex === 1 && mesh.name === 'Mouth');
+      const jawVertex = Number(execFileSync(python, ['-c', "import sys,numpy as np\nfrom pathlib import Path\nfrom UnityPy.helpers.MeshHelper import MeshHandler\nfrom webtools.core.model_edits import _inspect\ni=_inspect(Path(sys.argv[1]).read_bytes());m=next(o for o in i['objects'].values() if o.type.name=='Mesh' and o.read_typetree()['m_Name']=='Mouth');h=MeshHandler(m.read());h.process();print(int(np.argmin(np.asarray(h.m_Vertices)[:,1])))", actualSources[1]], { cwd: product, env: pythonEnv }).toString().trim());
+      await choose(page, '#viewer-outline-mesh', jaw.id); await field(page, '#viewer-outline-vertex-width', 25); await field(page, '#viewer-outline-vertex-index', jawVertex); await page.locator('#viewer-outline-vertex-apply').click();
+      const jawPreview = await page.evaluate(({ identity, vertex }) => { ModelViewer.renderProbe(); let result; window.__outlineRoot.traverse(mesh => { const map = mesh.geometry && mesh.geometry.userData.viewerMesh || mesh.userData.viewerMesh; if (!mesh.isMesh || mesh.userData.viewerHelper || !map || !map.mesh || [map.mesh.source, map.mesh.file, map.mesh.id].join(':') !== identity) return; result = { originalRed: mesh.geometry.attributes._sifas_color.getX(vertex), editedRed: mesh.geometry.attributes._sifas_outline_width.getX(vertex), positionWritable: map.writable, hasActualOutline: mesh.children.some(child => child.userData.sifasOutline) }; }); return result; }, { identity: jaw.id, vertex: jawVertex });
+      assert(jawPreview && jawPreview.hasActualOutline); assert.equal(jawPreview.positionWritable, false, 'Auto-face position/skin protections remain in place'); assert.equal(jawPreview.originalRed, 1); assert(Math.abs(jawPreview.editedRed - 64 / 255) < 1e-7);
+      const jawExport = page.waitForResponse(response => response.url().endsWith('/api/viewer/edit/export')); await (await show(page.locator('#viewer-save'))).click(); assert.equal((await jawExport).status(), 200);
+      await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ModelViewer.getState().persistence.previewPaths.length);
+      const jawSaved = await page.evaluate(() => ModelViewer.getState().persistence); assert.equal(jawSaved.previewPaths.length, 2, 'Original body and verified companion face are exported as new copies');
+      assert.deepStrictEqual(actualSources.map(sha), actualHashes); await page.screenshot({ path: path.join(evidence, '03-actual-jaw-detail-copy.png') });
+      report.cases.push({ name: 'Original Ayumu auto-face lower jaw is source-bound, editable with protected skin, and saves model+face copies', jaw, jawVertex, jawPreview, jawSaved });
+    }
     const gpu = await browser.newPage(); report.gpu = await gpuCase(gpu);
     assert(report.gpu.shared, 'Isolation test uses the same cached outline material for both meshes');
     assert(report.gpu.both.outlinePixels.every(count => count > 20), 'Stock outline produces measurable pixels');

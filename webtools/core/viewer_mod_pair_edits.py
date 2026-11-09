@@ -291,7 +291,14 @@ def _map_state(context, state, source_index, source_info, target_context, target
         matches = [item for item in target_outlines if item.get("semantic") == semantic]
         if semantic is None or len(origins) != 1 or len(matches) != 1:
             raise ValueError("The counterpart has no unique matching outline mesh: " + source_outline["name"])
-        outline_changes.append({"id": matches[0]["id"], "factor": row["factor"]})
+        change = {"id": matches[0]["id"], "factor": row["factor"]}
+        if row.get("vertices"):
+            signature = source_outline.get("vertexOrderSignature")
+            if (not signature or signature != matches[0].get("vertexOrderSignature") or
+                    source_outline.get("vertexCount") != matches[0].get("vertexCount")):
+                raise ValueError("The counterpart has no verified matching vertex order for detailed outline edits: " + source_outline["name"])
+            change["vertices"] = copy.deepcopy(row["vertices"])
+        outline_changes.append(change)
         outline_proof.append({"sourceOutline": row["id"], "targetOutline": matches[0]["id"],
                               "meshSemantic": copy.deepcopy(semantic)})
     if not converted and not physics and not outline_changes and "accessoryUnclip" not in state:

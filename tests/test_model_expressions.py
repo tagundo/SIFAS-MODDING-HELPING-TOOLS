@@ -57,6 +57,25 @@ class ExpressionCatalogTests(unittest.TestCase):
         self.assertEqual((self.morphs, self.bones, self.doc, self.sources), original)
         self.assertEqual(next(value for value in result["controls"] if value["id"] == "mouth-smile")["label"], "Smiling mouth")
 
+    def test_gaze_uses_the_displayed_characters_verified_pose_bank(self):
+        clips = [{"name": "own-up", "sourceName": "ch0207_LiveFacial_eye_008", "sourceHash": "own", "bindingComplete": True},
+                 {"name": "shared-up", "sourceName": "ch0001_LiveFacial_eye_008", "sourceHash": "shared", "bindingComplete": True},
+                 {"name": "unbound-left", "sourceName": "ch0207_LiveFacial_eye_007", "sourceHash": "own", "bindingComplete": False},
+                 {"name": "blink", "sourceName": "ch0207_LiveFacial_eye_900", "bindingComplete": True}]
+        result = self.catalog(clips=clips)
+        self.assertTrue(result["gaze"]["available"])
+        self.assertEqual(result["gaze"]["clips"], [{"name": "own-up", "index": 8, "kind": "eyes",
+                                                   "sourceName": "ch0207_LiveFacial_eye_008", "sourceHash": "own"}])
+        self.assertEqual((result["gaze"]["horizontalLimit"], result["gaze"]["verticalLimit"]), (45, 30))
+        self.assertNotIn(0, result["gaze"]["nodes"])
+
+    def test_gaze_does_not_require_morph_channels_and_never_invents_missing_eye_poses(self):
+        clips = [{"name": "up", "sourceName": "ch0207_LiveFacial_eye_008", "sourceHash": "own", "bindingComplete": True}]
+        result = expressions.describe_expressions([], self.bones, self.doc, owner=207, clips=clips)
+        self.assertTrue(result["available"])
+        self.assertTrue(result["gaze"]["available"])
+        self.assertFalse(expressions.describe_expressions([], self.bones, self.doc)["gaze"]["available"])
+
     def test_shared_eyelid_shape_is_open_eyelids_not_a_fake_gaze_control(self):
         result = self.catalog()
         control = next(value for value in result["controls"] if value["id"] == "eyes-open")

@@ -8,6 +8,13 @@
     'Paint': ['칠하기', '塗る'], 'Erase': ['지우기', '消す'], 'Undo': ['실행 취소', '元に戻す'],
     'Redo': ['다시 실행', 'やり直す'], 'Clear selection': ['선택 해제', '選択解除'],
     'Invert selection': ['선택 반전', '選択を反転'], 'Select all': ['모두 선택', 'すべて選択'],
+    'Select connected': ['연결된 면 선택', 'つながった面を選択'], 'Connected faces': ['연결된 면 선택', 'つながった面を選択'],
+    'Across UV seams': ['UV 경계도 연결', 'UV境界もつなぐ'],
+    'Choose a face or vertex first.': ['먼저 면이나 정점을 선택하세요.', '先に面または頂点を選択してください。'],
+    'Texture interaction': ['텍스처 조작', 'テクスチャ操作'], 'Move texture': ['텍스처 이동', 'テクスチャを移動'],
+    'Texture zoom': ['텍스처 확대', 'テクスチャ拡大'], 'Zoom in': ['확대', '拡大'], 'Zoom out': ['축소', '縮小'], 'Fit texture': ['텍스처 맞춤', 'テクスチャを全体表示'],
+    'Scroll or pinch to zoom. Use Move texture, Alt-drag or right-drag to pan.': ['스크롤이나 두 손가락으로 확대합니다. 텍스처 이동 모드, Alt+드래그 또는 오른쪽 드래그로 이동합니다.', 'スクロールまたはピンチで拡大します。移動モード、Altドラッグまたは右ドラッグで移動します。'],
+    'Connected selection stays in the selected material. Use the model to distinguish overlapping UVs.': ['연결 선택은 선택한 머티리얼 안에서 확장합니다. UV가 겹친 부분은 모델에서 직접 선택하면 구분할 수 있습니다.', '接続選択は選択中のマテリアル内で広がります。UVが重なる部分はモデル上で直接選択して区別できます。'],
     'Show UV lines': ['UV 선 표시', 'UV線を表示'], 'Texture image': ['텍스처 이미지', 'テクスチャ画像'],
     'Save mesh edits and open copy': ['메시 편집 저장 후 사본 열기', 'メッシュ編集を保存してコピーを開く'],
     'Open a model first.': ['먼저 모델을 여세요.', '先にモデルを開いてください。'],
@@ -95,6 +102,58 @@
     if (Math.abs(area) > 1e-12 && !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) return true;
     return Math.min(pointSegment(x, y, a, b), pointSegment(x, y, b, c), pointSegment(x, y, c, a)) <= radius;
   }
+  // A face component crosses shared edges, never a lone touching vertex. UV
+  // seams may duplicate vertices; join only a unique oppositely oriented edge
+  // with the same source positions and skin bindings, not coincident shells.
+  function buildFaceConnectivity(data, seams) {
+    var faces = data.triangles || [], positions = data.positions || [], skin = data.skin || [], neighbors = faces.map(function () { return []; });
+    var indexed = new Map(), geometric = seams ? new Map() : null, canonical = seams ? new Map() : null, vertexKeys = [], faceKeys = [], stride = positions.length + 1;
+    function vertexKey(index) {
+      if (vertexKeys[index] !== undefined) return vertexKeys[index];
+      var weights = (skin[index] || []).slice().sort(function (a, b) { return a[0] - b[0]; });
+      var signature = JSON.stringify([positions[index], weights]), id = canonical.get(signature);
+      if (id === undefined) { id = canonical.size; canonical.set(signature, id); }
+      return vertexKeys[index] = id;
+    }
+    function add(map, key, value) { var entries = map.get(key); if (entries) entries.push(value); else map.set(key, [value]); }
+    function connect(a, b) { if (a !== b) { neighbors[a].push(b); neighbors[b].push(a); } }
+    faces.forEach(function (face, index) {
+      var keys = seams ? face.map(vertexKey) : null; if (keys) faceKeys[index] = keys.slice().sort(function (a, b) { return a - b; }).join('|');
+      for (var edge = 0; edge < 3; edge++) {
+        var a = face[edge], b = face[(edge + 1) % 3]; if (a === b) continue;
+        var key = Math.min(a, b) * stride + Math.max(a, b); add(indexed, key, index);
+        if (geometric && keys[edge] !== keys[(edge + 1) % 3]) {
+          var first = keys[edge], second = keys[(edge + 1) % 3], forward = first < second;
+          add(geometric, Math.min(first, second) * stride + Math.max(first, second), { face: index, forward: forward, indexed: key });
+        }
+      }
+    });
+    indexed.forEach(function (entries) { for (var i = 1; i < entries.length; i++) connect(entries[0], entries[i]); });
+    if (geometric) geometric.forEach(function (entries) {
+      if (entries.length !== 2) return;
+      var a = entries[0], b = entries[1];
+      if (a.indexed !== b.indexed && a.forward !== b.forward && faceKeys[a.face] !== faceKeys[b.face]) connect(a.face, b.face);
+    });
+    return neighbors;
+  }
+  function connectedFaces(graph, seeds, accept) {
+    var visited = new Set(), queue = [];
+    (seeds || []).forEach(function (face) { if (Number.isInteger(face) && face >= 0 && face < graph.length && (!accept || accept(face)) && !visited.has(face)) { visited.add(face); queue.push(face); } });
+    for (var index = 0; index < queue.length; index++) (graph[queue[index]] || []).forEach(function (face) {
+      if (!visited.has(face) && (!accept || accept(face))) { visited.add(face); queue.push(face); }
+    });
+    return queue;
+  }
+  function clampView(view) {
+    var zoom = Math.max(1, Math.min(16, +view.zoom || 1));
+    return { zoom: zoom, x: Math.max(1 - zoom, Math.min(0, +view.x || 0)), y: Math.max(1 - zoom, Math.min(0, +view.y || 0)) };
+  }
+  function uvToView(point, view) { return [view.x + point[0] * view.zoom, view.y + (1 - point[1]) * view.zoom]; }
+  function viewToUv(point, view) { return [(point[0] - view.x) / view.zoom, 1 - (point[1] - view.y) / view.zoom]; }
+  function zoomView(view, zoom, anchor) {
+    anchor = anchor || [.5, .5]; var uv = viewToUv(anchor, view), result = { zoom: Math.max(1, Math.min(16, zoom)) };
+    result.x = anchor[0] - uv[0] * result.zoom; result.y = anchor[1] - (1 - uv[1]) * result.zoom; return clampView(result);
+  }
   function create(options) {
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
@@ -138,7 +197,7 @@
       var ticket = ++request; busy = true; status(panel, t('Loading…')); redraw(); if (options.onChange) options.onChange();
       try {
         var data = await api('data', { token: token, mesh: JSON.parse(id) }); if (disposed || ticket !== request) return;
-        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -173,25 +232,31 @@
     }
     function draw(panel) {
       var m = current(panel), canvas = panel.canvas, ctx = canvas.getContext('2d'), size = canvas.width;
-      ctx.clearRect(0, 0, size, size); if (!m || !m.data.uv) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, size, size); if (!m || !m.data.uv) return;
+      var view = panel.view;
       function point(i) { var uv = m.data.uv[i]; return [uv[0] * size, (1 - uv[1]) * size]; }
       var bone = panel.bone ? +panel.bone.value : 0, submesh = activeSubmesh(panel, m), image = submesh ? (submesh.textureIndex !== null ? m.images[submesh.textureIndex] : null) : m.image;
       function path(context, face) { context.beginPath(); face.forEach(function (v, i) { var p = point(v); if (i) context.lineTo(p[0], p[1]); else context.moveTo(p[0], p[1]); }); context.closePath(); }
-      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + panel.submesh.value;
+      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + panel.submesh.value + '/' + [view.zoom, view.x, view.y].join('/');
       if (baseKey !== panel.baseKey) {
         if (!panel.base) { panel.base = document.createElement('canvas'); panel.base.width = size; panel.base.height = size; }
-        var base = panel.base.getContext('2d'); base.clearRect(0, 0, size, size);
+        var base = panel.base.getContext('2d'); base.setTransform(1, 0, 0, 1, 0, 0); base.clearRect(0, 0, size, size);
+        base.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
+        // Resample the original texture into the zoomed viewport. Enlarging a
+        // previously reduced 640px image would lose the detail users need.
         if (image && image.complete && image.naturalWidth) base.drawImage(image, 0, 0, size, size);
         if (panel.lines.checked || panel.modify) m.data.triangles.forEach(function (face, index) {
           if (!visibleFace(panel, m, index)) return; path(base, face);
           if (panel.modify && m.data.skin.length) { var value = face.reduce(function (total, v) { var influences = m.weights[v] || m.data.skin[v]; return total + influences.reduce(function (sum, pair) { return sum + (pair[0] === bone ? pair[1] : 0); }, 0); }, 0) / 3; base.fillStyle = 'hsla(' + (240 - value * 240) + ',100%,50%,.35)'; base.fill(); }
-          if (panel.lines.checked) { base.strokeStyle = 'rgba(235,245,255,.55)'; base.lineWidth = .7; base.stroke(); }
+          if (panel.lines.checked) { base.strokeStyle = 'rgba(235,245,255,.55)'; base.lineWidth = .7 / view.zoom; base.stroke(); }
         }); panel.baseKey = baseKey;
       }
       ctx.drawImage(panel.base, 0, 0);
+      ctx.save(); ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
       m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
       m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
-      if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
+      if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
+      ctx.restore();
     }
     function operationState() {
       var result = [];
@@ -199,7 +264,7 @@
       return { version: 1, meshes: result };
     }
     function quickStatus() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.marked.size || m.positionCount || m.weightCount) count++; }); return { busy: busy, dirty: count > 0, dirtyCount: count, canSave: canSaveCopy(), hasHistory: history.length > 0, redoAvailable: future.length > 0, active: !!activePanel };  }
-    function redraw() {
+    function redraw(skipRuntime) {
       var changes = quickStatus().dirtyCount;
       panels.forEach(function (p) {
         var m = current(p); p.load.disabled = !token || busy || !interactive(); p.mesh.disabled = !token || busy || !interactive(); p.save.disabled = !token || busy || !canSaveCopy() || !interactive();
@@ -208,6 +273,10 @@
         p.canvas.style.opacity = busy ? '.5' : '1';
         p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
         p.actions.forEach(function (b) { b.disabled = busy || !m || !interactive(); });
+        if (p.connected) p.connected.disabled = busy || !m || !(p.modify ? m.selected.size : m.marked.size) || !interactive();
+        if (p.zoom) { p.zoom.value = p.view.zoom; p.zoomText.textContent = Math.round(p.view.zoom * 100) + '%'; p.zoom.disabled = busy || !m || !m.data.uv; }
+        if (p.viewButtons) p.viewButtons.forEach(function (b) { b.disabled = busy || !m || !m.data.uv; });
+        if (p.textureMode) { p.textureMode.disabled = busy || !m || !m.data.uv; p.canvas.style.cursor = p.textureMode.value === 'pan' ? 'grab' : p.textureMode.value === 'connected' ? 'pointer' : 'crosshair'; }
         if (p.vertex) {
           p.vertex.max = m ? m.data.positions.length - 1 : 0;
           p.weightApply.disabled = busy || !m || !m.data.skinWritable || !m.selected.size;
@@ -218,12 +287,29 @@
         }
         draw(p);
       });
-      syncRuntime();
+      if (skipRuntime !== true) syncRuntime();
     }
     function selection(panel, mode) { var m = current(panel); if (!m || busy) return; remember(); var set = panel.modify ? m.selected : m.marked, count = panel.modify ? m.data.positions.length : m.data.triangles.length, visible = panel.modify ? visibleVertices(panel, m) : null; for (var i = 0; i < count; i++) { if (visible ? !visible.has(i) : !visibleFace(panel, m, i)) continue; if (mode === 'clear') set.delete(i); else if (mode === 'all' || !set.has(i)) set.add(i); else set.delete(i); } changed(); }
+    function selectConnected(panel, seeds, erase, toggle, saveHistory) {
+      var m = current(panel); if (!m || busy || !interactive()) return;
+      var graphKey = panel.seams.checked ? 'seams' : 'indices';
+      var graph = m.connectivity[graphKey] || (m.connectivity[graphKey] = buildFaceConnectivity(m.data, panel.seams.checked));
+      if (!seeds) {
+        seeds = panel.modify ? m.data.triangles.reduce(function (list, face, index) { if (face.some(function (vertex) { return m.selected.has(vertex); })) list.push(index); return list; }, []) : Array.from(m.marked);
+      }
+      var faces = connectedFaces(graph, seeds, function (face) { return visibleFace(panel, m, face) && !m.deleted.has(face); });
+      if (!faces.length) { status(panel, t('Choose a face or vertex first.')); return; }
+      var values = faces;
+      if (panel.modify) { var vertices = new Set(); faces.forEach(function (face) { m.data.triangles[face].forEach(function (vertex) { vertices.add(vertex); }); }); values = Array.from(vertices); }
+      var set = panel.modify ? m.selected : m.marked;
+      if (toggle) erase = values.every(function (value) { return set.has(value); });
+      if (!values.some(function (value) { return set.has(value) === !!erase; })) return;
+      if (saveHistory !== false) remember();
+      values.forEach(function (value) { if (erase) set.delete(value); else set.add(value); }); changed();
+    }
     function stamp(panel, x, y) {
       var m = current(panel); if (!m || !m.data.uv) return;
-      var radius = Math.max(2, Math.min(200, +panel.radius.value || 20)) / Math.max(1, panel.canvas.getBoundingClientRect().width), add = panel.mode.value === 'paint', uv = m.data.uv;
+      var radius = Math.max(2, Math.min(200, +panel.radius.value || 20)) / Math.max(1, panel.canvas.getBoundingClientRect().width) / panel.view.zoom, add = panel.mode.value === 'paint', uv = m.data.uv;
       if (panel.modify) { var visible = visibleVertices(panel, m); uv.forEach(function (p, i) { if (visible.has(i) && Math.hypot(p[0] - x, p[1] - y) <= radius) { if (add) m.selected.add(i); else m.selected.delete(i); } }); }
       else {
         var candidates = null;
@@ -233,12 +319,65 @@
       }
     }
     function attachCanvas(panel) {
-      var down = false, previous = null;
-      function position(event) { var r = panel.canvas.getBoundingClientRect(); return [(event.clientX - r.left) / r.width, 1 - (event.clientY - r.top) / r.height]; }
-      on(panel.canvas, 'pointerdown', function (event) { if (busy || !interactive() || !current(panel) || !current(panel).data.uv || event.button > 0) return; event.preventDefault(); activePanel = panel; panel.canvas.focus({ preventScroll: true }); remember(); down = true; previous = position(event); panel.canvas.setPointerCapture(event.pointerId); stamp(panel, previous[0], previous[1]); redraw(); });
-      on(panel.canvas, 'pointermove', function (event) { if (!down) return; event.preventDefault(); var next = position(event), distance = Math.hypot(next[0] - previous[0], next[1] - previous[1]), step = Math.max(.002, +panel.radius.value / 2000), steps = Math.min(100, Math.ceil(distance / step)); for (var i = 1; i <= steps; i++) stamp(panel, previous[0] + (next[0] - previous[0]) * i / steps, previous[1] + (next[1] - previous[1]) * i / steps); previous = next; redraw(); });
-      function end() { if (down) { down = false; previous = null; changed(); } }
+      var pointers = new Map(), stroke = null;
+      function position(event) { var r = panel.canvas.getBoundingClientRect(); return [(event.clientX - r.left) / Math.max(1, r.width), (event.clientY - r.top) / Math.max(1, r.height)]; }
+      function valid() { var m = current(panel); return !busy && interactive() && m && m.data.uv; }
+      function view(value) { panel.view = clampView(value); redraw(true); }
+      function hideCursor() { if (uvCursor) uvCursor.hidden = true; }
+      function beginPaint(point) { remember(); stroke.kind = 'paint'; stroke.previous = viewToUv(point, panel.view); stamp(panel, stroke.previous[0], stroke.previous[1]); redraw(); }
+      function connected(point, event) {
+        var m = current(panel), uv = viewToUv(point, panel.view), seeds = [];
+        m.data.triangles.forEach(function (face, index) { if (visibleFace(panel, m, index) && !m.deleted.has(index) && intersects(uv[0], uv[1], 0, m.data.uv[face[0]], m.data.uv[face[1]], m.data.uv[face[2]])) seeds.push(index); });
+        selectConnected(panel, seeds, panel.mode.value === 'erase', !!event.shiftKey);
+      }
+      function pinch() {
+        if (stroke && stroke.kind === 'paint') changed();
+        var points = Array.from(pointers.values()), a = points[0], b = points[1];
+        stroke = { kind: 'pinch', distance: Math.max(.0001, Math.hypot(a[0] - b[0], a[1] - b[1])), centre: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], view: Object.assign({}, panel.view) }; hideCursor();
+      }
+      on(panel.canvas, 'pointerdown', function (event) {
+        if (!valid() || event.button > 2) return;
+        event.preventDefault(); activePanel = panel; panel.canvas.focus({ preventScroll: true });
+        var point = position(event); pointers.set(event.pointerId, point); panel.canvas.setPointerCapture(event.pointerId);
+        if (pointers.size > 1) { pinch(); return; }
+        stroke = { kind: 'pending', anchor: point, view: Object.assign({}, panel.view), event: { shiftKey: event.shiftKey } };
+        if (panel.textureMode.value === 'pan' || event.altKey || event.button === 1 || event.button === 2) { stroke.kind = 'pan'; hideCursor(); }
+        else if (panel.textureMode.value === 'connected') { stroke.kind = 'connected'; if (event.pointerType !== 'touch') connected(point, event); }
+        else if (event.pointerType !== 'touch') beginPaint(point);
+      });
+      on(panel.canvas, 'pointermove', function (event) {
+        if (!pointers.has(event.pointerId) || !stroke) return;
+        event.preventDefault(); var point = position(event); pointers.set(event.pointerId, point);
+        if (stroke.kind === 'pinch' && pointers.size > 1) {
+          var points = Array.from(pointers.values()), a = points[0], b = points[1], centre = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+          var zoom = Math.max(1, Math.min(16, stroke.view.zoom * Math.hypot(a[0] - b[0], a[1] - b[1]) / stroke.distance)), uv = viewToUv(stroke.centre, stroke.view);
+          view({ zoom: zoom, x: centre[0] - uv[0] * zoom, y: centre[1] - (1 - uv[1]) * zoom }); return;
+        }
+        if (stroke.kind === 'pan') { view({ zoom: stroke.view.zoom, x: stroke.view.x + point[0] - stroke.anchor[0], y: stroke.view.y + point[1] - stroke.anchor[1] }); return; }
+        if (stroke.kind === 'pending' && Math.hypot(point[0] - stroke.anchor[0], point[1] - stroke.anchor[1]) * panel.canvas.getBoundingClientRect().width >= 4) beginPaint(stroke.anchor);
+        if (stroke.kind !== 'paint') return;
+        var next = viewToUv(point, panel.view), previous = stroke.previous, distance = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+        var step = Math.max(.0001, (+panel.radius.value || 20) / Math.max(1, panel.canvas.getBoundingClientRect().width) / panel.view.zoom / 2), steps = Math.min(200, Math.max(1, Math.ceil(distance / step)));
+        for (var i = 1; i <= steps; i++) stamp(panel, previous[0] + (next[0] - previous[0]) * i / steps, previous[1] + (next[1] - previous[1]) * i / steps);
+        stroke.previous = next; redraw();
+      });
+      function end(event) {
+        if (!pointers.has(event.pointerId)) return;
+        var point = pointers.get(event.pointerId), previous = stroke; pointers.delete(event.pointerId);
+        if (previous && event.type === 'pointerup' && valid()) {
+          if (previous.kind === 'pending') beginPaint(point);
+          else if (previous.kind === 'connected' && event.pointerType === 'touch') connected(point, previous.event);
+        }
+        if (pointers.size) { var remaining = Array.from(pointers.values())[0]; stroke = { kind: 'pan', anchor: remaining, view: Object.assign({}, panel.view) }; }
+        else { stroke = null; if (previous && (previous.kind === 'paint' || previous.kind === 'pending' || previous.kind === 'connected')) changed(); }
+      }
       on(panel.canvas, 'pointerup', end); on(panel.canvas, 'pointercancel', end); on(panel.canvas, 'lostpointercapture', end);
+      on(panel.canvas, 'contextmenu', function (event) { event.preventDefault(); });
+      // Non-passive is required to keep a wheel gesture over the texture from
+      // also scrolling the surrounding editor on Android and desktop WebViews.
+      var wheel = function (event) { if (!valid()) return; event.preventDefault(); if (pointers.size) return; activePanel = panel; var delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? panel.canvas.getBoundingClientRect().height : 1); view(zoomView(panel.view, panel.view.zoom * Math.exp(-delta * .002), position(event))); hideCursor(); };
+      panel.canvas.addEventListener('wheel', wheel, { passive: false }); listeners.push(function () { panel.canvas.removeEventListener('wheel', wheel); });
+      on(panel.canvas, 'keydown', function (event) { if (!valid() || event.ctrlKey || event.metaKey || event.altKey) return; var zoom = event.key === '+' || event.key === '=' ? panel.view.zoom * Math.SQRT2 : event.key === '-' ? panel.view.zoom / Math.SQRT2 : event.key === '0' ? 1 : null; if (zoom === null) return; event.preventDefault(); view(event.key === '0' ? { zoom: 1, x: 0, y: 0 } : zoomView(panel.view, zoom)); hideCursor(); });
     }
     function changePosition(panel, absolute) {
       var m = current(panel); if (!m || !m.selected.size) return status(panel, t('Choose vertices first.'), true);
@@ -282,24 +421,37 @@
       var box = el('details', holder); box.id = modify ? 'viewer-mesh-modify' : 'viewer-mesh-deleter'; box.className = 'viewer-adjustments viewer-mesh-tools';
       el('summary', box, modify ? 'Mesh modify' : 'Mesh deleter');
       el('p', box, modify ? 'Paint to select vertices, then edit positions or normalized weights.' : 'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.').className = 'viewer-render-note';
-      var p = { root: box, modify: modify, actions: [] }, row = el('div', box); row.className = 'mesh-row';
+      var p = { root: box, modify: modify, actions: [], view: { zoom: 1, x: 0, y: 0 }, viewButtons: [] }, row = el('div', box); row.className = 'mesh-row';
       p.load = button(row, 'Load meshes', function () { inspectMeshes(p); }); p.mesh = select(row, 'Mesh', [['', 'Choose a mesh']]); on(p.mesh, 'change', function () { chooseMesh(p); });
       p.submesh = select(box, 'Material / submesh'); on(p.submesh, 'change', function () { activePanel = p; var m = current(p); if (m && p.modify) m.selected.clear(); p.baseKey = ''; changed(); });
       row = el('div', box); row.className = 'mesh-row'; p.mode = select(row, 'Paint', [['paint', 'Paint'], ['erase', 'Erase']]); p.radius = numeric(row, 'Brush radius', 30, 2, 200, 1);
       row = el('div', box); row.className = 'mesh-row';
-      p.sceneMode = select(row, '3D editing', modify ? [['orbit', 'Orbit model'], ['paint', 'Paint on model'], ['pick', 'Pick vertices'], ['drag', 'Move vertices in 3D']] : [['orbit', 'Orbit model'], ['paint', 'Paint on model']]);
-      on(p.sceneMode, 'change', function () { activePanel = p; changed(); });
+      p.sceneMode = select(row, '3D editing', modify ? [['orbit', 'Orbit model'], ['paint', 'Paint on model'], ['connected', 'Connected faces'], ['pick', 'Pick vertices'], ['drag', 'Move vertices in 3D']] : [['orbit', 'Orbit model'], ['paint', 'Paint on model'], ['connected', 'Connected faces']]);
+      on(p.sceneMode, 'change', function () { activePanel = p; if (options.onSceneModeChange) options.onSceneModeChange(p.sceneMode.value); changed(); });
+      on(p.sceneMode, 'focus', function () { if (p.sceneMode.value !== 'orbit' && options.onSceneModeChange) options.onSceneModeChange(p.sceneMode.value); });
       function check3d(title, initial) { var label = el('label', row), input = el('input', label); input.type = 'checkbox'; input.checked = initial; el('span', label, title); on(input, 'change', function () { activePanel = p; changed(); }); return input; }
       p.show3d = check3d('Show selection on model', true); p.showVertices = check3d('Show vertex targets', modify); p.liveStatus = el('p', box); p.liveStatus.className = 'viewer-render-note';
       el('p', box, 'Use Alt or right-drag to orbit while editing. Shift-click adds or removes vertices.').className = 'viewer-render-note';
       on(box, 'focusin', function () { activePanel = p; syncRuntime(); });
 
       var linesLabel = el('label', row); p.lines = el('input', linesLabel); p.lines.type = 'checkbox'; p.lines.checked = true; el('span', linesLabel, 'Show UV lines'); on(p.lines, 'change', redraw);
+      var seamLabel = el('label', row); p.seams = el('input', seamLabel); p.seams.type = 'checkbox'; p.seams.checked = true; el('span', seamLabel, 'Across UV seams');
+      row = el('div', box); row.className = 'mesh-row'; p.textureMode = select(row, 'Texture interaction', [['paint', 'Paint'], ['pan', 'Move texture'], ['connected', 'Connected faces']]);
+      on(p.textureMode, 'change', function () { activePanel = p; if (uvCursor) uvCursor.hidden = true; redraw(true); });
+      function setView(value) { p.view = clampView(value); if (uvCursor) uvCursor.hidden = true; redraw(true); }
+      p.zoomOut = button(row, 'Zoom out', function () { setView(zoomView(p.view, p.view.zoom / Math.SQRT2)); });
+      p.zoomIn = button(row, 'Zoom in', function () { setView(zoomView(p.view, p.view.zoom * Math.SQRT2)); });
+      p.fitTexture = button(row, 'Fit texture', function () { setView({ zoom: 1, x: 0, y: 0 }); }); p.viewButtons.push(p.zoomOut, p.zoomIn, p.fitTexture);
+      var zoomLabel = el('label', row); el('span', zoomLabel, 'Texture zoom'); p.zoom = el('input', zoomLabel); p.zoom.type = 'range'; p.zoom.min = 1; p.zoom.max = 16; p.zoom.step = .25; p.zoom.value = 1;
+      p.zoomText = el('output', zoomLabel); p.zoomText.textContent = '100%'; on(p.zoom, 'input', function () { setView(zoomView(p.view, +p.zoom.value)); });
+      el('p', box, 'Scroll or pinch to zoom. Use Move texture, Alt-drag or right-drag to pan.').className = 'viewer-render-note';
       p.canvas = el('canvas', box); p.canvas.width = 640; p.canvas.height = 640; p.canvas.setAttribute('aria-label', t(modify ? 'Selected vertices' : 'Selected faces')); p.canvas.tabIndex = 0;
       var imageLabel = el('label', box); el('span', imageLabel, 'Texture image'); var imageInput = el('input', imageLabel); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp';
       on(imageInput, 'change', function () { var m = current(p), file = imageInput.files[0]; if (!m || !file || file.size > 8 * 1024 * 1024) return; var url = URL.createObjectURL(file), img = new Image(); img.onload = function () { URL.revokeObjectURL(url); if (!disposed) { var entry = activeSubmesh(p, m), index = entry && entry.textureIndex !== null ? entry.textureIndex : m.images.length; m.images[index] = img; if (entry) entry.textureIndex = index; else m.image = img; m.imageRevision++; redraw(); } }; img.onerror = function () { URL.revokeObjectURL(url); }; img.src = url; });
       row = el('div', box); row.className = 'mesh-row'; p.undo = button(row, 'Undo', undo); p.redo = button(row, 'Redo', redo);
       ['clear', 'invert', 'all'].forEach(function (mode) { p.actions.push(button(row, { clear: 'Clear selection', invert: 'Invert selection', all: 'Select all' }[mode], function () { selection(p, mode); })); });
+      p.connected = button(row, 'Select connected', function () { selectConnected(p); });
+      el('p', box, 'Connected selection stays in the selected material. Use the model to distinguish overlapping UVs.').className = 'viewer-render-note';
       p.count = el('p', box); p.count.className = 'viewer-render-note';
       if (!modify) p.deleteFaces = button(box, 'Delete selected faces', function () { deleteMarked(p); });
       if (modify) {
@@ -320,8 +472,8 @@
       p.save = button(box, 'Save mesh copy', function () { save(p); }); p.save.className = 'mesh-save'; el('p', box, 'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.').className = 'viewer-render-note'; p.result = el('ul', box);
       p.status = el('p', box, 'Open a model first.'); p.status.className = 'viewer-render-note'; p.status.setAttribute('role', 'status'); p.status.setAttribute('aria-live', 'polite');
       var prefix = box.id;
-      ['load', 'mesh', 'submesh', 'sceneMode', 'show3d', 'showVertices', 'deleteFaces', 'canvas', 'save', 'undo', 'redo', 'count', 'status', 'vertex', 'weight', 'weightMode', 'bone', 'positionSet', 'translate', 'weightApply'].forEach(function (name) {
-        if (p[name]) p[name].id = prefix + '-' + ({ mesh: 'select', sceneMode: 'scene-mode', show3d: 'show-selection', showVertices: 'show-vertices', deleteFaces: 'delete', weight: 'weight-value', weightMode: 'weight-mode', bone: 'weight-bone', positionSet: 'position-set', weightApply: 'weight-apply' }[name] || name);
+      ['load', 'mesh', 'submesh', 'sceneMode', 'show3d', 'showVertices', 'deleteFaces', 'canvas', 'save', 'undo', 'redo', 'count', 'status', 'vertex', 'weight', 'weightMode', 'bone', 'positionSet', 'translate', 'weightApply', 'mode', 'radius', 'seams', 'connected', 'textureMode', 'zoom', 'zoomIn', 'zoomOut', 'fitTexture'].forEach(function (name) {
+        if (p[name]) p[name].id = prefix + '-' + ({ mesh: 'select', sceneMode: 'scene-mode', show3d: 'show-selection', showVertices: 'show-vertices', deleteFaces: 'delete', weight: 'weight-value', weightMode: 'weight-mode', bone: 'weight-bone', positionSet: 'position-set', weightApply: 'weight-apply', textureMode: 'texture-mode', zoomIn: 'zoom-in', zoomOut: 'zoom-out', fitTexture: 'fit-texture' }[name] || name);
       });
       if (p.xyz) p.xyz.forEach(function (field, axis) { field.dataset.meshPositionAxis = 'XYZ'[axis]; field.step = 'any'; });
       if (p.delta) p.delta.forEach(function (field, axis) { field.dataset.meshDeltaAxis = 'XYZ'[axis]; field.step = 'any'; });
@@ -335,7 +487,7 @@
       var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
       return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
         radius: +p.radius.value || 20, erase: p.mode.value === 'erase', showSelection: p.show3d.checked,
-        showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy };
+        showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy && (!options.isSceneInteractive || options.isSceneInteractive()) };
     }
     function syncRuntime() {
       if (!runtimeEngine) return;
@@ -358,6 +510,7 @@
         onBegin: remember,
         onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked; indices.forEach(function (index) { if (erase) set.delete(index); else if (modify || !m.deleted.has(index)) set.add(index); }); redraw(); },
         onSelect: chooseVertex,
+        onConnected: function (face, erase, toggle) { if (activePanel) selectConnected(activePanel, [face], erase, toggle, false); },
         onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); changed(); },
         onEnd: function () { changed(); }
       });
@@ -377,21 +530,22 @@
       document.addEventListener('keydown', handleShortcut, true); listeners.push(function () { document.removeEventListener('keydown', handleShortcut, true); });
       uvCursor = el('div', document.body); uvCursor.id = 'viewer-mesh-uv-cursor'; uvCursor.hidden = true; uvCursor.setAttribute('aria-hidden', 'true'); uvCursor.style.cssText = 'position:fixed;z-index:12000;pointer-events:none;border:2px solid #ffdb52;box-shadow:0 0 0 1px #17202b;border-radius:50%;box-sizing:border-box;';
       panels.forEach(function (p) {
-        on(p.canvas, 'pointermove', function (event) { var radius = Math.max(2, Math.min(200, +p.radius.value || 20)); uvCursor.hidden = !current(p); uvCursor.style.width = radius * 2 + 'px'; uvCursor.style.height = radius * 2 + 'px'; uvCursor.style.left = event.clientX - radius + 'px'; uvCursor.style.top = event.clientY - radius + 'px'; });
+        on(p.canvas, 'pointermove', function (event) { var radius = Math.max(2, Math.min(200, +p.radius.value || 20)); uvCursor.hidden = !current(p) || p.textureMode.value !== 'paint' || event.altKey || event.buttons > 1 || event.pointerType === 'touch'; uvCursor.style.width = radius * 2 + 'px'; uvCursor.style.height = radius * 2 + 'px'; uvCursor.style.left = event.clientX - radius + 'px'; uvCursor.style.top = event.clientY - radius + 'px'; });
         on(p.canvas, 'pointerleave', function () { uvCursor.hidden = true; });
       });
     }
     function refresh() {
       var next = options.getToken ? options.getToken() : null;
       if (next !== token) { token = next; request++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
-        panels.forEach(function (p) { p.baseKey = ''; p.mesh.textContent = ''; var o = el('option', p.mesh, 'Choose a mesh'); o.value = ''; fillBones(p); fillSubmeshes(p); status(p, t(token ? 'Changes are temporary until saved. Original files are preserved.' : 'Open a model first.')); }); }
+        panels.forEach(function (p) { p.baseKey = ''; p.view = { zoom: 1, x: 0, y: 0 }; p.mesh.textContent = ''; var o = el('option', p.mesh, 'Choose a mesh'); o.value = ''; fillBones(p); fillSubmeshes(p); status(p, t(token ? 'Changes are temporary until saved. Original files are preserved.' : 'Open a model first.')); }); }
       redraw();
     }
     build(false); build(true);
     initializeRuntime(); initializeShortcuts(); refresh();
     return { refresh: refresh, getStatus: quickStatus, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); redraw(); },
-      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
+      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
       dispose: function () { disposed = true; request++; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { p.root.remove(); }); style.remove(); cache = {}; } };
   }
-  window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects };
+  window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
+    buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView };
 })();

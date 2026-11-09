@@ -44,6 +44,7 @@ class ViewerRouteTests(unittest.TestCase):
         self.identifier = "a" * 32
         self.glb = b"glTF\x02\x00\x00\x00test-only-response"
         self.backend = SimpleNamespace(
+            MAX_MOTION_FILES=32,
             prepare=Mock(return_value={"id": self.identifier,
                                        "url": "/api/viewer/model/" + self.identifier + ".glb"}),
             get_model=Mock(return_value=self.glb),

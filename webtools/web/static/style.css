@@ -398,6 +398,19 @@ main { padding: 14px; }
 .viewer-adjustments input[type=range] { min-height: 36px; }
 .viewer-motion-choice, .viewer-expression-row > label { display: flex; flex: 1 1 200px; min-width: 0; flex-direction: column; gap: 5px; font-size: 13px; }
 .viewer-motion-choice { flex: 1 1 160px; min-width: 0; }
+.viewer-motion-library-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.viewer-motion-library-actions > button { margin: 0; font-size: 12px; padding: 6px 8px; }
+.viewer-motion-library-actions > .viewer-render-note { flex: 1 1 160px; margin: 0; }
+.viewer-save-advanced .viewer-physics-toggle { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+.viewer-save-advanced .viewer-physics-toggle > input[type=checkbox] { width: 18px; height: 18px; margin: .2em 0 0; }
+.viewer-physics-source-values { overflow-wrap: anywhere; }
+#viewer-outline-detail > div { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; min-width: 0; }
+#viewer-outline-detail > div > label { display: grid; gap: 5px; flex: 1 1 130px; min-width: 0; }
+#viewer-outline-detail > div > label > input:not([type=checkbox]), #viewer-outline-detail > div > label > select { width: 100%; min-width: 0; }
+#viewer-outline-detail > div > div { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; min-width: 0; }
+#viewer-outline-detail > div > div > input { min-width: 0; max-width: 100%; }
+#viewer-outline-detail > div button { margin: 0; white-space: normal; }
+#viewer-outline-detail > div > p { flex-basis: 100%; }
 .viewer-time { display: flex; flex: 1 1 240px; align-items: center; gap: 8px; min-width: 0; }
 .viewer-time input { min-width: 40px; flex: 1; }
 .viewer-time output { font-size: 12px; white-space: nowrap; }

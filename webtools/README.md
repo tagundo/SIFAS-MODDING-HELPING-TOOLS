@@ -144,6 +144,18 @@ songs have their own filter, and page controls expose the complete catalog.
 **Load linked game voice or music** decodes the catalog's original ACB/AWB cues
 locally and follows the authored timing, play, pause and seek. A local audio file
 can also be selected under **Accompanying voice or music**.
+Imported motion sources have their own bounded library. Opening another model
+retains that library and binds its clips to the new model; incompatible tracks
+are still reported. **Clear imported motions** removes the added sources.
+With accompanying audio enabled, continuous audio playback supplies the motion
+clock. Explicit seeking and looping still reposition both, while render delays
+do not repeatedly rewind the sound. Original decode sample rates are preserved.
+
+**Gaze** in the expression panel can follow the motion, look at the preview
+camera, look forward or use horizontal/vertical direction controls. It blends
+the character's original eye poses independently of eyelids and mouth. Authored
+camera targets use the preview camera. Audience positions and other performers
+that are absent from a single-character preview are reported as unavailable.
 
 **Physics preview** offers **Original game calculation** and **Additional
 clipping correction** as separate modes. The original mode ports SIFAS 3.12's
@@ -154,6 +166,8 @@ refresh rate when that game option is enabled. Animation and physics sample
 together, with one original update per accepted frame and no catch-up substeps.
 Pausing freezes the physical result; seeking starts new dynamic history while
 retaining the model's authored rest pose.
+SwingBone and SwingCollider are enabled on newly opened supported models.
+Restoring an inspection preserves an explicit choice to disable either one.
 
 The screen selector uses the selected imported game's motion category, or an
 explicit Home/member or MV override. MV also uses the game's selected quality,
@@ -170,17 +184,34 @@ not the simulated pose. The port does not reproduce Unity's whole animation,
 rendering or OS scheduler. Numeric reference coverage and float-rounding limits
 are recorded in `tests/fixtures/game_physics_native_provenance.md`.
 
-**Breast dynamics** in the breast card edits stiffness, drag and rotation limits;
-**Thigh SwingCollider** edits each original radius and offset. Breast presets
-use the existing tuner's exact values. The collider tool has no universal size
-preset, so its recommendation restores each component's original values.
-Saving writes the edited Unity component values, rather than baking simulated
-bone motion.
+**Bone and collider editing** in Pose and motion lists every supported source
+SwingBone and SwingCollider, with type, body-region and name filters. Edit bone
+stiffness, drag and rotation limits, or collider radius and XYZ offsets.
+**Breast dynamics** retains the original tuner's presets and can automatically
+set rotation limits from the closest breast-size reference tier. Each size
+change starts from the same manual baseline, so the limits do not accumulate.
+Turning automatic limits off restores that manual baseline. Collider
+recommendations restore each component's own source values. Saving writes the
+edited Unity fields, rather than baking simulated bone motion.
+
+**Character outline** includes verified separate face meshes such as the jaw.
+The detailed editor paints individual vertices in 3D or edits an exact vertex's
+width, with a brush cursor, edited-vertex markers and Undo/Redo. Sparse local
+widths are applied before the whole-mesh percentage; vertices whose original
+width was zero can also be enlarged. Save writes original vertex-color red
+values into new model/face copies and preserves other color channels and
+textures. Paired variants accept local edits only when vertex correspondence
+is verified. Automatically added face positions and skin weights remain
+protected even when their outline can be saved.
 
 **Mesh deleter** shows the source texture and UV triangles for the selected
 material/submesh. Paint the faces to
 remove, erase or undo the selection, then save a new copy. It removes triangle
 indices while retaining vertex identities, skin channels and morph data.
+Both mesh tools support 1–16× texture zoom, wheel/pinch zoom, panning and Fit.
+Connected selection follows shared face edges in the current material, from a
+UV/3D click or an existing selection. Optional seam joining verifies matching
+positions and skin weights. This selects topology islands, not anatomical parts.
 **Mesh modify** selects vertices by UV painting or index and edits their local
 XYZ positions and skin weights. Weight tools include set/add/subtract, neighbor
 smoothing, transfer between bones, bone locks, and normalized four-bone
@@ -199,6 +230,9 @@ Unity graft tools run on copies that include the wearer's current body and
 physics edits, and successful results open in the main viewer. Donor and wearer
 must use the same Unity platform. Transplants currently accept single-model
 bundles/ZIPs; paired platform or Rina ZIPs require editing individual bundles.
+New grafts retain unweighted endpoint dependencies, typed physics references
+and separate LOD manager indices. Older graft files that already lost endpoint
+bones need to be transplanted again from the original donor for exact recovery.
 
 ### Model viewer controls
 

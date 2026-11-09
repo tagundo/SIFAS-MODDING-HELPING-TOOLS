@@ -1091,6 +1091,147 @@ def _rand_pids(n, used):
     return out
 
 
+def physics_dependency_names(objs, id2, scriptnames, names, existing):
+    """Keep unweighted physics tips and offset parents when copying a chain.
+
+    Mesh bone lists omit unweighted End transforms. A SwingBone still requires
+    its explicit child, and its sibling points to a SwingBone component (not a
+    Transform). Resolve both through their owning GameObject before allocating
+    new target PathIDs.
+    """
+    transforms, owners, swings = {}, {}, {}
+    for obj in objs:
+        if obj.type.name not in ("Transform", "MonoBehaviour"):
+            continue
+        tree = obj.read_typetree()
+        name = _go_name(id2, tree.get("m_GameObject", {}).get("m_PathID"))
+        owners[obj.path_id] = name
+        if obj.type.name == "Transform" and name:
+            transforms[name] = tree
+        elif scriptnames.get(tree.get("m_Script", {}).get("m_PathID")) == "SwingBone" and name:
+            swings[name] = tree
+    pending = list(dict.fromkeys(names))
+    chosen = set()
+    while pending:
+        name = pending.pop(0)
+        if not name or name in existing or name in chosen:
+            continue
+        if name not in transforms:
+            raise ValueError(f"A donor physics transform is unavailable: {name}")
+        chosen.add(name)
+        parent = transforms[name].get("m_Father", {})
+        if parent.get("m_FileID", 0) == 0:
+            pending.append(owners.get(parent.get("m_PathID")))
+        swing = swings.get(name)
+        if swing:
+            for field in ("child", "sibling"):
+                pointer = swing.get(field, {})
+                if pointer.get("m_PathID"):
+                    if pointer.get("m_FileID", 0) != 0 or pointer["m_PathID"] not in owners:
+                        raise ValueError(f"The donor physics {field} cannot be resolved: {name}")
+                    pending.append(owners[pointer["m_PathID"]])
+    # Preserve the input order and use authored transform order for dependencies.
+    return [name for name in dict.fromkeys(list(names) + list(transforms)) if name in chosen]
+
+
+def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *, restore_collision=True, verbose=True):
+    """Rebind the saved graph by typed source references and manager identities.
+
+    The source indices address bones+lodBones, and sibling PPtrs address
+    SwingBone components. Merely copying components leaves both wrong after a
+    graft changes the manager's main/LOD membership. This pass runs after the
+    geometry/hierarchy writes so none of those writes can overwrite the repair.
+    """
+    env = UnityPy.load(out_path)
+    objs, index = _index(env)
+    scripts = _scriptname_map(objs)
+
+    def graph(environment):
+        os, ix = _index(environment)
+        sn = _scriptname_map(os)
+        manager = _find_swingbone_manager(os, sn)
+        mt = manager.read_typetree() if manager else {}
+        owners, transforms, swings, colliders = {}, {}, {}, {}
+        for o in os:
+            if o.type.name not in ("Transform", "MonoBehaviour"):
+                continue
+            t = o.read_typetree()
+            name = _go_name(ix, t.get("m_GameObject", {}).get("m_PathID"))
+            owners[o.path_id] = name
+            if o.type.name == "Transform":
+                transforms[name] = o
+            else:
+                cls = sn.get(t.get("m_Script", {}).get("m_PathID"))
+                if cls == "SwingBone": swings[name] = o
+                elif cls == "SwingCollider": colliders[name] = o
+        combined = [owners.get(p.get("m_PathID")) for p in mt.get("bones", []) + mt.get("lodBones", [])]
+        return dict(manager=manager, tree=mt, owners=owners, transforms=transforms,
+                    swings=swings, colliders=colliders, combined=combined)
+
+    out, donor, target = graph(env), graph(UnityPy.load(donor_path)), graph(UnityPy.load(target_path))
+    if not out["manager"]:
+        return 0
+    names = set(donor_names)
+    manager = out["tree"]
+    if "lodBones" in manager:
+        donor_lod = {donor["owners"].get(p.get("m_PathID")) for p in donor["tree"].get("lodBones", [])}
+        moved = [p for p in manager.get("bones", [])
+                 if out["owners"].get(p.get("m_PathID")) in donor_lod
+                 and out["owners"].get(p.get("m_PathID")) not in target["swings"]]
+        if moved:
+            removed = {p["m_PathID"] for p in moved}
+            manager["bones"] = [p for p in manager["bones"] if p["m_PathID"] not in removed]
+            manager["lodBones"] += moved
+            out["manager"].save_typetree(manager)
+    combined = manager.get("bones", []) + manager.get("lodBones", [])
+    indices = {out["owners"].get(p.get("m_PathID")): i for i, p in enumerate(combined)}
+    collider_indices = {out["owners"].get(p.get("m_PathID")): i for i, p in enumerate(manager.get("colliders", []))}
+    changed = 0
+    for name, obj in out["swings"].items():
+        source = donor if name in names or name not in target["swings"] else target
+        original = source["swings"].get(name)
+        if original is None:
+            continue
+        before = obj.read_typetree()
+        tree, source_tree = copy.deepcopy(before), original.read_typetree()
+        for field, objects in (("child", out["transforms"]), ("sibling", out["swings"])):
+            if field not in tree:
+                continue
+            pointer = source_tree.get(field, {})
+            owner = source["owners"].get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
+            resolved = objects.get(owner)
+            if pointer.get("m_PathID") and resolved is None:
+                raise ValueError(f"The transplanted SwingBone {field} is unavailable: {name}")
+            tree[field] = {"m_FileID": 0, "m_PathID": resolved.path_id if resolved else 0}
+        for field in ("parentIndex", "childIndex", "siblingIndex"):
+            if field in tree:
+                position = source_tree.get(field, -1)
+                owner = source["combined"][position] if isinstance(position, int) and 0 <= position < len(source["combined"]) else None
+                tree[field] = indices.get(owner, -1)
+        if source is donor and restore_collision:
+            references, ids, bits = [], [], 0
+            for p in source_tree.get("colliders", []):
+                owner = donor["owners"].get(p.get("m_PathID")) if p.get("m_FileID", 0) == 0 else None
+                collider, ordinal = out["colliders"].get(owner), collider_indices.get(owner)
+                if collider is not None and ordinal is not None:
+                    references.append({"m_FileID": 0, "m_PathID": collider.path_id})
+                    ids.append(_collider_id_for_bone(owner, ordinal))
+                    bits |= 1 << ordinal
+            for field, value in (("colliders", references), ("colliderIds", ids), ("colliderBits", bits)):
+                if field in tree:
+                    tree[field] = value
+        if tree != before:
+            obj.save_typetree(tree)
+            changed += 1
+    if changed or manager != out["manager"].read_typetree():
+        env.file.mark_changed()
+        with open(out_path, "wb") as output:
+            output.write(env.file.save(packer="original"))
+    if verbose and changed:
+        print(f"[physics] repaired {changed} saved SwingBone graph(s), including main/LOD indices and typed sibling links")
+    return changed
+
+
 def inject_appendage_bones(donor, target, inject_names, name2tf_target,
                            restore_collision=True, log=lambda *a: None):
     """Recreate donor costume-appendage bone chains (GameObject + Transform + their
@@ -1150,7 +1291,7 @@ def inject_appendage_bones(donor, target, inject_names, name2tf_target,
 
     used = set(t_sf.objects.keys())
     # allocate new path ids: GO + TF per bone, MB per swingbone
-    inject_names = [n for n in inject_names if n in d_go_by_name]
+    inject_names = physics_dependency_names(do, did, d_scripts, inject_names, name2tf_target)
     go_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
     used |= set(go_pid.values())
     tf_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
@@ -1211,7 +1352,7 @@ def inject_appendage_bones(donor, target, inject_names, name2tf_target,
     # becomes -1.
     d_mgr_tt = _find_swingbone_manager(do, d_scripts).read_typetree()
     donor_idx_name = []
-    for b in d_mgr_tt.get("bones", []):
+    for b in d_mgr_tt.get("bones", []) + d_mgr_tt.get("lodBones", []):
         co = did.get(b["m_PathID"])
         donor_idx_name.append(_go_name(did, co.read_typetree().get("m_GameObject", {}).get("m_PathID")) if co else None)
     t_existing_bones = t_mgr.read_typetree().get("bones", [])
@@ -1776,6 +1917,11 @@ def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
             if nm:
                 out_idx_of[nm] = i
 
+    # Donor assets often serialize a null runtime sibling PPtr plus the authored
+    # siblingIndex. Resolve that index in the donor manager before rebinding it;
+    # treating the null PPtr as "no capsule" drops every link on those assets.
+    donor_manager = _find_swingbone_manager(do, d_scripts)
+    donor_colliders = donor_manager.read_typetree().get("colliders", []) if donor_manager else []
     # donor: name -> (radius, offset, sibling collider name)
     donor_cfg = {}
     for o in do:
@@ -1789,6 +1935,10 @@ def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
                 sco = did.get(sp)
                 sib = collider_name(did, sco) if sco and sco.type.name == "MonoBehaviour" else \
                     go_name(did, did.get(sp).read_typetree().get("m_GameObject", {}).get("m_PathID")) if sp in did else None
+            elif type(tt.get("siblingIndex")) is int and 0 <= tt["siblingIndex"] < len(donor_colliders):
+                sibling = did.get(donor_colliders[tt["siblingIndex"]].get("m_PathID"))
+                if sibling is not None and sibling.path_id != o.path_id:
+                    sib = collider_name(did, sibling)
             donor_cfg[nm] = (tt.get("radius"), tt.get("offset"), sib)
 
     n = 0
@@ -1809,8 +1959,11 @@ def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
             want_pid = out_col[sib].path_id if (sib and sib in out_col) else 0
             if tt.get("sibling", {}).get("m_PathID", 0) != want_pid:
                 tt["sibling"] = {"m_FileID": 0, "m_PathID": want_pid}
-                if "siblingIndex" in tt:
-                    tt["siblingIndex"] = out_idx_of.get(sib, -1)
+                changed = True
+        if "siblingIndex" in tt:
+            want_index = out_idx_of.get(sib, -1)
+            if tt["siblingIndex"] != want_index:
+                tt["siblingIndex"] = want_index
                 changed = True
         if changed:
             o.save_typetree(tt)
@@ -2078,12 +2231,60 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     #          No-op on a standard target (scales match). Mesh untouched -> load-safe. ----
     if scale_swing_physics and costume_physics == "donor" and costume_dyn:
         scale_costume_swing_lengths(out_path, donor_path, costume_dyn, verbose=verbose)
+    if preserve_physics:
+        repair_transplant_physics(out_path, donor_path, target_path,
+                                  costume_dyn if costume_physics == "donor" else (),
+                                  restore_collision=restore_collision, verbose=verbose)
 
     # ---- 8) warn (read-only) if the result blows past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
 
     log(f"[done] wrote {out_path}")
     return out_path
+
+
+def physics_graph_issues(objs, id2):
+    """Validate typed endpoints and both manager arrays, not only nonzero IDs."""
+    scripts = _scriptname_map(objs)
+    def cls(obj):
+        return scripts.get(obj.read_typetree().get("m_Script", {}).get("m_PathID")) if obj and obj.type.name == "MonoBehaviour" else None
+    def resolve(pointer):
+        return id2.get(pointer.get("m_PathID")) if isinstance(pointer, dict) and pointer.get("m_FileID", 0) == 0 else None
+    issues = []
+    for manager in (obj for obj in objs if cls(obj) == "SwingBoneManager"):
+        tree = manager.read_typetree()
+        members = tree.get("bones", []) + tree.get("lodBones", [])
+        colliders = tree.get("colliders", [])
+        for pointer in members:
+            bone = resolve(pointer)
+            if cls(bone) != "SwingBone":
+                issues.append("manager bone reference")
+                continue
+            data = bone.read_typetree()
+            child = resolve(data.get("child"))
+            if child is None or child.type.name != "Transform":
+                issues.append("SwingBone child Transform")
+            sibling = data.get("sibling", {})
+            if sibling.get("m_PathID") and cls(resolve(sibling)) != "SwingBone":
+                issues.append("SwingBone sibling component")
+            for field in ("parentIndex", "childIndex", "siblingIndex"):
+                if type(data.get(field)) is int and data[field] >= len(members):
+                    issues.append("SwingBone " + field)
+            for collider in data.get("colliders", []):
+                if cls(resolve(collider)) != "SwingCollider":
+                    issues.append("SwingBone collider component")
+        for pointer in colliders:
+            collider = resolve(pointer)
+            if cls(collider) != "SwingCollider":
+                issues.append("manager collider reference")
+                continue
+            data = collider.read_typetree()
+            sibling = data.get("sibling", {})
+            if sibling.get("m_PathID") and cls(resolve(sibling)) != "SwingCollider":
+                issues.append("SwingCollider sibling component")
+            if type(data.get("siblingIndex")) is int and data["siblingIndex"] >= len(colliders):
+                issues.append("SwingCollider siblingIndex")
+    return issues
 
 
 def validate(out_path, verbose=True):
@@ -2133,6 +2334,7 @@ def validate(out_path, verbose=True):
                     pid = t.get(key, {}).get("m_PathID", 0)
                     if pid and pid not in id2:
                         dangling += 1
+    dangling += len(physics_graph_issues(objs, id2))
     if verbose:
         print(f"[validate] dangling references: {dangling}")
     return dangling == 0

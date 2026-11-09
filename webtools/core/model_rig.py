@@ -110,6 +110,7 @@ class RigBuilder:
         from .model_faces import _names, _body_sources, _manifest_owners, source_owner
         self.glb, self.scene, self.faces, self.deadline = glb, scene, faces, deadline
         self.selected = set(selected_paths)
+        self.motion_sources = set(faces.context.get("_selected_motion_paths", []))
         self.source_indices = {path: index for index, path in enumerate(selected_paths)}
         _, self.facial_sources = _names(scene)
         owners = set()
@@ -415,7 +416,7 @@ class RigBuilder:
         import copy
         from .model_expressions import describe_expressions
         from .model_motion import source_id
-        selected_sources = {source_id(path) for path in self.selected}
+        selected_sources = {source_id(path) for path in self.selected | self.motion_sources}
         public_clips = [dict(clip, userSelected=clip.get("sourceId") in selected_sources) for clip in self.clips]
         bounds = {"min": self.bounds[0].tolist(), "max": self.bounds[1].tolist()} if self.bounds is not None else None
         result = {"enabled": True, "available": self.skinned > 0, "root": self.root,
@@ -426,6 +427,16 @@ class RigBuilder:
                                                           clips=self.clips),
                 "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
         result["readOnlySkinJoints"] = sorted(self.read_only_skin_joints)
+        # Only successfully rendered, server-resolved faces receive outline
+        # source identities. Their body/skin transforms stay protected.
+        from .model_viewer import _source_path, _source_hash
+        shown_sources = {primitive.get("extras", {}).get("viewerMesh", {}).get("mesh", {}).get("source")
+                         for mesh in self.glb.doc.get("meshes", []) for primitive in mesh.get("primitives", [])}
+        hashes = {_source_path(obj): _source_hash(obj) for obj in self.scene.env.objects
+                  if _source_path(obj) in self.faces.auto_paths}
+        result["_editingCompanions"] = [{"path": path, "sha256": hashes[path], "sourceIndex": index}
+                                         for path, index in self.source_indices.items()
+                                         if path in self.faces.auto_paths and index in shown_sources and hashes.get(path)]
         if self.source_positions:
             result["sourcePositions"] = self.source_positions
         return copy.deepcopy(result)

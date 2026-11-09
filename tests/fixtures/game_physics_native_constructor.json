@@ -1,0 +1,108 @@
+{
+  "profile": "SIFAS GL 3.12.0",
+  "class": "LLAS.Components.Members.SwingBone",
+  "method": ".ctor",
+  "entrypoint": "0x2c99b90",
+  "il2cppSha256": "39c2eed48009be7632be5aaf910d76b9316cd8c98f118e180c593b5615dd022e",
+  "status": "RETURNED",
+  "instructions": 114,
+  "numericCode": "Original unmodified ARM64 constructor and Vector3 constructor; no numeric field result is stubbed",
+  "runtimeBoundaries": [
+    {
+      "entrypoint": "0x1f4149c",
+      "name": "Metadata usage",
+      "scope": "Initialized synthetic metadata storage only; numeric constructor code runs unchanged"
+    },
+    {
+      "entrypoint": "0x1f7b418",
+      "name": "Managed array allocation",
+      "scope": "Managed Quaternion array storage only; not a scalar physics-field result"
+    },
+    {
+      "entrypoint": "0x4b7ddd8",
+      "name": "Managed array init",
+      "scope": "childOtherRot managed runtime array initialization excluded; no scalar/vector physics field replaced"
+    },
+    {
+      "entrypoint": "0x34b1644",
+      "name": "MonoBehaviour base ctor",
+      "scope": "MonoBehaviour base runtime initialization excluded; no numeric physics field supplied"
+    }
+  ],
+  "managedStorage": "Fresh zero-initialized synthetic component storage, as managed allocation provides before .ctor",
+  "fields": {
+    "radius": {
+      "value": 0.019999999552965164,
+      "float32le": "0ad7a33c"
+    },
+    "stiffnessForce": {
+      "value": 0.019999999552965164,
+      "float32le": "0ad7a33c"
+    },
+    "dragForce": {
+      "value": 1.0,
+      "float32le": "0000803f"
+    },
+    "skirtLimitDotMin": {
+      "value": -0.9750000238418579,
+      "float32le": "9a9979bf"
+    },
+    "skirtRotDegMax": {
+      "value": 30.0,
+      "float32le": "0000f041"
+    },
+    "kneeSpaceOffsetFront": {
+      "value": 0.019999999552965164,
+      "float32le": "0ad7a33c"
+    },
+    "kneeSpaceOffsetOther": {
+      "value": 0.03999999910593033,
+      "float32le": "0ad7233d"
+    },
+    "kneeSpaceOffsetForce": {
+      "value": 0.20000000298023224,
+      "float32le": "cdcc4c3e"
+    }
+  },
+  "appliedToLegacyPreviewOnly": [
+    "kneeSpaceOffsetFront",
+    "kneeSpaceOffsetOther",
+    "kneeSpaceOffsetForce"
+  ],
+  "limits": [
+    "Managed array childOtherRot and MonoBehaviour runtime initialization excluded; those boundaries do not supply or modify captured physics numeric fields.",
+    "This is isolated native constructor evidence, not execution of a complete original game scene."
+  ],
+  "serializedFieldAttributes": {
+    "metadataSha256": "c1ac82ff0b68351ffb3a58fce275b940c26316da64cdfc8201413382afdec14f",
+    "image": "Assembly-CSharp.dll",
+    "records": [
+      {
+        "name": "kneeSpaceOffsetFront",
+        "token": "0x04005bc5",
+        "attributes": [
+          "UnityEngine.SerializeField",
+          "UnityEngine.TooltipAttribute"
+        ]
+      },
+      {
+        "name": "kneeSpaceOffsetOther",
+        "token": "0x04005bc6",
+        "attributes": [
+          "UnityEngine.SerializeField",
+          "UnityEngine.TooltipAttribute"
+        ]
+      },
+      {
+        "name": "kneeSpaceOffsetForce",
+        "token": "0x04005bc7",
+        "attributes": [
+          "UnityEngine.SerializeField",
+          "UnityEngine.TooltipAttribute"
+        ]
+      }
+    ],
+    "noFormerlySerializedAs": true,
+    "meaning": "These fields have no serialized-name alias. An old kneeSpaceOffsetMax does not override the new fields; missing new fields retain the verified constructor values."
+  }
+}

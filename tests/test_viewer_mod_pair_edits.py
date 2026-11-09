@@ -255,6 +255,29 @@ class PairedBodyEditTests(unittest.TestCase):
         recipe = json.loads(Path(output["result"]["paired_recipe_paths"][0]).read_text())
         self.assertEqual(recipe["state"]["outlines"][0]["factor"], .5)
 
+    def test_outline_detail_pair_requires_verified_vertex_order_and_keeps_overrides(self):
+        primary = self.write("board-detail.unity", self.outline_red(self.fixture(), values=[0, 80, 255, 190, 30, 1]))
+        other_raw = self.outline_red(self.fixture(other=True, offset=1000), values=[20, 140, 0, 180, 255, 37])
+        other = self.write("bare-detail.unity", other_raw)
+        source_token, _ = self.register(primary)
+        target_token, _ = self.register(other)
+        context, target = edits.mod_source_context(source_token), edits.mod_source_context(target_token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        rows = [{"id": identity, "factor": .5, "vertices": [{"vertex": 0, "value": 1}]}]
+        state = edits.validate_state(source_token, self.state(outlines=rows))
+        mapped, _ = paired._map_state(context, state, 0, edits._inspect(primary.read_bytes()), target, edits._inspect(other_raw))
+        self.assertEqual(mapped["outlines"][0]["vertices"], rows[0]["vertices"])
+        self.assertNotEqual(mapped["outlines"][0]["id"], identity)
+        result = edits.export(source_token, state, self.root / "outline-detail-source")
+        output = self.apply_raw(context, result, state, other)
+        actual = Path(output["pair"]["unmasked"]["path"]).read_bytes()
+        self.assertEqual(self.outline_red(actual), [128, 70, 0, 90, 128, 19])
+        self.assertEqual(other.read_bytes(), other_raw)
+        altered = copy.deepcopy(target)
+        altered["outlines"]["meshes"][0]["vertexOrderSignature"] = "different-geometry-order"
+        with self.assertRaisesRegex(ValueError, "verified matching vertex order"):
+            paired._map_state(context, state, 0, edits._inspect(primary.read_bytes()), altered, edits._inspect(other_raw))
+
     def test_outline_only_paired_mod_zip_propagates_all_platform_variants(self):
         path, original = self.paired_zip(four=True)
         token, _ = self.register(path, archive=True)

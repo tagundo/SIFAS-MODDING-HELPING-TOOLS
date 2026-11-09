@@ -276,6 +276,7 @@ def describe_expressions(morphs, bones, doc, *, owner=None, sources=None, clips=
         if control["id"] in by_id:
             control["presetId"] = control["id"]
     clip_labels = []
+    gaze_clips = []
     for clip in clips or []:
         name = clip.get("sourceName") or clip.get("name", "")
         match = _CLIP.search(name) if isinstance(name, str) else None
@@ -290,8 +291,26 @@ def describe_expressions(morphs, bones, doc, *, owner=None, sources=None, clips=
                             "semanticId": index if group == "eye" else 10000 + index,
                             "complete": bool(clip.get("bindingComplete")),
                             "advanced": group == "eye" and (6 <= index <= 11 or index == 900)})
-    return {"version": 1, "available": bool(channels), "truncated": not catalog_complete,
+        if group == "eye" and 6 <= index <= 11 and clip.get("bindingComplete"):
+            gaze_clips.append({"name": clip.get("name", name), "index": index,
+                               "kind": "eyes", "sourceName": clip.get("sourceName", name),
+                               "sourceHash": clip.get("sourceHash")})
+    # Prefer the displayed character's own verified pose bank. Shared ch0001
+    # is the original game's fallback; an ambiguous collection remains visible
+    # to the evaluator as ambiguous rather than borrowing arbitrary endpoints.
+    if _integer(owner):
+        own_prefix = "ch%04d_" % owner
+        own_gaze = [clip for clip in gaze_clips if clip["sourceName"].startswith(own_prefix)]
+        shared_gaze = [clip for clip in gaze_clips if clip["sourceName"].startswith("ch0001_")]
+        gaze_clips = own_gaze or shared_gaze or gaze_clips
+    gaze_bones = [bone["node"] for bone in bones if _integer(bone.get("node")) and
+                  re.fullmatch(r"(?:Left|Right)Eye(?:[12]|_Root)", bone.get("name", ""))]
+    gaze = {"available": bool(gaze_clips and gaze_bones), "clips": gaze_clips,
+            "nodes": gaze_bones, "horizontalLimit": 45, "verticalLimit": 30,
+            "owner": owner if _integer(owner) else None}
+    return {"version": 1, "available": bool(channels) or gaze["available"], "truncated": not catalog_complete,
             "rawChannelCount": total_channels, "catalogChannelLimit": MAX_CHANNELS,
             "groups": [{"id": "eyes", "label": "Eyes and brows"}, {"id": "mouth", "label": "Mouth"},
                        {"id": "other", "label": "Other expression channels"}],
-            "controls": controls, "presets": presets, "rawChannels": channels, "clips": clip_labels}
+            "controls": controls, "presets": presets, "rawChannels": channels, "clips": clip_labels,
+            "gaze": gaze}

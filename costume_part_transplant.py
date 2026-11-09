@@ -1319,7 +1319,11 @@ def inject_bone_chain(donor, target, inject_names, name2tf_target,
             seen.add(parent)
             if parent not in d_go_by_name: raise ValueError("A donor part ancestor is unavailable.")
             expanded.add(parent); parent = d_parent.get(parent)
-    inject_names = sorted(expanded)
+    if preserve_physics:
+        from costume_transplant import physics_dependency_names
+        inject_names = physics_dependency_names(do, did, d_scripts, sorted(expanded), name2tf_target)
+    else:
+        inject_names = sorted(expanded)
     go_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
     used |= set(go_pid.values())
     tf_pid = dict(zip(inject_names, _rand_pids(len(inject_names), used)))
@@ -1367,7 +1371,7 @@ def inject_bone_chain(donor, target, inject_names, name2tf_target,
         d_mgr = _find_swingbone_manager(do, d_scripts)
         d_mgr_tt = _safe_tt(d_mgr) if d_mgr else {"bones": []}
         donor_idx_name = []
-        for b in d_mgr_tt.get("bones", []):
+        for b in d_mgr_tt.get("bones", []) + d_mgr_tt.get("lodBones", []):
             co = did.get(b["m_PathID"])
             donor_idx_name.append(_go_name(did, _safe_tt(co).get("m_GameObject", {}).get("m_PathID")) if co else None)
         t_existing_bones = _safe_tt(t_mgr).get("bones", [])
@@ -2170,6 +2174,10 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     # mesh untouched -> load-safe even on a board.
     if scale_swing_physics and preserve_physics and inject_names:
         scale_costume_swing_lengths(out_path, donor_path, inject_names, verbose=verbose)
+    if preserve_physics:
+        from costume_transplant import repair_transplant_physics
+        repair_transplant_physics(out_path, donor_path, target_path, new_map if inject_names else (),
+                                  restore_collision=restore_collision, verbose=verbose)
     # read-only: warn if the grown body renderer blew past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
     log(f"[done] {out_path}")
@@ -2360,6 +2368,8 @@ def validate(out_path, verbose=True):
                     pid = tt.get(key, {}).get("m_PathID", 0)
                     if pid and pid not in id2:
                         dangling += 1
+    from costume_transplant import physics_graph_issues
+    dangling += len(physics_graph_issues(objs, id2))
     if verbose:
         if hier_problems:
             print(f"[validate] WARNING: {hier_problems} transform(s) with multiple/duplicate "

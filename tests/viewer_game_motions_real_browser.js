@@ -95,11 +95,12 @@ async function sample(page, time) {
     await page.locator('#viewer-game-motion-choice').selectOption('voice:1001014');
     await page.locator('#viewer-motion-import').click();
     await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && !ModelViewer.getState().loading && ModelViewer.getState().rig.selectedClip === 'game-timeline:voice:voice:1001014:1');
-    const voiceLoaded = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths, faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames, audio: ViewerMotionAudio.getState(), triangles: ModelViewer.getState().sourceTriangles }));
-    assert(voiceLoaded.paths.length <= 8, 'A second game motion replaces prior game inputs within the real viewer limit');
+    const voiceLoaded = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths, motionPaths: ModelViewer.getState().loadedMotionPaths, faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames, audio: ViewerMotionAudio.getState(), triangles: ModelViewer.getState().sourceTriangles }));
+    assert.equal(voiceLoaded.paths.length, 1, 'Game motion sources are independent of the selected original body');
+    assert(voiceLoaded.motionPaths.length <= 32, 'Distinct imported game motions share a bounded retained library');
     assert.equal(voiceLoaded.triangles, before.triangles, 'Navigation motion and pose banks add no geometry');
     assert.equal(voiceLoaded.faces.status, 'added', 'Six imported voice/face banks retain automatically completed original face');
-    assert.deepStrictEqual(voiceLoaded.clips.filter(name => !before.clips.includes(name)), ['game-timeline:voice:voice:1001014:1'], 'Four original voice segments and32facial poses add only one intentional motion choice');
+    assert.deepStrictEqual(voiceLoaded.clips.filter(name => !before.clips.includes(name)).sort(), [after.clip, 'game-timeline:voice:voice:1001014:1'].sort(), 'The selected voice adds one intentional choice while retaining the earlier solo MV');
     const cue = voiceLoaded.audio.tracks.find(track => track.cue === 'vo_ca_1000110014');
     assert(cue, 'The actual selected voice cue was decoded automatically');
     assert(Math.abs(cue.startTime - .7166666666666667) < 1e-8, 'The actual NaviVoiceTrack delay is preserved');
@@ -115,11 +116,12 @@ async function sample(page, time) {
     await page.screenshot({ path: path.join(evidence, 'original-navigation-voice-render.png') });
     report.voiceLoaded = voiceLoaded;
     await page.evaluate(additional => ModelViewer.addMotion([additional]), path.join(source, 'ayumu-animations1.unity'));
-    report.eightSelected = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths,
+    report.eightSelected = await page.evaluate(() => ({ paths: ModelViewer.getState().loadedPaths, motionPaths: ModelViewer.getState().loadedMotionPaths,
       faces: ModelViewer.getState().faces, clips: ModelViewer.getState().rig.clipNames, selected: ModelViewer.getState().rig.selectedClip, triangles: ModelViewer.getState().sourceTriangles, probe: ModelViewer.renderProbe(33) }));
-    assert.equal(report.eightSelected.paths.length, 8, 'Eight explicit body/animation inputs are supported');
-    assert.equal(report.eightSelected.faces.status, 'added', 'Automatic face has a separate dependency budget at eight explicit inputs');
-    assert.equal(report.eightSelected.triangles, before.triangles, 'Eight inputs retain the complete original face geometry');
+    assert.equal(report.eightSelected.paths.length, 1, 'Supplementary pose banks never become selected model sources');
+    assert(report.eightSelected.motionPaths.length >= voiceLoaded.motionPaths.length, 'Supplementary banks retain the earlier motion library');
+    assert.equal(report.eightSelected.faces.status, 'added', 'Automatic face has a separate dependency budget from the motion library');
+    assert.equal(report.eightSelected.triangles, before.triangles, 'Retained inputs keep the complete original face geometry');
     assert.deepStrictEqual(report.eightSelected.clips, voiceLoaded.clips, 'Adding a raw original eye bank creates no stray motion choices');
     assert.equal(report.eightSelected.selected, 'game-timeline:voice:voice:1001014:1', 'A manual auxiliary import preserves the selected complete voice motion');
     assert(report.eightSelected.probe.ready && report.eightSelected.probe.glError === 0 && report.eightSelected.probe.nonBackgroundSamples > 0);
@@ -149,6 +151,10 @@ async function sample(page, time) {
     // Original raw bundles also go through the normal manual AddMotion path.
     // A camera timeline or a facial pose bank must not masquerade as a dance.
     await page.evaluate(body => openModelViewer([body]), path.join(source, 'ayumu-body.unity'));
+    assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getState().rig.clipNames), report.eightSelected.clips, 'Reopening the actual model preserves both imported complete motions');
+    await page.locator('#viewer-adjustments').evaluate(node => node.open = true);
+    await page.locator('#viewer-clear-motion-library').click();
+    await page.waitForFunction(() => !ModelViewer.getState().loading && !ModelViewer.getState().loadedMotionPaths.length);
     const manualBase = await page.evaluate(() => ({ clips: ModelViewer.getState().rig.clipNames, triangles: ModelViewer.getState().sourceTriangles }));
     report.manualOriginal = [];
     for (const filename of ['group-main.unity', 'ayumu-animations1.unity', 'ayumu-animations2.unity']) {

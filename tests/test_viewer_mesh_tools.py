@@ -58,6 +58,25 @@ class MeshRoundtripTests(unittest.TestCase):
         self.assertTrue(data['texture'].startswith('data:image/png;base64,'))
         self.assertTrue(data['skinWritable']); self.assertTrue(data['positionWritable'])
 
+    def test_verified_outline_companion_cannot_be_used_as_a_mesh_edit_source(self):
+        companion = self.base / 'verified-face-source.unity'
+        companion.write_bytes(self.raw)
+        proof = {'path': str(companion), 'sha256': hashlib.sha256(self.raw).hexdigest(), 'sourceIndex': 1}
+        model_edits.register_session(self.token, [str(self.source)], self.rig, companions=[proof])
+        self.assertTrue(mesh.inspect(self.token)['meshes'])
+        self.assertTrue(all(row['mesh']['source'] == 0 for row in mesh.inspect(self.token)['meshes']))
+        self.assertEqual(len(mesh.data(self.token, self.ident)['positions']), 6)
+        foreign = {**self.ident, 'source': 1}
+        with self.assertRaisesRegex(mesh.MeshToolError, 'face file explicitly'):
+            mesh.data(self.token, foreign)
+        with self.assertRaisesRegex(mesh.MeshToolError, 'face file explicitly'):
+            self.save({'version': 1, 'meshes': [{'mesh': foreign, 'deleteFaces': [0]}]})
+        self.assertEqual(companion.read_bytes(), self.raw)
+        companion.write_bytes(self.raw + b'changed')
+        with self.assertRaisesRegex(model_edits.ModelEditError, 'facial companion changed'):
+            model_edits.register_session(secrets.token_hex(16), [str(self.source)], self.rig, companions=[proof])
+        self.assertEqual(self.source.read_bytes(), self.raw)
+
     def test_delete_only_painted_faces_preserves_vertex_and_morph_identity(self):
         result = self.save(self.state(deleteFaces=[1, 3]))
         record = self.output(result); tree = record[2]

@@ -56,6 +56,54 @@ class PhysicsTests(unittest.TestCase):
         bone = next(r for r in records if r["kind"] == "bone")
         self.assertEqual(bone["simulation"]["colliders"], ["0:0:224"])
 
+    def test_legacy_schema_uses_only_verified_native_constructor_defaults(self):
+        import struct
+        reference = json.loads((Path(__file__).parent / "fixtures/game_physics_native_constructor.json").read_text())
+        self.assertEqual(reference["status"], "RETURNED")
+        self.assertEqual(reference["instructions"], 114)
+        self.assertTrue(reference["serializedFieldAttributes"]["noFormerlySerializedAs"])
+        info = edits._inspect(fixture_bytes(native=True))
+        bone_obj = info["objects"][(0, 221)]
+        self.assertNotIn("kneeSpaceOffsetForce", bone_obj.read_typetree())
+        records = viewer_physics.inspect_info(info, 0, [])
+        simulation = next(r for r in records if r["kind"] == "bone")["simulation"]
+        self.assertEqual(set(simulation["constructorDefaults"]), set(reference["appliedToLegacyPreviewOnly"]))
+        for name in reference["appliedToLegacyPreviewOnly"]:
+            self.assertEqual(struct.pack("<f", simulation[name]).hex(), reference["fields"][name]["float32le"])
+        # These remain preview/runtime metadata: the old serialized schema and
+        # source bytes are not rewritten to manufacture fields absent from it.
+        self.assertNotIn("kneeSpaceOffsetForce", bone_obj.read_typetree())
+        self.assertNotIn("enableLod", self.bone["simulation"])
+        from UnityPy.helpers.TypeTreeNode import TypeTreeNode
+        tree = bone_obj.read_typetree()
+        tree.update(kneeSpaceOffsetForce=float("nan"))
+        node = bone_obj.serialized_type.node
+        field = TypeTreeNode(**next(child for child in node.m_Children if child.m_Name == "radius").to_dict())
+        field.m_Name = "kneeSpaceOffsetForce"
+        bone_obj.serialized_type.node = TypeTreeNode(**{**node.to_dict(), "m_Children": list(node.m_Children) + [field]})
+        bone_obj.save_typetree(tree)
+        invalid_info = edits._inspect(info["env"].file.save(packer="original"))
+        invalid = next(r for r in viewer_physics.inspect_info(invalid_info, 0, []) if r["kind"] == "bone")["simulation"]
+        self.assertNotIn("kneeSpaceOffsetForce", invalid)
+        self.assertNotIn("kneeSpaceOffsetForce", invalid["constructorDefaults"])
+
+    def test_breast_size_tiers_match_the_existing_tool_and_texture_identity(self):
+        import sifas_breast_tuner as tuner
+        reference = [{"scale": list(scale), "tier": tier} for _, scale, tier in tuner.BREAST_PRESETS_ALL]
+        recommendations = self.catalog["breastSizeRecommendations"]
+        self.assertEqual(recommendations["presets"], reference)
+        self.assertEqual(recommendations["stockTolerance"], .03)
+        info = edits._inspect(self.raw)
+        texture = next(obj for obj in info["objects"].values() if obj.type.name == "Texture2D")
+        original = texture.read_typetree()
+        original["m_Name"] = "ch0209_co0001_body"
+        texture.save_typetree(original)
+        changed = edits._inspect(info["env"].file.save(packer="original"))
+        records = viewer_physics.inspect_info(changed, 0, [])
+        breast = next(r for r in records if r["kind"] == "bone")
+        self.assertEqual(breast["stockJiggleTier"], 0)
+        self.assertNotIn("stockJiggleTier", self.bone, "A path or model filename cannot invent stock character identity")
+
     @unittest.skipUnless(shutil.which("node"), "Node is required for the enhanced Three.js solver regression")
     def test_enhanced_solver_constrained_surfaces_and_live_mesh_edits(self):
         result = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("viewer_physics_solver_node.js"))],

@@ -11,6 +11,8 @@
     var boneFamilies = {}, visibilityFamilies = {}, controls = [], presets = [], currentGroup = "";
     var selectedRaw = "", lastSelection = null, unavailable = 0, events = [], controlElements = [], partSelections = [];
     var presetButtons = [], groupButtons = [], rawError = "", rawInputValues = {};
+    var gaze = global.ViewerGaze && options.root ? global.ViewerGaze.create(options.root, options.animations || [], options.metadata || {}) : null;
+    var gazeSettings = { mode: "motion", horizontal: 0, vertical: 0, strength: 1 }, gazeOperations = [], gazeUi = null;
     function element(id) { return document.getElementById(id); }
     var ui = { panel: element("viewer-expression-panel"), groups: element("viewer-expression-groups"),
       presets: element("viewer-expression-presets"), raw: element("viewer-expression"),
@@ -195,6 +197,64 @@
       if (!node) return;
       node.addEventListener(event, handler); events.push(function () { node.removeEventListener(event, handler); });
     }
+    function gazeAvailable() { return !!gaze && gaze.getState().available; }
+    function gazeChanged() { gazeOperations = []; changed(); }
+    function makeGazeUi() {
+      if (!ui.panel || !gaze) return;
+      var holder = document.createElement("details"), heading = document.createElement("summary"), fields = document.createElement("div");
+      holder.id = "viewer-expression-gaze"; holder.className = "viewer-expression-advanced viewer-expression-gaze";
+      holder.appendChild(heading); fields.className = "viewer-expression-controls"; holder.appendChild(fields);
+      var modeLabel = document.createElement("label"), modeTitle = document.createElement("span"), mode = document.createElement("select");
+      mode.id = "viewer-gaze-mode"; modeLabel.className = "viewer-expression-control";
+      modeLabel.appendChild(modeTitle); modeLabel.appendChild(mode); fields.appendChild(modeLabel);
+      var controls = [];
+      [["horizontal", -100, 100], ["vertical", -100, 100], ["strength", 0, 100]].forEach(function (spec) {
+        var label = document.createElement("label"), title = document.createElement("span"), slider = document.createElement("input"), numberInput = document.createElement("input");
+        label.className = "viewer-expression-control"; slider.type = "range"; slider.min = String(spec[1]); slider.max = String(spec[2]); slider.step = "any";
+        slider.id = "viewer-gaze-" + spec[0]; numberInput.id = slider.id + "-number"; numberInput.type = "number";
+        numberInput.min = slider.min; numberInput.max = slider.max; numberInput.step = "any";
+        label.appendChild(title); label.appendChild(slider); label.appendChild(numberInput); fields.appendChild(label);
+        function input(value) {
+          if (!interactive || !gazeAvailable()) return;
+          if (!value.trim() || !isFinite(Number(value)) || Number(value) < spec[1] || Number(value) > spec[2]) { numberInput.setCustomValidity(translate("Enter a gaze value within the displayed range.")); return; }
+          numberInput.setCustomValidity(""); gazeSettings[spec[0]] = Number(value) / 100;
+          if (spec[0] !== "strength") gazeSettings.mode = "direction";
+          gazeChanged();
+        }
+        listen(slider, "input", function () { input(slider.value); }); listen(numberInput, "input", function () { input(numberInput.value); });
+        listen(numberInput, "blur", function () { numberInput.setCustomValidity(""); refreshGazeUi(); });
+        controls.push({ key: spec[0], title: title, slider: slider, number: numberInput });
+      });
+      var resetButton = document.createElement("button"), status = document.createElement("p"); resetButton.type = "button"; resetButton.id = "viewer-gaze-reset";
+      status.id = "viewer-gaze-status"; status.className = "viewer-info"; fields.appendChild(resetButton); fields.appendChild(status);
+      ui.panel.insertBefore(holder, ui.panel.firstChild);
+      gazeUi = { holder: holder, heading: heading, mode: mode, modeTitle: modeTitle, controls: controls, reset: resetButton, status: status };
+      listen(mode, "change", function () { if (!interactive || !gazeAvailable()) return; gazeSettings.mode = mode.value; gazeChanged(); });
+      listen(resetButton, "click", function () { if (!interactive) return; gazeSettings = { mode: "motion", horizontal: 0, vertical: 0, strength: 1 }; gazeChanged(); });
+    }
+    function refreshGazeUi() {
+      if (!gazeUi) return;
+      var available = gazeAvailable(), enabled = interactive && available, state = gazeSettings.mode === "motion" && options.getMotionGazeState && options.getMotionGazeState() || gaze.getState();
+      property(gazeUi.heading, "textContent", translate("Gaze")); property(gazeUi.modeTitle, "textContent", translate("Gaze control"));
+      if (gazeUi.mode.options.length !== 4 || gazeUi.mode.dataset.language !== translate("Follow motion gaze")) {
+        gazeUi.mode.textContent = "";
+        [["motion", "Follow motion gaze"], ["camera", "Look at the preview camera"], ["front", "Look straight ahead"], ["direction", "Adjust gaze direction"]].forEach(function (entry) { addOption(gazeUi.mode, entry[0], translate(entry[1])); });
+        gazeUi.mode.dataset.language = translate("Follow motion gaze");
+      }
+      property(gazeUi.mode, "value", gazeSettings.mode); property(gazeUi.mode, "disabled", !enabled);
+      gazeUi.controls.forEach(function (control) {
+        var title = control.key === "horizontal" ? "Horizontal gaze" : control.key === "vertical" ? "Vertical gaze" : "Gaze strength";
+        property(control.title, "textContent", translate(title));
+        property(control.slider, "disabled", !enabled || control.key !== "strength" && gazeSettings.mode !== "direction");
+        property(control.number, "disabled", control.slider.disabled);
+        property(control.slider, "value", percentNumber(gazeSettings[control.key]));
+        if (document.activeElement !== control.number) property(control.number, "value", percentNumber(gazeSettings[control.key]));
+        control.slider.setAttribute("aria-label", translate(title)); control.number.setAttribute("aria-label", translate(title));
+      });
+      property(gazeUi.reset, "textContent", translate("Follow motion gaze")); property(gazeUi.reset, "disabled", !enabled || gazeSettings.mode === "motion");
+      property(gazeUi.status, "textContent", !available ? translate("Open the original face and its eye-pose animation bank to adjust gaze.") :
+        state.missingTargets.length ? translate("The original gaze target is unavailable in this preview.") : translate("Gaze uses the original eye poses without changing eyelids or mouth shapes."));
+    }
     function addOption(parent, value, text) {
       var option = document.createElement("option"); option.value = value; option.textContent = text; parent.appendChild(option);
     }
@@ -283,7 +343,8 @@
     function refresh() {
       if (disposed) return;
       var enabled = interactive && channels.length > 0;
-      if (ui.panel) property(ui.panel, "hidden", !channels.length);
+      if (ui.panel) property(ui.panel, "hidden", !channels.length && !gazeAvailable());
+      refreshGazeUi();
       groupButtons.forEach(function (entry) { property(entry.element, "disabled", !enabled); attribute(entry.element, "aria-pressed", String(entry.group === currentGroup)); });
       presetButtons.forEach(function (entry) {
         property(entry.element, "disabled", !enabled);
@@ -327,7 +388,7 @@
         property(ui.source, "textContent", channel ? translate("File weight") + ": " + percent(authoredWeights[selectedRaw]) +
           " · " + translate("Current weight") + ": " + percent(value) : "");
       }
-      if (ui.reset) property(ui.reset, "disabled", !enabled || !(Object.keys(overrides).length || Object.keys(boneOperations).length || Object.keys(visibilityOperations).length));
+      if (ui.reset) property(ui.reset, "disabled", !interactive || !(Object.keys(overrides).length || Object.keys(boneOperations).length || Object.keys(visibilityOperations).length || gazeSettings.mode !== "motion"));
       if (ui.selection) {
         property(ui.selection, "textContent", lastSelection ? translate(lastSelection.label) + (lastSelection.note ? " — " + translate(lastSelection.note) : "") :
           !controls.length && !presets.length && channels.length ? translate("Only original channel names are available for this model.") : "");
@@ -346,17 +407,34 @@
         property(ui.status, "hidden", !notices.length); property(ui.status, "textContent", notices.join(" "));
       }
     }
-    function getBoneOperations() {
+    function explicitBoneOperations() {
       return Object.keys(boneOperations).sort().map(function (key) {
         var value = boneOperations[key]; return { node: value.node, kind: value.kind, value: value.value.slice(), source: "expression" };
       });
     }
+    function getBoneOperations() {
+      var result = explicitBoneOperations();
+      gazeOperations.forEach(function (operation) {
+        result = result.filter(function (current) { return current.node !== operation.node || current.kind !== operation.kind; });
+        result.push({ node: operation.node, kind: operation.kind, value: operation.value.slice(), source: "expression" });
+      });
+      return result;
+    }
     function applyBonesAndMorphs() {
       if (disposed) return;
-      getBoneOperations().forEach(function (operation) { nodes[String(operation.node)][operation.kind].fromArray(operation.value); });
+      explicitBoneOperations().forEach(function (operation) { nodes[String(operation.node)][operation.kind].fromArray(operation.value); });
       Object.keys(overrides).forEach(function (key) {
         var channel = channelByKey[key]; if (channel) channel.object.morphTargetInfluences[channel.index] = overrides[key];
       });
+      gazeOperations = [];
+      if (gaze && gazeSettings.mode !== "motion") {
+        var values = gazeSettings.mode === "direction" ? gaze.axes(gazeSettings.horizontal, gazeSettings.vertical) :
+          gazeSettings.mode === "camera" ? gaze.targetWeights(21, options.getGazeContext ? options.getGazeContext() : {}) : {};
+        if (values) {
+          Object.keys(values).forEach(function (id) { values[id] *= gazeSettings.strength; });
+          if (gaze.apply(values, true)) gazeOperations = gaze.operations();
+        }
+      }
     }
     function applyVisibility(parts) {
       if (disposed) return;
@@ -383,6 +461,7 @@
     function reset(silent) {
       overrides = {}; boneOperations = {}; visibilityOperations = {}; selectedPresets = {}; lastSelection = null; selectedRaw = "";
       rawInputValues = {}; partSelections = [];
+      gazeSettings = { mode: "motion", horizontal: 0, vertical: 0, strength: 1 }; gazeOperations = [];
       inputError(false);
       if (ui.raw) ui.raw.value = "";
       if (!silent) changed(); else refresh();
@@ -419,10 +498,18 @@
         else nextPresets[group] = id;
       });
       if (!valid) return false;
+      var nextGaze = { mode: "motion", horizontal: 0, vertical: 0, strength: 1 };
+      if (state.gaze !== undefined) {
+        if (!state.gaze || ["motion", "camera", "front", "direction"].indexOf(state.gaze.mode) < 0 ||
+            !["horizontal", "vertical", "strength"].every(function (key) { return finite(state.gaze[key]) && Math.abs(state.gaze[key]) <= 1; }) || state.gaze.strength < 0 ||
+            state.gaze.mode !== "motion" && !gazeAvailable()) return false;
+        nextGaze = { mode: state.gaze.mode, horizontal: state.gaze.horizontal, vertical: state.gaze.vertical, strength: state.gaze.strength };
+      }
       // Commit only after validating the complete snapshot. Display rounding
       // never feeds back into the restored morph weights or bone transforms.
       overrides = nextOverrides; boneOperations = nextBones; visibilityOperations = nextVisibility;
       selectedPresets = nextPresets; currentGroup = state.group; selectedRaw = state.selectedRaw;
+      gazeSettings = nextGaze; gazeOperations = [];
       rawInputValues = {}; partSelections = []; lastSelection = null; inputError(false);
       var selection = state.lastSelection;
       if (selection && selection.kind === "preset") {
@@ -443,7 +530,7 @@
     listen(ui.number, "change", function () { if (rawError) ui.number.reportValidity(); else refresh(); });
     listen(ui.number, "blur", function () { if (!rawError) refresh(); });
     listen(ui.reset, "click", function () { if (!ui.reset.disabled) reset(false); });
-    renderPanel(); refresh();
+    makeGazeUi(); renderPanel(); refresh();
     return {
       applyBonesAndMorphs: applyBonesAndMorphs, applyVisibility: applyVisibility, getBoneOperations: getBoneOperations,
       refresh: refresh, reset: reset, restoreState: restoreState,
@@ -453,13 +540,15 @@
         rawWeights: channels.map(function (channel) { return { key: String(channel.key), sourceWeight: authoredWeights[String(channel.key)],
           currentWeight: channel.object.morphTargetInfluences[channel.index] }; }),
         rawRange: channelByKey[selectedRaw] ? rawRange(channelByKey[selectedRaw]) : null, rawInputError: rawError,
-        overrides: Object.assign({}, overrides), boneOperations: getBoneOperations(),
+        overrides: Object.assign({}, overrides), boneOperations: explicitBoneOperations(),
+        gaze: Object.assign({}, gaze && gaze.getState() || { available: false, directions: [], weights: {}, missingTargets: [], warnings: [] }, gazeSettings),
         visibility: Object.keys(visibilityOperations).map(function (key) { var value = visibilityOperations[key]; return {node: value.node, visible: value.visible}; }),
         controls: controls.map(function (control) { return { id: control.id, group: control.group, label: control.label, values: weightsFor(control) }; }),
         presets: presets.map(function (preset) { return { id: preset.id, group: preset.group, label: preset.label, complete: preset.complete, source: preset.source, scope: preset.scope }; }),
         unavailablePresets: unavailable, truncatedCatalog: !!catalog.truncated }; },
       dispose: function () {
         disposed = true; events.forEach(function (remove) { remove(); });
+        if (gazeUi && gazeUi.holder.parentNode) gazeUi.holder.parentNode.removeChild(gazeUi.holder);
         [ui.groups, ui.presets, controlHolder].forEach(function (node) { if (node) node.textContent = ""; });
         groupButtons = []; presetButtons = []; controlElements = []; partSelections = [];
       }

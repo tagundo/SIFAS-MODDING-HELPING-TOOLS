@@ -34,6 +34,7 @@ async function main() {
     await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; openModelViewer([source]); }, source);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
     assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.components), 3);
+    assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.swingBone && ModelViewer.getState().rig.physics.swingCollider), true, 'New models enable both original physics systems by default');
     assert.equal(await page.locator('#viewer-adjustments').evaluate(el => el.open), false);
     await page.locator('#viewer-adjustments').evaluate(el => { el.open = true; });
     await page.locator('.viewer-physics-region').evaluateAll(items => items.forEach(el => { el.open = true; }));
@@ -69,7 +70,7 @@ async function main() {
     const saved = path.join(library, 'modded/viewer', dirs[0]);
     const recipe = JSON.parse(fs.readFileSync(path.join(saved, 'recipe.json'), 'utf8'));
     assert.equal(recipe.state.physics[0].values.dragForce, .5);
-    await page.locator('#viewer-breast-card .viewer-physics-region > details').first().evaluate(el => { el.open = true; });
+    await page.locator('#viewer-physics-breast-edit').click();
     const drag = page.locator('[data-physics-field="dragForce"]');
     await drag.fill('2'); assert.equal(await page.locator('#viewer-save').isDisabled(), true);
     await drag.fill('0.4'); assert.equal(await page.locator('#viewer-save').isEnabled(), true);

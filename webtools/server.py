@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import posixpath
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -262,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
-        if set(params) - {"paths", "auto_face", "rigged", "archive_variants", "preview_only"}:
+        if set(params) - {"paths", "motion_paths", "auto_face", "rigged", "archive_variants", "preview_only"}:
             return self._send_json({"error": "Unsupported model viewer option."}, status=400)
         auto_face = params.get("auto_face", True)
         if not isinstance(auto_face, bool):
@@ -277,6 +278,11 @@ class Handler(BaseHTTPRequestHandler):
         if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or not path.strip() for path in paths)):
             return self._send_json({"error": "Choose between one and eight model files."}, status=400)
+        motion_paths = params.get("motion_paths", [])
+        if (not isinstance(motion_paths, list) or len(motion_paths) > 32
+                or any(not isinstance(path, str) or not path.strip() for path in motion_paths)
+                or motion_paths and not rigged):
+            return self._send_json({"error": "Choose at most thirty-two motion source files."}, status=400)
         choices = params.get("archive_variants", {})
         indices = {str(index): index for index in range(len(paths))}
         if (not isinstance(choices, dict) or len(choices) > len(paths)
@@ -296,6 +302,15 @@ class Handler(BaseHTTPRequestHandler):
             if real not in resolved:
                 resolved.append(real)
             input_paths.append(real)
+        resolved_motions = []
+        for path in motion_paths:
+            real = os.path.realpath(os.path.expanduser(path))
+            if not filebrowser.is_within_allowed(real):
+                return self._send_json({"error": "Motion file is outside the allowed folders."}, status=403)
+            if not os.path.isfile(real):
+                return self._send_json({"error": "Motion file was not found."}, status=404)
+            if real not in resolved_motions and real not in resolved:
+                resolved_motions.append(real)
         variant_choices = {}
         for index, choice in choices.items():
             original = input_paths[indices[index]]
@@ -316,11 +331,20 @@ class Handler(BaseHTTPRequestHandler):
             "cache_dir": cache_dir,
         }
         try:
-            with viewer_archive.expand_inputs(resolved, cache_dir, variant_choices=variant_choices) as expanded:
+            with ExitStack() as opened:
+                expanded = opened.enter_context(viewer_archive.expand_inputs(resolved, cache_dir, variant_choices=variant_choices))
+                expanded_motions = []
+                for source in resolved_motions:
+                    motion_inputs = opened.enter_context(viewer_archive.expand_inputs([source], cache_dir))
+                    expanded_motions.extend(path for path in motion_inputs.paths if path not in expanded_motions)
+                if len(expanded_motions) > model_viewer.MAX_MOTION_FILES:
+                    raise ValueError("The expanded motion library has too many source files.")
                 context.update(manifest_paths=expanded.manifest_paths, origins=expanded.origins)
                 options = {"face_context": context}
                 if rigged:
                     options["rigged"] = True
+                if expanded_motions:
+                    options["motion_paths"] = expanded_motions
                 result = model_viewer.prepare(expanded.paths, **options)
                 result["source_names"] = expanded.source_names
                 # Indices select among the caller's already jailed inputs, never
@@ -330,9 +354,9 @@ class Handler(BaseHTTPRequestHandler):
                      "source_name": item["source_name"], "selected": item["selected"],
                      "choices": item["choices"]}
                     for item in expanded.variants]
-                # The editable inputs must be captured while ZIP members still
-                # exist. Auto-discovered faces and motions are deliberately not
-                # writable sources, even though they appear in the preview.
+                # Snapshot selected inputs and the completed preview's verified
+                # facial sources while archive members still exist. Retained
+                # motion sources never become persistent model-edit inputs.
                 if rigged and not preview_only and result.get("rig", {}).get("available"):
                     from webtools.core import model_edits
                     try:
@@ -342,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
                             archive_members=getattr(expanded, "archive_members", {}),
                             variants=(expanded.editing_variants if getattr(expanded, "editing_variants", None) is not None else
                                       {item["source_path"]: item["selected"] for item in expanded.variants}),
-                            cache_dir=cache_dir)
+                            cache_dir=cache_dir, companions=model_viewer.get_editing_companions(result["id"]))
                         if result["editing"].get("available"):
                             from webtools.core import viewer_mod_flow
                             result["editing"]["modPackaging"] = viewer_mod_flow.metadata(

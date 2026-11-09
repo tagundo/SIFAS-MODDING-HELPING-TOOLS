@@ -7,12 +7,50 @@ file and Unity PathID.
 """
 import copy
 import math
+import struct
 
 MAX_COMPONENTS = 512
 SCALAR_FIELDS = {"bone": {"stiffnessForce": (0., 10.), "dragForce": (0., 1.)},
                  "collider": {"radius": (0., 10.)}}
 VECTOR_FIELDS = {"bone": {"lowRotationLimit": 180., "highRotationLimit": 180.},
                  "collider": {"offset": 10.}}
+
+# Older bundles omit fields added to the runtime class. Unity runs the managed
+# constructor before deserialization, so those fields retain the constructor's
+# values. Captured by executing GL 3.12 SwingBone..ctor at RVA 0x2c99b90;
+# tests/fixtures/game_physics_native_constructor.json records the boundaries.
+# Do not use these for serialized-but-invalid values or unrelated missing facts.
+_CONSTRUCTOR_DEFAULTS = {name: struct.unpack("<f", bytes.fromhex(bits))[0] for name, bits in (
+    ("kneeSpaceOffsetFront", "0ad7a33c"),
+    ("kneeSpaceOffsetOther", "0ad7233d"),
+    ("kneeSpaceOffsetForce", "cdcc4c3e"),
+)}
+
+# Exact size/tier entries from sifas_breast_tuner.BREAST_PRESETS_ALL. Keep this
+# small conversion metadata independent of the desktop tuner's UI imports.
+_BREAST_SIZE_TIERS = (
+    ((.61, .91, .85), 0), ((.64, .94, .88), 0), ((.72, .95, .90), 1),
+    ((.80, .96, .92), 2), ((.90, .98, .96), 3), ((.95, .99, .98), 3),
+    ((1.04, 1.02, 1.04), 5), ((1.08, 1.04, 1.08), 5), ((1.12, 1.06, 1.12), 6),
+    ((1.14, 1.07, 1.14), 4), ((1.16, 1.08, 1.16), 6), ((1.20, 1.10, 1.20), 6),
+    ((1.22, 1.11, 1.22), 7), ((1.30, 1.15, 1.30), 7), ((1.30, 1.18, 1.30), 7),
+)
+
+
+def _stock_jiggle_tier(info):
+    """Identify stock shape only from unambiguous original body textures."""
+    from .charinfo import JIGGLE
+    characters = set()
+    for obj in info["objects"].values():
+        if obj.type.name != "Texture2D":
+            continue
+        name = obj.read_typetree().get("m_Name", "")
+        if not isinstance(name, str) or not name.startswith("ch") or "_body" not in name:
+            continue
+        character = name[2:name.find("_")]
+        if len(character) == 4 and character.isascii() and character.isdigit():
+            characters.add(int(character))
+    return JIGGLE.get(next(iter(characters))) if len(characters) == 1 else None
 
 
 def _field(tree, name):
@@ -56,6 +94,7 @@ def recommendations():
 
 
 def inspect_info(info, source_index, bones):
+    stock_jiggle_tier = _stock_jiggle_tier(info)
     nodes = {(int(b.get("serializedFile", 0)), str(b["transformId"])): b["node"]
              for b in bones if b.get("sourceIndex") == source_index and "transformId" in b}
     game_transforms = {}
@@ -130,6 +169,13 @@ def inspect_info(info, source_index, bones):
                     value = _field(tree, field)
                     if _finite(value):
                         simulation[field] = float(value)
+                defaults = []
+                for field, value in _CONSTRUCTOR_DEFAULTS.items():
+                    if field not in tree and field not in tree.get("Base", {}):
+                        simulation[field] = value
+                        defaults.append(field)
+                if defaults:
+                    simulation["constructorDefaults"] = defaults
                 for field in ("boneAxis", "externalForce", "gravity"):
                     value = _vector(_field(tree, field))
                     if value is not None:
@@ -160,6 +206,8 @@ def inspect_info(info, source_index, bones):
                 if isinstance(ids, list) and len(ids) <= MAX_COMPONENTS and all(type(v) is int for v in ids):
                     simulation["colliderIds"] = ids
                 record["simulation"] = simulation
+                if record["group"] == "breast" and stock_jiggle_tier is not None:
+                    record["stockJiggleTier"] = stock_jiggle_tier
             records.append(record)
             if len(records) > MAX_COMPONENTS:
                 raise ValueError("The model has too many physics components for preview editing.")
@@ -350,6 +398,9 @@ def make_catalog(records, managers):
         raise ValueError("The selected models have too many physics components or managers.")
     return {"available": bool(records), "components": records, "managers": managers,
             "native": native_readiness(records, managers), "presets": recommendations(),
+            "breastSizeRecommendations": {"presets": [{"scale": list(scale), "tier": tier}
+                                                        for scale, tier in _BREAST_SIZE_TIERS],
+                                          "stockTolerance": .03, "source": "sifas_breast_tuner.py"},
             "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
             "preview": "source_game_or_enhanced"}
 

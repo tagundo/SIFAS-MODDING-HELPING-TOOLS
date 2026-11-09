@@ -34,6 +34,20 @@
     "Show colliders": ["콜라이더 표시", "コライダーを表示"],
     "Show bones and colliders": ["본과 콜라이더 표시", "ボーンとコライダーを表示"],
     "Breast dynamics": ["가슴 Dynamic", "胸のダイナミクス"],
+    "SwingBones and colliders": ["스윙본·콜라이더 편집", "SwingBone・コライダー編集"],
+    "All components": ["모든 컴포넌트", "すべてのコンポーネント"],
+    "All body regions": ["모든 부위", "すべての部位"],
+    "Breast": ["가슴", "胸"], "Thighs": ["허벅지", "太もも"], "Other": ["기타", "その他"],
+    "Component type": ["컴포넌트 종류", "コンポーネントの種類"],
+    "Body region": ["부위", "部位"],
+    "Find a bone or collider": ["본·콜라이더 찾기", "ボーン・コライダーを検索"],
+    "Edit breast bones": ["가슴 본 상세 편집", "胸ボーンの詳細編集"],
+    "Match rotation limits to breast size": ["가슴 크기에 맞춰 rotation limit 자동 적용", "胸の大きさに回転制限を自動適用"],
+    "Uses the existing breast tuner's size tiers. X stays unchanged; Y/Z limits expand from the values present when enabled.": ["기존 가슴 튜너의 크기별 단계를 사용합니다. X는 유지하고, 켰을 때의 Y/Z 제한각을 기준으로 계산합니다.", "既存の胸調整ツールのサイズ段階を使用します。Xは維持し、有効にした時点のY/Z制限を基準に計算します。"],
+    "No verified size or character tier is available; these rotation limits are unchanged.": ["검증된 크기·캐릭터 단계가 없어 해당 제한각을 유지했습니다.", "確認済みのサイズ・キャラクター段階がないため、その回転制限を維持しました。"],
+    "The recommended limits exceed this component's editable range; its limits are unchanged.": ["권장 제한각이 편집 범위를 넘어 해당 제한각을 유지했습니다.", "推奨制限が編集範囲を超えるため、その回転制限を維持しました。"],
+    "Jiggle tier": ["Dynamic 단계", "揺れの段階"],
+    "No matching physics components.": ["조건에 맞는 물리 컴포넌트가 없습니다.", "条件に一致する物理コンポーネントがありません。"],
     "Thigh SwingCollider": ["허벅지 SwingCollider", "太もものSwingCollider"],
     "Other physics components": ["기타 물리 컴포넌트", "その他の物理コンポーネント"],
     "Tool recommendations": ["기존 도구 추천 값", "既存ツールの推奨値"],
@@ -453,10 +467,14 @@
   function create(root, catalog, options) {
     var THREE = window.THREE, components = catalog && catalog.components || [], edits = {}, controls = [], regions = [];
     var nodes = {}, interactive = true, writable = true, disposed = false;
-    var applyBones = false, applyColliders = false, showColliders = false, spheres = [], springs = [], helperGroup = new THREE.Group();
+    var applyBones = components.some(function (r) { return r.kind === "bone" && r.node !== null && r.enabled; });
+    var applyColliders = components.some(function (r) { return r.kind === "collider" && r.node !== null && r.enabled; });
+    var showColliders = false, spheres = [], springs = [], helperGroup = new THREE.Group();
     var nativeAvailable = !!(catalog && catalog.native && catalog.native.available && window.ViewerGamePhysics);
     var mode = nativeAvailable ? "game" : "enhanced", frameRate = 30, qualityMode = 20, profile = "auto", skirtCorrection = "auto", motionCorrection = "auto", frameElapsed = 0;
     var engines = {}, frameContext = null, modeSelect = null, frameSelect = null, profileSelect = null, qualitySelect = null, skirtSelect = null, motionSelect = null, modeNote = null;
+    var autoBreastLimits = false, breastLimitBases = {}, breastLimitState = [], breastAutoInput = null, breastAutoNote = null, breastSizeSignature = null;
+    var componentRows = [], componentKind = null, componentGroup = null, componentSearch = null, componentEmpty = null, componentsRegion = null;
     var base = {}, lang = function () { return document.documentElement.lang || "en"; };
     helperGroup.userData.viewerHelper = true; root.add(helperGroup);
     root.traverse(function (object) { if (!viewerHelper(object) && object.userData && object.userData.elichika_node !== undefined) nodes[String(object.userData.elichika_node)] = object; });
@@ -528,8 +546,72 @@
       Object.keys(values).forEach(function (name) { if (JSON.stringify(values[name]) !== JSON.stringify(record.values[name])) changed[name] = values[name]; });
       if (Object.keys(changed).length) edits[record.id] = changed; else delete edits[record.id];
     }
-    function refreshFields(selected) {
-      controls.forEach(function (row) { if (!row.record || selected && selected.indexOf(row.record.id) < 0) return; var value = current(row.record)[row.name]; row.input.value = row.axis === undefined ? String(value) : String(value[row.axis]); row.input.setCustomValidity(""); row.input.removeAttribute("aria-invalid"); delete row.input.dataset.physicsDirty; });
+    function refreshFields(selected, names) {
+      controls.forEach(function (row) { if (!row.record || selected && selected.indexOf(row.record.id) < 0 || names && names.indexOf(row.name) < 0) return; var value = current(row.record)[row.name]; row.input.value = row.axis === undefined ? String(value) : String(value[row.axis]); row.input.setCustomValidity(""); row.input.removeAttribute("aria-invalid"); delete row.input.dataset.physicsDirty; });
+    }
+    function breastBones() { return components.filter(function (record) { return record.group === "breast" && record.kind === "bone"; }); }
+    function refreshBreastAuto() {
+      if (breastAutoInput) breastAutoInput.checked = autoBreastLimits;
+      if (!breastAutoNote) return;
+      breastAutoNote.textContent = t("Uses the existing breast tuner's size tiers. X stays unchanged; Y/Z limits expand from the values present when enabled.");
+      if (autoBreastLimits && breastLimitState.length) {
+        breastAutoNote.textContent += " " + breastLimitState.map(function (row) {
+          var record = base[row.id] || components.filter(function (item) { return item.id === row.id; })[0];
+          return (record ? record.name + ": " : "") + (row.applied ? t("Jiggle tier") + " " + row.tier :
+            t(row.reason === "range" ? "The recommended limits exceed this component's editable range; its limits are unchanged." : "No verified size or character tier is available; these rotation limits are unchanged."));
+        }).join(" · ");
+      }
+    }
+    function disableBreastAuto(restoreLimits) {
+      if (restoreLimits) breastBones().forEach(function (record) {
+        var saved = breastLimitBases[record.id]; if (!saved) return;
+        var values = current(record); values.lowRotationLimit = saved.lowRotationLimit.slice(); values.highRotationLimit = saved.highRotationLimit.slice(); updateEdit(record, values);
+      });
+      autoBreastLimits = false; breastLimitBases = {}; breastLimitState = []; breastSizeSignature = null;
+      refreshBreastAuto();
+      if (restoreLimits) refreshFields(breastBones().map(function (record) { return record.id; }), ["lowRotationLimit", "highRotationLimit"]);
+    }
+    function breastScale(record, state) {
+      var targets = state && state.available && state.targets || [], object = nodes[String(record.node)], matched = null;
+      while (object && !matched) {
+        matched = targets.filter(function (target) { return nodes[String(target.node)] === object; })[0]; object = object.parent;
+      }
+      if (!matched && targets.length && targets.every(function (target) { return JSON.stringify(target.currentScale) === JSON.stringify(targets[0].currentScale); })) matched = targets[0];
+      var scale = matched && matched.currentScale;
+      return Array.isArray(scale) && scale.length === 3 && scale.every(function (value) { return typeof value === "number" && isFinite(value) && value > 0; }) ? scale : null;
+    }
+    function breastTier(record, scale) {
+      var recommendation = catalog.breastSizeRecommendations || {}, presets = recommendation.presets || [], tolerance = recommendation.stockTolerance;
+      if (!scale || !presets.length || typeof tolerance !== "number" || tolerance < 0) return null;
+      if (scale.every(function (value) { return Math.abs(value - 1) <= tolerance; })) return Number.isInteger(record.stockJiggleTier) ? record.stockJiggleTier : null;
+      var tier = null, distance = Infinity;
+      presets.forEach(function (preset) {
+        if (!Array.isArray(preset.scale) || preset.scale.length !== 3 || !Number.isInteger(preset.tier)) return;
+        var next = preset.scale.reduce(function (total, value, axis) { return total + Math.pow(scale[axis] - value, 2); }, 0);
+        if (next < distance) { distance = next; tier = preset.tier; }
+      });
+      return tier;
+    }
+    function syncBreastSize(state, force) {
+      if (!autoBreastLimits) return false;
+      state = state || (options.getBreastProfile ? options.getBreastProfile() : null);
+      var signature = JSON.stringify(state && { available: state.available, targets: state.targets });
+      if (!force && signature === breastSizeSignature) return false;
+      breastSizeSignature = signature; breastLimitState = [];
+      var changed = false, selected = [];
+      breastBones().forEach(function (record) {
+        var values = current(record), saved = breastLimitBases[record.id];
+        if (!saved) saved = breastLimitBases[record.id] = { lowRotationLimit: values.lowRotationLimit.slice(), highRotationLimit: values.highRotationLimit.slice() };
+        var tier = breastTier(record, breastScale(record, state)), next = {
+          lowRotationLimit: saved.lowRotationLimit.slice(), highRotationLimit: saved.highRotationLimit.slice()
+        }, applied = tier !== null, reason = "source";
+        if (applied) [1, 2].forEach(function (axis) { next.lowRotationLimit[axis] -= tier; next.highRotationLimit[axis] += tier; });
+        if (!validValues(record, next)) { applied = false; reason = "range"; next = { lowRotationLimit: saved.lowRotationLimit.slice(), highRotationLimit: saved.highRotationLimit.slice() }; }
+        var before = JSON.stringify(values); Object.assign(values, next); updateEdit(record, values);
+        changed = changed || before !== JSON.stringify(values); selected.push(record.id);
+        breastLimitState.push({ id: record.id, tier: tier, applied: applied, reason: applied ? null : reason });
+      });
+      refreshFields(selected, ["lowRotationLimit", "highRotationLimit"]); refreshBreastAuto(); return changed;
     }
     function field(record, name, axis, parent) {
       var label = element("label", null, parent), text = element("span", null, label);
@@ -541,6 +623,7 @@
       input.setAttribute("aria-label", record.name + " " + text.textContent);
       controls.push({ input: input, record: record, name: name, axis: axis, write: true });
       input.addEventListener("input", function () {
+        if (autoBreastLimits && record.group === "breast" && record.kind === "bone" && (name === "lowRotationLimit" || name === "highRotationLimit")) disableBreastAuto(false);
         input.dataset.physicsDirty = "true";
         var values = Object.assign({}, current(record)), number = input.value.trim() ? Number(input.value) : NaN;
         if (axis === undefined) values[name] = number; else { values[name] = values[name].slice(); values[name][axis] = number; }
@@ -552,16 +635,22 @@
     }
     function componentEditor(record, parent) {
       var box = element("details", null, parent); box.className = "viewer-save-advanced";
-      element("summary", null, box).textContent = record.name + " · " + record.kind + (record.sibling ? " · capsule" : "");
-      var original = element("p", null, box); original.className = "viewer-render-note";
+      box.dataset.physicsComponentEditor = record.id;
+      var summary = element("summary", null, box); summary.textContent = record.name + " · " + record.kind + (record.sibling ? " · capsule" : ""); summary.title = record.path || record.name;
+      var original = element("p", null, box); original.className = "viewer-render-note viewer-physics-source-values";
       original.textContent = t("Loaded values") + ": " + Object.keys(record.values).map(function (key) { return key + "=" + (Array.isArray(record.values[key]) ? record.values[key].join("/") : record.values[key]); }).join(" · ");
       Object.keys(record.values).forEach(function (name) { if (Array.isArray(record.values[name])) [0, 1, 2].forEach(function (axis) { field(record, name, axis, box); }); else field(record, name, undefined, box); });
+      componentRows.push({ record: record, element: box });
+      return box;
     }
-    function toggle(key, name, callback, available, parent) {
+    function toggle(key, name, callback, available, parent, checked) {
       var label = element("label", null, parent), input = element("input", null, label); input.type = "checkbox"; input.id = name;
+      label.className = "viewer-physics-toggle";
+      input.checked = !!checked;
       element("span", key, label); input.disabled = !available;
       controls.push({ input: input, available: available, write: false });
       input.addEventListener("change", function () { callback(input.checked); notify(); });
+      return input;
     }
     var pose = document.getElementById("viewer-adjustments"), preview = region(pose, "Physics preview");
     if (preview) {
@@ -597,30 +686,75 @@
       [["auto", "Use the game's motion setting"], ["enabled", "Enable skirt correction"], ["disabled", "Disable skirt correction"]].forEach(function (row) { var option = element("option", row[1], motionSelect); option.value = row[0]; });
       controls.push({ input: motionSelect, write: false });
       motionSelect.addEventListener("change", function () { motionCorrection = motionSelect.value; resetSimulation("physics:motion-setting-change"); refreshMode(); notify(); });
-      toggle("Apply SwingBone", "viewer-physics-bones", function (v) { if (applyBones !== v) resetSimulation("physics:bones-toggle"); applyBones = v; }, components.some(function (v) { return v.kind === "bone" && v.node !== null && v.enabled; }), preview);
-      toggle("Apply SwingCollider", "viewer-physics-colliders", function (v) { applyColliders = v; }, components.some(function (v) { return v.kind === "collider" && v.node !== null && v.enabled; }), preview);
+      toggle("Apply SwingBone", "viewer-physics-bones", function (v) { if (applyBones !== v) resetSimulation("physics:bones-toggle"); applyBones = v; }, applyBones, preview, applyBones);
+      toggle("Apply SwingCollider", "viewer-physics-colliders", function (v) { applyColliders = v; }, applyColliders, preview, applyColliders);
       toggle("Show bones and colliders", "viewer-physics-show-colliders", function (v) { showColliders = v; helperGroup.visible = v; }, components.some(function (v) { return v.kind === "collider" && v.node !== null; }), preview);
       modeNote = element("p", null, preview); modeNote.className = "viewer-render-note"; refreshMode();
       if (!components.length) element("p", "No compatible physics components.", preview);
     }
-    [["breast", "viewer-breast-card", "Breast dynamics"], ["thighs", "viewer-thighs-card", "Thigh SwingCollider"], ["other", "viewer-body-adjustments", "Other physics components"]].forEach(function (group) {
-      var records = components.filter(function (r) { return r.group === group[0]; }); if (!records.length) return;
-      var parent = document.getElementById(group[1]), container = region(parent && (parent.querySelector(".viewer-card-content") || parent), group[2]);
-      if (!container) return;
-      if (group[0] === "breast" && records.some(function (r) { return r.kind === "bone"; })) {
+    function filterComponents() {
+      var shown = 0, kind = componentKind ? componentKind.value : "", group = componentGroup ? componentGroup.value : "", search = componentSearch ? componentSearch.value.trim().toLowerCase() : "";
+      componentRows.forEach(function (row) {
+        row.element.hidden = !!(kind && row.record.kind !== kind || group && row.record.group !== group ||
+          search && (row.record.name + " " + (row.record.path || "") + " " + row.record.id).toLowerCase().indexOf(search) < 0);
+        if (!row.element.hidden) shown++;
+      });
+      if (componentEmpty) componentEmpty.hidden = shown > 0;
+    }
+    function showBreastEditors() {
+      if (!componentsRegion) return;
+      pose.open = true; componentsRegion.open = true; componentKind.value = "bone"; componentGroup.value = "breast"; componentSearch.value = "";
+      filterComponents(); componentRows.forEach(function (row) { if (!row.element.hidden) row.element.open = true; });
+      componentsRegion.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+    if (components.length) {
+      componentsRegion = region(pose, "SwingBones and colliders");
+      if (componentsRegion) {
+        componentsRegion.id = "viewer-physics-components";
+        var kindLabel = element("label", null, componentsRegion); element("span", "Component type", kindLabel);
+        componentKind = element("select", null, kindLabel); componentKind.id = "viewer-physics-component-kind";
+        [["", "All components"], ["bone", "SwingBone"], ["collider", "SwingCollider"]].forEach(function (row) { var option = element("option", row[1], componentKind); option.value = row[0]; });
+        var groupLabel = element("label", null, componentsRegion); element("span", "Body region", groupLabel);
+        componentGroup = element("select", null, groupLabel); componentGroup.id = "viewer-physics-component-group";
+        [["", "All body regions"], ["breast", "Breast"], ["thighs", "Thighs"], ["other", "Other"]].forEach(function (row) { var option = element("option", row[1], componentGroup); option.value = row[0]; });
+        var searchLabel = element("label", null, componentsRegion); element("span", "Find a bone or collider", searchLabel);
+        componentSearch = element("input", null, searchLabel); componentSearch.type = "search"; componentSearch.id = "viewer-physics-component-search";
+        [componentKind, componentGroup, componentSearch].forEach(function (input) { controls.push({ input: input, write: false }); input.addEventListener(input === componentSearch ? "input" : "change", filterComponents); });
+        var note = element("p", "Collider recommendations keep each original radius and offset; capsule ends can have different values.", componentsRegion); note.className = "viewer-render-note";
+        components.forEach(function (record) { componentEditor(record, componentsRegion); });
+        componentEmpty = element("p", "No matching physics components.", componentsRegion); componentEmpty.className = "viewer-render-note";
+        var resetVisible = element("button", "Undo physics edits", componentsRegion); resetVisible.type = "button"; controls.push({ input: resetVisible, write: true });
+        resetVisible.addEventListener("click", function () {
+          var visibleRows = componentRows.filter(function (row) { return !row.element.hidden; });
+          if (visibleRows.some(function (row) { return row.record.group === "breast" && row.record.kind === "bone"; })) disableBreastAuto(false);
+          visibleRows.forEach(function (row) { delete edits[row.record.id]; }); refreshFields(visibleRows.map(function (row) { return row.record.id; })); notify();
+        });
+        filterComponents();
+      }
+      var records = components.filter(function (record) { return record.group === "breast"; }), parent = document.getElementById("viewer-breast-card");
+      var container = records.length ? region(parent && (parent.querySelector(".viewer-card-content") || parent), "Breast dynamics") : null;
+      if (container && records.some(function (r) { return r.kind === "bone"; })) {
         var label = element("label", null, container); element("span", "Tool recommendations", label);
         var select = element("select", null, label); select.id = "viewer-physics-breast-preset";
         var original = element("option", "Loaded values", select); original.value = "";
         (catalog.presets || []).forEach(function (preset) { var option = element("option", null, select); option.value = preset.id; option.textContent = t(preset.label) + " (" + preset.stiffnessForce + " / " + preset.dragForce + ")"; });
         controls.push({ input: select, write: true });
         select.addEventListener("change", function () { var preset = (catalog.presets || []).filter(function (p) { return p.id === select.value; })[0]; var selected = records.filter(function (r) { return r.kind === "bone"; }); selected.forEach(function (r) { var v = current(r); ["stiffnessForce", "dragForce"].forEach(function (name) { v[name] = preset ? preset[name] : r.values[name]; }); updateEdit(r, v); }); refreshFields(selected.map(function (r) { return r.id; })); notify(); });
+        var autoLabel = element("label", null, container); autoLabel.className = "viewer-physics-toggle"; breastAutoInput = element("input", null, autoLabel); breastAutoInput.type = "checkbox"; breastAutoInput.id = "viewer-physics-breast-auto";
+        element("span", "Match rotation limits to breast size", autoLabel); controls.push({ input: breastAutoInput, write: true });
+        breastAutoInput.addEventListener("change", function () {
+          if (breastAutoInput.checked) { autoBreastLimits = true; breastLimitBases = {}; breastSizeSignature = null; syncBreastSize(null, true); }
+          else disableBreastAuto(true);
+          notify();
+        });
+        breastAutoNote = element("p", null, container); breastAutoNote.className = "viewer-render-note"; refreshBreastAuto();
+        var editBreast = element("button", "Edit breast bones", container); editBreast.id = "viewer-physics-breast-edit"; editBreast.type = "button";
+        controls.push({ input: editBreast, write: false }); editBreast.addEventListener("click", showBreastEditors);
         element("p", null, container).textContent = "sifas_breast_tuner.py";
+        var reset = element("button", "Undo physics edits", container); reset.type = "button"; controls.push({ input: reset, write: true });
+        reset.addEventListener("click", function () { disableBreastAuto(false); records.forEach(function (r) { delete edits[r.id]; }); refreshFields(records.map(function (r) { return r.id; })); notify(); });
       }
-      if (group[0] === "thighs") { var note = element("p", "Collider recommendations keep each original radius and offset; capsule ends can have different values.", container); note.className = "viewer-render-note"; }
-      records.forEach(function (record) { componentEditor(record, container); });
-      var reset = element("button", "Undo physics edits", container); reset.type = "button"; controls.push({ input: reset, write: true });
-      reset.addEventListener("click", function () { records.forEach(function (r) { delete edits[r.id]; }); refreshFields(records.map(function (r) { return r.id; })); notify(); });
-    });
+    }
     components.forEach(function (record) {
       var object = nodes[String(record.node)]; if (!object) return;
       base[record.id] = record;
@@ -681,6 +815,7 @@
     }
     return {
       apply: apply,
+      syncBreastSize: syncBreastSize,
       captureAnimationPose: function (context) { var previousCategory = frameContext && frameContext.motionCategory, previousSafe = frameContext && frameContext.safeSwingBone; frameContext = context || {}; var engine = activeSolver(); if (engine.captureAnimationPose) engine.captureAnimationPose(frameContext); if (previousCategory !== frameContext.motionCategory || previousSafe !== frameContext.safeSwingBone) refreshMode(); },
       resetSimulation: resetSimulation,
       playbackDelta: function (delta) {
@@ -700,15 +835,29 @@
         if (["auto", "enabled", "disabled"].indexOf(state.motionCorrection) >= 0) motionCorrection = state.motionCorrection;
         if (["auto", "navi", "live"].indexOf(state.profile) >= 0) profile = state.profile;
         if (state.mode === "game" && nativeAvailable || state.mode === "enhanced") selectMode(state.mode);
-        applyBones = !!state.swingBone; applyColliders = !!state.swingCollider; showColliders = !!state.showColliders;
+        if (typeof state.swingBone === "boolean") applyBones = state.swingBone;
+        if (typeof state.swingCollider === "boolean") applyColliders = state.swingCollider;
+        if (typeof state.showColliders === "boolean") showColliders = state.showColliders;
+        if (state.breastAutoLimits && typeof state.breastAutoLimits.enabled === "boolean") {
+          var savedAuto = state.breastAutoLimits, nextBases = {}, validAuto = Array.isArray(savedAuto.baselines) && savedAuto.baselines.length <= breastBones().length;
+          if (validAuto) savedAuto.baselines.forEach(function (row) {
+            var record = breastBones().filter(function (item) { return item.id === row.id; })[0];
+            if (!record || nextBases[row.id] || !validValues(record, { lowRotationLimit: row.lowRotationLimit, highRotationLimit: row.highRotationLimit })) validAuto = false;
+            else nextBases[row.id] = { lowRotationLimit: row.lowRotationLimit.slice(), highRotationLimit: row.highRotationLimit.slice() };
+          });
+          autoBreastLimits = savedAuto.enabled && validAuto; breastLimitBases = autoBreastLimits ? nextBases : {}; breastSizeSignature = null; breastLimitState = [];
+          if (autoBreastLimits) syncBreastSize(null, true); else refreshBreastAuto();
+        }
         [["viewer-physics-bones", applyBones], ["viewer-physics-colliders", applyColliders], ["viewer-physics-show-colliders", showColliders]].forEach(function (row) { var input = document.getElementById(row[0]); if (input) input.checked = row[1]; });
         helperGroup.visible = showColliders; resetSimulation("physics:inspection-restore"); refreshMode();
       },
-      restore: function (rows) { var next = {}; if (!Array.isArray(rows) || rows.length > components.length) throw new Error("The physics recipe is invalid."); rows.forEach(function (row) { var record = components.filter(function (r) { return r.id === row.id; })[0]; if (!record || next[row.id] || !validValues(record, row.values)) throw new Error("The physics recipe is invalid."); next[row.id] = JSON.parse(JSON.stringify(row.values)); }); edits = next; refreshFields(); resetSimulation("physics:recipe-restore"); },
-      reset: function () { edits = {}; resetSimulation("physics:reset-edits"); refreshFields(); },
+      restore: function (rows) { var next = {}; if (!Array.isArray(rows) || rows.length > components.length) throw new Error("The physics recipe is invalid."); rows.forEach(function (row) { var record = components.filter(function (r) { return r.id === row.id; })[0]; if (!record || next[row.id] || !validValues(record, row.values)) throw new Error("The physics recipe is invalid."); next[row.id] = JSON.parse(JSON.stringify(row.values)); }); disableBreastAuto(false); edits = next; refreshFields(); resetSimulation("physics:recipe-restore"); },
+      reset: function () { disableBreastAuto(false); edits = {}; resetSimulation("physics:reset-edits"); refreshFields(); },
       setInteractive: function (value, authoring) { interactive = !!value; writable = !!authoring; controls.forEach(function (row) { row.input.disabled = !interactive || row.write && !writable || row.available === false; }); refreshMode(); },
-      updateLanguage: function () { regions.forEach(function (region) { region.querySelectorAll("[data-physics-label]").forEach(function (el) { el.textContent = t(el.dataset.physicsLabel); }); }); refreshMode(); },
-      getState: function () { return { available: components.length > 0, mode: mode, frameRate: frameRate, profile: profile, qualityMode: qualityMode, skirtCorrection: skirtCorrection, motionCorrection: motionCorrection, runtime: runtimeFlags(), nativeAvailable: nativeAvailable, nativeMissing: catalog.native && catalog.native.missing || [], swingBone: applyBones, swingCollider: applyColliders, showColliders: showColliders, components: components.length, dynamicBones: springs.length, edited: Object.keys(edits).length, solver: activeSolver().getState() }; },
+      updateLanguage: function () { regions.forEach(function (region) { region.querySelectorAll("[data-physics-label]").forEach(function (el) { el.textContent = t(el.dataset.physicsLabel); }); }); refreshMode(); refreshBreastAuto(); },
+      getState: function () { return { available: components.length > 0, mode: mode, frameRate: frameRate, profile: profile, qualityMode: qualityMode, skirtCorrection: skirtCorrection, motionCorrection: motionCorrection, runtime: runtimeFlags(), nativeAvailable: nativeAvailable, nativeMissing: catalog.native && catalog.native.missing || [], swingBone: applyBones, swingCollider: applyColliders, showColliders: showColliders, components: components.length, dynamicBones: springs.length, edited: Object.keys(edits).length,
+        breastAutoLimits: { enabled: autoBreastLimits, baselines: Object.keys(breastLimitBases).sort().map(function (id) { return Object.assign({ id: id }, JSON.parse(JSON.stringify(breastLimitBases[id]))); }), tiers: breastLimitState.map(function (row) { return Object.assign({}, row); }) },
+        solver: activeSolver().getState() }; },
       dispose: function () { disposed = true; Object.keys(engines).forEach(function (name) { if (engines[name].dispose) engines[name].dispose(); }); regions.forEach(function (r) { r.remove(); }); root.remove(helperGroup); helperGroup.traverse(function (object) { if (object.geometry) object.geometry.dispose(); if (object.material) object.material.dispose(); }); }
     };
   }

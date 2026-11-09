@@ -37,7 +37,137 @@
     if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
     return clamp(value, 0, 1);
   }
-  function create(root, animations, metadata, descriptor) {
+  // GL3.12 MemberEyeContactBase uses 45 horizontal / 30 vertical degrees.
+  // Targets31..36 are explicit pose directions; Camera/Audience/member targets
+  // are positions transformed into the animated face's local rotation basis.
+  // These are the original iris pose clips, never synthetic eye/head rotations.
+  function gazeAxes(horizontal, vertical) {
+    horizontal = clamp(number(horizontal, 0), -1, 1); vertical = clamp(number(vertical, 0), -1, 1);
+    var sum = Math.abs(horizontal) + Math.abs(vertical), result = {};
+    if (sum > 1) { horizontal /= sum; vertical /= sum; }
+    if (horizontal) result[horizontal > 0 ? 6 : 7] = Math.abs(horizontal);
+    if (vertical) result[vertical > 0 ? 8 : 9] = Math.abs(vertical);
+    return result;
+  }
+  function createGaze(root, animations, metadata, options) {
+    options = options || {};
+    var T = global.THREE, info = metadata || {}, byName = {}, groups = {}, poses = {}, warnings = [], lastWeights = {}, missingTargets = [];
+    var face = null, eyeCandidates = [], faceCandidates = [], headCandidates = [];
+    function name(node) { return node.userData && node.userData.originalName || node.name.replace(/__\d+$/, ""); }
+    root.traverse(function (node) {
+      if (node.userData && node.userData.viewerHelper) return;
+      if (name(node) === "Eye_Root") eyeCandidates.push(node);
+      if (name(node) === "Face_Root") faceCandidates.push(node);
+      if (name(node) === "Head_Face") headCandidates.push(node);
+    });
+    // LiveMemberEyeContact.Initialize finds original Eye_Root (metadata
+    // literal7617). Head_Face is a90degree bone-axis reference on real faces;
+    // Eye_Root/Face_Root cancel it. Neutral/custom rigs may only have Head_Face.
+    if (eyeCandidates.length === 1) face = eyeCandidates[0];
+    else if (!eyeCandidates.length && faceCandidates.length === 1) face = faceCandidates[0];
+    else if (!eyeCandidates.length && !faceCandidates.length && headCandidates.length === 1) face = headCandidates[0];
+    (animations || []).forEach(function (clip) { byName[clip.name] = clip; });
+    var aliases = options.aliases || (info.expressionCatalog && info.expressionCatalog.gaze && info.expressionCatalog.gaze.clips) || [];
+    for (var direction = 6; direction <= 11; direction += 1) {
+      var candidates = (info.clips || []).filter(function (entry) {
+        if (!byName[entry.name]) return false;
+        if (aliases.length) return aliases.some(function (alias) {
+          return (alias.kind === undefined || alias.kind === "eyes") && alias.index === direction &&
+            (alias.name ? alias.name === entry.name : alias.sourceHash === entry.sourceHash && alias.sourceName === entry.sourceName);
+        });
+        return new RegExp("(?:^|_)LiveFacial_eye_0*" + direction + "(?:__\\d+)?$").test(entry.sourceName || entry.name);
+      });
+      var prepared = [];
+      candidates.forEach(function (entry) {
+        var clip = byName[entry.name], records = [];
+        clip.tracks.forEach(function (track) {
+          var binding = T.PropertyBinding.create(root, track.name); binding.bind();
+          var node = binding.targetObject || binding.node, property = binding.parsedPath && binding.parsedPath.propertyName;
+          if (!node || !node.isBone || node.userData && node.userData.viewerHelper || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(name(node)) ||
+              ["position", "quaternion", "scale"].indexOf(property) < 0) return;
+          var value = Array.prototype.slice.call(track.createInterpolant().evaluate(clip.duration));
+          if (value.length !== (property === "quaternion" ? 4 : 3) || !value.every(function (v) { return typeof v === "number" && isFinite(v); })) return;
+          var key = node.uuid + ":" + property;
+          records.push({ key: key, node: node, property: property, value: value });
+        });
+        if (records.length) prepared.push(records.sort(function (a, b) { return a.key.localeCompare(b.key); }));
+      });
+      if (!prepared.length) continue;
+      var signature = function (records) { return JSON.stringify(records.map(function (r) { return [r.key, r.value]; })); };
+      if (prepared.some(function (records) { return signature(records) !== signature(prepared[0]); })) {
+        warnings.push("Some original gaze poses are ambiguous for this model."); continue;
+      }
+      poses[direction] = prepared[0];
+      prepared[0].forEach(function (record) {
+        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, base: record.node[record.property].toArray() };
+      });
+    }
+    function worldRotation(node) {
+      var path = [], q = new T.Quaternion();
+      for (var current = node; current; current = current.parent) path.push(current);
+      for (var index = path.length - 1; index >= 0; index -= 1) q.multiply(path[index].quaternion);
+      return q.normalize();
+    }
+    function targetWeights(target, context) {
+      var fixed = { 31: 8, 32: 9, 33: 7, 34: 6, 35: 11, 36: 10 }[target];
+      if (fixed) { var result = {}; result[fixed] = 1; return result; }
+      if (target === 0) return {};
+      context = context || {};
+      var point = target === 21 ? context.camera : target === 22 ? context.audience :
+        target >= 1 && target <= 12 ? (context.members || {})[target] : (context.cameras || {})[target];
+      if (!face || !Array.isArray(point) || point.length !== 3 || !point.every(function (v) { return typeof v === "number" && isFinite(v); })) {
+        if (missingTargets.indexOf(target) < 0) missingTargets.push(target);
+        return null;
+      }
+      missingTargets = missingTargets.filter(function (value) { return value !== target; });
+      root.updateMatrixWorld(true);
+      var direction = new T.Vector3().fromArray(point).sub(face.getWorldPosition(new T.Vector3()));
+      if (direction.lengthSq() < 1e-12) return {};
+      direction.normalize().applyQuaternion(worldRotation(face).invert());
+      // The converter mirrors Unity's X coordinate, including its eye poses.
+      var horizontal = Math.abs(direction.x) <= .001 && Math.abs(direction.z) <= .001 ? 0 : Math.atan2(-direction.x, direction.z) * 180 / Math.PI / 45;
+      var vertical = Math.abs(direction.y) <= .001 ? 0 : Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI / 30;
+      return gazeAxes(horizontal, vertical);
+    }
+    function apply(weights, neutral) {
+      lastWeights = Object.assign({}, weights); var contributions = {}, requested = false;
+      Object.keys(weights).forEach(function (id) {
+        if (!(weights[id] > 0)) return;
+        requested = true;
+        if (!poses[id]) { if (warnings.indexOf("Some original gaze poses are unavailable for this model.") < 0) warnings.push("Some original gaze poses are unavailable for this model."); return; }
+        poses[id].forEach(function (record) { if (!contributions[record.key]) contributions[record.key] = []; contributions[record.key].push({ value: record.value, weight: weights[id] }); });
+      });
+      Object.keys(groups).forEach(function (key) {
+        var group = groups[key], entries = contributions[key] || [], total = entries.reduce(function (sum, entry) { return sum + entry.weight; }, 0);
+        if (!entries.length && !neutral) return;
+        var remainder = Math.max(0, 1 - total), result = group.base.slice();
+        if (group.property === "quaternion") {
+          var q = new T.Quaternion().fromArray(group.base), accumulated = remainder;
+          entries.forEach(function (entry) { var next = new T.Quaternion().fromArray(entry.value); if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight)); accumulated += entry.weight; });
+          group.node.quaternion.copy(q.normalize());
+        } else {
+          for (var i = 0; i < result.length; i += 1) { result[i] = group.base[i] * remainder; entries.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; }); result[i] /= Math.max(1, total); }
+          group.node[group.property].fromArray(result);
+        }
+      });
+      return requested && Object.keys(contributions).length > 0 || neutral && Object.keys(groups).length > 0;
+    }
+    return { warnings: warnings, targetWeights: targetWeights, axes: gazeAxes, apply: apply,
+      evaluate: function (requests, context) {
+        missingTargets = []; var combined = {};
+        (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
+          Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
+        return apply(combined, false);
+      },
+      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.node.userData && group.node.userData.elichika_node;
+        if (id !== undefined) { if (!result[String(id)]) result[String(id)] = {}; result[String(id)][group.property] = true; } }); return result; },
+      operations: function () { return Object.keys(groups).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
+        return { node: node, kind: group.property, value: group.node[group.property].toArray(), source: "expression" }; }).filter(function (operation) { return Number.isInteger(operation.node); }); },
+      getState: function () { return { available: Object.keys(poses).length > 0, directions: Object.keys(poses).map(Number), weights: Object.assign({}, lastWeights), missingTargets: missingTargets.slice(), warnings: warnings.slice() }; }
+    };
+  }
+  function create(root, animations, metadata, descriptor, options) {
+    options = options || {};
     var THREE = global.THREE, warnings = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
     var info = metadata || {}, clips = info.clips || [], expressions = info.expressionCatalog || {};
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
@@ -111,17 +241,16 @@
       if (register(groups, clip, segment, false)) used += 1;
       else warn("A selected body segment is incompatible with this model.");
     });
-    var events = descriptor.facial && descriptor.facial.events || [];
+    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
+    var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
+      Number.isInteger(modelGaze.owner) && Number.isInteger(descriptor.targetCharacter) && modelGaze.owner !== descriptor.targetCharacter);
+    // Direction indices are the game's common six-pose semantics. When a
+    // retained motion belongs to another character, use this face's verified
+    // endpoints instead of writing the old character's absolute iris positions.
+    var gaze = createGaze(root, animations, info, { aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [] });
     events.slice(0, 12000).forEach(function (event) {
       if (event.kind === "gaze") {
-        // Original GazingTarget enum (GL3.12.0), paired with the game's
-        // GazeDirection eye pose bank. Apply iris bones without changing lids.
-        var direction = { 31: 8, 32: 9, 33: 7, 34: 6, 35: 11, 36: 10 }[event.target];
-        if (direction) {
-          var gazeAlias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === "eyes" && entry.index === direction; });
-          var gazeClips = clips.filter(function (entry) { return animationByName[entry.name] && gazeAlias.some(function (alias) { return alias.sourceHash === entry.sourceHash && alias.sourceName === entry.sourceName; }); });
-          if (gazeClips.length === 1) register(gazeGroups, animationByName[gazeClips[0].name], event, true, true);
-        }
+        gazeEvents.push(event);
         return;
       }
       if (event.kind !== "eyes" && event.kind !== "mouth") return;
@@ -246,12 +375,21 @@
             owned[String(id)][property] = true;
           });
         });
+        if (gazeEvents.some(function (event) { return weight(event, time) > 0; })) {
+          var gazeProperties = gaze.properties(); Object.keys(gazeProperties).forEach(function (id) { owned[id] = Object.assign(owned[id] || {}, gazeProperties[id]); });
+        }
         return owned;
       },
       duration: Math.max(number(descriptor.facial && descriptor.facial.duration, 0), number(descriptor.audio && descriptor.audio.duration, 0),
         (descriptor.audio && descriptor.audio.tracks || []).reduce(function (end, track) { return Math.max(end, number(track.startTime, 0) + Math.max(0, number(track.duration, 0))); }, 0),
         (descriptor.bodySegments || []).reduce(function (end, segment) { return Math.max(end, segment.start + segment.duration); }, 0)),
-      evaluate: function (time) { evaluateGroups(groups, time, false); evaluateGroups(facialGroups, time, true); applyShapes(time); evaluateGroups(gazeGroups, time, true); },
+      evaluate: function (time) { evaluateGroups(groups, time, false); evaluateGroups(facialGroups, time, true); applyShapes(time);
+        gaze.evaluate(gazeEvents.map(function (event) { return { target: event.target, weight: weight(event, time) }; }).filter(function (event) { return event.weight > 0; }), options.getGazeContext ? options.getGazeContext() : {});
+        gaze.warnings.forEach(warn);
+        if (gaze.getState().missingTargets.length) warn("An original gaze target is unavailable in this single-model preview.");
+      },
+      getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
+      followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },
       applyVisibility: function (time) { visibility.forEach(function (record) {
         if (weight(record.event, time) <= .5) return;
         var track = record.track, node = nodeByIndex[String(track.node)];
@@ -261,5 +399,6 @@
       }); }
     };
   }
+  global.ViewerGaze = { create: createGaze, axes: gazeAxes };
   global.ViewerMotionTimeline = { create: create, weight: weight, curve: curve };
 }(window));

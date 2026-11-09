@@ -14,7 +14,7 @@ const report = { status: 'RUNNING', scope: 'Actual product HTTP/SSE/pack decrypt
 let child, browser;
 const snapshot = page => page.evaluate(() => {
   const s = ModelViewer.getState();
-  return { camera: s.camera, authoring: ModelViewer.getAuthoringState(), paths: s.loadedPaths, clips: s.rig.clipNames, selected: s.rig.selectedClip, triangles: s.sourceTriangles };
+  return { camera: s.camera, authoring: ModelViewer.getAuthoringState(), paths: s.loadedPaths, motionPaths: s.loadedMotionPaths, clips: s.rig.clipNames, selected: s.rig.selectedClip, triangles: s.sourceTriangles };
 });
 (async () => {
   try {
@@ -55,7 +55,7 @@ const snapshot = page => page.evaluate(() => {
       assert(dialog.within, 'Motion picker stays in viewport');
       await page.locator('#viewer-motion-download').uncheck();
       await page.locator('#viewer-motion-import').click();
-      await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && ModelViewer.getState().loadedPaths.length === 2 && !ModelViewer.getState().loading);
+      await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && ModelViewer.getState().loadedPaths.length === 1 && ModelViewer.getState().loadedMotionPaths.length === 1 && !ModelViewer.getState().loading);
       const after = await snapshot(page);
       assert.deepStrictEqual(after.camera, before.camera, 'Import preserves camera exactly');
       assert.deepStrictEqual(after.authoring, before.authoring, 'Import preserves existing body edits');
@@ -63,7 +63,7 @@ const snapshot = page => page.evaluate(() => {
       assert.equal(after.triangles, before.triangles, 'Animation import adds no geometry');
       assert(!after.clips.includes('Imported motion fixture'), 'The imported raw segment stays internal to its complete timeline');
       assert.deepStrictEqual(after.clips.filter(name => !before.clips.includes(name)), [after.selected], 'A game import adds exactly one user-facing motion');
-      const output = after.paths.find(value => value.includes('/game-motions/'));
+      const output = after.motionPaths.find(value => value.includes('/game-motions/'));
       assert(output, 'Imported output is the motion cache');
       const decryptedSource = path.join(path.dirname(output), 'source-1.unity');
       assert.equal(crypto.createHash('sha256').update(fs.readFileSync(decryptedSource)).digest('hex'), ready.motion_sha256, 'Decrypted source bytes exactly match original fixture before clips-only normalization');
@@ -92,13 +92,15 @@ const snapshot = page => page.evaluate(() => {
       const held = new Promise(resolve => { intercepted = resolve; });
       await page.route('**/api/viewer/prepare', async route => {
         const request = route.request().postDataJSON();
-        if (request.paths && request.paths.includes(ready.alternate)) {
+        if (request.motion_paths && request.motion_paths.includes(ready.alternate)) {
           const response = await route.fetch(); assert(response.ok(), 'Delayed old response is an actual successful preparation');
           intercepted(); await gate; await route.fulfill({ response }).catch(() => {});
         } else await route.continue().catch(() => {});
       });
       await page.evaluate(alternate => { window.__pendingMotionResult = null; ModelViewer.addMotion([alternate]).then(() => { window.__pendingMotionResult = 'done'; }, error => { window.__pendingMotionResult = error.name; }); }, ready.alternate);
-      await held;
+      let heldTimeout;
+      try { await Promise.race([held, new Promise((_, reject) => { heldTimeout = setTimeout(() => reject(new Error('The actual old motion request was not intercepted')), 45000); })]); }
+      finally { clearTimeout(heldTimeout); }
       await page.evaluate(replacement => ModelViewer.open([replacement]), ready.replacement);
       release();
       await page.waitForFunction(() => window.__pendingMotionResult !== null);

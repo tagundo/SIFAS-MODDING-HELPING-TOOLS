@@ -285,7 +285,7 @@
     function updateCursor(event) {
       var context = sourceContext(); lastPointer = event;
       if (!brushCursor) return;
-      var show = context && context.mesh && context.mode === 'paint' && !event.altKey && !event.ctrlKey && !event.metaKey;
+      var show = context && context.mesh && context.interactive !== false && context.mode === 'paint' && !event.altKey && !event.ctrlKey && !event.metaKey;
       brushCursor.hidden = !show;
       if (show) { var radius = Math.max(2, Math.min(200, context.radius || 20)); brushCursor.style.width = radius * 2 + 'px'; brushCursor.style.height = radius * 2 + 'px'; brushCursor.style.left = event.clientX - radius + 'px'; brushCursor.style.top = event.clientY - radius + 'px'; }
     }
@@ -322,12 +322,13 @@
         stroke = { pointerId: event.pointerId, controlsEnabled: runtime.controls ? runtime.controls.enabled : true, previous: { clientX: event.clientX, clientY: event.clientY } };
         if (runtime.controls) runtime.controls.enabled = false; canvas.setPointerCapture(event.pointerId);
         if (context.mode === 'paint') paint(event, context);
+        else if (context.mode === 'connected') { if (options.onConnected) options.onConnected(pick.sourceFace, !!context.erase, !!event.shiftKey); }
         else { if (options.onSelect) options.onSelect(pick.vertex, !!event.shiftKey, context.mode === 'drag'); if (context.mode === 'drag') startDrag(event, sourceContext(), pick); }
         notify(); request();
       }, true);
       listen(canvas, 'pointermove', function (event) {
         updateCursor(event); if (!stroke || stroke.pointerId !== event.pointerId) return;
-        event.preventDefault(); event.stopImmediatePropagation(); var context = sourceContext(); if (!context) return;
+        event.preventDefault(); event.stopImmediatePropagation(); var context = sourceContext(); if (!context || context.interactive === false || context.mode === 'orbit') { endStroke(true); return; }
         if (stroke.drag) {
           var point = pointerRay(event).ray.intersectPlane(stroke.drag.plane, new T.Vector3());
           if (point) { var delta = point.sub(stroke.drag.anchor), values = {}; Object.keys(stroke.drag.inverse).forEach(function (vertex) { var local = delta.clone().applyMatrix3(stroke.drag.inverse[vertex]); values[vertex] = stroke.drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); if (options.onDrag) options.onDrag(values); }

@@ -265,11 +265,11 @@ def _session(token):
 
 
 def register_session(model_id, paths, rig, *, originals=None, origins=None,
-                     archive_members=None, cache_dir=None, variants=None):
+                     archive_members=None, cache_dir=None, variants=None, companions=None):
     """Bind exported node numbers to immutable, already-jailed input bytes.
 
-    Must run while ZIP inputs still exist. Only caller-selected model inputs are
-    writable; automatically discovered face/motion companions have no identity.
+    Must run while ZIP inputs still exist. Selected inputs and verified facial
+    companions are copied before export; automatic motions remain read-only.
     ``cache_dir`` is accepted for the HTTP integration; originals are bounded in
     memory and copied to the export's originals folder when saving.
     """
@@ -280,12 +280,32 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
     if not isinstance(rig, dict) or rig.get("available") is not True:
         return {"available": False, "reason": "This model has no editable rig."}
     paths = [str(Path(p).resolve()) for p in paths]
-    origins = origins or {p: p for p in paths}
+    selected_count = len(paths)
+    companion_hashes = {}
+    if not isinstance(companions, (list, tuple, type(None))) or len(companions or ()) > 4:
+        _fail("The verified facial companions are invalid.")
+    for row in companions or ():
+        if (not isinstance(row, dict) or set(row) != {"path", "sha256", "sourceIndex"}
+                or not isinstance(row["path"], str) or not isinstance(row["sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])
+                or isinstance(row["sourceIndex"], bool) or not isinstance(row["sourceIndex"], int)
+                or row["sourceIndex"] != len(paths)):
+            _fail("A facial companion has no verified source identity.")
+        path = str(Path(row["path"]).resolve())
+        if path in paths:
+            _fail("A facial companion repeats a selected model.")
+        paths.append(path)
+        companion_hashes[path] = row["sha256"]
+    origins = dict(origins or {p: p for p in paths[:selected_count]})
+    origins.update({path: path for path in companion_hashes})
     members = archive_members or {}
     originals = list(dict.fromkeys(str(Path(p).resolve()) for p in (originals or paths)))
+    originals.extend(path for path in companion_hashes if path not in originals)
     containers, total = [], 0
     for path in originals:
         raw = _read(path); total += len(raw)
+        if path in companion_hashes and _sha(raw) != companion_hashes[path]:
+            _fail("The original facial companion changed while opening. Open the model again.")
         if total > MAX_SOURCE_BYTES:
             _fail("The selected originals exceed the body editing memory limit.")
         containers.append({"path": path, "name": Path(path).name, "raw": raw, "sha256": _sha(raw)})
@@ -295,7 +315,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                                             for path, choice in variants.items())):
         _fail("The selected costume variant is invalid.")
     from . import viewer_physics, model_outlines
-    sources, targets, public, physics_records, physics_managers, outline_records = [], {}, [], [], [], []
+    sources, targets, public, physics_records, physics_managers, inspected_sources = [], {}, [], [], [], []
     for index, path in enumerate(paths):
         origin = str(Path(origins.get(path, path)).resolve())
         if origin not in container_ids:
@@ -341,19 +361,19 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                       "reason": "observed_mv_scale_track" if name in _MV_SCALE_NAMES else "saved_node_setting" if method == "node" else "unverified_motion_coverage"}
             targets[node] = {**target, "key": key}
             public.append({k: copy.deepcopy(v) for k, v in target.items() if k not in ("serializedFile",)})
-        physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
-        physics_managers.extend(viewer_physics.native_managers(info, index, list(targets.values())))
-        outline_records.extend(model_outlines.catalogue(info, index)["meshes"])
-        if len(outline_records) > model_outlines.MAX_MESHES:
-            _fail("The selected models have too many outline meshes.")
+        if index < selected_count:
+            physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
+            physics_managers.extend(viewer_physics.native_managers(info, index, list(targets.values())))
+        inspected_sources.append((info, index))
         if len(physics_records) > viewer_physics.MAX_COMPONENTS:
             _fail("The selected models have too many physics components.")
     if not targets:
         return {"available": False, "reason": "No original writable body nodes were found."}
     physics = viewer_physics.make_catalog(physics_records, physics_managers)
-    outlines = {"version": 1, "available": bool(outline_records), "meshes": outline_records}
+    outlines = model_outlines.catalogue_sources(inspected_sources)
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
                "containers": containers, "sources": sources, "targets": targets,
+               "outlineOnlySources": set(range(selected_count, len(paths))),
                "physics": physics, "outlines": outlines,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
@@ -383,7 +403,8 @@ def mod_source_context(token):
     """Return immutable source identities for server-side mod packaging only.
 
     Raw bytes stay in this process; this structure must never be sent to HTTP
-    clients. Automatically discovered preview companions are not included.
+    clients. Verified facial companions are included for explicit outline edits;
+    automatically discovered motion inputs remain outside the export sources.
     """
     with _LOCK:
         session = _session(token)

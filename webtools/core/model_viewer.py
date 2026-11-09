@@ -23,10 +23,11 @@ from . import decode
 
 
 MAX_FILES = 8
+MAX_MOTION_FILES = 32
 # Public selections and trusted dependencies have separate bounded slots.
-# Four original face donors, plus preview/discovered motion companions, must
-# remain available when all eight user-selected inputs are already occupied.
-MAX_INTERNAL_FILES = MAX_FILES + 4 + 4
+# The retained motion library has separate slots from model selections and
+# trusted facial/preview dependencies; existing byte/geometry limits still apply.
+MAX_INTERNAL_FILES = MAX_FILES + MAX_MOTION_FILES + 4 + 4
 MAX_SOURCE_BYTES = 96 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 192 * 1024 * 1024
 MAX_UNPACKED_BYTES = 192 * 1024 * 1024
@@ -880,6 +881,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
+    if rig is not None and auto_only:
+        for path in faces.auto_paths:
+            if path not in rig.source_indices:
+                rig.source_indices[path] = len(rig.source_indices)
     for obj in scene.env.objects:
         if auto_only and _source_path(obj) not in faces.auto_paths:
             continue
@@ -901,6 +906,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         files = source_files.setdefault(_source_path(source_object), {})
         files.setdefault(id(source_object.assets_file), len(files))
     for renderer, tree, game_object in scene.renderers:
+        if rig is not None and _source_path(renderer) in getattr(rig, "motion_sources", set()):
+            continue
         if auto_only and _source_path(renderer) not in faces.auto_paths:
             continue
         _remaining(deadline)
@@ -1097,7 +1104,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     if rigged:
         from .model_rig import RigBuilder
         try:
-            rig = RigBuilder(scene, glb, disabled_faces, paths, deadline)
+            model_paths = (face_context or {}).get("_selected_model_paths", paths)
+            rig = RigBuilder(scene, glb, disabled_faces, model_paths, deadline)
         except ValueError:
             glb = _Glb()
             scene.warn("rig_unavailable")
@@ -1265,11 +1273,17 @@ def _prune(now):
         _SESSIONS.popitem(last=False)
 
 
-def prepare(paths, *, face_context=None, rigged=False):
+def prepare(paths, *, face_context=None, rigged=False, motion_paths=None):
     """Convert selected, already-jailed bundle paths and create a short-lived GLB."""
     if not isinstance(rigged, bool):
         raise ModelViewerError("The rigged preview setting must be true or false.")
     paths = _paths(paths)
+    if motion_paths is not None and (not rigged or not isinstance(motion_paths, (list, tuple))
+                                     or len(motion_paths) > MAX_MOTION_FILES):
+        raise ModelViewerError("The retained motion library is too large or invalid.")
+    library_paths = _paths(motion_paths, internal=True) if motion_paths else []
+    library_paths = [path for path in library_paths if path not in paths]
+    combined_paths = _paths(paths + library_paths, internal=True)
     if not _BUILD_LOCK.acquire(timeout=1):
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
     try:
@@ -1279,10 +1293,12 @@ def prepare(paths, *, face_context=None, rigged=False):
             # not enable automatic discovery.
             if rigged:
                 from .model_motion import prepare_motion_inputs
-                with prepare_motion_inputs(paths, face_context, deadline) as motion:
+                with prepare_motion_inputs(combined_paths, face_context, deadline) as motion:
                     context = dict(face_context or {"enabled": False, "allow_download": False})
                     context["_motion_stage"] = motion
                     context["origins"] = {**context.get("origins", {}), **motion.origins}
+                    context["_selected_model_paths"] = motion.paths[:len(paths)]
+                    context["_selected_motion_paths"] = motion.paths[len(paths):]
                     built = _build(motion.paths, deadline, context, rigged=True)
                     if len(built) > 4:
                         motion.promote(built[4])
@@ -1291,11 +1307,13 @@ def prepare(paths, *, face_context=None, rigged=False):
             data, stats, warnings = built[:3]
             faces = built[3] if len(built) > 3 else {"enabled": False, "status": "not_needed", "added": 0, "characters": []}
             rig = built[4] if len(built) > 4 else {"enabled": bool(rigged), "available": False}
+            rig = dict(rig)
+            companions = rig.pop("_editingCompanions", [])
             if rigged:
                 from .game_motions import resolve_import
                 # Only server-issued imports whose current bytes still match
                 # their receipt may describe a playable composite timeline.
-                rig = dict(rig, motionTimelines=resolve_import(paths))
+                rig = dict(rig, motionTimelines=resolve_import(paths + library_paths))
         except ModelViewerError:
             raise
         except Exception as error:
@@ -1303,7 +1321,7 @@ def prepare(paths, *, face_context=None, rigged=False):
         token = secrets.token_hex(16)
         with _CACHE_LOCK:
             now = time.monotonic()
-            _SESSIONS[token] = (now + CACHE_SECONDS, data)
+            _SESSIONS[token] = (now + CACHE_SECONDS, data, companions)
             _prune(now)
         return {"id": token, "url": f"/api/viewer/model/{token}.glb",
                 "source_names": [os.path.basename(path) for path in paths],
@@ -1324,3 +1342,13 @@ def get_model(token):
             return None
         _SESSIONS.move_to_end(token)
         return value[1]
+
+
+def get_editing_companions(token):
+    """Return source proofs from this completed preview, never client paths."""
+    if not isinstance(token, str) or not _TOKEN.fullmatch(token):
+        return []
+    with _CACHE_LOCK:
+        _prune(time.monotonic())
+        value = _SESSIONS.get(token)
+        return [dict(row) for row in value[2]] if value is not None and len(value) > 2 else []

@@ -105,6 +105,7 @@
     var timelineDescriptors = (info && info.motionTimelines || []).slice(), timelineWarnings = [];
     var currentClip = null;
     var playhead = 0;
+    var playbackRevision = 0, gazeContextKey = "";
     var parts = [];
     var mixer = clips.length ? new THREE.AnimationMixer(root) : null;
     var action = null;
@@ -631,6 +632,7 @@
     }
     function applyPhysics(delta, authoringReason) {
       if (!physicsController) return;
+      if (authoringReason && physicsController.syncBreastSize) physicsController.syncBreastSize(breastProfile());
       // Compare finished kinematic poses, before the physical output is added.
       // A display refresh and a repeated equal input must not reset history.
       var baseline = new Float64Array(all.length * 16), changedPose = false;
@@ -650,7 +652,7 @@
         animatedProperties: animatedPhysicsProperties(), time: currentTime(), advancing: !!playing && delta > 0 });
       physicsController.apply(delta || 0);
     }
-    function evaluate(delta, authoringReason) {
+    function evaluate(delta, authoringReason, physicsDelta) {
       if (disposed) return;
       var released = releaseAutomaticMatrices();
       if (evaluationMode === "animation") {
@@ -673,7 +675,7 @@
         all.forEach(function (record) { capture(record.object, record.base); });
         applyAdjustments(released);
       }
-      applyPhysics(delta || 0, authoringReason);
+      applyPhysics(physicsDelta === undefined ? delta || 0 : physicsDelta, authoringReason);
       if (nodeEditor && nodeEditor.refreshPose) nodeEditor.refreshPose();
     }
     function listen(id, event, handler) {
@@ -1111,6 +1113,7 @@
       source.textContent = "heightScale: " + metadata.map(function (part) { return part.targetName + " = " + numberText(part.heightScale); }).join("; ");
     }
     function setClip(name) {
+      playbackRevision += 1;
       if (name !== selectedClip || currentTime() !== 0) resetPhysicsSimulation("clip-change");
       playing = false;
       all.forEach(function (record) { restore(record.object, record.base); });
@@ -1136,7 +1139,7 @@
       var existing = clipEntries.filter(function (entry) { return entry.name === name; })[0];
       if (!existing) {
         all.forEach(function (record) { restore(record.object, record.authored); });
-        var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor);
+        var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor, { getGazeContext: options.getGazeContext });
         if (!timeline.compatibleSegments) throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions."));
         var motionPhysics = descriptor.physics && typeof descriptor.physics === "object" ? {
           profile: descriptor.physics.profile === "live" ? "live" : "navi", liveId: descriptor.physics.liveId,
@@ -1264,7 +1267,9 @@
     }
     buildSavedParts();
     expressionPanel = window.ViewerExpressions.create({ THREE: THREE, translate: translate, nodes: nodes,
-      channels: expressions, catalog: info && info.expressionCatalog || {},
+      channels: expressions, catalog: info && info.expressionCatalog || {}, root: root, animations: clips, metadata: info,
+      getGazeContext: options.getGazeContext,
+      getMotionGazeState: function () { return currentClip && currentClip.timeline && currentClip.timeline.getGazeState ? currentClip.timeline.getGazeState() : null; },
       change: function () { evaluate(0); refreshBodyControls(); refreshNode(); changed(); } });
     nodeEditor = editing.createNodeEditor({ THREE: THREE, translate: translate, nodes: nodes, bones: bones, scaling: scaling,
       defaultFilter: options.editing && options.editing.available ? "tool" : "all", forTool: toolAccepts,
@@ -1306,8 +1311,8 @@
     if (mixer) mixer.addEventListener("finished", function (event) { if (event.action === action) { playing = false; updateTime(); } });
     listen("viewer-play", "click", function () {
       playing = !playing;
-      if (playing && action && (action.paused || action.time >= duration() - 1e-7)) { resetPhysicsSimulation("playback-restart"); action.reset().play(); evaluate(0); }
-      if (playing && !action && playhead >= duration()) { resetPhysicsSimulation("playback-restart"); playhead = 0; evaluate(0); }
+      if (playing && action && (action.paused || action.time >= duration() - 1e-7)) { playbackRevision += 1; resetPhysicsSimulation("playback-restart"); action.reset().play(); evaluate(0); }
+      if (playing && !action && playhead >= duration()) { playbackRevision += 1; resetPhysicsSimulation("playback-restart"); playhead = 0; evaluate(0); }
       updateTime(); changed();
     });
     listen("viewer-time", "input", function () {
@@ -1315,6 +1320,7 @@
       // Looping actions wrap an exact end time to zero. Inspect the last frame
       // just before the boundary so dragging the scrubber to its end stays put.
       playing = false;
+      playbackRevision += 1;
       var time = clamp(finite(this.value, 0), 0, Math.max(0, duration() - (action && currentClip.loop ? 1e-7 : 0)));
       if (action) { action.paused = false; action.enabled = true; action.time = time; }
       else playhead = time;
@@ -1354,7 +1360,7 @@
     });
     listen("viewer-preview-reset", "click", reset);
     if (window.ViewerPhysics) physicsController = window.ViewerPhysics.create(root, options.editing && options.editing.physics || {}, {
-      translate: translate, getInitializationPose: physicsInitializationPose,
+      translate: translate, getInitializationPose: physicsInitializationPose, getBreastProfile: breastProfile,
       onChange: function () { evaluate(0, "physics-values"); changed(); }
     });
     timelineDescriptors.slice().forEach(function (descriptor) {
@@ -1425,7 +1431,7 @@
         unsupported: unsupported.filter(function (message, index, values) { return values.indexOf(message) === index; }) };
       if (physicsController && physicsController.getEdits().length) state.physics = physicsController.getEdits();
       if (accessoryUnclip) state.accessoryUnclip = Object.assign({}, accessoryUnclip);
-      if (outlineEdits.length) state.outlines = outlineEdits.map(function (value) { return { id: value.id, factor: value.factor }; });
+      if (outlineEdits.length) state.outlines = JSON.parse(JSON.stringify(outlineEdits));
       if (edits.some(function (edit) { return edit.compensate; })) {
         var reference = fileMap(), writable = {};
         applyBodyPreset(function (id) { return reference[id]; });
@@ -1528,7 +1534,7 @@
     }
     return {
       getAuthoringState: getAuthoringState,
-      getOutlineEdits: function () { return outlineEdits.map(function (value) { return { id: value.id, factor: value.factor }; }); },
+      getOutlineEdits: function () { return JSON.parse(JSON.stringify(outlineEdits)); },
       setOutlineEdits: function (values) {
         if (!window.ViewerOutlines) throw new Error("The outline editor is unavailable.");
         var next = window.ViewerOutlines.checked(values, (options.editing || {}).outlines);
@@ -1575,6 +1581,16 @@
         updateLanguage(); setClip(existing.name);
         return { clipName: existing.name, warnings: existing.timeline.warnings.slice() };
       },
+      getMotionTimelines: function () { return JSON.parse(JSON.stringify(timelineDescriptors)); },
+      refreshGaze: function () {
+        if (!options.getGazeContext) return false;
+        var key = JSON.stringify(options.getGazeContext());
+        if (key === gazeContextKey) return false;
+        gazeContextKey = key;
+        var manual = expressionPanel && expressionPanel.getState().gaze;
+        if (!(manual && manual.mode === "camera") && !(currentClip && currentClip.timeline && currentClip.timeline.followsGazeTarget())) return false;
+        evaluate(0); return true;
+      },
       restorePhysicsPreview: function (state) {
         if (!physicsController || !physicsController.restorePreviewState || !state || typeof state !== "object") return false;
         physicsController.restorePreviewState(state);
@@ -1602,13 +1618,22 @@
             delta = physicsController.playbackDelta(delta);
             if (!(delta > 0)) return playing && !!currentClip;
           }
+          var physicalDelta = delta;
+          // Let continuous local audio supply the playhead when available.
+          // Physics still performs exactly one update per accepted game frame,
+          // including when a browser quantizes two audio-clock observations.
+          if (window.ViewerMotionAudio && window.ViewerMotionAudio.getPlaybackClock) {
+            var audioTime = window.ViewerMotionAudio.getPlaybackClock({ selectedClip: selectedClip, playing: playing,
+              time: currentTime(), duration: duration(), playbackRevision: playbackRevision });
+            if (typeof audioTime === "number" && isFinite(audioTime)) delta = Math.max(0, audioTime - currentTime());
+          }
           if (!action) {
             playhead += delta;
             if (playhead >= duration()) { if (currentClip.loop && duration()) playhead %= duration(); else { playhead = duration(); playing = false; } }
           }
           // Imported composite timelines advance the same physics clock even
           // though they do not own a single top-level Three AnimationAction.
-          evaluate(delta); updateTime(); refreshExpression();
+          evaluate(delta, undefined, physicalDelta); updateTime(); refreshExpression();
         }
         return playing && !!currentClip;
       },
@@ -1620,7 +1645,7 @@
       setAuthoringEnabled: function (value) { if (!!value !== authoringEnabled) { authoringEnabled = !!value; refreshAvailability(); } },
       updateLanguage: updateLanguage,
       getBounds: posedBounds,
-      getPlaybackState: function () { return { selectedClip: selectedClip, playing: playing, time: currentTime(), duration: duration() }; },
+      getPlaybackState: function () { return { selectedClip: selectedClip, playing: playing, time: currentTime(), duration: duration(), playbackRevision: playbackRevision }; },
       restoreInspectionState: function (state, options) {
         if (!state || typeof state !== "object") throw new Error("The model inspection snapshot is invalid.");
         var strict = !options || options.strict !== false;
@@ -1647,7 +1672,17 @@
           inspectedNode = matches.length === 1 ? matches[0].id : "";
         }
         if (inspectedNode && nodes[String(inspectedNode)]) {
-          selectedNode = String(inspectedNode); element("viewer-node").value = selectedNode;
+          var restoredNode = String(inspectedNode), nodeList = element("viewer-node");
+          if (!Array.prototype.some.call(nodeList.options, function (option) { return option.value === restoredNode; })) {
+            // Tool groups show a focused subset. A restored selection from
+            // All bones must remain inspectable after motion/model rebuilds.
+            var restoredFilter = element("viewer-node-filter"), restoredSearch = element("viewer-node-search");
+            if (restoredFilter) restoredFilter.value = "all";
+            if (restoredSearch) restoredSearch.value = "";
+          }
+          if (nodeEditor) nodeEditor.select(restoredNode, false);
+          else { selectedNode = restoredNode; nodeList.value = restoredNode; }
+          editorSelections[editorGroup] = restoredNode;
         }
         if (currentClip && typeof state.time === "number" && isFinite(state.time)) {
           var time = clamp(state.time, 0, Math.max(0, duration() - (action && currentClip.loop ? 1e-7 : 0)));
@@ -1656,6 +1691,7 @@
         }
         if (state.physics && physicsController && physicsController.restorePreviewState) physicsController.restorePreviewState(state.physics);
         resetPhysicsSimulation("inspection-restore");
+        playbackRevision += 1;
         evaluate(0); updateTime(); refreshExpression(); refreshNode(); changed();
         return true;
       },
@@ -1666,8 +1702,9 @@
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: visibleClips().map(function (clip) { return clip.name; }), internalClipCount: clipEntries.length - visibleClips().length, selectedClip: selectedClip, defaultClip: defaultClip,
           accessoryUnclip: accessoryUnclip && Object.assign({}, accessoryUnclip), accessoryCorrectedAnchors: Object.keys(accessoryCorrections).length,
-          playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
+          playing: playing, time: currentTime(), duration: duration(), playbackRevision: playbackRevision, visibilityTracks: currentClip ? currentClip.visibility.length : 0,
           physics: physicsController ? physicsController.getState() : null,
+          motionGaze: currentClip && currentClip.timeline && currentClip.timeline.getGazeState ? currentClip.timeline.getGazeState() : null,
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),

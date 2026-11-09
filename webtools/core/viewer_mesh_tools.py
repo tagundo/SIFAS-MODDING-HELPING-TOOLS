@@ -170,6 +170,8 @@ def inspect(token):
     session = _session(token)
     result = []
     for index, source in enumerate(session['sources']):
+        if index in session.get('outlineOnlySources', set()):
+            continue
         _, records = _mesh_records(source['raw'], index)
         for identity, _, tree, bones, _, _, available, reason in records:
             result.append({'mesh': identity, 'name': tree.get('m_Name') or 'Mesh',
@@ -182,6 +184,8 @@ def _identity(value, session):
     if not isinstance(value, dict) or set(value) != {'source', 'file', 'id'}:
         _fail('Choose a mesh from the original model.')
     source = _integer(value['source'], len(session['sources']), 'mesh source')
+    if source in session.get('outlineOnlySources', set()):
+        _fail('Open the original face file explicitly with the model to edit its geometry or skin weights.')
     if type(value['file']) is not int or value['file'] < 0 or not isinstance(value['id'], str) or len(value['id']) > 32:
         _fail('Invalid mesh identity.')
     return source

@@ -120,6 +120,7 @@
     "uniform float uResolutionRatio;",
     "uniform float uOutlineScale;",
     "uniform float uOutlineEdited;",
+    "attribute float _sifas_outline_width;",
     "varying vec4 vSifasOutlineColor;",
     "void main() {",
     "  #include <beginnormal_vertex>",
@@ -137,6 +138,7 @@
     "  distanceFactor = distanceFactor < 0.9 ? distanceFactor * 1.11111116 : distanceFactor * 0.555555582 + 0.5;",
     "  distanceFactor *= projectionMatrix[3][3] == 0.0 ? 1.0 : 0.0;",
     "  float outlineWidth = uOutlineEdited > 0.5 ? floor(clamp(_sifas_color.r * uOutlineScale, 0.0, 1.0) * 255.0 + 0.5) / 255.0 : _sifas_color.r;",
+    "  if (_sifas_outline_width >= 0.0) outlineWidth = _sifas_outline_width;",
     "  vec2 shift = vec2(projectionMatrix[0][0], projectionMatrix[1][1]) * outlineNormal.xy * outlineWidth;",
     "  gl_Position.xy += shift * distanceFactor * 0.001;",
     "  gl_Position.z += (1.0 - _sifas_color.g) * 0.0007;",
@@ -358,6 +360,7 @@
       outline.name = original.name + " (AS/Member outline)";
       outline.userData.viewerHelper = true;
       outline.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
+      outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features };
       materialCache.set(key, pair);
@@ -441,12 +444,22 @@
           var mesh = mapping && mapping.mesh;
           var key = mesh && String(mesh.source) + ":" + String(mesh.file) + ":" + String(mesh.id);
           entry.outlineEdited = !!(key && Object.prototype.hasOwnProperty.call(outlineFactors, key));
-          entry.outlineFactor = entry.outlineEdited ? outlineFactors[key] : 1;
+          var edit = entry.outlineEdited ? outlineFactors[key] : null;
+          entry.outlineFactor = edit ? edit.factor : 1;
+          var vertices = edit && edit.vertices || [], signature = vertices.length ? edit.signature : "";
+          if (entry.widthGeometry !== entry.mesh.geometry || entry.widthSignature !== signature) {
+            entry.widthGeometry = entry.mesh.geometry; entry.widthSignature = signature;
+            if (vertices.length && mapping && mapping.vertexOrder === "identity") {
+              var count = entry.mesh.geometry.attributes.position.count, values = new Float32Array(count); values.fill(-1);
+              vertices.forEach(function (row) { if (row.vertex >= 0 && row.vertex < count) values[row.vertex] = Math.min(255, Math.max(0, Math.floor(row.value * 255 * edit.factor + .5))) / 255; });
+              entry.mesh.geometry.setAttribute("_sifas_outline_width", new T.BufferAttribute(values, 1));
+            } else if (entry.mesh.geometry.getAttribute("_sifas_outline_width")) entry.mesh.geometry.deleteAttribute("_sifas_outline_width");
+          }
         });
       },
       setOutlineEdits: function (values) {
         outlineFactors = {};
-        (values || []).forEach(function (value) { outlineFactors[value.id] = value.factor; });
+        (values || []).forEach(function (value) { var edit = { factor: value.factor, vertices: (value.vertices || []).map(function (row) { return { vertex: row.vertex, value: row.value }; }) }; edit.signature = JSON.stringify([edit.factor, edit.vertices]); outlineFactors[value.id] = edit; });
         controller.syncGeometry();
         if (options.onChange) options.onChange();
       },

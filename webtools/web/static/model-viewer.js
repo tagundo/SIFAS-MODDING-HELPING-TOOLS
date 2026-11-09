@@ -3,6 +3,7 @@
   "use strict";
 
   var MAX_FILES = 8;
+  var MAX_MOTION_FILES = 32;
   var MAX_GLB_BYTES = 64 * 1024 * 1024;
   var config = null;
   var mounted = false;
@@ -10,6 +11,9 @@
   var paths = [];
   var loadedPaths = [];
   var importedGameMotionPaths = [];
+  var motionLibraryPaths = [];
+  var loadedMotionPaths = [];
+  var audioBindingKey = "";
   var loadedAutoFace = true;
   var variantChoices = Object.create(null);
   var variantOptions = Object.create(null);
@@ -103,6 +107,7 @@
     if (persistenceController) persistenceController.refresh();
     if (transplantController) transplantController.refresh();
     if (outlineController) outlineController.refresh();
+    refreshMotionLibrary();
   }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
@@ -438,7 +443,7 @@
     });
     node("viewer-add").textContent = t(paths.length ? "Add file" : "Choose costume file");
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
-    node("viewer-add-motion").disabled = loading || paths.length >= MAX_FILES;
+    node("viewer-add-motion").disabled = loading || motionLibraryPaths.length >= MAX_MOTION_FILES;
     node("viewer-load").disabled = loading || !paths.length;
     renderVariantOptions();
     scheduleResize();
@@ -477,10 +482,12 @@
     if (transplantController) transplantController.refresh();
     if (outlineController) outlineController.refresh();
     refreshMinimizeButton();
+    refreshMotionLibrary();
   }
 
   function cancelLoading() {
     generation += 1;
+    motionLibraryPaths = loadedMotionPaths.slice();
     if (controller) controller.abort();
     controller = null;
     if (discardPendingPreview) discardPendingPreview();
@@ -501,8 +508,10 @@
     var moving = rigController ? rigController.update(delta) : false;
     syncPartVisibility();
     if (meshToolsController && meshToolsController.beforeRender) meshToolsController.beforeRender();
+    if (outlineController && outlineController.beforeRender) outlineController.beforeRender();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
+    if (rigController && rigController.refreshGaze) rigController.refreshGaze();
     // Keep evaluating the pose, material clock, timeline and editable state
     // while scrolling through the controls. Only the invisible GPU submission
     // is omitted; returning to the viewport must show the current pose.
@@ -1090,6 +1099,7 @@
 
   function disposePreviewControllers() {
     partInputs = [];
+    if (outlineController && outlineController.beforeModelDispose) outlineController.beforeModelDispose();
     if (meshToolsController && meshToolsController.beforeModelDispose) meshToolsController.beforeModelDispose();
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
@@ -1236,6 +1246,27 @@
     if (transplantController) transplantController.refresh();
     if (accessoryController) accessoryController.refresh();
     if (outlineController) outlineController.refresh();
+    syncMotionAudio();
+  }
+
+  function syncMotionAudio() {
+    if (!rigController || !metadata || !window.ViewerMotionAudio || window.ViewerMotionAudio.getState().source !== "game") return;
+    var playback = rigController.getPlaybackState(), key = metadata.id + ":" + playback.selectedClip;
+    if (key === audioBindingKey) return;
+    audioBindingKey = key;
+    var timelines = rigController.getMotionTimelines ? rigController.getMotionTimelines() : metadata.rig && metadata.rig.motionTimelines || [];
+    var descriptor = timelines.filter(function (item) {
+      return "game-timeline:" + String(item.category) + ":" + String(item.motion) + ":" + String(item.performerPosition || 1) === playback.selectedClip;
+    })[0];
+    if (descriptor && descriptor.audio) window.ViewerMotionAudio.load(descriptor.audio, { modelId: metadata.id, clipNames: [playback.selectedClip] });
+    else window.ViewerMotionAudio.clear();
+  }
+
+  function refreshMotionLibrary() {
+    var clear = node("viewer-clear-motion-library"), status = node("viewer-motion-library-status");
+    if (clear) clear.disabled = !motionLibraryPaths.length || loading || lost || workbenchBusy() || meshDraftPending() ||
+      !!(persistenceController && persistenceController.getState().busy) || !sameSelection(loadedPaths, loadedAutoFace, loadedVariants);
+    if (status) status.textContent = motionLibraryPaths.length ? t("Imported motions are kept when opening another model.") : "";
   }
 
   function showWarnings(warnings) {
@@ -1313,6 +1344,7 @@
       autoFace: loadedAutoFace, authoring: authoring, pose: rigController && rigController.getState(),
       camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), up: camera.up.toArray(), fov: camera.fov } : null,
       importedGameMotionPaths: importedGameMotionPaths.slice(),
+      motionLibraryPaths: motionLibraryPaths.slice(),
       completeFace: !!(metadata.faces && ["added", "already_present"].indexOf(metadata.faces.status) >= 0) });
   }
 
@@ -1335,9 +1367,15 @@
       }
       nextChoices[value.paths[Number(key)]] = value.archiveChoices[key];
     });
-    paths = value.paths.slice(); variantChoices = nextChoices; variantOptions = {};
+    var nextMotions = motionLibraryPaths.slice();
+    if (value.motionLibraryPaths !== undefined) {
+      if (!Array.isArray(value.motionLibraryPaths) || value.motionLibraryPaths.length > MAX_MOTION_FILES ||
+          value.motionLibraryPaths.some(function (path, index, all) { return typeof path !== "string" || !path || all.indexOf(path) !== index; })) throw new Error(t("The model inspection snapshot is invalid."));
+      nextMotions = value.motionLibraryPaths.slice();
+    }
+    paths = value.paths.slice(); variantChoices = nextChoices; variantOptions = {}; motionLibraryPaths = nextMotions;
     node("viewer-auto-face").checked = value.autoFace;
-    importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return paths.indexOf(path) >= 0; });
+    importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return motionLibraryPaths.indexOf(path) >= 0; });
     renderFiles();
   }
 
@@ -1347,7 +1385,7 @@
     if (meshDraftPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Save mesh edits before transplanting."));
     var before = expectedCurrent || captureViewerCheckpoint();
     var oldSelection = { paths: paths.slice(), choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
-      autoFace: node("viewer-auto-face").checked, imported: importedGameMotionPaths.slice() };
+      autoFace: node("viewer-auto-face").checked, imported: importedGameMotionPaths.slice(), motions: motionLibraryPaths.slice() };
     selectCheckpointInputs(value);
     var promise = loadSelected({ preserveMotionInputs: true, throwOnFailure: true,
       expectedSourceFingerprint: options.graft ? null : value.sourceFingerprint,
@@ -1359,7 +1397,7 @@
       var committed = await promise;
       if (requestEpoch !== generation || destroyed || !sameSelection(value.paths, value.autoFace, value.variants)) return false;
       if (committed !== true) throw new Error(statusDetail || t(statusKey) || t("The model could not be displayed."));
-      importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return loadedPaths.indexOf(path) >= 0; });
+      importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return loadedMotionPaths.indexOf(path) >= 0; });
       requestRender(); return true;
     } catch (error) {
       // A later user open owns the selection. Never roll it back when an old
@@ -1368,6 +1406,7 @@
       if (metadata && metadata.id === before.modelId && metadata.editing && metadata.editing.sourceFingerprint === before.sourceFingerprint) {
         paths = oldSelection.paths; variantChoices = oldSelection.choices; variantOptions = oldSelection.options;
         node("viewer-auto-face").checked = oldSelection.autoFace; importedGameMotionPaths = oldSelection.imported;
+        motionLibraryPaths = oldSelection.motions;
         renderFiles(); setLoading(false);
       } else if (!options.rollback) {
         // The usual failures occur before commit. If an inspection restore
@@ -1397,6 +1436,7 @@
     controller = new window.AbortController();
     var requestController = controller;
     var selected = paths.slice();
+    var selectedMotions = motionLibraryPaths.slice();
     var selectedAutoFace = node("viewer-auto-face").checked;
     var selectedVariants = variantsFor(selected);
     var archiveVariants = {};
@@ -1404,6 +1444,7 @@
       if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) archiveVariants[index] = selectedVariants[index];
     });
     var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
+    if (selectedMotions.length) payload.motion_paths = selectedMotions;
     if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
     var pendingModel = null;
     var pendingMaterials = null;
@@ -1480,6 +1521,7 @@
       framingState = null;
       metadata = prepared;
       loadedPaths = selected;
+      loadedMotionPaths = selectedMotions;
       loadedAutoFace = selectedAutoFace;
       Object.keys(nextVariantOptions).forEach(function (path) { variantChoices[path] = nextVariantOptions[path].selected; });
       loadedVariants = resolvedVariants.slice();
@@ -1492,16 +1534,22 @@
       pendingModel = null;
       if (window.ViewerRig) {
         rigController = window.ViewerRig.create(model, gltf.animations || [], prepared.rig || {}, { translate: t, onChange: rigChanged, editing: prepared.editing || {},
+          getGazeContext: function () { return { camera: camera ? camera.position.toArray() : null }; },
           // A Rina variant change recreates the rig within the same model.
           // Preserve the user's folds; initial defaults belong to a new model.
           initializeNodeCards: !keepView,
           onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
+        if (retain && retain.allowRemovedMotion && previousPose && previousPose.selectedClip &&
+            rigController.getState().clipNames.indexOf(previousPose.selectedClip) < 0) {
+          previousPose = Object.assign({}, previousPose, { selectedClip: "", time: 0, playing: false });
+          retain.inspection = previousPose;
+        }
         restoreVariantPose(previousPose);
-        if ((retain || keepView) && previousPose && previousPose.physics && rigController.restorePhysicsPreview) rigController.restorePhysicsPreview(previousPose.physics);
         if (prepared.editing && prepared.editing.initialState) {
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }
         if (retain && retain.authoring) rigController.restoreAuthoringState(retain.authoring, { initializeNodeCards: false });
+        if ((retain || keepView) && previousPose && previousPose.physics && rigController.restorePhysicsPreview) rigController.restorePhysicsPreview(previousPose.physics);
         if (retain && retain.inspection && rigController.restoreInspectionState) rigController.restoreInspectionState(retain.inspection, { strict: retain.strictInspection !== false });
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
@@ -1520,13 +1568,7 @@
         node("viewer-fov").value = String(camera.fov);
       }
       setStatus("Model ready.");
-      if (retain && window.ViewerMotionAudio && window.ViewerMotionAudio.getState().source === "game" && rigController) {
-        var playback = rigController.getPlaybackState();
-        var retainedMotion = (prepared.rig && prepared.rig.motionTimelines || []).filter(function (descriptor) {
-          return "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1) === playback.selectedClip;
-        })[0];
-        if (retainedMotion && retainedMotion.audio) window.ViewerMotionAudio.load(retainedMotion.audio, { modelId: prepared.id, clipNames: [playback.selectedClip] });
-      }
+      syncMotionAudio();
       document.dispatchEvent(new CustomEvent("viewer:model-loaded", { detail: { modelId: prepared.id } }));
       return true;
     } catch (error) {
@@ -1539,6 +1581,7 @@
       if (current === generation) {
         controller = null;
         setLoading(false);
+        refreshMotionLibrary();
         if (!sameSelection(selected, selectedAutoFace, committedVariants || selectedVariants)) filesChanged();
       }
     }
@@ -1813,7 +1856,9 @@
     mounted = true;
     if (window.ViewerOutlines) outlineController = window.ViewerOutlines.create({
       translate: t,
-      onChange: function () { if (persistenceController) persistenceController.refresh(); },
+      onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); },
+      getRuntime: function () { return { model: model, renderer: renderer, camera: camera, scene: scene,
+        controls: controls, domElement: renderer && renderer.domElement, requestRender: requestRender }; },
       context: function () { return { rig: rigController, editing: metadata && metadata.editing,
         materials: materialController, busy: workbenchBusy() || !!(persistenceController && persistenceController.getState().busy),
         current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; }
@@ -1883,6 +1928,8 @@
     });
     if (window.ViewerMeshTools) meshToolsController = window.ViewerMeshTools.create({
       translate: t,
+      isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()); },
+      onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); },
       getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
       getBodyState: function () { return rigController && rigController.getAuthoringState(); },
       getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
@@ -1950,6 +1997,12 @@
       } catch (error) { restoreViewerPicker(); throw error; }
     });
     node("viewer-load").addEventListener("click", loadSelected);
+    node("viewer-clear-motion-library").addEventListener("click", function () {
+      if (!model || loading || lost || workbenchBusy() || !motionLibraryPaths.length || meshDraftPending()) return;
+      loadMotionLibrary([]).then(function () { importedGameMotionPaths = []; }).catch(function (error) {
+        if (error.name !== "AbortError") setStatus("The motion could not be loaded.", true, error.message);
+      });
+    });
     node("viewer-cancel").addEventListener("click", cancelLoading);
     node("viewer-auto-face").addEventListener("change", filesChanged);
     node("viewer-high-quality").addEventListener("change", function () {
@@ -2063,6 +2116,7 @@
     if (metadata) showWarnings(metadata.warnings);
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
+    refreshMotionLibrary();
     if (persistenceController) persistenceController.updateLanguage();
     if (meshToolsController) meshToolsController.updateLanguage();
     if (transplantController) transplantController.updateLanguage();
@@ -2102,8 +2156,8 @@
       if (typeof path === "string" && path.trim() && unique.indexOf(path) < 0) unique.push(path);
     });
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
+    if (loading) motionLibraryPaths = loadedMotionPaths.slice();
     paths = unique;
-    importedGameMotionPaths = [];
     if (nextVariants && typeof nextVariants === "object") {
       paths.forEach(function (path, index) {
         if (Object.prototype.hasOwnProperty.call(nextVariants, index) &&
@@ -2121,28 +2175,38 @@
     if (workbenchBusy() || persistenceController && persistenceController.getState().busy) throw new Error(t("Wait for model saving to finish."));
     if (meshDraftPending()) throw new Error(t("Save mesh edits before adding motion."));
     var replaceGame = options && options.replaceGame === true;
-    var basePaths = replaceGame ? loadedPaths.filter(function (path) { return importedGameMotionPaths.indexOf(path) < 0; }) : loadedPaths;
+    var basePaths = motionLibraryPaths;
     var additions = (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).filter(function (path) {
-      return typeof path === "string" && path.trim() && basePaths.indexOf(path) < 0;
+      return typeof path === "string" && path.trim() && basePaths.indexOf(path) < 0 && loadedPaths.indexOf(path) < 0;
     });
     var selected = basePaths.concat(additions.filter(function (path, index, all) { return all.indexOf(path) === index; }));
-    if (selected.length > MAX_FILES) throw new Error(t("Choose up to eight costume files at a time."));
-    if (JSON.stringify(selected) === JSON.stringify(loadedPaths)) return;
+    if (selected.length > MAX_MOTION_FILES) throw new Error(t("The motion library is full. Clear imported motions before adding more."));
+    if (JSON.stringify(selected) === JSON.stringify(loadedMotionPaths)) return;
+    await loadMotionLibrary(selected);
+    if (replaceGame) importedGameMotionPaths = importedGameMotionPaths.concat(additions).filter(function (path, index, all) { return all.indexOf(path) === index; });
+  }
+
+  async function loadMotionLibrary(selected) {
+    if (!sameSelection(loadedPaths, loadedAutoFace, loadedVariants)) throw new Error(t("Open the selected model before adding motion."));
     var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: rigController.getAuthoringState(),
       priorCompleteFace: !!(metadata && metadata.faces && metadata.faces.enabled && ["added", "already_present"].indexOf(metadata.faces.status) >= 0),
       camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
-    var oldPaths = loadedPaths.slice();
-    paths = selected; renderFiles();
+    previous.inspection = previous.pose;
+    previous.allowRemovedMotion = selected.length === 0;
+    if (previous.allowRemovedMotion) previous.strictInspection = false;
+    previous.expectedSourceFingerprint = metadata && metadata.editing && metadata.editing.sourceFingerprint || null;
+    var oldPaths = loadedPaths.slice(), oldMotions = loadedMotionPaths.slice();
+    motionLibraryPaths = selected.slice(); renderFiles();
     var completion = loadSelected(previous), motionGeneration = generation;
-    await completion;
-    if (generation !== motionGeneration || JSON.stringify(paths) !== JSON.stringify(selected)) {
+    var completed = await completion;
+    if (generation !== motionGeneration || JSON.stringify(paths) !== JSON.stringify(oldPaths) || JSON.stringify(motionLibraryPaths) !== JSON.stringify(selected)) {
       var interrupted = new Error(t("Loading cancelled.")); interrupted.name = "AbortError"; throw interrupted;
     }
-    if (JSON.stringify(loadedPaths) !== JSON.stringify(selected)) {
-      paths = oldPaths; renderFiles(); filesChanged();
+    if (!completed || JSON.stringify(loadedMotionPaths) !== JSON.stringify(selected)) {
+      motionLibraryPaths = oldMotions; renderFiles(); filesChanged(); refreshMotionLibrary();
       throw new Error(statusDetail || t("The motion could not be loaded."));
     }
-    if (replaceGame) importedGameMotionPaths = additions.slice();
+    refreshMotionLibrary();
   }
 
   function dispose() {
@@ -2193,7 +2257,11 @@
     },
     getEditingMetadata: function () { return metadata && metadata.editing || null; },
     projectMeshVertex: function (identity, index) { return meshToolsController && meshToolsController.projectVertex ? meshToolsController.projectVertex(identity, index) : null; },
-    executeMeshShortcut: function (event) { return meshToolsController && meshToolsController.handleShortcut ? meshToolsController.handleShortcut(event) : false; },
+    projectOutlineVertex: function (identity, index) { return outlineController && outlineController.projectVertex ? outlineController.projectVertex(identity, index) : null; },
+    executeMeshShortcut: function (event) {
+      if (outlineController && outlineController.handleShortcut && outlineController.handleShortcut(event)) return true;
+      return meshToolsController && meshToolsController.handleShortcut ? meshToolsController.handleShortcut(event) : false;
+    },
     saveMeshIfPending: function () {
       var state = meshToolsController && meshToolsController.getStatus();
       if (!state || !state.canSave) return false;
@@ -2212,7 +2280,7 @@
     getState: function () {
       var names = [];
       if (model) model.traverse(function (child) { if (child.isMesh && !isViewerHelper(child)) names.push(child.name); });
-      return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), loading: loading, loaded: !!model,
+      return { paths: paths.slice(), loadedPaths: loadedPaths.slice(), motionLibraryPaths: motionLibraryPaths.slice(), loadedMotionPaths: loadedMotionPaths.slice(), loading: loading, loaded: !!model,
         autoFace: node("viewer-auto-face") ? node("viewer-auto-face").checked : true,
         loadedAutoFace: loadedAutoFace, faces: metadata && metadata.faces ? metadata.faces : null,
         archiveVariants: variantsFor(paths), loadedArchiveVariants: loadedVariants.slice(),

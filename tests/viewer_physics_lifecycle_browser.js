@@ -77,6 +77,7 @@ async function run() {
     await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer([source]); }, source);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().rig.physics.available);
     assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.mode), 'game', 'The real native-metadata fixture uses the production game engine, not the enhanced fallback');
+    assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.swingBone && ModelViewer.getState().rig.physics.swingCollider), true, 'Original SwingBone and Collider are enabled on a fresh model');
     assert(prepared && prepared.rig.clips.length, 'Actual source has exported motion metadata');
     const clip = prepared.rig.clips.find(value => value.userSelected !== false), rawName = clip.name;
     const initializationPose = await page.evaluate(() => window.__getPhysicsInitializationPose());
