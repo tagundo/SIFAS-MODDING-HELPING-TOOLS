@@ -32,7 +32,7 @@ class WorkbenchHTTPBase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
+        self.root = Path(directory.name).resolve()
         self.library = self.root / 'sukusta'
         self.library.mkdir()
         environment = patch.dict(os.environ, {'SUKUSTA_DIR': str(self.library)})
