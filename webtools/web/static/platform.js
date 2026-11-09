@@ -11,7 +11,7 @@
     handler && typeof handler.postMessage === "function" && global.location.protocol === "http:" &&
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
-  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings", setEditorSurface: "editorNavigation" };
+  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings", setEditorSurface: "editorNavigation", setSection: "setSection" };
   function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
   function validFilesWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 160 && width <= 360); }
   function validPanelSettings(value) {
@@ -87,6 +87,14 @@
       }
       message.panelScope = args.panelScope;
       message.panelSettings = JSON.parse(JSON.stringify(args.panelSettings));
+    }
+    if (action === "setSection") {
+      if (["tools", "viewer"].indexOf(args.section) < 0 ||
+          args.event !== undefined && ["ready", "change"].indexOf(args.event) < 0) {
+        return Promise.reject(new Error("Choose an available app section."));
+      }
+      message.section = args.section;
+      message.event = args.event || "change";
     }
     return new Promise(function (resolve, reject) {
       var timer = global.setTimeout(function () {

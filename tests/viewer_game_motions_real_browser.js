@@ -4,7 +4,8 @@
 const assert = require('assert'), fs = require('fs'), os = require('os'), path = require('path'), net = require('net');
 const { spawn } = require('child_process');
 const { chromium } = require('playwright');
-const root = path.resolve(__dirname, '../..');
+const root = path.resolve(process.env.VIEWER_REPO_ROOT || path.resolve(__dirname, '../..'));
+const product = path.resolve(process.env.VIEWER_PRODUCT_DIR || path.join(root, 'modtools'));
 const source = process.env.REAL_GAME_MOTION_DIR;
 assert(source && fs.existsSync(path.join(source, 'ayumu-body.unity')), 'Set REAL_GAME_MOTION_DIR to the private original-game asset directory');
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-real-game-motion-'));
@@ -16,7 +17,7 @@ async function boot() {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const stream = fs.createWriteStream(path.join(evidence, 'server.log'));
   server = spawn(process.env.VIEWER_PYTHON || 'python3', ['-m', 'webtools', '--no-browser', '--host', '127.0.0.1', '--port', String(port)],
-    { cwd: root, env: { ...process.env, PYTHONPATH: path.join(root, 'modtools') + ':' + root, SUKUSTA_DIR: source }, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: root, env: { ...process.env, PYTHONPATH: product + path.delimiter + root, SUKUSTA_DIR: source }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.pipe(stream); server.stderr.pipe(stream);
   const url = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 100; i++) {

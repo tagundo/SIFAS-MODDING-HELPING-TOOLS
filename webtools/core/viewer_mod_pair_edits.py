@@ -277,7 +277,7 @@ def _map_state(context, state, source_index, source_info, target_context, target
         # assigned to both native versions. No browser simulation is baked.
         physics.append({"id": matches[0]["id"], "values": copy.deepcopy(row["values"])})
         physics_proof.append({"sourcePhysics": row["id"], "targetPhysics": matches[0]["id"], "hierarchy": list(semantic)})
-    if not converted and not physics:
+    if not converted and not physics and "accessoryUnclip" not in state:
         raise ValueError("There are no source-bound body edits to apply to the counterpart.")
     references = []
     for row in state.get("compensationReference", []):
@@ -301,6 +301,8 @@ def _map_state(context, state, source_index, source_info, target_context, target
                   "edits": converted, "compensationReference": references}
     if physics:
         translated["physics"] = physics
+    if "accessoryUnclip" in state:
+        translated["accessoryUnclip"] = copy.deepcopy(state["accessoryUnclip"])
     proof = [{"sourceNode": ident, "targetNode": row[1]["node"], "hierarchy": list(row[4]),
               "sourceUnity": list(_key(row[0])), "targetUnity": list(_key(row[1]))}
              for ident, row in mapping.items()]
@@ -417,19 +419,28 @@ def _apply(context, result, state, *, pair, declarations, job):
                     continue
                 replacements, claimed = {}, set()
                 for members in groups:
-                    selected = [(index, source) for index, source in enumerate(context["sources"])
-                                if source["container"] == ci and source["member"] in members and
-                                (any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
-                                     for row in state["edits"]) or
-                                 any(row["id"].split(":", 1)[0] == str(index) for row in state.get("physics", [])))]
+                    opened = [(index, source) for index, source in enumerate(context["sources"])
+                              if source["container"] == ci and source["member"] in members]
+                    selected = [(index, source) for index, source in opened
+                                if (any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
+                                        for row in state["edits"]) or
+                                    any(row["id"].split(":", 1)[0] == str(index) for row in state.get("physics", [])))]
+                    accessory_only = not selected and "accessoryUnclip" in state
+                    if accessory_only:
+                        selected = opened
                     if not selected:
                         continue
+                    # Each opened member already received its own accessory
+                    # pass. Mapped node/physics changes still need their partner.
+                    already_selected = {row[1]["member"] for row in selected} if accessory_only else set()
+                    if already_selected:
+                        selected = selected[:1]
                     if len(selected) != 1:
                         raise ValueError("Multiple edited costume variants would conflict in one paired ZIP.")
                     index, source = selected[0]
                     with zipfile.ZipFile(io.BytesIO(containers[ci]["raw"])) as archive:
                         for member in members:
-                            if member == source["member"]:
+                            if member == source["member"] or member in already_selected:
                                 continue
                             if member in claimed:
                                 raise ValueError("Two paired declarations target the same costume member.")

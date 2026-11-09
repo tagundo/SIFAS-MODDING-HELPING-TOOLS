@@ -51,6 +51,7 @@ _TABLES = {
         "Language": "언어",
         "SIFAS Modding Tools": "SIFAS 모딩 도구",
         "Tools": "도구",
+        "Asset editing tools": "에셋 편집툴",
         "Gallery": "갤러리",
         "Pick a tool on the left to begin.": "왼쪽에서 도구를 선택해 시작하세요.",
         "folder of bundles...": "번들이 들어있는 폴더...",
@@ -551,6 +552,7 @@ _TABLES = {
         "Language": "言語",
         "SIFAS Modding Tools": "SIFAS Modding Tools",
         "Tools": "ツール",
+        "Asset editing tools": "アセット編集ツール",
         "Gallery": "ギャラリー",
         "Pick a tool on the left to begin.": "左側からツールを選んで開始してください。",
         "folder of bundles...": "バンドルのフォルダ...",
@@ -2104,6 +2106,50 @@ _VIEWER_TRANSLATIONS.update({
         "모델 불러오기",
         "モデルを読み込む"
     ],
+    "Bundle platform": [
+        "번들 플랫폼",
+        "バンドルのプラットフォーム"
+    ],
+    "Use this model": [
+        "이 모델 사용",
+        "このモデルを使用"
+    ],
+    "Fills this model field with one body bundle. Your 3D preview stays open as it is.": [
+        "선택한 본체 번들을 이 모델 칸에 입력합니다. 현재 3D 미리보기는 유지됩니다.",
+        "選択した本体バンドルをこのモデル欄に入力します。現在の3Dプレビューはそのままです。"
+    ],
+    "The selected game asset is not a body bundle.": [
+        "선택한 게임 에셋은 코스튬 본체 번들이 아닙니다.",
+        "選択したゲームアセットは衣装の本体バンドルではありません。"
+    ],
+    "Transplanting requires an original UnityFS costume bundle.": [
+        "이식에는 원본 UnityFS 코스튬 번들이 필요합니다.",
+        "移植には元のUnityFS衣装バンドルが必要です。"
+    ],
+    "Choose Android or iOS game assets.": [
+        "Android 또는 iOS 게임 에셋을 선택하세요.",
+        "AndroidまたはiOSのゲームアセットを選択してください。"
+    ],
+    "The selected costume body does not match its requested native platform.": [
+        "선택한 코스튬 본체의 플랫폼이 요청한 플랫폼과 다릅니다.",
+        "選択した衣装本体のプラットフォームが要求されたものと一致しません。"
+    ],
+    "The selected asset is not a skinned costume body for transplanting.": [
+        "선택한 에셋은 이식할 수 있는 스킨 메시 코스튬 본체가 아닙니다.",
+        "選択したアセットは移植可能なスキンメッシュの衣装本体ではありません。"
+    ],
+    "The selected costume has no canonical body for that platform.": [
+        "이 플랫폼용으로 확인된 코스튬 본체가 없습니다.",
+        "このプラットフォーム用の確認済み衣装本体がありません。"
+    ],
+    "The costume catalog changed. Select the game costume again.": [
+        "코스튬 목록이 변경되었습니다. 게임 코스튬을 다시 선택하세요.",
+        "衣装一覧が変更されました。ゲームの衣装を選び直してください。"
+    ],
+    "Native costume body ready for transplanting.": [
+        "이식에 사용할 코스튬 본체를 준비했습니다.",
+        "移植に使う衣装本体を準備しました。"
+    ],
     "Loading costumes…": [
         "의상 목록 불러오는 중…",
         "衣装一覧を読み込み中…"
@@ -2264,5 +2310,56 @@ _VIEWER_TRANSLATIONS.update({
 })
 
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _translated[0]
+    _TABLES["ja"][_source] = _translated[1]
+
+_VIEWER_ACCESSORY_TRANSLATIONS = {
+    "Correct accessory clipping": ["액세서리 클리핑 해제", "アクセサリーのクリップを解消"],
+    "Moves overlapping ornaments with the resized body while keeping their shape. Uses the original model for every preview and save.": [
+        "몸에 겹친 장식의 모양은 유지하면서 위치를 보정합니다. 미리보기와 저장은 매번 원본 모델을 기준으로 계산합니다.",
+        "体に重なる装飾の形を保ちながら位置を補正します。プレビューと保存は毎回元のモデルから計算します。"],
+    "Open a model to check accessories.": ["모델을 열면 액세서리를 확인할 수 있습니다.", "モデルを開くとアクセサリーを確認できます。"],
+    "Accessory correction is off.": ["액세서리 보정이 꺼져 있습니다.", "アクセサリー補正はオフです。"],
+    "Accessory correction is unavailable for this model.": ["이 모델은 액세서리 보정을 지원하지 않습니다.", "このモデルではアクセサリー補正を利用できません。"],
+    "Checking accessory clipping…": ["액세서리 겹침 확인 중…", "アクセサリーの重なりを確認中…"],
+    "Corrected accessory anchors": ["보정한 액세서리", "補正したアクセサリー"],
+    "Affected anchors": ["보정 대상", "補正対象"],
+    "No resized saved body regions were found.": ["보정할 크기 설정이 있는 신체 부위를 찾지 못했습니다.", "補正するサイズ設定のある体の部位が見つかりませんでした。"],
+    "No overlapping accessories need correction for these settings.": ["현재 설정에서 보정이 필요한 겹친 액세서리가 없습니다.", "現在の設定では補正が必要な重なるアクセサリーはありません。"],
+    "Check accessories again": ["액세서리 다시 확인", "アクセサリーを再確認"],
+    "Advanced correction settings": ["보정 고급 설정", "補正の詳細設定"],
+    "Correction strength": ["보정 강도", "補正の強さ"],
+    "Minimum overlap (0–1)": ["최소 겹침 비율 (0–1)", "最小重なり率 (0–1)"],
+    "Also close gaps after shrinking": ["크기를 줄여 생긴 틈도 보정", "縮小で生じた隙間も補正"],
+    "Enter a correction strength from 0 to 3 and an overlap from 0 to 1.": ["보정 강도는 0~3, 겹침 비율은 0~1로 입력하세요.", "補正の強さは0〜3、重なり率は0〜1で入力してください。"],
+    "The accessory correction settings are invalid.": ["액세서리 보정 설정이 올바르지 않습니다.", "アクセサリー補正の設定が無効です。"],
+    "The accessory preview response is invalid.": ["액세서리 미리보기 결과가 올바르지 않습니다.", "アクセサリーのプレビュー結果が無効です。"],
+    "Accessory correction could not be checked.": ["액세서리 보정을 확인하지 못했습니다.", "アクセサリー補正を確認できませんでした。"],
+    "This model's skinning cannot be checked safely. Turn accessory correction off to save other edits.": [
+        "이 모델의 스킨을 안전하게 확인할 수 없습니다. 다른 편집을 저장하려면 액세서리 보정을 끄세요.",
+        "このモデルのスキニングを安全に確認できません。他の編集を保存するにはアクセサリー補正をオフにしてください。"],
+    "Wait for the accessory check before saving.": ["액세서리 확인이 끝난 뒤 저장하세요.", "アクセサリーの確認が終わってから保存してください。"],
+    "The accessory skin cannot be analyzed safely:": ["액세서리의 본·가중치를 안전하게 분석할 수 없습니다:", "アクセサリーのスキニングを安全に解析できません:"],
+    "Reset explicit accessory-anchor position edits before applying automatic unclipping.": ["자동 보정을 적용하려면 장식의 수동 위치 편집을 먼저 초기화하세요.", "自動補正を適用するには、装飾の手動位置編集を先にリセットしてください。"],
+    "This model's skinning cannot be checked safely. Turn accessory correction off before saving.": ["이 모델의 본·가중치를 안전하게 확인할 수 없습니다. 저장하려면 액세서리 보정을 끄세요.", "このモデルのスキニングを安全に確認できません。保存するにはアクセサリー補正をオフにしてください。"],
+    "The accessory anchor failed its saved-position reload check.": ["저장 후 다시 확인한 액세서리 위치가 요청과 다릅니다.", "保存後に再確認したアクセサリーの位置が要求と一致しません。"],
+    "The accessory hierarchy points outside its original model.": ["액세서리의 본 연결이 원본 모델 밖을 가리킵니다.", "アクセサリーのボーン階層が元のモデル外を参照しています。"],
+    "An accessory scale region has a singular authored scale.": ["보정할 부위의 원본 배율을 역산할 수 없습니다.", "補正する部位の元のスケールを逆算できません。"],
+    "The costume skin is ambiguous; accessory unclipping cannot choose a renderer.": ["의상의 본·가중치가 모호해 보정할 메시를 정할 수 없습니다.", "衣装のスキニングが曖昧なため、補正するメッシュを選べません。"],
+    "Accessory unclipping cannot follow external meshes.": ["외부 메시를 참조하는 액세서리는 보정할 수 없습니다.", "外部メッシュを参照するアクセサリーは補正できません。"],
+    "Accessory unclipping cannot follow external skin bones.": ["외부 본을 참조하는 액세서리는 보정할 수 없습니다.", "外部スキンボーンを参照するアクセサリーは補正できません。"],
+    "The accessory skin is not bound to its original model.": ["액세서리의 본·가중치가 원본 모델과 연결되어 있지 않습니다.", "アクセサリーのスキニングが元のモデルに結び付いていません。"],
+    "The accessory skin has inconsistent bind poses.": ["액세서리의 기준 본 자세가 일치하지 않습니다.", "アクセサリーのバインドポーズが一致しません。"],
+    "The accessory skin exceeds the supported vertex limit.": ["액세서리 메시가 지원하는 정점 수를 초과합니다.", "アクセサリーメッシュの頂点数が対応上限を超えています。"],
+    "The accessory skin contains invalid vertex data.": ["액세서리 메시의 정점 데이터가 올바르지 않습니다.", "アクセサリーメッシュの頂点データが無効です。"],
+    "The accessory skin has unbound or non-normalized vertex weights.": ["액세서리에 연결되지 않았거나 정규화되지 않은 정점 가중치가 있습니다.", "アクセサリーに未設定または正規化されていない頂点ウェイトがあります。"],
+    "The accessory skin contains an unbound weighted bone.": ["액세서리 정점의 가중치가 없는 본을 참조합니다.", "アクセサリーの頂点ウェイトが未設定のボーンを参照しています。"],
+    "The accessory bind poses contain invalid transforms.": ["액세서리의 기준 본 자세에 올바르지 않은 변환이 있습니다.", "アクセサリーのバインドポーズに無効な変換があります。"],
+    "An accessory overlaps multiple equally likely body regions.": ["액세서리가 여러 부위와 비슷하게 겹쳐 보정 대상을 정할 수 없습니다.", "アクセサリーが複数の部位と同程度に重なり、補正対象を選べません。"],
+    "The accessory anchor has no unambiguous writable rest position.": ["액세서리의 원본 위치를 안전하게 수정할 수 없습니다.", "アクセサリーの元の位置を安全に編集できません。"],
+    "The accessory lift has a singular transform chain.": ["액세서리 보정에 필요한 본 변환을 역산할 수 없습니다.", "アクセサリー補正に必要なボーン変換を逆算できません。"],
+    "The accessory lift exceeds its supported numeric range.": ["액세서리 보정값이 지원하는 범위를 벗어납니다.", "アクセサリーの補正値が対応範囲を超えています。"],
+}
+for _source, _translated in _VIEWER_ACCESSORY_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

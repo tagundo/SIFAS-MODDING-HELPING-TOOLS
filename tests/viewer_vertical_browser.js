@@ -178,7 +178,11 @@ function assertFrame(value, label) {
       await page.locator('#viewer-skirt-number').fill('.9'); await page.locator('#viewer-skirt-apply').click();
       await page.locator('[data-viewer-expression-group="eyes"]').click();
       await page.locator('[data-viewer-expression-preset="fixture-eyes-closed"]').click();
+      assert.equal(await page.locator('#viewer-adjustments').evaluate(element => element.open), false, 'Pose / motion starts collapsed');
+      await page.locator('#viewer-adjustments > summary').click();
+      assert(await page.locator('#viewer-time').isVisible(), 'Open Pose / motion before changing its playhead');
       await page.locator('#viewer-time').evaluate(element => { element.value = '.35'; element.dispatchEvent(new Event('input', { bubbles: true })); });
+      await page.locator('#viewer-adjustments > summary').click();
       await page.evaluate(() => scrollTo(0, 0));
       const retained = () => page.evaluate(() => {
         const s = ModelViewer.getState(), r = s.rig;
@@ -218,7 +222,7 @@ function assertFrame(value, label) {
       await page.locator('#viewer-workspace-menu > summary').click();
       const workspaceTargets = [];
       for (const selector of ['.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select',
-        '#viewer-add', '#viewer-add-motion', '#viewer-load', '#viewer-file-options > summary']) {
+        '#viewer-add', '#viewer-load', '#viewer-file-options > summary']) {
         const control = page.locator(selector); await control.scrollIntoViewIfNeeded(); await frames(page);
         const target = await control.evaluate(element => {
           const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
@@ -229,8 +233,41 @@ function assertFrame(value, label) {
           language + ': original drawer navigation/file action stays a reachable44px target: ' + JSON.stringify({ selector, ...target }));
         workspaceTargets.push({ selector, ...target });
       }
+      const poseSummary = page.locator('#viewer-adjustments > summary');
+      await poseSummary.scrollIntoViewIfNeeded(); await poseSummary.click();
+      const motion = page.locator('#viewer-add-motion'); await motion.scrollIntoViewIfNeeded(); await frames(page);
+      const motionTarget = await motion.evaluate(element => {
+        const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+          hit: !!hit && (hit === element || element.contains(hit)), panel: element.closest('details').id };
+      });
+      assert.equal(motionTarget.panel, 'viewer-adjustments', language + ': Add motion belongs to Pose / motion');
+      assert(motionTarget.width >= 43.5 && motionTarget.height >= 43.5 && motionTarget.hit &&
+        motionTarget.x >= 0 && motionTarget.y >= 0 && motionTarget.right <= 361 && motionTarget.bottom <= 457,
+        language + ': Add motion is a reachable44px target in its opened Pose / motion card: ' + JSON.stringify(motionTarget));
+      workspaceTargets.push({ selector: '#viewer-adjustments #viewer-add-motion', ...motionTarget });
+      await poseSummary.scrollIntoViewIfNeeded(); await poseSummary.click();
+      assert.equal(await page.locator('#viewer-adjustments').evaluate(element => element.open), false, 'The original pose fold is restored');
       await page.keyboard.press('Escape'); await frames(page);
       assert.deepEqual(await retained(), fitted, language + ': drawer scrolling and popups retain model/camera/pose/edits');
+      await page.locator('#viewer-workspace-menu > summary').click();
+      await page.locator('.tab[data-tab="tools"]').click();
+      const textureButton = page.locator('#tool-list button[data-id="texture_previews"]');
+      await textureButton.scrollIntoViewIfNeeded(); await frames(page);
+      const textureTarget = await textureButton.evaluate(element => {
+        const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+          hit: !!hit && (hit === element || element.contains(hit)) };
+      });
+      assert(textureTarget.width >= 43.5 && textureTarget.height >= 43.5 && textureTarget.hit &&
+        textureTarget.x >= 0 && textureTarget.y >= 0 && textureTarget.right <= 361 && textureTarget.bottom <= 457,
+        language + ': Texture previews remains a reachable44px Tools entry at200% text: ' + JSON.stringify(textureTarget));
+      await textureButton.click();
+      assert(await page.locator('#tool-gallery-panel').isVisible(), 'Texture previews opens inside the Tools workspace');
+      assert(await page.locator('#tab-tools').evaluate(element => element.classList.contains('active')));
+      await page.locator('.tab[data-tab="viewer"]').click(); await page.evaluate(() => scrollTo(0, 0)); await frames(page);
+      assert.deepEqual(await retained(), fitted, language + ': texture-tool navigation retains the loaded model, camera, pose and edits');
+      workspaceTargets.push({ selector: '#tool-list button[data-id="texture_previews"]', ...textureTarget });
       await style.evaluate(element => { element.disabled = true; });
       await page.waitForFunction(() => !ModelViewer.getState().layout.shortHeight); await frames(page);
       assert.deepEqual(await retained(), fitted, language + ': restoring normal text does not auto-fit');
@@ -244,8 +281,12 @@ function assertFrame(value, label) {
 
     for (const options of [{ wide: true }, { twoModels: true }, { shifted: true }, { wide: true, twoModels: true }]) {
       const { page, context, errors } = await openPage(browser, options, options.wide && options.twoModels ? profiles[4] : profiles[1], 3);
+      assert.equal(await page.locator('#viewer-adjustments').evaluate(element => element.open), false, 'Pose / motion starts collapsed');
+      await page.locator('#viewer-adjustments > summary').click();
       await page.locator('#viewer-motion').selectOption('Original humanoid preview');
+      assert(await page.locator('#viewer-time').isVisible(), 'Open Pose / motion before changing its playhead');
       await page.locator('#viewer-time').evaluate(element => { element.value = '.55'; element.dispatchEvent(new Event('input', { bubbles: true })); });
+      await page.locator('#viewer-adjustments > summary').click();
       await page.locator('[data-viewer-expression-group="eyes"]').click();
       await page.locator('[data-viewer-expression-preset="fixture-eyes-closed"]').click();
       assert((await state(page)).rig.expressions.some(expression => expression.weight > .99), 'Use an actually enabled authored morph for the independent vertex projection');

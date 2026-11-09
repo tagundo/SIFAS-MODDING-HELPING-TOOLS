@@ -70,6 +70,7 @@ class ViewerEditRouteTests(unittest.TestCase):
                     "sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}],
                 "sources": [], "variants": {}, "nodes": []}),
             validate_state=Mock(return_value=self.state), export=Mock(side_effect=export),
+            accessory_preview=Mock(return_value={"corrections": [], "summary": {"status": "nothing", "changed": 0}}),
             restore=Mock(return_value=self.state))
         self.viewer = SimpleNamespace(prepare=Mock(return_value={
             "id": self.token, "rig": {"available": True, "bones": []}}))
@@ -116,6 +117,36 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertEqual(kwargs["originals"], [str(self.source)])
         self.assertIn("archive_members", kwargs)
         self.assertEqual(self.source.read_bytes(), b"UnityFS source must never change")
+
+    def test_accessory_preview_is_read_only_and_source_bound(self):
+        state = {"version": 1, "savedSettingsEnabled": True, "edits": [],
+                 "accessoryUnclip": {"strength": 1, "overlap": .15, "closeGaps": False}}
+        status, result = self.request("/api/viewer/edit/accessories", {"token": self.token, "state": state})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result, {"corrections": [], "summary": {"status": "nothing", "changed": 0}})
+        self.backend.accessory_preview.assert_called_once_with(self.token, state)
+        self.backend.export.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.source.read_bytes(), b"UnityFS source must never change")
+
+    def test_accessory_preview_rejects_foreign_origins_and_caller_paths(self):
+        payload = {"token": self.token, "state": self.state}
+        status, _ = self.request("/api/viewer/edit/accessories", payload, headers={"Origin": "https://foreign.example"})
+        self.assertEqual(status, 403)
+        for invalid in ({**payload, "output_dir": str(self.root)},
+                        {**payload, "token": "outside"}, {**payload, "state": []}):
+            status, _ = self.request("/api/viewer/edit/accessories", invalid)
+            self.assertEqual(status, 400)
+        self.backend.accessory_preview.assert_not_called()
+        self.backend.export.assert_not_called()
+
+    def test_accessory_preview_reports_unsupported_skin_without_exporting(self):
+        self.backend.accessory_preview.side_effect = ValueError("The accessory skin is unsupported.")
+        status, result = self.request("/api/viewer/edit/accessories", {"token": self.token, "state": self.state})
+        self.assertEqual(status, 400)
+        self.assertEqual(result["error"], "The accessory skin is unsupported.")
+        self.backend.export.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def test_cache_failure_keeps_read_only_viewer_available(self):
         self.backend.register_session.side_effect = OSError("Editing cache is full.")

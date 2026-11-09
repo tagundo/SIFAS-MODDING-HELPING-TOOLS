@@ -57,7 +57,7 @@ async function openPage(browser, mode = 'browser', viewport = { width: 853, heig
   await page.route('**/api/viewer/model/*.glb', route => route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: model.glb }));
   await page.goto(process.env.VIEWER_URL || 'http://127.0.0.1:8898');
   await page.waitForFunction(() => typeof openModelViewer === 'function' && !!window.ViewerRig);
-  await page.evaluate(source => openModelViewer([source]), model.sourceSha256 ? '/original/viewer-qa-832049459529.unity' : '/original/layout.unity');
+  await page.evaluate(source => { window.__layoutOpen = openModelViewer([source]); return window.__layoutOpen; }, model.sourceSha256 ? '/original/viewer-qa-832049459529.unity' : '/original/layout.unity');
   await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
   return { page, context, errors };
 }
@@ -172,6 +172,12 @@ async function primaryNavigationTargets(browser) {
     const before = retained(await state(page));
     async function target(selector) {
       const control = page.locator(selector); await control.scrollIntoViewIfNeeded(); await frames(page);
+      // A scroll can stop below the retained sticky header. Centre the target
+      // with an ordinary scroll before judging the real pointer hit location.
+      if (!await control.evaluate(element => {
+        const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return !!hit && (hit === element || element.contains(hit));
+      })) { await control.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest' })); await frames(page); }
       const value = await control.evaluate(element => {
         const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
         return { width: r.width, height: r.height, x: r.x, y: r.y, right: r.right, bottom: r.bottom,
@@ -206,7 +212,19 @@ async function primaryNavigationTargets(browser) {
       const toolButtons = await page.locator('#tool-list button').evaluateAll(buttons => buttons.map(button => ({ id: button.dataset.id, width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })));
       assert(toolButtons.length > 0 && toolButtons.every(button => button.height >= 44), 'Every tool-list entry keeps its44px height: ' + JSON.stringify(toolButtons));
       controls.push(await target('#tool-list button[data-id="mesh_baker"]'));
-      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Tools navigation must not overflow the page');
+      const textureTarget = await target('#tool-list button[data-id="texture_previews"]');
+      assert(textureTarget.height >= 43.5 && textureTarget.width >= 43.5,
+        'Texture previews retains a full44px tool-list target');
+      controls.push(textureTarget);
+      await page.locator('#tool-list button[data-id="texture_previews"]').click();
+      assert(await page.locator('#tool-gallery-panel').isVisible(), 'Texture previews is reached through the real Tools list');
+      assert.equal(await page.locator('.tab[data-tab="gallery"]').count(), 0, 'Texture previews does not retain a duplicate top-level tab');
+      const toolsOverflow = await page.evaluate(() => ({ viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        offenders: Array.from(document.querySelectorAll('#tab-tools *')).map(element => {
+          const r = element.getBoundingClientRect(); return { id: element.id, className: element.className, right: r.right, width: r.width };
+        }).filter(element => element.width > 0 && element.right > innerWidth + 1).slice(0, 12) }));
+      assert(toolsOverflow.scrollWidth <= toolsOverflow.viewport + 1,
+        'Tools navigation must not overflow the page: ' + JSON.stringify({ profile, ...toolsOverflow }));
       await page.locator('.tab[data-tab="viewer"]').click(); await frames(page);
       await page.evaluate(() => { const workspace = document.getElementById('viewer-workspace-menu'); if (workspace.open) workspace.querySelector('summary').click(); scrollTo(0, 0); });
       const normal = await geometry();
@@ -248,6 +266,7 @@ async function motionChoiceReadability(browser) {
   const { page, context, errors } = await openPage(browser);
   const rows = [];
   try {
+    if (!await page.locator("#viewer-adjustments").evaluate(node => node.open)) await page.locator("#viewer-adjustments > summary").click();
     await frames(page); const before = retained(await state(page));
     for (const language of ['en', 'ko', 'ja']) {
       await page.locator('#lang-select').selectOption(language);

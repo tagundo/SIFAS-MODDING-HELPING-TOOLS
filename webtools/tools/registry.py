@@ -355,9 +355,9 @@ TOOLS = [
         "run": run_costume_transplant,
         "fields": [
             {"name": "donor", "label": "Donor (costume) bundle", "type": "path", "required": True,
-             "root": "extracted"},
+             "root": "extracted", "game_asset": True},
             {"name": "target", "label": "Target (wearer) bundle", "type": "path", "required": True,
-             "root": "extracted"},
+             "root": "extracted", "game_asset": True},
             {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True, "root": "modded"},
             {"name": "suffix", "label": "Filename suffix", "type": "text", "default": "_transplant"},
             # option surface + defaults mirror the desktop tool's GUI (costume_transplant.py run_gui)

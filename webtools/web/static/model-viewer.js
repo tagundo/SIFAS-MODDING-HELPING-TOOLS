@@ -32,6 +32,7 @@
   var persistenceController = null;
   var meshToolsController = null;
   var transplantController = null;
+  var accessoryController = null;
   var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
@@ -305,7 +306,7 @@
     var plans = layoutHomes.map(function (home, index) {
       var parent = home.parent, before = home.next && home.next.parentNode === parent ? home.next : null;
       if (next) {
-        if (index < 2 || index === 2 && narrow) { parent = content; before = null; }
+        if (index < 2 || index === 2 && (narrow || expanded)) { parent = content; before = null; }
       }
       return { home: home, parent: parent, before: before };
     });
@@ -455,6 +456,7 @@
     if (persistenceController) persistenceController.refresh();
     if (meshToolsController) meshToolsController.refresh();
     if (transplantController) transplantController.refresh();
+    if (accessoryController) accessoryController.refresh();
   }
 
   function setLoading(value) {
@@ -465,6 +467,7 @@
     node("viewer-auto-face").disabled = value;
     node("viewer-high-quality").disabled = value || lost;
     if (rigController) rigController.setInteractive(!value && !lost && !workbenchBusy() && !(persistenceController && persistenceController.getState().busy));
+    if (accessoryController) accessoryController.refresh();
     renderFiles();
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
@@ -1087,6 +1090,7 @@
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
+    if (accessoryController) accessoryController.refresh();
     materialController = null;
     lastFrameTime = 0;
   }
@@ -1225,6 +1229,7 @@
     requestRender();
     if (persistenceController) persistenceController.refresh();
     if (transplantController) transplantController.refresh();
+    if (accessoryController) accessoryController.refresh();
   }
 
   function showWarnings(warnings) {
@@ -1690,15 +1695,27 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    if (window.ViewerAccessories) accessoryController = window.ViewerAccessories.create({
+      translate: t,
+      context: function () {
+        var saved = persistenceController && persistenceController.getState();
+        return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+          busy: !!(saved && saved.busy), reviewingSaved: !!(saved && saved.reviewingSaved),
+          current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) };
+      },
+      onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); }
+    });
     if (window.ViewerPersistence && node("viewer-save")) persistenceController = window.ViewerPersistence.create({
       translate: t,
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+        accessories: accessoryController && accessoryController.getState(),
         loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), pendingMeshEdits: meshDraftPending(),
         current: !!model && !loading && !lost && !workbenchBusy() && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
       busyChanged: function (busy) {
         if (rigController) rigController.setInteractive(!busy && !loading && !lost && !workbenchBusy());
         if (transplantController) transplantController.refresh();
         if (meshToolsController) meshToolsController.refresh();
+        if (accessoryController) accessoryController.refresh();
       },
       pickFile: function (callback) {
         containViewerPicker();
@@ -1800,9 +1817,13 @@
     node("viewer-add-motion").addEventListener("click", function () {
       if (!model) { pickCompanion(); return; }
       containViewerPicker();
-      config.pickFile(function (path) {
-        if (!destroyed) addMotion([path]).catch(function (error) { if (error.name !== "AbortError") setStatus("The motion could not be loaded.", true, error.message); });
-      });
+      try {
+        config.pickFile(function (path) {
+          if (!destroyed) addMotion([path]).catch(function (error) { if (error.name !== "AbortError") setStatus("The motion could not be loaded.", true, error.message); });
+        });
+        var picker = node("picker");
+        if (picker && !picker.classList.contains("hidden")) focusElement(node("picker-cancel"));
+      } catch (error) { restoreViewerPicker(); throw error; }
     });
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
@@ -1921,6 +1942,7 @@
     if (persistenceController) persistenceController.updateLanguage();
     if (meshToolsController) meshToolsController.updateLanguage();
     if (transplantController) transplantController.updateLanguage();
+    if (accessoryController) accessoryController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -2012,6 +2034,7 @@
     if (persistenceController) persistenceController.dispose();
     if (meshToolsController) meshToolsController.dispose();
     if (transplantController) transplantController.dispose();
+    if (accessoryController) accessoryController.dispose();
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
@@ -2073,6 +2096,7 @@
         persistence: persistenceController ? persistenceController.getState() : null,
         meshTools: meshToolsController ? meshToolsController.getState() : null,
         transplants: transplantController ? transplantController.getState() : null,
+        accessories: accessoryController ? accessoryController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,

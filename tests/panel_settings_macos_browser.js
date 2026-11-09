@@ -8,7 +8,8 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { chromium } = require('playwright');
-const repo = path.resolve(__dirname, '../..');
+const repo = process.env.VIEWER_REPO_ROOT || path.resolve(__dirname, '../..');
+const product = process.env.VIEWER_PRODUCT_DIR || path.join(repo, 'modtools');
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'panel-settings-native-'));
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'panel-settings-native-library-'));
 fs.mkdirSync(evidence, { recursive: true });
@@ -30,7 +31,7 @@ async function server(module, serial) {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const log = fs.createWriteStream(path.join(evidence, module + '-' + serial + '.log'));
   const child = spawn(process.env.VIEWER_PYTHON || 'python3', ['-m', module, '--no-browser', '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: module === 'webtools' ? path.join(repo, 'modtools') : repo,
+    cwd: module === 'webtools' ? product : repo,
     env: { ...process.env, SUKUSTA_DIR: library }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.pipe(log); child.stderr.pipe(log); const url = 'http://127.0.0.1:' + port;

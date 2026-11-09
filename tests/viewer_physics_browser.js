@@ -6,7 +6,7 @@ const os = require('os');
 const net = require('net');
 const { spawn, execFileSync } = require('child_process');
 const { chromium } = require('playwright');
-const repo = path.resolve(__dirname, '../..'), product = path.join(repo, 'modtools');
+const product = path.resolve(__dirname, '..'), repo = process.env.SIFAS_REPO_ROOT || path.resolve(product, '..');
 const python = process.env.VIEWER_PYTHON || '/workspace/.venv-elichika/bin/python';
 const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-physics-library-'));
 const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-physics-browser-'));
@@ -20,7 +20,7 @@ async function main() {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const logs = fs.createWriteStream(path.join(evidence, 'server.log'));
   const server = spawn(python, ['-m', 'webtools', '--no-browser', '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: repo, env: { ...process.env, PYTHONPATH: product, SUKUSTA_DIR: library }, stdio: ['ignore', 'pipe', 'pipe'] });
+    cwd: repo, env: { ...process.env, PYTHONPATH: [product, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter), SUKUSTA_DIR: library }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.pipe(logs); server.stderr.pipe(logs);
   let browser;
   try {

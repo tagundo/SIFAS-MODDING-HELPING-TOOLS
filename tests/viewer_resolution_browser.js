@@ -59,6 +59,29 @@ async function openDetails(page, id) {
   if (!(await details.evaluate(n => n.open))) await details.locator('summary').first().click();
   await frames(page);
 }
+async function preparePickerTrigger(page, id) {
+  if (id !== 'viewer-add-motion') {
+    await openDetails(page, 'viewer-workspace-menu');
+    return { hit: await target(page, '#' + id, '#viewer-workspace-menu-content') };
+  }
+  const inWorkspace = await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(document.getElementById('viewer-adjustments')));
+  if (inWorkspace) await openDetails(page, 'viewer-workspace-menu');
+  else if (await page.locator('#viewer-workspace-menu').evaluate(n => n.open)) await page.locator('#viewer-workspace-menu > summary').click();
+  const poseWasOpen = await page.locator('#viewer-adjustments').evaluate(n => n.open);
+  await openDetails(page, 'viewer-adjustments');
+  const hit = await target(page, '#viewer-add-motion', inWorkspace ? '#viewer-workspace-menu-content' : '.viewer-control-panel');
+  assert(await page.locator('#viewer-add-motion').evaluate(n => n.closest('details').id === 'viewer-adjustments'), 'Add motion belongs to its Pose / motion card');
+  return { hit, poseWasOpen };
+}
+async function restorePickerTrigger(page, trigger) {
+  if (trigger.poseWasOpen !== false) return true;
+  const inWorkspace = await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(document.getElementById('viewer-adjustments')));
+  if (inWorkspace) await openDetails(page, 'viewer-workspace-menu');
+  if (!(await page.locator('#viewer-adjustments > summary').isVisible())) return false;
+  if (await page.locator('#viewer-adjustments').evaluate(n => n.open)) await page.locator('#viewer-adjustments > summary').click();
+  assert.equal(await page.locator('#viewer-adjustments').evaluate(n => n.open), false, 'Restore the original pose fold after using its motion picker');
+  return true;
+}
 async function target(page, selector, popup) {
   return page.evaluate(async ({ selector, popup }) => {
     const n = document.querySelector(selector); if (!n) return { selector, missing: true };
@@ -168,8 +191,14 @@ async function setup(browser, profile) {
   await page.locator('#viewer-node-editor').evaluate(n => { n.open = true; });
   await page.locator('#viewer-node').selectOption('3');
   await page.locator('[data-viewer-node-kind="position"][data-axis="X"]').fill('.2');
+  const poseWasOpen = await page.locator('#viewer-adjustments').evaluate(n => n.open);
+  assert.equal(poseWasOpen, false, 'Pose / motion starts collapsed');
+  await openDetails(page, 'viewer-adjustments');
   await page.locator('#viewer-motion').selectOption('Original generated preview');
+  assert(await page.locator('#viewer-time').isVisible(), 'Open Pose / motion before using its playhead');
   await page.locator('#viewer-time').evaluate(n => { n.value = '.37'; n.dispatchEvent(new Event('input', { bubbles: true })); });
+  if (!poseWasOpen) await page.locator('#viewer-adjustments > summary').click();
+  assert.equal(await page.locator('#viewer-adjustments').evaluate(n => n.open), poseWasOpen, 'Restore the original pose fold after setup');
   await page.locator('#viewer-node-editor').evaluate(n => { n.open = false; });
   await page.locator('#viewer-high-quality').check(); await settle(page);
   const edited = await state(page);
@@ -313,11 +342,15 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
   await openDetails(page, 'viewer-workspace-menu');
   assert(await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(__resolutionIdentity.header)));
   assert(await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(__resolutionIdentity.files)));
-  for (const selector of ['#viewer-add', '#viewer-add-motion', '#viewer-load', '.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) {
+  if (mode === 'expanded-short') assert(await page.evaluate(() => document.getElementById('viewer-workspace-menu-content').contains(__resolutionIdentity.inspector)),
+    'Expanded short-window editing keeps Pose / motion reachable in Workspace');
+  for (const selector of ['#viewer-add', '#viewer-load', '.tab[data-tab="tools"]', '.tab[data-tab="viewer"]', '#lang-select']) {
     const c = await target(page, selector, '#viewer-workspace-menu-content'); assertTarget(c, selector); controls.push(c);
   }
   for (const id of ['viewer-add', 'viewer-add-motion']) {
-    await target(page, '#' + id, '#viewer-workspace-menu-content'); const originalPicker = await pickerState(page), layoutBeforePicker = (await state(page)).layout;
+    const trigger = await preparePickerTrigger(page, id); assertTarget(trigger.hit, id);
+    if (id === 'viewer-add-motion') controls.push(trigger.hit);
+    const originalPicker = await pickerState(page), layoutBeforePicker = (await state(page)).layout;
     await page.locator('#' + id).click();
     const immediate = await pickerState(page); assert(immediate.activeInsidePicker, mode + ' chooser immediately owns focus: ' + JSON.stringify(immediate));
     await page.waitForFunction(() => !document.getElementById('picker').classList.contains('hidden'));
@@ -331,8 +364,10 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
     const restored = await pickerState(page);
     assert.equal(restored.parent, originalPicker.parent, 'Cancel restores the original picker DOM parent');
     assert.equal(restored.ariaHidden, originalPicker.ariaHidden); assert.equal(restored.inert, originalPicker.inert);
-    assert(restored.active.inWorkspace && restored.active.visible, 'Cancel restores focus to a visible Workspace control: ' + JSON.stringify(restored));
-    pickerProofs.push({ trigger: id, mode, immediate, picker, originalPicker, restored, cancelMethod, cancelWorked: true }); await openDetails(page, 'viewer-workspace-menu');
+    assert((id === 'viewer-add-motion' ? restored.active.inViewer : restored.active.inWorkspace) && restored.active.visible,
+      'Cancel restores focus to a visible control in the owning Workspace or Pose / motion surface: ' + JSON.stringify(restored));
+    pickerProofs.push({ trigger: id, mode, immediate, picker, originalPicker, restored, cancelMethod, cancelWorked: true });
+    assert(await restorePickerTrigger(page, trigger), 'Restore the pose fold in its currently visible workspace'); await openDetails(page, 'viewer-workspace-menu');
   }
   let callback = null;
   if (selectRealFixture) {
@@ -358,11 +393,11 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
   return { controls, originalHeaderAndFileNodes: true, fileAndMotionPickerListeners: true, pickerProofs, callback };
 }
 async function pickerOpenAcrossViewportChange(page, cdp, dpr) {
-  const baseline = retained(await state(page)), cases = []; report.openPickerResize = cases;
+  const baseline = retained(await state(page)), cases = []; let pendingFold = null; report.openPickerResize = cases;
   await page.locator('#viewer-expand').click(); await settle(page);
   for (const input of [{ trigger: 'viewer-add', close: 'Cancel button' }, { trigger: 'viewer-add-motion', close: 'Escape' }]) {
     await setViewport(page, cdp, { width: 840, height: 195 }, dpr); await openDetails(page, 'viewer-workspace-menu');
-    const hit = await target(page, '#' + input.trigger, '#viewer-workspace-menu-content'); assertTarget(hit, input.trigger + ' before open-picker resize');
+    const trigger = await preparePickerTrigger(page, input.trigger), hit = trigger.hit; assertTarget(hit, input.trigger + ' before open-picker resize');
     const originalPicker = await pickerState(page), test = { ...input, originalPicker }; cases.push(test); save();
     await page.locator('#' + input.trigger).click(); test.immediate = await pickerState(page); save();
     assert(test.immediate.activeInsidePicker && !test.immediate.hidden && !test.immediate.blocked.length, 'The opened picker immediately owns usable focus before resize');
@@ -379,9 +414,14 @@ async function pickerOpenAcrossViewportChange(page, cdp, dpr) {
     assert.equal(test.layoutAfterClose.expanded, true); assert.equal(test.layoutAfterClose.fullscreen, 'none');
     assert(test.restored.active.inViewer && test.restored.active.visible,
       'Closing a resized expanded chooser must focus a visible active viewer control, not a hidden old File button: ' + JSON.stringify(test.restored));
-    assert.deepEqual(retained(await state(page)), baseline, 'Keeping a chooser open across resize preserves camera, pose, HQ and edits'); test.status = 'PASS'; save();
+    assert.deepEqual(retained(await state(page)), baseline, 'Keeping a chooser open across resize preserves camera, pose, HQ and edits');
+    if (!(await restorePickerTrigger(page, trigger))) pendingFold = trigger;
+    test.status = 'PASS'; save();
   }
-  await setViewport(page, cdp, { width: 840, height: 195 }, dpr); await page.locator('#viewer-expand').click(); await settle(page);
+  await setViewport(page, cdp, { width: 840, height: 195 }, dpr);
+  if (pendingFold) assert(await restorePickerTrigger(page, pendingFold), 'Return to the visible short-window workspace to restore the pose fold');
+  await closeMenus(page);
+  await page.locator('#viewer-expand').click(); await settle(page);
   assert.deepEqual(retained(await state(page)), baseline); return cases;
 }
 async function finishRealInputCoast(page) {

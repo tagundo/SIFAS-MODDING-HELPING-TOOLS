@@ -481,7 +481,9 @@ def export(token, state, output_dir, *, body_state=None):
                 # matching the live skinning preview and avoiding overwriting
                 # baked positions with unscaled source-local coordinates.
                 context = dict(session); context['sources'] = list(session['sources'])
-                context['sources'][index] = dict(source, raw=changed)
+                # Keep accessory collision detection on the same immutable
+                # geometry as its preview; vertex/weight edits still feed bake.
+                context['sources'][index] = dict(source, raw=changed, _accessory_original_raw=source['raw'])
                 changed, _ = model_edits.edit_source_state(context, index, validated_body)
             # Parse each actual serialized output before publishing it.
             _, reloaded = _mesh_records(changed, index)

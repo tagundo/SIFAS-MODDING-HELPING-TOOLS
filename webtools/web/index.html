@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/viewer-transplants.css"/>
 </head>
 <body>
-  <header>
+  <header id="asset-tools-header">
     <h1 data-i18n="SIFAS Modding Tools">SIFAS Modding Tools</h1>
     <nav class="tabs">
       <button class="tab active" data-tab="tools" data-i18n="Tools">Tools</button>
@@ -347,6 +347,22 @@
               </section>
               <div id="viewer-mesh-tool-slot"></div>
             </section>
+            <details id="viewer-accessory-card" class="viewer-body-card">
+              <summary data-i18n="Accessory Un-clip">Accessory Un-clip</summary>
+              <div class="viewer-card-content">
+                <label><input id="viewer-accessory-enabled" type="checkbox" disabled><span data-i18n="Correct accessory clipping">Correct accessory clipping</span></label>
+                <p class="viewer-control-note" data-i18n="Moves overlapping ornaments with the resized body while keeping their shape. Uses the original model for every preview and save.">Moves overlapping ornaments with the resized body while keeping their shape. Uses the original model for every preview and save.</p>
+                <p id="viewer-accessory-status" class="viewer-render-note" role="status" aria-live="polite" data-i18n="Open a model to check accessories.">Open a model to check accessories.</p>
+                <p id="viewer-accessory-targets" class="viewer-control-note" hidden></p>
+                <button id="viewer-accessory-retry" type="button" data-i18n="Check accessories again" hidden disabled>Check accessories again</button>
+                <details class="viewer-scale-details">
+                  <summary data-i18n="Advanced correction settings">Advanced correction settings</summary>
+                  <label><span data-i18n="Correction strength">Correction strength</span><input id="viewer-accessory-strength" type="number" min="0" max="3" step="0.05" value="1" inputmode="decimal" disabled></label>
+                  <label><span data-i18n="Minimum overlap (0–1)">Minimum overlap (0–1)</span><input id="viewer-accessory-overlap" type="number" min="0" max="1" step="0.01" value="0.15" inputmode="decimal" disabled></label>
+                  <label><input id="viewer-accessory-close-gaps" type="checkbox" disabled><span data-i18n="Also close gaps after shrinking">Also close gaps after shrinking</span></label>
+                </details>
+              </div>
+            </details>
             <label class="viewer-saved-choice"><input id="viewer-saved-nodes" type="checkbox" disabled><span data-i18n="Apply settings saved in the file">Apply settings saved in the file</span></label>
             <p class="viewer-render-note" data-i18n="Loads the file's size, position and rotation corrections.">Loads the file's size, position and rotation corrections.</p>
             <p id="viewer-saved-status" class="viewer-render-note" role="status"></p>
@@ -442,6 +458,7 @@
   <script src="/static/viewer-mesh-runtime.js"></script>
   <script src="/static/viewer-mesh-tools.js"></script>
   <script src="/static/viewer-transplants.js"></script>
+  <script src="/static/viewer-accessories.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>
