@@ -597,7 +597,7 @@ class RigTests(unittest.TestCase):
                 return environment(paths, deadline, base_env=base_env)
 
             with patch.object(model_faces.FacePlan, "resolve", return_value=["broken-face.unity"]), \
-                    patch.object(viewer, "_paths", side_effect=lambda paths: paths), \
+                    patch.object(viewer, "_paths", side_effect=lambda paths, **kwargs: paths), \
                     patch.object(viewer, "_environment", side_effect=fail_optional_load), \
                     patch.object(model_motion.MotionInputs, "automatic", return_value=[str(FIXTURE)]):
                 metadata = viewer.prepare([str(path)], rigged=True, face_context={"enabled": True})
