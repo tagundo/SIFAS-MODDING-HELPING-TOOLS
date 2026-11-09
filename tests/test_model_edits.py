@@ -35,7 +35,7 @@ class ModelEditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.source = self.base / "costume.unity"
         self.source.write_bytes(self.raw)
         with edits._LOCK:
@@ -181,6 +181,49 @@ class ModelEditTests(unittest.TestCase):
         broken = copy.deepcopy(result["recipe"]); broken["sources"][0]["sha256"] = "0"*64
         with self.assertRaisesRegex(edits.ModelEditError, "different original"):
             edits.restore(token, broken)
+
+    def test_legacy_recipe_restores_when_only_verified_outline_companions_were_added(self):
+        state = self.state(self.change("BreastSize", "node", scale=[1.1, 1.2, 1.3]))
+        saved = edits.export(self.token, state, self.base / "before")
+        companion = self.base / "verified-companion.unity"
+        companion.write_bytes(self.raw)
+        current = secrets.token_hex(16)
+        edits.register_session(current, [str(self.source)], self.rig, companions=[{
+            "path": str(companion), "sha256": hashlib.sha256(self.raw).hexdigest(), "sourceIndex": 1}])
+        restored = edits.restore(current, saved["recipe"])
+        self.assertEqual(restored, saved["recipe"]["state"])
+        exported = edits.export(current, restored, self.base / "after")
+        self.assertEqual(len(exported["preview_paths"]), 2)
+        self.assertEqual(Path(exported["preview_paths"][0]).read_bytes(), Path(saved["preview_paths"][0]).read_bytes())
+        self.assertEqual(Path(exported["preview_paths"][1]).read_bytes(), self.raw)
+        self.assertEqual(self.source.read_bytes(), self.raw)
+
+    def test_legacy_recipe_cannot_omit_selected_sources_or_edit_unbound_companions(self):
+        state = edits.validate_state(self.token, self.state(self.change("BreastSize", "node", scale=[1.1, 1.2, 1.3])))
+        recipe = edits._recipe(edits._session(self.token), state)
+        companion = self.base / "verified-companion.unity"
+        companion.write_bytes(self.raw)
+        proof = {"path": str(companion), "sha256": hashlib.sha256(self.raw).hexdigest(), "sourceIndex": 1}
+        current = secrets.token_hex(16)
+        edits.register_session(current, [str(self.source)], self.rig, companions=[proof])
+        for section, key, value in (("sources", "sha256", "0" * 64), ("sources", "container", 1),
+                                    ("sources", "member", "other.unity"), ("originals", "sha256", "0" * 64)):
+            invalid = copy.deepcopy(recipe)
+            invalid[section][0][key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(edits.ModelEditError):
+                edits.restore(current, invalid)
+        face_outline = next(row for row in edits._session(current)["outlines"]["meshes"] if row["sourceIndex"] == 1)
+        invalid = copy.deepcopy(recipe)
+        invalid["state"]["outlines"] = [{"id": face_outline["id"], "factor": .5}]
+        with self.assertRaisesRegex(edits.ModelEditError, "not bound"):
+            edits.restore(current, invalid)
+        second = self.base / "second-selected.unity"
+        second.write_bytes(self.raw)
+        another = secrets.token_hex(16)
+        edits.register_session(another, [str(self.source), str(second)], self.rig,
+                               companions=[{**proof, "sourceIndex": 2}])
+        with self.assertRaises(edits.ModelEditError):
+            edits.restore(another, recipe)
 
     def test_zip_exports_only_selected_member_and_preserves_manifest_and_variant(self):
         archive = self.base / "rina.zip"

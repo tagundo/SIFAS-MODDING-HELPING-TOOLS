@@ -972,9 +972,22 @@ def restore(token, recipe):
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             return None
         return [{key: row.get(key) for key in keys} for row in rows]
-    if (fingerprints(source_values, ("sha256", "container", "member")) !=
-            fingerprints(_source_signature(session), ("sha256", "container", "member")) or
-            fingerprints(original_values, ("sha256",)) != [{"sha256": c["sha256"]} for c in session["containers"]]):
+    source_keys = ("sha256", "container", "member")
+    supplied_sources = fingerprints(source_values, source_keys)
+    supplied_originals = fingerprints(original_values, ("sha256",))
+    current_sources = fingerprints(_source_signature(session), source_keys)
+    current_originals = [{"sha256": c["sha256"]} for c in session["containers"]]
+    exact_sources = supplied_sources == current_sources and supplied_originals == current_originals
+    # Older recipes predate writable automatic faces. Only those verified
+    # outline-only companions may be absent; every selected source and its
+    # exact archive/container identity must still match.
+    outline_only = session.get("outlineOnlySources", set())
+    selected_sources = [row for index, row in enumerate(current_sources) if index not in outline_only]
+    selected_containers = {row["container"] for row in selected_sources}
+    selected_originals = [row for index, row in enumerate(current_originals) if index in selected_containers]
+    legacy_sources = (bool(outline_only) and supplied_sources == selected_sources
+                      and supplied_originals == selected_originals)
+    if not exact_sources and not legacy_sources:
         _fail("This recipe belongs to different original model bytes. Open its preserved originals first.")
     identities = recipe.get("nodeIdentities")
     if not isinstance(identities, list) or len(identities) > MAX_EDITS:
@@ -991,6 +1004,12 @@ def restore(token, recipe):
     state = copy.deepcopy(recipe.get("state"))
     if not isinstance(state, dict):
         _fail("The recipe has no valid body edit state.")
+    if legacy_sources and not exact_sources:
+        outlines = state.get("outlines", [])
+        bound_outlines = {row["id"] for row in session.get("outlines", {}).get("meshes", [])
+                          if row["sourceIndex"] not in outline_only}
+        if not isinstance(outlines, list) or any(not isinstance(row, dict) or row.get("id") not in bound_outlines for row in outlines):
+            _fail("The recipe's outline edits are not bound to its original model bytes.")
     try:
         for edit in state.get("edits", []):
             edit["node"] = mapping[edit["node"]]
