@@ -6,6 +6,7 @@
     if (!button || !dialog || button.dataset.gameAssetsBound) return;
     button.dataset.gameAssetsBound = "true";
     var generation = 0, request = null, events = null, jobId = null, busy = false, timer = null, choices = [];
+    var selectionCallback = null, returnFocus = button;
     var region, character, search, costume, variant, download, status, log, progress, submit, closeButton, cancel;
     function t(value) { return typeof window.T === "function" ? window.T(value) : value; }
     function language() { return document.documentElement.lang || "en"; }
@@ -43,7 +44,7 @@
     function close() {
       generation += 1; clearTimeout(timer); stopRequest(); finishEvents(); cancelJob();
       if (dialog.open) dialog.close();
-      button.focus();
+      if (returnFocus && returnFocus.focus) returnFocus.focus();
     }
     function variants() {
       var selected = choices.filter(function (choice) { return choice.value === costume.value; })[0];
@@ -140,9 +141,12 @@
               if (item.status !== "done") throw new Error(item.summary || "The game model could not be loaded.");
               var paths = item.output_paths;
               if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string" || !paths[0]) throw new Error("The game model could not be loaded.");
-              dialog.close(); button.focus();
-              if (typeof window.openModelViewer === "function") await window.openModelViewer(paths,
-                /\.zip$/i.test(paths[0]) ? { 0: importedVariant } : null);
+              var callback = selectionCallback;
+              selectionCallback = null;
+              dialog.close(); if (returnFocus && returnFocus.focus) returnFocus.focus();
+              var selectedVariants = /\.zip$/i.test(paths[0]) ? { 0: importedVariant } : null;
+              if (callback) await callback(paths, selectedVariants);
+              else if (typeof window.openModelViewer === "function") await window.openModelViewer(paths, selectedVariants);
             }
           } catch (error) { completed = true; finishEvents(); cancelJob(); setBusy(false); progress.hidden = true; setStatus(error.message || "The game model could not be loaded.", true); }
         };
@@ -155,10 +159,14 @@
         if (token === generation) { progress.hidden = true; setBusy(false); setStatus(error.message || "The game model could not be loaded.", true); }
       }
     }
-    button.addEventListener("click", function () {
+    function pick(callback) {
       if (dialog.open) return;
+      selectionCallback = typeof callback === "function" ? callback : null;
+      returnFocus = document.activeElement || button;
       generation += 1; choices = []; busy = false; build(); dialog.showModal(); loadCatalog(false);
-    });
+    }
+    button.addEventListener("click", function () { pick(null); });
+    window.ViewerGameAssets = { pick: pick };
     dialog.addEventListener("cancel", function (event) { event.preventDefault(); close(); });
     dialog.addEventListener("keydown", function (event) {
       // A modal owns its keys; the viewer underneath must not consume Escape

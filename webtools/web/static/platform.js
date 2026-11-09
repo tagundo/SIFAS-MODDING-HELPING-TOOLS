@@ -11,9 +11,17 @@
     handler && typeof handler.postMessage === "function" && global.location.protocol === "http:" &&
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
-  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth" };
+  var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings" };
   function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
   function validFilesWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 160 && width <= 360); }
+  function validPanelSettings(value) {
+    return !!value && !Array.isArray(value) && Object.keys(value).sort().join(",") === "hidden,order" &&
+      [value.hidden, value.order].every(function (items) {
+        return Array.isArray(items) && items.length <= 256 && items.every(function (id, index) {
+          return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) && items.indexOf(id) === index;
+        });
+      });
+  }
   function notify(error) {
     if (unloading) return;
     var message = String(error.message || error);
@@ -68,6 +76,13 @@
     if (action === "setViewerFilesWidth") {
       if (!validFilesWidth(args.width)) return Promise.reject(new Error("The panel width is invalid."));
       message.width = args.width;
+    }
+    if (action === "setPanelSettings") {
+      if (["viewer", "tools", "content"].indexOf(args.panelScope) < 0 || !validPanelSettings(args.panelSettings)) {
+        return Promise.reject(new Error("The panel settings are invalid."));
+      }
+      message.panelScope = args.panelScope;
+      message.panelSettings = JSON.parse(JSON.stringify(args.panelSettings));
     }
     return new Promise(function (resolve, reject) {
       var timer = global.setTimeout(function () {

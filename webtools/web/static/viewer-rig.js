@@ -22,7 +22,7 @@
     var body = { breastPreset: "loaded" };
     var skirtOverrides = {};
     var authoredNodes = {};
-    var nodeEditor = null, expressionPanel = null;
+    var nodeEditor = null, expressionPanel = null, physicsController = null;
     var selectedNode = "";
     var editingMethods = {}, meshConversions = {}, editorGroup = "node", editorSelections = {}, evaluationMode = "authoring", restoredCompensationReference = {};
     var selectedClip = "";
@@ -509,6 +509,7 @@
         all.forEach(function (record) { capture(record.object, record.base); });
         applyAdjustments(released);
       }
+      if (physicsController) physicsController.apply(delta || 0);
       if (nodeEditor && nodeEditor.refreshPose) nodeEditor.refreshPose();
     }
     function listen(id, event, handler) {
@@ -541,6 +542,7 @@
       element("viewer-time").disabled = !enabled || !currentClip || duration() <= 0;
       if (expressionPanel) expressionPanel.setInteractive(enabled);
       if (nodeEditor) nodeEditor.setInteractive(enabled && authoringEnabled);
+      if (physicsController) physicsController.setInteractive(enabled, authoringEnabled);
       element("viewer-saved-nodes").disabled = !enabled || !authoringEnabled || !savedOperations.length;
       savedParts.forEach(function (part) { if (part.input) part.input.disabled = !enabled || !authoringEnabled || !useSavedNodes; });
       element("viewer-preview-reset").disabled = !enabled || !(bones.length || clipEntries.length || expressions.length);
@@ -966,6 +968,7 @@
       adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
       clearHipDrafts();
       if (expressionPanel) expressionPanel.reset(true);
+      if (physicsController) physicsController.reset();
       parts.forEach(function (part) { part.visible = part.fileVisible; part.userVisible = undefined; part.userChanged = false; });
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
@@ -1001,6 +1004,7 @@
       }); motion.value = selectedClip;
       if (nodeEditor) nodeEditor.updateLanguage();
       if (expressionPanel) expressionPanel.updateLanguage();
+      if (physicsController) physicsController.updateLanguage();
       var preset = element("viewer-breast-preset");
       if (preset) {
         preset.textContent = ""; appendOption(preset, "loaded", translate("No extra edits"));
@@ -1157,6 +1161,9 @@
       useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
     });
     listen("viewer-preview-reset", "click", reset);
+    if (window.ViewerPhysics) physicsController = window.ViewerPhysics.create(root, options.editing && options.editing.physics || {}, {
+      translate: translate, onChange: function () { evaluate(0); changed(); }
+    });
     clearHipDrafts(); updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
     if (options.initializeNodeCards !== false) initializeNodeCards();
 
@@ -1182,6 +1189,7 @@
           (validity.badInput || validity.customError || validity.rangeOverflow || validity.rangeUnderflow || validity.typeMismatch || validity.valueMissing);
       });
       if (invalid) unsupported.push("Correct the invalid editing values before saving.");
+      if (physicsController && physicsController.invalid()) unsupported.push("Correct the invalid physics values before saving.");
       var savedEnabled = !savedOperations.length || useSavedNodes && savedParts.every(function (part) { return part.enabled; });
       if (!savedEnabled) unsupported.push("Turn saved file settings on before saving body changes.");
       if (savedConflicts || savedSkipped || savedMetadataWarnings.length) unsupported.push("Unsupported saved settings must be resolved before saving body changes.");
@@ -1218,6 +1226,7 @@
       }
       var state = { version: 1, edits: edits, savedSettingsEnabled: savedEnabled,
         unsupported: unsupported.filter(function (message, index, values) { return values.indexOf(message) === index; }) };
+      if (physicsController && physicsController.getEdits().length) state.physics = physicsController.getEdits();
       if (edits.some(function (edit) { return edit.compensate; })) {
         var reference = fileMap(), writable = {};
         applyBodyPreset(function (id) { return reference[id]; });
@@ -1272,6 +1281,8 @@
         })) throw new Error("The body edit recipe is invalid.");
         references[id] = { scale: new THREE.Vector3().fromArray(entry.scale), position: new THREE.Vector3().fromArray(entry.position), quaternion: editing.uiQuaternion(THREE, entry.rotation) };
       });
+      if (physicsController) physicsController.restore(state.physics || []);
+      else if (state.physics && state.physics.length) throw new Error("The model has no compatible physics editor.");
       adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
       clearHipDrafts();
       var baseline = storedFileMap();
@@ -1340,11 +1351,12 @@
       getBounds: posedBounds,
       getPartVisibility: function (object) { var part = parts.filter(function (item) { return item.object === object; })[0]; return part ? { fileVisible: part.fileVisible, selected: part.visible, userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible } : null; },
       reset: reset,
-      dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
+      dispose: function () { disposed = true; playing = false; releaseAutomaticMatrices(); root.updateMatrixWorld(true); refreshAvailability(); events.forEach(function (remove) { remove(); }); if (nodeEditor) nodeEditor.dispose(); if (expressionPanel) expressionPanel.dispose(); if (physicsController) physicsController.dispose(); if (mixer) { mixer.stopAllAction(); mixer.uncacheRoot(root); } },
       getState: function () {
         var values = bones.map(function (bone) { return { node: bone.id, name: bone.name, position: bone.object.position.toArray(), quaternion: bone.object.quaternion.toArray(), scale: bone.object.scale.toArray() }; });
         return { available: !!bones.length, authoringEnabled: authoringEnabled, editorGroup: editorGroup, meshConversions: Object.assign({}, meshConversions), bones: values, evaluation: { mode: evaluationMode, scaleTargets: motionScaleTargets(), hasMotion: !!currentClip }, editingMethods: Object.assign({}, editingMethods), restoredCompensationReference: Object.keys(restoredCompensationReference).length, clipNames: clipEntries.map(function (clip) { return clip.name; }), selectedClip: selectedClip, defaultClip: defaultClip,
           playing: playing, time: currentTime(), duration: duration(), visibilityTracks: currentClip ? currentClip.visibility.length : 0,
+          physics: physicsController ? physicsController.getState() : null,
           parts: parts.map(function (part) { return { name: part.object.name, node: part.object.userData.elichika_node, fileVisible: part.fileVisible, selected: part.visible,
             userVisible: part.userVisible, userChanged: part.userChanged, visible: part.object.visible }; }),
           expressions: expressions.map(function (value) { return { key: value.key, name: value.name, weight: value.object.morphTargetInfluences[value.index] }; }),

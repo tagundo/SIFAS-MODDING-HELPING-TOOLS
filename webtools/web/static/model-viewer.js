@@ -29,6 +29,8 @@
   var model = null;
   var rigController = null;
   var persistenceController = null;
+  var meshToolsController = null;
+  var transplantController = null;
   var partInputs = [];
   var materialController = null;
   var discardPendingPreview = null;
@@ -85,6 +87,17 @@
   var MAX_FIT_TRIANGLE_VISITS = 1000000;
 
   function node(id) { return document.getElementById(id); }
+  function workbenchBusy() {
+    return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).busy ||
+      transplantController && transplantController.getState().busy);
+  }
+  function meshDraftPending() { return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).dirty); }
+  function workbenchChanged() {
+    if (rigController) rigController.setInteractive(!loading && !lost && !workbenchBusy() &&
+      !(persistenceController && persistenceController.getState().busy));
+    if (persistenceController) persistenceController.refresh();
+    if (transplantController) transplantController.refresh();
+  }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
   function variantsFor(selected) { return selected.map(function (path) { return variantChoices[path] || "primary"; }); }
@@ -423,6 +436,8 @@
     else if (!loading) setStatus("Model ready.");
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
+    if (meshToolsController) meshToolsController.refresh();
+    if (transplantController) transplantController.refresh();
   }
 
   function setLoading(value) {
@@ -432,10 +447,12 @@
     node("viewer-load").hidden = value;
     node("viewer-auto-face").disabled = value;
     node("viewer-high-quality").disabled = value || lost;
-    if (rigController) rigController.setInteractive(!value && !lost && !(persistenceController && persistenceController.getState().busy));
+    if (rigController) rigController.setInteractive(!value && !lost && !workbenchBusy() && !(persistenceController && persistenceController.getState().busy));
     renderFiles();
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
+    if (meshToolsController) meshToolsController.refresh();
+    if (transplantController) transplantController.refresh();
     refreshMinimizeButton();
   }
 
@@ -1187,6 +1204,7 @@
     syncPartVisibility();
     requestRender();
     if (persistenceController) persistenceController.refresh();
+    if (transplantController) transplantController.refresh();
   }
 
   function showWarnings(warnings) {
@@ -1239,7 +1257,8 @@
     }
   }
 
-  async function loadSelected() {
+  async function loadSelected(retain) {
+    retain = retain && retain.preserveMotionInputs ? retain : null;
     if (!paths.length) { setStatus("Choose a costume file to begin.", true); return; }
     if (!ensureRenderer()) return;
     var current = ++generation;
@@ -1315,9 +1334,9 @@
         if (pendingMaterials.ready) await pendingMaterials.ready;
       }
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
-      var keepView = !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
+      var keepView = !!retain || !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
         selectedAutoFace === loadedAutoFace && JSON.stringify(resolvedVariants) !== JSON.stringify(loadedVariants);
-      var previousPose = keepView && rigController ? rigController.getState() : null;
+      var previousPose = retain ? retain.pose : keepView && rigController ? rigController.getState() : null;
       disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
@@ -1345,6 +1364,7 @@
         if (prepared.editing && prepared.editing.initialState) {
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }
+        if (retain && retain.authoring) rigController.restoreAuthoringState(retain.authoring, { initializeNodeCards: false });
       }
       var materialState = materialController && materialController.getState ? materialController.getState() : null;
       node("viewer-shader").disabled = !materialState || !materialState.recognizedMaterials;
@@ -1355,7 +1375,12 @@
       showWarnings(prepared.warnings);
       resize();
       if (!keepView) setView("front");
+      if (retain && retain.camera && camera && controls) {
+        camera.position.fromArray(retain.camera.position); controls.target.fromArray(retain.camera.target);
+        camera.fov = retain.camera.fov; camera.updateProjectionMatrix(); controls.update();
+      }
       setStatus("Model ready.");
+      document.dispatchEvent(new CustomEvent("viewer:model-loaded", { detail: { modelId: prepared.id } }));
     } catch (error) {
       if (current !== generation) return;
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
@@ -1640,8 +1665,13 @@
     if (window.ViewerPersistence && node("viewer-save")) persistenceController = window.ViewerPersistence.create({
       translate: t,
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
-        loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
-      busyChanged: function (busy) { if (rigController) rigController.setInteractive(!busy && !loading && !lost); },
+        loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), pendingMeshEdits: meshDraftPending(),
+        current: !!model && !loading && !lost && !workbenchBusy() && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
+      busyChanged: function (busy) {
+        if (rigController) rigController.setInteractive(!busy && !loading && !lost && !workbenchBusy());
+        if (transplantController) transplantController.refresh();
+        if (meshToolsController) meshToolsController.refresh();
+      },
       pickFile: function (callback) {
         containViewerPicker();
         try { config.pickFile(function (path) { if (!destroyed) callback(path); }); }
@@ -1682,6 +1712,36 @@
         }
       }
     });
+    if (window.ViewerMeshTools) meshToolsController = window.ViewerMeshTools.create({
+      translate: t,
+      getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
+      getBodyState: function () { return rigController && rigController.getAuthoringState(); },
+      isInteractive: function () { return !!model && !loading && !lost &&
+        !(persistenceController && persistenceController.getState().busy) &&
+        !(transplantController && transplantController.getState().busy) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants); },
+      onChange: workbenchChanged,
+      onSaved: async function (result, sourceToken) {
+        if (loading || !metadata || !metadata.editing || sourceToken && metadata.editing.token !== sourceToken ||
+            !sameSelection(loadedPaths, loadedAutoFace, loadedVariants)) return false;
+        await open(result.preview_paths);
+        if (statusError) throw new Error(statusDetail || statusKey);
+        return true;
+      }
+    });
+    if (window.ViewerTransplants) transplantController = window.ViewerTransplants.create({
+      translate: t,
+      context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing,
+        authoring: rigController && rigController.getAuthoringState(), loadedPaths: loadedPaths.slice(),
+        persistence: persistenceController && persistenceController.getState(),
+        meshTools: meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()),
+        current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
+      pickFile: function (callback) { containViewerPicker(); config.pickFile(callback); },
+      busyChanged: workbenchChanged,
+      openFiles: async function (nextPaths, variants) {
+        await open(nextPaths, variants);
+        if (statusError) throw new Error(statusDetail || statusKey);
+      }
+    });
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
       containViewerPicker();
@@ -1697,7 +1757,13 @@
       } catch (error) { restoreViewerPicker(); throw error; }
     }
     node("viewer-add").addEventListener("click", pickCompanion);
-    node("viewer-add-motion").addEventListener("click", pickCompanion);
+    node("viewer-add-motion").addEventListener("click", function () {
+      if (!model) { pickCompanion(); return; }
+      containViewerPicker();
+      config.pickFile(function (path) {
+        if (!destroyed) addMotion([path]).catch(function (error) { if (error.name !== "AbortError") setStatus("The motion could not be loaded.", true, error.message); });
+      });
+    });
     node("viewer-load").addEventListener("click", loadSelected);
     node("viewer-cancel").addEventListener("click", cancelLoading);
     node("viewer-auto-face").addEventListener("change", filesChanged);
@@ -1813,6 +1879,8 @@
     showFaceStatus();
     if (rigController) rigController.updateLanguage();
     if (persistenceController) persistenceController.updateLanguage();
+    if (meshToolsController) meshToolsController.updateLanguage();
+    if (transplantController) transplantController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -1860,6 +1928,31 @@
     return loadSelected();
   }
 
+  async function addMotion(nextPaths) {
+    if (!model || !rigController || loading || lost) throw new Error(t("Open a model before adding motion."));
+    if (workbenchBusy() || persistenceController && persistenceController.getState().busy) throw new Error(t("Wait for model saving to finish."));
+    if (meshDraftPending()) throw new Error(t("Save mesh edits before adding motion."));
+    var additions = (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).filter(function (path) {
+      return typeof path === "string" && path.trim() && loadedPaths.indexOf(path) < 0;
+    });
+    var selected = loadedPaths.concat(additions.filter(function (path, index, all) { return all.indexOf(path) === index; }));
+    if (selected.length > MAX_FILES) throw new Error(t("Choose up to eight costume files at a time."));
+    if (selected.length === loadedPaths.length) return;
+    var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: rigController.getAuthoringState(),
+      camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
+    var oldPaths = loadedPaths.slice();
+    paths = selected; renderFiles();
+    var completion = loadSelected(previous), motionGeneration = generation;
+    await completion;
+    if (generation !== motionGeneration || JSON.stringify(paths) !== JSON.stringify(selected)) {
+      var interrupted = new Error(t("Loading cancelled.")); interrupted.name = "AbortError"; throw interrupted;
+    }
+    if (JSON.stringify(loadedPaths) !== JSON.stringify(selected)) {
+      paths = oldPaths; renderFiles(); filesChanged();
+      throw new Error(statusDetail || t("The motion could not be loaded."));
+    }
+  }
+
   function dispose() {
     if (destroyed) return;
     active = false;
@@ -1872,6 +1965,8 @@
     updateShortLayout(null);
     destroyed = true;
     if (persistenceController) persistenceController.dispose();
+    if (meshToolsController) meshToolsController.dispose();
+    if (transplantController) transplantController.dispose();
     generation += 1;
     if (controller) controller.abort();
     if (discardPendingPreview) discardPendingPreview();
@@ -1893,7 +1988,7 @@
   }
 
   window.ModelViewer = {
-    mount: mount, open: open, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
+    mount: mount, open: open, addMotion: addMotion, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
     getAuthoringState: function () { return rigController && rigController.getAuthoringState ? rigController.getAuthoringState() : null; },
     restoreAuthoringState: function (state) {
       if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
@@ -1901,6 +1996,10 @@
       if (persistenceController) persistenceController.refresh();
     },
     getEditingMetadata: function () { return metadata && metadata.editing || null; },
+    getMotionState: function () {
+      return { visible: active, loading: loading, contextLost: lost, layout: { minimized: minimized },
+        rig: rigController ? rigController.getState() : null };
+    },
     getState: function () {
       var names = [];
       if (model) model.traverse(function (child) { if (child.isMesh && !isViewerHelper(child)) names.push(child.name); });
@@ -1914,6 +2013,8 @@
         framing: framingState, renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
+        meshTools: meshToolsController ? meshToolsController.getState() : null,
+        transplants: transplantController ? transplantController.getState() : null,
         quality: qualityController ? qualityController.getState() : null,
         layout: { expanded: expanded, minimized: minimized, minimizeDirection: minimizeDirection, fullscreen: fullscreenMode, fullscreenPending: !!fullscreenPending, stageVisible: stageVisible,
           compactControls: compactControls, shortHeight: shortHeight,

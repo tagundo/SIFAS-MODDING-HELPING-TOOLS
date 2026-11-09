@@ -87,7 +87,8 @@ async function run() {
       await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; openModelViewer([source]); }, source);
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
       const initial = await snapshot(page);
-      assert(Object.values(initial.panels).every(Boolean), 'Pose, Body and Expression start independently open');
+      assert.equal(initial.panels['viewer-adjustments'], false, 'Pose starts collapsed');
+      assert(initial.panels['viewer-body-adjustments'] && initial.panels['viewer-expression-adjustments'], 'Body and Expression start independently open');
       const structure = await page.evaluate(() => {
         const pose = document.getElementById('viewer-adjustments'), body = document.getElementById('viewer-body-adjustments'), expression = document.getElementById('viewer-expression-adjustments');
         return { siblings: pose.parentElement === body.parentElement && body.parentElement === expression.parentElement,
@@ -102,6 +103,7 @@ async function run() {
       const minHeight = profile.mac ? 34 : 44;
       await target(page, '#viewer-adjustments > summary', minHeight);
       await target(page, '#viewer-body-adjustments > summary', minHeight);
+      await page.locator('#viewer-adjustments > summary').click();
       const clip = await page.locator('#viewer-motion option').evaluateAll(options => options.find(option => option.value).value);
       await page.locator('#viewer-motion').selectOption(clip);
       await page.locator('#viewer-time').press('Home');

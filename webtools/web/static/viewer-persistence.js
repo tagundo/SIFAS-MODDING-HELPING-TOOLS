@@ -6,6 +6,7 @@
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
+  function editCount(state) { return (state.edits || []).length + (state.physics || []).length; }
   function create(options) {
     var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save body edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
@@ -53,17 +54,17 @@
       }
       if (c.rig && c.rig.setAuthoringEnabled) c.rig.setAuthoringEnabled(!reviewingSaved);
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
-      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved;
+      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !c.pendingMeshEdits;
       var authored = editingState(), fingerprint = JSON.stringify(authored);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) lastPackage = null;
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
-      element("viewer-save").disabled = !authoring || (!authored.edits.length && !metadata.allowEmptySceneReset) || !!(authored.unsupported && authored.unsupported.length);
+      element("viewer-save").disabled = !authoring || (!editCount(authored) && !metadata.allowEmptySceneReset) || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : "";
       refreshModForm(c, rigState, authored, authoring);
       element("viewer-recipe-open").disabled = !authoring;
       element("viewer-open-saved").hidden = !previewPaths.length;
-      element("viewer-open-saved").disabled = busy || !c.current;
+      element("viewer-open-saved").disabled = busy || !c.current || !!c.pendingMeshEdits;
       element("viewer-reedit-original").hidden = !originalPaths.length || !result || !result.recipe;
       element("viewer-reedit-original").disabled = busy;
       var method = element("viewer-save-method"), selected = String(rigState.selectedNode || "");
@@ -98,9 +99,9 @@
       if (rigState.restoredCompensationReference) evaluationText += " " + translate("The recipe's saved child-compensation baseline is retained.");
       element("viewer-edit-evaluation-status").textContent = evaluationText;
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
-        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : !ready ? (c.current ? "Body saving is unavailable for this model." : "Open a model to save body edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : "Body changes";
+        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : c.pendingMeshEdits ? "Save from the mesh panel to include all current edits." : !ready ? (c.current ? "Body saving is unavailable for this model." : "Open a model to save body edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : "Body changes";
         statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle";
-        element("viewer-save-status").textContent = translate(key) + (key === "Body changes" ? ": " + authored.edits.length : "");
+        element("viewer-save-status").textContent = translate(key) + (key === "Body changes" ? ": " + editCount(authored) : "");
       }
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
@@ -199,7 +200,7 @@
       element("viewer-mod-counterpart-clear").disabled = !authoring || !counterpartPath;
       var owner = characters.value || metadata.characterId;
       element("viewer-mod-rina-fields").hidden = !!owner && Number(owner) !== 209;
-      var enabled = authoring && validName && (authored.edits.length || (c.editing || {}).allowEmptySceneReset || (c.editing || {}).allowEmptyScenePackage) && !(authored.unsupported || []).length;
+      var enabled = authoring && validName && (editCount(authored) || (c.editing || {}).allowEmptySceneReset || (c.editing || {}).allowEmptyScenePackage) && !(authored.unsupported || []).length;
       ["viewer-save-mod", "viewer-add-to-game"].forEach(function (id) { element(id).disabled = !enabled; element(id).title = element("viewer-save").title; });
       var body = Object.assign({}, authored); delete body.unsupported;
       alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions())]);
@@ -282,13 +283,15 @@
       if (canonical.edits.some(function (edit) { return edit.compensate; })) canonical.compensationReference = (input.compensationReference || []).map(function (entry) {
         return { node: entry.node, scale: vector(entry.scale), position: vector(entry.position), rotation: vector(entry.rotation) };
       }).sort(function (a, b) { return a.node - b.node; });
+      if (input.physics && input.physics.length) canonical.physics = input.physics;
       return JSON.stringify(canonical);
     }
     function captureSave(forPackage) {
       var c = context(), authored = editingState();
       if (!c.current || !c.editing || !c.editing.available || reviewingSaved) throw new Error("Open the original model before saving body edits.");
+      if (c.pendingMeshEdits) throw new Error("Save from the mesh panel to include all current edits.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
-      if (!authored.edits.length && !c.editing.allowEmptySceneReset && !(forPackage && c.editing.allowEmptyScenePackage)) throw new Error("Change a body value before saving.");
+      if (!editCount(authored) && !c.editing.allowEmptySceneReset && !(forPackage && c.editing.allowEmptyScenePackage)) throw new Error("Change a body value before saving.");
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
       return { body: body, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
@@ -418,7 +421,7 @@
       if (busy || !previewPaths.length) return;
       var c = context(), current = editingState();
       var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths);
-      if (!reviewingSaved && current.edits.length && (!ownOriginal || !result || !result.recipe ||
+      if (!reviewingSaved && editCount(current) && (!ownOriginal || !result || !result.recipe ||
           canonicalBody(current, c.editing) !== canonicalBody(result.recipe.state || {}, c.editing))) {
         say("Save current body changes before opening the saved result.", "error"); return;
       }

@@ -94,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_model(path[len("/api/viewer/model/"):])
             if path == "/api/viewer/game/catalog":
                 return self._api_viewer_game_catalog()
+            if path == "/api/viewer/game/motions/catalog":
+                return self._api_viewer_motion_catalog()
             if path.startswith("/api/viewer/edit/result/"):
                 return self._api_viewer_edit_result(path[len("/api/viewer/edit/result/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
@@ -113,6 +115,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_prepare()
             if path == "/api/viewer/game/import":
                 return self._api_viewer_game_import()
+            if path == "/api/viewer/game/motions/import":
+                return self._api_viewer_motion_import()
+            if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
+                return self._api_viewer_mesh(path.rsplit("/", 1)[1])
+            if path in ("/api/viewer/transplant/inspect", "/api/viewer/transplant/run"):
+                return self._api_viewer_transplant(path.rsplit("/", 1)[1])
             if path == "/api/viewer/edit/export":
                 return self._api_viewer_edit_export()
             if path == "/api/viewer/edit/package":
@@ -371,6 +379,111 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(exc)}, status=400)
         except SQLiteError:
             return self._send_json({"error": "Game assets are unavailable. Start or prepare the server data first."}, status=400)
+
+    def _viewer_feature_request(self, fields, *, max_bytes=512 * 1024, token=True):
+        """Validate same-origin feature requests before doing work or starting jobs."""
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise PermissionError("Open the editor from this app before saving changes.")
+        if origins:
+            origin = urlsplit(origins[0])
+            if (origin.scheme not in ("http", "https") or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment
+                    or origin.netloc.lower() != (self.headers.get("Host") or "").lower()):
+                raise PermissionError("Open the editor from this app before saving changes.")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid editing request size.") from None
+        if self.headers.get("Transfer-Encoding") or not 0 < length <= max_bytes:
+            raise ValueError("The editing request is too large or empty.")
+        params = self._read_json_body()
+        if not isinstance(params, dict) or set(params) != set(fields):
+            raise ValueError("Unsupported editing request.")
+        if token:
+            import re
+            if not isinstance(params.get("token"), str) or not re.fullmatch(r"[a-f0-9]{32}", params["token"]):
+                raise ValueError("Load the original model before editing it.")
+        return params
+
+    def _viewer_feature_output(self, relative):
+        from webtools.core.sukusta import default_sukusta_dir
+        result = Path(default_sukusta_dir(relative)).resolve()
+        if not filebrowser.is_within_allowed(result):
+            raise PermissionError("The model output folder is outside the allowed folders.")
+        return result
+
+    def _api_viewer_motion_catalog(self):
+        from webtools.core import game_motions
+        from sqlite3 import Error as SQLiteError
+        try:
+            query = self._query()
+            if (len(urlsplit(self.path).query) > 2048 or
+                    set(query) - {"region", "character", "category", "search", "lang"} or
+                    any(len(values) != 1 for values in query.values())):
+                raise ValueError("Unsupported game motion search.")
+            return self._send_json(game_motions.catalog(Path.cwd(), language=self._lang(),
+                **{key: (query.get(key) or [default])[0] for key, default in
+                   (("region", ""), ("character", ""), ("category", "home"), ("search", ""))}))
+        except (ValueError, OSError, SQLiteError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_motion_import(self):
+        from webtools.core import game_motions
+        from sqlite3 import Error as SQLiteError
+        try:
+            params = self._viewer_feature_request({"region", "character", "category", "motion", "download"}, max_bytes=4096, token=False)
+            record = game_motions.validate_selection(Path.cwd(), params, self._lang())
+            output = self._viewer_feature_output("extracted/game-motions")
+            job = MANAGER.create("viewer_game_motions")
+            MANAGER.run_async(job, lambda current: game_motions.run_import(current,
+                repo_root=Path.cwd(), output_root=output, record=record))
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, OSError, SQLiteError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_mesh(self, operation):
+        from webtools.core import viewer_mesh_tools
+        try:
+            fields = {"inspect": {"token"}, "data": {"token", "mesh"},
+                      "export": {"token", "state", "bodyState"}}[operation]
+            params = self._viewer_feature_request(fields, max_bytes=viewer_mesh_tools.MAX_REQUEST_BYTES)
+            if operation == "inspect":
+                result = viewer_mesh_tools.inspect(params["token"])
+            elif operation == "data":
+                result = viewer_mesh_tools.data(params["token"], params["mesh"])
+            else:
+                result = viewer_mesh_tools.export(params["token"], params["state"],
+                    self._viewer_feature_output("modded/viewer"), body_state=params["bodyState"])
+            return self._send_json(result)
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except TimeoutError as exc:
+            return self._send_json({"error": str(exc)}, status=503)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_transplant(self, operation):
+        from webtools.core import viewer_transplants
+        try:
+            if operation == "inspect":
+                params = self._viewer_feature_request({"donor", "variant"}, token=False)
+                return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"],
+                    cache_root=self._viewer_feature_output(".viewer-cache")))
+            params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"})
+            request = viewer_transplants.validate_request(params)
+            output = self._viewer_feature_output("modded/viewer")
+            cache = self._viewer_feature_output(".viewer-cache")
+            job = MANAGER.create("viewer_transplant")
+            MANAGER.run_async(job, lambda current: viewer_transplants.run_transplant(current,
+                request, output_root=output, cache_root=cache))
+            return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
 
     def _viewer_edit_request(self, fields):
         """Bound writes to source-bound sessions, without caller output paths."""

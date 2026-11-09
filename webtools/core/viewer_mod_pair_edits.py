@@ -257,7 +257,27 @@ def _map_state(context, state, source_index, source_info, target_context, target
                     required_references.add(key)
                     key = source_info["parents"].get(key)
         converted.append(change)
-    if not converted:
+    physics = []
+    physics_proof = []
+    source_physics = {row["id"]: row for row in context.get("physics", {}).get("components", [])
+                      if row["sourceIndex"] == source_index}
+    target_physics = target_context.get("physics", {}).get("components", [])
+    target_paths, _ = _hierarchy(target_info, anchored)
+    for row in state.get("physics", []):
+        source_component = source_physics.get(row["id"])
+        if source_component is None:
+            continue
+        semantic = source_paths.get(_key(source_component))
+        matches = [record for record in target_physics if record["kind"] == source_component["kind"] and
+                   target_paths.get(_key(record)) == semantic and
+                   record.get("siblingIndex") == source_component.get("siblingIndex")]
+        if semantic is None or len(matches) != 1:
+            raise ValueError("The counterpart has no unique matching physics component: " + source_component["name"])
+        # Fields retain their original Unity units, so one explicit endpoint is
+        # assigned to both native versions. No browser simulation is baked.
+        physics.append({"id": matches[0]["id"], "values": copy.deepcopy(row["values"])})
+        physics_proof.append({"sourcePhysics": row["id"], "targetPhysics": matches[0]["id"], "hierarchy": list(semantic)})
+    if not converted and not physics:
         raise ValueError("There are no source-bound body edits to apply to the counterpart.")
     references = []
     for row in state.get("compensationReference", []):
@@ -279,10 +299,12 @@ def _map_state(context, state, source_index, source_info, target_context, target
             for kind in ("scale", "position", "rotation")}})
     translated = {"version": edits.VERSION, "savedSettingsEnabled": True, "unsupported": [],
                   "edits": converted, "compensationReference": references}
+    if physics:
+        translated["physics"] = physics
     proof = [{"sourceNode": ident, "targetNode": row[1]["node"], "hierarchy": list(row[4]),
               "sourceUnity": list(_key(row[0])), "targetUnity": list(_key(row[1]))}
              for ident, row in mapping.items()]
-    return translated, proof
+    return translated, proof + physics_proof
 
 
 def _edit_partner(context, state, source_index, original_raw, folder, job):
@@ -397,8 +419,9 @@ def _apply(context, result, state, *, pair, declarations, job):
                 for members in groups:
                     selected = [(index, source) for index, source in enumerate(context["sources"])
                                 if source["container"] == ci and source["member"] in members and
-                                any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
-                                    for row in state["edits"])]
+                                (any(row["node"] in {node["node"] for node in context["nodes"] if node["sourceIndex"] == index}
+                                     for row in state["edits"]) or
+                                 any(row["id"].split(":", 1)[0] == str(index) for row in state.get("physics", [])))]
                     if not selected:
                         continue
                     if len(selected) != 1:

@@ -24,6 +24,17 @@ let child,browser;
   await page.locator('#viewer-game-costume').selectOption('suit:1');await page.locator('#viewer-game-download').uncheck();await page.locator('#viewer-game-import').click();
   await page.waitForFunction(()=>!document.getElementById('viewer-game-assets-dialog').open&&ModelViewer.getState().loaded&&!ModelViewer.getState().loading);
   const opened=await page.evaluate(()=>({state:ModelViewer.getState(),probe:ModelViewer.renderProbe(33)}));assert.equal(opened.state.loadedPaths.length,1);assert(opened.state.loadedPaths[0].includes('/game-models/'));assert(opened.probe.ready&&opened.probe.glError===0&&opened.probe.nonBackgroundSamples>=3);
+  // Reuse the real game catalog/decrypt picker for the donor without replacing
+  // the main wearer or its camera/authoring session.
+  const donorPanel=page.locator('#viewer-costume-transplant');await donorPanel.evaluate(node=>node.open=true);
+  await donorPanel.locator('[data-transplant-label="Load donor from game"]').click();
+  await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
+  await page.locator('#viewer-game-character').selectOption('101');await page.waitForFunction(()=>document.getElementById('viewer-game-costume').value==='suit:1');
+  await page.locator('#viewer-game-download').uncheck();await page.locator('#viewer-game-import').click();
+  await page.waitForFunction(()=>!document.getElementById('viewer-game-assets-dialog').open);
+  await donorPanel.locator('.viewer-transplant-stage canvas').waitFor({state:'visible'});
+  const donorState=await page.evaluate(()=>ModelViewer.getState());assert.equal(donorState.modelId,opened.state.modelId);
+  assert(donorState.transplants.donors.find(row=>row.operation==='costume').donor.includes('/game-models/'));
   // Closing the dialog discards stale requests without clearing the loaded model.
   await page.locator('#viewer-game-assets').click();await page.waitForFunction(()=>document.getElementById('viewer-game-character').options.length>1);
   await page.locator('#viewer-game-search').fill('Rina');await page.waitForFunction(()=>document.getElementById('viewer-game-costume').value==='suit:2');
@@ -39,7 +50,7 @@ let child,browser;
   await page.unroute('**/api/viewer/game/import?**');
   assert.equal(await page.locator('#viewer-game-assets-dialog').evaluate(d=>d.open),false);assert.equal((await page.evaluate(()=>ModelViewer.getState())).modelId,opened.state.modelId);
   await page.screenshot({path:path.join(evidence,profile.name+'.png')});assert.deepEqual(errors,[]);
-  report.cases.push({profile,dialog:initial,loadedPaths:opened.state.loadedPaths,probe:opened.probe,exactRinaVariantListed:true,escapePreservesModel:true,lateCancelledImportPreservesModel:true,pageErrors:errors});
+  report.cases.push({profile,dialog:initial,loadedPaths:opened.state.loadedPaths,probe:opened.probe,donorGameSelectionKeepsWearer:true,exactRinaVariantListed:true,escapePreservesModel:true,lateCancelledImportPreservesModel:true,pageErrors:errors});
   await context.close();
  }
  report.sourceAfter=hashes();assert.deepEqual(report.sourceAfter,report.sourceBefore);report.status='PASS';

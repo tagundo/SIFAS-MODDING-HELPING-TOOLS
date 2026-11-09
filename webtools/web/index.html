@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title data-i18n="SIFAS Modding Tools">SIFAS Modding Tools</title>
   <link rel="stylesheet" href="/static/style.css"/>
+  <link rel="stylesheet" href="/static/viewer-transplants.css"/>
 </head>
 <body>
   <header>
@@ -37,7 +38,7 @@
           <div class="viewer-file-actions">
             <button id="viewer-game-assets" type="button" data-i18n="Load from game assets">Load from game assets</button>
             <button id="viewer-add" type="button" data-i18n="Choose costume file">Choose costume file</button>
-            <button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button>
+            <button id="viewer-panel-settings" class="panel-settings-button" type="button">Panel settings</button>
             <button id="viewer-load" class="viewer-primary" type="button" data-i18n="Open model" disabled>Open model</button>
           </div>
           <ul id="viewer-file-list" class="viewer-file-list"></ul>
@@ -172,8 +173,9 @@
               <p id="viewer-edit-evaluation-status" class="viewer-render-note" role="status"></p>
             </details>
           </details>
-          <details id="viewer-adjustments" class="viewer-adjustments" open>
+          <details id="viewer-adjustments" class="viewer-adjustments">
             <summary data-i18n="Pose and motion">Pose and motion</summary>
+            <div class="viewer-motion-sources"><button id="viewer-add-motion" type="button" data-i18n="Add custom motion">Add custom motion</button></div>
             <div class="viewer-motion-row">
               <label class="viewer-motion-choice"><span data-i18n="Pose / motion">Pose / motion</span><select id="viewer-motion" disabled><option value="" data-i18n="Saved pose">Saved pose</option></select></label>
               <button id="viewer-play" type="button" data-i18n="Play" disabled>Play</button>
@@ -361,7 +363,7 @@
             <p id="viewer-expression-status" class="viewer-render-note" role="status" hidden></p>
           </details>
           <div class="viewer-preview-actions"><button id="viewer-preview-reset" type="button" data-i18n="Reset pose, body and expressions" disabled>Reset pose, body and expressions</button></div>
-          <details class="viewer-options">
+          <details id="viewer-display-options" class="viewer-options">
             <summary data-i18n="Display options">Display options</summary>
             <div class="viewer-option-row">
               <label><input id="viewer-textures" type="checkbox" checked><span data-i18n="Show textures">Show textures</span></label>
@@ -431,11 +433,16 @@
   <script src="/static/sifas-material.js"></script>
   <script src="/static/viewer-editing.js"></script>
   <script src="/static/viewer-expressions.js"></script>
+  <script src="/static/viewer-physics.js"></script>
   <script src="/static/viewer-rig.js"></script>
   <script src="/static/viewer-quality.js"></script>
   <script src="/static/viewer-persistence.js"></script>
+  <script src="/static/viewer-mesh-tools.js"></script>
+  <script src="/static/viewer-transplants.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>
+  <script src="/static/viewer-game-motions.js"></script>
+  <script src="/static/panel-settings.js"></script>
 </body>
 </html>

@@ -294,7 +294,8 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
     if (not isinstance(variants, dict) or any(path not in container_ids or choice not in ("primary", "unmasked")
                                             for path, choice in variants.items())):
         _fail("The selected costume variant is invalid.")
-    sources, targets, public = [], {}, []
+    from . import viewer_physics
+    sources, targets, public, physics_records = [], {}, [], []
     for index, path in enumerate(paths):
         origin = str(Path(origins.get(path, path)).resolve())
         if origin not in container_ids:
@@ -340,10 +341,18 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                       "reason": "observed_mv_scale_track" if name in _MV_SCALE_NAMES else "saved_node_setting" if method == "node" else "unverified_motion_coverage"}
             targets[node] = {**target, "key": key}
             public.append({k: copy.deepcopy(v) for k, v in target.items() if k not in ("serializedFile",)})
+        physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
+        if len(physics_records) > viewer_physics.MAX_COMPONENTS:
+            _fail("The selected models have too many physics components.")
     if not targets:
         return {"available": False, "reason": "No original writable body nodes were found."}
+    physics = {"available": bool(physics_records), "components": physics_records,
+               "presets": viewer_physics.recommendations(),
+               "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
+               "preview": "approximate_spring_sphere_capsule"}
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
                "containers": containers, "sources": sources, "targets": targets,
+               "physics": physics,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
                "busy": threading.Lock()}
@@ -358,7 +367,8 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             _fail("The body editor cache is busy. Finish saving another model first.")
     return {"available": True, "token": model_id, "version": VERSION, "nodes": public,
             "scope": "Observed MV tracks guide recommendations; other songs may differ.",
-            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry"]}
+            "physics": copy.deepcopy(physics),
+            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics"]}
 
 
 def mod_source_context(token):
@@ -376,6 +386,7 @@ def mod_source_context(token):
             "sources": [{key: source[key] for key in ("name", "container", "member", "sha256")}
                         for source in session["sources"]],
             "variants": dict(session["variants"]),
+            "physics": copy.deepcopy(session.get("physics", {})),
             "nodes": [{key: copy.deepcopy(target[key]) for key in
                        ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
                       for target in session["targets"].values()],
@@ -388,9 +399,9 @@ def _node(session, value):
     return session["targets"][value]
 
 
-def validate_state(token, state):
+def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
-    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference"}:
+    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics"}:
         _fail("The body edit state contains unsupported settings.")
     try:
         encoded = json.dumps(state, allow_nan=False).encode()
@@ -406,7 +417,12 @@ def validate_state(token, state):
     if not isinstance(unsupported, list) or unsupported:
         _fail("Reset unsupported preview-only changes before exporting body edits.")
     edits = state.get("edits")
-    if not isinstance(edits, list) or not (0 if session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
+    from . import viewer_physics
+    try:
+        physics = viewer_physics.validate_edits(session.get("physics", {}), state.get("physics", []))
+    except ValueError as error:
+        _fail(str(error))
+    if not isinstance(edits, list) or not (0 if allow_empty or physics or session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:
@@ -467,8 +483,11 @@ def validate_state(token, state):
         seen.add(target["node"])
         reference.append({"node": target["node"], "scale": _vector(row["scale"], scale=True),
                           "position": _vector(row["position"]), "rotation": _vector(row["rotation"])})
-    return {"version": VERSION, "edits": sorted(out, key=lambda e: e["node"]),
-            "savedSettingsEnabled": True, "unsupported": [], "compensationReference": reference}
+    result = {"version": VERSION, "edits": sorted(out, key=lambda e: e["node"]),
+              "savedSettingsEnabled": True, "unsupported": [], "compensationReference": reference}
+    if physics:
+        result["physics"] = physics
+    return result
 
 
 def _worlds(local, parents):
@@ -868,7 +887,23 @@ def _safe_root(directory):
     return root
 
 
-def export(token, state, output_dir, *, log=lambda message: None):
+def edit_source_state(session, index, state):
+    """Apply validated node and physics edits to one immutable session source."""
+    source = session["sources"][index]
+    selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
+    blob, meshes = source["raw"], 0
+    if selected:
+        reference = [row for row in state.get("compensationReference", []) if session["targets"][row["node"]]["sourceIndex"] == index]
+        read_only = [session["targets"][node]["key"] for node in session["readOnlySkinJoints"]
+                     if session["targets"][node]["sourceIndex"] == index]
+        blob, meshes = _edit_source(blob, selected, session["targets"], reference, read_only)
+    if state.get("physics"):
+        from . import viewer_physics
+        blob = viewer_physics.apply_edits(blob, index, state["physics"], session["physics"])
+    return blob, meshes
+
+
+def export(token, state, output_dir, *, log=lambda message: None, allow_empty=False):
     """Create new edited copies, preserved originals and a source-bound recipe.
 
     The HTTP caller owns authorization of output_dir. No request filename/path
@@ -884,22 +919,20 @@ def export(token, state, output_dir, *, log=lambda message: None):
         _fail("Another model is being saved. Wait for it to finish.")
     temporary = None
     try:
-        state = validate_state(token, state)
+        state = validate_state(token, state, allow_empty=allow_empty)
         for original in session["containers"]:
             if _sha(_read(original["path"])) != original["sha256"]:
                 _fail("An original model changed after opening. Reopen it before saving.")
         replacements, summaries = {}, []
         for index, source in enumerate(session["sources"]):
             selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
-            if not selected:
+            physics = [row for row in state.get("physics", []) if row["id"].split(":", 1)[0] == str(index)]
+            if not selected and not physics:
                 continue
-            reference = [row for row in state.get("compensationReference", []) if session["targets"][row["node"]]["sourceIndex"] == index]
             log("Saving body edits: " + source["name"])
-            read_only = [session["targets"][node]["key"] for node in session["readOnlySkinJoints"]
-                         if session["targets"][node]["sourceIndex"] == index]
-            blob, meshes = _edit_source(source["raw"], selected, session["targets"], reference, read_only)
+            blob, meshes = edit_source_state(session, index, state)
             replacements[(source["container"], source["member"])] = blob
-            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes})
+            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics)})
         recipe = _recipe(session, state)
         root = _safe_root(output_dir)
         temporary = Path(tempfile.mkdtemp(prefix=".viewer-edit-", dir=root))

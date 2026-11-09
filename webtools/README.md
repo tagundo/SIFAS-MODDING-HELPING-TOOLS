@@ -104,6 +104,57 @@ before viewing their result.
 
 ## 3D model
 
+### Workspace panels, motions and mesh tools
+
+**Panel settings** in the file actions selects visible editing panels and moves
+them up or down. All panels start visible; **Pose and motion** starts folded.
+The same settings button is available in the asset tool list and Server content.
+Visibility and order are saved on this browser/device and restored after a
+restart. Hidden panels retain their editing values.
+
+**Pose and motion** contains **Add custom motion** and **Load game motion**.
+The game picker uses the installed region's catalog relationships for home/idle,
+click, member voice, MV, and dated/login actions. Availability dates are shown
+when the catalog supplies them; login actions include their bonus type. Missing
+packs can be downloaded with the existing game asset connection. Adding a clip
+retains the current body edits, camera and pose. Under **Accompanying voice or
+music**, select a browser-compatible audio file to follow motion play, pause and
+seek. CRI ACB/AWB game audio needs conversion before selecting it.
+
+**Physics preview** optionally applies SwingBone and SwingCollider simulation
+and shows collision volumes. This browser simulation is approximate. **Breast
+dynamics** in the breast card edits stiffness, drag and rotation limits;
+**Thigh SwingCollider** edits each original radius and offset. Breast presets
+use the existing tuner's exact values. The collider tool has no universal size
+preset, so its recommendation restores each component's original values.
+Saving writes the edited Unity component values, rather than baking simulated
+bone motion.
+
+**Mesh deleter** shows the source texture and UV triangles for the selected
+material/submesh. Paint the faces to
+remove, erase or undo the selection, then save a new copy. It removes triangle
+indices while retaining vertex identities, skin channels and morph data.
+**Mesh modify** selects vertices by UV painting or index and edits their local
+XYZ positions and skin weights. Weight tools include set/add/subtract, neighbor
+smoothing, transfer between bones, bone locks, and normalized four-bone
+influences. Saving from either mesh panel includes current body and physics
+edits. Original files are preserved. Save pending mesh edits before adding a
+motion or starting a transplant. Use individual bundles for multi-model
+platform/Rina archives; mesh edits do not infer vertex correspondence between
+different models.
+
+**Costume transplant**, **Costume part transplant**, and **Lower body
+replacement** operate on the displayed wearer and a separately selected donor.
+Load the donor from a bundle/ZIP or the game asset picker; its own preview and
+available part roots appear in the panel. Lower-body replacement shows the two
+cut planes and lets you choose the band and anatomical region. The existing
+Unity graft tools run on copies that include the wearer's current body and
+physics edits, and successful results open in the main viewer. Donor and wearer
+must use the same Unity platform. Transplants currently accept single-model
+bundles/ZIPs; paired platform or Rina ZIPs require editing individual bundles.
+
+### Model viewer controls
+
 Open the **3D model** tab, choose a Unity costume file or costume ZIP from
 `models`, `modded` or `suit`, and press **Open model**. Extensionless UnityFS
 members in costume ZIPs are supported. ZIP contents are read into a bounded
@@ -188,10 +239,16 @@ repacking is unnecessary and the source files remain unchanged.
   The verified common suit-preview motion is included with the app and works
   offline without selecting a motion file. Posed view stays disabled for
   incompatible skeletons rather than applying partially bound tracks.
+- **Panel settings**, beside the costume file actions, lets you hide/show panels
+  and move them up or down. Body cards move within their own editing tool. All
+  panels are shown by default; visibility and order are saved on this device
+  across restarts. The asset tool list and Server content have the same settings
+  button. Restore defaults makes every panel available again.
 - **Pose and motion**, **Body and outfit**, and **Facial expression** are separate
-  collapsible panels. Closing one preserves its values and leaves the other
-  panels usable. **Pose and motion** selects available clips, plays/pauses or
-  seeks them. **Add custom motion** selects another Unity
+  collapsible panels. Pose and motion starts collapsed. Closing one preserves
+  its values and leaves the other panels usable. **Pose and motion** selects
+  available clips, plays/pauses or seeks them. **Add custom motion**, inside
+  this panel, selects another Unity
   animation bundle. Same-character local eye-animation companions can also be
   discovered within the bounded trusted library search.
 - The verified **SIFAS costume preview** starts at its first frame, paused; press

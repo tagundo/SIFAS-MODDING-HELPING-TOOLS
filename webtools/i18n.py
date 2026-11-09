@@ -2253,6 +2253,16 @@ _VIEWER_TRANSLATIONS.update({
     "The Rina counterparts must use the same character and platform.": ["리나의 두 버전은 캐릭터와 플랫폼이 같아야 합니다.", "璃奈の両バージョンは同じキャラクターとプラットフォームである必要があります。"],
     "The Rina ZIP must include both board and unmasked models.": ["리나 ZIP에는 보드 있음·없음 모델이 모두 필요합니다.", "璃奈のZIPにはボードあり・なしのモデルが必要です。"],
 })
+from webtools.core.viewer_motion_i18n import STRINGS as _MOTION_TRANSLATIONS
+_VIEWER_TRANSLATIONS.update(_MOTION_TRANSLATIONS)
+_VIEWER_TRANSLATIONS.update({
+    "Open a model before adding motion.": ["모션을 추가하기 전에 모델을 여세요.", "モーションを追加する前にモデルを開いてください。"],
+    "Wait for model saving to finish.": ["모델 저장이 끝날 때까지 기다려 주세요.", "モデルの保存が終わるまでお待ちください。"],
+    "Save mesh edits before adding motion.": ["메시 편집을 저장한 뒤 모션을 추가하세요.", "メッシュ編集を保存してからモーションを追加してください。"],
+    "Save from the mesh panel to include all current edits.": ["현재 변경을 모두 저장하려면 메시 편집 칸의 저장 버튼을 사용하세요.", "すべての変更を保存するにはメッシュ編集パネルの保存ボタンを使ってください。"],
+    "The motion could not be loaded.": ["모션을 불러오지 못했습니다.", "モーションを読み込めませんでした。"],
+})
+
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

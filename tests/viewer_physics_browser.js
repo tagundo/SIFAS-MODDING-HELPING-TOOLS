@@ -1,0 +1,81 @@
+/* Real HTTP/WebGL SwingBone preview and serialized physics-only save. */
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const net = require('net');
+const { spawn, execFileSync } = require('child_process');
+const { chromium } = require('playwright');
+const repo = path.resolve(__dirname, '../..'), product = path.join(repo, 'modtools');
+const python = process.env.VIEWER_PYTHON || '/workspace/.venv-elichika/bin/python';
+const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-physics-library-'));
+const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-physics-browser-'));
+const source = path.join(library, 'extracted/3d_model/physics.unity');
+fs.mkdirSync(path.dirname(source), { recursive: true }); fs.mkdirSync(evidence, { recursive: true });
+execFileSync(python, [path.join(__dirname, 'generate_viewer_physics_fixture.py'), source], { cwd: repo });
+const original = fs.readFileSync(source);
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function main() {
+  const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
+  const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
+  const logs = fs.createWriteStream(path.join(evidence, 'server.log'));
+  const server = spawn(python, ['-m', 'webtools', '--no-browser', '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: repo, env: { ...process.env, PYTHONPATH: product, SUKUSTA_DIR: library }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server.stdout.pipe(logs); server.stderr.pipe(logs);
+  let browser;
+  try {
+    const url = 'http://127.0.0.1:' + port;
+    for (let n = 0; n < 100; n++) { try { if ((await fetch(url + '/api/tools')).ok) break; } catch (_) {} await wait(100); }
+    browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } }), errors = [];
+    page.on('pageerror', error => errors.push(String(error)));
+    await page.addInitScript(() => localStorage.setItem('sifas_lang', 'ko'));
+    await page.goto(url); await page.waitForFunction(() => typeof openModelViewer === 'function');
+    await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; openModelViewer([source]); }, source);
+    await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
+    assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.components), 3);
+    assert.equal(await page.locator('#viewer-adjustments').evaluate(el => el.open), false);
+    await page.locator('#viewer-adjustments').evaluate(el => { el.open = true; });
+    await page.locator('.viewer-physics-region').evaluateAll(items => items.forEach(el => { el.open = true; }));
+    await page.locator('#viewer-physics-bones').check();
+    await page.locator('#viewer-physics-colliders').check();
+    await page.locator('#viewer-physics-show-colliders').check();
+    const state = await page.evaluate(() => ModelViewer.getState().rig.physics);
+    assert(state.swingBone && state.swingCollider && state.showColliders);
+    const clip = await page.locator('#viewer-motion option').evaluateAll(options => options.find(option => option.value).value);
+    await page.locator('#viewer-motion').selectOption(clip);
+    const initial = await page.evaluate(() => ModelViewer.getState().rig.bones.find(b => b.name.endsWith('/LeftBreast_Dyna')).quaternion);
+    await page.locator('#viewer-play').click();
+    await page.waitForFunction(() => ModelViewer.getState().rig.time > .25);
+    const dynamic = await page.evaluate(() => ModelViewer.getState().rig.bones.find(b => b.name.endsWith('/LeftBreast_Dyna')).quaternion);
+    assert(dynamic.some((q, index) => Math.abs(q - initial[index]) > .000001), 'spring preview changes the actual bone rotation');
+    await page.locator('#viewer-play').click();
+    await page.locator('#viewer-physics-bones').uncheck();
+    const stopped = await page.evaluate(() => ModelViewer.getState().rig.bones.find(b => b.name.endsWith('/LeftBreast_Dyna')).quaternion);
+    assert(stopped.every((q, index) => Math.abs(q - initial[index]) < .000001), 'disabling physics restores the authored rotation');
+    await page.locator('#viewer-breast-card').evaluate(el => { el.open = true; });
+    await page.locator('#viewer-physics-breast-preset').selectOption('firm');
+    const authored = await page.evaluate(() => ModelViewer.getAuthoringState());
+    assert.equal(authored.edits.length, 0); assert.equal(authored.physics.length, 1);
+    assert.equal(authored.physics[0].values.stiffnessForce, .05); assert.equal(authored.physics[0].values.dragForce, .5);
+    await page.locator('#viewer-save-panel').evaluate(el => { el.open = true; });
+    assert.equal(await page.locator('#viewer-save').isEnabled(), true, 'physics-only changes enable Save');
+    const request = page.waitForResponse(r => r.url().endsWith('/api/viewer/edit/export'));
+    await page.locator('#viewer-save').click(); assert.equal((await request).status(), 200);
+    await page.waitForFunction(() => !document.getElementById('viewer-open-saved').hidden, { timeout: 30000 });
+    assert.deepStrictEqual(fs.readFileSync(source), original);
+    const dirs = fs.readdirSync(path.join(library, 'modded/viewer')).filter(n => n.startsWith('body-edit-'));
+    assert.equal(dirs.length, 1);
+    const saved = path.join(library, 'modded/viewer', dirs[0]);
+    const recipe = JSON.parse(fs.readFileSync(path.join(saved, 'recipe.json'), 'utf8'));
+    assert.equal(recipe.state.physics[0].values.dragForce, .5);
+    await page.locator('#viewer-breast-card .viewer-physics-region > details').first().evaluate(el => { el.open = true; });
+    const drag = page.locator('[data-physics-field="dragForce"]');
+    await drag.fill('2'); assert.equal(await page.locator('#viewer-save').isDisabled(), true);
+    await drag.fill('0.4'); assert.equal(await page.locator('#viewer-save').isEnabled(), true);
+    assert.deepStrictEqual(errors, []);
+    await page.screenshot({ path: path.join(evidence, 'physics-controls-ko.png'), fullPage: true });
+    console.log(JSON.stringify({ status: 'PASS', evidence, preview: 'approximate spring and capsule collision', components: state.components, savedPhysics: recipe.state.physics }));
+  } finally { if (browser) await browser.close(); server.kill(); logs.end(); }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
