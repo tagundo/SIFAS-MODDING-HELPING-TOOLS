@@ -145,9 +145,32 @@ songs have their own filter, and page controls expose the complete catalog.
 locally and follows the authored timing, play, pause and seek. A local audio file
 can also be selected under **Accompanying voice or music**.
 
-**Physics preview** optionally applies SwingBone and SwingCollider simulation
-and shows collision volumes. This browser simulation is approximate. **Breast
-dynamics** in the breast card edits stiffness, drag and rotation limits;
+**Physics preview** offers **Original game calculation** and **Additional
+clipping correction** as separate modes. The original mode ports SIFAS 3.12's
+single and grouped SwingBone jobs, four collision routines, initialization,
+rotation constraints and conditional skirt correction. Its default is the
+game's normal 30 FPS setting; select 60 FPS for maximum game quality or display
+refresh rate when that game option is enabled. Animation and physics sample
+together, with one original update per accepted frame and no catch-up substeps.
+Pausing freezes the physical result; seeking starts new dynamic history while
+retaining the model's authored rest pose.
+
+The screen selector uses the selected imported game's motion category, or an
+explicit Home/member or MV override. MV also uses the game's selected quality,
+verified costume-specific `skirtsafe_disable`, and song-specific
+`safe_swing_bone` setting. Game imports obtain those settings from the matching
+master data. A manual file has no inferred costume/song identity; missing
+settings are shown and require an explicit choice before that MV profile runs.
+
+The additional mode retains the separate mesh/triangle contact correction. It
+can reduce clipping while deliberately changing the original motion. Original
+mode does not add those repairs or promise zero penetration for every mesh.
+Both modes are previews: exports change the original Unity component fields,
+not the simulated pose. The port does not reproduce Unity's whole animation,
+rendering or OS scheduler. Numeric reference coverage and float-rounding limits
+are recorded in `tests/fixtures/game_physics_native_provenance.md`.
+
+**Breast dynamics** in the breast card edits stiffness, drag and rotation limits;
 **Thigh SwingCollider** edits each original radius and offset. Breast presets
 use the existing tuner's exact values. The collider tool has no universal size
 preset, so its recommendation restores each component's original values.

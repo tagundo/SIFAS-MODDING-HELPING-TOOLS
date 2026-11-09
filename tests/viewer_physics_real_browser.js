@@ -1,4 +1,6 @@
-/* Read-only scene observation of real original costumes and original MV clips.
+/* Enhanced clipping-correction regression on real costumes and original clips.
+ * PHYSICS_MODE=game observes the native mode without imposing enhanced surface
+ * clearance or timestep invariance. Native numerical parity has separate tests.
  * The scene observer never changes mesh, animation, physics or API responses. */
 'use strict';
 const assert = require('assert'), fs = require('fs'), path = require('path'), os = require('os'), net = require('net');
@@ -12,6 +14,10 @@ const library = fs.mkdtempSync(path.join(os.tmpdir(), 'physics-real-library-')),
 fs.mkdirSync(evidence, { recursive: true }); fs.mkdirSync(sources, { recursive: true });
 const bodyFile = process.env.PHYSICS_MODEL || '/workspace/scratch/game-motion-real/ayumu-body.unity';
 const animationFile = process.env.PHYSICS_MOTION || '/workspace/scratch/game-motion-real/import-cache/motion-c77f23d6-khpvs7mr/animation-1.unity';
+const physicsMode = process.env.PHYSICS_MODE || 'enhanced';
+assert(['enhanced', 'game'].includes(physicsMode), 'PHYSICS_MODE must be enhanced or game');
+const physicsProfile = process.env.PHYSICS_PROFILE || (physicsMode === 'game' ? 'live' : null);
+if (physicsProfile) assert(['auto', 'live', 'navi'].includes(physicsProfile), 'PHYSICS_PROFILE must be auto, live or navi');
 const body = path.join(sources, 'body.unity'), animation = path.join(sources, 'animation.unity'); fs.copyFileSync(bodyFile, body); fs.copyFileSync(animationFile, animation);
 const originalBodyHash = sha(fs.readFileSync(body)), originalMotionHash = sha(fs.readFileSync(animation));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -22,7 +28,7 @@ async function start() {
   const url = 'http://127.0.0.1:' + port; for (let i = 0; i < 200; i++) { if (child.exitCode !== null) throw Error('Product exited'); try { if ((await fetch(url + '/api/tools')).ok) return { child, log, url }; } catch (_) {} await wait(100); } throw Error('Product startup timed out');
 }
 async function snapshot(page, time, mode) {
-  return page.evaluate(({ time, mode }) => {
+  return page.evaluate(({ time, mode, physicsMode }) => {
     const state = ModelViewer.getState().rig.physics, catalog = ModelViewer.getEditingMetadata().physics;
     const skirtNodes = new Set(catalog.components.filter(c => c.kind === 'bone' && /skirt/i.test(c.name)).map(c => String(c.node)));
     const triangles = [], triangleIds = [], seenGeometry = new Set(), meshFrames = [], nodeFrames = {};
@@ -47,11 +53,12 @@ async function snapshot(page, time, mode) {
       }
       if (Object.keys(frame.vertices).length) meshFrames.push(frame);
     });
-    return { nodeFrames, meshFrames, catalog, name: 'original-model', time, mode, components: catalog.components.map(c => ({ id: c.id, name: c.name, kind: c.kind })), solver: state.solver, triangles, triangleIds };
-  }, { time, mode });
+    return { nodeFrames, meshFrames, catalog, name: 'original-model', time, mode, physicsMode, previewSettings: { mode: state.mode, frameRate: state.frameRate, profile: state.profile, qualityMode: state.qualityMode, runtime: state.runtime }, components: catalog.components.map(c => ({ id: c.id, name: c.name, kind: c.kind })), solver: state.solver, triangles, triangleIds };
+  }, { time, mode, physicsMode });
 }
 async function main() {
-  let server, browser; const snapshots = [], report = { status: 'RUNNING', evidence, source: bodyFile, motion: animationFile };
+  let server, browser; const snapshots = [], report = { status: 'RUNNING', evidence, source: bodyFile, motion: animationFile, physicsMode,
+    validationScope: physicsMode === 'enhanced' ? 'Enhanced surface-clearance regression; not native-fidelity proof' : 'Original-mode browser observation; native numerical parity is checked by separate ARM64 fixtures' };
   try {
     server = await start(); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } }); page.setDefaultTimeout(120000); const errors = []; page.on('pageerror', e => errors.push(String(e)));
@@ -67,6 +74,14 @@ async function main() {
     await page.evaluate(paths => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer(paths); }, [body, animation]);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().rig.physics.solver);
     await page.locator('#viewer-adjustments').evaluate(e => { e.open = true; }); await page.locator('.viewer-physics-region').evaluateAll(es => es.forEach(e => { e.open = true; }));
+    await page.locator('#viewer-physics-mode').selectOption(physicsMode);
+    assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.mode), physicsMode, 'The requested physics engine is explicitly selected');
+    if (physicsProfile) await page.locator('#viewer-physics-profile').selectOption(physicsProfile);
+    for (const [key, id] of [['PHYSICS_SKIRT_CORRECTION', 'viewer-physics-skirt-correction'], ['PHYSICS_MOTION_CORRECTION', 'viewer-physics-motion-correction']]) if (process.env[key]) {
+      assert(['auto', 'enabled', 'disabled'].includes(process.env[key]), key + ' must be auto, enabled or disabled');
+      await page.locator('#' + id).selectOption(process.env[key]);
+    }
+    report.previewSettings = await page.evaluate(() => { const p=ModelViewer.getState().rig.physics; return {mode:p.mode,frameRate:p.frameRate,profile:p.profile,qualityMode:p.qualityMode,skirtCorrection:p.skirtCorrection,motionCorrection:p.motionCorrection,runtime:p.runtime}; });
     const motion = await page.locator('#viewer-motion option').evaluateAll(options => options.filter(o => o.value).find(o => /so2002|dance|2002/i.test(o.textContent + o.value))?.value || options.filter(o => o.value)[0].value);
     await page.locator('#viewer-motion').selectOption(motion);
     const times = JSON.parse(process.env.PHYSICS_TIMES || '[0,54.25,65.5,82.75]');
@@ -107,18 +122,46 @@ async function main() {
         substeps: Object.fromEntries(Object.entries(groups).map(([steps, values]) => [steps, { frames: values.length, ...stats(values) }])),
         showColliders: process.env.PHYSICS_PERF_DEBUG === '1', samples: 'frame-timings.json',
         renderer: 'Chromium software WebGL (SwiftShader), shared cloud CPU', windows: [54, 65.25, 82.5] };
+      if (physicsMode === 'game') {
+        report.performance.nativeAcceptedFrames = samples.filter(row => row.nativeSteps > 0).length;
+        assert(report.performance.nativeAcceptedFrames > 0, 'Actual playback advances the original native-equation engine');
+      }
     }
     await page.locator('#viewer-physics-show-colliders').check(); await page.screenshot({ path: path.join(evidence, 'original-model-colliders.png') });
     assert.deepStrictEqual(errors, [], 'Actual physics has no browser exceptions');
     fs.writeFileSync(path.join(evidence, 'snapshots.json'), JSON.stringify(snapshots));
-    execFileSync(python, [path.join(__dirname, 'measure_physics_capture.py'), path.join(evidence, 'snapshots.json'), '--output', path.join(evidence, 'measurements.json')], { cwd: product });
-    const measurements = JSON.parse(fs.readFileSync(path.join(evidence, 'measurements.json'))); report.measurements = measurements.map(({ capsules, tips, ...summary }) => summary);
-    const baseline = measurements.filter(row => row.mode === 'disabled'), corrected = measurements.filter(row => row.mode === 'collision');
-    assert(baseline.some(row => row.fullyMobile.penetratingTriangles > 0), 'The original motion must exercise actual free skirt/leg intersections');
-    corrected.forEach(row => { assert.equal(row.fullyMobile.penetratingTriangles, 0, 'Free skirt triangles clear authored capsules at ' + row.time); assert(row.fullyMobile.minimumGap >= -.0001, 'Independent finite-triangle clearance at ' + row.time); assert.deepStrictEqual(row.rotationLimitViolations, [], 'Collision response stays within authored Unity Euler limits'); });
+    if (physicsMode === 'enhanced') {
+      execFileSync(python, [path.join(__dirname, 'measure_physics_capture.py'), path.join(evidence, 'snapshots.json'), '--output', path.join(evidence, 'measurements.json')], { cwd: product });
+      const measurements = JSON.parse(fs.readFileSync(path.join(evidence, 'measurements.json'))); report.measurements = measurements.map(({ capsules, tips, ...summary }) => summary);
+      const baseline = measurements.filter(row => row.mode === 'disabled'), corrected = measurements.filter(row => row.mode === 'collision');
+      assert(baseline.some(row => row.fullyMobile.penetratingTriangles > 0), 'The original motion must exercise actual free skirt/leg intersections');
+      corrected.forEach(row => { assert.equal(row.fullyMobile.penetratingTriangles, 0, 'Enhanced correction clears free skirt triangles at ' + row.time); assert(row.fullyMobile.minimumGap >= -.0001, 'Enhanced finite-triangle clearance at ' + row.time); assert.deepStrictEqual(row.rotationLimitViolations, [], 'Enhanced correction stays within authored Unity Euler limits'); });
+    } else {
+      report.nativeObservations = snapshots.map(row => ({time:row.time,mode:row.mode,triangles:row.triangles.length,settings:row.previewSettings,solver:row.solver}));
+      snapshots.filter(row => row.mode === 'collision').forEach(row => {
+        assert(row.solver.available && row.solver.initialized, 'The original engine is available and initialized at ' + row.time);
+        assert.deepStrictEqual(row.solver.unsupported, [], 'All required original runtime inputs are supplied');
+        assert(row.triangles.length > 0 && row.triangles.flat(2).every(Number.isFinite), 'Actual animated/skinned skirt geometry remains finite');
+      });
+      report.nativePlaybackResponses = snapshots.filter(row => row.mode === 'collision' && row.solver.totalNativeSteps > 0).map(row => {
+        const baseline=snapshots.find(other=>other.time===row.time&&other.mode==='disabled');
+        assert(baseline, 'Native playback has a disabled-physics comparison at the identical animation time');
+        const changes=row.catalog.components.filter(c=>c.kind==='bone').map(c=>{
+          const a=row.nodeFrames[String(c.node)]?.quaternion,b=baseline.nodeFrames[String(c.node)]?.quaternion;
+          if(!a||!b)return null;
+          const dot=Math.min(1,Math.abs(a.reduce((sum,value,i)=>sum+value*b[i],0))/Math.sqrt(a.reduce((sum,v)=>sum+v*v,0)*b.reduce((sum,v)=>sum+v*v,0)));
+          return {name:c.name,angleDegrees:2*Math.acos(dot)*180/Math.PI};
+        }).filter(change=>change&&change.angleDegrees>1e-4);
+        assert(changes.length>0, 'Native playback changes the actual loaded model bone rotations');
+        return {time:row.time,totalNativeSteps:row.solver.totalNativeSteps,changedBones:changes.length,largestAngleDegrees:Math.max(...changes.map(change=>change.angleDegrees))};
+      });
+      if(process.env.PHYSICS_PERF!=='0') assert(report.nativePlaybackResponses.length>=3, 'All three actual playback windows visibly apply the original engine');
+    }
     assert.equal(sha(fs.readFileSync(body)), originalBodyHash); assert.equal(sha(fs.readFileSync(animation)), originalMotionHash);
+    assert.equal(sha(fs.readFileSync(bodyFile)), originalBodyHash); assert.equal(sha(fs.readFileSync(animationFile)), originalMotionHash);
+    report.sourceHashes = {body:{before:originalBodyHash,after:sha(fs.readFileSync(bodyFile))},motion:{before:originalMotionHash,after:sha(fs.readFileSync(animationFile))}};
     report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
-  finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.log.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence: report.evidence, source: report.source, poses: report.measurements && report.measurements.filter(row => row.mode === 'collision').length, worstMobileGap: report.measurements && Math.min(...report.measurements.filter(row => row.mode === 'collision').map(row => row.fullyMobile.minimumGap)), performance: report.performance, error: report.error }, null, 2)); }
+  finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.log.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, physicsMode: report.physicsMode, evidence: report.evidence, source: report.source, poses: (report.measurements || report.nativeObservations || []).filter(row => row.mode === 'collision').length, worstMobileGap: report.measurements && Math.min(...report.measurements.filter(row => row.mode === 'collision').map(row => row.fullyMobile.minimumGap)), performance: report.performance, error: report.error }, null, 2)); }
 }
 main().catch(() => { process.exitCode = 1; });

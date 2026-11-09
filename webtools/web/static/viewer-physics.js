@@ -4,6 +4,31 @@
   function viewerHelper(object) { while (object) { if (object.userData && object.userData.viewerHelper) return true; object = object.parent; } return false; }
   var labels = {
     "Physics preview": ["물리 미리보기", "物理プレビュー"],
+    "Physics calculation": ["물리 계산 방식", "物理計算方式"],
+    "Original game calculation": ["게임 원본 계산", "ゲーム本来の計算"],
+    "Additional clipping correction": ["추가 뚫림 보정", "追加の貫通補正"],
+    "Game frame setting": ["게임 프레임 설정", "ゲームのフレーム設定"],
+    "30 FPS (normal game setting)": ["30 FPS (일반 게임 설정)", "30 FPS（通常のゲーム設定）"],
+    "60 FPS (maximum game quality)": ["60 FPS (게임 최고 품질)", "60 FPS（ゲーム最高品質）"],
+    "Display refresh rate": ["화면 주사율", "画面のリフレッシュレート"],
+    "Character screen": ["캐릭터 화면", "キャラクター画面"],
+    "From the selected game motion": ["선택한 게임 모션에 맞춤", "選択したゲームモーションに合わせる"],
+    "Home and member screens": ["홈·멤버 화면", "ホーム・メンバー画面"],
+    "MV screen": ["MV 화면", "MV画面"],
+    "Game 3D quality": ["게임 3D 품질", "ゲームの3D品質"],
+    "Maximum": ["최고", "最高"], "High": ["고", "高"], "Middle": ["중", "中"], "Low": ["저", "低"],
+    "MV costume skirt correction": ["MV 의상 치마 보정", "MV衣装のスカート補正"],
+    "Use the game's costume setting": ["게임의 의상 설정 사용", "ゲームの衣装設定を使用"],
+    "Enable skirt correction": ["치마 보정 사용", "スカート補正を使用"],
+    "Disable skirt correction": ["치마 보정 사용 안 함", "スカート補正を使用しない"],
+    "MV motion skirt correction": ["MV 모션 치마 보정", "MVモーションのスカート補正"],
+    "Use the game's motion setting": ["게임의 모션 설정 사용", "ゲームのモーション設定を使用"],
+    "Import this motion from game assets or select its skirt correction setting.": ["곡별 게임 설정을 확인할 수 없습니다. 게임 에셋에서 모션을 불러오거나 모션 치마 보정 설정을 선택하세요.", "曲別のゲーム設定を確認できません。ゲームアセットからモーションを読み込むか、モーションのスカート補正設定を選択してください。"],
+    "Import this costume from game assets or select its skirt correction setting.": ["의상별 게임 설정을 확인할 수 없습니다. 게임 에셋에서 의상을 불러오거나 치마 보정 설정을 선택하세요.", "衣装別のゲーム設定を確認できません。ゲームアセットから衣装を読み込むか、スカート補正設定を選択してください。"],
+    "The motion's original screen is unknown. Home/member settings are used; select MV when needed.": ["모션의 원본 화면 정보가 없어 홈·멤버 설정을 사용합니다. MV 모션이면 화면 설정을 바꾸세요.", "元の画面情報がないため、ホーム・メンバー設定を使用します。MVモーションの場合は画面設定を変更してください。"],
+    "Original game equations and update order are used. Match the frame setting to the game. This does not reproduce the entire Unity engine.": ["원본 게임의 계산식과 갱신 순서를 사용합니다. 프레임 설정을 게임과 맞추세요. Unity 엔진 전체를 재현하는 기능은 아닙니다.", "元のゲームの計算式と更新順を使用します。フレーム設定をゲームに合わせてください。Unityエンジン全体を再現する機能ではありません。"],
+    "Additional mesh correction can reduce clipping and changes the original game motion.": ["메시 충돌을 추가로 보정해 뚫림을 줄입니다. 움직임은 원본 게임과 달라집니다.", "メッシュの衝突を追加補正して貫通を減らします。動きは元のゲームと異なります。"],
+    "Original game calculation requires complete source physics data. Additional clipping correction is selected.": ["원본 계산에 필요한 물리 데이터가 없어 추가 뚫림 보정이 선택되었습니다.", "元の計算に必要な物理データがないため、追加の貫通補正が選択されています。"],
     "Apply SwingBone": ["스윙본 적용", "SwingBoneを適用"],
     "Apply SwingCollider": ["스윙 콜라이더 적용", "SwingColliderを適用"],
     "Show colliders": ["콜라이더 표시", "コライダーを表示"],
@@ -429,6 +454,9 @@
     var THREE = window.THREE, components = catalog && catalog.components || [], edits = {}, controls = [], regions = [];
     var nodes = {}, interactive = true, writable = true, disposed = false;
     var applyBones = false, applyColliders = false, showColliders = false, spheres = [], springs = [], helperGroup = new THREE.Group();
+    var nativeAvailable = !!(catalog && catalog.native && catalog.native.available && window.ViewerGamePhysics);
+    var mode = nativeAvailable ? "game" : "enhanced", frameRate = 30, qualityMode = 20, profile = "auto", skirtCorrection = "auto", motionCorrection = "auto", frameElapsed = 0;
+    var engines = {}, frameContext = null, modeSelect = null, frameSelect = null, profileSelect = null, qualitySelect = null, skirtSelect = null, motionSelect = null, modeNote = null;
     var base = {}, lang = function () { return document.documentElement.lang || "en"; };
     helperGroup.userData.viewerHelper = true; root.add(helperGroup);
     root.traverse(function (object) { if (!viewerHelper(object) && object.userData && object.userData.elichika_node !== undefined) nodes[String(object.userData.elichika_node)] = object; });
@@ -437,6 +465,55 @@
     function region(parent, title) { if (!parent) return null; var box = element("details", null, parent); box.className = "viewer-save-advanced viewer-physics-region"; element("summary", title, box); regions.push(box); return box; }
     function current(record) { return Object.assign({}, record.values, edits[record.id] || {}); }
     function notify() { if (!disposed && options.onChange) options.onChange(); }
+    function activeSolver() {
+      if (!engines[mode]) engines[mode] = mode === "game" ? window.ViewerGamePhysics.create(root, catalog, current,
+        { getInitializationPose: options.getInitializationPose }) : createSolver(root, catalog, current);
+      return engines[mode];
+    }
+    function resetSimulation(reason) {
+      frameElapsed = 0;
+      Object.keys(engines).forEach(function (name) { var engine = engines[name];
+        if (name === "game" && engine.setInitializationPose && options.getInitializationPose && /authoring|recipe-restore|reset-edits/.test(reason || "")) engine.setInitializationPose(options.getInitializationPose());
+        if (engine.resetSimulation) engine.resetSimulation(reason); else engine.reset();
+      });
+    }
+    function refreshMode() {
+      var selectedProfile = resolvedProfile();
+      if (modeSelect) modeSelect.value = mode;
+      if (frameSelect) { frameSelect.value = String(frameRate); frameSelect.disabled = !interactive || mode !== "game"; }
+      if (profileSelect) { profileSelect.value = profile; profileSelect.disabled = !interactive || mode !== "game"; }
+      if (qualitySelect) { qualitySelect.value = String(qualityMode); qualitySelect.disabled = !interactive || mode !== "game" || selectedProfile !== "live"; }
+      if (skirtSelect) { skirtSelect.value = skirtCorrection; skirtSelect.disabled = !interactive || mode !== "game" || selectedProfile !== "live"; }
+      if (motionSelect) { motionSelect.value = motionCorrection; motionSelect.disabled = !interactive || mode !== "game" || selectedProfile !== "live"; }
+      if (modeNote) modeNote.textContent = t(mode === "game" ?
+        "Original game equations and update order are used. Match the frame setting to the game. This does not reproduce the entire Unity engine." :
+        nativeAvailable ? "Additional mesh correction can reduce clipping and changes the original game motion." :
+          "Original game calculation requires complete source physics data. Additional clipping correction is selected.");
+      if (modeNote && mode === "game" && profile === "auto" && frameContext && frameContext.clipId && !frameContext.motionCategory) modeNote.textContent += " " + t("The motion's original screen is unknown. Home/member settings are used; select MV when needed.");
+      if (modeNote && mode === "game" && selectedProfile === "live") {
+        var flags = runtimeFlags();
+        if ((catalog.managers || []).some(function (manager) { return flags.skirtsafeDisableBySource[manager.sourceIndex] === undefined; })) modeNote.textContent += " " + t("Import this costume from game assets or select its skirt correction setting.");
+        if (flags.safeSwingBone === undefined) modeNote.textContent += " " + t("Import this motion from game assets or select its skirt correction setting.");
+      }
+    }
+    function resolvedProfile() { return profile === "auto" ? frameContext && frameContext.motionCategory === "mv" ? "live" : "navi" : profile; }
+    function runtimeFlags() {
+      var selectedProfile = resolvedProfile(), flags = {}, runtime = catalog.native && catalog.native.runtime || {};
+      (runtime.sources || []).forEach(function (source) { if (source.known && typeof source.skirtsafeDisable === "boolean") flags[source.sourceIndex] = source.skirtsafeDisable; });
+      (catalog.managers || []).forEach(function (manager) {
+        if (selectedProfile === "navi") flags[manager.sourceIndex] = true;
+        else if (skirtCorrection !== "auto") flags[manager.sourceIndex] = skirtCorrection === "disabled";
+      });
+      var safeSwingBone = selectedProfile === "navi" ? false : motionCorrection === "auto" ?
+        frameContext && typeof frameContext.safeSwingBone === "boolean" ? frameContext.safeSwingBone : undefined : motionCorrection === "enabled";
+      return { profile: selectedProfile, qualityMode: qualityMode, enableJob: true,
+        enableLod: selectedProfile === "navi" || qualityMode !== 40, skirtsafeDisableBySource: flags, safeSwingBone: safeSwingBone };
+    }
+    function selectMode(value) {
+      if (["game", "enhanced"].indexOf(value) < 0 || value === "game" && !nativeAvailable) throw new Error("The selected physics calculation is unavailable.");
+      if (mode !== value) { mode = value; resetSimulation("physics:mode-change"); }
+      refreshMode();
+    }
     function validField(record, name, value) {
       if (Array.isArray(record.values[name])) return Array.isArray(value) && value.length === 3 && value.every(function (v) { return typeof v === "number" && isFinite(v) && Math.abs(v) <= (name === "offset" ? 10 : 180); });
       return typeof value === "number" && isFinite(value) && value >= 0 && value <= (name === "dragForce" ? 1 : 10);
@@ -484,14 +561,46 @@
       var label = element("label", null, parent), input = element("input", null, label); input.type = "checkbox"; input.id = name;
       element("span", key, label); input.disabled = !available;
       controls.push({ input: input, available: available, write: false });
-      input.addEventListener("change", function () { callback(input.checked); if (solver) solver.reset(); notify(); });
+      input.addEventListener("change", function () { callback(input.checked); notify(); });
     }
     var pose = document.getElementById("viewer-adjustments"), preview = region(pose, "Physics preview");
     if (preview) {
-      toggle("Apply SwingBone", "viewer-physics-bones", function (v) { applyBones = v; }, components.some(function (v) { return v.kind === "bone" && v.node !== null && v.enabled; }), preview);
+      var modeLabel = element("label", null, preview); element("span", "Physics calculation", modeLabel);
+      modeSelect = element("select", null, modeLabel); modeSelect.id = "viewer-physics-mode";
+      [["game", "Original game calculation"], ["enhanced", "Additional clipping correction"]].forEach(function (row) {
+        var option = element("option", row[1], modeSelect); option.value = row[0]; option.disabled = row[0] === "game" && !nativeAvailable;
+      });
+      controls.push({ input: modeSelect, write: false });
+      modeSelect.addEventListener("change", function () { selectMode(modeSelect.value); notify(); });
+      var frameLabel = element("label", null, preview); element("span", "Game frame setting", frameLabel);
+      frameSelect = element("select", null, frameLabel); frameSelect.id = "viewer-physics-frame-rate";
+      [[30, "30 FPS (normal game setting)"], [60, "60 FPS (maximum game quality)"], [0, "Display refresh rate"]].forEach(function (row) { var option = element("option", row[1], frameSelect); option.value = String(row[0]); });
+      controls.push({ input: frameSelect, write: false });
+      frameSelect.addEventListener("change", function () { frameRate = Number(frameSelect.value); frameElapsed = 0; refreshMode(); notify(); });
+      var profileLabel = element("label", null, preview); element("span", "Character screen", profileLabel);
+      profileSelect = element("select", null, profileLabel); profileSelect.id = "viewer-physics-profile";
+      [["auto", "From the selected game motion"], ["navi", "Home and member screens"], ["live", "MV screen"]].forEach(function (row) { var option = element("option", row[1], profileSelect); option.value = row[0]; });
+      controls.push({ input: profileSelect, write: false });
+      profileSelect.addEventListener("change", function () { profile = profileSelect.value; resetSimulation("physics:screen-change"); refreshMode(); notify(); });
+      var qualityLabel = element("label", null, preview); element("span", "Game 3D quality", qualityLabel);
+      qualitySelect = element("select", null, qualityLabel); qualitySelect.id = "viewer-physics-quality";
+      [[10, "Maximum"], [20, "High"], [30, "Middle"], [40, "Low"]].forEach(function (row) { var option = element("option", row[1], qualitySelect); option.value = String(row[0]); });
+      controls.push({ input: qualitySelect, write: false });
+      qualitySelect.addEventListener("change", function () { qualityMode = Number(qualitySelect.value); if (frameRate !== 0) frameRate = qualityMode === 10 ? 60 : 30; resetSimulation("physics:quality-change"); refreshMode(); notify(); });
+      var skirtLabel = element("label", null, preview); element("span", "MV costume skirt correction", skirtLabel);
+      skirtSelect = element("select", null, skirtLabel); skirtSelect.id = "viewer-physics-skirt-correction";
+      [["auto", "Use the game's costume setting"], ["enabled", "Enable skirt correction"], ["disabled", "Disable skirt correction"]].forEach(function (row) { var option = element("option", row[1], skirtSelect); option.value = row[0]; });
+      controls.push({ input: skirtSelect, write: false });
+      skirtSelect.addEventListener("change", function () { skirtCorrection = skirtSelect.value; resetSimulation("physics:costume-setting-change"); refreshMode(); notify(); });
+      var motionLabel = element("label", null, preview); element("span", "MV motion skirt correction", motionLabel);
+      motionSelect = element("select", null, motionLabel); motionSelect.id = "viewer-physics-motion-correction";
+      [["auto", "Use the game's motion setting"], ["enabled", "Enable skirt correction"], ["disabled", "Disable skirt correction"]].forEach(function (row) { var option = element("option", row[1], motionSelect); option.value = row[0]; });
+      controls.push({ input: motionSelect, write: false });
+      motionSelect.addEventListener("change", function () { motionCorrection = motionSelect.value; resetSimulation("physics:motion-setting-change"); refreshMode(); notify(); });
+      toggle("Apply SwingBone", "viewer-physics-bones", function (v) { if (applyBones !== v) resetSimulation("physics:bones-toggle"); applyBones = v; }, components.some(function (v) { return v.kind === "bone" && v.node !== null && v.enabled; }), preview);
       toggle("Apply SwingCollider", "viewer-physics-colliders", function (v) { applyColliders = v; }, components.some(function (v) { return v.kind === "collider" && v.node !== null && v.enabled; }), preview);
       toggle("Show bones and colliders", "viewer-physics-show-colliders", function (v) { showColliders = v; helperGroup.visible = v; }, components.some(function (v) { return v.kind === "collider" && v.node !== null; }), preview);
-      var note = element("p", "Physics preview is approximate. Play a motion to inspect it; saved copies retain the Unity physics values.", preview); note.className = "viewer-render-note";
+      modeNote = element("p", null, preview); modeNote.className = "viewer-render-note"; refreshMode();
       if (!components.length) element("p", "No compatible physics components.", preview);
     }
     [["breast", "viewer-breast-card", "Breast dynamics"], ["thighs", "viewer-thighs-card", "Thigh SwingCollider"], ["other", "viewer-body-adjustments", "Other physics components"]].forEach(function (group) {
@@ -524,10 +633,10 @@
     helperGroup.visible = false; refreshFields();
     function colliderWorld(sphere) {
       var value = current(sphere.record), center = new THREE.Vector3(-value.offset[0], value.offset[1], value.offset[2]).applyMatrix4(sphere.object.matrixWorld);
-      var scale = sphere.object.getWorldScale(new THREE.Vector3()), radius = value.radius * Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z));
+      var scale = sphere.object.getWorldScale(new THREE.Vector3()), radius = value.radius * (mode === "game" ? 1 : Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z)));
       return { center: center, radius: radius };
     }
-    var solver = createSolver(root, catalog, current), capsuleLines = {}, boneHelpers = {};
+    var capsuleLines = {}, boneHelpers = {};
     function lineHelper(count, color) {
       var geometry = new THREE.BufferGeometry(); geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
       var line = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: color, depthTest: false, transparent: true, opacity: .7 }));
@@ -538,29 +647,33 @@
       points.forEach(function (point, index) { var local = root.worldToLocal(point.clone()); attr.setXYZ(index, local.x, local.y, local.z); }); attr.needsUpdate = true;
     }
     function drawConstraints() {
-      var state = solver.getState();
-      state.capsules.forEach(function (capsule) {
+      var state = activeSolver().getState();
+      Object.keys(capsuleLines).forEach(function (id) { capsuleLines[id].visible = false; });
+      Object.keys(boneHelpers).forEach(function (id) { boneHelpers[id].line.visible = boneHelpers[id].dot.visible = false; });
+      (state.capsules || []).forEach(function (capsule) {
         var a = new THREE.Vector3().fromArray(capsule.a), b = new THREE.Vector3().fromArray(capsule.b), axis = b.clone().sub(a);
         if (axis.lengthSq() < 1e-10) return;
         var line = capsuleLines[capsule.id] || (capsuleLines[capsule.id] = lineHelper(16, 0x39a4dd));
+        line.visible = true;
         axis.normalize(); var u = axis.clone().cross(new THREE.Vector3(0, 1, 0)); if (u.lengthSq() < 1e-8) u.crossVectors(axis, new THREE.Vector3(1, 0, 0)); u.normalize();
         var v = axis.clone().cross(u).normalize(), points = [];
         for (var i = 0; i < 8; i++) { var angle = i * Math.PI / 4, radial = u.clone().multiplyScalar(Math.cos(angle)).addScaledVector(v, Math.sin(angle)); points.push(a.clone().addScaledVector(radial, capsule.ra), b.clone().addScaledVector(radial, capsule.rb)); }
         setLine(line, points);
       });
-      state.bones.forEach(function (bone) {
+      (state.bones || []).forEach(function (bone) {
         var helper = boneHelpers[bone.id];
         if (!helper) {
           var dot = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf0b54c, wireframe: true, depthTest: false, transparent: true, opacity: .6 }));
           dot.userData.viewerHelper = true; dot.renderOrder = 1002; helperGroup.add(dot); helper = boneHelpers[bone.id] = { line: lineHelper(2, 0xf0b54c), dot: dot };
         }
         var origin = new THREE.Vector3().fromArray(bone.origin), tip = new THREE.Vector3().fromArray(bone.tip), scale = root.getWorldScale(new THREE.Vector3()); setLine(helper.line, [origin, tip]);
+        helper.line.visible = helper.dot.visible = true;
         helper.dot.position.copy(root.worldToLocal(tip)); var radius = Math.max(.002, bone.radius); helper.dot.scale.set(radius / Math.abs(scale.x || 1), radius / Math.abs(scale.y || 1), radius / Math.abs(scale.z || 1));
       });
     }
     function apply(delta) {
       if (disposed) return;
-      solver.apply(delta, { bones: applyBones, colliders: applyColliders });
+      activeSolver().apply(delta, Object.assign({ bones: applyBones, colliders: applyColliders, frameRate: frameRate }, runtimeFlags()));
       if (showColliders) { drawConstraints(); spheres.forEach(function (sphere) {
         var value = colliderWorld(sphere); sphere.helper.position.copy(root.worldToLocal(value.center.clone()));
         var rs = root.getWorldScale(new THREE.Vector3()); sphere.helper.scale.set(value.radius / Math.abs(rs.x || 1), value.radius / Math.abs(rs.y || 1), value.radius / Math.abs(rs.z || 1));
@@ -568,21 +681,35 @@
     }
     return {
       apply: apply,
-      getTimingState: function () { return solver.getTimingState(); },
+      captureAnimationPose: function (context) { var previousCategory = frameContext && frameContext.motionCategory, previousSafe = frameContext && frameContext.safeSwingBone; frameContext = context || {}; var engine = activeSolver(); if (engine.captureAnimationPose) engine.captureAnimationPose(frameContext); if (previousCategory !== frameContext.motionCategory || previousSafe !== frameContext.safeSwingBone) refreshMode(); },
+      resetSimulation: resetSimulation,
+      playbackDelta: function (delta) {
+        if (mode !== "game" || !applyBones || frameRate === 0 || !(delta > 0)) return delta;
+        frameElapsed += delta;
+        if (frameElapsed + 1e-8 < 1 / frameRate) return 0;
+        var accepted = frameElapsed; frameElapsed = 0; return accepted;
+      },
+      getTimingState: function () { return Object.assign({ mode: mode, frameRate: frameRate }, activeSolver().getTimingState()); },
       getEdits: function () { return Object.keys(edits).sort().map(function (id) { return { id: id, values: JSON.parse(JSON.stringify(edits[id])) }; }); },
       invalid: function () { return controls.some(function (c) { return c.record && c.input.dataset.physicsDirty === "true" && !c.input.disabled && !c.input.checkValidity(); }); },
       restorePreviewState: function (state) {
         if (!state || typeof state !== "object") return;
+        if ([0, 30, 60].indexOf(state.frameRate) >= 0) frameRate = state.frameRate;
+        if ([10, 20, 30, 40].indexOf(state.qualityMode) >= 0) qualityMode = state.qualityMode;
+        if (["auto", "enabled", "disabled"].indexOf(state.skirtCorrection) >= 0) skirtCorrection = state.skirtCorrection;
+        if (["auto", "enabled", "disabled"].indexOf(state.motionCorrection) >= 0) motionCorrection = state.motionCorrection;
+        if (["auto", "navi", "live"].indexOf(state.profile) >= 0) profile = state.profile;
+        if (state.mode === "game" && nativeAvailable || state.mode === "enhanced") selectMode(state.mode);
         applyBones = !!state.swingBone; applyColliders = !!state.swingCollider; showColliders = !!state.showColliders;
         [["viewer-physics-bones", applyBones], ["viewer-physics-colliders", applyColliders], ["viewer-physics-show-colliders", showColliders]].forEach(function (row) { var input = document.getElementById(row[0]); if (input) input.checked = row[1]; });
-        helperGroup.visible = showColliders; solver.reset();
+        helperGroup.visible = showColliders; resetSimulation("physics:inspection-restore"); refreshMode();
       },
-      restore: function (rows) { var next = {}; if (!Array.isArray(rows) || rows.length > components.length) throw new Error("The physics recipe is invalid."); rows.forEach(function (row) { var record = components.filter(function (r) { return r.id === row.id; })[0]; if (!record || next[row.id] || !validValues(record, row.values)) throw new Error("The physics recipe is invalid."); next[row.id] = JSON.parse(JSON.stringify(row.values)); }); edits = next; refreshFields(); },
-      reset: function () { edits = {}; solver.reset(); refreshFields(); },
-      setInteractive: function (value, authoring) { interactive = !!value; writable = !!authoring; controls.forEach(function (row) { row.input.disabled = !interactive || row.write && !writable || row.available === false; }); },
-      updateLanguage: function () { regions.forEach(function (region) { region.querySelectorAll("[data-physics-label]").forEach(function (el) { el.textContent = t(el.dataset.physicsLabel); }); }); },
-      getState: function () { return { available: components.length > 0, swingBone: applyBones, swingCollider: applyColliders, showColliders: showColliders, components: components.length, dynamicBones: springs.length, edited: Object.keys(edits).length, solver: solver.getState() }; },
-      dispose: function () { disposed = true; regions.forEach(function (r) { r.remove(); }); root.remove(helperGroup); helperGroup.traverse(function (object) { if (object.geometry) object.geometry.dispose(); if (object.material) object.material.dispose(); }); }
+      restore: function (rows) { var next = {}; if (!Array.isArray(rows) || rows.length > components.length) throw new Error("The physics recipe is invalid."); rows.forEach(function (row) { var record = components.filter(function (r) { return r.id === row.id; })[0]; if (!record || next[row.id] || !validValues(record, row.values)) throw new Error("The physics recipe is invalid."); next[row.id] = JSON.parse(JSON.stringify(row.values)); }); edits = next; refreshFields(); resetSimulation("physics:recipe-restore"); },
+      reset: function () { edits = {}; resetSimulation("physics:reset-edits"); refreshFields(); },
+      setInteractive: function (value, authoring) { interactive = !!value; writable = !!authoring; controls.forEach(function (row) { row.input.disabled = !interactive || row.write && !writable || row.available === false; }); refreshMode(); },
+      updateLanguage: function () { regions.forEach(function (region) { region.querySelectorAll("[data-physics-label]").forEach(function (el) { el.textContent = t(el.dataset.physicsLabel); }); }); refreshMode(); },
+      getState: function () { return { available: components.length > 0, mode: mode, frameRate: frameRate, profile: profile, qualityMode: qualityMode, skirtCorrection: skirtCorrection, motionCorrection: motionCorrection, runtime: runtimeFlags(), nativeAvailable: nativeAvailable, nativeMissing: catalog.native && catalog.native.missing || [], swingBone: applyBones, swingCollider: applyColliders, showColliders: showColliders, components: components.length, dynamicBones: springs.length, edited: Object.keys(edits).length, solver: activeSolver().getState() }; },
+      dispose: function () { disposed = true; Object.keys(engines).forEach(function (name) { if (engines[name].dispose) engines[name].dispose(); }); regions.forEach(function (r) { r.remove(); }); root.remove(helperGroup); helperGroup.traverse(function (object) { if (object.geometry) object.geometry.dispose(); if (object.material) object.material.dispose(); }); }
     };
   }
   window.ViewerPhysics = { create: create, createSolver: createSolver };

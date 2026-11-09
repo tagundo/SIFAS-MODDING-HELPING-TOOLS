@@ -338,6 +338,8 @@ def _audio(job, repo_root, output_root, record, timelines):
 
 def _publish(job, *, paths, descriptor, timelines, repo_root, output_root, record):
     descriptor = json.loads(json.dumps(descriptor, allow_nan=False))
+    from .viewer_physics_runtime import motion_settings
+    descriptor["physics"] = motion_settings(repo_root=repo_root, record=record)
     descriptor["audio"] = _audio(job, repo_root, output_root, record, timelines)
     _register(paths, descriptor)
     job.emit({"type": "motion", "motion": descriptor})

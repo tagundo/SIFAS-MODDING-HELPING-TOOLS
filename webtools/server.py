@@ -350,6 +350,13 @@ class Handler(BaseHTTPRequestHandler):
                                 repo_root=Path.cwd(),
                                 cache_root=Path(default_sukusta_dir("extracted")) / "game-models",
                                 language=self._lang())
+                            physics = result["editing"].get("physics")
+                            if isinstance(physics, dict) and isinstance(physics.get("native"), dict):
+                                from webtools.core import viewer_physics_runtime
+                                physics["native"]["runtime"] = viewer_physics_runtime.describe(
+                                    model_edits.mod_source_context(result["editing"]["token"]),
+                                    physics, repo_root=Path.cwd(),
+                                    cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
                             from webtools.core import viewer_scene_roles
                             if (result["editing"]["modPackaging"].get("characterId") == 209 and
                                     viewer_scene_roles.pending_supported_nodes(model_edits.mod_source_context(result["id"]))):

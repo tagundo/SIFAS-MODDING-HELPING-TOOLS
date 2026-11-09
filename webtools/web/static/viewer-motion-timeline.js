@@ -233,6 +233,21 @@
       });
     }
     return { warnings: warnings, compatibleSegments: used,
+      animatedProperties: function (time) {
+        var owned = {};
+        [groups, facialGroups, gazeGroups].forEach(function (collection) {
+          Object.keys(collection).forEach(function (key) {
+            var group = collection[key], binding = group.binding, property = binding.parsedPath && binding.parsedPath.propertyName;
+            if (["position", "quaternion", "scale"].indexOf(property) < 0 ||
+                !group.tracks.some(function (record) { return weight(record.segment, time) > 0; })) return;
+            var node = binding.targetObject || binding.node, id = node && node.userData && node.userData.elichika_node;
+            if (id === undefined) return;
+            if (!owned[String(id)]) owned[String(id)] = {};
+            owned[String(id)][property] = true;
+          });
+        });
+        return owned;
+      },
       duration: Math.max(number(descriptor.facial && descriptor.facial.duration, 0), number(descriptor.audio && descriptor.audio.duration, 0),
         (descriptor.audio && descriptor.audio.tracks || []).reduce(function (end, track) { return Math.max(end, number(track.startTime, 0) + Math.max(0, number(track.duration, 0))); }, 0),
         (descriptor.bodySegments || []).reduce(function (end, segment) { return Math.max(end, segment.start + segment.duration); }, 0)),

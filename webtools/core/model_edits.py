@@ -295,7 +295,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                                             for path, choice in variants.items())):
         _fail("The selected costume variant is invalid.")
     from . import viewer_physics, model_outlines
-    sources, targets, public, physics_records, outline_records = [], {}, [], [], []
+    sources, targets, public, physics_records, physics_managers, outline_records = [], {}, [], [], [], []
     for index, path in enumerate(paths):
         origin = str(Path(origins.get(path, path)).resolve())
         if origin not in container_ids:
@@ -342,6 +342,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             targets[node] = {**target, "key": key}
             public.append({k: copy.deepcopy(v) for k, v in target.items() if k not in ("serializedFile",)})
         physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
+        physics_managers.extend(viewer_physics.native_managers(info, index, list(targets.values())))
         outline_records.extend(model_outlines.catalogue(info, index)["meshes"])
         if len(outline_records) > model_outlines.MAX_MESHES:
             _fail("The selected models have too many outline meshes.")
@@ -349,10 +350,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             _fail("The selected models have too many physics components.")
     if not targets:
         return {"available": False, "reason": "No original writable body nodes were found."}
-    physics = {"available": bool(physics_records), "components": physics_records,
-               "presets": viewer_physics.recommendations(),
-               "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
-               "preview": "approximate_spring_sphere_capsule"}
+    physics = viewer_physics.make_catalog(physics_records, physics_managers)
     outlines = {"version": 1, "available": bool(outline_records), "meshes": outline_records}
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
                "containers": containers, "sources": sources, "targets": targets,

@@ -1497,6 +1497,7 @@
           initializeNodeCards: !keepView,
           onSelection: function () { if (persistenceController) persistenceController.refresh(); } });
         restoreVariantPose(previousPose);
+        if ((retain || keepView) && previousPose && previousPose.physics && rigController.restorePhysicsPreview) rigController.restorePhysicsPreview(previousPose.physics);
         if (prepared.editing && prepared.editing.initialState) {
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }

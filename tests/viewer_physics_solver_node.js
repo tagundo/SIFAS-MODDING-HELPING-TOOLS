@@ -1,4 +1,5 @@
-/* Real production solver, independent geometric assertions (no DOM doubles). */
+/* Enhanced clipping-correction solver, independent geometric assertions.
+ * These surface-clearance requirements do not describe original game physics. */
 'use strict';
 const assert = require('assert');
 const THREE = require('../webtools/web/static/vendor/three-r128/three.min.js');
@@ -78,7 +79,7 @@ for (const blend of [1, .5]) {
   s.bone.quaternion.setFromAxisAngle(new V(0, 1, 0), .3); solver.apply(1 / 60, { bones: false, colliders: true });
   assert(Math.abs(s.bone.quaternion.angleTo(new THREE.Quaternion()) - .3) < 1e-8);
 }
-console.log('PHYSICS_SOLVER_PASS: fixed length + radius, limits, membership, paused collision, moving sweep, exact blended triangle interiors, toggles');
+console.log('ENHANCED_PHYSICS_SOLVER_PASS: fixed length + radius, limits, membership, paused collision, moving sweep, exact blended triangle interiors, toggles');
 {
   // Two roots share a cloth panel. Neither independent joint can fully clear
   // this sphere alone; the finished blended surface needs coupled relaxation.
@@ -111,4 +112,4 @@ console.log('PHYSICS_SOLVER_PASS: fixed length + radius, limits, membership, pau
   assert.equal(solver.getState().surfaceSupports, 0, 'live weight reassignment rebuilds collision membership');
   mesh.visible = false; s.resetPose(); solver.apply(0, { bones: true, colliders: true }); assert.equal(solver.getState().surfaceTriangles, 0);
 }
-console.log('PHYSICS_COUPLED_AND_EDIT_INVALIDATION_PASS');
+console.log('ENHANCED_PHYSICS_COUPLED_AND_EDIT_INVALIDATION_PASS');

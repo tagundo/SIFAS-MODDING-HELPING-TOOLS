@@ -56,16 +56,16 @@ class PhysicsTests(unittest.TestCase):
         bone = next(r for r in records if r["kind"] == "bone")
         self.assertEqual(bone["simulation"]["colliders"], ["0:0:224"])
 
-    @unittest.skipUnless(shutil.which("node"), "Node is required for the real Three.js solver regression")
-    def test_production_solver_constrained_surfaces_and_live_mesh_edits(self):
+    @unittest.skipUnless(shutil.which("node"), "Node is required for the enhanced Three.js solver regression")
+    def test_enhanced_solver_constrained_surfaces_and_live_mesh_edits(self):
         result = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("viewer_physics_solver_node.js"))],
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("PHYSICS_COUPLED_AND_EDIT_INVALIDATION_PASS", result.stdout)
+        self.assertIn("ENHANCED_PHYSICS_COUPLED_AND_EDIT_INVALIDATION_PASS", result.stdout)
         timing = subprocess.run([shutil.which("node"), str(Path(__file__).with_name("viewer_physics_timing_node.js"))],
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
         self.assertEqual(timing.returncode, 0, timing.stdout)
-        self.assertIn("PHYSICS_TIMING_PASS", timing.stdout)
+        self.assertIn("ENHANCED_PHYSICS_TIMING_PASS", timing.stdout)
 
     def test_physics_only_export_roundtrips_fields_and_preserves_geometry_originals(self):
         state = self.state({"id": self.bone["id"], "values": {"stiffnessForce": .05, "dragForce": .5}},

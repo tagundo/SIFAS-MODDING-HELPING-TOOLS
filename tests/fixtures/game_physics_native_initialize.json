@@ -1,0 +1,883 @@
+{
+  "schemaVersion": 1,
+  "scope": "Original SwingBone.Initialize and original Transform.localEulerAngles wrapper with actual three-ELF Quaternion conversion; explicit synthetic Transform/name/live-reference/runtime boundaries",
+  "provenance": {
+    "sourceFixture": "native-initialize-fixtures.json",
+    "sourceFixtureSha256": "5e1589dff1b6a8fedad50ad9f346519127f0248a942eeb79c4f8cea06c6db727",
+    "images": {
+      "il2cpp": {
+        "file": "libil2cpp.so",
+        "sha256": "39c2eed48009be7632be5aaf910d76b9316cd8c98f118e180c593b5615dd022e"
+      },
+      "libunity": {
+        "file": "libunity.so",
+        "sha256": "1db08266ee63c5c4f0036b62d47a93f8586b233ad4acb2100ad3dd08577e492d"
+      },
+      "android26_libm": {
+        "file": "libm.so",
+        "sha256": "06058af55fc85804d8a5f9b7b38ef726e22953e0a79b3b59cbcfad490872da85"
+      }
+    },
+    "entryRva": "0x2c97150",
+    "originalEulerWrapperRva": "0x4408180",
+    "numericStubs": 0,
+    "runtimeBoundaries": {
+      "metadata": "0x1f4149c",
+      "componentTransform": "0x42b6bf0",
+      "transformParent": "0x4408d5c",
+      "transformPosition": "0x4407bc4",
+      "transformLocalRotation": "0x44081b8",
+      "transformLocalRotationInjected": "0x4408a4c",
+      "liveObjectInequality": "0x349cd44",
+      "objectName": "0x34b01a0",
+      "ordinalAsciiIndexOf": "0x3a951ec",
+      "icallNameResolver": "0x1fa2014"
+    },
+    "runtimeClassState": [
+      {
+        "type": "Mathf",
+        "gotRva": "0x6fdab98",
+        "initializerFlags": 0,
+        "staticState": "Epsilon float32bits00000001"
+      },
+      {
+        "type": "Vector3",
+        "gotRva": "0x70d9d50",
+        "initializerFlags": 0,
+        "staticState": "zero vectors/fields; Quaternion identity where applicable"
+      },
+      {
+        "type": "Quaternion",
+        "gotRva": "0x70145b8",
+        "initializerFlags": 0,
+        "staticState": "zero vectors/fields; Quaternion identity where applicable"
+      },
+      {
+        "type": "UnityObject",
+        "gotRva": "0x6ffec18",
+        "initializerFlags": 0,
+        "staticState": "zero vectors/fields; Quaternion identity where applicable"
+      },
+      {
+        "type": "LLAS.Utils.UtilVector",
+        "gotRva": "0x7036a50",
+        "initializerFlags": 0,
+        "staticState": "zero vectors/fields; Quaternion identity where applicable"
+      }
+    ],
+    "syntheticTls": "Declared thread pointer/stack-canary storage only",
+    "limits": "Valid declared live Transform references or null parent; ASCII names; original OS/runtime startup not executed",
+    "numericProviderNote": "Original client IL2CPP/Unity instructions plus unchanged SDK Android26 libm; not a captured running device OS/FP state"
+  },
+  "summary": {
+    "cases": 8,
+    "explicitInitializations": 11,
+    "unchangedRestCachesWithoutReinitialize": 8,
+    "originalEulerWrapperEntries": 27,
+    "originalUnityEulerInjectedEntries": 27
+  },
+  "cases": [
+    {
+      "name": "SkirtA1_Dyna",
+      "restInputs": {
+        "name": "SkirtA1_Dyna",
+        "bonePosition": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "childPosition": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "localRotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "00000000",
+          "00000000",
+          "00000000"
+        ],
+        "childPosition": [
+          "00000000",
+          "3f800000",
+          "00000000"
+        ],
+        "localRotation": [
+          "00000000",
+          "00000000",
+          "00000000",
+          "3f800000"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": true,
+        "isInitialized": true,
+        "skirtData": 7,
+        "localRotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "initialAngles": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "springLength": 1.0,
+        "currentTipPosition": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "previousTipPosition": [
+          0.0,
+          1.0,
+          0.0
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "SkirtA1_Dyna2_Dyna",
+        "bonePosition": [
+          0.75,
+          0.75,
+          0.75
+        ],
+        "childPosition": [
+          -1.100000023841858,
+          1.399999976158142,
+          1.7000000476837158
+        ],
+        "localRotation": [
+          0.3399980962276459,
+          -0.16999904811382294,
+          0.5099971890449524,
+          0.7716245651245117
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.1788759231567383,
+      "explicitReinitialize": {
+        "expectedCache": {
+          "hasTrans": true,
+          "hasParent": false,
+          "isInitialized": true,
+          "skirtData": 0,
+          "localRotation": [
+            0.3399980962276459,
+            -0.16999904811382294,
+            0.5099971890449524,
+            0.7716245651245117
+          ],
+          "initialAngles": [
+            44.27475357055664,
+            6.7732439041137695,
+            69.68274688720703
+          ],
+          "springLength": 2.1788759231567383,
+          "currentTipPosition": [
+            -1.100000023841858,
+            1.399999976158142,
+            1.7000000476837158
+          ],
+          "previousTipPosition": [
+            -1.100000023841858,
+            1.399999976158142,
+            1.7000000476837158
+          ]
+        }
+      }
+    },
+    {
+      "name": "SkirtE1_Dyna",
+      "restInputs": {
+        "name": "SkirtE1_Dyna",
+        "bonePosition": [
+          3.0,
+          2.0,
+          1.0
+        ],
+        "childPosition": [
+          3.0,
+          3.0,
+          1.0
+        ],
+        "localRotation": [
+          0.0,
+          0.0,
+          0.258819043636322,
+          0.9659258127212524
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "40400000",
+          "40000000",
+          "3f800000"
+        ],
+        "childPosition": [
+          "40400000",
+          "40400000",
+          "3f800000"
+        ],
+        "localRotation": [
+          "00000000",
+          "00000000",
+          "3e8483ee",
+          "3f7746ea"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": true,
+        "isInitialized": true,
+        "skirtData": 3,
+        "localRotation": [
+          0.0,
+          0.0,
+          0.258819043636322,
+          0.9659258127212524
+        ],
+        "initialAngles": [
+          -0.0,
+          0.0,
+          30.000001907348633
+        ],
+        "springLength": 1.0,
+        "currentTipPosition": [
+          3.0,
+          3.0,
+          1.0
+        ],
+        "previousTipPosition": [
+          3.0,
+          3.0,
+          1.0
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "SkirtE1_Dyna2_Dyna",
+        "bonePosition": [
+          3.75,
+          2.75,
+          1.75
+        ],
+        "childPosition": [
+          1.899999976158142,
+          3.4000000953674316,
+          2.700000047683716
+        ],
+        "localRotation": [
+          0.35067829489707947,
+          -0.17533914744853973,
+          0.526017427444458,
+          0.7547096014022827
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.1788759231567383
+    },
+    {
+      "name": "LeftSkirtB1_Dyna",
+      "restInputs": {
+        "name": "LeftSkirtB1_Dyna",
+        "bonePosition": [
+          1.25,
+          -2.0,
+          0.4000000059604645
+        ],
+        "childPosition": [
+          1.7999999523162842,
+          -0.5,
+          1.7000000476837158
+        ],
+        "localRotation": [
+          0.11925138533115387,
+          0.23850277066230774,
+          0.3577541410923004,
+          0.894934356212616
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "3fa00000",
+          "c0000000",
+          "3ecccccd"
+        ],
+        "childPosition": [
+          "3fe66666",
+          "bf000000",
+          "3fd9999a"
+        ],
+        "localRotation": [
+          "3df43a12",
+          "3e743a12",
+          "3eb72b8d",
+          "3f651a6b"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": true,
+        "isInitialized": true,
+        "skirtData": 1,
+        "localRotation": [
+          0.11925138533115387,
+          0.23850277066230774,
+          0.3577541410923004,
+          0.894934356212616
+        ],
+        "initialAngles": [
+          2.4526426792144775,
+          30.842754364013672,
+          44.255226135253906
+        ],
+        "springLength": 2.0597331523895264,
+        "currentTipPosition": [
+          1.7999999523162842,
+          -0.5,
+          1.7000000476837158
+        ],
+        "previousTipPosition": [
+          1.7999999523162842,
+          -0.5,
+          1.7000000476837158
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "LeftSkirtB1_Dyna2_Dyna",
+        "bonePosition": [
+          2.0,
+          -1.25,
+          1.149999976158142
+        ],
+        "childPosition": [
+          0.6999999284744263,
+          -0.10000000149011612,
+          3.4000000953674316
+        ],
+        "localRotation": [
+          0.3611181676387787,
+          -0.18055908381938934,
+          0.5416772365570068,
+          0.7372773289680481
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.8416545391082764,
+      "explicitReinitialize": {
+        "expectedCache": {
+          "hasTrans": true,
+          "hasParent": false,
+          "isInitialized": true,
+          "skirtData": 0,
+          "localRotation": [
+            0.3611181676387787,
+            -0.18055908381938934,
+            0.5416772365570068,
+            0.7372773289680481
+          ],
+          "initialAngles": [
+            46.727176666259766,
+            10.504863739013672,
+            77.15770721435547
+          ],
+          "springLength": 2.8416545391082764,
+          "currentTipPosition": [
+            0.6999999284744263,
+            -0.10000000149011612,
+            3.4000000953674316
+          ],
+          "previousTipPosition": [
+            0.6999999284744263,
+            -0.10000000149011612,
+            3.4000000953674316
+          ]
+        }
+      }
+    },
+    {
+      "name": "RightSkirtC1_Dyna",
+      "restInputs": {
+        "name": "RightSkirtC1_Dyna",
+        "bonePosition": [
+          -2.0,
+          0.30000001192092896,
+          4.0
+        ],
+        "childPosition": [
+          -2.0,
+          0.30000001192092896,
+          4.75
+        ],
+        "localRotation": [
+          -0.0,
+          -0.0,
+          -0.8660253882408142,
+          0.5
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "c0000000",
+          "3e99999a",
+          "40800000"
+        ],
+        "childPosition": [
+          "c0000000",
+          "3e99999a",
+          "40980000"
+        ],
+        "localRotation": [
+          "80000000",
+          "80000000",
+          "bf5db3d7",
+          "3f000000"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": false,
+        "isInitialized": true,
+        "skirtData": 2,
+        "localRotation": [
+          -0.0,
+          -0.0,
+          -0.8660253882408142,
+          0.5
+        ],
+        "initialAngles": [
+          -0.0,
+          0.0,
+          240.0
+        ],
+        "springLength": 0.75,
+        "currentTipPosition": [
+          -2.0,
+          0.30000001192092896,
+          4.75
+        ],
+        "previousTipPosition": [
+          -2.0,
+          0.30000001192092896,
+          4.75
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "RightSkirtC1_Dyna2_Dyna",
+        "bonePosition": [
+          -1.25,
+          1.0499999523162842,
+          4.75
+        ],
+        "childPosition": [
+          -3.0999999046325684,
+          0.699999988079071,
+          6.449999809265137
+        ],
+        "localRotation": [
+          0.3713105320930481,
+          -0.18565526604652405,
+          0.5569657683372498,
+          0.7193397879600525
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.5367300510406494,
+      "explicitReinitialize": {
+        "expectedCache": {
+          "hasTrans": true,
+          "hasParent": true,
+          "isInitialized": true,
+          "skirtData": 0,
+          "localRotation": [
+            0.3713105320930481,
+            -0.18565526604652405,
+            0.5569657683372498,
+            0.7193397879600525
+          ],
+          "initialAngles": [
+            47.817020416259766,
+            12.602867126464844,
+            81.10456085205078
+          ],
+          "springLength": 2.5367300510406494,
+          "currentTipPosition": [
+            -3.0999999046325684,
+            0.699999988079071,
+            6.449999809265137
+          ],
+          "previousTipPosition": [
+            -3.0999999046325684,
+            0.699999988079071,
+            6.449999809265137
+          ]
+        }
+      }
+    },
+    {
+      "name": "LeftSkirtA1_Dyna",
+      "restInputs": {
+        "name": "LeftSkirtA1_Dyna",
+        "bonePosition": [
+          0.20000000298023224,
+          0.30000001192092896,
+          0.4000000059604645
+        ],
+        "childPosition": [
+          1.2000000476837158,
+          0.30000001192092896,
+          0.4000000059604645
+        ],
+        "localRotation": [
+          0.0,
+          0.7071067690849304,
+          0.0,
+          0.7071067690849304
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "3e4ccccd",
+          "3e99999a",
+          "3ecccccd"
+        ],
+        "childPosition": [
+          "3f99999a",
+          "3e99999a",
+          "3ecccccd"
+        ],
+        "localRotation": [
+          "00000000",
+          "3f3504f3",
+          "00000000",
+          "3f3504f3"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": true,
+        "isInitialized": true,
+        "skirtData": 0,
+        "localRotation": [
+          0.0,
+          0.7071067690849304,
+          0.0,
+          0.7071067690849304
+        ],
+        "initialAngles": [
+          -0.0,
+          90.0,
+          0.0
+        ],
+        "springLength": 1.0,
+        "currentTipPosition": [
+          1.2000000476837158,
+          0.30000001192092896,
+          0.4000000059604645
+        ],
+        "previousTipPosition": [
+          1.2000000476837158,
+          0.30000001192092896,
+          0.4000000059604645
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "LeftSkirtA1_Dyna2_Dyna",
+        "bonePosition": [
+          0.949999988079071,
+          1.0499999523162842,
+          1.149999976158142
+        ],
+        "childPosition": [
+          0.1000000461935997,
+          0.699999988079071,
+          2.0999999046325684
+        ],
+        "localRotation": [
+          0.381248414516449,
+          -0.1906242072582245,
+          0.5718725919723511,
+          0.7009092569351196
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 1.3219302892684937
+    },
+    {
+      "name": "SkirtA1_Dyna2_Dyna",
+      "restInputs": {
+        "name": "SkirtA1_Dyna2_Dyna",
+        "bonePosition": [
+          -4.0,
+          2.0,
+          7.0
+        ],
+        "childPosition": [
+          -3.0,
+          3.0,
+          8.0
+        ],
+        "localRotation": [
+          0.2636081874370575,
+          -0.17573879659175873,
+          0.017573880031704903,
+          0.948323667049408
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "c0800000",
+          "40000000",
+          "40e00000"
+        ],
+        "childPosition": [
+          "c0400000",
+          "40400000",
+          "41000000"
+        ],
+        "localRotation": [
+          "3e86f7a7",
+          "be33f4df",
+          "3c8ff719",
+          "3f72c557"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": false,
+        "isInitialized": true,
+        "skirtData": 0,
+        "localRotation": [
+          0.2636081874370575,
+          -0.17573879659175873,
+          0.017573880031704903,
+          0.948323667049408
+        ],
+        "initialAngles": [
+          30.40762710571289,
+          337.9303894042969,
+          356.05596923828125
+        ],
+        "springLength": 1.7320507764816284,
+        "currentTipPosition": [
+          -3.0,
+          3.0,
+          8.0
+        ],
+        "previousTipPosition": [
+          -3.0,
+          3.0,
+          8.0
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "SkirtA1_Dyna2_Dyna2_Dyna",
+        "bonePosition": [
+          -3.25,
+          2.75,
+          7.75
+        ],
+        "childPosition": [
+          -4.099999904632568,
+          3.4000000953674316,
+          9.699999809265137
+        ],
+        "localRotation": [
+          0.39092499017715454,
+          -0.19546249508857727,
+          0.5863875150680542,
+          0.6819983720779419
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.224297523498535
+    },
+    {
+      "name": "plain",
+      "restInputs": {
+        "name": "plain",
+        "bonePosition": [
+          2.0,
+          2.0,
+          2.0
+        ],
+        "childPosition": [
+          2.0,
+          2.0,
+          2.0
+        ],
+        "localRotation": [
+          0.3772584795951843,
+          0.12575283646583557,
+          -0.8802698254585266,
+          0.258819043636322
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "40000000",
+          "40000000",
+          "40000000"
+        ],
+        "childPosition": [
+          "40000000",
+          "40000000",
+          "40000000"
+        ],
+        "localRotation": [
+          "3ec12806",
+          "3e00c55a",
+          "bf61595d",
+          "3e8483ee"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": true,
+        "isInitialized": true,
+        "skirtData": 0,
+        "localRotation": [
+          0.3772584795951843,
+          0.12575283646583557,
+          -0.8802698254585266,
+          0.258819043636322
+        ],
+        "initialAngles": [
+          24.624919891357422,
+          318.7749328613281,
+          203.38278198242188
+        ],
+        "springLength": 0.0,
+        "currentTipPosition": [
+          2.0,
+          2.0,
+          2.0
+        ],
+        "previousTipPosition": [
+          2.0,
+          2.0,
+          2.0
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "plain2_Dyna",
+        "bonePosition": [
+          2.75,
+          2.75,
+          2.75
+        ],
+        "childPosition": [
+          0.8999999761581421,
+          2.4000000953674316,
+          3.700000047683716
+        ],
+        "localRotation": [
+          0.4003336727619171,
+          -0.20016683638095856,
+          0.6005005240440369,
+          0.6626200675964355
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.1089096069335938
+    },
+    {
+      "name": "RightSkirtD1_Dyna_suffix",
+      "restInputs": {
+        "name": "RightSkirtD1_Dyna_suffix",
+        "bonePosition": [
+          0.699999988079071,
+          -1.2999999523162842,
+          2.0999999046325684
+        ],
+        "childPosition": [
+          1.899999976158142,
+          -0.20000000298023224,
+          -1.399999976158142
+        ],
+        "localRotation": [
+          0.12044252455234528,
+          -0.4817700982093811,
+          -0.24088504910469055,
+          0.8338858485221863
+        ]
+      },
+      "restInputBits": {
+        "bonePosition": [
+          "3f333333",
+          "bfa66666",
+          "40066666"
+        ],
+        "childPosition": [
+          "3ff33333",
+          "be4ccccd",
+          "bfb33333"
+        ],
+        "localRotation": [
+          "3df6aa92",
+          "bef6aa92",
+          "be76aa92",
+          "3f55798b"
+        ]
+      },
+      "expectedCache": {
+        "hasTrans": true,
+        "hasParent": false,
+        "isInitialized": true,
+        "skirtData": 2,
+        "localRotation": [
+          0.12044252455234528,
+          -0.4817700982093811,
+          -0.24088504910469055,
+          0.8338858485221863
+        ],
+        "initialAngles": [
+          358.21026611328125,
+          300.4661865234375,
+          328.7987976074219
+        ],
+        "springLength": 3.8600518703460693,
+        "currentTipPosition": [
+          1.899999976158142,
+          -0.20000000298023224,
+          -1.399999976158142
+        ],
+        "previousTipPosition": [
+          1.899999976158142,
+          -0.20000000298023224,
+          -1.399999976158142
+        ]
+      },
+      "animatedGetterInputs": {
+        "name": "RightSkirtD1_Dyna_suffix2_Dyna",
+        "bonePosition": [
+          1.4500000476837158,
+          -0.5499999523162842,
+          2.8499999046325684
+        ],
+        "childPosition": [
+          0.7999999523162842,
+          0.20000000298023224,
+          0.30000001192092896
+        ],
+        "localRotation": [
+          0.4094679653644562,
+          -0.2047339826822281,
+          0.6142019629478455,
+          0.6427876353263855
+        ]
+      },
+      "expectedCacheUnchangedWithoutInitialize": true,
+      "animatedNativeSpringDistance": 2.7363295555114746
+    }
+  ]
+}

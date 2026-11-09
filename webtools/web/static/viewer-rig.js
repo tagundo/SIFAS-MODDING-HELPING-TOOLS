@@ -91,6 +91,7 @@
     var skirtOverrides = {};
     var authoredNodes = {};
     var nodeEditor = null, expressionPanel = null, physicsController = null;
+    var physicsPoseBaseline = null, physicsValuesBaseline = "";
     var outlineEdits = [];
     var selectedNode = "";
     var editingMethods = {}, meshConversions = {}, editorGroup = "node", editorSelections = {}, evaluationMode = "authoring", restoredCompensationReference = {};
@@ -508,6 +509,22 @@
       if (adjusted) Object.keys(adjustments).forEach(function (id) { if (values[id]) applyUser(values[id], adjustments[id], id); });
       return values;
     }
+    function physicsInitializationPose() {
+      // A lazy simulation may first be enabled midway through an animation.
+      // Its authored initial rotations and lengths still come from file TRS
+      // plus persistent body edits, never the currently displayed frame.
+      // Keep this detached: reading a rest pose must not move the scene.
+      var values = fileMap(), pose = {};
+      applyBodyPreset(function (id) { return values[id]; });
+      applyBody(function (id) { return values[id]; });
+      Object.keys(adjustments).forEach(function (id) { if (values[id]) applyUser(values[id], adjustments[id], id); });
+      Object.keys(accessoryCorrections).forEach(function (id) { if (values[id]) values[id].position.add(accessoryCorrections[id]); });
+      Object.keys(values).forEach(function (id) {
+        var value = values[id];
+        pose[id] = { position: value.position.toArray(), quaternion: value.quaternion.toArray(), scale: value.scale.toArray() };
+      });
+      return pose;
+    }
     function editingValues(id) {
       var value = editing.toUI(THREE, staticMap(true)[id], savedEuler(id)), manual = adjustments[id];
       if (manual && (manual.rotation || []).some(function (part) { return part !== null; })) {
@@ -585,7 +602,55 @@
       // single-action track after update, including paused/scrubbed frames.
       currentClip.replayTracks.forEach(function (track) { track.binding.setValue(track.interpolant.evaluate(currentTime()), 0); });
     }
-    function evaluate(delta) {
+    function resetPhysicsSimulation(reason) {
+      if (physicsController && physicsController.resetSimulation) physicsController.resetSimulation("rig:" + reason);
+    }
+    function animatedPhysicsProperties() {
+      var owned = {};
+      if (currentClip && currentClip.timeline && currentClip.timeline.animatedProperties) owned = currentClip.timeline.animatedProperties(currentTime());
+      else if (currentClip && currentClip.animation) {
+        if (!currentClip.physicsAnimatedProperties) {
+          var properties = {};
+          currentClip.animation.tracks.forEach(function (track) {
+            var binding = THREE.PropertyBinding.create(root, track.name); binding.bind();
+            var property = binding.parsedPath && binding.parsedPath.propertyName, node = binding.targetObject || binding.node;
+            var id = node && node.userData && node.userData.elichika_node;
+            if (id === undefined || ["position", "quaternion", "scale"].indexOf(property) < 0) return;
+            if (!properties[String(id)]) properties[String(id)] = {};
+            properties[String(id)][property] = true;
+          });
+          currentClip.physicsAnimatedProperties = properties;
+        }
+        Object.keys(currentClip.physicsAnimatedProperties).forEach(function (id) { owned[id] = Object.assign({}, currentClip.physicsAnimatedProperties[id]); });
+      }
+      if (expressionPanel) expressionPanel.getBoneOperations().forEach(function (operation) {
+        if (["position", "quaternion", "scale"].indexOf(operation.kind) < 0) return;
+        var id = String(operation.node); if (!owned[id]) owned[id] = {}; owned[id][operation.kind] = true;
+      });
+      return owned;
+    }
+    function applyPhysics(delta, authoringReason) {
+      if (!physicsController) return;
+      // Compare finished kinematic poses, before the physical output is added.
+      // A display refresh and a repeated equal input must not reset history.
+      var baseline = new Float64Array(all.length * 16), changedPose = false;
+      all.forEach(function (record, index) {
+        var values = record.object.matrix.elements;
+        for (var axis = 0; axis < 16; axis += 1) {
+          var offset = index * 16 + axis; baseline[offset] = values[axis];
+          if (physicsPoseBaseline && Math.abs(physicsPoseBaseline[offset] - values[axis]) > 1e-9) changedPose = true;
+        }
+      });
+      var valuesKey = JSON.stringify(physicsController.getEdits ? physicsController.getEdits() : []);
+      if (authoringReason && physicsPoseBaseline && (changedPose || valuesKey !== physicsValuesBaseline)) resetPhysicsSimulation("authoring:" + authoringReason);
+      physicsPoseBaseline = baseline; physicsValuesBaseline = valuesKey;
+      if (physicsController.captureAnimationPose) physicsController.captureAnimationPose({ clipId: selectedClip, motionCategory: currentClip && currentClip.motionCategory || null,
+        motionPhysics: currentClip && currentClip.motionPhysics || null,
+        safeSwingBone: currentClip && currentClip.motionPhysics && currentClip.motionPhysics.safeSwingBoneKnown ? currentClip.motionPhysics.safeSwingBone : undefined,
+        animatedProperties: animatedPhysicsProperties(), time: currentTime(), advancing: !!playing && delta > 0 });
+      physicsController.apply(delta || 0);
+    }
+    function evaluate(delta, authoringReason) {
       if (disposed) return;
       var released = releaseAutomaticMatrices();
       if (evaluationMode === "animation") {
@@ -608,7 +673,7 @@
         all.forEach(function (record) { capture(record.object, record.base); });
         applyAdjustments(released);
       }
-      if (physicsController) physicsController.apply(delta || 0);
+      applyPhysics(delta || 0, authoringReason);
       if (nodeEditor && nodeEditor.refreshPose) nodeEditor.refreshPose();
     }
     function listen(id, event, handler) {
@@ -754,7 +819,7 @@
           clearUnusedMethod(id);
         }
       });
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "percentage:" + kind); refreshBodyControls(); refreshNode(); changed();
     }
     function hipsInputs() {
       return ["x", "y", "z"].map(function (axis) { return element("viewer-hips-scale-" + axis); });
@@ -794,7 +859,7 @@
         dirty.forEach(function (input) { value.scale[Number(input.dataset.viewerHipsAxis)] = Number(input.value); });
         adjustments[id] = value; methodForNewEdit(id, "node");
       });
-      clearHipDrafts(); evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      clearHipDrafts(); evaluate(0, "hips"); refreshBodyControls(); refreshNode(); changed();
     }
     function undoHipAxes() {
       var control = rawControl("hips"); if (!control || !control.available) return;
@@ -806,7 +871,7 @@
         }
         delete meshConversions[id]; delete nodeCompensations[id]; clearUnusedMethod(id);
       });
-      clearHipDrafts(); evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      clearHipDrafts(); evaluate(0, "hips-reset"); refreshBodyControls(); refreshNode(); changed();
     }
     function refreshHipAxes() {
       var state = hipsState(), enabled = interactive && authoringEnabled && !disposed && state.available;
@@ -882,7 +947,7 @@
       // invalid draft. Unequal Y/Z is a valid mixed display, not a Save error.
       var input = element("viewer-thighs-number"); input.value = "";
       input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "thigh-preset"); refreshBodyControls(); refreshNode(); changed();
     }
     function refreshThighPresets() {
       var select = element("viewer-thighs-preset"); if (!select) return;
@@ -910,7 +975,7 @@
         clearUnusedMethod(id);
       });
       input.value = "100"; input.setCustomValidity(""); input.removeAttribute("aria-invalid"); delete input.dataset.viewerPercentageDirty;
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "percentage-reset:" + kind); refreshBodyControls(); refreshNode(); changed();
     }
     function refreshPercentages() {
       percentageKinds.forEach(function (kind) {
@@ -972,7 +1037,7 @@
       if (!bodyControl("breast") || id !== "loaded" && !breastPresets().some(function (preset) { return preset.id === id; })) return;
       body.breastPreset = id; restoredCompensationReference = {}; clearManualScale(bodyControl("breast").nodes);
       bodyControl("breast").nodes.forEach(function (target) { var node = String(target.node); delete meshConversions[node]; if (id !== "loaded") methodForNewEdit(node, "node"); else clearUnusedMethod(node); });
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "breast-profile"); refreshBodyControls(); refreshNode(); changed();
     }
     function setSkirt() {
       var state = skirtValues(), input = element("viewer-skirt-number"), value = Number(input.value);
@@ -980,12 +1045,12 @@
         input.setCustomValidity(translate("Skirt scale must be between 0.01 and 10.")); input.reportValidity(); return;
       }
       input.setCustomValidity(""); restoredCompensationReference = {}; state.targets.forEach(function (target) { skirtOverrides[target.node] = [value, value, value]; delete meshConversions[target.node]; methodForNewEdit(String(target.node), "node"); }); clearManualScale(state.targets);
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "skirt"); refreshBodyControls(); refreshNode(); changed();
     }
     function undoSkirt() {
       var state = skirtValues(); skirtOverrides = {}; restoredCompensationReference = {}; clearManualScale(state.targets);
       state.targets.forEach(function (target) { delete meshConversions[target.node]; clearUnusedMethod(String(target.node)); });
-      evaluate(0); refreshBodyControls(); refreshNode(); changed();
+      evaluate(0, "skirt-reset"); refreshBodyControls(); refreshNode(); changed();
     }
     function numberText(value) { return String(Number(value.toPrecision(7))); }
     function percentageText(value) { return String(Number(value.toFixed(2))); }
@@ -1046,6 +1111,7 @@
       source.textContent = "heightScale: " + metadata.map(function (part) { return part.targetName + " = " + numberText(part.heightScale); }).join("; ");
     }
     function setClip(name) {
+      if (name !== selectedClip || currentTime() !== 0) resetPhysicsSimulation("clip-change");
       playing = false;
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.stopAllAction();
@@ -1072,7 +1138,13 @@
         all.forEach(function (record) { restore(record.object, record.authored); });
         var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor);
         if (!timeline.compatibleSegments) throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions."));
-        existing = { name: name, label: descriptor.label || name, animation: null, timeline: timeline,
+        var motionPhysics = descriptor.physics && typeof descriptor.physics === "object" ? {
+          profile: descriptor.physics.profile === "live" ? "live" : "navi", liveId: descriptor.physics.liveId,
+          safeSwingBoneKnown: descriptor.physics.safeSwingBoneKnown === true && typeof descriptor.physics.safeSwingBone === "boolean",
+          safeSwingBone: typeof descriptor.physics.safeSwingBone === "boolean" ? descriptor.physics.safeSwingBone : null
+        } : null;
+        existing = { name: name, label: descriptor.label || name, motionCategory: descriptor.category,
+          motionPhysics: motionPhysics, animation: null, timeline: timeline,
           duration: timeline.duration, loop: descriptor.category !== "voice", partial: timeline.warnings.length > 0, visibility: [] };
         clipEntries.push(existing);
         if (!timelineDescriptors.some(function (value) { return value.category === descriptor.category && value.motion === descriptor.motion && value.performerPosition === descriptor.performerPosition; })) timelineDescriptors.push(descriptor);
@@ -1146,7 +1218,7 @@
       savedParts.forEach(function (part) {
         var label = document.createElement("label"), input = document.createElement("input"), title = document.createElement("span");
         input.type = "checkbox"; input.checked = part.enabled; input.dataset.viewerSavedPart = part.id;
-        function change() { part.enabled = input.checked; evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode(); changed(); }
+        function change() { part.enabled = input.checked; evaluate(0, "saved-part"); refreshSavedStatus(); refreshBodyControls(); refreshNode(); changed(); }
         input.addEventListener("change", change); events.push(function () { input.removeEventListener("change", change); });
         part.input = input; part.title = title; label.appendChild(input); label.appendChild(title); holder.appendChild(label);
       });
@@ -1208,12 +1280,12 @@
       changeCompensation: function (id, value) {
         if (!compensationSelection(id) || !value || ["auto", "spine2", "spine1", "both"].indexOf(value.mode) < 0 || value.enabled && effectiveMethod(id) !== "mesh") return;
         nodeCompensations[id] = { enabled: !!value.enabled, mode: value.mode };
-        evaluate(0); refreshNode(); changed();
+        evaluate(0, "compensation"); refreshNode(); changed();
       },
       change: function (id, value) {
         if (value) { adjustments[id] = value; methodForNewEdit(id); }
         else { delete adjustments[id]; delete nodeCompensations[id]; delete editingMethods[id]; delete meshConversions[id]; }
-        evaluate(0); refreshBodyControls(); changed();
+        evaluate(0, "node"); refreshBodyControls(); changed();
       } });
     ["node", "mesh"].forEach(function (tool) {
       if (!element("viewer-editor-" + tool + "-tab")) return;
@@ -1234,8 +1306,8 @@
     if (mixer) mixer.addEventListener("finished", function (event) { if (event.action === action) { playing = false; updateTime(); } });
     listen("viewer-play", "click", function () {
       playing = !playing;
-      if (playing && action && (action.paused || action.time >= duration() - 1e-7)) { action.reset().play(); evaluate(0); }
-      if (playing && !action && playhead >= duration()) { playhead = 0; evaluate(0); }
+      if (playing && action && (action.paused || action.time >= duration() - 1e-7)) { resetPhysicsSimulation("playback-restart"); action.reset().play(); evaluate(0); }
+      if (playing && !action && playhead >= duration()) { resetPhysicsSimulation("playback-restart"); playhead = 0; evaluate(0); }
       updateTime(); changed();
     });
     listen("viewer-time", "input", function () {
@@ -1246,6 +1318,7 @@
       var time = clamp(finite(this.value, 0), 0, Math.max(0, duration() - (action && currentClip.loop ? 1e-7 : 0)));
       if (action) { action.paused = false; action.enabled = true; action.time = time; }
       else playhead = time;
+      resetPhysicsSimulation("seek");
       evaluate(0); updateTime(); refreshExpression(); changed();
     });
     percentageKinds.forEach(function (kind) {
@@ -1277,11 +1350,12 @@
     listen("viewer-skirt-number", "input", function () { this.setCustomValidity(""); });
     listen("viewer-skirt-reset", "click", function () { if (!this.disabled) undoSkirt(); });
     listen("viewer-saved-nodes", "change", function () {
-      useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
+      useSavedNodes = this.checked && savedOperations.length > 0; evaluate(0, "saved-settings"); refreshSavedStatus(); refreshAvailability(); refreshNode(); changed();
     });
     listen("viewer-preview-reset", "click", reset);
     if (window.ViewerPhysics) physicsController = window.ViewerPhysics.create(root, options.editing && options.editing.physics || {}, {
-      translate: translate, onChange: function () { evaluate(0); changed(); }
+      translate: translate, getInitializationPose: physicsInitializationPose,
+      onChange: function () { evaluate(0, "physics-values"); changed(); }
     });
     timelineDescriptors.slice().forEach(function (descriptor) {
       try { registerMotionTimeline(descriptor); }
@@ -1423,6 +1497,7 @@
       body = { breastPreset: "loaded" }; skirtOverrides = {};
       useSavedNodes = savedOperations.length > 0; element("viewer-saved-nodes").checked = useSavedNodes;
       savedParts.forEach(function (part) { part.enabled = true; if (part.input) part.input.checked = true; });
+      resetPhysicsSimulation("authoring-restore");
       evaluate(0); refreshSavedStatus(); refreshBodyControls(); refreshNode();
       if (!restoreOptions || restoreOptions.initializeNodeCards !== false) initializeNodeCards();
       changed();
@@ -1465,7 +1540,7 @@
       setAccessoryUnclip: function (value) {
         var next = checkedAccessory(value);
         if (JSON.stringify(next) === JSON.stringify(accessoryUnclip)) return;
-        accessoryUnclip = next; accessoryCorrections = {}; evaluate(0); changed();
+        accessoryUnclip = next; accessoryCorrections = {}; evaluate(0, "accessory"); changed();
       },
       setAccessoryCorrections: function (values) {
         if (!Array.isArray(values) || values.length > bones.length) throw new Error("The accessory preview response is invalid.");
@@ -1483,7 +1558,7 @@
         if (ids.length === previousIds.length && ids.every(function (id) {
           return accessoryCorrections[id] && next[id].equals(accessoryCorrections[id]);
         })) return;
-        accessoryCorrections = next; evaluate(0); changed();
+        accessoryCorrections = next; evaluate(0, "accessory-correction"); changed();
       },
       setEditingMethod: function (id, method) {
         id = String(id);
@@ -1500,6 +1575,12 @@
         updateLanguage(); setClip(existing.name);
         return { clipName: existing.name, warnings: existing.timeline.warnings.slice() };
       },
+      restorePhysicsPreview: function (state) {
+        if (!physicsController || !physicsController.restorePreviewState || !state || typeof state !== "object") return false;
+        physicsController.restorePreviewState(state);
+        evaluate(0); refreshAvailability();
+        return true;
+      },
       setEvaluationMode: function (mode) {
         if (["authoring", "animation"].indexOf(mode) < 0 || mode === evaluationMode) return;
         if (mode === "authoring") {
@@ -1509,11 +1590,18 @@
           replayAnimationTracks();
           all.forEach(function (record) { capture(record.object, record.base); });
         }
-        evaluationMode = mode; evaluate(0); refreshNode(); changed();
+        evaluationMode = mode; evaluate(0, "evaluation-mode"); refreshNode(); changed();
       },
       update: function (delta) {
         if (playing && currentClip) {
           delta = clamp(delta, 0, .1);
+          // Native SwingBone advances once per accepted game frame. Sample
+          // the animation/composite on that same clock rather than running
+          // the kinematic pose at the display's unrelated refresh rate.
+          if (physicsController && physicsController.playbackDelta) {
+            delta = physicsController.playbackDelta(delta);
+            if (!(delta > 0)) return playing && !!currentClip;
+          }
           if (!action) {
             playhead += delta;
             if (playhead >= duration()) { if (currentClip.loop && duration()) playhead %= duration(); else { playhead = duration(); playing = false; } }
@@ -1567,6 +1655,7 @@
           playing = !!state.playing;
         }
         if (state.physics && physicsController && physicsController.restorePreviewState) physicsController.restorePreviewState(state.physics);
+        resetPhysicsSimulation("inspection-restore");
         evaluate(0); updateTime(); refreshExpression(); refreshNode(); changed();
         return true;
       },

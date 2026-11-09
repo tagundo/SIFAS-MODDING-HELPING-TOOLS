@@ -1,4 +1,5 @@
-/* Production solver dynamics at different display rates; no DOM or fake math. */
+/* Enhanced solver dynamics at different display rates; no DOM or fake math.
+ * Frame-rate invariance is an enhanced feature, not native frame-unit fidelity. */
 'use strict';
 const assert = require('assert');
 const THREE = require('../webtools/web/static/vendor/three-r128/three.min.js');
@@ -41,7 +42,7 @@ switched.solver.apply(0, { bones: true, colliders: false });
 assert(switched.child.getWorldPosition(new THREE.Vector3()).distanceTo(new THREE.Vector3(1, 0, 0)) < 1e-8,
   'reset clears stored displacement and velocity without advancing a paused motion');
 
-console.log('PHYSICS_TIMING_PASS: 30/60/90/120/144/240 FPS, mid-motion rate changes, fixed length, paused reset');
+console.log('ENHANCED_PHYSICS_TIMING_PASS: 30/60/90/120/144/240 FPS, mid-motion rate changes, fixed length, paused reset');
 console.log(JSON.stringify(report));
 
 {
@@ -64,5 +65,5 @@ console.log(JSON.stringify(report));
   const line = tip.clone().sub(origin), t = Math.max(0, Math.min(1, center.clone().sub(origin).dot(line) / line.lengthSq()));
   const clearance = center.distanceTo(origin.clone().addScaledVector(line, t));
   assert(clearance >= .55 - .002, `the larger collider still penetrates the rod by ${.55 - clearance}`);
-  console.log(`PHYSICS_COLOCATED_RADII_PASS: clearance=${clearance}, required=0.55`);
+  console.log(`ENHANCED_PHYSICS_COLOCATED_RADII_PASS: clearance=${clearance}, required=0.55`);
 }

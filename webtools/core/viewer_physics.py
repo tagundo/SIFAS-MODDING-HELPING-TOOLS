@@ -1,8 +1,9 @@
 """Source-bound SwingBone and SwingCollider inspection and absolute editing.
 
-The serialized values are the game's original fields. The browser's spring
-preview is an approximation; exporting never bakes that approximation into the
-mesh. Component identity includes source, serialized file and Unity PathID.
+The serialized values are the game's original fields. Source game calculation
+and additional mesh correction are separate preview modes; neither preview is
+baked into exported geometry. Component identity includes source, serialized
+file and Unity PathID.
 """
 import copy
 import math
@@ -138,6 +139,9 @@ def inspect_info(info, source_index, bones):
                     if type(value) is int:
                         simulation[field] = value
                 simulation["skirtSafeEnable"] = bool(_field(tree, "skirtSafeEnable"))
+                lod = _field(tree, "enableLod")
+                if type(lod) in (bool, int) and lod in (0, 1):
+                    simulation["enableLod"] = bool(lod)
                 child = _field(tree, "child") or {}
                 if child.get("m_FileID", 0) == 0 and child.get("m_PathID"):
                     child_key = key[0], child["m_PathID"]
@@ -192,16 +196,162 @@ def inspect_info(info, source_index, bones):
     return records
 
 
+def native_managers(info, source_index, bones):
+    """Retain the original ordered manager graph, including its empty slots.
+
+    These are source settings, not inferred runtime quality choices. In the
+    game Initialize receives job/LOD/skirtsafe flags from its caller; the
+    browser adapter must keep that distinction explicit.
+    """
+    nodes = {(int(b.get("serializedFile", 0)), str(b["transformId"])): b["node"]
+             for b in bones if b.get("sourceIndex") == source_index and "transformId" in b}
+    transforms = {}
+    for key, tree in info["transforms"].items():
+        pointer = tree.get("m_GameObject") or {}
+        if pointer.get("m_FileID", 0) == 0:
+            transforms[(key[0], pointer.get("m_PathID"))] = key
+
+    active_cache = {}
+
+    def active(key):
+        if key in active_cache:
+            return active_cache[key]
+        tree = info["transforms"][key]
+        pointer = tree.get("m_GameObject") or {}
+        game = info["objects"].get((key[0], pointer.get("m_PathID"))) if pointer.get("m_FileID", 0) == 0 else None
+        own = bool(game.read_typetree().get("m_IsActive", True)) if game is not None else False
+        parent = info["parents"].get(key)
+        value = own and (active(parent) if parent in info["transforms"] else True)
+        active_cache[key] = value
+        return value
+
+    def knees(root):
+        found, visited = [None, None], set()
+
+        def walk(key, is_root=False):
+            if key in visited or key not in info["transforms"]:
+                return
+            visited.add(key)
+            # Unity searches the receiver itself even when inactive. Other
+            # transforms must be active in the original hierarchy; user mesh
+            # visibility is not a GameObject activation flag.
+            if not is_root and not active(key):
+                return
+            name = info["names"].get(key, "")
+            for ordinal, token in enumerate(("LeftUpLeg", "RightUpLeg")):
+                if token in name:
+                    found[ordinal] = nodes.get((key[0], str(key[1])))
+            for pointer in info["transforms"][key].get("m_Children", []):
+                if isinstance(pointer, dict) and pointer.get("m_FileID", 0) == 0:
+                    walk((key[0], pointer.get("m_PathID")))
+
+        if root is not None:
+            walk(root, True)
+        return found
+
+    def reference(key, pointer):
+        if isinstance(pointer, dict) and pointer.get("m_FileID", 0) == 0 and pointer.get("m_PathID"):
+            return f"{source_index}:{key[0]}:{pointer['m_PathID']}"
+        return None
+
+    result = []
+    for key, obj in info["objects"].items():
+        if obj.type.name != "MonoBehaviour":
+            continue
+        tree = obj.read_typetree()
+        script = _local(obj, _field(tree, "m_Script"))
+        if script is None or script.type.name != "MonoScript":
+            continue
+        if script.read_typetree().get("m_ClassName", "").rsplit(".", 1)[-1] != "SwingBoneManager":
+            continue
+        pointer = _field(tree, "m_GameObject") or {}
+        transform = transforms.get((key[0], pointer.get("m_PathID"))) if pointer.get("m_FileID", 0) == 0 else None
+        manager = {"id": f"{source_index}:{key[0]}:{key[1]}", "sourceIndex": source_index,
+                   "node": nodes.get((transform[0], str(transform[1]))) if transform else None,
+                   "enabled": bool(_field(tree, "m_Enabled") if _field(tree, "m_Enabled") is not None else True)}
+        for name in ("bones", "lodBones", "colliders", "kneeTransforms"):
+            values = _field(tree, name)
+            if values is None:
+                manager[name] = None
+                continue
+            if not isinstance(values, list) or len(values) > MAX_COMPONENTS:
+                raise ValueError("The original physics manager graph is invalid or too large.")
+            if name == "kneeTransforms":
+                manager[name] = [nodes.get((key[0], str(p.get("m_PathID"))))
+                                 if isinstance(p, dict) and p.get("m_FileID", 0) == 0 else None for p in values]
+            else:
+                manager[name] = [reference(key, p) for p in values]
+        for name in ("enableJob", "enableLod", "enableAutoStart"):
+            value = _field(tree, name)
+            manager[name] = bool(value) if type(value) in (bool, int) and value in (0, 1) else None
+        if manager["kneeTransforms"] == []:
+            manager["resolvedKneeTransforms"] = knees(transform)
+        result.append(manager)
+        if len(result) > MAX_COMPONENTS:
+            raise ValueError("The model has too many original physics managers.")
+    return result
+
+
+def native_readiness(records, managers):
+    """Report missing source facts rather than substituting enhanced physics."""
+    missing, known = [], {row["id"]: row for row in records}
+    active = [row for row in managers if row["enabled"]]
+    if not active:
+        missing.append("manager")
+    for manager in active:
+        if manager["node"] is None:
+            missing.append(manager["id"] + ":node")
+        for name in ("bones", "lodBones", "colliders", "kneeTransforms", "enableJob", "enableLod", "enableAutoStart"):
+            if manager.get(name) is None:
+                missing.append(manager["id"] + ":" + name)
+        for name in ("bones", "lodBones", "colliders"):
+            for ident in manager.get(name) or []:
+                if ident not in known:
+                    missing.append(manager["id"] + ":" + name + ":reference")
+    managed = {ident for manager in active for ident in (manager.get("bones") or []) + (manager.get("lodBones") or [])}
+    for ident in managed:
+        row = known.get(ident)
+        if row is None:
+            continue
+        sim = row.get("simulation", {})
+        for name in ("radius", "boneAxis", "externalForce", "enableLod"):
+            if name not in sim:
+                missing.append(ident + ":" + name)
+        if sim.get("childNode") is None and sim.get("childOffset") is None:
+            missing.append(ident + ":child")
+        if sim.get("skirtSafeEnable"):
+            for name in ("skirtLimitDotMin", "skirtLimitDotMax", "skirtRotDegMax", "kneeSpaceOffsetFront", "kneeSpaceOffsetOther", "kneeSpaceOffsetForce"):
+                if name not in sim:
+                    missing.append(ident + ":" + name)
+    for row in records:
+        if row["node"] is None:
+            missing.append(row["id"] + ":node")
+        sibling = row.get("sibling") if row["kind"] == "collider" else row.get("simulation", {}).get("sibling")
+        if sibling is not None and sibling not in known:
+            missing.append(row["id"] + ":sibling")
+    return {"profile": "sifas-3.12.0", "available": not missing,
+            "missing": sorted(set(missing)), "runtimeFlagsFromCaller": True}
+
+
 def catalog_sources(sources, bones):
     from .model_edits import _inspect
-    records = []
+    records, managers = [], []
     for index, source in enumerate(sources):
-        records.extend(inspect_info(_inspect(source["raw"]), index, bones))
+        info = _inspect(source["raw"])
+        records.extend(inspect_info(info, index, bones))
+        managers.extend(native_managers(info, index, bones))
         if len(records) > MAX_COMPONENTS:
             raise ValueError("The selected models have too many physics components.")
-    return {"available": bool(records), "components": records, "presets": recommendations(),
+    return make_catalog(records, managers)
+
+
+def make_catalog(records, managers):
+    if len(records) > MAX_COMPONENTS or len(managers) > MAX_COMPONENTS:
+        raise ValueError("The selected models have too many physics components or managers.")
+    return {"available": bool(records), "components": records, "managers": managers,
+            "native": native_readiness(records, managers), "presets": recommendations(),
             "recommendationSource": "sifas_breast_tuner.py / Upleg_SwingCollider_changer.py",
-            "preview": "ordered_swing_capsule_constraints"}
+            "preview": "source_game_or_enhanced"}
 
 
 def validate_edits(catalog, edits):

@@ -7,7 +7,7 @@ const window = { THREE };
 vm.runInNewContext(fs.readFileSync(require.resolve('../webtools/web/static/viewer-motion-timeline.js'), 'utf8'), { window });
 const timeline = window.ViewerMotionTimeline;
 const root = new THREE.Group();
-const bone = new THREE.Bone(); bone.name = 'hips'; root.add(bone);
+const bone = new THREE.Bone(); bone.name = 'hips'; bone.userData.elichika_node = 1; root.add(bone);
 const face = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
 face.name = 'face'; face.userData.elichika_node = 2; face.morphTargetInfluences = [0, 0]; face.morphTargetDictionary = { A: 0, E: 1 }; root.add(face);
 const first = new THREE.AnimationClip('body-1', 2, [new THREE.VectorKeyframeTrack('hips.position', [0, 2], [0, 0, 0, 2, 0, 0])]);
@@ -23,6 +23,8 @@ const descriptor = { version: 2, category: 'mv', bodySegments: [
 const player = timeline.create(root, [first, second, mouth], { clips }, descriptor);
 assert.equal(player.compatibleSegments, 2);
 player.evaluate(.5); assert(Math.abs(bone.position.x - .75) < 1e-6);
+assert.equal(JSON.stringify(player.animatedProperties(.5)), JSON.stringify({'1': {position: true}}), 'Only an active bound body property owns native input; facial morphs own no TRS');
+assert.equal(JSON.stringify(player.animatedProperties(3.5)), '{}', 'Expired body and facial segments cannot own input in a neutral gap');
 assert(Math.abs(face.morphTargetInfluences[1] - .8) < 1e-6, 'index13 resolves the original alias to mouth004');
 player.evaluate(1.5); assert(Math.abs(bone.position.x - 5.875) < 1e-6, 'overlapping body tracks blend on one playhead');
 player.evaluate(2.5); assert(Math.abs(bone.position.x - 11.5) < 1e-6);
