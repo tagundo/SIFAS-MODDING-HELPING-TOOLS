@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/K0lb3/texture2ddecoder",
+  "commit": "3ebc3b758bd6b1a3108b50148f7998ee34f058c6",
+  "version": "1.0.6",
+  "licenses": [
+    "MIT",
+    "Zlib"
+  ],
+  "files": {
+    "LICENSE-MIT": "f933e94e0f23cc8ee4da01a7c5f832221f509c190819c5e2985b6cda7dbb9066",
+    "LICENSE-Zlib": "a4845e2909a080c8d94693cca7bf5bf0140292d9801f0f5f533f77478aed3629",
+    "upstream/color.h": "30fd0d50d1e627f504ccb9ec4fb390da6bb75bea88175d24ea11cd4026cec42f",
+    "upstream/endianness.h": "0ef71764093b0214465f9c6e9de0f1ea345e1fb1b3f8a6197a21bcfb92051847",
+    "upstream/etc.cpp": "c2518f18b15b76b594998845b6b969263ce8cf847c6be80acfc00480c2c42d27",
+    "upstream/etc.h": "2931164505ad3dd37f47ee543315344f8f4854120eab8bee54fd4b6599b1c182",
+    "upstream/unitycrunch/crn_decomp.h": "0cfc0f722492cf2e18d36225a95bd0eed02cb5a5fe8125f3afbb732685184a28",
+    "upstream/unitycrunch/crn_defs.h": "9bdb576f07dc2673d632c89ebb9e69199851cced6d7269cf3134ae9cfb935f5c",
+    "upstream/unitycrunch/crnlib.h": "cf05c16902e0c282369a5d4468c4c97aa0e8538c22aeb63713e2ae7b043395b8"
+  }
+}

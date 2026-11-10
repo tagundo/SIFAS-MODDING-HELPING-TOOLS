@@ -5,7 +5,7 @@ with SIGILL on some Termux/ARM builds. The packer already ships a throwaway-chil
 decode worker exactly for this reason; we shell out to it so a codec crash kills
 only the child and we fall back to "no thumbnail" instead of taking down the
 server. Embedded Chaquopy cannot run a Python CLI child: there we allow only
-bounded Pillow raw-pixel decoding and isolate ASTC in the bundled CLI instead.
+bounded Pillow raw pixels and isolate ASTC/UnityCrunch in bundled executables.
 """
 import os
 import re
@@ -24,6 +24,7 @@ _ANDROID_LOCK = threading.Lock()
 _ANDROID_CACHE = OrderedDict()
 _ANDROID_CACHE_ENTRIES = 64
 _ANDROID_CACHE_BYTES = 32 * 1024 * 1024
+_TEXTURE65_SLOT = threading.BoundedSemaphore(1)
 _MAX_DIMENSION = 8192
 _MAX_PIXELS = 4096 * 4096
 _MAX_SOURCE_BYTES = _MAX_PIXELS * 4 * 2  # base level plus mipmaps, bounded before stream reads
@@ -59,8 +60,21 @@ def _remaining(deadline):
     return seconds
 
 
+def _texture65_profile(texture):
+    """A mip proxy keeps original Crunch dimensions and immutable source data."""
+    width = getattr(texture, "_texture65_source_width", texture.m_Width)
+    height = getattr(texture, "_texture65_source_height", texture.m_Height)
+    mip = getattr(texture, "_texture65_mip", 0)
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in (width, height, mip))
+            or not 0 < width <= _MAX_DIMENSION or not 0 < height <= _MAX_DIMENSION
+            or width * height > _MAX_PIXELS or not 0 <= mip < max(width, height).bit_length()
+            or (texture.m_Width, texture.m_Height) != (max(1, width >> mip), max(1, height >> mip))):
+        raise ValueError("Invalid UnityCrunch mip dimensions or level")
+    return width, height, mip
+
+
 def _android_image(texture, deadline):
-    """Decode only known-safe raw pixels or an isolated ASTC CLI result.
+    """Decode raw pixels or isolated ASTC/UnityCrunch ETC2A CLI results.
 
     Do not access Texture2D.image: unsupported formats can enter native texture
     decoders with known SIGILL failures. get_image_data() only reads bytes and
@@ -84,8 +98,10 @@ def _android_image(texture, deadline):
     name = TextureFormat(texture.m_TextureFormat).name
     raw = _RAW_FORMATS.get(name)
     astc = re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name)
-    if raw is None and astc is None:
+    crunch65 = name == "ETC2_RGBA8Crunched"
+    if raw is None and astc is None and not crunch65:
         raise ValueError(f"Texture format {name} is unavailable for Android previews")
+    profile = _texture65_profile(texture) if crunch65 else None
     stream = getattr(texture, "m_StreamData", None)
     if stream and getattr(stream, "size", 0) > _MAX_SOURCE_BYTES:
         raise ValueError("Streamed texture data exceeds the preview limit")
@@ -103,6 +119,39 @@ def _android_image(texture, deadline):
         if len(data) < needed:
             raise ValueError("Truncated raw texture data")
         image = Image.frombytes(mode, (width, height), bytes(data[:needed]), "raw", layout)
+    elif crunch65:
+        # Never load texture2ddecoder into the app interpreter. The trusted
+        # executable validates/budgets Crunch and ETC2A in a disposable process.
+        binary = os.environ.get("ELICHIKA_TEXTURE65_BIN")
+        if not binary or not os.path.isfile(binary):
+            raise ValueError("Bundled UnityCrunch ETC2A decoder is unavailable")
+        if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+            raise TimeoutError("Another UnityCrunch texture is still decoding")
+        try:
+            with tempfile.TemporaryDirectory(prefix="webtools_texture65_") as directory:
+                source = os.path.join(directory, "texture.crn")
+                output = os.path.join(directory, "texture.rgba")
+                with open(source, "wb") as stream:
+                    stream.write(data)
+                original_width, original_height, mip = profile
+                command = [binary, str(original_width), str(original_height), source, output]
+                if mip:
+                    command += ["--mip", str(mip)]
+                result = subprocess.run(command,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=min(12, _remaining(deadline)))
+                if result.returncode:
+                    raise ValueError("UnityCrunch ETC2A decoding failed (code " + str(result.returncode) + ")")
+                needed = width * height * 4
+                if os.path.islink(output) or not os.path.isfile(output) or os.path.getsize(output) != needed:
+                    raise ValueError("UnityCrunch decoder returned an incorrect pixel count")
+                with open(output, "rb") as stream:
+                    pixels = stream.read(needed + 1)
+                if len(pixels) != needed:
+                    raise ValueError("UnityCrunch decoder output changed while reading")
+                image = Image.frombytes("RGBA", (width, height), pixels)
+        finally:
+            _TEXTURE65_SLOT.release()
     else:
         block = int(astc.group(1))
         needed = ((width + block - 1) // block) * ((height + block - 1) // block) * 16

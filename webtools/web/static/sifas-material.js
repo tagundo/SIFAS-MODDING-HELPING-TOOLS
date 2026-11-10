@@ -109,6 +109,19 @@
     "}"
   ].join("\n");
 
+  // An edge-on inner-mouth triangle can cover one MSAA sample while the
+  // pixel center lies outside it. A center-extrapolated depth can then put
+  // that rear surface in front of the skin. Evaluate depth at a covered
+  // centroid, retaining the original geometry, texture and sample count.
+  // These qualifiers/gl_FragDepth are enabled only for verified mouth nodes
+  // on WebGL2. Keep the original programs byte-for-byte for every other mesh.
+  var MOUTH_VERTEX = "centroid varying vec2 vSifasMouthClipZW;\n" + VERTEX.replace(/\n}$/, "\n  vSifasMouthClipZW = gl_Position.zw;\n}");
+  var MOUTH_FRAGMENT = "centroid varying vec2 vSifasMouthClipZW;\n" + FRAGMENT.replace(/\n}$/, [
+    "\n  float mouthDepth = 0.5 * (vSifasMouthClipZW.x / vSifasMouthClipZW.y) + 0.5;",
+    "  gl_FragDepth = gl_DepthRange.near + gl_DepthRange.diff * mouthDepth;",
+    "}"
+  ].join("\n"));
+
   var OUTLINE_VERTEX = [
     "#include <common>",
     "#include <morphtarget_pars_vertex>",
@@ -149,6 +162,15 @@
     "}"
   ].join("\n");
   var OUTLINE_FRAGMENT = "varying vec4 vSifasOutlineColor;\nvoid main() { gl_FragColor = vSifasOutlineColor; }";
+  // Back-facing inner-mouth surfaces also participate in the native outline
+  // pass, including vertices with zero width. Keep its expansion/color intact
+  // and capture clip depth only after the original outline XY and Z shifts.
+  var MOUTH_OUTLINE_VERTEX = "centroid varying vec2 vSifasMouthClipZW;\n" + OUTLINE_VERTEX.replace(/\n}$/, "\n  vSifasMouthClipZW = gl_Position.zw;\n}");
+  var MOUTH_OUTLINE_FRAGMENT = "centroid varying vec2 vSifasMouthClipZW;\n" + OUTLINE_FRAGMENT.replace(/}\s*$/, [
+    "float mouthDepth = 0.5 * (vSifasMouthClipZW.x / vSifasMouthClipZW.y) + 0.5;",
+    "  gl_FragDepth = gl_DepthRange.near + gl_DepthRange.diff * mouthDepth;",
+    "}"
+  ].join("\n"));
 
   function metadata(material) {
     var data = material && material.userData && material.userData.sifas;
@@ -168,6 +190,8 @@
     var T = global.THREE;
     if (!T || !root || !renderer) throw new Error("The shader renderer is unavailable.");
     var enabled = options.enabled !== false;
+    var mouthCentroidDepth = options.mouthCentroidDepth === true &&
+      !!(renderer.capabilities && renderer.capabilities.isWebGL2);
     var disposed = false;
     var loading = true;
     var beat = 0;
@@ -302,7 +326,14 @@
     function makeMaterials(original, data, mesh) {
       var morph = !!(mesh.geometry.morphAttributes && mesh.geometry.morphAttributes.position && mesh.geometry.morphAttributes.position.length);
       var morphNormals = morph && !!(mesh.geometry.morphAttributes.normal && mesh.geometry.morphAttributes.normal.length);
-      var key = original.uuid + ":" + !!mesh.isSkinnedMesh + ":" + morph + ":" + morphNormals;
+      var mouthDepth = false;
+      if (mouthCentroidDepth) {
+        for (var ancestor = mesh; ancestor; ancestor = ancestor.parent) {
+          if (ancestor.userData && ancestor.userData.viewerFacialRole === "mouth") { mouthDepth = true; break; }
+          if (ancestor === root) break;
+        }
+      }
+      var key = original.uuid + ":" + !!mesh.isSkinnedMesh + ":" + morph + ":" + morphNormals + (mouthDepth ? ":mouth-centroid-depth" : "");
       if (materialCache.has(key)) return materialCache.get(key);
       recognized.add(original);
       var colors = data.colors || {}, floats = data.floats || {}, features = data.features || {};
@@ -337,7 +368,8 @@
       ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
         if (features[name]) defines["SIFAS_" + name.toUpperCase()] = 1;
       });
-      var parameters = { vertexShader: VERTEX, fragmentShader: FRAGMENT, uniforms: uniforms,
+      var parameters = { vertexShader: mouthDepth ? MOUTH_VERTEX : VERTEX,
+        fragmentShader: mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
         defines: defines, skinning: !!mesh.isSkinnedMesh, morphTargets: morph,
         morphNormals: morphNormals, depthTest: true, depthWrite: true,
         side: floats._CullMode === 0 ? T.DoubleSide : floats._CullMode === 1 ? T.BackSide : T.FrontSide,
@@ -349,7 +381,8 @@
       main.userData.sifas = data;
       main.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       var outlineParameters = Object.assign({}, parameters, {
-        vertexShader: OUTLINE_VERTEX, fragmentShader: OUTLINE_FRAGMENT,
+        vertexShader: mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
+        fragmentShader: mouthDepth ? MOUTH_OUTLINE_FRAGMENT : OUTLINE_FRAGMENT,
         uniforms: uniforms, side: T.BackSide, defines: {},
         stencilZPass: T.KeepStencilOp,
         stencilFunc: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,

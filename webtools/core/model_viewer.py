@@ -701,7 +701,7 @@ def _texture_png(texture, deadline):
     try:
         from UnityPy.enums import TextureFormat
         name = TextureFormat(texture.m_TextureFormat).name
-        supported = name in decode._RAW_FORMATS or bool(re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name))
+        supported = name in decode._RAW_FORMATS or name == "ETC2_RGBA8Crunched" or bool(re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name))
     except (AttributeError, TypeError, ValueError):
         supported = False
     bounded = (callable(getattr(texture, "get_image_data", None))
@@ -723,10 +723,11 @@ def _texture_png(texture, deadline):
             return _png_texture(image, deadline)
         finally:
             image.close()
+    profile = decode._texture65_profile(texture) if name == "ETC2_RGBA8Crunched" else None
     data = texture.get_image_data()
     if len(data) > decode._MAX_SOURCE_BYTES:
         raise ValueError("Texture data exceeds the preview limit")
-    binary = os.environ.get("ASTCENC_BIN", "")
+    binary = os.environ.get("ELICHIKA_TEXTURE65_BIN" if name == "ETC2_RGBA8Crunched" else "ASTCENC_BIN", "")
     try:
         stat = os.stat(binary)
         decoder = (os.path.realpath(binary), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -735,6 +736,8 @@ def _texture_png(texture, deadline):
     key = (width, height, int(texture.m_TextureFormat), getattr(texture, "m_ImageCount", 1),
            getattr(texture, "m_TextureDimension", 2), platform,
            bool(blob), hashlib.sha256(data).digest(), decoder, id(decode._android_image), id(_png_texture))
+    if profile is not None:
+        key += (profile,)
     png = _conversion_get(_TEXTURE_PNGS, key, deadline)
     if png is not None:
         return png
@@ -1053,6 +1056,23 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
     # quietly tell users that a body-only file is a complete game character.
+    from .model_faces import _names as facial_names, renderer_role
+    # Explicitly selected native facial prefabs still need their semantic role
+    # when automatic face discovery is disabled/already complete. Keep this
+    # local: discovering a declaration must not accept a rejected donor.
+    facial_sources = set(faces.dynamic_sources) | facial_names(scene)[1]
+    # Saved costume/face graphs isolate Unity's CAB and AssetBundle names.
+    # Their native prefab container paths remain unchanged. Recognize that
+    # declaration locally without changing FacePlan's accepted-source state.
+    native_face_prefab = re.compile(r"(?:^|/)characters/models/ch([0-9]{4})/ch\1_[^/]*_facedynamic\.prefab$", re.I)
+    for source_object in scene.env.objects:
+        if source_object.type.name != "AssetBundle" or _source_path(source_object) in facial_sources:
+            continue
+        _remaining(deadline)
+        containers = scene.tree(source_object).get("m_Container", [])
+        if any(isinstance(row, (list, tuple)) and row and isinstance(row[0], str)
+               and native_face_prefab.search(row[0].replace("\\", "/")) for row in containers[:64]):
+            facial_sources.add(_source_path(source_object))
     if rig is not None and auto_only:
         for path in faces.auto_paths:
             if path not in rig.source_indices:
@@ -1206,6 +1226,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         node_index = len(glb.doc["nodes"])
         glb.doc["nodes"].append({"name": name or game_name, "mesh": mesh_index,
                                  "extras": {"sourceName": _source_name(mesh_obj)}})
+        if _source_path(renderer) in facial_sources and renderer_role(
+                scene, renderer, game_object, mesh_obj, dynamic=True) == "mouth":
+            glb.doc["nodes"][-1]["extras"]["viewerFacialRole"] = "mouth"
         if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
             glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
         glb.doc["scenes"][0]["nodes"].append(node_index)

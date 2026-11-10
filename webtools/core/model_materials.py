@@ -104,11 +104,26 @@ def _original_mips(obj, texture):
     name = TextureFormat(format_id).name
     channels = {"RGBA32": 4, "ARGB32": 4, "BGRA32": 4, "RGB24": 3}.get(name)
     astc = re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name)
-    if channels is None and astc is None:
+    crunch65 = name == "ETC2_RGBA8Crunched"
+    if channels is None and astc is None and not crunch65:
         raise ValueError("The authored mip format is unavailable in this preview.")
     data = texture.get_image_data()
     if not isinstance(data, (bytes, bytearray)) or not 0 < len(data) <= MAX_ARRAY_BYTES:
         raise ValueError("The authored mip data exceeds the preview limits.")
+    if crunch65:
+        # Every level uses the original complete CRN stream. Slice only the
+        # requested decoder output; Crunch mip offsets are not ETC block spans.
+        pixels = bytes(data)
+        return [SimpleNamespace(assets_file=obj.assets_file,
+            path_id=(obj.path_id, "authored-mip", level), type=SimpleNamespace(name="Texture2D"),
+            read=lambda level=level: SimpleNamespace(
+                m_Name=str(texture.m_Name) + "_mip_" + str(level),
+                m_Width=max(1,width>>level), m_Height=max(1,height>>level), m_TextureFormat=format_id,
+                m_MipCount=1, m_ImageCount=1, m_TextureDimension=2,
+                m_TextureSettings=texture.m_TextureSettings, m_ColorSpace=getattr(texture,"m_ColorSpace",1),
+                m_StreamData=None, image_data=pixels, object_reader=getattr(texture,"object_reader",None),
+                _texture65_source_width=width, _texture65_source_height=height, _texture65_mip=level,
+                get_image_data=lambda:pixels)) for level in range(1,count)]
     output, offset = [], 0
     for level in range(count):
         w, h = max(1, width >> level), max(1, height >> level)

@@ -42,6 +42,8 @@ class CombinedExportTests(unittest.TestCase):
         self.environment.start(); self.addCleanup(self.environment.stop)
         jailed = patch('webtools.filebrowser.is_within_allowed', lambda value: Path(value).resolve().is_relative_to(self.root))
         jailed.start(); self.addCleanup(jailed.stop)
+        roots = patch('webtools.filebrowser.allowed_roots', return_value={'home': str(self.root), 'sukusta': str(self.library)})
+        roots.start(); self.addCleanup(roots.stop)
         self.addCleanup(thumbs._PLANS.clear)
         self.source = self.root / 'costume.unity'; self.source.write_bytes(self.raw)
         self.output = self.root / 'exports'; self.cache = self.library / 'extracted/game-models'

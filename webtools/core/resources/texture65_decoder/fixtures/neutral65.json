@@ -1,0 +1,45 @@
+{
+  "width": 16,
+  "height": 16,
+  "texture_format": 65,
+  "crunch_format": 12,
+  "mip_count": 1,
+  "encoded_sha256": "d22610a543c19f361d896ce8225e800a0507154867760615673265b2cfb1b577",
+  "rgba_unflipped_sha256": "76a9cba0c36c189f976ac41793d14055407929beb4f142d17a2f8867dd6e479e",
+  "rgba_display_sha256": "57b0febf48dfd82df66c88426f7677107ad0d48cf588233f044b59d6d817ebf9",
+  "authored_rgba_sha256": "2532baa91eead87b5cd71d89eed5389d34d2795fa719f67661dc0bdda8678d19",
+  "partial_alpha_pixels": 191,
+  "zero_alpha_nonzero_rgb_pixels": 33,
+  "provenance": {
+    "authoredSource": "generate_fixture.py author() arithmetic only; no input asset files",
+    "encoderRepository": "https://github.com/Unity-Technologies/crunch.git",
+    "encoderBranch": "unity",
+    "encoderCommit": "8708900eca8ec609d279270e72936258f81ddfb7",
+    "encoderSHA256": "5de9ac7602f957c109f0acc87fd03bddd35225f940d6c513b452704e70592039",
+    "encoderCommand": [
+      "/workspace/scratch/texture65-neutral-fixture/upstream/crnlib/crunch",
+      "-file",
+      "/workspace/scratch/texture65-neutral-fixture/input.tga",
+      "-out",
+      "/workspace/scratch/texture65-neutral-fixture/compressed.crn",
+      "-fileformat",
+      "crn",
+      "-ETC2A",
+      "-quality",
+      "255",
+      "-mipMode",
+      "None",
+      "-helperThreads",
+      "0",
+      "-noprogress",
+      "-nostats"
+    ],
+    "decoder": {
+      "UnityPy": "1.25.0",
+      "texture2ddecoder": "1.0.6"
+    },
+    "decoderAgreement": "UnityPy converter == direct unpack_unity_crunch + decode_etc2a8 BGRA\u2192RGBA",
+    "generatorSHA256": "6ce635f0ec60213d3b6d8ddc3aa8529abd06e74f7309222f6d2fe896e03c29ae"
+  },
+  "license": "CC0-1.0, mechanically authored neutral fixture; no game/private inputs"
+}

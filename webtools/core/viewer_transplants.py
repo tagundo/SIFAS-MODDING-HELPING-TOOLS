@@ -18,6 +18,7 @@ import zipfile
 
 from webtools import filebrowser
 from webtools.core import model_edits, viewer_archive
+from webtools.core.sukusta import default_sukusta_dir
 
 MAX_DONOR_BYTES = 96 * 1024 * 1024
 COMPANION_HINT = "viewer-companions.json"
@@ -26,6 +27,8 @@ MAX_PART_BONES = 512
 MAX_PART_TRIANGLES = 200000
 PART_SELECTION_FIELDS = {"partSelectionMode", "partRoots", "includeDescendants", "triangleIndices", "donorSha256", "donorMesh", "donorSelectionFingerprint"}
 OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer", "mesh_state"} | PART_SELECTION_FIELDS
+_OS_PATH_ALIASES = (("/var", "/private/var"), ("/tmp", "/private/tmp"),
+                    ("/data/user/0", "/data/data"))
 
 
 def _geometry(model, renderer=None, *, environment=None):
@@ -55,15 +58,46 @@ def _geometry(model, renderer=None, *, environment=None):
 def _read_donor(path):
     if not isinstance(path, str) or len(path) > 4096:
         raise ValueError("Choose a donor costume file.")
-    value = Path(path).resolve()
+    supplied = Path(path).expanduser().absolute()
+    if supplied.is_symlink():
+        raise ValueError("Choose a real donor file, not a symbolic link.")
+    # Native pickers return canonical roots, but an earlier caller can still
+    # hold an OS spelling of the same path. Only these actual system aliases
+    # may cross a configured boundary; arbitrary selected links may not.
+    for alias, destination in _OS_PATH_ALIASES:
+        alias, destination = Path(alias), Path(destination)
+        if supplied.is_relative_to(alias) and alias.is_symlink() and alias.resolve() == destination:
+            supplied = destination / supplied.relative_to(alias)
+            break
+    roots = [Path(value).expanduser().absolute() for value in
+             (*filebrowser.allowed_roots().values(), default_sukusta_dir(""))]
+    # Check from the outer configured boundary so a derived picker subfolder
+    # cannot make an interior symlink into a new trusted root. A selected file
+    # root authorizes only itself, never its parent or sibling files.
+    boundaries = sorted({root for value in roots for root in (value, value.resolve())},
+                        key=lambda value: len(value.parts))
+    for boundary in boundaries:
+        try:
+            relative = supplied.relative_to(boundary)
+        except ValueError:
+            continue
+        if relative.parts and boundary.is_file():
+            continue
+        cursor = boundary
+        for component in relative.parts:
+            cursor /= component
+            if cursor.is_symlink():
+                raise ValueError("Choose a real donor file, not a symbolic link.")
+        break
+    else:
+        raise PermissionError("The donor costume is outside the allowed folders.")
+    value = supplied.resolve()
     if not filebrowser.is_within_allowed(value):
         raise PermissionError("The donor costume is outside the allowed folders.")
     if not value.is_file() or not 0 < value.stat().st_size <= MAX_DONOR_BYTES:
         raise ValueError("Choose a donor costume smaller than 96 MiB.")
-    with value.open("rb") as source:
-        raw = source.read(MAX_DONOR_BYTES + 1)
-    if not 0 < len(raw) <= MAX_DONOR_BYTES:
-        raise ValueError("Choose a donor costume smaller than 96 MiB.")
+    from . import viewer_mod_sources
+    raw = viewer_mod_sources._read(value)
     return value, raw
 
 
@@ -328,7 +362,7 @@ def validate_request(params):
         raise ValueError("The donor changed after selection. Load it again.")
     selection = _resolve_snapshot_selection(raw, donor.name, params) if operation == "part" else {}
     return {**copy.deepcopy(params), **selection, "state": state, "mesh_state": mesh_state,
-            "donorSha256": digest, "donorName": donor.name,
+            "donor": str(donor), "donorSha256": digest, "donorName": donor.name,
             "donorRaw": raw, "sourceIndex": source_index, "context": context}
 
 

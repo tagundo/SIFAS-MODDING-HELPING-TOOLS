@@ -2422,6 +2422,8 @@ for _source, _translated in _VIEWER_ACCESSORY_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 _VIEWER_MODEL_SAVE_TRANSLATIONS = {
+    "Choose a real donor file, not a symbolic link.": ["바로가기나 심볼릭 링크 대신 원본 도너 파일을 선택하세요.", "ショートカットやシンボリックリンクではなく、実体のあるドナーファイルを選んでください。"],
+    "The donor costume is outside the allowed folders.": ["도너 의상이 앱에서 접근할 수 있는 폴더 밖에 있습니다.", "ドナー衣装がアプリからアクセスできるフォルダの外にあります。"],
     "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.": ["이 ZIP의 의상은 포함된 얼굴 파일과 연결되어 있습니다. 얼굴을 제외하려면 원본 의상을 다시 가져온 뒤 저장하세요. 모드 ZIP은 생성하지 않았습니다.", "このZIPの衣装は同梱された顔ファイルと結び付いています。顔を除外するには元の衣装を再インポートしてから保存してください。Mod ZIPは作成されていません。"],
     "Choose whether to include this costume's verified face companion.": ["이 코스튬에 얼굴·입 편집을 포함할지 선택하세요.", "この衣装に顔・口の編集を含めるか選んでください。"],
     "Open the original model before saving model edits.": ["원본 모델을 열고 모델 편집을 저장하세요.", "元のモデルを開いてからモデル編集を保存してください。"],

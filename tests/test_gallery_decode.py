@@ -191,7 +191,7 @@ class SafeDecoderTests(unittest.TestCase):
         self.assertEqual(texture.reads, 0)
 
     def test_unsupported_codecs_hdr_and_swizzled_data_never_enter_image_decoder(self):
-        textures = [Texture(m_TextureFormat="ETC2_RGBA8Crunched"),
+        textures = [Texture(m_TextureFormat="ETC_RGB4Crunched"),
                     Texture(m_TextureFormat="ASTC_HDR_6x6"),
                     Texture(object_reader=SimpleNamespace(platform=38), m_PlatformBlob=[1]),
                     Texture(object_reader=SimpleNamespace(platform=11)),

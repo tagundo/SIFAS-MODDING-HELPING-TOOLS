@@ -1570,7 +1570,8 @@
       }
       if (window.SifasMaterial && window.SifasMaterial.apply) {
         pendingMaterials = window.SifasMaterial.apply(next, renderer, {
-          parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender
+          parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender,
+          mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
         });
         if (pendingMaterials.ready) await pendingMaterials.ready;
       }
