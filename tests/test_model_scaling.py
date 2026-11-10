@@ -81,6 +81,25 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(height["mode"], "saved_height_metadata_only")
         self.assertEqual(height["unavailableReason"], "unverified_height_formula")
 
+    def test_unexported_face_helpers_do_not_block_unrelated_body_saving(self):
+        self.make(50, "GameObject", {"m_Name": "InactiveFaceHelper"}, source="face.unity")
+        helper = self.make(51, "Transform", {"m_GameObject": {"m_PathID": 50}}, source="face.unity")
+        self.scene.transforms[50] = helper
+        self.scene.env.objects = list(self.objects.values())
+        original = copy.deepcopy((self.glb.doc, self.tree))
+        result = self.describe(sources={"costume.unity", "face.unity"})
+        self.assertNotIn("scaling_target_unavailable", result["warnings"])
+        self.assertTrue(all(row["supported"] for row in result["components"][0]["entries"]))
+        self.assertEqual((self.glb.doc, self.tree), original)
+
+        # An actual saved operation targeting that same unexported helper must
+        # still be rejected; omitting it from discovery must not bypass this.
+        self.make(52, "MonoBehaviour", {"targetName": "face", "heightScale": 1,
+            "scaleValues": [self.record(51, [1, 1, 1], [2, 2, 2])]}, source="face.unity")
+        self.scene.env.objects = list(self.objects.values())
+        rejected = self.describe(sources={"costume.unity", "face.unity"})
+        self.assertIn("scaling_invalid_entry", rejected["warnings"])
+
     def test_already_scaled_transform_is_preserved_and_not_squared(self):
         self.glb.doc["nodes"][1]["scale"] = [1.08, 1.04, 1.08]
         result = self.describe()

@@ -131,5 +131,52 @@ class ActualGameCostumeTests(unittest.TestCase):
         self.assertTrue(np.array_equal(actual[protected], original[protected]))
         self.assertGreater(np.count_nonzero(actual != original), 0)
 
+    def test_workspace_multi_bone_and_surface_masks_save_the_exact_selected_faces(self):
+        import secrets
+        import shutil
+        from webtools.core import model_edits, model_viewer, viewer_transplants
+        from webtools.jobs import Job
+        root = Path(self.directory.name)
+        wearer, donor = root / 'extracted/wearer.unity', root / 'extracted/donor.unity'
+        wearer.parent.mkdir(); shutil.copyfile(self.target, wearer); shutil.copyfile(self.wolf, donor)
+        with patch.dict(os.environ, {'SUKUSTA_DIR': str(root)}):
+            rig = model_viewer.prepare([str(wearer)], rigged=True,
+                face_context={'enabled': False, 'allow_download': False})['rig']
+            token = secrets.token_hex(16)
+            model_edits.register_session(token, [str(wearer)], rig)
+            inspected = viewer_transplants.inspect_donor(str(donor), cache_root=root / '.viewer-cache')
+            hierarchy = {row['value']: row for row in inspected['parts']}
+            self.assertEqual(hierarchy['TailA_Root_Dyna']['ownVertices'], 0)
+            self.assertIn('TailA3_Dyna', hierarchy['TailA2_Dyna']['bones'])
+            geometry = inspected['geometry']; bone_names = geometry['boneNames']
+            chosen = set(hierarchy['TailA2_Dyna']['bones']) | set(hierarchy['RightArm']['bones'])
+            vertices = [sum(weight for bone, weight in skin if bone_names[bone] in chosen) >= .5 for skin in geometry['skin']]
+            expected = [i for i, face in enumerate(geometry['triangles']) if all(vertices[v] for v in face)]
+            self.assertGreater(len(expected), hierarchy['TailA2_Dyna']['triangles'])
+            # Disjoint patches on the same original renderer retain distinct face IDs.
+            patch_faces = [expected[0], expected[len(expected) // 2], expected[-1]]
+            base_count = sum(len(group) for group in part.submesh_triangles(self.check_model(str(wearer))[1]))
+            for mode in ('bones', 'triangles'):
+                with self.subTest(mode=mode):
+                    request = {'token': token, 'state': {'version': 1, 'savedSettingsEnabled': True, 'edits': []},
+                        'donor': str(donor), 'variant': 'primary', 'operation': 'part', 'partRoot': '',
+                        'cutLow': .5, 'cutHigh': .96, 'region': 'lower', 'partSelectionMode': mode,
+                        'partRoots': ['TailA2_Dyna', 'RightArm'], 'includeDescendants': True,
+                        'triangleIndices': patch_faces if mode == 'triangles' else [],
+                        'donorSha256': inspected['sha256'], 'donorSelectionFingerprint': inspected['selectionFingerprint'],
+                        'donorRenderer': geometry['renderer'], 'donorMesh': geometry['mesh']}
+                    validated = viewer_transplants.validate_request(request)
+                    job = Job(secrets.token_hex(6), 'viewer_transplant')
+                    viewer_transplants.run_transplant(job, validated, output_root=root / 'modded/viewer', cache_root=root / '.viewer-cache')
+                    self.assertEqual(len(job.output_paths()), 1)
+                    output = job.output_paths()[0]
+                    renderer, mesh = self.check_model(output)
+                    self.assertEqual(sum(len(group) for group in part.submesh_triangles(mesh)),
+                                     base_count + (len(expected) if mode == 'bones' else len(patch_faces)))
+                    self.assertTrue(self.textures(self.target) <= self.textures(output))
+                    self.assertTrue(self.textures(self.wolf) & self.textures(output))
+            self.assertEqual(wearer.read_bytes(), Path(self.target).read_bytes())
+            self.assertEqual(donor.read_bytes(), Path(self.wolf).read_bytes())
+
 
 if __name__ == '__main__': unittest.main()

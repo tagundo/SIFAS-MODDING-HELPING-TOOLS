@@ -59,7 +59,7 @@ async function start() {
       { id: 'viewer-part-transplant', value: 'part', button: 'Transplant' },
       { id: 'viewer-lower-transplant', value: 'lower', button: 'Replace lower body' }
     ]) {
-      let previewSelectedTriangles = 0;
+      let previewSelectedTriangles = 0, selectedPart = '';
       await page.evaluate(source => openModelViewer([source]), source);
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);
       await page.evaluate(() => {
@@ -92,7 +92,7 @@ async function start() {
       await page.waitForFunction(({ operation }) => ModelViewer.getState().transplants.donors.some(entry => entry.operation === operation && entry.donor), { operation: operation.value });
       await panel.locator('.viewer-transplant-stage canvas').waitFor({ state: 'visible' });
       if (operation.value === 'part') {
-        if (!realModels) await panel.locator('select').first().selectOption('BreastSize');
+        if (!realModels) await panel.locator('#viewer-part-transplant-part').selectOption('BreastSize');
         else {
           const canvas = panel.locator('.viewer-transplant-stage canvas');
           await canvas.scrollIntoViewIfNeeded();
@@ -129,9 +129,10 @@ async function start() {
           }))));
           assert(target, 'A visible real donor tail must be pickable');
           await page.mouse.click(target.x, target.y);
-          await page.waitForFunction(() => document.querySelector('#viewer-part-transplant-part').value === 'TailA_Root_Dyna');
+          await page.waitForFunction(() => ModelViewer.getState().transplants.donors.some(entry => entry.operation === 'part' && entry.selectedBones.some(name => /^TailA/.test(name)) && entry.selectedTriangles > 0));
           await page.screenshot({ path: path.join(evidence, 'part-direct-pick-preview.png') });
         }
+        selectedPart = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'part').partRoots[0]);
       }
       if (operation.value === 'lower') {
         await panel.locator('#' + operation.id + '-low').fill(realModels ? '.38' : '.5');
@@ -156,7 +157,7 @@ async function start() {
       assert.equal(requests.at(-1).operation, operation.value);
       assert.equal(requests.at(-1).matchSkin, false, 'Colour correction is opt-in');
       assert.equal(requests.at(-1).skinOnly, true);
-      if (operation.value === 'part') assert.equal(requests.at(-1).partRoot, realModels ? 'TailA_Root_Dyna' : 'BreastSize');
+      if (operation.value === 'part') { assert.equal(requests.at(-1).partRoot, selectedPart); assert.equal(requests.at(-1).partSelectionMode, 'bones'); assert(requests.at(-1).partRoots.includes(selectedPart)); }
       if (operation.value === 'lower') {
         assert.equal(requests.at(-1).cutLow, realModels ? .38 : .5); assert.equal(requests.at(-1).cutHigh, .96);
         assert((await panel.locator('.viewer-transplant-log').innerText()).includes('donor UVs, materials and texture bytes preserved'));

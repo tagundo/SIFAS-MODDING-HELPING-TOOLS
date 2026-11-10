@@ -319,6 +319,11 @@ def describe_scaling(scene, glb, node_by_transform, *, sources=None):
         if key in seen or (selected is not None and _source_path(transform) not in selected):
             continue
         seen.add(key)
+        # Facial sources can contain inactive helpers that were deliberately not
+        # exported. They are not editable catalogue targets. Actual saved
+        # scaling records below still validate every referenced transform.
+        if key not in node_by_transform:
+            continue
         try:
             tree = scene.tree(transform)
             game_object = _ref(transform, tree.get("m_GameObject"))

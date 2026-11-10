@@ -124,6 +124,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_mesh(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/transplant/inspect", "/api/viewer/transplant/run"):
                 return self._api_viewer_transplant(path.rsplit("/", 1)[1])
+            if path in ("/api/viewer/thumbnail/plan", "/api/viewer/thumbnail/model", "/api/viewer/thumbnail/render"):
+                return self._api_viewer_thumbnail(path.rsplit("/", 1)[1])
             if path == "/api/viewer/edit/export":
                 return self._api_viewer_edit_export()
             if path == "/api/viewer/edit/package":
@@ -571,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "renderer" in params: arguments["renderer"] = params["renderer"]
                 return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"], **arguments))
             params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"},
-                optional_fields=viewer_transplants.OPTIONAL_FIELDS)
+                optional_fields=viewer_transplants.OPTIONAL_FIELDS, max_bytes=4 * 1024 * 1024)
             request = viewer_transplants.validate_request(params)
             output = self._viewer_feature_output("modded/viewer")
             cache = self._viewer_feature_output(".viewer-cache")
@@ -579,6 +581,23 @@ class Handler(BaseHTTPRequestHandler):
             MANAGER.run_async(job, lambda current: viewer_transplants.run_transplant(current,
                 request, output_root=output, cache_root=cache))
             return self._send_json({"job_id": job.id})
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_thumbnail(self, operation):
+        from webtools.core import model_viewer, viewer_thumbnails
+        try:
+            optional = {"kind", "params", "token", "state", "character_id", "counterpart_path",
+                        "selected_variant", "item_id", "cache_key", "profile_digest", "png", "render"}
+            params = self._viewer_feature_request(set(), optional_fields=optional,
+                max_bytes=4 * 1024 * 1024, token=False)
+            handler = {"plan": viewer_thumbnails.plan, "model": viewer_thumbnails.model,
+                       "render": viewer_thumbnails.store}[operation]
+            return self._send_json(handler(params))
+        except model_viewer.ViewerBusyError as exc:
+            return self._send_json({"error": str(exc)}, status=409)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
         except (ValueError, TypeError, KeyError, OSError) as exc:
@@ -677,7 +696,7 @@ class Handler(BaseHTTPRequestHandler):
         except TimeoutError:
             return self._send_json({"error": "Another model is saving. Try again shortly."}, status=503)
 
-    def _viewer_mod_request(self, fields):
+    def _viewer_mod_request(self, fields, *, optional_fields=()):
         """Validate app-origin writes; Mod installation accepts an opaque token."""
         import ipaddress
         import re
@@ -715,7 +734,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") or not 0 < length <= 512 * 1024:
             raise ValueError("The Mod ZIP request is too large or empty.")
         params = self._read_json_body()
-        if not isinstance(params, dict) or set(params) != set(fields):
+        if (not isinstance(params, dict) or not set(fields).issubset(params)
+                or set(params) - set(fields) - set(optional_fields)):
             raise ValueError("Unsupported Mod ZIP request.")
         key = "token" if "token" in fields else "package_token"
         if not isinstance(params.get(key), str) or not re.fullmatch(r"[a-f0-9]{32}", params[key]):
@@ -726,7 +746,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from webtools.core import model_edits, viewer_mod_flow
             from webtools.core.sukusta import default_sukusta_dir
-            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"})
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token"})
+            thumbnail_token = params.get("thumbnail_token", "")
+            import re
+            if not isinstance(thumbnail_token, str) or thumbnail_token and not re.fullmatch(r"[a-f0-9]{32}", thumbnail_token):
+                raise ValueError("Prepare a valid automatic thumbnail before saving its Mod ZIP.")
             viewer_mod_flow.validate_options(params["display_name"], params["character_id"], params["counterpart_path"], params["selected_variant"])
             model_edits.validate_state(params["token"], params["state"])
             counterpart = params["counterpart_path"]
@@ -748,7 +772,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = viewer_mod_flow.create_package(params["token"], params["state"],
                     output_root=output_root, repo_root=runtime_root, cache_root=cache_root,
                     display_name=params["display_name"], character_id=params["character_id"],
-                    counterpart_path=counterpart, selected_variant=params["selected_variant"], job=current)
+                    counterpart_path=counterpart, selected_variant=params["selected_variant"],
+                    thumbnail_token=thumbnail_token, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)

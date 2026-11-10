@@ -100,8 +100,15 @@ function near(actual, expected, message) {
     });
     await page.goto(url);
     await page.waitForFunction(() => !!window.ModelViewer && typeof openModelViewer === 'function');
+    assert.equal(await page.locator('#viewer-accessory-card').evaluate(element => element.open), true,
+      'The accessory clipping correction section starts expanded');
     await page.locator('#viewer-auto-face').evaluate(element => { element.checked = false; });
     await open(page, first);
+    assert.equal(await page.locator('#viewer-accessory-card').evaluate(element => element.open), true);
+    await page.locator('#viewer-accessory-card').evaluate(element => { element.open = false; });
+    await page.evaluate(() => ModelViewer.updateLanguage());
+    assert.equal(await page.locator('#viewer-accessory-card').evaluate(element => element.open), false,
+      'Refreshing the model preserves an explicit user collapse');
     const metadata = await page.evaluate(() => ModelViewer.getEditingMetadata());
     const target = metadata.nodes.find(node => node.name === 'HipsSize') || metadata.nodes[0];
     assert(target, 'Real writable fixture node exists');

@@ -1892,6 +1892,61 @@ def inspect(bundle_path, verbose=True):
     return parts
 
 
+def part_hierarchy(bundle_path, renderer=None):
+    """Every skin bone, in its actual Transform hierarchy, for part selection.
+
+    A root is a convenient selection, not a substitute for its children.  The
+    returned descendant names use the same m_Bones parent walk as the graft,
+    so the UI and the serialized selection cannot disagree about a subtree.
+    """
+    env = _require_unitypy().load(bundle_path)
+    objects, index = _index(env)
+    smr = _body_smr(objects) if renderer in (None, "") else index.get(int(renderer))
+    if smr is None or smr.type.name != "SkinnedMeshRenderer":
+        raise ValueError("Choose a valid skinned donor mesh.")
+    tree = smr.read_typetree()
+    mesh = index.get(tree.get("m_Mesh", {}).get("m_PathID"))
+    if mesh is None or mesh.type.name != "Mesh":
+        raise ValueError("The selected donor renderer has no local mesh.")
+    mesh_tree = mesh.read_typetree()
+    names, parents = _smr_bone_names(index, tree), _bone_parent_array(index, tree)
+    if len(names) > 512 or any(not isinstance(name, str) or not name or len(name) > 256 for name in names):
+        raise ValueError("The selected donor has unsupported bone names.")
+    if len(set(names)) != len(names):
+        raise ValueError("The selected donor has ambiguous duplicate bone names.")
+    children = {}
+    for i, parent in enumerate(parents):
+        children.setdefault(parent, []).append(i)
+        seen, cursor = set(), i
+        while cursor != -1:
+            if cursor in seen or not 0 <= cursor < len(parents):
+                raise ValueError("The selected donor has an invalid bone hierarchy.")
+            seen.add(cursor); cursor = parents[cursor]
+    vc, channels, strides, starts, _ = stream_layout(mesh_tree)
+    raw = np.frombuffer(bytes(mesh_tree["m_VertexData"]["m_DataSize"]), np.uint8)
+    weights, bone_indices = get_skin(raw, mesh_tree, channels, strides, starts, vc)
+    groups = submesh_triangles(mesh_tree)
+    triangles = np.concatenate(groups) if groups else np.empty((0, 3), np.int64)
+    if vc > 100000 or len(triangles) > 200000:
+        raise ValueError("The donor mesh exceeds the transplant preview limits.")
+    output, stack = [], [(i, 0) for i in reversed(children.get(-1, []))]
+    while stack:
+        i, depth = stack.pop()
+        descendants = sorted(_descendants(parents, i))
+        mask = part_vertex_mask(weights, bone_indices, bone_membership(len(names), descendants)) if weights is not None else np.zeros(vc, bool)
+        own_mask = part_vertex_mask(weights, bone_indices, bone_membership(len(names), [i])) if weights is not None else np.zeros(vc, bool)
+        count = int(mask[triangles].all(axis=1).sum()) if len(triangles) else 0
+        output.append({"value": names[i], "name": names[i], "index": i,
+                       "parent": names[parents[i]] if parents[i] >= 0 else None,
+                       "depth": depth, "bones": [names[j] for j in descendants],
+                       "ownVertices": int(own_mask.sum()), "vertices": int(mask.sum()),
+                       "triangles": count, "available": count > 0,
+                       "label": "%s%s  (%d v, %d t, %d bones)" %
+                                ("  " * depth, names[i], int(mask.sum()), count, len(descendants))})
+        stack.extend((child, depth + 1) for child in reversed(children.get(i, [])))
+    return output
+
+
 # ==========================================================================
 # 9. transplant a part
 # ==========================================================================
@@ -1990,9 +2045,11 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     tris = np.concatenate(source_groups) if source_groups else np.empty((0, 3), np.int64)
     selected = np.zeros(len(tris), dtype=bool)
     if triangle_indices is not None:
-        indices = np.asarray(triangle_indices, dtype=np.int64)
-        if indices.ndim != 1 or np.any(indices < 0) or np.any(indices >= len(tris)):
+        indices = np.asarray(triangle_indices)
+        if (indices.ndim != 1 or not len(indices) or indices.dtype.kind not in "iu"
+                or np.any(indices < 0) or np.any(indices >= len(tris))):
             raise ValueError("The selected donor triangles are invalid.")
+        indices = indices.astype(np.int64, copy=False)
         selected[indices] = True
     else:
         selected = vmask[tris].all(axis=1) if tri_mode == "all" else vmask[tris].any(axis=1)

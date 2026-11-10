@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "width": 128,
+  "height": 128,
+  "camera": {
+    "position": [
+      0.0,
+      1.0956215599568677,
+      0.6933255763754474
+    ],
+    "direction": [
+      0,
+      -0.04361933498394666,
+      -0.9990482238688773
+    ],
+    "up": [
+      0,
+      0.9990482238688773,
+      -0.04361933498394666
+    ],
+    "left": -0.3700000047683716,
+    "right": 0.3700000047683716,
+    "bottom": -0.3700000047683716,
+    "top": 0.3700000047683716,
+    "near": 0.10000000149011612,
+    "far": 1000
+  },
+  "layers": [
+    {
+      "file": "pattern.png",
+      "opacity": 0.2,
+      "blend": "source-over"
+    },
+    {
+      "file": "cross.png",
+      "opacity": 0.7019607843137254,
+      "blend": "source-over"
+    },
+    {
+      "file": "gradient.png",
+      "opacity": 0.7490196078431373,
+      "blend": "screen"
+    }
+  ],
+  "innerMask": "inner-mask.png",
+  "outerBorder": "outer-border.png",
+  "memberColors": {
+    "1": "#ffa336",
+    "2": "#7aeeff",
+    "3": "#cebfbf",
+    "4": "#1769ff",
+    "5": "#fff832",
+    "6": "#ff503e",
+    "7": "#c455f6",
+    "8": "#6ae673",
+    "9": "#ff4f91",
+    "101": "#ff9547",
+    "102": "#ff9eac",
+    "103": "#27c1b7",
+    "104": "#db0839",
+    "105": "#66c0ff",
+    "106": "#c1cad4",
+    "107": "#ffd010",
+    "108": "#c252c6",
+    "109": "#ff6fbe",
+    "201": "#ffbfe0",
+    "202": "#f5ff8a",
+    "203": "#bbedff",
+    "204": "#4a2fed",
+    "205": "#ff8246",
+    "206": "#be82ff",
+    "207": "#f60e0e",
+    "208": "#b1f69c",
+    "209": "#d0cee1",
+    "210": "#24bd8b",
+    "211": "#d6d5ca",
+    "212": "#f8c8c4"
+  },
+  "referenceColor": [
+    233,
+    95,
+    95
+  ],
+  "referenceTemplate": "template-reference.png",
+  "provenance": {
+    "psd": {
+      "file": "sdk/Thumbnail Template.psd",
+      "sha256": "edb83c393e1a1f70bad9a0a22193b043ee2e3f9707fe2b23ab2f758270c7ca84",
+      "detail": "template.json"
+    },
+    "blend": {
+      "file": "sdk/Thumbnail Render.blend",
+      "sha256": "69fed1baa9cc0d4370c0fc7d69014fd131a700e4f4dfe4d275e6779a5c5c84bb",
+      "detail": "camera-provenance.json",
+      "source_camera": {
+        "name": "Thumbnail Camera",
+        "type": "ORTHO",
+        "location_blender": [
+          0,
+          -0.7400000095367432,
+          0.026599999517202377
+        ],
+        "euler_blender_xyz": [
+          1.5271631479263306,
+          0,
+          0
+        ],
+        "orthographic_scale": 0.7400000095367432,
+        "shift": [
+          0,
+          1.4459999799728394
+        ],
+        "clip": [
+          0.10000000149011612,
+          1000
+        ]
+      }
+    },
+    "memberColors": {
+      "file": "assets/db/gl/masterdata.db",
+      "sha256": "a9b825cc7691991719c8a550a096e00481cd8dcd69575fbff0cbc126c1d6922e",
+      "table": "m_member",
+      "key": "id",
+      "column": "theme_color",
+      "packing": "signed SQLite INTEGER reinterpreted as unsigned RGBA8888 (R high byte, A low byte)",
+      "detail": "member-colors.json"
+    },
+    "derivedAssets": {
+      "pattern.png": {
+        "sha256": "9a7fdb6d92e491b47a0b1219687a751a3e877f466bc4abd7563c42a6ddb89a73",
+        "bytes": 6890
+      },
+      "cross.png": {
+        "sha256": "c17a6052767f018e70302b88b89c6acd4fb80f72e198153758d2c4bb2ea99c24",
+        "bytes": 1033
+      },
+      "gradient.png": {
+        "sha256": "88300846e09d2bdaff7f7aef63032d12b715425434ae34afbd8d9b31349ab7cc",
+        "bytes": 1670
+      },
+      "inner-mask.png": {
+        "sha256": "ea2812d1bad14368505946a32d2ad008c9a102b5ed480534675fd69f853b9b35",
+        "bytes": 487
+      },
+      "outer-border.png": {
+        "sha256": "3c80f559eed9d4fbd6720a9564867499ab889acc166fbed7ff3b5e6431ae7e4c",
+        "bytes": 989
+      },
+      "template-reference.png": {
+        "sha256": "b402b583b4d09ad38394f38ea73ec19a32ee0d5b7bbc078977c8117cbe2d7053",
+        "bytes": 13150
+      }
+    },
+    "composition": "Member Color → pattern normal20% → cross normal70.196% → Gradient screen74.902% → costume → Border In mask once → Border Out",
+    "runtimeDependencies": "Existing Canvas/WebGL only; Blender and PSD tooling are offline extraction tools."
+  }
+}

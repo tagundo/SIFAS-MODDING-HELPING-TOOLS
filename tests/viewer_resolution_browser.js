@@ -48,9 +48,13 @@ async function settle(page) {
   await frames(page);
 }
 async function closeMenus(page) {
-  await page.evaluate(() => ['viewer-view-menu', 'viewer-info', 'viewer-workspace-menu', 'viewer-file-options'].forEach(id => {
-    const n = document.getElementById(id); if (n) n.open = false;
-  }));
+  await page.evaluate(() => {
+    ['viewer-view-menu', 'viewer-info', 'viewer-workspace-menu', 'viewer-file-options'].forEach(id => {
+      const n = document.getElementById(id); if (n) n.open = false;
+    });
+    const models = document.getElementById('viewer-model-files');
+    if (models && !models.classList.contains('viewer-model-files-embedded')) models.open = false;
+  });
   await frames(page);
 }
 async function openDetails(page, id) {
@@ -58,6 +62,16 @@ async function openDetails(page, id) {
   assert(await details.locator('summary').first().isVisible(), id + ' summary must be visible');
   if (!(await details.evaluate(n => n.open))) await details.locator('summary').first().click();
   await frames(page);
+}
+async function openModelFiles(page) {
+  const embedded = await page.locator('#viewer-model-files').evaluate(element => element.classList.contains('viewer-model-files-embedded'));
+  const id = embedded ? 'viewer-file-options' : 'viewer-model-files';
+  const workspace = await page.locator('#' + id).evaluate(element => !!element.closest('#viewer-workspace-menu-content'));
+  const menuHit = await target(page, '#' + id + ' > summary', workspace ? '#viewer-workspace-menu-content' : undefined);
+  assertTarget(menuHit, 'The real model-file menu is discoverable and reachable');
+  await openDetails(page, id);
+  assert(await page.locator('#viewer-file-list').isVisible(), 'Opening the actual gear or model summary reveals model files');
+  return {embedded, id, menuHit, popup: embedded ? '.viewer-file-options-panel' : '.viewer-model-file-popup'};
 }
 async function preparePickerTrigger(page, id) {
   if (id !== 'viewer-add-motion') {
@@ -105,12 +119,12 @@ async function target(page, selector, popup) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const r = e.getBoundingClientRect();
     let left = Math.max(0, r.left), top = Math.max(0, r.top), right = Math.min(innerWidth, r.right), bottom = Math.min(innerHeight, r.bottom);
-    for (const p of [e.closest('#viewer-stage'), panel, e.closest('#viewer-workspace-menu-content'), e.closest('.viewer-file-options-panel'), e.closest('.modal-box')]) if (p) {
+    for (const p of [e.closest('#viewer-stage'), panel, e.closest('#viewer-workspace-menu-content'), e.closest('.viewer-file-options-panel'), e.closest('.viewer-model-file-popup'), e.closest('.modal-box')]) if (p) {
       const c = p.getBoundingClientRect(); left = Math.max(left, c.left); top = Math.max(top, c.top); right = Math.min(right, c.right); bottom = Math.min(bottom, c.bottom);
     }
     const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const vertical = document.getElementById('tab-viewer').classList.contains('viewer-vertical-controls');
-    const inPopup = !!e.closest('.viewer-workspace-menu-content,.viewer-view-menu-content,.viewer-file-options-panel,.viewer-info-panel,.modal-box');
+    const inPopup = !!e.closest('.viewer-workspace-menu-content,.viewer-view-menu-content,.viewer-file-options-panel,.viewer-model-file-popup,.viewer-info-panel,.modal-box');
     const compactSurface = !!e.closest('.viewer-stage-tools,.viewer-files,body.viewer-active-page > header');
     const minimumTarget = vertical && compactSurface && !inPopup ? 32 : 44;
     return { selector, width: r.width, height: r.height, visibleWidth: Math.max(0, right - left), visibleHeight: Math.max(0, bottom - top),
@@ -380,14 +394,13 @@ async function workspace(page, mode = 'normal', selectRealFixture = false) {
     await row.click(); await page.waitForFunction(file => ModelViewer.getState().paths.includes(file), fixtureFile.file); await frames(page);
     assert.deepEqual(retained(await state(page)), before, 'Choosing a companion only changes the pending path list; it must not reload or alter the actual model');
     await openDetails(page, 'viewer-workspace-menu');
-    const optionsHit = await target(page, '#viewer-file-options > summary', '#viewer-workspace-menu-content'); assertTarget(optionsHit, 'Model options remains accessible after choosing a file');
-    await openDetails(page, 'viewer-file-options');
+    const modelFiles = await openModelFiles(page);
     const remove = page.locator('#viewer-file-list > li').filter({ hasText: fixtureFile.name }).locator('.viewer-remove');
     await remove.evaluate(n => { n.setAttribute('data-resolution-remove-fixture', 'true'); });
-    const removeHit = await target(page, '[data-resolution-remove-fixture]', '.viewer-file-options-panel'); assertTarget(removeHit, 'The selected companion has a real reachable Remove control');
+    const removeHit = await target(page, '[data-resolution-remove-fixture]', modelFiles.popup); assertTarget(removeHit, 'The selected companion has a real reachable Remove control');
     await remove.click(); await page.waitForFunction(file => !ModelViewer.getState().paths.includes(file), fixtureFile.file); await frames(page);
     assert.deepEqual(retained(await state(page)), before, 'Removing the pending companion preserves the loaded model and absolute edits');
-    callback = { originalGeneratedUnityFixture: fixtureFile.name, realRoot: path.dirname(fixtureFile.file), selectedViaRealEntry: true, entryHit: hit, removeHit, loadedModelAndRigRetained: true };
+    callback = { originalGeneratedUnityFixture: fixtureFile.name, realRoot: path.dirname(fixtureFile.file), selectedViaRealEntry: true, entryHit: hit, modelFiles, removeHit, loadedModelAndRigRetained: true };
   }
   await closeMenus(page);
   return { controls, originalHeaderAndFileNodes: true, fileAndMotionPickerListeners: true, pickerProofs, callback };

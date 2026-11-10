@@ -7,8 +7,10 @@ displayed model member when the wearer came from an archive.
 import copy
 import hashlib
 import io
+import json
 import math
 from pathlib import Path
+import re
 import secrets
 import shutil
 import tempfile
@@ -19,7 +21,10 @@ from webtools.core import model_edits, viewer_archive
 
 MAX_DONOR_BYTES = 96 * 1024 * 1024
 OPERATIONS = {"costume", "part", "lower"}
-OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer"}
+MAX_PART_BONES = 512
+MAX_PART_TRIANGLES = 200000
+PART_SELECTION_FIELDS = {"partSelectionMode", "partRoots", "includeDescendants", "triangleIndices", "donorSha256", "donorMesh", "donorSelectionFingerprint"}
+OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer"} | PART_SELECTION_FIELDS
 
 
 def _geometry(model, renderer=None):
@@ -32,8 +37,15 @@ def _geometry(model, renderer=None):
     _, positions = lower.band_selection(body, -10, 10, "central", False, "mesh")
     triangles = body.tris()
     names = body.dom_names()
+    if not np.isfinite(body.bw).all() or np.any(body.bw < 0):
+        raise ValueError("The donor has invalid skin weights.")
+    if np.any((body.bw > 0) & ((body.bi < 0) | (body.bi >= len(body.bones)))):
+        raise ValueError("The donor skin refers to a missing bone.")
     return {"renderer": str(body.smr_obj.path_id), "mesh": str(body.mesh_obj.path_id),
             "positions": positions.tolist(), "triangles": triangles.tolist(),
+            "boneNames": body.bones,
+            "skin": [[[int(i), float(w)] for i, w in zip(ids, weights)]
+                     for ids, weights in zip(body.bi, body.bw)],
             "anatomy": np.isin(names, list(lower.ANATOMY)).tolist(),
             "regions": {key: np.isin(names, list(value)).tolist() for key, value in lower.REGIONS.items()},
             "components": lower._components(body.pos, triangles, body.n).tolist()}
@@ -75,6 +87,12 @@ def _donor_model(expanded):
     return candidates[0]
 
 
+def _selection_fingerprint(model, donor_sha256, variant, geometry):
+    values = [donor_sha256, variant, hashlib.sha256(Path(model).read_bytes()).hexdigest(),
+              geometry["renderer"], geometry["mesh"]]
+    return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+
 def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
     """Return verified part-root choices; inspection never writes to a model."""
     if variant not in ("primary", "unmasked"):
@@ -88,23 +106,25 @@ def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
         with viewer_archive.expand_inputs([str(original)], root, choices) as expanded:
             model = _donor_model(expanded)
             from webtools.tools.costume import part_root_options
-            parts = part_root_options({"donor": model})
             import UnityPy
             env = UnityPy.load(model)
             renderers = []
             for obj in env.objects:
                 if obj.type.name != "SkinnedMeshRenderer": continue
                 tree = obj.read_typetree()
-                if len(tree.get("m_Bones", [])) < 2: continue
+                if not tree.get("m_Bones", []): continue
                 mesh = obj.assets_file.objects.get(tree.get("m_Mesh", {}).get("m_PathID"))
                 if mesh is not None:
                     renderers.append({"value": str(obj.path_id), "label": mesh.read_typetree().get("m_Name", "Mesh")})
             if renderer is not None and renderer not in {row["value"] for row in renderers}:
                 raise ValueError("Choose a valid skinned donor mesh.")
             geometry = _geometry(model, renderer)
+            parts = part_root_options({"donor": model, "donor_renderer": geometry["renderer"]})
+            digest = hashlib.sha256(raw).hexdigest()
             return {"name": donor.name, "parts": parts, "platform": _platform(model), "geometry": geometry,
                     "renderers": renderers,
-                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "sha256": digest,
+                    "selectionFingerprint": _selection_fingerprint(model, digest, variant, geometry),
                     "cutPresets": [
                         {"value": "hip_fix", "label": "Knee to waist", "low": .5, "high": .96},
                         {"value": "calf", "label": "Calf to waist", "low": .3, "high": .96},
@@ -113,18 +133,56 @@ def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
                         {"value": "custom", "label": "Custom range"}]}
 
 
+def _part_selection(model, params):
+    """Resolve a checked UI selection against the immutable donor model."""
+    from webtools.tools.costume import part_root_options
+    geometry = _geometry(model, params["donorRenderer"] or None)
+    if params["donorMesh"] and geometry["mesh"] != params["donorMesh"]:
+        raise ValueError("The selected donor mesh changed. Load the donor again.")
+    fingerprint = _selection_fingerprint(model, params["donorSha256"], params["variant"], geometry)
+    if params["donorSelectionFingerprint"] and params["donorSelectionFingerprint"] != fingerprint:
+        raise ValueError("The selected donor variant or mesh changed. Load it again.")
+    selected = {"donorRenderer": geometry["renderer"], "donorMesh": geometry["mesh"], "donorSelectionFingerprint": fingerprint}
+    if params["partSelectionMode"] == "triangles":
+        if any(index >= len(geometry["triangles"]) for index in params["triangleIndices"]):
+            raise ValueError("A selected triangle is outside the original donor mesh.")
+        return {**selected, "partBones": [], "triangleIndices": params["triangleIndices"]}
+    choices = part_root_options({"donor": model, "donor_renderer": geometry["renderer"]})
+    available = {item["value"]: item for item in choices}
+    roots = params["partRoots"] or [params["partRoot"]]
+    if any(root not in available for root in roots):
+        raise ValueError("The selected part no longer exists in the donor costume.")
+    names = set()
+    for root in roots:
+        names.update(available[root]["bones"] if params["includeDescendants"] else [root])
+    return {**selected, "partBones": [name for name in geometry["boneNames"] if name in names], "triangleIndices": []}
+
+
+def _resolve_snapshot_selection(raw, name, params):
+    with tempfile.TemporaryDirectory(prefix="transplant-selection-") as directory:
+        root = Path(directory)
+        donor = root / name
+        donor.write_bytes(raw)
+        choices = {str(donor): params["variant"]} if zipfile.is_zipfile(donor) and params["variant"] == "unmasked" else None
+        with viewer_archive.expand_inputs([str(donor)], root / "cache", choices) as expanded:
+            return _part_selection(_donor_model(expanded), {**params, "donorSha256": hashlib.sha256(raw).hexdigest()})
+
+
 def validate_request(params):
     required = {
             "token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"}
     if not isinstance(params, dict) or not required <= set(params) or set(params) - required - OPTIONAL_FIELDS:
         raise ValueError("Unsupported costume transplant request.")
+    source_bound = bool(set(params) & PART_SELECTION_FIELDS)
     params = {"matchSkin": False, "skinOnly": True, "excludeAccessories": True,
-              "selectionScope": "skin", "donorRenderer": "", "targetRenderer": "", **params}
+              "selectionScope": "skin", "donorRenderer": "", "targetRenderer": "",
+              "partSelectionMode": "bones", "partRoots": [], "includeDescendants": True,
+              "triangleIndices": [], "donorSha256": "", "donorMesh": "", "donorSelectionFingerprint": "", **params}
     for key in ("matchSkin", "skinOnly", "excludeAccessories"):
         if not isinstance(params[key], bool): raise ValueError("Transplant options must be true or false.")
     if params["selectionScope"] not in ("skin", "mesh"):
         raise ValueError("Choose body skin or the selected whole mesh.")
-    for key in ("donorRenderer", "targetRenderer"):
+    for key in ("donorRenderer", "targetRenderer", "donorMesh"):
         value = params[key]
         if not isinstance(value, str) or value and (len(value) > 21 or not value.lstrip("-").isdigit()):
             raise ValueError("Choose a valid donor or wearer mesh.")
@@ -134,8 +192,30 @@ def validate_request(params):
     if params.get("variant") not in ("primary", "unmasked"):
         raise ValueError("Choose a valid donor costume variant.")
     part = params.get("partRoot")
-    if not isinstance(part, str) or len(part) > 256 or operation == "part" and not part:
+    if not isinstance(part, str) or len(part) > 256:
         raise ValueError("Choose the donor part root bone.")
+    if params["partSelectionMode"] not in ("bones", "triangles"):
+        raise ValueError("Choose bone or donor surface selection.")
+    if type(params["includeDescendants"]) is not bool:
+        raise ValueError("Choose whether to include child bones.")
+    roots = params["partRoots"]
+    if (not isinstance(roots, list) or len(roots) > MAX_PART_BONES or
+            any(not isinstance(root, str) or not root or len(root) > 256 for root in roots) or len(set(roots)) != len(roots)):
+        raise ValueError("Choose valid donor part bones.")
+    triangles = params["triangleIndices"]
+    if (not isinstance(triangles, list) or len(triangles) > MAX_PART_TRIANGLES or
+            any(type(index) is not int or not 0 <= index < MAX_PART_TRIANGLES for index in triangles) or len(set(triangles)) != len(triangles)):
+        raise ValueError("Choose valid original donor triangles.")
+    for key in ("donorSha256", "donorSelectionFingerprint"):
+        if not isinstance(params[key], str) or params[key] and not re.fullmatch(r"[a-f0-9]{64}", params[key]):
+            raise ValueError("The donor selection has no valid source identity.")
+    if operation == "part":
+        if params["partSelectionMode"] == "bones" and not (roots or part):
+            raise ValueError("Choose one or more donor part bones.")
+        if params["partSelectionMode"] == "triangles" and not triangles:
+            raise ValueError("Select donor faces on the model or texture first.")
+        if source_bound and not all(params[key] for key in ("donorSha256", "donorRenderer", "donorMesh", "donorSelectionFingerprint")):
+            raise ValueError("Load the donor before selecting parts or faces.")
     if params.get("region") not in ("lower", "lower_belly", "central"):
         raise ValueError("Choose a valid lower-body region.")
     for key in ("cutLow", "cutHigh"):
@@ -169,7 +249,11 @@ def validate_request(params):
             if model_count != 1:
                 raise ValueError("For transplanting, open a single Unity costume bundle or a ZIP with one model. Paired platform and Rina ZIPs need separate donor models.")
     donor, raw = _read_donor(params["donor"])
-    return {**copy.deepcopy(params), "state": state, "donorName": donor.name,
+    digest = hashlib.sha256(raw).hexdigest()
+    if params["donorSha256"] and params["donorSha256"] != digest:
+        raise ValueError("The donor changed after selection. Load it again.")
+    selection = _resolve_snapshot_selection(raw, donor.name, params) if operation == "part" else {}
+    return {**copy.deepcopy(params), **selection, "state": state, "donorSha256": digest, "donorName": donor.name,
             "donorRaw": raw, "sourceIndex": source_index, "context": context}
 
 
@@ -220,11 +304,11 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
             if operation == "costume":
                 costume.run_costume_transplant(job, params)
             elif operation == "part":
-                available = {item["value"] for item in costume.part_root_options({"donor": donor_model})}
-                if request["partRoot"] not in available:
-                    raise ValueError("The selected part no longer exists in the donor costume.")
                 costume.run_costume_part_transplant(job, {**params,
-                    "part_root": request["partRoot"], "new_submesh": True})
+                    "part_bones": request["partBones"] or None,
+                    "triangle_indices": request["triangleIndices"] if request["partSelectionMode"] == "triangles" else None,
+                    "donor_renderer": request["donorRenderer"],
+                    "target_renderer": request["targetRenderer"] or None, "new_submesh": True})
             else:
                 costume.run_lower_body_swap(job, {**params, "cut": "custom", "region": request["region"],
                     "cut_low": request["cutLow"], "cut_high": request["cutHigh"],

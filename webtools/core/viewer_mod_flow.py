@@ -225,7 +225,7 @@ def validate_options(display_name, character_id, counterpart_path, selected_vari
 
 
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
-                   character_id=None, counterpart_path=None, selected_variant=None, job):
+                   character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
     if not _PACKAGE_SLOT.acquire(blocking=False):
@@ -235,6 +235,9 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         _check(job)
         context = model_edits.mod_source_context(token)
         normalized = model_edits.validate_state(token, state)
+        from webtools.core import viewer_thumbnails
+        thumbnail = viewer_thumbnails.for_viewer_package(thumbnail_token, token, normalized,
+            character_id, counterpart_path, selected_variant)
         result = model_edits.export(token, normalized, output_root, log=job.log)
         exported_result = result
         remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
@@ -249,7 +252,9 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
             result["paired_edits"] = paired["summary"]
         _check(job)
         packed = viewer_mod_package.package_saved_export(result, Path(result["recipe_path"]).parent / "mod",
-            display_name=name, chara_id=character_id, pair=pair, log=job.log, should_stop=job.should_stop)
+            display_name=name, chara_id=character_id, pair=pair,
+            log=job.log, should_stop=job.should_stop,
+            **({"thumbnail": thumbnail} if thumbnail is not None else {}))
         if viewer_scene_roles.should_package(context, normalized, packed, token):
             packed = viewer_scene_roles.package_scene(context, result, normalized, pair=pair, packed=packed,
                 token=token, repo_root=repo_root, receipts=cached_receipts(context, cache_root), log=job.log)
@@ -266,6 +271,8 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
                   "display_name": name, "installable": True}
         if packed.get("format"):
             public.update(format=packed["format"], version=packed["version"])
+        if packed.get("thumbnail"):
+            public["thumbnail"] = copy.deepcopy(packed["thumbnail"])
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
         receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized,

@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "size": [
+    128,
+    128
+  ],
+  "source": "sdk/Thumbnail Template.psd",
+  "source_sha256": "edb83c393e1a1f70bad9a0a22193b043ee2e3f9707fe2b23ab2f758270c7ca84",
+  "source_example_color": [
+    233,
+    95,
+    95
+  ],
+  "member_color": "Use the selected member color from game master data, not the PSD example color.",
+  "composition": [
+    {
+      "action": "fill",
+      "source": "member_color",
+      "blend": "source-over",
+      "opacity": 1
+    },
+    {
+      "asset": "pattern.png",
+      "source_layer": "Border In/pattern ui",
+      "blend": "source-over",
+      "opacity": 0.2
+    },
+    {
+      "asset": "cross.png",
+      "source_layer": "Border In/cross ui",
+      "blend": "source-over",
+      "opacity": 0.7019607843137254
+    },
+    {
+      "asset": "gradient.png",
+      "source_layer": "Border In/Gradient",
+      "blend": "screen",
+      "opacity": 0.7490196078431373
+    },
+    {
+      "action": "draw_costume",
+      "blend": "source-over",
+      "opacity": 1
+    },
+    {
+      "asset": "inner-mask.png",
+      "source_layer": "Border In mask",
+      "blend": "destination-in",
+      "opacity": 1
+    },
+    {
+      "asset": "outer-border.png",
+      "source_layer": "Border Out with layer mask",
+      "blend": "source-over",
+      "opacity": 1
+    }
+  ],
+  "notes": [
+    "Apply the Border In group mask once after the costume, not independently to each background layer.",
+    "All exported image coordinates are the original 128x128 canvas; oversized pattern/cross layers are cropped without rescaling.",
+    "Opacity and screen blending are not pre-applied to pattern/cross/gradient pixels.",
+    "Original SDK files remain unchanged. Runtime rendering uses PNG assets and Canvas/WebGL only.",
+    "No standalone license declaration was found within sdk; these are derived from the SDK assets already supplied in this repository."
+  ],
+  "assets": {
+    "pattern.png": {
+      "sha256": "9a7fdb6d92e491b47a0b1219687a751a3e877f466bc4abd7563c42a6ddb89a73",
+      "bytes": 6890
+    },
+    "cross.png": {
+      "sha256": "c17a6052767f018e70302b88b89c6acd4fb80f72e198153758d2c4bb2ea99c24",
+      "bytes": 1033
+    },
+    "gradient.png": {
+      "sha256": "88300846e09d2bdaff7f7aef63032d12b715425434ae34afbd8d9b31349ab7cc",
+      "bytes": 1670
+    },
+    "inner-mask.png": {
+      "sha256": "ea2812d1bad14368505946a32d2ad008c9a102b5ed480534675fd69f853b9b35",
+      "bytes": 487
+    },
+    "outer-border.png": {
+      "sha256": "3c80f559eed9d4fbd6720a9564867499ab889acc166fbed7ff3b5e6431ae7e4c",
+      "bytes": 989
+    },
+    "template-reference.png": {
+      "sha256": "b402b583b4d09ad38394f38ea73ec19a32ee0d5b7bbc078977c8117cbe2d7053",
+      "bytes": 13150
+    }
+  }
+}

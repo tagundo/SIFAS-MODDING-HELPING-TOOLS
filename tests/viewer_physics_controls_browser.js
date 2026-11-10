@@ -49,8 +49,25 @@ async function main() {
     });
     let state = await physics();
     assert(state.nativeAvailable && state.mode === 'game' && state.swingBone && state.swingCollider, 'Both source physics systems start enabled in original mode');
+    assert.equal(state.frameRate, 0, 'A fresh physics preview follows the display refresh rate');
+    assert.equal(await page.locator('#viewer-physics-frame-rate').inputValue(), '0');
     assert(await page.locator('#viewer-physics-bones').isChecked()); assert(await page.locator('#viewer-physics-colliders').isChecked());
     report.initial = state;
+    const timingDelta = 1 / 144;
+    assert.equal(await page.evaluate(delta => window.__physicsControls.playbackDelta(delta), timingDelta), timingDelta,
+      'The display setting accepts every positive display-frame delta rather than imposing a30/60 FPS gate');
+    for (const frameRate of [60, 30, 0]) {
+      await page.evaluate(frameRate => window.__physicsControls.restorePreviewState({...ModelViewer.getState().rig.physics, frameRate}), frameRate);
+      assert.equal((await physics()).frameRate, frameRate, 'An explicit saved cadence wins over the fresh default');
+      assert.equal(await page.locator('#viewer-physics-frame-rate').inputValue(), String(frameRate));
+    }
+    await (await show(page.locator('#viewer-physics-profile'))).selectOption('live');
+    for (const quality of ['10', '20']) {
+      await page.locator('#viewer-physics-quality').selectOption(quality);
+      assert.equal((await physics()).frameRate, 0, 'Changing game quality preserves the explicit display refresh cadence');
+      assert.equal(await page.locator('#viewer-physics-frame-rate').inputValue(), '0');
+    }
+    await page.evaluate(state => window.__physicsControls.restorePreviewState(state), report.initial);
     await page.evaluate(() => window.__physicsControls.restorePreviewState({...ModelViewer.getState().rig.physics, swingBone: false, swingCollider: false}));
     state = await physics(); assert(!state.swingBone && !state.swingCollider, 'Explicit off inspection state wins over new defaults');
     await page.evaluate(state => window.__physicsControls.restorePreviewState(state), report.initial);
@@ -127,7 +144,7 @@ async function main() {
     report.recipe = recipe.state;
     await page.screenshot({path: path.join(evidence, 'physics-controls.png'), fullPage: true});
     await page.evaluate(() => window.__physicsControls.restorePreviewState({...window.__physicsControls.getState(), swingBone: false, swingCollider: false}));
-    await load(); state = await physics(); assert(state.swingBone && state.swingCollider, 'A genuinely new model load uses enabled defaults');
+    await load(); state = await physics(); assert(state.swingBone && state.swingCollider && state.frameRate === 0, 'A genuinely new model load uses enabled defaults and display refresh cadence');
     assert.equal(state.breastAutoLimits.enabled, false, 'Authoring auto policy does not silently migrate to a different model session');
     assert.deepStrictEqual(errors, []); report.status = 'PASS'; report.evidence = evidence;
     fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({status: report.status, evidence, nativeSteps: report.defaultPlayback.solver.totalNativeSteps, savedLimits: limits.values}));

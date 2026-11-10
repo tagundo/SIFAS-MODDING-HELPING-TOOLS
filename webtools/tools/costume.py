@@ -16,44 +16,13 @@ from webtools.tools.common import as_float, single_out_path
 
 # ---- dynamic dropdown provider: donor -> candidate part-root bones ----------
 def part_root_options(params):
-    """Options for the Costume Part Transplant 'part root bone' dropdown: the
-    donor bundle's candidate part roots, mirroring the desktop GUI's parts
-    combobox (costume_part_transplant.inspect). Returns [{value, label}]; the
-    value is the bone name transplant_part expects, the label adds vert/tri/bone
-    counts. Empty list when no donor is chosen yet."""
+    """All donor skin bones, retaining their actual subtree relationships."""
     donor = (params.get("donor") or "").strip()
     if not donor:
         return []
     ensure_repo_on_path()
     import costume_part_transplant as cpt
-    out = []
-    for p in cpt.inspect(donor, verbose=False):
-        root = p.get("root")
-        if not root:
-            continue
-        out.append({
-            "value": root,
-            "bones": list(p.get("bones", [])),
-            "label": "%s  (%d v, %d t, %d bones)" % (
-                root, p.get("verts", 0), p.get("tris", 0), len(p.get("bones", []) or [])),
-        })
-    # Also offer explicit anatomical subtrees for direct 3D part selection.
-    import UnityPy
-    env = UnityPy.load(donor)
-    objects, index = cpt._index(env)
-    renderer = cpt._body_smr(objects)
-    if renderer is not None:
-        tree = renderer.read_typetree()
-        names = cpt._smr_bone_names(index, tree)
-        parents = cpt._bone_parent_array(index, tree)
-        roots = {item["value"] for item in out}
-        for name in ("BreastSize", "LeftShoulder", "RightShoulder", "LeftArm", "RightArm",
-                     "LeftForeArm", "RightForeArm", "LeftHand", "RightHand",
-                     "LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg", "LeftFoot", "RightFoot"):
-            if name not in names or name in roots: continue
-            bones = [names[i] for i in sorted(cpt._descendants(parents, names.index(name)))]
-            out.append({"value": name, "label": name, "bones": bones})
-    return out
+    return cpt.part_hierarchy(donor, renderer=params.get("donor_renderer") or None)
 
 
 # ---------------------------------------------------------- costume packer
@@ -75,6 +44,8 @@ def run_costume_packer(job, params):
     auto_chara_id = bool(params.get("auto_chara_id", True))
     manual_chara_id = int(as_float(params.get("manual_chara_id"), 0))
     thumbnail_size = int(as_float(params.get("thumbnail_size"), 256))
+    from webtools.core import viewer_thumbnails
+    thumbnail_provider = viewer_thumbnails.packer_provider(params)
 
     if params.get("mode") == "batch":
         combine_pairs = bool(params.get("combine_pairs", True))
@@ -83,15 +54,17 @@ def run_costume_packer(job, params):
         success, fail = m.run_pack_jobs(
             files, out_dir, auto_chara_id=auto_chara_id, manual_chara_id=manual_chara_id,
             thumbnail_size=thumbnail_size, combine_pairs=combine_pairs,
-            ask_chara_id=None, log=job.log)
+            ask_chara_id=None, log=job.log, thumbnail_provider=thumbnail_provider)
         job.progress(1, 1)
+        if thumbnail_provider is not None and fail:
+            raise RuntimeError(f"Automatic 3D costume packing failed for {fail} costume(s); see the log above.")
         return f"packed: success={success} fail={fail}"
 
     in_file = params.get("in_path")
     job.progress(0, 1)
     zip_path = m.pack_single_bundle(
         in_file, out_dir, auto_chara_id=auto_chara_id, manual_chara_id=manual_chara_id,
-        thumbnail_size=thumbnail_size, ask_chara_id=None, log=job.log)
+        thumbnail_size=thumbnail_size, ask_chara_id=None, log=job.log, thumbnail_provider=thumbnail_provider)
     job.progress(1, 1)
     if not zip_path:
         raise RuntimeError("packing failed (see log above)")
@@ -200,6 +173,8 @@ def run_costume_part_transplant(job, params):
     suffix = params.get("suffix") or "_part"
     out_path = single_out_path(out_dir, target, "", suffix)
     part_root = (params.get("part_root") or "").strip() or None
+    part_bones = params.get("part_bones")
+    triangle_indices = params.get("triangle_indices")
 
     # GUI maps the unchecked "own sub-mesh" box to new_submesh="auto"; checked -> True
     new_submesh = True if params.get("new_submesh") else "auto"
@@ -207,7 +182,11 @@ def run_costume_part_transplant(job, params):
     job.log(f"transplanting part from {Path(donor).name} onto {Path(target).name} …")
     m.transplant_part(
         str(donor), str(target), str(out_path),
-        part_root=part_root, auto=(part_root is None),
+        part_root=part_root, part_bones=part_bones,
+        auto=part_root is None and part_bones is None and triangle_indices is None,
+        triangle_indices=triangle_indices,
+        donor_renderer=params.get("donor_renderer") or None,
+        target_renderer=params.get("target_renderer") or None,
         preserve_physics=bool(params.get("preserve_physics", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         new_submesh=new_submesh,

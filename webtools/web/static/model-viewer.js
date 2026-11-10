@@ -402,11 +402,17 @@
     if (!hasVariants) menu.open = false;
     if (changed && focusedPrimary) focusElement(focusedPrimary);
     else if (changed && focusedSummary) focusElement(node("viewer-expand"));
-    var list = node("viewer-file-list"), options = node("viewer-file-options");
+    var list = node("viewer-model-files"), options = node("viewer-file-options");
     var hideList = compact && tab.classList.contains("viewer-has-model");
     if (hideList && list && list.contains(document.activeElement)) options.open = true;
+    if (list && hideList !== list.classList.contains("viewer-model-files-embedded")) {
+      if (hideList) { list.dataset.wideOpen = list.open ? "1" : "0"; list.open = true; }
+      else list.open = list.dataset.wideOpen === "1" || list.contains(document.activeElement);
+      list.classList.toggle("viewer-model-files-embedded", hideList);
+    }
     moveLayoutElement(list, hideList ? options.querySelector(".viewer-file-options-panel") : options.parentNode,
       hideList ? null : options);
+    positionModelFilePopup();
     refreshPopoverStack(menu.open ? menu : null);
   }
 
@@ -441,12 +447,34 @@
       item.appendChild(remove);
       list.appendChild(item);
     });
+    var chooser = node("viewer-model-files"), count = node("viewer-model-file-count"), badge = node("viewer-model-options-count");
+    chooser.hidden = !paths.length;
+    node("viewer-model-file-name").textContent = paths.length ? basename(paths[0]) : t("Model files");
+    chooser.querySelector("summary").title = t("Model files") + " (" + paths.length + ")";
+    count.textContent = String(paths.length); count.hidden = paths.length < 2;
+    badge.textContent = String(paths.length); badge.hidden = paths.length < 2;
+    var workspaceBadge = node("viewer-workspace-model-count");
+    workspaceBadge.textContent = String(paths.length); workspaceBadge.hidden = paths.length < 2;
+    node("viewer-workspace-menu").querySelector("summary").setAttribute("aria-label", t("Files and app controls") + " · " + t("Model files") + " " + paths.length);
+    node("viewer-file-options").querySelector("summary").setAttribute("aria-label", t("Model options") + " · " + t("Model files") + " " + paths.length);
     node("viewer-add").textContent = t(paths.length ? "Add file" : "Choose costume file");
     node("viewer-add").disabled = loading || paths.length >= MAX_FILES;
     node("viewer-add-motion").disabled = loading || motionLibraryPaths.length >= MAX_MOTION_FILES;
     node("viewer-load").disabled = loading || !paths.length;
+    refreshMotionLibrary();
     renderVariantOptions();
     scheduleResize();
+  }
+
+  function positionModelFilePopup() {
+    var chooser = node("viewer-model-files");
+    if (!chooser || !chooser.open || chooser.classList.contains("viewer-model-files-embedded")) return;
+    var popup = chooser.querySelector(".viewer-model-file-popup"), viewport = viewportRect();
+    popup.style.left = "0px";
+    var rect = popup.getBoundingClientRect(), left = 0;
+    if (rect.right > viewport.left + viewport.width - 8) left -= rect.right - (viewport.left + viewport.width - 8);
+    if (rect.left + left < viewport.left + 8) left += viewport.left + 8 - (rect.left + left);
+    popup.style.left = left + "px";
   }
 
   function filesChanged() {
@@ -1267,6 +1295,33 @@
     if (clear) clear.disabled = !motionLibraryPaths.length || loading || lost || workbenchBusy() || meshDraftPending() ||
       !!(persistenceController && persistenceController.getState().busy) || !sameSelection(loadedPaths, loadedAutoFace, loadedVariants);
     if (status) status.textContent = motionLibraryPaths.length ? t("Imported motions are kept when opening another model.") : "";
+    var files = node("viewer-motion-files"), list = node("viewer-motion-file-list"), count = node("viewer-motion-file-count");
+    if (!files || !list || !count) return;
+    files.hidden = !motionLibraryPaths.length;
+    count.textContent = String(motionLibraryPaths.length);
+    var pathsKey = JSON.stringify(motionLibraryPaths);
+    if (list.dataset.paths === pathsKey) {
+      Array.prototype.forEach.call(list.querySelectorAll("button"), function (button, index) {
+        button.disabled = !clear || clear.disabled;
+        button.setAttribute("aria-label", t("Remove") + " " + basename(motionLibraryPaths[index]));
+      });
+      return;
+    }
+    list.dataset.paths = pathsKey;
+    list.textContent = "";
+    motionLibraryPaths.forEach(function (path) {
+      var item = document.createElement("li"), label = document.createElement("span"), remove = document.createElement("button");
+      label.textContent = basename(path); label.title = path;
+      remove.type = "button"; remove.className = "viewer-remove"; remove.textContent = "×";
+      remove.setAttribute("aria-label", t("Remove") + " " + basename(path));
+      remove.disabled = !clear || clear.disabled;
+      remove.addEventListener("click", async function () {
+        if (remove.disabled) return;
+        try { await loadMotionLibrary(motionLibraryPaths.filter(function (entry) { return entry !== path; })); }
+        catch (error) { if (error.name !== "AbortError") setStatus(error.message || String(error), true); }
+      });
+      item.appendChild(label); item.appendChild(remove); list.appendChild(item);
+    });
   }
 
   function showWarnings(warnings) {
@@ -2021,6 +2076,11 @@
     bindViewportPopover(node("viewer-view-menu"));
     bindViewportPopover(node("viewer-info"));
     bindViewportPopover(node("viewer-workspace-menu"));
+    listenLayout(node("viewer-model-files"), "toggle", positionModelFilePopup);
+    listenLayout(document, "pointerdown", function (event) {
+      var chooser = node("viewer-model-files");
+      if (chooser.open && !chooser.classList.contains("viewer-model-files-embedded") && !chooser.contains(event.target)) chooser.open = false;
+    });
     document.querySelectorAll("[data-viewer-view]").forEach(function (button) {
       button.addEventListener("click", function () { setView(button.dataset.viewerView); });
     });
@@ -2048,6 +2108,10 @@
       var picker = node("picker");
       if ((shortHeight || pickerHome) && picker && !picker.classList.contains("hidden")) {
         event.preventDefault(); node("picker-cancel").click(); return;
+      }
+      var modelFiles = node("viewer-model-files");
+      if (modelFiles && modelFiles.open && !modelFiles.classList.contains("viewer-model-files-embedded")) {
+        event.preventDefault(); modelFiles.open = false; focusElement(modelFiles.querySelector("summary")); return;
       }
       var workspaceMenu = node("viewer-workspace-menu");
       if (workspaceMenu && workspaceMenu.open) {
@@ -2192,7 +2256,7 @@
       priorCompleteFace: !!(metadata && metadata.faces && metadata.faces.enabled && ["added", "already_present"].indexOf(metadata.faces.status) >= 0),
       camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
     previous.inspection = previous.pose;
-    previous.allowRemovedMotion = selected.length === 0;
+    previous.allowRemovedMotion = loadedMotionPaths.some(function (path) { return selected.indexOf(path) < 0; });
     if (previous.allowRemovedMotion) previous.strictInspection = false;
     previous.expectedSourceFingerprint = metadata && metadata.editing && metadata.editing.sourceFingerprint || null;
     var oldPaths = loadedPaths.slice(), oldMotions = loadedMotionPaths.slice();
@@ -2206,6 +2270,7 @@
       motionLibraryPaths = oldMotions; renderFiles(); filesChanged(); refreshMotionLibrary();
       throw new Error(statusDetail || t("The motion could not be loaded."));
     }
+    importedGameMotionPaths = importedGameMotionPaths.filter(function (path) { return selected.indexOf(path) >= 0; });
     refreshMotionLibrary();
   }
 

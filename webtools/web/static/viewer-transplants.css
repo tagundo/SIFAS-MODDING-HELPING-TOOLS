@@ -11,3 +11,18 @@
 .viewer-transplant-cuts label:first-child, .viewer-transplant-cuts label:last-child { grid-column: 1 / -1; }
 .viewer-transplant-log { max-height: 150px; white-space: pre-wrap; overflow: auto; font-size: .75rem; }
 .viewer-transplant-panel [hidden] { display: none !important; }
+.viewer-transplant-bone-controls { display: grid; gap: .55rem; margin: .65rem 0; min-width: 0; }
+.viewer-transplant-bone-controls > label, .viewer-transplant-face-controls > label, .viewer-transplant-texture-panel > label { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; }
+.viewer-transplant-bone-controls input[type=search], .viewer-transplant-bone-controls select, .viewer-transplant-face-controls select, .viewer-transplant-texture-panel select { width: 100%; min-width: 0; max-width: 100%; }
+.viewer-transplant-bone-tree { max-height: 16rem; overflow: auto; border: 1px solid var(--line, #475466); border-radius: .4rem; padding: .25rem; overscroll-behavior: contain; }
+.viewer-transplant-bone-tree .viewer-transplant-bone-row { display: flex; align-items: center; gap: .45rem; min-height: 44px; padding: .25rem .35rem .25rem calc(.35rem + var(--bone-depth, 0) * .6rem); cursor: pointer; }
+.viewer-transplant-bone-row input { flex: 0 0 18px; width: 18px; height: 18px; }
+.viewer-transplant-bone-row > span { min-width: 0; overflow-wrap: anywhere; font-size: .8rem; }
+.viewer-transplant-face-controls { display: grid; gap: .55rem; margin: .6rem 0; min-width: 0; }
+.viewer-transplant-texture-panel { min-width: 0; }
+.viewer-transplant-texture-panel canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; touch-action: none; border: 1px solid var(--line, #475466); border-radius: .4rem; background: repeating-conic-gradient(#28313f 0% 25%,#323e50 0% 50%) 50%/20px 20px; cursor: crosshair; }
+.viewer-transplant-texture-zoom { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .5rem 0; }
+.viewer-transplant-texture-zoom > label { display: grid; gap: .3rem; min-width: 0; flex: 1 1 150px; }
+.viewer-transplant-texture-zoom input[type=range] { width: 100%; min-width: 0; }
+.viewer-transplant-brush-cursor { position: fixed; z-index: 1001; pointer-events: none; border: 2px solid #35e8a5; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.7); box-sizing: border-box; }
+.viewer-transplant-brush-cursor[hidden] { display: none; }

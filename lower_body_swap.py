@@ -351,6 +351,7 @@ class BodyMesh:
         self.smr_obj = self.smr = None
         for o in objs:
             if o.type.name == "SkinnedMeshRenderer":
+                if renderer is not None and o.path_id != int(renderer): continue
                 d = o.read_typetree()
                 if d.get("m_Mesh", {}).get("m_PathID") == self.mesh_obj.path_id:
                     self.smr_obj = o; self.smr = d; break

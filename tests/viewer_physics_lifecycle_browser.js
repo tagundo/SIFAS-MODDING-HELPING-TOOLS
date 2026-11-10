@@ -77,6 +77,7 @@ async function run() {
     await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer([source]); }, source);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getState().rig.physics.available);
     assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.mode), 'game', 'The real native-metadata fixture uses the production game engine, not the enhanced fallback');
+    assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.frameRate), 0, 'Fresh original physics follows the display refresh rate');
     assert.equal(await page.evaluate(() => ModelViewer.getState().rig.physics.swingBone && ModelViewer.getState().rig.physics.swingCollider), true, 'Original SwingBone and Collider are enabled on a fresh model');
     assert(prepared && prepared.rig.clips.length, 'Actual source has exported motion metadata');
     const clip = prepared.rig.clips.find(value => value.userSelected !== false), rawName = clip.name;
@@ -111,11 +112,12 @@ async function run() {
     assert(directlyAnimatedFrames > 1 && changedDyna, 'Multiple actual source-keyed Dyna frames reach native input, including a nontrivial rotation');
     report.cases.push({name: 'serialized Dyna and child curves preserve their actual animated properties at the native job boundary', frames: directlyAnimatedFrames});
     report.cases.push({ name: 'raw motion receives capture-before-positive-delta without authoring resets', trace });
-    const cadence = await page.evaluate(() => {
+    async function sampleCadence() { return page.evaluate(() => {
       const seek = document.getElementById('viewer-time'); seek.value = '0'; seek.dispatchEvent(new Event('input', {bubbles: true}));
       window.__physicsEvents = [];
       // These synchronous calls use the actual Rig and controller. A browser
-      // RAF cannot interleave, so the 120Hz input/30Hz game boundary is exact.
+      // RAF cannot interleave, so display input and the selected game boundary
+      // can be checked separately without changing the actual native engine.
       document.getElementById('viewer-play').click();
       const times = [], beforeSteps = window.__lifecycleRig.getState().physics.solver.totalNativeSteps;
       for (let i = 0; i < 4; i++) { window.__lifecycleRig.update(1 / 120); times.push(window.__lifecycleRig.getState().time); }
@@ -123,7 +125,16 @@ async function run() {
       document.getElementById('viewer-play').click();
       return {times, events: window.__physicsEvents.slice(), finalTime: window.__lifecycleRig.getState().time,
         nativeStepCount: window.__lifecycleRig.getState().physics.solver.totalNativeSteps - beforeSteps};
-    });
+    }); }
+    const displayCadence = await sampleCadence();
+    displayCadence.times.forEach((time, index) => assert(Math.abs(time - (index + 1) / 120) < 1e-7,
+      'The default display setting samples animation on each display frame'));
+    assert.equal(displayCadence.events.filter(value => value.method === 'apply' && value.delta > 0).length, 5);
+    assert.equal(displayCadence.nativeStepCount, 5, 'Each120Hz tick and one long tick advance the original job exactly once');
+    assert(Math.abs(displayCadence.finalTime - (1 / 30 + .1)) < 1e-7);
+    report.cases.push({name: 'default display cadence accepts each120Hz tick without catch-up substeps', cadence: displayCadence});
+    await (await show(page.locator('#viewer-physics-frame-rate'))).selectOption('30');
+    const cadence = await sampleCadence();
     assert.deepStrictEqual(cadence.times.slice(0, 3), [0, 0, 0], 'Sub-frame display ticks skip both kinematic sampling and native simulation');
     assert(Math.abs(cadence.times[3] - 1 / 30) < 1e-7, 'The accepted frame samples animation at the same accumulated game clock');
     assert.equal(cadence.events.filter(value => value.method === 'apply' && value.delta > 0).length, 2, 'A long accepted frame runs one original update, without catch-up substeps');

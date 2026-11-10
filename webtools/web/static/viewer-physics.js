@@ -471,7 +471,7 @@
     var applyColliders = components.some(function (r) { return r.kind === "collider" && r.node !== null && r.enabled; });
     var showColliders = false, spheres = [], springs = [], helperGroup = new THREE.Group();
     var nativeAvailable = !!(catalog && catalog.native && catalog.native.available && window.ViewerGamePhysics);
-    var mode = nativeAvailable ? "game" : "enhanced", frameRate = 30, qualityMode = 20, profile = "auto", skirtCorrection = "auto", motionCorrection = "auto", frameElapsed = 0;
+    var mode = nativeAvailable ? "game" : "enhanced", frameRate = 0, qualityMode = 20, profile = "auto", skirtCorrection = "auto", motionCorrection = "auto", frameElapsed = 0;
     var engines = {}, frameContext = null, modeSelect = null, frameSelect = null, profileSelect = null, qualitySelect = null, skirtSelect = null, motionSelect = null, modeNote = null;
     var autoBreastLimits = false, breastLimitBases = {}, breastLimitState = [], breastAutoInput = null, breastAutoNote = null, breastSizeSignature = null;
     var componentRows = [], componentKind = null, componentGroup = null, componentSearch = null, componentEmpty = null, componentsRegion = null;

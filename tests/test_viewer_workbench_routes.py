@@ -138,6 +138,22 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
             self.assertEqual(self.request('/api/viewer/transplant/run', self.transplant)[0], 400)
         create.assert_not_called()
 
+    def test_large_source_bound_part_mask_reaches_validation_with_a_fixed_upper_bound(self):
+        validate = self.backend_patch(viewer_transplants, 'validate_request', return_value={'validated': True})
+        run = self.backend_patch(viewer_transplants, 'run_transplant', return_value='Ready')
+        payload = {**self.transplant, 'operation': 'part', 'partRoot': '', 'partSelectionMode': 'triangles',
+                   'partRoots': [], 'includeDescendants': True, 'triangleIndices': list(range(100000)),
+                   'donorSha256': 'a' * 64, 'donorSelectionFingerprint': 'b' * 64, 'donorRenderer': '12', 'donorMesh': '1'}
+        self.assertGreater(len(json.dumps(payload).encode()), 512 * 1024)
+        status, response = self.request('/api/viewer/transplant/run', payload)
+        self.assertEqual(status, 200, response)
+        self.finish(response['job_id'])
+        validate.assert_called_once_with(payload)
+        self.assertEqual(run.call_count, 1)
+        validate.reset_mock()
+        self.assertEqual(self.headers_only('/api/viewer/transplant/run', [('Content-Length', str(4 * 1024 * 1024 + 1))])[0], 400)
+        validate.assert_not_called()
+
     def test_all_feature_posts_reject_extra_paths_and_cross_origin_calls(self):
         routes = [
             ('/api/viewer/game/motions/import', self.motion),

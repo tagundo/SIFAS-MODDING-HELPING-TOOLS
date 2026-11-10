@@ -88,14 +88,39 @@ remain available when switching tools. On macOS, the native sidebar provides
 **Asset editing tools** and **3D model** instead of duplicating those controls in
 the web header. Both native destinations share the same model session.
 
+Every tool with **Selected files** can add several files from one picker.
+Checkbox selections survive folder navigation until **Add selected files**;
+Cancel leaves the existing input list unchanged. The native Mac file panel also
+allows multiple selection. Inputs still have individual Remove controls.
+
+The model file summary shows the first filename and total count. Its full list
+opens over the viewer without adding a toolbar row. Compact file/workspace
+buttons also show the count. Motion filenames live under **Pose and motion**,
+where individual imported sources can be removed.
+
+**Automatic high-quality 3D** thumbnails are available in both **Costume Mod
+Packer** and the viewer's **Save mod ZIP** flow. An independent renderer uses
+the SDK orthographic camera, source rest pose, member colors and PSD layers;
+the costume is composited above Gradient. It uses the existing SIFAS materials
+and high-quality renderer without changing the live camera, pose or physics.
+Blender and Photoshop are reference sources only. Main costume textures must
+decode successfully, and the render receipt binds source bytes, edits, target
+member, variant, size, template and quality before packaging.
+
+**Replace existing Mod thumbnail** applies the same renderer to an existing
+costume Mod ZIP. Single and Selected files modes produce new copies, preserving
+models, settings and other assets. Literal legacy installers and validated
+scene-role packages are supported; the active thumbnail reference is updated
+for the chosen/default costume variant.
+
 Game asset pickers initially use Japan for a Japanese app language and Global
 for the other app languages. An explicit region choice is retained when the
 picker opens again; the server's game-data locale does not override this choice.
 
 ## Notes
 
-- The WebUI calls the **same** functions the command-line tools use, so output is
-  identical to running the scripts directly.
+- Asset processing uses the **same** functions as the command-line tools.
+  Automatic 3D thumbnails are rendered by the app before those packaging calls.
 - If a texture thumbnail can't be decoded (some Termux/ARM codec builds), the
   gallery just shows a "no preview" placeholder — it never crashes the server.
 
@@ -160,9 +185,9 @@ that are absent from a single-character preview are reported as unavailable.
 **Physics preview** offers **Original game calculation** and **Additional
 clipping correction** as separate modes. The original mode ports SIFAS 3.12's
 single and grouped SwingBone jobs, four collision routines, initialization,
-rotation constraints and conditional skirt correction. Its default is the
-game's normal 30 FPS setting; select 60 FPS for maximum game quality or display
-refresh rate when that game option is enabled. Animation and physics sample
+rotation constraints and conditional skirt correction. The preview follows the
+display refresh rate by default; select 30 FPS for the normal game cadence or
+60 FPS for maximum game quality. Animation and physics sample
 together, with one original update per accepted frame and no catch-up substeps.
 Pausing freezes the physical result; seeking starts new dynamic history while
 retaining the model's authored rest pose.
@@ -233,6 +258,12 @@ bundles/ZIPs; paired platform or Rina ZIPs require editing individual bundles.
 New grafts retain unweighted endpoint dependencies, typed physics references
 and separate LOD manager indices. Older graft files that already lost endpoint
 bones need to be transplanted again from the original donor for exact recovery.
+Part transplantation lists the donor's complete bone hierarchy and supports
+multiple bones with child selection enabled by default. Alternatively, select
+faces directly on its 3D model or texture/UV preview. Green faces form one
+source-bound transplant selection across materials within the selected
+renderer. UV overlaps select every matching face; the 3D brush selects visible
+surfaces. Selection Undo/Redo is separate from undoing a completed transplant.
 
 ### Model viewer controls
 

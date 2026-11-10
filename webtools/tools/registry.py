@@ -23,6 +23,7 @@ from webtools.tools.mesh import inspect_body_parts, inspect_bones, run_fix_expor
 from webtools.tools.renamer import run_renamer
 from webtools.tools.skintone import SRC_TONES, TONES, run_skintone
 from webtools.tools.info import run_charinfo
+from webtools.tools.thumbnail import run_thumbnail_replace
 from webtools.core.charinfo import NAMES as _CHAR_NAMES
 from webtools.core.bodymatch import is_android as _is_android
 
@@ -342,9 +343,31 @@ TOOLS = [
             {"name": "auto_chara_id", "label": "Auto-detect character ID", "type": "checkbox", "default": True},
             {"name": "manual_chara_id", "label": "Manual character ID", "type": "number", "default": "0",
              "help": "Used when auto-detect is off or fails."},
+            {"name": "thumbnail_mode", "label": "Costume thumbnail", "type": "select", "default": "texture",
+             "options": [{"value": "texture", "label": "Texture thumbnail"},
+                         {"value": "3d", "label": "Automatic high-quality 3D"}],
+             "help": "Automatically render the SDK costume camera and member-colored template when packing."},
             {"name": "thumbnail_size", "label": "Thumbnail size", "type": "number", "default": "256"},
             {"name": "combine_pairs", "label": "Combine Android+iOS pairs", "type": "checkbox",
              "default": True, "mode": "batch"},
+        ],
+    },
+    {
+        "id": "costume_thumbnail_replace",
+        "label": "Replace existing Mod thumbnail",
+        "description": "Create new copies of costume Mod ZIPs with automatic high-quality 3D thumbnails, preserving their models and other settings.",
+        "modes": ["single"],
+        "run": run_thumbnail_replace,
+        "fields": [
+            {"name": "in_path", "label": "Input costume Mod ZIP", "type": "path", "required": True,
+             "mode": "single", "root": "suit", "help": "An existing costume Mod ZIP; the original remains unchanged."},
+            {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True,
+             "root": "modded", "help": "New costume ZIP copies are saved here; existing files are never overwritten."},
+            {"name": "thumbnail_size", "label": "Thumbnail size", "type": "number", "default": "256", "min": 64, "max": 1024, "step": 1},
+            {"name": "variant", "label": "Thumbnail costume variant", "type": "select", "default": "auto",
+             "options": [{"value": "auto", "label": "Use Mod default variant"},
+                         {"value": "primary", "label": "Primary costume"},
+                         {"value": "unmasked", "label": "Rina unmasked costume"}]},
         ],
     },
     {

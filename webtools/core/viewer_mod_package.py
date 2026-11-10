@@ -382,7 +382,7 @@ def _namespace_assets(target, temporary, display_name, should_stop, source_manif
     return references, prefix, metadata_member
 
 
-def _raw(paths, target, temporary, display_name, requested, pair, packer, should_stop, log):
+def _raw(paths, target, temporary, display_name, requested, pair, packer, should_stop, log, thumbnail_png=None):
     if pair is not None:
         _require(isinstance(pair, dict) and pair.get("owner") == 209 and not isinstance(pair.get("owner"), bool),
                  "The Rina counterpart resolver did not provide a valid pair.")
@@ -414,11 +414,14 @@ def _raw(paths, target, temporary, display_name, requested, pair, packer, should
     # The existing packer accepts a safe decoder; never enter native texture
     # codecs from an embedded Android request just to create a thumbnail.
     from . import decode
-    deadline = time.monotonic() + 30
-    _, png = packer._extract_body_texture_core(str(main), log=log,
-        image_decoder=lambda texture: decode._android_image(texture, deadline))
-    thumbnail = (packer.make_thumbnail_png(png, 256) if png else
-                 packer.make_name_thumbnail_png(display_name, 256, owner))
+    if thumbnail_png is not None:
+        thumbnail = thumbnail_png
+    else:
+        deadline = time.monotonic() + 30
+        _, png = packer._extract_body_texture_core(str(main), log=log,
+            image_decoder=lambda texture: decode._android_image(texture, deadline))
+        thumbnail = (packer.make_thumbnail_png(png, 256) if png else
+                     packer.make_name_thumbnail_png(display_name, 256, owner))
     _require(thumbnail, "The costume thumbnail could not be created.")
     arcs = {"costume_file": _arcname(main, packer)}
     if alternate is not None:
@@ -441,8 +444,40 @@ def _raw(paths, target, temporary, display_name, requested, pair, packer, should
     return owner, platform, "packed_unity", arcs, roles
 
 
+
+def _replace_thumbnail(target, png, should_stop):
+    """Change only the active thumbnail reference, preserving original ZIP assets."""
+    modified = target.with_suffix(".rendered.zip")
+    with zipfile.ZipFile(target) as incoming:
+        entries = incoming.infolist()
+        manifests = [info for info in entries if not info.is_dir() and
+                     PurePosixPath(info.filename.replace("\\", "/")).name.lower() == "modinstall.txt"]
+        _require(len(manifests) == 1, "The costume ZIP needs one thumbnail manifest.")
+        manifest = manifests[0]
+        values, _ = _manifest(incoming.read(manifest), "Thumbnail")
+        names = {info.filename.casefold() for info in entries}
+        name = "rendered-thumbnail-" + secrets.token_hex(8) + ".png"
+        _require(name.casefold() not in names, "The thumbnail asset name collides with the costume ZIP.")
+        # Preserve the already selected localized costume names.
+        original = ast.parse(incoming.read(manifest).decode("utf-8-sig"))
+        values = {node.targets[0].id: ast.literal_eval(node.value) for node in original.body}
+        values["thumbnail_file"] = name
+        encoded = ("\n".join(key + " = " + repr(value) for key, value in values.items()) + "\n").encode("utf-8")
+        _require(len(encoded) <= viewer_archive.MAX_MANIFEST_BYTES, "The rendered thumbnail manifest is too large.")
+        with zipfile.ZipFile(modified, "w", compression=zipfile.ZIP_DEFLATED) as outgoing:
+            outgoing.comment = incoming.comment
+            for info in entries:
+                _stop(should_stop)
+                if info is manifest:
+                    outgoing.writestr(info, encoded)
+                else:
+                    with incoming.open(info) as source, outgoing.open(info, "w") as output:
+                        shutil.copyfileobj(source, output, 65536)
+            outgoing.writestr(name, png)
+    modified.replace(target)
+
 def package_saved_export(export_result, output_dir, *, display_name, chara_id=None,
-                         pair=None, log=lambda message: None, should_stop=lambda: False):
+                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None):
     """Return an atomic installer ZIP receipt; authorization belongs to the caller.
 
     Generic ZIPs require exactly one Unity model. Their other non-model files
@@ -452,6 +487,12 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
     unreferenced entries retain their original names and bytes.
     """
     display_name = _display(display_name)
+    if thumbnail is not None:
+        _require(isinstance(thumbnail, dict) and isinstance(thumbnail.get("png"), bytes) and
+                 thumbnail["png"].startswith(b"\x89PNG\r\n\x1a\n") and
+                 len(thumbnail["png"]) <= 3 * 1024 * 1024 and
+                 hashlib.sha256(thumbnail["png"]).hexdigest() == thumbnail.get("sha256"),
+                 "The source-bound rendered thumbnail is missing or changed.")
     _require(isinstance(export_result, dict) and export_result.get("originals_preserved") is True,
              "Finish saving the source-bound costume before creating its Mod ZIP.")
     selected = export_result.get("preview_paths")
@@ -475,10 +516,19 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
             _require(len(paths) == 1 and pair is None, "Choose one installer costume ZIP instead of combining independent archives or models.")
             owner, platform, mode, references, source_manifest = _existing(paths[0], target, temporary, display_name, chara_id, packer, should_stop, log)
         else:
-            owner, platform, mode, references, roles = _raw(paths, target, temporary, display_name, chara_id, pair, packer, should_stop, log)
+            owner, platform, mode, references, roles = _raw(paths, target, temporary, display_name, chara_id, pair, packer, should_stop, log,
+                thumbnail_png=thumbnail["png"] if thumbnail is not None else None)
             for role, path in roles.items():
                 snapshots[path] = pair[role]["sha256"] if pair is not None else snapshots[path]
+        if thumbnail is not None:
+            _require(thumbnail.get("character_id") == owner, "The rendered thumbnail belongs to another target member.")
+            if any(zipfile.is_zipfile(path) for path in paths):
+                _replace_thumbnail(target, thumbnail["png"], should_stop)
         asset_references, asset_namespace, metadata_member = _namespace_assets(target, temporary, display_name, should_stop, source_manifest)
+        if thumbnail is not None:
+            with zipfile.ZipFile(target) as archive:
+                _require(hashlib.sha256(archive.read(asset_references["thumbnail_file"])).hexdigest() == thumbnail["sha256"],
+                         "The Mod ZIP did not preserve its rendered thumbnail.")
         references = {key: value for key, value in asset_references.items() if key != "thumbnail_file"}
         _stop(should_stop)
         _require(target.stat().st_size <= viewer_archive.MAX_ARCHIVE_BYTES, "The completed Mod ZIP exceeds the packaging limit.")
@@ -501,6 +551,9 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
                 "mode": mode, "model_members": references, "members": members,
                 "asset_members": asset_references, "asset_namespace": asset_namespace,
                 "source_manifest_member": metadata_member,
+                "thumbnail": ({"mode": "3d", "sha256": thumbnail["sha256"], "member": asset_references["thumbnail_file"],
+                               "characterId": owner, "profileDigest": thumbnail["profile_digest"],
+                               "cacheKey": thumbnail["cache_key"], "quality": thumbnail["quality"]} if thumbnail else None),
                 "preserved_extras": [member["name"] for member in members
                                      if mode == "packed_single_model_archive" and member["name"].startswith("extras/")],
                 "variant_labels": ({"primary": "Rina board", "unmasked": "Rina no-mask"}

@@ -1,5 +1,7 @@
 """Real UnityFS costume grafts and source-bound workspace validation."""
 import os
+import hashlib
+import copy
 from pathlib import Path
 import secrets
 import struct
@@ -112,6 +114,145 @@ class ViewerTransplantTests(unittest.TestCase):
         self.assertIn("BreastSize", [part["value"] for part in result["parts"]])
         self.assertEqual(result["platform"], 13)
         self.assertEqual(self.donor.read_bytes(), self.raw)
+
+    def selected_request(self, **changes):
+        inspected = viewer_transplants.inspect_donor(str(self.donor), cache_root=self.root / ".viewer-cache")
+        return self.request(operation="part", partSelectionMode="bones", partRoots=["LeftArm", "RightLeg"],
+            includeDescendants=True, triangleIndices=[], donorSha256=inspected["sha256"],
+            donorSelectionFingerprint=inspected["selectionFingerprint"],
+            donorRenderer=inspected["geometry"]["renderer"], donorMesh=inspected["geometry"]["mesh"], **changes)
+
+    def output_mesh(self, path):
+        import costume_part_transplant as part
+        env = UnityPy.load(str(path)); objects, index = part._index(env)
+        renderer = part._body_smr(objects).read_typetree()
+        return index[renderer["m_Mesh"]["m_PathID"]].read_typetree()
+
+    def test_complete_bone_hierarchy_and_original_skin_are_available(self):
+        result = viewer_transplants.inspect_donor(str(self.donor), cache_root=self.root / ".viewer-cache")
+        rows = {row["value"]: row for row in result["parts"]}
+        self.assertEqual(set(rows), set(result["geometry"]["boneNames"]))
+        self.assertEqual(rows["LeftForeArm"]["parent"], "LeftArm")
+        self.assertEqual(rows["LeftHandIndex1"]["parent"], "LeftHand")
+        self.assertEqual(rows["LeftHandIndex1"]["depth"], rows["LeftArm"]["depth"] + 3)
+        self.assertEqual(rows["LeftArm"]["bones"], ["LeftArm", "LeftForeArm", "LeftHand", "LeftHandIndex1"])
+        self.assertEqual(rows["Move"]["ownVertices"], 0)
+        self.assertEqual(rows["Move"]["vertices"], 60)
+        self.assertEqual(len(result["geometry"]["skin"]), 60)
+        self.assertEqual(result["geometry"]["skin"][0], [[8, 1.], [0, 0.], [0, 0.], [0, 0.]])
+        self.assertEqual(result["sha256"], hashlib.sha256(self.raw).hexdigest())
+
+    def test_explicit_renderer_identity_is_kept_when_two_renderers_share_one_mesh(self):
+        env = UnityPy.load(self.raw)
+        original = next(obj for obj in env.objects if obj.type.name == 'SkinnedMeshRenderer')
+        sibling = copy.copy(original); sibling.path_id = 1000; original.assets_file.objects[1000] = sibling
+        tree = copy.deepcopy(original.read_typetree()); tree['m_Bones'].reverse(); sibling.save_typetree(tree)
+        self.donor.write_bytes(env.file.save())
+        result = viewer_transplants.inspect_donor(str(self.donor), renderer='1000', cache_root=self.root / '.viewer-cache')
+        self.assertEqual(result['geometry']['renderer'], '1000')
+        self.assertEqual(result['geometry']['mesh'], '1')
+        self.assertEqual(result['geometry']['boneNames'][0], 'BreastSize')
+        self.assertEqual(result['geometry']['boneNames'][-1], 'Move')
+        indices = {row['value']: row['index'] for row in result['parts']}
+        self.assertEqual(indices['BreastSize'], 0)
+        self.assertEqual(indices['Move'], 19)
+
+    def test_multiple_roots_copy_the_union_with_real_children_once(self):
+        import costume_part_transplant as part
+        request = self.selected_request()
+        request["partRoots"] += ["LeftHand"]  # overlapping roots do not duplicate geometry
+        validated = viewer_transplants.validate_request(request)
+        self.assertEqual(validated["partBones"], ["RightLeg", "RightFoot", "LeftArm", "LeftForeArm", "LeftHand", "LeftHandIndex1"])
+        output = self.run_graft(request)
+        self.assertEqual(sum(len(group) for group in part.submesh_triangles(self.output_mesh(output))), 26)
+
+    def test_turning_off_child_selection_copies_only_the_selected_bones(self):
+        import costume_part_transplant as part
+        request = self.selected_request(); request["includeDescendants"] = False
+        validated = viewer_transplants.validate_request(request)
+        self.assertEqual(validated["partBones"], ["RightLeg", "LeftArm"])
+        output = self.run_graft(request)
+        self.assertEqual(sum(len(group) for group in part.submesh_triangles(self.output_mesh(output))), 22)
+
+    def test_separate_surface_patches_preserve_exact_source_uvs(self):
+        import costume_part_transplant as part
+        request = self.selected_request(); request.update(partSelectionMode="triangles", triangleIndices=[0, 5, 19])
+        output = self.run_graft(request)
+        result = self.output_mesh(output)
+        self.assertEqual(sum(len(group) for group in part.submesh_triangles(result)), 23)
+        source = self.output_mesh(self.donor)
+        def uv(tree):
+            import numpy as np
+            count, channels, strides, starts, _ = part.stream_layout(tree)
+            raw = np.frombuffer(bytes(tree["m_VertexData"]["m_DataSize"]), np.uint8)
+            return part.read_attr(raw, 4, channels, strides, starts, count)
+        import numpy as np
+        np.testing.assert_array_equal(uv(result)[60:], uv(source)[[0, 1, 2, 15, 16, 17, 57, 58, 59]])
+
+    def test_surface_patches_keep_each_source_material_and_its_texture(self):
+        import costume_part_transplant as part
+        env = UnityPy.load(self.raw); objects, index = part._index(env)
+        asset = index[13].assets_file
+        for old_id, new_id in ((13, 1000), (14, 1001)):
+            obj = copy.copy(index[old_id]); obj.path_id = new_id; asset.objects[new_id] = obj
+            tree = copy.deepcopy(index[old_id].read_typetree())
+            tree['m_Name'] = 'Second Donor Material' if old_id == 13 else 'Second Donor Texture'
+            if old_id == 13:
+                tree['m_SavedProperties']['m_TexEnvs'][0][1]['m_Texture']['m_PathID'] = 1001
+                tree['m_SavedProperties']['m_Colors'][0][1]['g'] = .3
+            obj.save_typetree(tree)
+        mesh = index[1].read_typetree(); first = copy.deepcopy(mesh['m_SubMeshes'][0]); second = copy.deepcopy(first)
+        first['indexCount'] = 30; second.update(firstByte=60, indexCount=30)
+        mesh['m_SubMeshes'] = [first, second]; index[1].save_typetree(mesh)
+        renderer = index[12].read_typetree(); renderer['m_Materials'].append({'m_FileID': 0, 'm_PathID': 1000})
+        index[12].save_typetree(renderer)
+        self.donor.write_bytes(env.file.save())
+        donor_raw = self.donor.read_bytes()
+        request = self.selected_request(); request.update(partSelectionMode='triangles', triangleIndices=[0, 19])
+        job = Job(secrets.token_hex(6), 'viewer_transplant')
+        viewer_transplants.run_transplant(job, viewer_transplants.validate_request(request),
+            output_root=self.root / 'modded/viewer', cache_root=self.root / '.viewer-cache')
+        output = Path(job.output_paths()[0]); saved = UnityPy.load(str(output)); saved_objects, saved_index = part._index(saved)
+        result_renderer = part._body_smr(saved_objects).read_typetree()
+        result_mesh = saved_index[result_renderer['m_Mesh']['m_PathID']].read_typetree()
+        self.assertEqual([len(group) for group in part.submesh_triangles(result_mesh)], [20, 1, 1])
+        materials = [saved_index[p['m_PathID']].read_typetree() for p in result_renderer['m_Materials']]
+        self.assertEqual([m['m_Name'] for m in materials[-2:]], ['Neutral AS Member test material', 'Second Donor Material'])
+        for material, original_id in zip(materials[-2:], [14, 1001]):
+            tex_id = material['m_SavedProperties']['m_TexEnvs'][0][1]['m_Texture']['m_PathID']
+            self.assertEqual(saved_index[tex_id].read().get_image_data(), asset.objects[original_id].read().get_image_data())
+        self.assertEqual(self.donor.read_bytes(), donor_raw)
+        self.assertEqual(self.source.read_bytes(), self.raw)
+
+    def test_surface_and_bone_selections_are_bound_to_the_original_donor(self):
+        valid = self.selected_request()
+        for changes in ({"donorSha256": "0" * 64}, {"donorSelectionFingerprint": "0" * 64}, {"donorSelectionFingerprint": ""},
+                        {"variant": "unmasked"}, {"donorMesh": "123456"}, {"donorRenderer": "1"},
+                        {"partRoots": ["NoSuchBone"]}, {"partRoots": ["LeftArm", "LeftArm"]},
+                        {"includeDescendants": 1}, {"donorSha256": ""}, {"donorMesh": ""},
+                        {"partSelectionMode": "triangles", "triangleIndices": []},
+                        {"partSelectionMode": "triangles", "triangleIndices": [20]},
+                        {"partSelectionMode": "triangles", "triangleIndices": [0, 0]},
+                        {"partSelectionMode": "triangles", "triangleIndices": [True]},
+                        {"partSelectionMode": "triangles", "triangleIndices": [0.0]},
+                        {"partSelectionMode": "triangles", "triangleIndices": [-1]},
+                        {"partSelectionMode": "triangles", "triangleIndices": list(range(200001))}):
+            with self.subTest(changes=changes.keys()), self.assertRaises(ValueError):
+                viewer_transplants.validate_request({**valid, **changes})
+        self.assertFalse((self.root / "modded").exists())
+        self.assertEqual(self.source.read_bytes(), self.raw)
+        self.assertEqual(self.donor.read_bytes(), self.raw)
+
+    def test_zip_surface_selection_uses_the_zip_identity_and_one_selected_model(self):
+        archive = self.donor.with_suffix(".zip")
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("costume.unity", self.raw)
+        self.donor = archive
+        request = self.selected_request(); request.update(partSelectionMode="triangles", triangleIndices=[0, 19])
+        self.assertEqual(request["donorSha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
+        validated = viewer_transplants.validate_request(request)
+        self.assertEqual(validated["triangleIndices"], [0, 19])
+        self.assertEqual(validated["donorRaw"], archive.read_bytes())
 
     def test_invalid_cut_values_and_extra_paths_are_rejected_before_writes(self):
         for changes in ({"cutLow": 1., "cutHigh": .5}, {"cutLow": float("nan")},

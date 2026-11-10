@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "source": "sdk/Thumbnail Render.blend",
+  "source_sha256": "69fed1baa9cc0d4370c0fc7d69014fd131a700e4f4dfe4d275e6779a5c5c84bb",
+  "blend_header": "BLENDER-v306",
+  "runtime_requirement": "No Blender dependency: this file records the orthographic camera extracted offline from the SDK.",
+  "render": {
+    "size": [
+      128,
+      128
+    ],
+    "resolution_percentage": 100,
+    "transparent": true,
+    "pixel_aspect": [
+      1,
+      1
+    ],
+    "view_transform": "Standard",
+    "look": "None",
+    "exposure": 0,
+    "gamma": 1
+  },
+  "source_camera": {
+    "name": "Thumbnail Camera",
+    "type": "ORTHO",
+    "location_blender": [
+      0,
+      -0.7400000095367432,
+      0.026599999517202377
+    ],
+    "euler_blender_xyz": [
+      1.5271631479263306,
+      0,
+      0
+    ],
+    "orthographic_scale": 0.7400000095367432,
+    "shift": [
+      0,
+      1.4459999799728394
+    ],
+    "clip": [
+      0.10000000149011612,
+      1000
+    ]
+  },
+  "three_y_up": {
+    "position": [
+      0,
+      0.026599999517202377,
+      0.7400000095367432
+    ],
+    "euler_xyz": [
+      -0.04363317886856599,
+      0,
+      0
+    ],
+    "forward": [
+      0,
+      -0.04361933498394666,
+      -0.9990482238688773
+    ],
+    "up": [
+      0,
+      0.9990482238688773,
+      -0.04361933498394666
+    ],
+    "frustum": {
+      "left": -0.3700000047683716,
+      "right": 0.3700000047683716,
+      "bottom": 0.70003999420166,
+      "top": 1.4400400037384031
+    },
+    "equivalent_symmetric": {
+      "position": [
+        0.0,
+        1.0956215599568677,
+        0.6933255763754474
+      ],
+      "euler_xyz": [
+        -0.04363317886856599,
+        0,
+        0
+      ],
+      "frustum": {
+        "left": -0.3700000047683716,
+        "right": 0.3700000047683716,
+        "bottom": -0.3700000047683716,
+        "top": 0.3700000047683716
+      }
+    },
+    "crop_at_model_z_0": {
+      "bottom_y": 0.6949978505354484,
+      "top_y": 1.4357028454065133
+    }
+  },
+  "pose": {
+    "reference_model": "ch0003_co0032_member",
+    "style": "unanimated source/rest A-pose",
+    "reference_body_vertices": 6891,
+    "reference_body_materials": [
+      "ch0003_co0032_body",
+      "skin thumbnail"
+    ],
+    "note": "Do not include donor face/hair or stage shadow meshes in a costume thumbnail. The SDK mesh has no nontrivial pose offsets."
+  },
+  "coordinate_notes": [
+    "SDK character root has Euler X90 degrees mapping Unity Y-up to Blender Z-up. The preview GLB uses Y-up and camera fronts from +Z.",
+    "Empty at Blender Z0.695 is a framing helper constrained to copy camera rotation, not the camera origin.",
+    "Using the symmetric equivalent camera with the same pitch gives exactly the same projection as the shifted camera; do not also apply shiftY after using the symmetric equivalent position.",
+    "Model GLB exporter mirrors Unity X; retain the existing viewer model convention rather than introducing another horizontal flip."
+  ]
+}

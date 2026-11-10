@@ -470,6 +470,7 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
         temporary.unlink(missing_ok=True)
     log("Prepared Rina Navi/MV scene-role Mod ZIP: " + destination.name)
     return {**packed, "package_path": str(destination), "sha256": fmt.sha(data), "bytes": len(data),
+            "thumbnail": ({**packed["thumbnail"], "member": "thumbnail.png"} if packed.get("thumbnail") else None),
             "format": fmt.FORMAT, "version": fmt.SHARED_VERSION, "scene_roles": manifest["platforms"],
             "target_member_id": manifest["target_member_id"], "default_variant": manifest["default_variant"],
             "identity_proofs": proofs, "canonical_goldens": manifest["canonical_goldens"]}

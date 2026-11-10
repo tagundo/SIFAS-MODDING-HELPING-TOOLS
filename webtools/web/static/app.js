@@ -6,7 +6,7 @@ const state = {
   currentTool: null,
   currentMode: "single",
   es: null,
-  picker: null, // { type: 'path'|'dir', onPick: fn, cwd: str, navigation: number, pending: bool }
+  picker: null, // { type: 'path'|'paths'|'dir', onPick: fn, cwd: str, navigation: number, pending: bool }
   lang: "en",
   strings: {},       // { "English source": "translation" } for the active language
   languages: [],     // [["en","English"], ...] from the server
@@ -195,6 +195,33 @@ async function init() {
       if (state.picker === picker && picker.navigation === navigation) closePicker();
     }
   });
+  $("#picker-add-selected").addEventListener("click", () => {
+    const picker = state.picker;
+    if (!picker || picker.type !== "paths" || picker.pending || !picker.selected.size) return;
+    const navigation = picker.navigation, chosen = Array.from(picker.selected);
+    picker.onPick(chosen);
+    if (state.picker === picker && picker.navigation === navigation) closePicker();
+  });
+  $("#picker-select-all").addEventListener("click", () => {
+    const picker = state.picker;
+    if (!picker || picker.type !== "paths" || picker.pending || !picker.cwd || !picker.visibleFiles.length) return;
+    const all = picker.visibleFiles.every(path => picker.selected.has(path));
+    const adding = picker.visibleFiles.filter(path => !picker.selected.has(path));
+    if (!all && picker.selected.size + adding.length > PICKER_SELECTION_LIMIT) {
+      alert(T("You can select up to 128 files at once.")); return;
+    }
+    picker.visibleFiles.forEach(path => all ? picker.selected.delete(path) : picker.selected.add(path));
+    refreshPickerSelection();
+  });
+  $("#picker-clear-selection").addEventListener("click", () => {
+    const picker = state.picker;
+    if (!picker || picker.type !== "paths") return;
+    picker.selected.clear(); refreshPickerSelection();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || event.defaultPrevented || !state.picker || state.picker.native) return;
+    event.preventDefault(); closePicker();
+  });
   $("#gallery-browse").addEventListener("click", () =>
     openPicker("dir", (p) => { $("#gallery-path").value = p; }, "modded"));
   $("#gallery-load").addEventListener("click", loadGallery);
@@ -326,6 +353,7 @@ function renderForm() {
     const toggle = el("div", { class: "mode-toggle" });
     for (const m of modes) {
       const mb = el("button", {
+        "data-mode": m,
         text: m === "single" ? T("Single file")
           : m === "multi" ? T("Selected files") : T("Batch folder"),
         onclick: () => { state.currentMode = m; renderForm(); },
@@ -752,6 +780,10 @@ function renderField(field) {
       if (value === field.default) o.selected = true;
       sel.appendChild(o);
     }
+    if (field.name === "thumbnail_mode") {
+      try { if (localStorage.getItem("sifas_costume_thumbnail_mode") === "3d") sel.value = "3d"; } catch (_) {}
+      sel.addEventListener("change", () => { try { localStorage.setItem("sifas_costume_thumbnail_mode", sel.value); } catch (_) {} });
+    }
     wrap.appendChild(sel);
   } else if (field.type === "dynamic_select") {
     // A select whose options are fetched from the server based on a dependency
@@ -843,7 +875,7 @@ function renderField(field) {
     wrap.appendChild(row);
   } else if (field.type === "paths") {
     // multi-select: a hidden newline-joined value (collected as the param) plus a
-    // visible removable list; "Add file" opens the picker and appends each pick.
+    // visible removable list; one picker confirmation appends multiple files.
     const hidden = el("input", { type: "hidden" });
     hidden.dataset.name = field.name;
     hidden.dataset.ftype = "paths";
@@ -869,11 +901,14 @@ function renderField(field) {
     };
     hidden.addEventListener("restore", rerender);
     const add = el("button", {
-      type: "button", text: T("Add file"),
-      onclick: () => openPicker("path", (p) => {
+      type: "button", text: T("Add files"), "data-paths-add": field.name,
+      onclick: () => openPicker("paths", (chosen) => {
+        if (!hidden.isConnected) return;
         const cur = items();
-        if (!cur.includes(p)) {
-          cur.push(p); hidden.value = cur.join("\n"); rerender();
+        const previousLength = cur.length, seen = new Set(cur);
+        chosen.forEach(path => { if (!seen.has(path)) { seen.add(path); cur.push(path); } });
+        if (cur.length !== previousLength) {
+          hidden.value = cur.join("\n"); rerender();
           hidden.dispatchEvent(new Event("change", { bubbles: true }));
         }
       }, field.root, items().length ? items()[items().length - 1].replace(/\/[^/]*$/, "") : ""),
@@ -930,6 +965,7 @@ function collectParams() {
 
 // -------------------------------------------------------------------- run
 async function runTool() {
+  if (state.thumbnailRenderController) return;
   const tool = state.currentTool;
   if (!tool || tool.id === TEXTURE_PREVIEWS_TOOL) return;
   const params = collectParams();
@@ -951,12 +987,33 @@ async function runTool() {
   openConsole(tool.label);
   let resp;
   try {
+    if (tool.id === "costume_thumbnail_replace" || tool.id === "costume_packer" && params.thumbnail_mode === "3d") {
+      if (!window.ViewerThumbnails) throw new Error(T("The automatic 3D thumbnail renderer is unavailable."));
+      const thumbnailForm = $("#tool-form"), thumbnailParams = JSON.stringify(params), thumbnailLanguage = state.lang;
+      const controller = new AbortController(); state.thumbnailRenderController = controller;
+      try {
+        const renderThumbnails = tool.id === "costume_thumbnail_replace" ? ViewerThumbnails.prepareUpdater : ViewerThumbnails.preparePacker;
+        const thumbnails = await renderThumbnails(params, { signal: controller.signal,
+          onProgress: (done, total, name) => { setProgress(done, total); if (name) appendLog(T("Rendering costume thumbnail…") + " " + name); },
+          onPreview: (png, receipt) => {
+            if (state.currentTool !== tool || $("#tool-form") !== thumbnailForm || state.lang !== thumbnailLanguage ||
+                JSON.stringify(collectParams()) !== thumbnailParams) return;
+            const field = $(tool.id === "costume_thumbnail_replace" ? "#f_thumbnail_size" : "#f_thumbnail_mode");
+            if (!field) return;
+            const previewId = tool.id === "costume_thumbnail_replace" ? "costume-thumbnail-replace-preview" : "costume-thumbnail-preview";
+            let preview = $("#" + previewId);
+            if (!preview) { preview = el("img", { id: previewId, alt: T("Costume thumbnail"), width: "128", height: "128" }); field.parentNode.appendChild(preview); }
+            preview.src = png; preview.dataset.sha256 = receipt.sha256; preview.hidden = false;
+          } });
+        params.thumbnail_plan = thumbnails.token;
+      } finally { if (state.thumbnailRenderController === controller) state.thumbnailRenderController = null; }
+    }
     resp = await (await fetch("/api/run/" + tool.id, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     })).json();
   } catch (e) {
-    appendLog("ERROR: " + e); finishConsole("error"); return;
+    appendLog("ERROR: " + e); finishConsole(e && e.name === "AbortError" ? "cancelled" : "error"); return;
   }
   if (resp.error) { appendLog("ERROR: " + resp.error); finishConsole("error"); return; }
   streamJob(resp.job_id);
@@ -986,6 +1043,7 @@ function streamJob(jobId) {
 }
 
 async function cancelRun() {
+  if (state.thumbnailRenderController) { appendLog(T("[cancelling…]")); state.thumbnailRenderController.abort(); return; }
   if (!state.jobId) return;
   appendLog(T("[cancelling…]"));
   try { await fetch("/api/jobs/" + state.jobId + "/cancel", { method: "POST" }); } catch {}
@@ -1017,33 +1075,65 @@ function setProgress(done, total) {
 }
 
 // ------------------------------------------------------------- file picker
+const PICKER_SELECTION_LIMIT = 128;
+
+function refreshPickerSelection() {
+  const picker = state.picker, multi = !!(picker && picker.type === "paths" && !picker.native);
+  $("#picker-multi-controls").hidden = !multi;
+  $("#picker-add-selected").hidden = !multi;
+  if (!multi) return;
+  const count = picker.selected.size, files = picker.visibleFiles;
+  $("#picker-selection-count").textContent = T("Selected files: {count}").replace("{count}", String(count));
+  $("#picker-selection-count").title = Array.from(picker.selected).map(baseName).join("\n");
+  $("#picker-add-selected").textContent = T("Add selected files ({count})").replace("{count}", String(count));
+  $("#picker-add-selected").disabled = picker.pending || !count;
+  $("#picker-clear-selection").disabled = !count;
+  const all = files.length > 0 && files.every(path => picker.selected.has(path));
+  $("#picker-select-all").textContent = T(all ? "Deselect files in this folder" : "Select files in this folder");
+  $("#picker-select-all").disabled = picker.pending || !picker.cwd || !files.length;
+  $("#picker-select-all").setAttribute("aria-pressed", String(all));
+  $("#picker-entries").querySelectorAll("input[data-picker-file]").forEach(input => {
+    input.checked = picker.selected.has(input.dataset.pickerFile);
+    input.closest("li").classList.toggle("selected", input.checked);
+  });
+}
+
 function openPicker(type, onPick, rootName, startPath) {
+  const active = document.activeElement;
+  const trigger = state.picker && $("#picker").contains(active) ? state.picker.trigger : active;
   const platform = window.ElichikaPlatform, capability = type === "dir" ? "chooseDirectory" : "openFiles";
   if (platform && platform.supports(capability)) {
-    const picker = { type, onPick, pending: true, native: true };
+    const picker = { type, onPick, pending: true, native: true, trigger };
     state.picker = picker;
-    platform.request(capability, { multiple: false, title: T(type === "dir" ? "Choose a folder" : "Choose a bundle file") })
+    platform.request(capability, { multiple: type === "paths", title: T(type === "dir" ? "Choose a folder" : type === "paths" ? "Choose bundle files" : "Choose a bundle file") })
       .then((result) => {
         if (state.picker !== picker || result && result.cancelled) return;
         const paths = type === "dir" ? platform.chosenPaths({ paths: result && result.path ? [result.path] : [] }) : platform.chosenPaths(result);
-        if (paths.length > 1) throw new Error("The file selection response is invalid.");
-        if (paths.length) onPick(paths[0]);
+        if (type !== "paths" && paths.length > 1) throw new Error("The file selection response is invalid.");
+        if (paths.length) onPick(type === "paths" ? paths.slice() : paths[0]);
       }).catch((error) => { if (state.picker === picker && platform.supports(capability)) alert(T("Cannot open: ") + T(String(error.message || error))); })
       .finally(() => { if (state.picker === picker) closePicker(); });
     return;
   }
-  state.picker = { type, onPick, cwd: "", navigation: 0, pending: true };
-  $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : T("Choose a bundle file");
+  state.picker = { type, onPick, cwd: "", navigation: 0, pending: true, selected: new Set(), visibleFiles: [], trigger };
+  $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : type === "paths" ? T("Choose bundle files") : T("Choose a bundle file");
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";
   $("#picker-use-folder").disabled = true;
   $("#picker-crumb").textContent = "";
   $("#picker-entries").textContent = "";
+  refreshPickerSelection();
   $("#picker").classList.remove("hidden");
   renderRoots();
   const start = startPath || (rootName && state.roots[rootName]) || state.roots.home;
   navigate(start);
 }
-function closePicker() { $("#picker").classList.add("hidden"); state.picker = null; }
+function closePicker() {
+  const picker = state.picker;
+  $("#picker").classList.add("hidden"); state.picker = null; refreshPickerSelection();
+  if (picker && picker.trigger && picker.trigger.isConnected && typeof picker.trigger.focus === "function") {
+    try { picker.trigger.focus({ preventScroll: true }); } catch (_) { picker.trigger.focus(); }
+  }
+}
 
 function renderRoots() {
   const picker = state.picker;
@@ -1061,44 +1151,71 @@ async function navigate(path) {
   const isCurrent = () => state.picker === picker && picker.navigation === navigation;
   picker.pending = true;
   picker.cwd = "";
+  picker.visibleFiles = [];
   $("#picker-use-folder").disabled = true;
   $("#picker-crumb").textContent = "";
   $("#picker-entries").textContent = "";
+  refreshPickerSelection();
   let data;
   try {
     data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path || ""))).json();
   } catch (e) {
-    if (isCurrent()) { picker.pending = false; alert(T("Cannot open: ") + e); }
+    if (isCurrent()) { picker.pending = false; refreshPickerSelection(); alert(T("Cannot open: ") + e); }
     return;
   }
   if (!isCurrent()) return;
   picker.pending = false;
+  refreshPickerSelection();
   if (data.error) { alert(data.error); return; }
   picker.cwd = data.path;
   $("#picker-use-folder").disabled = !picker.cwd;
   $("#picker-crumb").textContent = data.path;
   const ul = $("#picker-entries");
   ul.innerHTML = "";
+  function directoryEntry(name, destination, icon) {
+    const go = () => { if (isCurrent()) navigate(destination); };
+    return el("li", { role: "button", tabindex: "0", onclick: go, onkeydown: event => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); }
+    } }, [el("span", { class: "ic", text: icon }), document.createTextNode(name)]);
+  }
   if (data.parent) {
-    ul.appendChild(el("li", { onclick: () => { if (isCurrent()) navigate(data.parent); } },
-      [el("span", { class: "ic", text: "↩" }), document.createTextNode("..")]));
+    ul.appendChild(directoryEntry("..", data.parent, "↩"));
   }
   for (const e of data.entries) {
     if (e.is_dir) {
-      ul.appendChild(el("li", { onclick: () => { if (isCurrent()) navigate(e.path); } },
-        [el("span", { class: "ic", text: "📁" }), document.createTextNode(e.name)]));
+      ul.appendChild(directoryEntry(e.name, e.path, "📁"));
     } else if (picker.type === "path") {
-      const li = el("li", { class: e.is_bundle ? "bundle" : "", onclick: () => {
+      const pick = () => {
         if (!isCurrent()) return;
         picker.onPick(e.path);
         if (isCurrent()) closePicker();
-      } },
+      };
+      const li = el("li", { class: e.is_bundle ? "bundle" : "", role: "button", tabindex: "0", onclick: pick,
+        onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(); } } },
         [el("span", { class: "ic", text: e.is_bundle ? "🎁" : "📄" }),
          document.createTextNode(e.name),
          el("span", { class: "sz", text: fmtSize(e.size) })]);
       ul.appendChild(li);
+    } else if (picker.type === "paths") {
+      picker.visibleFiles.push(e.path);
+      const input = el("input", { type: "checkbox", "data-picker-file": e.path, "data-path": e.path, "aria-label": T("Select file") + " " + e.name });
+      input.checked = picker.selected.has(e.path);
+      input.addEventListener("change", () => {
+        if (!isCurrent() || picker.pending) { input.checked = picker.selected.has(e.path); return; }
+        if (input.checked && !picker.selected.has(e.path) && picker.selected.size >= PICKER_SELECTION_LIMIT) {
+          alert(T("You can select up to 128 files at once."));
+        } else if (input.checked) picker.selected.add(e.path);
+        else picker.selected.delete(e.path);
+        refreshPickerSelection();
+      });
+      ul.appendChild(el("li", { class: (e.is_bundle ? "bundle " : "") + "picker-multi-file" },
+        [el("label", { class: "picker-file-choice" }, [input,
+          el("span", { class: "ic", text: e.is_bundle ? "🎁" : "📄" }),
+          el("span", { class: "picker-file-name", text: e.name }), el("span", { class: "sz", text: fmtSize(e.size) })])]));
     }
   }
+  picker.visibleFiles = Array.from(new Set(picker.visibleFiles));
+  refreshPickerSelection();
 }
 
 function fmtSize(n) {

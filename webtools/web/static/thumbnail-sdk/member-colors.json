@@ -1,0 +1,342 @@
+{
+  "schema": 1,
+  "source": "assets/db/gl/masterdata.db",
+  "source_sha256": "a9b825cc7691991719c8a550a096e00481cd8dcd69575fbff0cbc126c1d6922e",
+  "table": "m_member",
+  "key": "id",
+  "column": "theme_color",
+  "packing": "signed SQLite INTEGER reinterpreted as unsigned RGBA8888 (R high byte, A low byte)",
+  "member_count": 30,
+  "members": {
+    "1": {
+      "rgba": [
+        255,
+        163,
+        54,
+        255
+      ],
+      "css": "#ffa336",
+      "rgba8888": "ffa336ff",
+      "source_signed": -6080769
+    },
+    "2": {
+      "rgba": [
+        122,
+        238,
+        255,
+        255
+      ],
+      "css": "#7aeeff",
+      "rgba8888": "7aeeffff",
+      "source_signed": 2062483455
+    },
+    "3": {
+      "rgba": [
+        206,
+        191,
+        191,
+        255
+      ],
+      "css": "#cebfbf",
+      "rgba8888": "cebfbfff",
+      "source_signed": -826294273
+    },
+    "4": {
+      "rgba": [
+        23,
+        105,
+        255,
+        255
+      ],
+      "css": "#1769ff",
+      "rgba8888": "1769ffff",
+      "source_signed": 392822783
+    },
+    "5": {
+      "rgba": [
+        255,
+        248,
+        50,
+        255
+      ],
+      "css": "#fff832",
+      "rgba8888": "fff832ff",
+      "source_signed": -511233
+    },
+    "6": {
+      "rgba": [
+        255,
+        80,
+        62,
+        255
+      ],
+      "css": "#ff503e",
+      "rgba8888": "ff503eff",
+      "source_signed": -11518209
+    },
+    "7": {
+      "rgba": [
+        196,
+        85,
+        246,
+        255
+      ],
+      "css": "#c455f6",
+      "rgba8888": "c455f6ff",
+      "source_signed": -1000999169
+    },
+    "8": {
+      "rgba": [
+        106,
+        230,
+        115,
+        255
+      ],
+      "css": "#6ae673",
+      "rgba8888": "6ae673ff",
+      "source_signed": 1793487871
+    },
+    "9": {
+      "rgba": [
+        255,
+        79,
+        145,
+        255
+      ],
+      "css": "#ff4f91",
+      "rgba8888": "ff4f91ff",
+      "source_signed": -11562497
+    },
+    "101": {
+      "rgba": [
+        255,
+        149,
+        71,
+        255
+      ],
+      "css": "#ff9547",
+      "rgba8888": "ff9547ff",
+      "source_signed": -6993921
+    },
+    "102": {
+      "rgba": [
+        255,
+        158,
+        172,
+        255
+      ],
+      "css": "#ff9eac",
+      "rgba8888": "ff9eacff",
+      "source_signed": -6378241
+    },
+    "103": {
+      "rgba": [
+        39,
+        193,
+        183,
+        255
+      ],
+      "css": "#27c1b7",
+      "rgba8888": "27c1b7ff",
+      "source_signed": 667006975
+    },
+    "104": {
+      "rgba": [
+        219,
+        8,
+        57,
+        255
+      ],
+      "css": "#db0839",
+      "rgba8888": "db0839ff",
+      "source_signed": -620217857
+    },
+    "105": {
+      "rgba": [
+        102,
+        192,
+        255,
+        255
+      ],
+      "css": "#66c0ff",
+      "rgba8888": "66c0ffff",
+      "source_signed": 1723924479
+    },
+    "106": {
+      "rgba": [
+        193,
+        202,
+        212,
+        255
+      ],
+      "css": "#c1cad4",
+      "rgba8888": "c1cad4ff",
+      "source_signed": -1043671809
+    },
+    "107": {
+      "rgba": [
+        255,
+        208,
+        16,
+        255
+      ],
+      "css": "#ffd010",
+      "rgba8888": "ffd010ff",
+      "source_signed": -3141377
+    },
+    "108": {
+      "rgba": [
+        194,
+        82,
+        198,
+        255
+      ],
+      "css": "#c252c6",
+      "rgba8888": "c252c6ff",
+      "source_signed": -1034762497
+    },
+    "109": {
+      "rgba": [
+        255,
+        111,
+        190,
+        255
+      ],
+      "css": "#ff6fbe",
+      "rgba8888": "ff6fbeff",
+      "source_signed": -9453825
+    },
+    "201": {
+      "rgba": [
+        255,
+        191,
+        224,
+        255
+      ],
+      "css": "#ffbfe0",
+      "rgba8888": "ffbfe0ff",
+      "source_signed": -4202241
+    },
+    "202": {
+      "rgba": [
+        245,
+        255,
+        138,
+        255
+      ],
+      "css": "#f5ff8a",
+      "rgba8888": "f5ff8aff",
+      "source_signed": -167802113
+    },
+    "203": {
+      "rgba": [
+        187,
+        237,
+        255,
+        255
+      ],
+      "css": "#bbedff",
+      "rgba8888": "bbedffff",
+      "source_signed": -1142030337
+    },
+    "204": {
+      "rgba": [
+        74,
+        47,
+        237,
+        255
+      ],
+      "css": "#4a2fed",
+      "rgba8888": "4a2fedff",
+      "source_signed": 1244655103
+    },
+    "205": {
+      "rgba": [
+        255,
+        130,
+        70,
+        255
+      ],
+      "css": "#ff8246",
+      "rgba8888": "ff8246ff",
+      "source_signed": -8239361
+    },
+    "206": {
+      "rgba": [
+        190,
+        130,
+        255,
+        255
+      ],
+      "css": "#be82ff",
+      "rgba8888": "be82ffff",
+      "source_signed": -1098711041
+    },
+    "207": {
+      "rgba": [
+        246,
+        14,
+        14,
+        255
+      ],
+      "css": "#f60e0e",
+      "rgba8888": "f60e0eff",
+      "source_signed": -166850817
+    },
+    "208": {
+      "rgba": [
+        177,
+        246,
+        156,
+        255
+      ],
+      "css": "#b1f69c",
+      "rgba8888": "b1f69cff",
+      "source_signed": -1309238017
+    },
+    "209": {
+      "rgba": [
+        208,
+        206,
+        225,
+        255
+      ],
+      "css": "#d0cee1",
+      "rgba8888": "d0cee1ff",
+      "source_signed": -791748097
+    },
+    "210": {
+      "rgba": [
+        36,
+        189,
+        139,
+        255
+      ],
+      "css": "#24bd8b",
+      "rgba8888": "24bd8bff",
+      "source_signed": 616401919
+    },
+    "211": {
+      "rgba": [
+        214,
+        213,
+        202,
+        255
+      ],
+      "css": "#d6d5ca",
+      "rgba8888": "d6d5caff",
+      "source_signed": -690631937
+    },
+    "212": {
+      "rgba": [
+        248,
+        200,
+        196,
+        255
+      ],
+      "css": "#f8c8c4",
+      "rgba8888": "f8c8c4ff",
+      "source_signed": -121060097
+    }
+  }
+}

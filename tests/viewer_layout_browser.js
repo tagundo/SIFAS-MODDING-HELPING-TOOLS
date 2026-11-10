@@ -356,6 +356,22 @@ async function motionChoiceReadability(browser) {
         assert(Math.max(...primaryNavigation.map(value => value.y + value.height / 2)) - Math.min(...primaryNavigation.map(value => value.y + value.height / 2)) <= 1,
           'Short-phone primary navigation and language selection share one reachable row: ' + JSON.stringify(primaryNavigation));
         assert.equal(await page.getByRole('heading', { level: 1 }).count(), 1, 'The visually compact brand remains an accessible heading');
+        const fileMenuHit = await assertReachable('#viewer-file-options > summary');
+        assert(fileMenuHit.width >= 44 && fileMenuHit.height >= 44, 'The phone Model options menu retains a44px file-menu target');
+        const filesHeight = await page.locator('#viewer-files-panel').evaluate(element => element.getBoundingClientRect().height);
+        assert.equal(await page.locator('#viewer-file-list').isVisible(), false);
+        await page.locator('#viewer-file-options > summary').click(); await frames(page);
+        assert(await page.locator('#viewer-file-list').isVisible(), 'Clicking the actual gear exposes the embedded model file list');
+        assert.equal(await page.locator('#viewer-file-list > li').count(), 1);
+        assert((await page.locator('#viewer-file-list').innerText()).includes('viewer-qa-832049459529.unity'));
+        const fileRemoveHit = await assertReachable('#viewer-file-list .viewer-remove');
+        assert(fileRemoveHit.width >= 44 && fileRemoveHit.height >= 44, 'The actual model Remove control retains a44px target');
+        assert(Math.abs(await page.locator('#viewer-files-panel').evaluate(element => element.getBoundingClientRect().height) - filesHeight) <= 1,
+          'The embedded list overlays content without adding a toolbar row');
+        assert.deepEqual(retained(await state(page)), before, 'Opening model files does not prepare or alter the actual model/rig');
+        await page.screenshot({ path: path.join(evidence, 'short-phone-' + language + '-files.png') });
+        await page.locator('#viewer-file-options > summary').click(); await frames(page);
+        assert.equal(await page.locator('#viewer-file-list').isVisible(), false);
         assert.equal(normal.layout.expanded, false); assert.equal(normal.layout.fullscreen, 'none');
         for (const selector of ['#viewer-expand', '#viewer-fullscreen', '#viewer-fit']) await assertReachable(selector);
         assert.equal(await page.locator('#viewer-view-menu > summary').isVisible(), false, 'A variant-free model needs no extra View menu');
@@ -372,7 +388,7 @@ async function motionChoiceReadability(browser) {
         assert.deepEqual(retained(await state(page)), before, 'Phone orientation reflow preserves camera, pose and edits');
         await page.setViewportSize({ width: 360, height: 456 }); await frames(page);
         assert.deepEqual(retained(await state(page)), before);
-        report.shortPhone.languages.push({ language, normal, sparseProbe, primaryNavigation });
+        report.shortPhone.languages.push({ language, normal, sparseProbe, primaryNavigation, fileMenuHit, fileRemoveHit });
       }
       assert.deepEqual(errors, []); await context.close();
     }

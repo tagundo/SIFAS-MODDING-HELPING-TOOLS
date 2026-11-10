@@ -16,13 +16,19 @@
     var installedFingerprint = "", alreadyAdded = false;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
+    function thumbnailMode() { var select = element("viewer-mod-thumbnail-mode"); return select && select.value === "3d" ? "3d" : "texture"; }
+    function clearThumbnail() {
+      var preview = element("viewer-mod-thumbnail-preview"), label = element("viewer-mod-thumbnail-status");
+      if (preview) { preview.hidden = true; preview.removeAttribute("src"); preview.removeAttribute("data-sha256"); }
+      if (label) label.textContent = "";
+    }
     function state() {
       return { available: !!((context().editing || {}).available), busy: busy, installing: installing, alreadyAdded: alreadyAdded, status: status, error: error,
         outputs: outputPaths.slice(), outputPaths: outputPaths.slice(), previewPaths: previewPaths.slice(), originalPaths: originalPaths.slice(),
         recipePath: recipePath, resultModelId: resultModelId, reviewingSaved: reviewingSaved, jobId: jobId,
-        modName: element("viewer-mod-name").value, modNameManual: manualModName,
+        modName: element("viewer-mod-name").value, modNameManual: manualModName, thumbnailMode: thumbnailMode(),
         modPackage: lastPackage ? { packagePath: lastPackage.package_path, characterId: lastPackage.character_id,
-          variants: lastPackage.variants || [] } : null };
+          variants: lastPackage.variants || [], thumbnail: lastPackage.thumbnail || null } : null };
     }
     function listen(id, name, fn) {
       var target = element(id); if (!target) return;
@@ -57,7 +63,7 @@
       var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !c.pendingMeshEdits;
       var authored = editingState(), fingerprint = JSON.stringify(authored);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
-      if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) lastPackage = null;
+      if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
       element("viewer-save").disabled = !authoring || (!editCount(authored) && !metadata.allowEmptySceneReset) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
@@ -164,7 +170,7 @@
     function refreshModForm(c, rigState, authored, authoring) {
       var key = modContextKey(c), metadata = (c.editing || {}).modPackaging || {};
       if (key !== modContext) {
-        modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = "";
+        modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = ""; clearThumbnail();
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
       }
@@ -193,6 +199,7 @@
       }
       var validName = !!name.value.trim() && name.value.trim().length <= 120;
       name.disabled = !authoring; element("viewer-mod-name-auto").disabled = !authoring || !manualModName;
+      if (element("viewer-mod-thumbnail-mode")) element("viewer-mod-thumbnail-mode").disabled = !authoring;
       characters.disabled = !authoring; element("viewer-mod-character-field").hidden = !choices.length;
       element("viewer-mod-variant").disabled = !authoring;
       element("viewer-mod-counterpart").value = counterpartPath ? basename(counterpartPath) : "";
@@ -314,10 +321,11 @@
     function modOptions() {
       var character = element("viewer-mod-character").value;
       return { display_name: element("viewer-mod-name").value.trim(), character_id: character ? Number(character) : null,
-        counterpart_path: counterpartPath || null, selected_variant: element("viewer-mod-variant").value || null };
+        counterpart_path: counterpartPath || null, selected_variant: element("viewer-mod-variant").value || null,
+        thumbnail_mode: thumbnailMode() };
     }
     function modChanged() {
-      lastPackage = null;
+      lastPackage = null; clearThumbnail();
       if (installedFingerprint && !busy) { status = "ready"; error = ""; }
       refresh();
     }
@@ -365,9 +373,23 @@
       var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions]);
       if (install && installedFingerprint === binding) { say("Already added to game. Change the edits or mod name to add another copy.", "done"); return; }
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
+      delete body.thumbnail_mode;
       requestController = new global.AbortController(); var signal = requestController.signal;
       lastPackage = null; setBusy(true); say("Saving an installer-ready mod ZIP…", "saving");
       try {
+        if (parameters.thumbnail_mode === "3d") {
+          if (!global.ViewerThumbnails) throw new Error("The automatic 3D thumbnail renderer is unavailable.");
+          say("Rendering costume thumbnail…", "saving");
+          var rendered = await global.ViewerThumbnails.prepareViewer(snapshot, parameters, { signal: signal,
+            onPreview: function (png, receipt) {
+              if (disposed || !stillCurrent(snapshot)) return;
+              var preview = element("viewer-mod-thumbnail-preview"), label = element("viewer-mod-thumbnail-status");
+              if (preview) { preview.src = png; preview.hidden = false; preview.dataset.sha256 = receipt.sha256; }
+              if (label) label.textContent = translate("Automatic 3D thumbnail ready.");
+            } });
+          body.thumbnail_token = rendered.token;
+          say("Saving an installer-ready mod ZIP…", "saving");
+        }
         // Each explicit action packages the current authoring snapshot. An older
         // downloaded result can never become the input to a later installation.
         var data = await runJob("/api/viewer/edit/package", body, signal), packaged = data.mod_package;
@@ -470,6 +492,14 @@
     listen("viewer-mod-name", "input", function () { manualModName = true; modChanged(); });
     listen("viewer-mod-name-auto", "click", function () { manualModName = false; modChanged(); });
     ["viewer-mod-character", "viewer-mod-variant"].forEach(function (id) { listen(id, "change", modChanged); });
+    var thumbnailChoice = element("viewer-mod-thumbnail-mode");
+    if (thumbnailChoice) {
+      try { if (global.localStorage.getItem("sifas_costume_thumbnail_mode") === "3d") thumbnailChoice.value = "3d"; } catch (_) {}
+      listen("viewer-mod-thumbnail-mode", "change", function () {
+        try { global.localStorage.setItem("sifas_costume_thumbnail_mode", this.value); } catch (_) {}
+        modChanged();
+      });
+    }
     listen("viewer-mod-counterpart-pick", "click", function () {
       if (busy || disposed) return;
       var key = modContextKey(context());

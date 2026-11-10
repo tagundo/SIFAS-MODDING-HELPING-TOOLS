@@ -1191,7 +1191,7 @@ def _rina_content_scan(path, log=None):
 
 def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                        thumbnail_size=256, append_suffix=True, rina_unmasked_map=None,
-                       rina_unmasked_by_path=None, platform=None, ask_chara_id=None, log=print):
+                       rina_unmasked_by_path=None, platform=None, ask_chara_id=None, log=print, thumbnail_provider=None):
     """Package one bundle into a zip in out_dir. Returns the zip path or None."""
     rina_unmasked_map = rina_unmasked_map or {}
     rina_unmasked_by_path = rina_unmasked_by_path or {}
@@ -1203,7 +1203,12 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
     if platform is None and append_suffix:
         log(f"  ❓ Platform unknown for '{bn_with_ext}' - zip name will have no platform suffix")
 
-    tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path, log=log)
+    if thumbnail_provider is not None:
+        names = _bundle_texture_names(bundle_path)
+        tex_name = next((name for name in names if extract_chara_id_from_texture_name(name)), None)
+        tex_png_bytes = None
+    else:
+        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path, log=log)
 
     if auto_chara_id:
         cid = (extract_chara_id_from_texture_name(tex_name)
@@ -1219,8 +1224,9 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
         cid = 209
     log(f"  🎯 Chara ID: {cid}")
 
-    thumb_bytes = (make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes
-                   else make_name_thumbnail_png(bn_no_ext, thumbnail_size, cid))
+    thumb_bytes = (thumbnail_provider(bundle_path, thumbnail_size, cid) if thumbnail_provider is not None else
+                   make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes else
+                   make_name_thumbnail_png(bn_no_ext, thumbnail_size, cid))
     if not thumb_bytes:
         log("  ❌ Thumbnail creation failed."); return None
     thumb_name = "im" + pack_safe_stem(bn_no_ext) + ".png"
@@ -1263,7 +1269,7 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
 
 def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_id=True,
                       manual_chara_id=0, thumbnail_size=256, rina_unmasked_map=None,
-                      rina_unmasked_by_path=None, ask_chara_id=None, log=print):
+                      rina_unmasked_by_path=None, ask_chara_id=None, log=print, thumbnail_provider=None):
     """Package an Android+iOS pair into one combined zip. Returns True/False."""
     rina_unmasked_map = rina_unmasked_map or {}
     rina_unmasked_by_path = rina_unmasked_by_path or {}
@@ -1271,9 +1277,14 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
     ios_name = os.path.basename(ios_path)
     and_no_ext = os.path.splitext(and_name)[0]
 
-    tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path, log=log)
-    if not tex_png_bytes:
-        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path, log=log)
+    if thumbnail_provider is not None:
+        names = _bundle_texture_names(android_path) + _bundle_texture_names(ios_path)
+        tex_name = next((name for name in names if extract_chara_id_from_texture_name(name)), None)
+        tex_png_bytes = None
+    else:
+        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path, log=log)
+        if not tex_png_bytes:
+            tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path, log=log)
 
     if auto_chara_id:
         cid = (extract_chara_id_from_texture_name(tex_name)
@@ -1288,8 +1299,9 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
         cid = 209
     log(f"  🎯 Chara ID: {cid}")
 
-    thumb_bytes = (make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes
-                   else make_name_thumbnail_png(pair_key, thumbnail_size, cid))
+    thumb_bytes = (thumbnail_provider(android_path, thumbnail_size, cid) if thumbnail_provider is not None else
+                   make_thumbnail_png(tex_png_bytes, thumbnail_size) if tex_png_bytes else
+                   make_name_thumbnail_png(pair_key, thumbnail_size, cid))
     if not thumb_bytes:
         log("  ❌ Thumbnail creation failed."); return False
     thumb_name = "im" + pack_safe_stem(pair_key) + ".png"
@@ -1341,14 +1353,8 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
     return True
 
 
-def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
-                  thumbnail_size=256, append_suffix=True, combine_pairs=True,
-                  ask_chara_id=None, log=print):
-    """Pre-scan Rina unmasked helpers, detect platforms, build jobs (pairing
-    android+ios), and package each into out_dir. Returns (success, fail)."""
-    out_dir = os.path.expanduser(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-
+def prepare_pack_jobs(files, *, combine_pairs=True, log=print):
+    """Use exactly the packer's platform/Rina grouping for automatic previews."""
     rina_map = {}
     masked = []
     for p in files:
@@ -1403,6 +1409,18 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                     "Use the '209rinamasked/209rinaunmasked' names to pair explicitly.")
 
     jobs = build_pack_jobs(masked, platforms, combine_pairs)
+    return jobs, rina_map, rina_by_path, platforms
+
+
+def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
+                  thumbnail_size=256, append_suffix=True, combine_pairs=True,
+                  ask_chara_id=None, log=print, thumbnail_provider=None):
+    """Pre-scan Rina unmasked helpers, detect platforms, build jobs (pairing
+    android+ios), and package each into out_dir. Returns (success, fail)."""
+    out_dir = os.path.expanduser(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    jobs, rina_map, rina_by_path, platforms = prepare_pack_jobs(files, combine_pairs=combine_pairs, log=log)
     pair_count = sum(1 for j in jobs if j[0] == 'pair')
     if combine_pairs:
         if pair_count:
@@ -1420,7 +1438,7 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                 ok = pack_pair_bundles(key, ap, ip, out_dir, auto_chara_id=auto_chara_id,
                                        manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
                                        rina_unmasked_map=rina_map, rina_unmasked_by_path=rina_by_path,
-                                       ask_chara_id=ask_chara_id, log=log)
+                                       ask_chara_id=ask_chara_id, log=log, thumbnail_provider=thumbnail_provider)
             else:
                 bp = job[1]
                 log(f"\n📦 [{i}/{total}] {os.path.basename(bp)}")
@@ -1429,7 +1447,7 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                                              append_suffix=append_suffix, rina_unmasked_map=rina_map,
                                              rina_unmasked_by_path=rina_by_path,
                                              ask_chara_id=ask_chara_id,
-                                             platform=platforms.get(bp), log=log))
+                                             platform=platforms.get(bp), log=log, thumbnail_provider=thumbnail_provider))
             if ok:
                 success += 1
             else:
