@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import math
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -167,7 +168,22 @@ def _class_name(obj, tree):
 
 def _inspect(raw):
     import UnityPy
-    env = UnityPy.load(raw)
+
+    class EditingEnvironment(UnityPy.Environment):
+        # Match the preview's selected-input scope. In particular, a missing
+        # shader must not make UnityPy walk the whole game/cache directory.
+        def load_file(self, file, parent=None, name=None, is_dependency=False):
+            if isinstance(file, (str, os.PathLike)):
+                raise FileNotFoundError("Only the selected model's embedded assets can be inspected.")
+            return super().load_file(file, parent=parent, name=name, is_dependency=is_dependency)
+
+        def find_file(self, name, is_dependency=True):
+            found = self.get_cab(name) or self.get_cab(ntpath.basename(name))
+            if found is None:
+                raise FileNotFoundError("A linked asset was not included in the selected model.")
+            return found
+
+    env = EditingEnvironment(raw, path="")
     # Selected Unity files can themselves contain multiple serialized files.
     # Identity includes the stable serialized-file ordinal and the PathID.
     transforms, objects, names, parents, authored = {}, {}, {}, {}, {}

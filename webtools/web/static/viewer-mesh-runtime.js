@@ -104,6 +104,8 @@
     var pointGeometry = null, points = null, pointVertices = [], pointSelectionGeometry = null, selectedPoints = null;
     var stroke = null, disposed = false, sceneListeners = [], brushCursor = null, lastPointer = null;
     var overlayRefs = [], projected = [], projectionCache = null, worldVertices = {}, updateVersion = 0, lastBindingsVersion = -1, syncedData = [];
+    var poseSignature = '', projectionValidated = false, currentSurfaces = [], helperSelectionKey = '', attributeIds = new WeakMap(), attributeGeneration = 0;
+    var performanceState = { worldInvalidations: 0, worldVertices: 0, projectionBuilds: 0, projectionHits: 0, geometryApplications: 0, overlayUpdates: 0 };
     var raycaster = new T.Raycaster(), scratch = new T.Vector3(), v4 = new T.Vector4();
     function sourceContext() { return options.getContext ? options.getContext() : null; }
     function request() { var r = options.getRuntime(); if (r && r.requestRender) r.requestRender(); }
@@ -126,6 +128,7 @@
     function releaseBindings() {
       bindings.forEach(function (binding) { if (binding.mesh.geometry === binding.geometry) binding.mesh.geometry = binding.original; binding.geometry.dispose(); });
       bindings = []; boundKeys = {}; worldVertices = {}; projected = []; overlayRefs = []; pointVertices = [];
+      poseSignature = ''; projectionCache = null; projectionValidated = false; currentSurfaces = []; helperSelectionKey = '';
       if (overlayRoot) { overlayRoot.parent.remove(overlayRoot); overlayRoot.traverse(function (child) { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); }); }
       overlayRoot = null; overlayGeometry = null; overlay = null; pointGeometry = null; points = null; selectedPoints = null; pointSelectionGeometry = null;
       updateVersion++; lastBindingsVersion = -1;
@@ -158,6 +161,11 @@
     }
     function apply(binding) {
       var m = binding.data, geometry = binding.geometry, position = geometry.attributes.position;
+      // Selection and UV navigation do not change the source geometry. Keep
+      // attribute versions and the index object stable for exact pick caching.
+      // The JSON fallback retains the standalone runtime's mutation contract.
+      var revision = typeof m.geometryRevision === 'number' ? m.geometryRevision : JSON.stringify([Array.from(m.deleted), m.positions, m.weights]);
+      if (binding.appliedRevision === revision) return;
       position.array.set(binding.basePosition);
       Object.keys(m.positions).forEach(function (id) { scratch.fromArray(m.positions[id]).applyMatrix4(binding.positionMatrix); position.setXYZ(+id, scratch.x, scratch.y, scratch.z); });
       position.needsUpdate = true;
@@ -177,6 +185,7 @@
       if (Object.keys(m.positions).length) geometry.computeVertexNormals();
       else if (binding.baseNormal && geometry.attributes.normal) { geometry.attributes.normal.array.set(binding.baseNormal); geometry.attributes.normal.needsUpdate = true; }
       geometry.boundingBox = null; geometry.boundingSphere = null;
+      binding.appliedRevision = revision; performanceState.geometryApplications++;
     }
     function rebuildOverlay() {
       overlayRefs = []; pointVertices = [];
@@ -203,26 +212,65 @@
       if (pointSelectionGeometry) pointSelectionGeometry.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(selectedCount * 3), 3));
     }
     function sync(items) {
-      if (disposed) return; syncedData = items || syncedData;
+      if (disposed) return; var nextData = items || syncedData;
       if (!adoptRuntime()) return;
+      syncedData = nextData;
       syncedData.forEach(bind); bindings.forEach(apply); updateVersion++; rebuildOverlay(); beforeRender(); request();
     }
     function world(binding, vertex) {
       var id = binding.mesh.uuid, values = worldVertices[id] || (worldVertices[id] = []);
-      return values[vertex] || (values[vertex] = vertexWorld(binding.mesh, vertex));
+      if (!values[vertex]) { values[vertex] = vertexWorld(binding.mesh, vertex); performanceState.worldVertices++; }
+      return values[vertex];
     }
     function visible(mesh) { for (var node = mesh; node; node = node.parent) if (!node.visible) return false; return true; }
+    function attributeKey(attribute) {
+      if (!attribute) return '-';
+      if (!attributeIds.has(attribute)) attributeIds.set(attribute, ++attributeGeneration);
+      var data = attribute.data, array = attribute.array || data && data.array;
+      if (array && !attributeIds.has(array)) attributeIds.set(array, ++attributeGeneration);
+      return [attributeIds.get(attribute), attribute.version, data && data.version, attribute.count,
+        attribute.itemSize, attribute.offset, data && data.stride, array && attributeIds.get(array)].join(':');
+    }
+    function surfacePoseSignature(surfaces) {
+      var key = [];
+      surfaces.forEach(function (binding) {
+        var mesh = binding.mesh, geometry = mesh.geometry, attributes = geometry.attributes;
+        key.push(mesh.uuid, geometry.uuid, mesh.matrixWorld.elements.join(','));
+        [geometry.index, attributes.position, attributes.skinIndex, attributes.skinWeight].forEach(function (attribute) { key.push(attributeKey(attribute)); });
+        key.push((mesh.morphTargetInfluences || []).join(','), geometry.morphTargetsRelative);
+        (geometry.morphAttributes.position || []).forEach(function (attribute) { key.push(attributeKey(attribute)); });
+        if (mesh.isSkinnedMesh && mesh.skeleton) {
+          key.push(mesh.bindMatrix.elements.join(','), mesh.bindMatrixInverse.elements.join(','));
+          mesh.skeleton.bones.forEach(function (bone, index) {
+            var inverse = mesh.skeleton.boneInverses[index];
+            key.push(bone && bone.matrixWorld ? bone.matrixWorld.elements.join(',') : '-', inverse ? inverse.elements.join(',') : '-');
+          });
+        }
+      });
+      return key.join('|');
+    }
     function beforeRender() {
       if (disposed || !adoptRuntime()) return;
       var context = sourceContext(); if (!context || !context.mesh) { if (overlayRoot) overlayRoot.visible = false; return; }
       var list = boundKeys[identityKey(context.mesh.data.mesh)] || [];
       if (!list.length) { if (overlayRoot) overlayRoot.visible = false; return; }
       if (overlayRoot) overlayRoot.visible = true;
-      runtime.model.updateMatrixWorld(true); worldVertices = {}; projectionCache = null;
+      runtime.model.updateMatrixWorld(true); runtime.camera.updateMatrixWorld(true); currentSurfaces = surfaceBindings();
+      var signature = surfacePoseSignature(currentSurfaces), changedPose = signature !== poseSignature;
+      if (changedPose) { poseSignature = signature; worldVertices = {}; projectionCache = null; performanceState.worldInvalidations++; }
+      projectionValidated = false;
+      var selectionKey = context.showVertices ? Array.from(context.mesh.selected).join(',') : '';
+      if (overlay) overlay.visible = context.showSelection && overlayRefs.length > 0;
+      if (points) points.visible = context.showVertices && pointVertices.length > 0;
+      if (selectedPoints) selectedPoints.visible = context.showVertices && context.mesh.selected.size > 0;
+      // Both pose and selection must be unchanged before reusing helper buffers.
+      if (!changedPose && lastBindingsVersion === updateVersion && helperSelectionKey === selectionKey) return;
       if (overlayGeometry) { var pos = overlayGeometry.attributes.position; overlayRefs.forEach(function (entry, i) { var v = world(entry.binding, entry.vertex); pos.setXYZ(i, v.x, v.y, v.z); }); pos.needsUpdate = true; overlay.visible = context.showSelection && overlayRefs.length > 0; }
       if (pointGeometry) { var p = pointGeometry.attributes.position; pointVertices.forEach(function (entry, i) { var v = world(entry.binding, entry.vertex); p.setXYZ(i, v.x, v.y, v.z); }); p.needsUpdate = true; points.visible = context.showVertices && pointVertices.length > 0; }
       if (pointSelectionGeometry) { var chosen = pointSelectionGeometry.attributes.position, first = list[0], n = 0; context.mesh.selected.forEach(function (vertex) { var v = world(first, vertex); chosen.setXYZ(n++, v.x, v.y, v.z); }); chosen.needsUpdate = true; selectedPoints.visible = context.showVertices && context.mesh.selected.size > 0; }
       lastBindingsVersion = updateVersion;
+      helperSelectionKey = selectionKey;
+      performanceState.overlayUpdates++;
     }
     function activeBindings(context) { return (boundKeys[identityKey(context.mesh.data.mesh)] || []).filter(function (binding) { return visible(binding.mesh) && (context.submesh === undefined || binding.map.submesh === context.submesh); }); }
     function pointerRay(event) {
@@ -240,9 +288,14 @@
       }); return result;
     }
     function projection(context) {
-      if (projectionCache) return projectionCache;
+      if (projectionCache && projectionValidated) { performanceState.projectionHits++; return projectionCache; }
+      runtime.camera.updateMatrixWorld(true);
       var rect = (runtime.domElement || runtime.renderer.domElement).getBoundingClientRect(), cols = Math.max(1, Math.ceil(rect.width / 32));
-      var result = { rect: rect, cols: cols, bindings: {}, surfaces: surfaceBindings() };
+      var viewKey = runtime.camera.matrixWorld.elements.join(',') + ':' + runtime.camera.projectionMatrix.elements.join(',') + ':' + [rect.left, rect.top, rect.width, rect.height].join(',');
+      projectionValidated = true;
+      if (projectionCache && projectionCache.viewKey === viewKey) { performanceState.projectionHits++; return projectionCache; }
+      var result = { rect: rect, cols: cols, bindings: {}, surfaces: currentSurfaces, viewKey: viewKey };
+      performanceState.projectionBuilds++;
       result.surfaces.forEach(function (binding) {
         if (!visible(binding.mesh)) return;
         var entry = { points: {}, bins: {}, binding: binding };
@@ -384,7 +437,7 @@
     function inspect() {
       var context = sourceContext(); return { boundPrimitives: bindings.length, mode: context && context.mode || 'orbit',
         highlightedFaces: overlayRefs.length / 3, vertexDots: pointVertices.length, selectedVertices: context && context.mesh ? context.mesh.selected.size : 0,
-        activeStroke: !!stroke, cursorVisible: !!brushCursor && !brushCursor.hidden,
+        activeStroke: !!stroke, cursorVisible: !!brushCursor && !brushCursor.hidden, performance: Object.assign({}, performanceState),
         bindings: bindings.map(function (b) { return { mesh: b.map.mesh, submesh: b.map.submesh, triangles: b.faceMap.length,
           vertexCount: b.geometry.attributes.position.count, selectedFaces: b.data.marked ? Array.from(b.data.marked) : [],
           samplePositions: Array.from(b.geometry.attributes.position.array.slice(0, 24)), sampleWeights: b.geometry.attributes.skinWeight ? Array.from(b.geometry.attributes.skinWeight.array.slice(0, 24)) : [] }; }) };

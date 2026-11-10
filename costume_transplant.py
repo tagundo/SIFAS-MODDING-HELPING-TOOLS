@@ -1135,7 +1135,7 @@ def physics_dependency_names(objs, id2, scriptnames, names, existing):
 
 
 def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *, restore_collision=True, verbose=True,
-                             provenance=None):
+                             provenance=None, donor_environment=None):
     """Rebind the saved graph by typed source references and manager identities.
 
     The source indices address bones+lodBones, and sibling PPtrs address
@@ -1170,7 +1170,11 @@ def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *,
         return dict(manager=manager, tree=mt, owners=owners, transforms=transforms,
                     swings=swings, colliders=colliders, combined=combined, files=files)
 
-    out, donor, target = graph(env), graph(UnityPy.load(donor_path)), graph(UnityPy.load(target_path))
+    # The donor is read-only throughout a graft. Keep its operation-local
+    # environment; the written output and original wearer must still be read
+    # separately so their mutations and source physics cannot be confused.
+    donor_source = donor_environment if donor_environment is not None else UnityPy.load(donor_path)
+    out, donor, target = graph(env), graph(donor_source), graph(UnityPy.load(target_path))
     if provenance is not None:
         provenance["components"] = []
     if not out["manager"]:
@@ -1652,7 +1656,7 @@ def sync_costume_swing_physics(donor, target, costume_bone_names,
 _SWING_LENGTH_FIELDS = ("radius", "kneeSpaceOffsetFront", "kneeSpaceOffsetOther")
 
 
-def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbose=True):
+def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbose=True, *, donor_environment=None):
     """Rescale donor-authored SwingBone length tuning on every costume dynamic bone by
     the target/donor body-scale ratio, so donor pieces keep their proportions when the
     target scales the body. Re-opens the written bundle (so it sees the final realigned
@@ -1663,7 +1667,7 @@ def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbos
     env = UnityPy.load(out_path)
     objs, id2 = _index(env)
     scripts = _scriptname_map(objs)
-    donor = UnityPy.load(donor_path)
+    donor = donor_environment if donor_environment is not None else UnityPy.load(donor_path)
     do, did = _index(donor)
 
     t_scale = _accumulated_scale_byname(id2)
@@ -1724,7 +1728,7 @@ def scale_costume_swing_lengths(out_path, donor_path, costume_bone_names, verbos
 # inserting the deeper segment back into the chain. Sibling links are left alone
 # (the root-level sibling ring already includes wearer-only bones like SkirtE1).
 # No-op when the donor and output chains already agree.
-def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose=True):
+def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose=True, *, donor_environment=None):
     """Insert donor-only deeper swing segments back into the chain by fixing each
     costume bone's child / childIndex to match the donor's topology. Returns the
     number of links repaired (0 = chains already agree)."""
@@ -1734,7 +1738,7 @@ def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose
     env = UnityPy.load(out_path)
     objs, id2 = _index(env)
     scripts = _scriptname_map(objs)
-    donor = UnityPy.load(donor_path)
+    donor = donor_environment if donor_environment is not None else UnityPy.load(donor_path)
     do, did = _index(donor)
     d_scripts = _scriptname_map(do)
     names = {n for n in costume_bone_names if n}
@@ -1893,7 +1897,7 @@ def repair_costume_swing_chain(out_path, donor_path, costume_bone_names, verbose
 # donor collider's radius / offset / sibling capsule link onto the wearer's same-named
 # collider, remapping the sibling to the wearer's collider of that name. Body identity
 # is unaffected (the wearer keeps its head/face; the body was already the donor's).
-def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
+def adopt_donor_body_colliders(out_path, donor_path, verbose=True, *, donor_environment=None):
     """Copy each donor body collider's geometry + capsule sibling onto the wearer's
     same-named collider so the transplanted outfit collides with the body it was
     authored for. Returns the number of colliders updated."""
@@ -1903,7 +1907,7 @@ def adopt_donor_body_colliders(out_path, donor_path, verbose=True):
     env = UnityPy.load(out_path)
     objs, id2 = _index(env)
     scripts = _scriptname_map(objs)
-    donor = UnityPy.load(donor_path)
+    donor = donor_environment if donor_environment is not None else UnityPy.load(donor_path)
     do, did = _index(donor)
     d_scripts = _scriptname_map(do)
 
@@ -2229,25 +2233,27 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     #          1-segment wearer): re-insert the donor's lower segments so they
     #          simulate instead of staying rigid (legs would otherwise clip through). ----
     if costume_physics == "donor" and costume_dyn:
-        repair_costume_swing_chain(out_path, donor_path, costume_dyn, verbose=verbose)
+        repair_costume_swing_chain(out_path, donor_path, costume_dyn, verbose=verbose,
+                                  donor_environment=donor)
 
     # ---- 7a2) the grafted body is the donor's, so adopt the donor's body colliders
     #           (geometry + capsule links) onto the wearer's same-named colliders. Fixes
     #           one-sided skirt clipping where the wearer's leg capsule chain differs from
     #           what the donor outfit was authored for. Positions already match (realign). ----
-    adopt_donor_body_colliders(out_path, donor_path, verbose=verbose)
+    adopt_donor_body_colliders(out_path, donor_path, verbose=verbose, donor_environment=donor)
 
     # ---- 7b) if the target scales the whole body (e.g. the Rina board's Move~0.927),
     #          rescale the donor's swing-physics lengths so the grafted skirt/ribbon/
     #          wing/tail keeps its proportions instead of splaying on the smaller body.
     #          No-op on a standard target (scales match). Mesh untouched -> load-safe. ----
     if scale_swing_physics and costume_physics == "donor" and costume_dyn:
-        scale_costume_swing_lengths(out_path, donor_path, costume_dyn, verbose=verbose)
+        scale_costume_swing_lengths(out_path, donor_path, costume_dyn, verbose=verbose,
+                                   donor_environment=donor)
     if preserve_physics:
         repair_transplant_physics(out_path, donor_path, target_path,
                                   costume_dyn if costume_physics == "donor" else (),
                                   restore_collision=restore_collision, verbose=verbose,
-                                  provenance=physics_provenance)
+                                  provenance=physics_provenance, donor_environment=donor)
 
     # ---- 8) warn (read-only) if the result blows past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)

@@ -634,7 +634,9 @@ def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=
     # Use the same effective saved transforms as the rigged viewer.
     from webtools.core import model_edits
     import costume_part_transplant as cpt
-    info = model_edits._inspect(open(body.path, "rb").read())
+    with open(body.path, "rb") as source:
+        original = source.read()
+    info = model_edits._inspect(original)
     worlds = model_edits._worlds({key: model_edits._matrix(value) for key, value in info["effective"].items()}, info["parents"])
     file_ordinal = info["file_indices"].get(id(body.mesh_obj.assets_file))
     # _inspect owns a separate Unity environment; asset ordinals are stable.

@@ -179,7 +179,8 @@
     function current(panel) { return cache[panel.mesh.value] || null; }
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember() { var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; }); changed(); }
+    function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); changed(); }
     function undo() { if (busy || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
@@ -199,7 +200,7 @@
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
     function makeMesh(data) {
-        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
+        var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, geometryRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
             if (cells > 500000) return; var points = face.map(function (v) { return data.uv[v]; });
@@ -300,8 +301,8 @@
         Object.keys(cache).forEach(function (id) { previous.values[id] = Object.assign({}, cache[id]); });
         var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
         var next = {};
-        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1 }); });
-        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; next[id] = mesh; });
+        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1, geometryRevision: (old.geometryRevision || 0) + 1 }); });
+        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; geometryChanged(mesh); next[id] = mesh; });
         function restorePanels(values, fallback) {
           fillMeshes(); panels.forEach(function (p, index) {
             var value = values[index]; p.mesh.value = cache[value.mesh] ? value.mesh : fallback || '';
@@ -498,7 +499,7 @@
       if (absolute && m.selected.size !== 1) return status(panel, t('Choose one vertex for an absolute position.'), true);
       var fields = absolute ? panel.xyz : panel.delta, value = fields.map(function (i) { return +i.value; });
       if (fields.some(function (i) { return !i.checkValidity() || !i.value.trim(); }) || value.some(function (v) { return !Number.isFinite(v); })) return;
-      remember(); m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); changed();
+      remember(); m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
     }
     function applyWeights(panel) {
       var m = current(panel); if (!m || !m.data.skinWritable || !m.selected.size) return;
@@ -516,7 +517,7 @@
         else target = mode === 'set' ? amount : mode === 'add' ? target + amount : target - amount;
         updates[vertex] = redistributeInfluence(old, bone, target, locks, values);
       });
-      remember(); Object.keys(updates).forEach(function (v) { if (updates[v].length) m.weights[v] = updates[v]; }); m.weightRevision++; changed();
+      remember(); Object.keys(updates).forEach(function (v) { if (updates[v].length) m.weights[v] = updates[v]; }); m.weightRevision++; geometryChanged(m); changed();
     }
     async function save(panel) {
       var state = operationState(); if (!token || busy || !interactive() || !canSaveCopy()) return;
@@ -583,7 +584,7 @@
         var lock = el('details', weight); el('summary', lock, 'Lock bone weights'); p.locks = el('div', lock); p.locks.className = 'mesh-weights';
         el('p', weight, 'Locked bones retain their current weights. Remaining weights normalize to a total of 1, with at most four influences.').className = 'viewer-render-note';
       }
-      p.actions.push(button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; changed(); }));
+      p.actions.push(button(box, 'Restore mesh changes', function () { var m = current(p); if (!m) return; remember(); m.deleted.clear(); m.marked.clear(); m.selected.clear(); m.positions = {}; m.weights = {}; m.weightRevision++; geometryChanged(m); changed(); }));
       p.save = button(box, 'Save mesh copy', function () { save(p); }); p.save.className = 'mesh-save'; el('p', box, 'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.').className = 'viewer-render-note'; p.result = el('ul', box);
       p.status = el('p', box, 'Open a model first.'); p.status.className = 'viewer-render-note'; p.status.setAttribute('role', 'status'); p.status.setAttribute('aria-live', 'polite');
       var prefix = box.id;
@@ -597,7 +598,7 @@
     }
     function persistentChangeCount() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.positionCount || m.weightCount) count++; }); return count; }
     function canSaveCopy() { return persistentChangeCount() > 0 || savedToken === token && !!savedFingerprint; }
-    function deleteMarked(panel) { var m = current(panel); if (!m || !m.marked.size || busy) return; activePanel = panel; remember(); m.marked.forEach(function (face) { m.deleted.add(face); }); m.marked.clear(); changed(); }
+    function deleteMarked(panel) { var m = current(panel); if (!m || !m.marked.size || busy) return; activePanel = panel; remember(); m.marked.forEach(function (face) { m.deleted.add(face); }); m.marked.clear(); geometryChanged(m); changed(); }
     function runtimeContext() {
       var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
       return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
@@ -623,10 +624,10 @@
       if (!window.ViewerMeshRuntime || !options.getRuntime) return;
       runtimeEngine = window.ViewerMeshRuntime.create({ getRuntime: options.getRuntime, getContext: runtimeContext,
         onBegin: remember,
-        onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked; indices.forEach(function (index) { if (erase) set.delete(index); else if (modify || !m.deleted.has(index)) set.add(index); }); redraw(); },
+        onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked, altered = false; indices.forEach(function (index) { if (erase) { if (set.delete(index)) altered = true; } else if ((modify || !m.deleted.has(index)) && !set.has(index)) { set.add(index); altered = true; } }); if (altered) redraw(); },
         onSelect: chooseVertex,
         onConnected: function (face, erase, toggle) { if (activePanel) selectConnected(activePanel, [face], erase, toggle, false); },
-        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); changed(); },
+        onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); changed(); },
         onEnd: function () { changed(); }
       });
     }

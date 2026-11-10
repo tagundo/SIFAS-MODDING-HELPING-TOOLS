@@ -1758,7 +1758,7 @@ def rebase_node_scaling(path, eps=1e-4, verbose=True):
 _SWING_LENGTH_FIELDS = ("radius", "kneeSpaceOffsetFront", "kneeSpaceOffsetOther")
 
 
-def scale_costume_swing_lengths(out_path, donor_path, part_bone_names, verbose=True):
+def scale_costume_swing_lengths(out_path, donor_path, part_bone_names, verbose=True, *, donor_environment=None):
     """Rescale donor-authored SwingBone length tuning on every transplanted part bone by
     the target/donor body-scale ratio, so the part keeps its proportions when the target
     scales the body. Re-opens the written bundle (so it sees the injected part bones) and
@@ -1769,7 +1769,7 @@ def scale_costume_swing_lengths(out_path, donor_path, part_bone_names, verbose=T
     env = _require_unitypy().load(out_path)
     objs, id2 = _index(env)
     scripts = _scriptname_map(objs)
-    donor = _require_unitypy().load(donor_path)
+    donor = donor_environment if donor_environment is not None else _require_unitypy().load(donor_path)
     do, did = _index(donor)
 
     t_scale = _accumulated_scale_byname(id2)
@@ -2230,12 +2230,13 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     # proportions instead of splaying. No-op on a standard target (scales match);
     # mesh untouched -> load-safe even on a board.
     if scale_swing_physics and preserve_physics and inject_names:
-        scale_costume_swing_lengths(out_path, donor_path, inject_names, verbose=verbose)
+        scale_costume_swing_lengths(out_path, donor_path, inject_names, verbose=verbose,
+                                   donor_environment=donor)
     if preserve_physics:
         from costume_transplant import repair_transplant_physics
         repair_transplant_physics(out_path, donor_path, target_path, new_map if inject_names else (),
                                   restore_collision=restore_collision, verbose=verbose,
-                                  provenance=physics_provenance)
+                                  provenance=physics_provenance, donor_environment=donor)
     # read-only: warn if the grown body renderer blew past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
     finish_working_bundle(out_path, output_packer)

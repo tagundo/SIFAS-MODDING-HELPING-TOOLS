@@ -1,16 +1,19 @@
 """Serialized main/LOD graph and unweighted-tip regression for costume grafts."""
 import copy
 import json
+import random
 import struct
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import UnityPy
 import costume_transplant as full
 import costume_part_transplant as part
 from generate_viewer_physics_fixture import fixture_bytes
 from webtools.core import model_edits, viewer_physics
+from test_viewer_transplants import costume_fixture
 
 
 def as_bundle(raw):
@@ -58,6 +61,94 @@ def donor_chain():
 
 
 class TransplantPhysicsGraphTests(unittest.TestCase):
+    def test_shared_donor_keeps_saved_physics_and_provenance_without_reopening_source(self):
+        target_raw, donor_raw = as_bundle(fixture_bytes(native=True)), as_bundle(donor_chain())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            donor_path, target_path = root / 'donor.unity', root / 'target.unity'
+            donor_path.write_bytes(donor_raw); target_path.write_bytes(target_raw)
+            donor, target = UnityPy.load(donor_raw), UnityPy.load(target_raw)
+            _, index = part._index(target)
+            names, children = full.inject_appendage_bones(donor, target, ['TailA1_Dyna'],
+                part._name2transform(index), restore_collision=False)
+            part.wire_child_adds(index, children)
+            initial = target.file.save(packer='original')
+            source_objects = {obj.path_id: obj.get_raw_data() for obj in donor.objects}
+            real_load = UnityPy.load
+            results = []
+            for cached in (False, True):
+                out = root / ('cached.unity' if cached else 'fresh.unity')
+                out.write_bytes(initial)
+                source_reads = []
+                def load(value, *args, **kwargs):
+                    if value == str(donor_path):
+                        source_reads.append(value)
+                        self.assertFalse(cached, 'A shared donor must not be opened again')
+                    return real_load(value, *args, **kwargs)
+                options = {'donor_environment': donor} if cached else {}
+                provenance = {}
+                with patch.object(UnityPy, 'load', side_effect=load):
+                    full.repair_costume_swing_chain(str(out), str(donor_path), names, verbose=False, **options)
+                    full.adopt_donor_body_colliders(str(out), str(donor_path), verbose=False, **options)
+                    full.scale_costume_swing_lengths(str(out), str(donor_path), names, verbose=False, **options)
+                    part.scale_costume_swing_lengths(str(out), str(donor_path), names, verbose=False, **options)
+                    full.repair_transplant_physics(str(out), str(donor_path), str(target_path), names,
+                        restore_collision=False, verbose=False, provenance=provenance, **options)
+                self.assertEqual(len(source_reads), 0 if cached else 5)
+                self.assertTrue(full.validate(str(out), verbose=False))
+                results.append((out.read_bytes(), provenance))
+            self.assertEqual(results[0], results[1])
+            self.assertEqual({obj.path_id: obj.get_raw_data() for obj in donor.objects}, source_objects)
+            self.assertEqual(donor_path.read_bytes(), donor_raw)
+            self.assertEqual(target_path.read_bytes(), target_raw)
+
+    def test_full_and_part_reuse_only_the_immutable_donor_and_keep_exact_output(self):
+        raw = costume_fixture()
+        for operation in ('full', 'part'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                donor, target = root / 'donor.unity', root / 'wearer.unity'
+                donor.write_bytes(raw); target.write_bytes(raw)
+                results = []
+                for fresh in (True, False):
+                    source_reads = []
+                    real_load = UnityPy.load
+                    def load(value, *args, **kwargs):
+                        if value == str(donor): source_reads.append(value)
+                        return real_load(value, *args, **kwargs)
+                    def fallback(function):
+                        def call(*args, **kwargs):
+                            if fresh: kwargs['donor_environment'] = None
+                            return function(*args, **kwargs)
+                        return call
+                    output, provenance = root / 'output.unity', {}
+                    # Seed only this isolated test so injected object IDs permit
+                    # an exact saved-file comparison; production IDs stay random.
+                    rng = random.getstate()
+                    try:
+                        random.seed(47)
+                        with patch.object(UnityPy, 'load', side_effect=load), \
+                             patch.object(full, 'repair_costume_swing_chain', fallback(full.repair_costume_swing_chain)), \
+                             patch.object(full, 'adopt_donor_body_colliders', fallback(full.adopt_donor_body_colliders)), \
+                             patch.object(full, 'scale_costume_swing_lengths', fallback(full.scale_costume_swing_lengths)), \
+                             patch.object(part, 'scale_costume_swing_lengths', fallback(part.scale_costume_swing_lengths)), \
+                             patch.object(full, 'repair_transplant_physics', fallback(full.repair_transplant_physics)):
+                            if operation == 'full':
+                                full.transplant(str(donor), str(target), str(output), verbose=False,
+                                    preserve_physics=True, physics_provenance=provenance)
+                            else:
+                                part.transplant_part(str(donor), str(target), str(output),
+                                    part_root='BreastSize', verbose=False, physics_provenance=provenance)
+                    finally:
+                        random.setstate(rng)
+                    self.assertTrue(full.validate(str(output), verbose=False))
+                    results.append((output.read_bytes(), provenance, len(source_reads)))
+                self.assertEqual(results[0][:2], results[1][:2])
+                self.assertGreater(results[0][2], results[1][2])
+                self.assertEqual(results[1][2], 1)
+                self.assertEqual(donor.read_bytes(), raw)
+                self.assertEqual(target.read_bytes(), raw)
+
     def test_full_and_part_keep_unweighted_tips_typed_siblings_and_lod_indices(self):
         target_raw, donor_raw = as_bundle(fixture_bytes(native=True)), as_bundle(donor_chain())
         for operation in ("full", "part"):
