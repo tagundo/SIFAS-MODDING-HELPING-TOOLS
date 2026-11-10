@@ -190,6 +190,7 @@
     var T = global.THREE;
     if (!T || !root || !renderer) throw new Error("The shader renderer is unavailable.");
     var enabled = options.enabled !== false;
+    var rimlightEnabled = options.rimlight !== false;
     var mouthCentroidDepth = options.mouthCentroidDepth === true &&
       !!(renderer.capabilities && renderer.capabilities.isWebGL2);
     var disposed = false;
@@ -366,7 +367,7 @@
       uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
       var defines = {};
       ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
-        if (features[name]) defines["SIFAS_" + name.toUpperCase()] = 1;
+        if (features[name] && (name !== "rimlight" || rimlightEnabled)) defines["SIFAS_" + name.toUpperCase()] = 1;
       });
       var parameters = { vertexShader: mouthDepth ? MOUTH_VERTEX : VERTEX,
         fragmentShader: mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
@@ -524,6 +525,17 @@
         });
         if (options.onChange) options.onChange();
       },
+      setRimlight: function (value) {
+        if (disposed || rimlightEnabled === !!value) return;
+        rimlightEnabled = !!value;
+        materialCache.forEach(function (pair) {
+          if (!pair.features.rimlight) return;
+          if (rimlightEnabled) pair.main.defines.SIFAS_RIMLIGHT = 1;
+          else delete pair.main.defines.SIFAS_RIMLIGHT;
+          pair.main.needsUpdate = true;
+        });
+        if (options.onChange) options.onChange();
+      },
       getMaterial: function (mesh) {
         for (var i = 0; i < entries.length; i += 1) {
           if (entries[i].mesh === mesh) return enabled ? entries[i].custom : entries[i].original;
@@ -544,6 +556,7 @@
       },
       getState: function () {
         return Object.assign({}, state, { enabled: enabled, loading: loading, disposed: disposed,
+          rimlightEnabled: rimlightEnabled,
           animated: enabled && animated, ownedMaterials: ownedMaterials.size,
           ownedTextures: ownedTextures.size, limitations: Array.from(limitations) });
       },

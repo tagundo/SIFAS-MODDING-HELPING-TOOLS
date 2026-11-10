@@ -141,7 +141,9 @@ fs.mkdirSync(evidence, { recursive: true });
           } else mesh = new T.Mesh(geometry, original);
           if (args.backface) mesh.rotation.y = Math.PI;
           root.add(mesh); root.updateMatrixWorld(true);
-          const controller = SifasMaterial.apply(root, renderer, { parser: { getDependency: async (_, index) => textures[index] } });
+          const applyOptions = { parser: { getDependency: async (_, index) => textures[index] } };
+          if (args.explicitRimOff) applyOptions.rimlight = false;
+          const controller = SifasMaterial.apply(root, renderer, applyOptions);
           await controller.ready;
           if (args.emissiveUv) controller.setBeat(1);
           if (args.cull !== undefined) mesh.children.filter(child => child.userData.viewerHelper).forEach(child => { child.visible = false; });
@@ -153,11 +155,48 @@ fs.mkdirSync(evidence, { recursive: true });
           check(mesh.children.filter(child => child.userData.viewerHelper).length === 1, name + ': helper');
           check(gpuTriangles === (args.cull !== undefined ? 2 : 4), name + ': source/outline draw triangle count: ' + gpuTriangles);
           const culled = args.cull === 1 && !args.backface || args.cull === 2 && args.backface;
+          const displayFeatures = Object.assign({}, features, { rimlight: features.rimlight && !args.explicitRimOff });
           const expected = culled ? [32, 32, 32] : args.matcapUv || args.emissiveUv ? [255, 0, 0] : args.mips || args.cheekUv ? [0, 0, 255] : reference(args.base || [40, 180, 240, 255], mask,
             { ambient: colors._AmbientColor, tint: colors._TintColor, rim: colors._RimlightColor, cap: colors._MatcapIntensity, span: colors._MatcapSpanCol, emission: colors._EmissiveIntensity },
-            { cheek: .5, capAdd: .4, spanAdd: .3, darkenR: .8, brightR: 1.2, brightG: 1.4, rimIntensity: .5 }, features, sample);
+            { cheek: .5, capAdd: .4, spanAdd: .3, darkenR: .8, brightR: 1.2, brightG: 1.4, rimIntensity: .5 }, displayFeatures, sample);
           near(Array.from(pixel), expected, target + '/' + name);
           check(gl.getError() === 0, name + ': GPU error');
+          check(state.rimlightEnabled === !args.explicitRimOff, name + ': raw API keeps its legacy default unless explicitly disabled');
+          const rimlightRoundTrip = [];
+          if (args.rimlightRoundTrip) {
+            const main = mesh.material, outline = mesh.children.find(child => child.userData.viewerHelper).material;
+            function immutableState() {
+              function value(item) {
+                if (item && item.isTexture) return { texture: item.uuid, encoding: item.encoding,
+                  pixels: item.image && item.image.data ? Array.from(item.image.data) : null };
+                return item && item.toArray ? item.toArray() : item;
+              }
+              return JSON.stringify({ metadata: meta, attributes: Object.keys(geometry.attributes).map(key =>
+                [key, Array.from(geometry.attributes[key].array)]), indices: geometry.index && Array.from(geometry.index.array),
+              uniforms: Object.fromEntries(Object.entries(main.uniforms).map(([key, uniform]) => [key, value(uniform.value)])),
+              mainVertex: main.vertexShader, mainFragment: main.fragmentShader,
+              otherDefines: Object.fromEntries(Object.entries(main.defines).filter(([key]) => key !== 'SIFAS_RIMLIGHT')),
+              outlineVertex: outline.vertexShader, outlineFragment: outline.fragmentShader, outlineDefines: outline.defines });
+            }
+            const immutable = immutableState();
+            for (const enabled of [false, true, false]) {
+              controller.setRimlight(enabled); renderer.render(scene, camera);
+              const rgba = new Uint8Array(4); gl.readPixels(64, 64, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+              const wanted = reference(args.base || [40, 180, 240, 255], mask,
+                { ambient: colors._AmbientColor, tint: colors._TintColor, rim: colors._RimlightColor, cap: colors._MatcapIntensity, span: colors._MatcapSpanCol, emission: colors._EmissiveIntensity },
+                { cheek: .5, capAdd: .4, spanAdd: .3, darkenR: .8, brightR: 1.2, brightG: 1.4, rimIntensity: .5 },
+                Object.assign({}, features, { rimlight: features.rimlight && enabled }), sample);
+              near(Array.from(rgba), wanted, target + '/' + name + '/rim-' + enabled);
+              check(controller.getState().rimlightEnabled === enabled, name + ': controller reports the display preference');
+              check(!!main.defines.SIFAS_RIMLIGHT === (features.rimlight && enabled), name + ': only authored rimlight can be enabled');
+              check(immutableState() === immutable, name + ': rim preview preserves source metadata, geometry, uniforms and both shader programs');
+              check(mesh.material === main && mesh.children.find(child => child.userData.viewerHelper).material === outline,
+                name + ': rim preview does not replace materials or the outline pass');
+              check(gl.getError() === 0, name + ': rim round trip has no GPU error');
+              rimlightRoundTrip.push({ enabled, rgba: Array.from(rgba), expected: wanted });
+            }
+            check(JSON.stringify(rimlightRoundTrip[0].rgba) === JSON.stringify(rimlightRoundTrip[2].rgba), name + ': off/on/off restores exact original display pixels');
+          }
           if (args.skin) {
             mesh.skeleton.bones[0].position.x = .1; mesh.morphTargetInfluences[0] = .9;
             scene.updateMatrixWorld(true); renderer.render(scene, camera);
@@ -172,7 +211,7 @@ fs.mkdirSync(evidence, { recursive: true });
           check(mesh.material === original && !mesh.children.some(child => child.userData.viewerHelper), name + ': restore original/dispose helpers');
           check(controller.getState().ownedTextures === 0 && controller.getState().ownedMaterials === 0, name + ': owned resources released');
           original.dispose(); textures.forEach(texture => texture.dispose()); geometry.dispose();
-          all.push({ target, name, pixel: Array.from(pixel), expected, sourceTriangles: 2, gpuTriangles, glError: 0, state });
+          all.push({ target, name, pixel: Array.from(pixel), expected, sourceTriangles: 2, gpuTriangles, glError: 0, state, rimlightRoundTrip });
         }
         await drawCase('gamma-mask', { mask: [1, 1, 0, 1] });
         await drawCase('ambient-tint', { tint: true });
@@ -181,6 +220,10 @@ fs.mkdirSync(evidence, { recursive: true });
         await drawCase('cheek', { cheek: true });
         await drawCase('emissive', { emissive: true });
         await drawCase('combined-variants', { matcap: true, cheek: true, emissive: true, tint: true, rim: true });
+        await drawCase('rim-explicit-off-roundtrip', { rim: true, explicitRimOff: true, rimlightRoundTrip: true });
+        await drawCase('combined-rim-explicit-off-roundtrip', { matcap: true, cheek: true, emissive: true, tint: true, rim: true, explicitRimOff: true, rimlightRoundTrip: true });
+        await drawCase('skinned-rim-explicit-off-roundtrip', { skin: true, rim: true, explicitRimOff: true, rimlightRoundTrip: true });
+        await drawCase('non-rim-roundtrip', { explicitRimOff: true, rimlightRoundTrip: true });
         await drawCase('authored-mips', { mips: true });
         await drawCase('skinned-morph', { skin: true });
         await drawCase('matcap-flipped-png-uv', { matcap: true, matcapUv: true });

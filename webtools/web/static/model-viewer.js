@@ -43,6 +43,8 @@
   var discardPendingPreview = null;
   var lastFrameTime = 0;
   var materialPreference = "sifas";
+  var RIMLIGHT_KEY = "elichika.viewer.rimlight.v1";
+  var rimlightPreference = false;
   var frame = 0;
   var resizeObserver = null;
   var stageObserver = null;
@@ -1168,6 +1170,7 @@
     var showTextures = node("viewer-textures").checked;
     var wireframe = node("viewer-wireframe").checked;
     if (materialController && materialController.setEnabled) {
+      if (materialController.setRimlight) materialController.setRimlight(rimlightPreference);
       materialController.setEnabled(showTextures && !wireframe && node("viewer-shader").value === "sifas");
     }
     model.traverse(function (child) {
@@ -1571,6 +1574,7 @@
       if (window.SifasMaterial && window.SifasMaterial.apply) {
         pendingMaterials = window.SifasMaterial.apply(next, renderer, {
           parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender,
+          rimlight: rimlightPreference,
           mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
         });
         if (pendingMaterials.ready) await pendingMaterials.ready;
@@ -1919,6 +1923,8 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    try { rimlightPreference = window.localStorage.getItem(RIMLIGHT_KEY) === "true"; } catch (_) {}
+    node("viewer-rimlight").checked = rimlightPreference;
     if (window.ViewerOutlines) outlineController = window.ViewerOutlines.create({
       translate: t,
       onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); },
@@ -2104,6 +2110,11 @@
     node("viewer-textures").addEventListener("change", updateAppearance);
     node("viewer-wireframe").addEventListener("change", updateAppearance);
     node("viewer-shader").addEventListener("change", function () { materialPreference = this.value; updateAppearance(); });
+    node("viewer-rimlight").addEventListener("change", function () {
+      rimlightPreference = this.checked;
+      try { window.localStorage.setItem(RIMLIGHT_KEY, String(rimlightPreference)); } catch (_) {}
+      updateAppearance();
+    });
     node("viewer-background").addEventListener("change", setBackground);
     node("viewer-fov").addEventListener("input", function () {
       node("viewer-fov-value").textContent = this.value + "°";
@@ -2178,6 +2189,7 @@
 
   function updateLanguage() {
     if (!mounted) return;
+    node("viewer-rimlight").parentNode.title = t("Preview lighting only; saved model materials stay unchanged.");
     renderFiles();
     refreshStatus();
     var expandLabel = t(expanded ? "Close expanded view" : "Expand view");
