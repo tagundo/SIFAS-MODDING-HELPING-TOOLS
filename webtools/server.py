@@ -265,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
-        if set(params) - {"paths", "motion_paths", "auto_face", "rigged", "archive_variants", "preview_only"}:
+        if set(params) - {"paths", "motion_paths", "auto_face", "rigged", "archive_variants", "preview_only", "reimport"}:
             return self._send_json({"error": "Unsupported model viewer option."}, status=400)
         auto_face = params.get("auto_face", True)
         if not isinstance(auto_face, bool):
@@ -276,6 +276,9 @@ class Handler(BaseHTTPRequestHandler):
         preview_only = params.get("preview_only", False)
         if not isinstance(preview_only, bool):
             return self._send_json({"error": "Preview-only loading must be on or off."}, status=400)
+        reimport = params.get("reimport", False)
+        if not isinstance(reimport, bool):
+            return self._send_json({"error": "Reimport must be on or off."}, status=400)
         paths = params.get("paths")
         if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
                 or any(not isinstance(path, str) or not path.strip() for path in paths)):
@@ -343,6 +346,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("The expanded motion library has too many source files.")
                 context.update(manifest_paths=expanded.manifest_paths, origins=expanded.origins)
                 options = {"face_context": context}
+                if reimport:
+                    options["reimport"] = True
                 if rigged:
                     options["rigged"] = True
                 if expanded_motions:
@@ -371,8 +376,9 @@ class Handler(BaseHTTPRequestHandler):
                             cache_dir=cache_dir, companions=model_viewer.get_editing_companions(result["id"]))
                         if result["editing"].get("available"):
                             from webtools.core import viewer_mod_flow
+                            editing_context = model_edits.mod_source_context(result["editing"]["token"])
                             result["editing"]["modPackaging"] = viewer_mod_flow.metadata(
-                                model_edits.mod_source_context(result["editing"]["token"]),
+                                editing_context,
                                 repo_root=Path.cwd(),
                                 cache_root=Path(default_sukusta_dir("extracted")) / "game-models",
                                 language=self._lang())
@@ -380,12 +386,12 @@ class Handler(BaseHTTPRequestHandler):
                             if isinstance(physics, dict) and isinstance(physics.get("native"), dict):
                                 from webtools.core import viewer_physics_runtime
                                 physics["native"]["runtime"] = viewer_physics_runtime.describe(
-                                    model_edits.mod_source_context(result["editing"]["token"]),
+                                    editing_context,
                                     physics, repo_root=Path.cwd(),
                                     cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
                             from webtools.core import viewer_scene_roles
                             if (result["editing"]["modPackaging"].get("characterId") == 209 and
-                                    viewer_scene_roles.pending_supported_nodes(model_edits.mod_source_context(result["id"]))):
+                                    viewer_scene_roles.pending_supported_nodes(editing_context)):
                                 model_edits._session(result["id"])["allowEmptySceneReset"] = True
                                 result["editing"]["allowEmptyScenePackage"] = True
                             if getattr(expanded, "scene_context", None):
@@ -459,7 +465,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Invalid game asset request size.") from None
             if self.headers.get("Transfer-Encoding") or not 0 < length <= 4096:
                 raise ValueError("The game asset request is too large or empty.")
-            record = game_models.validate_selection(Path.cwd(), self._read_json_body(), self._lang())
+            selection = self._read_json_body()
+            if not isinstance(selection, dict):
+                raise ValueError("Choose a valid costume and download option.")
+            reimport = selection.pop("reimport", False)
+            if not isinstance(reimport, bool):
+                raise ValueError("Reimport must be on or off.")
+            record = game_models.validate_selection(Path.cwd(), selection, self._lang())
             output_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
             if record.get("purpose") == "transplant":
                 output_root = output_root / "transplant-bodies"
@@ -467,7 +479,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise PermissionError("The game model cache is outside the allowed folders.")
             job = MANAGER.create("viewer_game_assets")
             MANAGER.run_async(job, lambda active: game_models.run_import(active,
-                repo_root=Path.cwd(), output_root=output_root, record=record))
+                repo_root=Path.cwd(), output_root=output_root, record=record,
+                **({"reimport": True} if reimport else {})))
             return self._send_json({"job_id": job.id})
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
@@ -554,8 +567,13 @@ class Handler(BaseHTTPRequestHandler):
             elif operation == "data":
                 result = viewer_mesh_tools.data(params["token"], params["mesh"])
             else:
-                result = viewer_mesh_tools.export(params["token"], params["state"],
-                    self._viewer_feature_output("modded/viewer"), body_state=params["bodyState"])
+                from webtools.core import viewer_mod_flow
+                runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+                body_state = params["bodyState"] if params["bodyState"] is not None else {"version": 1, "edits": []}
+                result = viewer_mod_flow.export_current(params["token"], body_state,
+                    self._viewer_feature_output("modded/viewer"), mesh_state=params["state"],
+                    allow_empty=True, repo_root=runtime_root,
+                    cache_root=self._viewer_feature_output("extracted/game-models"))
             return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
@@ -573,13 +591,14 @@ class Handler(BaseHTTPRequestHandler):
                 if "renderer" in params: arguments["renderer"] = params["renderer"]
                 return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"], **arguments))
             params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"},
-                optional_fields=viewer_transplants.OPTIONAL_FIELDS, max_bytes=4 * 1024 * 1024)
+                optional_fields=viewer_transplants.OPTIONAL_FIELDS, max_bytes=16 * 1024 * 1024)
             request = viewer_transplants.validate_request(params)
             output = self._viewer_feature_output("modded/viewer")
             cache = self._viewer_feature_output(".viewer-cache")
             job = MANAGER.create("viewer_transplant")
             MANAGER.run_async(job, lambda current: viewer_transplants.run_transplant(current,
-                request, output_root=output, cache_root=cache))
+                request, output_root=output, cache_root=cache, repo_root=Path.cwd(),
+                physics_cache_root=self._viewer_feature_output("extracted/game-models")))
             return self._send_json({"job_id": job.id})
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
@@ -590,9 +609,10 @@ class Handler(BaseHTTPRequestHandler):
         from webtools.core import model_viewer, viewer_thumbnails
         try:
             optional = {"kind", "params", "token", "state", "character_id", "counterpart_path",
-                        "selected_variant", "item_id", "cache_key", "profile_digest", "png", "render"}
+                        "selected_variant", "item_id", "cache_key", "profile_digest", "png", "render",
+                        "mesh_state", "include_face_edits"}
             params = self._viewer_feature_request(set(), optional_fields=optional,
-                max_bytes=4 * 1024 * 1024, token=False)
+                max_bytes=(16 if operation == "plan" else 4) * 1024 * 1024, token=False)
             handler = {"plan": viewer_thumbnails.plan, "model": viewer_thumbnails.model,
                        "render": viewer_thumbnails.store}[operation]
             return self._send_json(handler(params))
@@ -603,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, KeyError, OSError) as exc:
             return self._send_json({"error": str(exc)}, status=400)
 
-    def _viewer_edit_request(self, fields):
+    def _viewer_edit_request(self, fields, *, optional_fields=(), max_bytes=512 * 1024):
         """Bound writes to source-bound sessions, without caller output paths."""
         origin = self.headers.get("Origin")
         if origin:
@@ -617,10 +637,10 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ValueError("Invalid editing request size.") from None
-        if not 0 < length <= 512 * 1024:
+        if not 0 < length <= max_bytes:
             raise ValueError("The editing request is too large or empty.")
         params = self._read_json_body()
-        if not isinstance(params, dict) or set(params) != set(fields):
+        if not isinstance(params, dict) or not set(fields).issubset(params) or set(params) - set(fields) - set(optional_fields):
             raise ValueError("Unsupported editing request.")
         import re
         if not isinstance(params.get("token"), str) or not re.fullmatch(r"[a-f0-9]{32}", params["token"]):
@@ -629,7 +649,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_viewer_edit_export(self):
         try:
-            params = self._viewer_edit_request({"token", "state"})
+            params = self._viewer_edit_request({"token", "state"}, optional_fields={"mesh_state"}, max_bytes=16 * 1024 * 1024)
             if not isinstance(params["state"], dict):
                 raise ValueError("Invalid model editing values.")
             from webtools.core import model_edits
@@ -639,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
             validator = getattr(model_edits, "validate_state", None)
             validated_state = params["state"]
             if validator is not None:
-                validated_state = validator(params["token"], params["state"])
+                validated_state = validator(params["token"], params["state"], allow_empty=True)
             output_dir = os.path.realpath(default_sukusta_dir("modded/viewer"))
             if not filebrowser.is_within_allowed(output_dir):
                 raise PermissionError("The model output folder is outside the allowed folders.")
@@ -651,20 +671,28 @@ class Handler(BaseHTTPRequestHandler):
                 current.progress(0, 1)
                 from webtools.core import viewer_mod_pair_edits, viewer_mod_flow
                 context = model_edits.mod_source_context(params["token"])
-                result = model_edits.export(
-                    params["token"], params["state"], output_dir, log=current.log)
+                source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+                runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
+                mesh_state = viewer_mod_flow.normalize_mesh_state(params.get("mesh_state"))
+                result = viewer_mod_flow.export_current(params["token"], params["state"], output_dir,
+                    mesh_state=mesh_state, allow_empty=True, repo_root=runtime_root,
+                    cache_root=source_cache, log=current.log)
                 # A declared costume family includes the platform alternatives
                 # stored in the same ZIP. Apply the edit intent to each original
                 # rig before exposing the saved copy, regardless of host OS.
                 try:
-                    paired = viewer_mod_pair_edits.apply_pair_edits(
+                    paired = (viewer_mod_pair_edits.apply_pair_edits(
                         context, result, validated_state, pair=None, job=current)
+                        if mesh_state is None else {"result": result, "summary": []})
                 except Exception:
                     viewer_mod_flow.discard_failed_export(result, output_dir)
                     raise
                 result = paired["result"]
                 if paired.get("summary"):
                     result["paired_edits"] = paired["summary"]
+                from webtools.core import viewer_physics_runtime
+                result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
+                    repo_root=runtime_root, cache_root=source_cache)
                 # Re-editing opens these immutable original copies, so retain
                 # their verified game selection without relying on filenames.
                 source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
@@ -696,7 +724,7 @@ class Handler(BaseHTTPRequestHandler):
         except TimeoutError:
             return self._send_json({"error": "Another model is saving. Try again shortly."}, status=503)
 
-    def _viewer_mod_request(self, fields, *, optional_fields=()):
+    def _viewer_mod_request(self, fields, *, optional_fields=(), max_bytes=512 * 1024):
         """Validate app-origin writes; Mod installation accepts an opaque token."""
         import ipaddress
         import re
@@ -731,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ValueError("Invalid Mod ZIP request size.") from None
-        if self.headers.get("Transfer-Encoding") or not 0 < length <= 512 * 1024:
+        if self.headers.get("Transfer-Encoding") or not 0 < length <= max_bytes:
             raise ValueError("The Mod ZIP request is too large or empty.")
         params = self._read_json_body()
         if (not isinstance(params, dict) or not set(fields).issubset(params)
@@ -746,13 +774,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from webtools.core import model_edits, viewer_mod_flow
             from webtools.core.sukusta import default_sukusta_dir
-            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token"})
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits"}, max_bytes=16 * 1024 * 1024)
+            include_face_edits = params.get("include_face_edits")
+            if "include_face_edits" in params and type(include_face_edits) is not bool:
+                raise ValueError("Choose whether to include face and mouth edits for this costume.")
             thumbnail_token = params.get("thumbnail_token", "")
             import re
             if not isinstance(thumbnail_token, str) or thumbnail_token and not re.fullmatch(r"[a-f0-9]{32}", thumbnail_token):
                 raise ValueError("Prepare a valid automatic thumbnail before saving its Mod ZIP.")
             viewer_mod_flow.validate_options(params["display_name"], params["character_id"], params["counterpart_path"], params["selected_variant"])
-            model_edits.validate_state(params["token"], params["state"])
+            model_edits.validate_state(params["token"], params["state"], allow_empty=True)
+            mesh_state = viewer_mod_flow.normalize_mesh_state(params.get("mesh_state"))
             counterpart = params["counterpart_path"]
             if counterpart:
                 if len(counterpart) > 4096:
@@ -773,7 +805,8 @@ class Handler(BaseHTTPRequestHandler):
                     output_root=output_root, repo_root=runtime_root, cache_root=cache_root,
                     display_name=params["display_name"], character_id=params["character_id"],
                     counterpart_path=counterpart, selected_variant=params["selected_variant"],
-                    thumbnail_token=thumbnail_token, job=current)
+                    thumbnail_token=thumbnail_token, mesh_state=mesh_state,
+                    include_face_edits=include_face_edits, job=current)
                 current._viewer_edit_result = result
                 for path in result["output_paths"]:
                     current.add_output(path)
@@ -844,12 +877,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_viewer_edit_restore(self):
         try:
-            params = self._viewer_edit_request({"token", "recipe"})
+            params = self._viewer_edit_request({"token", "recipe"}, max_bytes=16 * 1024 * 1024)
             if not isinstance(params["recipe"], dict):
                 raise ValueError("Choose an editing recipe for this original model.")
-            from webtools.core import model_edits
-            state = model_edits.restore(params["token"], params["recipe"])
-            return self._send_json({"state": state})
+            from webtools.core import model_edits, viewer_mod_flow
+            if params["recipe"].get("tool") == "mesh-tools":
+                result = viewer_mod_flow.restore_current(params["token"], params["recipe"])
+            else:
+                result = {"state": model_edits.restore(params["token"], params["recipe"])}
+            return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
         except (ValueError, TypeError, KeyError) as exc:

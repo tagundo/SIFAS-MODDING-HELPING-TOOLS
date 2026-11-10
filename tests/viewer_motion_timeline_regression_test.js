@@ -89,4 +89,17 @@ check('identical source copies reuse one motion while conflicting same-name clip
   const conflict = factory.create(s.root, [s.body, duplicate], s.metadata, s.descriptor);
   assert.equal(conflict.compatibleSegments, 0, 'different actual tracks with the same source label must never be guessed');
 });
+check('shared facial tracks retain each source clip endpoint and repeated-time changes', () => {
+  const s = setup(), track = new THREE.NumberKeyframeTrack('face.morphTargetInfluences', [0, 2], [0, 0, 1, 0]);
+  const short = new THREE.AnimationClip('short-mouth', 1, [track]), long = new THREE.AnimationClip('long-mouth', 2, [track]);
+  s.metadata.clips.push({ name: short.name, sourceHash: 'short-hash', sourceName: 'short-source' }, { name: long.name, sourceHash: 'long-hash', sourceName: 'long-source' });
+  s.descriptor.facialClips = [{ kind: 'mouth', index: 13, sourceHash: 'short-hash', sourceName: 'short-source' }, { kind: 'mouth', index: 14, sourceHash: 'long-hash', sourceName: 'long-source' }];
+  s.descriptor.facial.events = [{ kind: 'mouth', index: 13, start: 0, duration: 1, weight: 1 }, { kind: 'mouth', index: 14, start: 2, duration: 1, weight: 1 }];
+  const player = factory.create(s.root, [s.body, short, long], s.metadata, s.descriptor);
+  player.evaluate(.5); close(s.face.morphTargetInfluences[0], .5, 'short source uses its own endpoint');
+  player.evaluate(2.5); close(s.face.morphTargetInfluences[0], 1, 'same underlying track uses the long source endpoint');
+  s.descriptor.facial.events[1].weight = .5;
+  s.face.morphTargetInfluences.splice(0, 2, .2, .4); player.evaluate(2.5);
+  close(s.face.morphTargetInfluences[0], .6, 'a new evaluation at the same time observes current authored segment values');
+});
 if (failures.length) { console.error(JSON.stringify(failures, null, 2)); process.exitCode = 1; }

@@ -26,8 +26,8 @@
       preMode: read("preMode", "m_PreExtrapolationMode", 0), postMode: read("postMode", "m_PostExtrapolationMode", 0),
       preTime: read("preTime", "m_PreExtrapolationTime", 0), postTime: read("postTime", "m_PostExtrapolationTime", 0) };
   }
-  function weight(segment, time) {
-    var local = time - segment.start, span = segment.duration, spec = timing(segment.timing);
+  function weightWithTiming(segment, time, spec) {
+    var local = time - segment.start, span = segment.duration;
     if (local < 0) return spec.preMode && local >= -spec.preTime ? number(segment.weight, 1) : 0;
     if (local > span) return spec.postMode && local <= span + spec.postTime ? number(segment.weight, 1) : 0;
     var incoming = spec.blendIn >= 0 ? spec.blendIn : spec.easeIn;
@@ -37,6 +37,7 @@
     if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
     return clamp(value, 0, 1);
   }
+  function weight(segment, time) { return weightWithTiming(segment, time, timing(segment.timing)); }
   // GL3.12 MemberEyeContactBase uses 45 horizontal / 30 vertical degrees.
   // Targets31..36 are explicit pose directions; Camera/Audience/member targets
   // are positions transformed into the animated face's local rotation basis.
@@ -102,11 +103,12 @@
         if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, base: record.node[record.property].toArray() };
       });
     }
-    function worldRotation(node) {
-      var path = [], q = new T.Quaternion();
-      for (var current = node; current; current = current.parent) path.push(current);
-      for (var index = path.length - 1; index >= 0; index -= 1) q.multiply(path[index].quaternion);
-      return q.normalize();
+    var rotationPath = [], worldQuaternion = new T.Quaternion(), direction = new T.Vector3(), facePosition = new T.Vector3();
+    for (var ancestor = face; ancestor; ancestor = ancestor.parent) rotationPath.push(ancestor);
+    function worldRotation() {
+      worldQuaternion.set(0, 0, 0, 1);
+      for (var index = rotationPath.length - 1; index >= 0; index -= 1) worldQuaternion.multiply(rotationPath[index].quaternion);
+      return worldQuaternion.normalize();
     }
     function targetWeights(target, context) {
       var fixed = { 31: 8, 32: 9, 33: 7, 34: 6, 35: 11, 36: 10 }[target];
@@ -120,10 +122,11 @@
         return null;
       }
       missingTargets = missingTargets.filter(function (value) { return value !== target; });
-      root.updateMatrixWorld(true);
-      var direction = new T.Vector3().fromArray(point).sub(face.getWorldPosition(new T.Vector3()));
+      // getWorldPosition updates this face's ancestor chain. Updating every
+      // mesh and bone in the model again for each gaze request is unnecessary.
+      direction.fromArray(point).sub(face.getWorldPosition(facePosition));
       if (direction.lengthSq() < 1e-12) return {};
-      direction.normalize().applyQuaternion(worldRotation(face).invert());
+      direction.normalize().applyQuaternion(worldRotation().invert());
       // The converter mirrors Unity's X coordinate, including its eye poses.
       var horizontal = Math.abs(direction.x) <= .001 && Math.abs(direction.z) <= .001 ? 0 : Math.atan2(-direction.x, direction.z) * 180 / Math.PI / 45;
       var vertical = Math.abs(direction.y) <= .001 ? 0 : Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI / 30;
@@ -168,10 +171,30 @@
   }
   function create(root, animations, metadata, descriptor, options) {
     options = options || {};
-    var THREE = global.THREE, warnings = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
+    var THREE = global.THREE, warnings = [], compatibilityDetails = [], groups = {}, facialGroups = {}, gazeGroups = {}, visibility = [], nativeEvents = new Set(), used = 0;
     var info = metadata || {}, clips = info.clips || [], expressions = info.expressionCatalog || {};
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
+    var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
+    var sampledSegments = new WeakMap(), sampleTime = null, sampleRevision = 0;
+    function beginSample(time, fresh) {
+      if (fresh || sampleTime !== time) { sampleTime = time; sampleRevision += 1; }
+    }
+    function sampleSegment(segment, time) {
+      var sample = sampledSegments.get(segment);
+      if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
+      if (sample.revision !== sampleRevision) {
+        var spec = timing(segment.timing);
+        sample.revision = sampleRevision; sample.spec = spec;
+        sample.weight = weightWithTiming(segment, time, spec);
+        sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
+        sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
+      }
+      return sample;
+    }
+    function sampleWeight(segment, time) { return sampleSegment(segment, time).weight; }
     animations.forEach(function (clip) { animationByName[clip.name] = clip; });
+    clips.forEach(function (entry) { if (!animationByName[entry.name]) return; var key = JSON.stringify([entry.sourceHash, entry.sourceName]);
+      if (!clipIdentities.has(key)) clipIdentities.set(key, []); clipIdentities.get(key).push(entry); });
     root.traverse(function (node) { if (node.userData && node.userData.elichika_node !== undefined) nodeByIndex[String(node.userData.elichika_node)] = node; });
     (expressions.rawChannels || []).forEach(function (channel) {
       var node = nodeByIndex[String(channel.node)], targets = [];
@@ -204,20 +227,33 @@
       });
     }
     function sourceClip(segment) {
-      var matches = clips.filter(function (entry) { return entry.sourceHash === segment.sourceHash && entry.sourceName === segment.sourceName && animationByName[entry.name]; });
-      if (!matches.length || matches.length > 1 && !matches.slice(1).every(function (entry) { return identicalAnimation(animationByName[matches[0].name], animationByName[entry.name]); })) return null;
+      var matches = clipIdentities.get(JSON.stringify([segment.sourceHash, segment.sourceName])) || [];
+      if (!matches.length) {
+        compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The selected body clip is missing from the loaded motion files." }); return null;
+      }
+      if (matches.length > 1 && !matches.slice(1).every(function (entry) { return identicalAnimation(animationByName[matches[0].name], animationByName[entry.name]); })) {
+        compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "Different clips have the same original motion identity." }); return null;
+      }
       if (matches.some(function (entry) { return entry.bindingComplete === false; })) warn("Some original Animator parameters or unmatched tracks are unavailable. The compatible character tracks are playing.");
       return animationByName[matches[0].name];
     }
     function register(collection, clip, segment, staticPose, gazeOnly) {
       var registered = 0;
       clip.tracks.forEach(function (track) {
-        var key = track.name, group = collection[key], binding = group && group.binding;
-        if (!binding) { binding = THREE.PropertyBinding.create(root, key); binding.bind(); }
+        var key = track.name, group = collection[key], binding = group && group.binding || bindingsByName.get(key);
+        if (!binding) { binding = THREE.PropertyBinding.create(root, key); binding.bind(); bindingsByName.set(key, binding); }
         if (gazeOnly && (!binding.node || !binding.node.isBone || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(binding.node.userData.originalName || binding.node.name.replace(/__\d+$/, "")))) return;
         var base = new Array(track.getValueSize()); binding.getValue(base, 0);
         if (!denseFinite(base)) return;
-        var record = { segment: segment, interpolant: track.createInterpolant(), duration: clip.duration, staticPose: !!staticPose };
+        var staticValue = null;
+        if (staticPose) {
+          var endpoints = staticSamples.get(track);
+          if (!endpoints) { endpoints = new Map(); staticSamples.set(track, endpoints); }
+          staticValue = endpoints.get(clip.duration);
+          if (!staticValue) { staticValue = track.createInterpolant().evaluate(clip.duration); endpoints.set(clip.duration, staticValue); }
+        }
+        var record = { segment: segment, interpolant: staticPose ? null : track.createInterpolant(), staticValue: staticValue, duration: clip.duration, staticPose: !!staticPose,
+          weightedSample: { value: null, weight: 0 } };
         if (collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences") {
           var node = binding.targetObject || binding.node, channel = binding.propertyIndex;
           if (!node || !node.morphTargetInfluences) return;
@@ -230,7 +266,8 @@
           }
           registered += 1; return;
         }
-        if (!group) group = collection[key] = { binding: binding, base: base, quaternion: track.ValueTypeName === "quaternion", tracks: [] };
+        if (!group) group = collection[key] = { binding: binding, base: base, quaternion: track.ValueTypeName === "quaternion", tracks: [],
+          values: [], result: base.slice(), rotation: new THREE.Quaternion(), nextRotation: new THREE.Quaternion() };
         group.tracks.push(record); registered += 1;
       });
       return registered;
@@ -239,7 +276,7 @@
       var clip = sourceClip(segment);
       if (!clip) { warn("A selected body segment is incompatible with this model."); return; }
       if (register(groups, clip, segment, false)) used += 1;
-      else warn("A selected body segment is incompatible with this model.");
+      else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
     var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
     var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
@@ -254,11 +291,15 @@
         return;
       }
       if (event.kind !== "eyes" && event.kind !== "mouth") return;
-      var kind = event.kind === "eyes" ? "eye" : "mouth", pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
-      var alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
-      var matches = clips.filter(function (entry) {
-        return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
-      });
+      var kind = event.kind === "eyes" ? "eye" : "mouth", identity = event.kind + ":" + event.index, matches = facialMatches.get(identity);
+      if (!matches) {
+        var pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
+        var alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
+        matches = clips.filter(function (entry) {
+          return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
+        });
+        facialMatches.set(identity, matches);
+      }
       if (matches.length === 1 && register(facialGroups, animationByName[matches[0].name], event, true)) {
         var entry = matches[0];
         (entry.visibility || []).forEach(function (track) { visibility.push({ event: event, track: track }); });
@@ -273,32 +314,42 @@
         if (!presetBound && !rawMatch) warn("Some original facial shapes are unavailable for this model.");
       }
     });
-    function evaluateGroups(collection, time, facial) {
-      Object.keys(collection).forEach(function (key) {
-        var group = collection[key], values = [], total = 0;
+    // Collections and track/interpolant buffers are fixed for this controller.
+    // Reuse them while sampling, rather than allocating per bone every frame.
+    var bodyGroups = Object.keys(groups).map(function (key) { return groups[key]; });
+    var faceGroups = Object.keys(facialGroups).map(function (key) { return facialGroups[key]; });
+    var gazeTrackGroups = Object.keys(gazeGroups).map(function (key) { return gazeGroups[key]; });
+    var shapeGroups = Object.keys(morphGroups).map(function (key) { return morphGroups[key]; });
+    function evaluateGroups(collection, time) {
+      collection.forEach(function (group) {
+        var values = group.values, total = 0; values.length = 0;
         group.tracks.forEach(function (record) {
-          var segment = record.segment, amount = weight(segment, time);
+          var sample = sampleSegment(record.segment, time), amount = sample.weight;
           if (amount <= 0) return;
-          var local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
+          var local = sample.local;
           // Facial clips are original poses (many have one key at the end).
           if (record.staticPose) local = record.duration;
           else {
-            var spec = timing(segment.timing), mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
+            var mode = sample.mode;
             if (mode === 2 && record.duration) local = ((local % record.duration) + record.duration) % record.duration;
             else if (mode === 3 && record.duration) { var phase = ((local % (2 * record.duration)) + 2 * record.duration) % (2 * record.duration); local = phase <= record.duration ? phase : 2 * record.duration - phase; }
             else local = clamp(local, 0, record.duration);
           }
-          values.push({ value: Array.prototype.slice.call(record.interpolant.evaluate(local)), weight: amount }); total += amount;
+          // Each record owns an interpolant and its result buffer, so another
+          // track cannot overwrite this sample before this group is blended.
+          var entry = record.weightedSample;
+          entry.value = record.staticPose ? record.staticValue : record.interpolant.evaluate(local); entry.weight = amount;
+          values.push(entry); total += amount;
         });
         if (!values.length) return;
-        var result = group.base.slice(), remainder = Math.max(0, 1 - total), denominator = total + remainder;
+        var result = group.result, remainder = Math.max(0, 1 - total), denominator = total + remainder;
         if (group.quaternion) {
-          var q = new THREE.Quaternion().fromArray(group.base), accumulated = remainder;
+          var q = group.rotation.fromArray(group.base), next = group.nextRotation, accumulated = remainder;
           values.forEach(function (entry) {
-            var next = new THREE.Quaternion().fromArray(entry.value);
+            next.fromArray(entry.value);
             if (!accumulated) q.copy(next); else q.slerp(next, entry.weight / (accumulated + entry.weight));
             accumulated += entry.weight;
-          }); result = q.normalize().toArray();
+          }); q.normalize().toArray(result);
         } else {
           for (var i = 0; i < result.length; i += 1) {
             result[i] = group.base[i] * remainder;
@@ -309,21 +360,34 @@
         group.binding.setValue(result, 0);
       });
     }
+    var fallbackTargets = {};
+    function targetsFor(kind, index) {
+      var semantic = (kind === "mouth" ? 10000 : 0) + index;
+      if (fallbackTargets[semantic]) return fallbackTargets[semantic];
+      var preset = facePresets[semantic];
+      return fallbackTargets[semantic] = preset && preset.targets || (expressions.rawChannels || []).filter(function (channel) {
+        return channel.group === kind;
+      }).map(function (channel) {
+        var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + index).slice(-3);
+        return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected.toLowerCase() ? 1 : 0 };
+      });
+    }
     function applyShapes(time) {
       var active = { eyes: [], mouth: [] }, contributions = {};
       sampleFrame += 1;
-      Object.keys(morphGroups).forEach(function (key) {
-        morphGroups[key].tracks.forEach(function (track) {
-          var record = track.record, amount = weight(record.segment, time); if (amount <= 0) return;
-          if (record.sampleFrame !== sampleFrame) { record.sample = Array.prototype.slice.call(record.interpolant.evaluate(record.duration)); record.sampleFrame = sampleFrame; }
+      shapeGroups.forEach(function (group) {
+        var key = group.node.uuid + ":" + group.index;
+        group.tracks.forEach(function (track) {
+          var record = track.record, amount = sampleWeight(record.segment, time); if (amount <= 0) return;
+          if (record.sampleFrame !== sampleFrame) { record.sample = record.staticValue; record.sampleFrame = sampleFrame; }
           if (!contributions[key]) contributions[key] = [];
           contributions[key].push({ value: record.sample[track.component], weight: amount });
         });
       });
-      events.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = weight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
+      events.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
       // Navi speech follows decoded voice amplitude between authored mouth
       // poses. MV songs always use their original vowel timeline.
-      var hasAuthoredMouth = events.some(function (event) { return event.kind === "mouth" && weight(event, time) > 0; });
+      var hasAuthoredMouth = events.some(function (event) { return event.kind === "mouth" && sampleWeight(event, time) > 0; });
       if (descriptor.category !== "mv" && !hasAuthoredMouth) {
         (descriptor.audio && descriptor.audio.tracks || []).forEach(function (track) {
           var envelope = track.envelope, local = number(track.offset, 0) + (time - number(track.startTime, 0)) * number(track.playbackRate, 1);
@@ -336,12 +400,7 @@
       }
       Object.keys(active).forEach(function (kind) {
         active[kind].forEach(function (record) {
-          var semantic = (kind === "mouth" ? 10000 : 0) + record.event.index, preset = facePresets[semantic];
-          var targets = preset && preset.targets;
-          if (!targets) targets = (expressions.rawChannels || []).filter(function (channel) { return channel.group === kind; }).map(function (channel) {
-            var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + record.event.index).slice(-3);
-            return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected.toLowerCase() ? 1 : 0 };
-          });
+          var targets = targetsFor(kind, record.event.index);
           targets.forEach(function (target) {
             (faceChannels[target.node + ":" + target.index] || []).forEach(function (channel) {
               var key = channel.node.uuid + ":" + channel.index;
@@ -361,21 +420,22 @@
         group.node.morphTargetInfluences[group.index] = (group.base * remainder + value) / Math.max(1, total);
       });
     }
-    return { warnings: warnings, compatibleSegments: used,
+    return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails,
       animatedProperties: function (time) {
+        beginSample(time, false);
         var owned = {};
-        [groups, facialGroups, gazeGroups].forEach(function (collection) {
-          Object.keys(collection).forEach(function (key) {
-            var group = collection[key], binding = group.binding, property = binding.parsedPath && binding.parsedPath.propertyName;
+        [bodyGroups, faceGroups, gazeTrackGroups].forEach(function (collection) {
+          collection.forEach(function (group) {
+            var binding = group.binding, property = binding.parsedPath && binding.parsedPath.propertyName;
             if (["position", "quaternion", "scale"].indexOf(property) < 0 ||
-                !group.tracks.some(function (record) { return weight(record.segment, time) > 0; })) return;
+                !group.tracks.some(function (record) { return sampleWeight(record.segment, time) > 0; })) return;
             var node = binding.targetObject || binding.node, id = node && node.userData && node.userData.elichika_node;
             if (id === undefined) return;
             if (!owned[String(id)]) owned[String(id)] = {};
             owned[String(id)][property] = true;
           });
         });
-        if (gazeEvents.some(function (event) { return weight(event, time) > 0; })) {
+        if (gazeEvents.some(function (event) { return sampleWeight(event, time) > 0; })) {
           var gazeProperties = gaze.properties(); Object.keys(gazeProperties).forEach(function (id) { owned[id] = Object.assign(owned[id] || {}, gazeProperties[id]); });
         }
         return owned;
@@ -383,15 +443,15 @@
       duration: Math.max(number(descriptor.facial && descriptor.facial.duration, 0), number(descriptor.audio && descriptor.audio.duration, 0),
         (descriptor.audio && descriptor.audio.tracks || []).reduce(function (end, track) { return Math.max(end, number(track.startTime, 0) + Math.max(0, number(track.duration, 0))); }, 0),
         (descriptor.bodySegments || []).reduce(function (end, segment) { return Math.max(end, segment.start + segment.duration); }, 0)),
-      evaluate: function (time) { evaluateGroups(groups, time, false); evaluateGroups(facialGroups, time, true); applyShapes(time);
-        gaze.evaluate(gazeEvents.map(function (event) { return { target: event.target, weight: weight(event, time) }; }).filter(function (event) { return event.weight > 0; }), options.getGazeContext ? options.getGazeContext() : {});
+      evaluate: function (time) { beginSample(time, true); evaluateGroups(bodyGroups, time); evaluateGroups(faceGroups, time); applyShapes(time);
+        gaze.evaluate(gazeEvents.map(function (event) { return { target: event.target, weight: sampleWeight(event, time) }; }).filter(function (event) { return event.weight > 0; }), options.getGazeContext ? options.getGazeContext() : {});
         gaze.warnings.forEach(warn);
         if (gaze.getState().missingTargets.length) warn("An original gaze target is unavailable in this single-model preview.");
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },
-      applyVisibility: function (time) { visibility.forEach(function (record) {
-        if (weight(record.event, time) <= .5) return;
+      applyVisibility: function (time) { beginSample(time, false); visibility.forEach(function (record) {
+        if (sampleWeight(record.event, time) <= .5) return;
         var track = record.track, node = nodeByIndex[String(track.node)];
         if (!node || !track.values || !track.values.length) return;
         var value = track.values[track.values.length - 1];

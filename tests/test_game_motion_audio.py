@@ -17,6 +17,62 @@ from webtools.jobs import Job
 from test_cri_audio_decode import original_acb, original_awb
 
 
+class MouthEnvelopeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(); self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "voice.wav"
+
+    def write(self, values, channels=1):
+        pcm = array.array("h", values)
+        import sys
+        if sys.byteorder != "little":
+            pcm.byteswap()
+        with wave.open(str(self.path), "wb") as stream:
+            stream.setnchannels(channels); stream.setsampwidth(2); stream.setframerate(8000); stream.writeframes(pcm.tobytes())
+
+    def reference(self, point_limit=6000):
+        with wave.open(str(self.path), "rb") as stream:
+            frames = max(round(stream.getframerate() * .04), math.ceil(stream.getnframes() / max(1, min(6000, point_limit))))
+            values = []
+            while True:
+                block = stream.readframes(frames)
+                if not block:
+                    break
+                pcm = array.array("h"); pcm.frombytes(block)
+                import sys
+                if sys.byteorder != "little":
+                    pcm.byteswap()
+                values.append(math.sqrt(sum((value / 32768.) ** 2 for value in pcm) / len(pcm)))
+            ordered = sorted(values); normalizer = max(.02, ordered[min(len(ordered) - 1, int(len(ordered) * .9))])
+            return {"kind": "rms_mouth_openness", "step": frames / 8000, "values": [round(min(1., max(0., value - .002) / normalizer), 4) for value in values]}
+
+    def test_integer_pcm_reduction_keeps_original_voice_envelope(self):
+        self.write([round(28000 * math.sin(index * .31) * ((index // 320) % 4 + 1) / 4) for index in range(44100)], channels=2)
+        for limit in (6000, 7, 1):
+            with self.subTest(limit=limit):
+                self.assertEqual(audio.mouth_envelope(self.path, point_limit=limit), self.reference(limit))
+
+    def test_warm_reuse_still_hashes_current_bytes_and_returns_independent_values(self):
+        self.write([12000 if index // 320 % 2 else 0 for index in range(8000)])
+        original = audio.mouth_envelope(self.path)
+        original["values"][0] = 99
+        with patch.object(audio.game, "_sha", wraps=audio.game._sha) as digest:
+            again = audio.mouth_envelope(self.path)
+            digest.assert_called_once_with(self.path)
+        self.assertEqual(again, self.reference())
+        before = self.path.stat()
+        self.write([0] * 8000)
+        os.utime(self.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(audio.mouth_envelope(self.path)["values"], [0.] * len(again["values"]))
+
+    def test_full_scale_pcm_and_truncated_voice_are_handled(self):
+        self.write([-32768, 32767] * 50000)
+        self.assertEqual(audio.mouth_envelope(self.path, point_limit=1), self.reference(1))
+        self.path.write_bytes(self.path.read_bytes()[:44])
+        with self.assertRaisesRegex(ValueError, "no PCM samples"):
+            audio.mouth_envelope(self.path)
+
+
 class TimelineTests(unittest.TestCase):
     def objects(self, *, muted=False, start=.7166666666666667, cue="original-tone"):
         objects = {}

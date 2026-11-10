@@ -4,6 +4,7 @@ Navigation voice playback uses the actual NaviVoiceTrack clip's cue, start,
 clip-in, duration and time scale. Music uses the selected live's catalog BGM.
 ACB/AWB source packs stay local; browsers receive bounded PCM WAV derivatives.
 """
+from collections import OrderedDict
 from contextlib import closing
 import hashlib
 import json
@@ -28,6 +29,8 @@ _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
 _AUDIO = {}
 _LOCK = threading.Lock()
 _SLOT = threading.BoundedSemaphore(1)
+_ENVELOPES = OrderedDict()
+_ENVELOPE_LOCK = threading.Lock()
 
 
 def _number(value, low=0., high=MAX_SECONDS):
@@ -214,24 +217,68 @@ def _register(path):
 
 def mouth_envelope(path, *, point_limit=6000):
     """A bounded RMS openness guide; this does not identify spoken phonemes."""
-    import array
-    import sys
+    path = Path(path)
+    original = path.stat()
+    def unchanged():
+        current = path.stat()
+        return (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) == (
+            original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns, original.st_ctime_ns)
     meta = _wav_metadata(path)
     frames_per_point = max(round(meta["sampleRate"] * .04), math.ceil(meta["frames"] / max(1, min(6000, point_limit))))
+    # Verify current bytes even on a warm import. A stat-only cache would miss
+    # user replacements that preserve size/mtime, and must not change lip sync.
+    identity = game._sha(path), frames_per_point
+    if not unchanged():
+        raise ValueError("The decoded audio changed while preparing its mouth motion. Load the motion again.")
+    with _ENVELOPE_LOCK:
+        cached = _ENVELOPES.get(identity)
+        if cached is not None:
+            _ENVELOPES.move_to_end(identity)
+            return {"kind": "rms_mouth_openness", "step": cached[0], "values": list(cached[1])}
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+        import array
+        import sys
     values = []
     with wave.open(str(path), "rb") as stream:
         while True:
-            block = stream.readframes(frames_per_point)
-            if not block:
+            remaining, energy, samples = frames_per_point, 0, 0
+            while remaining:
+                # Limit temporary arrays even for long cues or a small point
+                # limit. NumPy reduces integer PCM exactly before normalization.
+                wanted = min(remaining, 16384)
+                block = stream.readframes(wanted)
+                if not block:
+                    break
+                if np is not None:
+                    pcm = np.frombuffer(block, dtype="<i2").astype(np.int32)
+                    energy += int(np.square(pcm, dtype=np.int64).sum(dtype=np.int64))
+                else:
+                    pcm = array.array("h"); pcm.frombytes(block)
+                    if sys.byteorder != "little":
+                        pcm.byteswap()
+                    energy += sum(sample * sample for sample in pcm)
+                samples += len(pcm)
+                remaining -= len(pcm) // meta["channels"]
+            if not samples:
                 break
-            pcm = array.array("h"); pcm.frombytes(block)
-            if sys.byteorder != "little":
-                pcm.byteswap()
-            values.append(math.sqrt(sum((sample / 32768.) ** 2 for sample in pcm) / len(pcm)))
+            values.append(math.sqrt(energy / samples) / 32768.)
+    if not values:
+        raise ValueError("The decoded audio contains no PCM samples for its mouth motion.")
+    if not unchanged():
+        raise ValueError("The decoded audio changed while preparing its mouth motion. Load the motion again.")
     ordered = sorted(values)
     normalizer = max(.02, ordered[min(len(ordered) - 1, int(len(ordered) * .9))])
-    return {"kind": "rms_mouth_openness", "step": frames_per_point / meta["sampleRate"],
-            "values": [round(min(1., max(0., value - .002) / normalizer), 4) for value in values]}
+    step = frames_per_point / meta["sampleRate"]
+    result = tuple(round(min(1., max(0., value - .002) / normalizer), 4) for value in values)
+    with _ENVELOPE_LOCK:
+        _ENVELOPES[identity] = step, result
+        _ENVELOPES.move_to_end(identity)
+        while len(_ENVELOPES) > 16:
+            _ENVELOPES.popitem(last=False)
+    return {"kind": "rms_mouth_openness", "step": step, "values": list(result)}
 
 
 def get_audio(token):

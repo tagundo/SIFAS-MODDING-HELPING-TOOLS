@@ -510,22 +510,26 @@
       if (modeNote && mode === "game" && profile === "auto" && frameContext && frameContext.clipId && !frameContext.motionCategory) modeNote.textContent += " " + t("The motion's original screen is unknown. Home/member settings are used; select MV when needed.");
       if (modeNote && mode === "game" && selectedProfile === "live") {
         var flags = runtimeFlags();
-        if ((catalog.managers || []).some(function (manager) { return flags.skirtsafeDisableBySource[manager.sourceIndex] === undefined; })) modeNote.textContent += " " + t("Import this costume from game assets or select its skirt correction setting.");
+        if ((catalog.managers || []).some(function (manager) { return flags.skirtsafeDisableBySource[manager.sourceIndex] === undefined &&
+          (manager.bones || []).concat(manager.lodBones || []).some(function (id) { return typeof flags.skirtsafeDisableByComponent[id] !== "boolean"; }); })) modeNote.textContent += " " + t("Import this costume from game assets or select its skirt correction setting.");
         if (flags.safeSwingBone === undefined) modeNote.textContent += " " + t("Import this motion from game assets or select its skirt correction setting.");
       }
     }
     function resolvedProfile() { return profile === "auto" ? frameContext && frameContext.motionCategory === "mv" ? "live" : "navi" : profile; }
     function runtimeFlags() {
       var selectedProfile = resolvedProfile(), flags = {}, runtime = catalog.native && catalog.native.runtime || {};
+      var componentFlags = Object.assign({}, runtime.skirtsafeDisableByComponent || {});
       (runtime.sources || []).forEach(function (source) { if (source.known && typeof source.skirtsafeDisable === "boolean") flags[source.sourceIndex] = source.skirtsafeDisable; });
       (catalog.managers || []).forEach(function (manager) {
         if (selectedProfile === "navi") flags[manager.sourceIndex] = true;
         else if (skirtCorrection !== "auto") flags[manager.sourceIndex] = skirtCorrection === "disabled";
       });
+      if (selectedProfile === "navi" || skirtCorrection !== "auto") componentFlags = {};
       var safeSwingBone = selectedProfile === "navi" ? false : motionCorrection === "auto" ?
         frameContext && typeof frameContext.safeSwingBone === "boolean" ? frameContext.safeSwingBone : undefined : motionCorrection === "enabled";
       return { profile: selectedProfile, qualityMode: qualityMode, enableJob: true,
-        enableLod: selectedProfile === "navi" || qualityMode !== 40, skirtsafeDisableBySource: flags, safeSwingBone: safeSwingBone };
+        enableLod: selectedProfile === "navi" || qualityMode !== 40, skirtsafeDisableBySource: flags,
+        skirtsafeDisableByComponent: componentFlags, safeSwingBone: safeSwingBone };
     }
     function selectMode(value) {
       if (["game", "enhanced"].indexOf(value) < 0 || value === "game" && !nativeAvailable) throw new Error("The selected physics calculation is unavailable.");

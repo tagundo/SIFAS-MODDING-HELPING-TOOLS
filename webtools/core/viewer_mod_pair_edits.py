@@ -292,6 +292,8 @@ def _map_state(context, state, source_index, source_info, target_context, target
         if semantic is None or len(origins) != 1 or len(matches) != 1:
             raise ValueError("The counterpart has no unique matching outline mesh: " + source_outline["name"])
         change = {"id": matches[0]["id"], "factor": row["factor"]}
+        if "absolute" in row:
+            change["absolute"] = row["absolute"]
         if row.get("vertices"):
             signature = source_outline.get("vertexOrderSignature")
             if (not signature or signature != matches[0].get("vertexOrderSignature") or

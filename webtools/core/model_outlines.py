@@ -220,7 +220,7 @@ def catalogue(info, source_index, *, runtime_bindings=None):
         obj = info["objects"][key]
         tree = obj.read_typetree()
         try:
-            count, _, _ = _layout(tree)
+            count, color_start, color_stride = _layout(tree)
         except (KeyError, ValueError, TypeError, NotImplementedError):
             continue
         name = tree.get("m_Name", "")
@@ -230,10 +230,13 @@ def catalogue(info, source_index, *, runtime_bindings=None):
         signatures = [json.dumps(binding, sort_keys=True) for binding in bindings]
         semantic = ([name, sorted(bindings, key=lambda row: json.dumps(row, sort_keys=True))]
                     if name and all(row[1] and row[2] for row in bindings) and len(set(signatures)) == len(signatures) else None)
+        color_data = tree["m_VertexData"]["m_DataSize"]
+        red = memoryview(color_data if isinstance(color_data, (bytes, bytearray)) else bytes(color_data))[color_start:color_start + count * color_stride:color_stride]
         record = {"id": f"{source_index}:{key[0]}:{key[1]}", "sourceIndex": source_index,
                         "file": key[0], "meshId": str(key[1]), "name": name or "Mesh",
                         "vertexCount": count, "format": "UNorm8", "channel": 3,
                         "min": 0, "max": 2, "default": 1, "saturatesAbove": 1,
+                        "originalWidth": {"min": min(red), "max": max(red), "mean": sum(red) / count},
                         "semantic": semantic, "vertexOrderSignature": _vertex_order_signature(tree)}
         runtime = [proof for _, _, proof in uses if proof]
         if runtime:
@@ -298,7 +301,7 @@ def validate(catalog, values):
     known = {row["id"]: row for row in catalog.get("meshes", [])}
     normalized, seen, vertex_edits = [], set(), 0
     for value in values:
-        if not isinstance(value, dict) or not {"id", "factor"} <= set(value) or set(value) - {"id", "factor", "vertices"}:
+        if not isinstance(value, dict) or not {"id", "factor"} <= set(value) or set(value) - {"id", "factor", "vertices", "absolute"}:
             _error("An outline edit contains unsupported properties.")
         identity, factor = value["id"], value["factor"]
         if not isinstance(identity, str) or identity not in known or identity in seen:
@@ -306,6 +309,9 @@ def validate(catalog, values):
         seen.add(identity)
         if type(factor) not in (int, float) or not 0 <= factor <= 2 or not math.isfinite(factor):
             _error("Outline strength must be a finite value between zero and two.")
+        absolute = value.get("absolute")
+        if "absolute" in value and (type(absolute) is not int or not 0 <= absolute <= 255):
+            _error("Absolute outline width must be an integer between zero and 255.")
         vertices = value.get("vertices", [])
         if not isinstance(vertices, list) or len(vertices) > known[identity]["vertexCount"]:
             _error("The outline vertex edit list is invalid.")
@@ -323,8 +329,10 @@ def validate(catalog, values):
         vertex_edits += len(edits)
         if vertex_edits > MAX_VERTEX_EDITS:
             _error("There are too many outline vertex edits.")
-        if factor != 1 or edits:
+        if factor != 1 or edits or "absolute" in value:
             row = {"id": identity, "factor": float(factor)}
+            if "absolute" in value:
+                row["absolute"] = absolute
             if edits:
                 row["vertices"] = sorted(edits, key=lambda item: item["vertex"])
             normalized.append(row)
@@ -358,7 +366,8 @@ def apply_edits(raw, source_index, values, catalog, *, original_raw=None):
         data, source_data = bytearray(tree["m_VertexData"]["m_DataSize"]), source_tree["m_VertexData"]["m_DataSize"]
         overrides = {row["vertex"]: row["value"] for row in edit.get("vertices", [])}
         for vertex in range(count):
-            red = overrides[vertex] * 255 if vertex in overrides else source_data[source_start + vertex * source_stride]
+            red = (overrides[vertex] * 255 if vertex in overrides else edit["absolute"] if "absolute" in edit
+                   else source_data[source_start + vertex * source_stride])
             data[start + vertex * stride] = min(255, max(0, int(red * edit["factor"] + .5)))
         tree["m_VertexData"]["m_DataSize"] = bytes(data)
         obj.save_typetree(tree)

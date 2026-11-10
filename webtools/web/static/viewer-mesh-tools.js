@@ -48,7 +48,11 @@
     'Paint selects faces. Delete selected faces removes them from the model. Ctrl/Cmd+Z restores the mesh.': ['칠하면 면이 선택됩니다. 선택한 면 삭제를 누르면 모델에서도 삭제됩니다. Ctrl/Cmd+Z로 메시를 복구할 수 있습니다.', '塗ると面を選択します。「選択面を削除」でモデルから削除します。Ctrl/Cmd+Zでメッシュを復元します。'],
     'Use Alt or right-drag to orbit while editing. Shift-click adds or removes vertices.': ['편집 중 Alt 또는 오른쪽 드래그로 모델을 회전합니다. Shift+클릭으로 정점을 추가하거나 해제합니다.', '編集中はAltまたは右ドラッグで回転できます。Shift+クリックで頂点の選択を追加・解除します。'],
     'Deleted faces': ['삭제한 면', '削除面'], '3D mapping unavailable for this mesh. UV editing remains available.': ['이 메시의 정확한 3D 편집 연결을 사용할 수 없습니다. UV 편집은 사용할 수 있습니다.', 'このメッシュの正確な3D編集対応がありません。UV編集は利用できます。'],
-    'Mesh editing failed.': ['메시 편집에 실패했습니다.', 'メッシュ編集に失敗しました。']
+    'Mesh editing failed.': ['메시 편집에 실패했습니다.', 'メッシュ編集に失敗しました。'],
+    'The mesh recipe is invalid.': ['메시 편집 설정이 올바르지 않습니다.', 'メッシュ編集レシピが無効です。'],
+    'The mesh recipe exceeds the undo history limit.': ['메시 편집 설정이 실행 취소 기록의 크기 제한을 넘습니다.', 'メッシュ編集レシピが元に戻す履歴の上限を超えています。'],
+    'Wait for mesh editing to finish before restoring a recipe.': ['메시 작업이 끝난 뒤 편집 설정을 불러오세요.', 'メッシュの処理が完了してからレシピを復元してください。'],
+    'The model changed while restoring mesh edits.': ['메시 편집을 복원하는 동안 모델이 바뀌었습니다.', 'メッシュ編集の復元中にモデルが変更されました。']
   };
   function language() { try { return localStorage.getItem('sifas_lang') || document.documentElement.lang || 'en'; } catch (_) { return document.documentElement.lang || 'en'; } }
   function translated(key, external) { var text = external ? external(key) : key, lang = language().slice(0, 2); return text !== key ? text : WORDS[key] && (lang === 'ko' || lang === 'ja') ? WORDS[key][lang === 'ko' ? 0 : 1] : key; }
@@ -157,7 +161,7 @@
   function create(options) {
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
-    var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null;
+    var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null, editRevision = 0;
     var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, savedToken = null, savedFingerprint = null, uvCursor = null;
     function t(key) { return translated(key, options.translate); }
     function interactive() { return !options.isInteractive || options.isInteractive(); }
@@ -171,7 +175,7 @@
       var response = await fetch('/api/viewer/mesh/' + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       var result = await response.json(); if (!response.ok || result.error) throw new Error(result.error || t('Mesh editing failed.')); return result;
     }
-    function key(mesh) { return JSON.stringify(mesh); }
+    function key(mesh) { return JSON.stringify({ source: mesh.source, file: mesh.file, id: mesh.id }); }
     function current(panel) { return cache[panel.mesh.value] || null; }
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
     function remember() { var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
@@ -179,24 +183,22 @@
     function undo() { if (busy || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
     function redo() { if (busy || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
-    function changed() { Object.keys(cache).forEach(function (id) { var m = cache[id]; m.positionCount = Object.keys(m.positions).length; m.weightCount = Object.keys(m.weights).length; }); redraw(); if (options.onChange) options.onChange(); }
+    function changed() { editRevision++; Object.keys(cache).forEach(function (id) { var m = cache[id]; m.positionCount = Object.keys(m.positions).length; m.weightCount = Object.keys(m.weights).length; }); redraw(); if (options.onChange) options.onChange(); }
+    function fillMeshes() {
+      panels.forEach(function (p) { var previous = p.mesh.value; p.mesh.textContent = ''; var empty = el('option', p.mesh, 'Choose a mesh'); empty.value = ''; records.forEach(function (r) { var o = el('option', p.mesh); o.value = key(r.mesh); o.textContent = r.name + ' · ' + r.sourceName + ' (' + r.vertices + ')'; o.disabled = !r.available; if (r.reason) o.title = r.reason; }); if (Array.from(p.mesh.options).some(function (o) { return o.value === previous; })) p.mesh.value = previous; });
+    }
     async function inspectMeshes(panel) {
       refresh(); if (!token || busy || !interactive()) return;
       var ticket = ++request; busy = true; status(panel, t('Loading…')); redraw(); if (options.onChange) options.onChange();
       try {
         var response = await api('inspect', { token: token }); if (disposed || ticket !== request) return;
         records = response.meshes || [];
-        panels.forEach(function (p) { var previous = p.mesh.value; p.mesh.textContent = ''; var empty = el('option', p.mesh, 'Choose a mesh'); empty.value = ''; records.forEach(function (r) { var o = el('option', p.mesh); o.value = key(r.mesh); o.textContent = r.name + ' · ' + r.sourceName + ' (' + r.vertices + ')'; o.disabled = !r.available; if (r.reason) o.title = r.reason; }); if (Array.from(p.mesh.options).some(function (o) { return o.value === previous; })) p.mesh.value = previous; });
+        fillMeshes();
         status(panel, records.length + ' ' + t('Mesh'));
       } catch (error) { if (ticket === request) status(panel, error.message, true); }
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
-    async function chooseMesh(panel) {
-      var id = panel.mesh.value; if (!id || busy || !interactive()) { redraw(); return; }
-      activePanel = panel; if (cache[id]) { fillBones(panel); fillSubmeshes(panel); redraw(); return; }
-      var ticket = ++request; busy = true; status(panel, t('Loading…')); redraw(); if (options.onChange) options.onChange();
-      try {
-        var data = await api('data', { token: token, mesh: JSON.parse(id) }); if (disposed || ticket !== request) return;
+    function makeMesh(data) {
         var m = { data: data, deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, adjacency: [], connectivity: {}, image: null, weightRevision: 0, imageRevision: 0, grid: null, positionCount: 0, weightCount: 0, images: [] };
         if (data.uv) {
           var grid = {}, cells = 0; data.triangles.forEach(function (face, index) {
@@ -208,9 +210,121 @@
         }
         (data.textures || [data.texture]).forEach(function (uri, index) { if (!uri) return; var img = new Image(); img.onload = function () { m.imageRevision++; if (!disposed) redraw(); }; img.src = uri; m.images[index] = img; }); m.image = m.images[0] || null;
         data.triangles.forEach(function (face) { face.forEach(function (v) { if (!m.adjacency[v]) m.adjacency[v] = new Set(); face.forEach(function (other) { if (v !== other) m.adjacency[v].add(other); }); }); });
+        return m;
+    }
+    async function chooseMesh(panel) {
+      var id = panel.mesh.value; if (!id || busy || !interactive()) { redraw(); return; }
+      activePanel = panel; if (cache[id]) { fillBones(panel); fillSubmeshes(panel); redraw(); return; }
+      var ticket = ++request; busy = true; status(panel, t('Loading…')); redraw(); if (options.onChange) options.onChange();
+      try {
+        var data = await api('data', { token: token, mesh: JSON.parse(id) }); if (disposed || ticket !== request) return;
+        var m = makeMesh(data);
         cache[id] = m; fillBones(panel); fillSubmeshes(panel); status(panel, data.uv ? t('Changes are temporary until saved. Original files are preserved.') : t('No UV coordinates are available. Select vertices by index.'));
       } catch (error) { if (ticket === request) status(panel, error.message, true); }
       finally { if (ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
+    }
+    function checkedRecipe(state) {
+      function fail() { throw new Error(t('The mesh recipe is invalid.')); }
+      function keys(value, allowed, required) {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(function (name) { return allowed.indexOf(name) < 0; }) ||
+            (required || allowed).some(function (name) { return !Object.prototype.hasOwnProperty.call(value, name); })) fail();
+      }
+      var text;
+      try { text = JSON.stringify(state); } catch (_) { fail(); }
+      if (!text || text.length > 12 * 1024 * 1024) fail();
+      state = JSON.parse(text); keys(state, ['version', 'meshes']);
+      if (state.version !== 1 || !Array.isArray(state.meshes) || state.meshes.length > 128) fail();
+      var seen = new Set();
+      state.meshes.forEach(function (operation) {
+        keys(operation, ['mesh', 'deleteFaces', 'positions', 'weights'], ['mesh']);
+        var mesh = operation.mesh; keys(mesh, ['source', 'file', 'id']);
+        if (!Number.isInteger(mesh.source) || mesh.source < 0 || !Number.isInteger(mesh.file) || mesh.file < 0 ||
+            typeof mesh.id !== 'string' || !/^-?[0-9]{1,20}$/.test(mesh.id) || seen.has(key(mesh))) fail();
+        seen.add(key(mesh));
+        ['deleteFaces', 'positions', 'weights'].forEach(function (field) {
+          if (operation[field] === undefined) operation[field] = [];
+          if (!Array.isArray(operation[field]) || operation[field].length > (field === 'deleteFaces' ? 200000 : 60000)) fail();
+        });
+        if (!operation.deleteFaces.length && !operation.positions.length && !operation.weights.length) fail();
+      });
+      return state;
+    }
+    function checkedMeshEdits(data, operation) {
+      function fail() { throw new Error(t('The mesh recipe is invalid.')); }
+      function index(value, length) { if (!Number.isInteger(value) || value < 0 || value >= length) fail(); return value; }
+      function number(value) { if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1000000) fail(); return value; }
+      function row(value, names) { if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== names.length || names.some(function (name) { return !Object.prototype.hasOwnProperty.call(value, name); })) fail(); }
+      if (!data || key(data.mesh || {}) !== key(operation.mesh) || !Array.isArray(data.positions) || !Array.isArray(data.triangles) || !Array.isArray(data.bones)) fail();
+      var deleted = new Set(), positions = {}, weights = {}, count = data.positions.length;
+      if (operation.deleteFaces.length > data.triangles.length) fail();
+      operation.deleteFaces.forEach(function (face) { index(face, data.triangles.length); if (deleted.has(face)) fail(); deleted.add(face); });
+      if (operation.positions.length && !data.positionWritable || operation.weights.length && !data.skinWritable) fail();
+      operation.positions.forEach(function (value) {
+        row(value, ['vertex', 'position']); var vertex = index(value.vertex, count);
+        if (Object.prototype.hasOwnProperty.call(positions, vertex) || !Array.isArray(value.position) || value.position.length !== 3) fail();
+        positions[vertex] = value.position.map(number);
+      });
+      operation.weights.forEach(function (value) {
+        row(value, ['vertex', 'influences']); var vertex = index(value.vertex, count), influences = value.influences;
+        if (Object.prototype.hasOwnProperty.call(weights, vertex) || !Array.isArray(influences) || influences.length < 1 || influences.length > 32) fail();
+        influences.forEach(function (pair) { if (!Array.isArray(pair) || pair.length !== 2) fail(); index(pair[0], data.bones.length); number(pair[1]); if (pair[1] < 0 || pair[1] > 1) fail(); });
+        var normalized = normalize(influences);
+        if (!normalized.length) fail(); weights[vertex] = normalized;
+      });
+      return { deleted: deleted, positions: positions, weights: weights };
+    }
+    async function restoreEdits(state) {
+      if (disposed) throw new Error(t('The model changed while restoring mesh edits.'));
+      if (busy || runtimeEngine && runtimeEngine.getState().activeStroke) throw new Error(t('Wait for mesh editing to finish before restoring a recipe.'));
+      state = checkedRecipe(state); refresh();
+      if (!token) throw new Error(t('Open a model first.'));
+      var selectedToken = token, ticket = ++request;
+      function currentRequest() { return !disposed && request === ticket && token === selectedToken && (!options.getToken || options.getToken() === selectedToken); }
+      function requireCurrent() { if (!currentRequest()) { var error = new Error(t('The model changed while restoring mesh edits.')); error.name = 'AbortError'; throw error; } }
+      var before = JSON.stringify(snapshot());
+      if (before.length > 8 * 1024 * 1024) throw new Error(t('The mesh recipe exceeds the undo history limit.'));
+      busy = true; redraw(true); if (options.onChange) options.onChange();
+      try {
+        var listing = await api('inspect', { token: selectedToken }); requireCurrent();
+        if (!listing || !Array.isArray(listing.meshes)) throw new Error(t('The mesh recipe is invalid.'));
+        var available = new Map(); listing.meshes.forEach(function (record) { if (record.available && record.mesh) available.set(key(record.mesh), record); });
+        var prepared = {};
+        for (var i = 0; i < state.meshes.length; i++) {
+          var operation = state.meshes[i], id = key(operation.mesh), record = available.get(id);
+          if (!record) throw new Error(t('The mesh recipe is invalid.'));
+          var data = cache[id] ? cache[id].data : await api('data', { token: selectedToken, mesh: record.mesh }); requireCurrent();
+          prepared[id] = { data: data, edits: checkedMeshEdits(data, operation) };
+        }
+        requireCurrent();
+        var previous = { cache: cache, values: {}, records: records, history: history.slice(), future: future.slice(), bytes: historyBytes, revision: editRevision, active: activePanel };
+        Object.keys(cache).forEach(function (id) { previous.values[id] = Object.assign({}, cache[id]); });
+        var panelState = panels.map(function (p) { return { mesh: p.mesh.value, submesh: p.submesh.value, bone: p.bone && p.bone.value, sourceBone: p.sourceBone && p.sourceBone.value }; });
+        var next = {};
+        Object.keys(cache).forEach(function (id) { var old = cache[id]; next[id] = Object.assign({}, old, { deleted: new Set(), marked: new Set(), selected: new Set(), positions: {}, weights: {}, positionCount: 0, weightCount: 0, weightRevision: old.weightRevision + 1 }); });
+        Object.keys(prepared).forEach(function (id) { var item = prepared[id], mesh = next[id] || makeMesh(item.data); mesh.deleted = item.edits.deleted; mesh.positions = item.edits.positions; mesh.weights = item.edits.weights; next[id] = mesh; });
+        function restorePanels(values, fallback) {
+          fillMeshes(); panels.forEach(function (p, index) {
+            var value = values[index]; p.mesh.value = cache[value.mesh] ? value.mesh : fallback || '';
+            fillBones(p); fillSubmeshes(p);
+            [[p.submesh, value.submesh], [p.bone, value.bone], [p.sourceBone, value.sourceBone]].forEach(function (entry) { if (entry[0] && Array.from(entry[0].options).some(function (option) { return option.value === entry[1]; })) entry[0].value = entry[1]; });
+            p.baseKey = '';
+          });
+        }
+        try {
+          // Runtime bindings and pending image callbacks retain these objects.
+          // Commit validated channels into them without replacing their identity.
+          Object.keys(next).forEach(function (id) { if (cache[id]) { Object.assign(cache[id], next[id]); next[id] = cache[id]; } });
+          cache = next; records = listing.meshes; history.push(before); historyBytes += before.length;
+          while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length;
+          future = []; restorePanels(panelState, Object.keys(prepared)[0]);
+          if (!activePanel || !current(activePanel)) activePanel = panels[0]; changed();
+        } catch (error) {
+          Object.keys(previous.values).forEach(function (id) { Object.assign(previous.cache[id], previous.values[id]); });
+          cache = previous.cache; records = previous.records; history = previous.history; future = previous.future; historyBytes = previous.bytes; editRevision = previous.revision; activePanel = previous.active;
+          restorePanels(panelState); redraw(); if (options.onChange) options.onChange(); throw error;
+        }
+        return clone(operationState());
+      } finally { if (currentRequest()) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
     function fillBones(panel) {
       if (!panel.bone) return;
@@ -237,7 +351,7 @@
       function point(i) { var uv = m.data.uv[i]; return [uv[0] * size, (1 - uv[1]) * size]; }
       var bone = panel.bone ? +panel.bone.value : 0, submesh = activeSubmesh(panel, m), image = submesh ? (submesh.textureIndex !== null ? m.images[submesh.textureIndex] : null) : m.image;
       function path(context, face) { context.beginPath(); face.forEach(function (v, i) { var p = point(v); if (i) context.lineTo(p[0], p[1]); else context.moveTo(p[0], p[1]); }); context.closePath(); }
-      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + panel.submesh.value + '/' + [view.zoom, view.x, view.y].join('/');
+      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (window.ViewerUVColor ? window.ViewerUVColor.get() : '') + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + (image && image.complete && image.naturalWidth || 0) + '/' + panel.submesh.value + '/' + [view.zoom, view.x, view.y].join('/');
       if (baseKey !== panel.baseKey) {
         if (!panel.base) { panel.base = document.createElement('canvas'); panel.base.width = size; panel.base.height = size; }
         var base = panel.base.getContext('2d'); base.setTransform(1, 0, 0, 1, 0, 0); base.clearRect(0, 0, size, size);
@@ -248,7 +362,7 @@
         if (panel.lines.checked || panel.modify) m.data.triangles.forEach(function (face, index) {
           if (!visibleFace(panel, m, index)) return; path(base, face);
           if (panel.modify && m.data.skin.length) { var value = face.reduce(function (total, v) { var influences = m.weights[v] || m.data.skin[v]; return total + influences.reduce(function (sum, pair) { return sum + (pair[0] === bone ? pair[1] : 0); }, 0); }, 0) / 3; base.fillStyle = 'hsla(' + (240 - value * 240) + ',100%,50%,.35)'; base.fill(); }
-          if (panel.lines.checked) { base.strokeStyle = 'rgba(235,245,255,.55)'; base.lineWidth = .7 / view.zoom; base.stroke(); }
+          if (panel.lines.checked) { base.strokeStyle = window.ViewerUVColor ? window.ViewerUVColor.stroke(.55) : 'rgba(235,245,255,.55)'; base.lineWidth = .7 / view.zoom; base.stroke(); }
         }); panel.baseKey = baseKey;
       }
       ctx.drawImage(panel.base, 0, 0);
@@ -263,7 +377,7 @@
       Object.keys(cache).forEach(function (id) { var m = cache[id], positions = Object.keys(m.positions).map(function (i) { return { vertex: +i, position: m.positions[i] }; }), weights = Object.keys(m.weights).map(function (i) { return { vertex: +i, influences: m.weights[i] }; }); if (m.deleted.size || positions.length || weights.length) result.push({ mesh: m.data.mesh, deleteFaces: Array.from(m.deleted).sort(function (a, b) { return a - b; }), positions: positions, weights: weights }); });
       return { version: 1, meshes: result };
     }
-    function quickStatus() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.marked.size || m.positionCount || m.weightCount) count++; }); return { busy: busy, dirty: count > 0, dirtyCount: count, canSave: canSaveCopy(), hasHistory: history.length > 0, redoAvailable: future.length > 0, active: !!activePanel };  }
+    function quickStatus() { var count = 0, marked = false; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.marked.size) marked = true; if (m.deleted.size || m.marked.size || m.positionCount || m.weightCount) count++; }); return { busy: busy, dirty: count > 0, dirtyCount: count, hasUnappliedSelection: marked, canSave: canSaveCopy(), hasHistory: history.length > 0, redoAvailable: future.length > 0, active: !!activePanel };  }
     function redraw(skipRuntime) {
       var changes = quickStatus().dirtyCount;
       panels.forEach(function (p) {
@@ -435,6 +549,7 @@
       on(box, 'focusin', function () { activePanel = p; syncRuntime(); });
 
       var linesLabel = el('label', row); p.lines = el('input', linesLabel); p.lines.type = 'checkbox'; p.lines.checked = true; el('span', linesLabel, 'Show UV lines'); on(p.lines, 'change', redraw);
+      if (window.ViewerUVColor) p.uvColor = window.ViewerUVColor.control(row, { id: p.root.id + '-uv-color', translate: t, onChange: function () { redraw(true); } });
       var seamLabel = el('label', row); p.seams = el('input', seamLabel); p.seams.type = 'checkbox'; p.seams.checked = true; el('span', seamLabel, 'Across UV seams');
       row = el('div', box); row.className = 'mesh-row'; p.textureMode = select(row, 'Texture interaction', [['paint', 'Paint'], ['pan', 'Move texture'], ['connected', 'Connected faces']]);
       on(p.textureMode, 'change', function () { activePanel = p; if (uvCursor) uvCursor.hidden = true; redraw(true); });
@@ -536,15 +651,16 @@
     }
     function refresh() {
       var next = options.getToken ? options.getToken() : null;
-      if (next !== token) { token = next; request++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
+      if (next !== token) { token = next; request++; editRevision++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
         panels.forEach(function (p) { p.baseKey = ''; p.view = { zoom: 1, x: 0, y: 0 }; p.mesh.textContent = ''; var o = el('option', p.mesh, 'Choose a mesh'); o.value = ''; fillBones(p); fillSubmeshes(p); status(p, t(token ? 'Changes are temporary until saved. Original files are preserved.' : 'Open a model first.')); }); }
       redraw();
     }
     build(false); build(true);
     initializeRuntime(); initializeShortcuts(); refresh();
-    return { refresh: refresh, getStatus: quickStatus, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); redraw(); },
-      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
-      dispose: function () { disposed = true; request++; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { p.root.remove(); }); style.remove(); cache = {}; } };
+    return { refresh: refresh, getStatus: quickStatus, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
+      getEdits: function () { return clone(operationState()); }, getEditRevision: function () { return editRevision; }, restoreEdits: restoreEdits,
+      getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
+      dispose: function () { disposed = true; request++; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
     buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView };

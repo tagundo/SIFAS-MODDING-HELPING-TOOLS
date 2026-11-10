@@ -92,7 +92,8 @@
     var authoredNodes = {};
     var nodeEditor = null, expressionPanel = null, physicsController = null;
     var physicsPoseBaseline = null, physicsValuesBaseline = "";
-    var outlineEdits = [];
+    var physicsAvailable = !!(options.editing && options.editing.physics && options.editing.physics.available);
+    var outlineEdits = [], outlineRevision = 0;
     var selectedNode = "";
     var editingMethods = {}, meshConversions = {}, editorGroup = "node", editorSelections = {}, evaluationMode = "authoring", restoredCompensationReference = {};
     var selectedClip = "";
@@ -631,21 +632,28 @@
       return owned;
     }
     function applyPhysics(delta, authoringReason) {
-      if (!physicsController) return;
+      if (!physicsController || !physicsAvailable) return;
       if (authoringReason && physicsController.syncBreastSize) physicsController.syncBreastSize(breastProfile());
       // Compare finished kinematic poses, before the physical output is added.
       // A display refresh and a repeated equal input must not reset history.
-      var baseline = new Float64Array(all.length * 16), changedPose = false;
+      var hadBaseline = !!physicsPoseBaseline;
+      var baseline = physicsPoseBaseline && physicsPoseBaseline.length === all.length * 16 ? physicsPoseBaseline : new Float64Array(all.length * 16), changedPose = false;
       all.forEach(function (record, index) {
         var values = record.object.matrix.elements;
         for (var axis = 0; axis < 16; axis += 1) {
-          var offset = index * 16 + axis; baseline[offset] = values[axis];
-          if (physicsPoseBaseline && Math.abs(physicsPoseBaseline[offset] - values[axis]) > 1e-9) changedPose = true;
+          var offset = index * 16 + axis;
+          if (authoringReason && hadBaseline && Math.abs(baseline[offset] - values[axis]) > 1e-9) changedPose = true;
+          baseline[offset] = values[axis];
         }
       });
-      var valuesKey = JSON.stringify(physicsController.getEdits ? physicsController.getEdits() : []);
-      if (authoringReason && physicsPoseBaseline && (changedPose || valuesKey !== physicsValuesBaseline)) resetPhysicsSimulation("authoring:" + authoringReason);
-      physicsPoseBaseline = baseline; physicsValuesBaseline = valuesKey;
+      // Physics edits only change through authoring controls. Playback updates
+      // the kinematic baseline without cloning and serializing those controls.
+      if (authoringReason || !hadBaseline) {
+        var valuesKey = JSON.stringify(physicsController.getEdits ? physicsController.getEdits() : []);
+        if (authoringReason && hadBaseline && (changedPose || valuesKey !== physicsValuesBaseline)) resetPhysicsSimulation("authoring:" + authoringReason);
+        physicsValuesBaseline = valuesKey;
+      }
+      physicsPoseBaseline = baseline;
       if (physicsController.captureAnimationPose) physicsController.captureAnimationPose({ clipId: selectedClip, motionCategory: currentClip && currentClip.motionCategory || null,
         motionPhysics: currentClip && currentClip.motionPhysics || null,
         safeSwingBone: currentClip && currentClip.motionPhysics && currentClip.motionPhysics.safeSwingBoneKnown ? currentClip.motionPhysics.safeSwingBone : undefined,
@@ -1140,7 +1148,13 @@
       if (!existing) {
         all.forEach(function (record) { restore(record.object, record.authored); });
         var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor, { getGazeContext: options.getGazeContext });
-        if (!timeline.compatibleSegments) throw new Error(translate("No compatible motion is available. You can adjust this model's bones and expressions."));
+        if (!timeline.compatibleSegments) {
+          var reason = (timeline.compatibilityDetails || []).slice(0, 3).map(function (entry) {
+            return translate(entry.reason) + (entry.sourceName ? " (" + entry.sourceName + ")" : "");
+          }).join(" ");
+          if (timeline.dispose) timeline.dispose();
+          throw new Error(translate("The selected game motion is incompatible with this model.") + (reason ? " " + reason : ""));
+        }
         var motionPhysics = descriptor.physics && typeof descriptor.physics === "object" ? {
           profile: descriptor.physics.profile === "live" ? "live" : "navi", liveId: descriptor.physics.liveId,
           safeSwingBoneKnown: descriptor.physics.safeSwingBoneKnown === true && typeof descriptor.physics.safeSwingBone === "boolean",
@@ -1158,7 +1172,7 @@
     function reset() {
       adjustments = {}; nodeCompensations = {}; editingMethods = {}; meshConversions = {}; restoredCompensationReference = {}; body = { breastPreset: "loaded" }; skirtOverrides = {};
       accessoryUnclip = null; accessoryCorrections = {};
-      outlineEdits = [];
+      outlineEdits = []; outlineRevision += 1;
       clearHipDrafts();
       if (expressionPanel) expressionPanel.reset(true);
       if (physicsController) physicsController.reset();
@@ -1380,7 +1394,7 @@
       // Numeric steps control spinner increments, not the precision of Unity
       // file values or explicit edits. A fractional untouched TRS can be off
       // that grid while remaining a valid finite authoring value.
-      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input, #viewer-hips-card input, #viewer-outline-number"), function (input) {
+      var invalid = Array.prototype.some.call(document.querySelectorAll("#viewer-node-fields input, #viewer-skirt-number, .viewer-percentage-control input, #viewer-hips-card input, #viewer-outline-number, #viewer-outline-absolute, #viewer-outline-vertex-width"), function (input) {
         if (input.closest(".viewer-hips-control")) {
           // An invalid draft remains unresolved if an advanced method change
           // disables the dedicated fields. Only reset or an explicit valid
@@ -1493,7 +1507,7 @@
       else if (state.physics && state.physics.length) throw new Error("The model has no compatible physics editor.");
       adjustments = next; editingMethods = methods; nodeCompensations = compensations; restoredCompensationReference = references; meshConversions = {};
       accessoryUnclip = restoredAccessory; accessoryCorrections = {};
-      outlineEdits = restoredOutlines;
+      outlineEdits = restoredOutlines; outlineRevision += 1;
       clearHipDrafts();
       var baseline = storedFileMap();
       state.edits.forEach(function (edit) {
@@ -1535,11 +1549,12 @@
     return {
       getAuthoringState: getAuthoringState,
       getOutlineEdits: function () { return JSON.parse(JSON.stringify(outlineEdits)); },
+      getOutlineRevision: function () { return outlineRevision; },
       setOutlineEdits: function (values) {
         if (!window.ViewerOutlines) throw new Error("The outline editor is unavailable.");
         var next = window.ViewerOutlines.checked(values, (options.editing || {}).outlines);
         if (JSON.stringify(next) === JSON.stringify(outlineEdits)) return;
-        outlineEdits = next; changed();
+        outlineEdits = next; outlineRevision += 1; changed();
       },
       restoreAuthoringState: restoreAuthoringState,
       getAccessoryUnclip: function () { return accessoryUnclip && Object.assign({}, accessoryUnclip); },

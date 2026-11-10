@@ -29,7 +29,7 @@ def discard_failed_export(result, output_root):
     if not isinstance(result, dict) or not isinstance(result.get("recipe_path"), str):
         return
     directory = Path(result["recipe_path"]).parent
-    if (directory.is_symlink() or not re.fullmatch(r"body-edit-\d{8}-\d{6}-[a-f0-9]{8}", directory.name)
+    if (directory.is_symlink() or not re.fullmatch(r"(?:body|mesh)-edit-\d{8}-\d{6}-[a-f0-9]{8}", directory.name)
             or directory.resolve().parent != Path(output_root).resolve()):
         return
     shutil.rmtree(directory, ignore_errors=True)
@@ -155,9 +155,14 @@ def _manifest_metadata(context, language):
                         pass
     except (OSError, ValueError, SyntaxError, UnicodeError, RecursionError):
         return {}
+    from .member_identity import member_from_native
+    owner = (values.get("chara_id_append") if values.get("chara_id_append") is not None
+             else member_from_native(values.get("chara_id")))
     name = values.get("costume_name_" + language) or values.get("costume_name_en")
-    return {"name": name if isinstance(name, str) else None, "owner": values.get("chara_id"),
-            "paired": bool(values.get("costume_file") and values.get("rina_unmask_costume_file"))}
+    return {"name": name if isinstance(name, str) else None, "owner": owner,
+            "paired": bool(values.get("costume_file") and values.get("rina_unmask_costume_file")),
+            "has_face": any(isinstance(values.get(key), str) and bool(values[key])
+                            for key in ("costume_facedynamic_file", "costume_facedynamic_file_ios"))}
 
 
 def metadata(context, *, repo_root, cache_root, language="en"):
@@ -165,8 +170,11 @@ def metadata(context, *, repo_root, cache_root, language="en"):
     from webtools.core.charinfo import NAMES
     result = {"nameBase": Path(context["containers"][0]["name"]).stem,
               "characterId": None, "requiresCounterpart": False,
+              "hasFaceCompanions": bool(context.get("outline_only_sources")),
+              "faceSourceIndices": list(context.get("outline_only_sources", [])),
               "characters": [{"value": str(key), "label": value} for key, value in NAMES.items()]}
     manifest = _manifest_metadata(context, language)
+    result["hasFaceCompanions"] = result["hasFaceCompanions"] or bool(manifest.get("has_face"))
     if manifest.get("name"):
         result["nameBase"] = manifest["name"][:120]
     if type(manifest.get("owner")) is int and manifest["owner"] in NAMES:
@@ -196,14 +204,128 @@ def metadata(context, *, repo_root, cache_root, language="en"):
             # Rina's board texture has a distinct, observed character identity;
             # no costume/suit pairing is inferred from that texture hint.
             _, sources = viewer_mod_sources._snapshots(context)
-            facts = [viewer_mod_sources._model_facts(source["raw"]) for source in sources]
-            if facts and all(item["owner"] == 209 for item in facts):
-                result["characterId"] = 209
-                result["requiresCounterpart"] = True
+            facts = [viewer_mod_sources._model_facts(source["raw"]) for source in sources
+                     if source["source"] not in set(context.get("outline_only_sources", []))]
+            from .member_identity import member_from_native
+            owners = {member_from_native(item["owner"]) for item in facts}
+            if facts and len(owners) == 1 and next(iter(owners)) in NAMES:
+                result["characterId"] = next(iter(owners))
+                result["requiresCounterpart"] = result["characterId"] == 209
     except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         # A naming hint must not disable ordinary model/recipe exports.
         pass
+    try:
+        from . import viewer_physics_runtime
+        derived = viewer_physics_runtime.owner_for_context(context, repo_root=repo_root, cache_root=cache_root)
+        if derived and derived.get("derived"):
+            # A verified wearer hint is not an original game receipt and must
+            # never lend the edited bytes native counterpart auto-pairing.
+            result["derivedOwner"] = copy.deepcopy(derived)
+            result["characterId"] = derived["character_id"]
+            result["requiresCounterpart"] = derived["character_id"] == 209 and not manifest.get("paired")
+    except (ImportError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        pass
     return result
+
+
+def normalize_mesh_state(mesh_state):
+    """Canonical optional mesh channel; the mesh exporter validates operations."""
+    if mesh_state is None:
+        return None
+    from . import viewer_mesh_tools
+    if (not isinstance(mesh_state, dict) or set(mesh_state) != {"version", "meshes"}
+            or type(mesh_state.get("version")) is not int or mesh_state["version"] != 1
+            or not isinstance(mesh_state["meshes"], list) or len(mesh_state["meshes"]) > 128):
+        raise ValueError("Invalid mesh edit state.")
+    try:
+        encoded = json.dumps(mesh_state, allow_nan=False).encode()
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValueError("The mesh edit state contains invalid values.") from error
+    if len(encoded) > viewer_mesh_tools.MAX_REQUEST_BYTES:
+        raise ValueError("The mesh edit request exceeds the supported limit.")
+    return copy.deepcopy(mesh_state) if mesh_state["meshes"] else None
+
+
+def export_current(token, state, output_root, *, mesh_state=None, allow_empty=False,
+                   repo_root, cache_root, log=lambda message: None):
+    """Save one immutable preview containing every active edit channel."""
+    from . import model_edits, viewer_mesh_tools, viewer_physics_runtime
+    context = model_edits.mod_source_context(token)
+    mesh = normalize_mesh_state(mesh_state)
+    normalized = model_edits.validate_state(token, state, allow_empty=allow_empty or mesh is not None)
+    result = None
+    try:
+        if mesh is not None:
+            result = viewer_mesh_tools.export(token, mesh, output_root, body_state=normalized)
+            with model_edits._LOCK:
+                body_recipe = model_edits._recipe(model_edits._session(token), normalized)
+            result["recipe"]["bodyRecipe"] = body_recipe
+            path = Path(result["recipe_path"])
+            temporary = path.with_name(".mesh-recipe-" + secrets.token_hex(8) + ".part")
+            try:
+                temporary.write_text(json.dumps(result["recipe"], ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        else:
+            result = model_edits.export(token, normalized, output_root, allow_empty=allow_empty, log=log)
+        remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
+        result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
+            repo_root=repo_root, cache_root=cache_root)
+        result["metadata"] = metadata(context, repo_root=repo_root, cache_root=cache_root)
+        return result
+    except Exception:
+        discard_failed_export(result, output_root)
+        raise
+
+
+def restore_current(token, recipe):
+    """Restore a combined recipe only against its exact immutable sources."""
+    from . import model_edits, viewer_mesh_tools
+    fields = {"version", "tool", "sources", "state", "bodyState", "bodyRecipe"}
+    if (not isinstance(recipe, dict) or set(recipe) != fields or recipe.get("tool") != "mesh-tools"
+            or type(recipe.get("version")) is not int or recipe["version"] != 1):
+        raise ValueError("Choose a source-bound combined mesh recipe.")
+    context = model_edits.mod_source_context(token)
+    hashes = [row["sha256"] for row in context["containers"]]
+    if recipe["sources"] != hashes:
+        raise ValueError("This mesh recipe belongs to different original model bytes.")
+    for source in context["containers"]:
+        if hashlib.sha256(model_edits._read(source["path"])).hexdigest() != source["sha256"]:
+            raise ValueError("An original model changed after opening. Reopen it before restoring.")
+    body_recipe = recipe["bodyRecipe"]
+    def identities(rows):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None
+        return [{key: row.get(key) for key in ("sha256", "container", "member")} for row in rows]
+    if (not isinstance(body_recipe, dict)
+            or identities(body_recipe.get("sources")) != identities(context["sources"])
+            or not isinstance(body_recipe.get("originals"), list)
+            or [row.get("sha256") for row in body_recipe["originals"] if isinstance(row, dict)] != hashes
+            or len(body_recipe["originals"]) != len(hashes)
+            or recipe["bodyState"] != body_recipe.get("state")):
+        raise ValueError("The combined recipe does not match every original source and body state.")
+    body = model_edits.restore(token, body_recipe, allow_empty=True)
+    normalized = normalize_mesh_state(recipe["state"])
+    mesh = normalized if normalized is not None else {"version": 1, "meshes": []}
+    with model_edits._LOCK:
+        session = model_edits._session(token)
+    viewer_mesh_tools._check_archive_scope(session)
+    seen = set()
+    for operation in mesh["meshes"]:
+        if not isinstance(operation, dict) or set(operation) - {"mesh", "deleteFaces", "positions", "weights"}:
+            raise ValueError("Unsupported mesh edit property.")
+        identity = operation.get("mesh")
+        source = viewer_mesh_tools._identity(identity, session)
+        key = (source, identity["file"], identity["id"])
+        if key in seen or not any(operation.get(name) for name in ("deleteFaces", "positions", "weights")):
+            raise ValueError("The combined mesh recipe contains empty or duplicate operations.")
+        seen.add(key)
+        _, record = viewer_mesh_tools._record(session, identity)
+        # The same native writer performs a dry validation in a fresh in-memory
+        # Unity environment. No original bytes or files are modified here.
+        viewer_mesh_tools._write_mesh(record[1], copy.deepcopy(record[2]), record[3], operation)
+    return {"state": body, "mesh_state": mesh}
 
 
 def validate_options(display_name, character_id, counterpart_path, selected_variant):
@@ -224,38 +346,125 @@ def validate_options(display_name, character_id, counterpart_path, selected_vari
     return display_name.strip()
 
 
+def _package_inputs(context, result):
+    """Separate only server-verified automatic faces from body pack inputs."""
+    automatic = set(context.get("outline_only_sources", []))
+    if not automatic:
+        return result, []
+    sources = context["sources"]
+    if any(type(index) is not int or not 0 <= index < len(sources) for index in automatic):
+        raise ValueError("The automatic face source binding is invalid.")
+    body = [row for index, row in enumerate(sources) if index not in automatic]
+    if not body:
+        raise ValueError("Choose a body costume before packaging its face companion.")
+    by_container = {index: {i for i, row in enumerate(sources) if row["container"] == index}
+                    for index in range(len(context["containers"]))}
+    face_only = {index for index, rows in by_container.items() if rows and rows <= automatic}
+    selected = dict(result)
+    selected["preview_paths"] = [path for index, path in enumerate(result["preview_paths"]) if index not in face_only]
+    companions = []
+    from . import viewer_mod_sources
+    target_hint = result.get("metadata", {}).get("characterId")
+    directory = Path(result["recipe_path"]).parent / "face-companions"
+    for index in sorted(automatic):
+        source = sources[index]; container = source["container"]; member = source["member"]
+        original = context["containers"][container]
+        original_raw = original["raw"]
+        if member is not None:
+            with zipfile.ZipFile(io.BytesIO(original_raw)) as archive:
+                original_raw = archive.read(member)
+        if hashlib.sha256(original_raw).hexdigest() != source["sha256"]:
+            raise ValueError("The automatic face no longer matches its original source.")
+        current = Path(result["preview_paths"][container])
+        raw = current.read_bytes()
+        if member is not None:
+            if container not in face_only:
+                # An existing installer already preserves its declared face in
+                # this same archive. Generic multi-model ZIPs remain rejected.
+                with zipfile.ZipFile(current) as archive:
+                    raw = archive.read(member)
+                    declared = _manifest_metadata({"containers": [{"raw": current.read_bytes()}]}, "en")
+                if declared.get("owner") is not None:
+                    continue
+                raise ValueError("Open the body and verified face as individual Unity bundles before packaging this multi-model archive.")
+            with zipfile.ZipFile(current) as archive:
+                raw = archive.read(member)
+            directory.mkdir(exist_ok=True)
+            current = directory / ("face-" + str(index) + ".unity")
+            current.write_bytes(raw)
+        facts = viewer_mod_sources._model_facts(original_raw)
+        from .member_identity import member_from_native
+        owner = member_from_native(facts["owner"]) if facts["owner"] is not None else target_hint
+        companions.append({"path": str(current), "sha256": hashlib.sha256(raw).hexdigest(),
+            "original_path": result["original_paths"][container], "original_sha256": original["sha256"],
+            "source_sha256": source["sha256"], "source_index": index, "container": container,
+            "member": member, "owner": owner, "platform": facts["platform"],
+            "body_source_sha256": body[0]["sha256"]})
+    return selected, companions
+
+
 def create_package(token, state, *, output_root, repo_root, cache_root, display_name,
-                   character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", job):
+                   character_id=None, counterpart_path=None, selected_variant=None, thumbnail_token="", mesh_state=None,
+                   include_face_edits=None, job):
     from webtools.core import model_edits, viewer_mod_package, viewer_mod_sources, viewer_mod_pair_edits, viewer_scene_roles
     name = validate_options(display_name, character_id, counterpart_path, selected_variant)
+    if include_face_edits is not None and not isinstance(include_face_edits, bool):
+        raise ValueError("Choose whether to include this costume's verified face companion.")
     if not _PACKAGE_SLOT.acquire(blocking=False):
         raise ValueError("Another Mod ZIP is being prepared. Try again shortly.")
     exported_result = None
     try:
         _check(job)
         context = model_edits.mod_source_context(token)
-        normalized = model_edits.validate_state(token, state)
+        normalized = model_edits.validate_state(token, state, allow_empty=True)
+        mesh = normalize_mesh_state(mesh_state)
+        if mesh is not None and (counterpart_path or viewer_scene_roles.session_metadata(token)):
+            raise ValueError("Mesh edits cannot be propagated to paired or scene costumes. Save an individual edited Unity bundle instead.")
         from webtools.core import viewer_thumbnails
         thumbnail = viewer_thumbnails.for_viewer_package(thumbnail_token, token, normalized,
-            character_id, counterpart_path, selected_variant)
-        result = model_edits.export(token, normalized, output_root, log=job.log)
+            character_id, counterpart_path, selected_variant, mesh_state=mesh, include_face_edits=include_face_edits)
+        result = export_current(token, normalized, output_root, mesh_state=mesh, allow_empty=True,
+            repo_root=repo_root, cache_root=cache_root, log=job.log)
         exported_result = result
-        remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
         _check(job)
         selection = {"counterpart_path": counterpart_path, "selected_variant": selected_variant} if counterpart_path else None
-        pair = viewer_mod_sources.resolve_pair(context, result, repo_root=repo_root,
-            output_root=cache_root, job=job, selection=selection, receipts=cached_receipts(context, cache_root))
-        paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, normalized, pair=pair, job=job)
+        derived = result.get("metadata", {}).get("derivedOwner")
+        automatic_faces = set(context.get("outline_only_sources", []))
+        body_containers = {source["container"] for index, source in enumerate(context["sources"])
+                           if index not in automatic_faces}
+        independent_derived = (derived and derived["character_id"] != 209 and not selection
+            and len(body_containers) == 1
+            and not zipfile.is_zipfile(io.BytesIO(context["containers"][next(iter(body_containers))]["raw"])))
+        pair = (None if independent_derived else viewer_mod_sources.resolve_pair(context, result, repo_root=repo_root,
+            output_root=cache_root, job=job, selection=selection, receipts=cached_receipts(context, cache_root)))
+        if mesh is not None and pair is not None:
+            raise ValueError("Mesh edits cannot be propagated to paired costumes. Save an individual edited Unity bundle instead.")
+        pair_state = copy.deepcopy(normalized)
+        if automatic_faces and pair_state.get("outlines"):
+            pair_state["outlines"] = [row for row in pair_state["outlines"] if int(row["id"].split(":", 1)[0]) not in automatic_faces]
+        paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
                   if model_edits.has_changes(normalized) else {"result": result, "pair": pair, "summary": []})
         result, pair = paired["result"], paired["pair"]
+        # Counterpart mapping may rewrite the complete archive. Bind derived
+        # runtime proof to those final bytes, never to the pre-pair ZIP hash.
+        from . import viewer_physics_runtime
+        result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
+            repo_root=repo_root, cache_root=cache_root)
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
         _check(job)
-        packed = viewer_mod_package.package_saved_export(result, Path(result["recipe_path"]).parent / "mod",
-            display_name=name, chara_id=character_id, pair=pair,
+        package_result, faces = _package_inputs(context, result)
+        owner = character_id if character_id is not None else result.get("metadata", {}).get("characterId")
+        packed = viewer_mod_package.package_saved_export(package_result, Path(result["recipe_path"]).parent / "mod",
+            display_name=name, chara_id=owner, pair=pair,
             log=job.log, should_stop=job.should_stop,
+            **({"face_companions": faces} if include_face_edits and faces else {}),
+            **({"include_face_edits": include_face_edits} if include_face_edits is not None else {}),
             **({"thumbnail": thumbnail} if thumbnail is not None else {}))
+        result["face_identity"] = packed.get("face_identity", [])
         if viewer_scene_roles.should_package(context, normalized, packed, token):
+            if mesh is not None:
+                raise ValueError("Mesh edits cannot be propagated to scene costumes. Save an individual edited Unity bundle instead.")
             packed = viewer_scene_roles.package_scene(context, result, normalized, pair=pair, packed=packed,
                 token=token, repo_root=repo_root, receipts=cached_receipts(context, cache_root), log=job.log)
         _check(job)
@@ -275,7 +484,7 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
             public["thumbnail"] = copy.deepcopy(packed["thumbnail"])
         if paired.get("summary"):
             result["paired_edits"] = paired["summary"]
-        receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized,
+        receipt = {"public": copy.deepcopy(public), "source_token": token, "state": normalized, "mesh_state": mesh,
                    "created": time.monotonic(), "status": "ready"}
         with _LOCK:
             for old_token, old in list(_PACKAGES.items()):

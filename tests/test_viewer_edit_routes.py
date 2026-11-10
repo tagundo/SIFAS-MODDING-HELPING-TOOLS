@@ -52,7 +52,7 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.output = self.library / "modded/viewer/new-copy/original.unity"
         self.recipe_path = self.output.with_name("editing-recipe.json")
 
-        def export(token, state, output_dir, *, log):
+        def export(token, state, output_dir, *, log, allow_empty=False):
             self.assertEqual(token, self.token)
             self.assertEqual(state, self.state)
             self.assertEqual(output_dir, str(self.library / "modded/viewer"))
@@ -68,7 +68,8 @@ class ViewerEditRouteTests(unittest.TestCase):
                 "containers": [{"path": str(self.source), "name": self.source.name,
                     "raw": self.source.read_bytes(),
                     "sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}],
-                "sources": [], "variants": {}, "nodes": []}),
+                "sources": [{"source": 0, "container": 0, "member": None,
+                    "sha256": hashlib.sha256(self.source.read_bytes()).hexdigest()}], "variants": {}, "nodes": []}),
             validate_state=Mock(return_value=self.state), export=Mock(side_effect=export),
             accessory_preview=Mock(return_value={"corrections": [], "summary": {"status": "nothing", "changed": 0}}),
             restore=Mock(return_value=self.state))
@@ -162,7 +163,7 @@ class ViewerEditRouteTests(unittest.TestCase):
         status, response = self.export_request()
         self.assertEqual(status, 200, response)
         job = self.finish(response["job_id"])
-        self.assertEqual(job.status, "done")
+        self.assertEqual(job.status, "done", job._events[-3:])
         status, result = self.request("/api/viewer/edit/result/" + job.id)
         self.assertEqual(status, 200, result)
         self.assertEqual(result["preview_paths"], [str(self.output)])
@@ -185,11 +186,11 @@ class ViewerEditRouteTests(unittest.TestCase):
         self.assertEqual(self.request("/api/viewer/edit/export", raw=b"not-json")[0], 400)
         # An oversized declaration is rejected before reading its body. Send
         # only the headers so an intentional early close is not a client-side
-        # BrokenPipe while urllib is still streaming half a megabyte.
+        # BrokenPipe while urllib is still streaming the combined edit body.
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         try:
             connection.putrequest("POST", "/api/viewer/edit/export")
-            connection.putheader("Content-Length", str(512 * 1024 + 1))
+            connection.putheader("Content-Length", str(16 * 1024 * 1024 + 1))
             connection.endheaders()
             response = connection.getresponse()
             self.assertEqual(response.status, 400)

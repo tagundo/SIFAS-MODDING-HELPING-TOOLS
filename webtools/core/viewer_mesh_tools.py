@@ -262,7 +262,7 @@ def data(token, mesh):
             skin = []
     skin_writable = bool(skin and (len(tree.get('m_Skin', [])) == len(positions) or
         len(channels) >= 14 and channels[12].get('dimension') == 4 and channels[12].get('format') == 0 and
-        channels[13].get('dimension') == 4 and channels[13].get('format') in (6, 8, 10)))
+        channels[13].get('dimension') == 4 and channels[13].get('format') in (6, 8, 10, 11)))
     textures, submeshes, texture_ids, image_bytes = [], [], {}, 0
     pointers = linked[0].read_typetree().get('m_Materials', []) if linked else []
     for index, (first, last, _) in enumerate(spans):
@@ -355,8 +355,8 @@ def _write_mesh(obj, tree, bones, operation):
         normalized.append((vertex, normalize_influences(row['influences'], len(bones))))
     if normalized:
         if (len(channels) >= 14 and channels[12].get('dimension') == 4 and channels[12].get('format') == 0
-                and channels[13].get('dimension') == 4 and channels[13].get('format') in (6, 8, 10)):
-            index_format = {6: ('B', 1), 8: ('H', 2), 10: ('I', 4)}[channels[13]['format']]
+                and channels[13].get('dimension') == 4 and channels[13].get('format') in (6, 8, 10, 11)):
+            index_format = {6: ('B', 1), 8: ('H', 2), 10: ('I', 4), 11: ('i', 4)}[channels[13]['format']]
             for vertex, values in normalized:
                 for slot in range(4):
                     bone, weight = values[slot] if slot < len(values) else (0, 0.)
@@ -526,9 +526,11 @@ def export(token, state, output_dir, *, body_state=None):
                 _fail('An original model changed while saving. No output was published.')
         final = root / ('mesh-edit-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-') + secrets.token_hex(4))
         temporary.rename(final); temporary = None
-        return {'preview_paths': [str(final / 'models' / n) for n in names],
+        return {'recipe': recipe, 'recipe_path': str(final / 'mesh-recipe.json'),
+            'preview_paths': [str(final / 'models' / n) for n in names],
             'output_paths': [str(final / 'models' / n) for n in names] + [str(final / 'mesh-recipe.json')],
             'original_paths': [str(final / 'originals' / n) for n in names],
+            'preview_variants': dict(session['variants']), 'original_variants': dict(session['variants']),
             'summary': summary, 'originals_preserved': True}
     finally:
         if temporary is not None:

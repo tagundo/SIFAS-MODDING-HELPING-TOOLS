@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import secrets
 import sys
 import tempfile
 import threading
@@ -341,7 +342,7 @@ def _tool_name(record):
     return name if name.lower().endswith(".unity") else name + ".unity"
 
 
-def _tool_scene_import(job, *, repo_root, root, record, scene, deadline):
+def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimport=False):
     from . import viewer_scene_format as fmt
     source = Path(scene["archive_path"])
     raw = fmt._raw(source)
@@ -359,7 +360,7 @@ def _tool_scene_import(job, *, repo_root, root, record, scene, deadline):
     _tool_body(body, record["platform"])
     signature = [{"archive_sha256": scene["sha256"]}]
     identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
-    cached = _cache_hit(root, identity, signature)
+    cached = None if reimport else _cache_hit(root, identity, signature)
     if cached and Path(cached).name != _tool_name(record):
         cached = None
     if cached:
@@ -567,8 +568,10 @@ def _plain_section(job, record, source, signature, extractor, deadline):
     return data
 
 
-def run_import(job, *, repo_root, output_root, record):
+def run_import(job, *, repo_root, output_root, record, reimport=False):
     """One exact selected costume, with colour and unmasked variants preserved."""
+    if not isinstance(reimport, bool):
+        raise ValueError("Reimport must be on or off.")
     if not _IMPORT_SLOT.acquire(blocking=False):
         raise ValueError("Another game model is being prepared. Try again shortly.")
     temporary, temporary_manifest = None, None
@@ -584,9 +587,12 @@ def run_import(job, *, repo_root, output_root, record):
             if scene is None or scene != record["scene_source"]:
                 raise ValueError("The installed scene costume changed. Refresh the game asset list.")
             if tool:
-                return _tool_scene_import(job, repo_root=repo_root, root=root, record=record, scene=scene, deadline=deadline)
+                return _tool_scene_import(job, repo_root=repo_root, root=root, record=record, scene=scene, deadline=deadline,
+                                          **({"reimport": True} if reimport else {}))
             source = Path(scene["archive_path"])
             destination = root / ("scene-" + scene["sha256"] + "-" + record["variant"] + ".zip")
+            if reimport:
+                destination = root / (destination.stem + "-" + secrets.token_hex(4) + ".zip")
             if destination.is_symlink():
                 raise ValueError("The canonical scene cache cannot be a symbolic link.")
             if destination.exists():
@@ -607,7 +613,7 @@ def run_import(job, *, repo_root, output_root, record):
         found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]
         identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
-        cached = _cache_hit(root, identity, signatures)
+        cached = None if reimport else _cache_hit(root, identity, signatures)
         if tool and cached and Path(cached).name != _tool_name(record):
             cached = None
         if cached:

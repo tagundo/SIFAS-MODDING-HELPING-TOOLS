@@ -1892,14 +1892,14 @@ def inspect(bundle_path, verbose=True):
     return parts
 
 
-def part_hierarchy(bundle_path, renderer=None):
+def part_hierarchy(bundle_path, renderer=None, *, environment=None):
     """Every skin bone, in its actual Transform hierarchy, for part selection.
 
     A root is a convenient selection, not a substitute for its children.  The
     returned descendant names use the same m_Bones parent walk as the graft,
     so the UI and the serialized selection cannot disagree about a subtree.
     """
-    env = _require_unitypy().load(bundle_path)
+    env = environment if environment is not None else _require_unitypy().load(bundle_path)
     objects, index = _index(env)
     smr = _body_smr(objects) if renderer in (None, "") else index.get(int(renderer))
     if smr is None or smr.type.name != "SkinnedMeshRenderer":
@@ -1956,7 +1956,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
                     new_submesh="auto", patch_texture=False, worldspace=True,
                     fix_nodescaling=True, mask_handling="auto", scale_swing_physics=True,
                     dry_run=False, verbose=True, triangle_indices=None,
-                    donor_renderer=None, target_renderer=None):
+                    donor_renderer=None, target_renderer=None, physics_provenance=None):
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target."""
     def log(*a):
@@ -2210,8 +2210,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     # ---- write ----
     bf, _ = _serialized_file(target)
     bf.mark_changed()
-    with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+    from transplant_bundle_io import write_working_bundle, finish_working_bundle
+    output_packer = write_working_bundle(bf, out_path)
     log(f"[ok] wrote {out_path}")
 
     if worldspace and not board:
@@ -2234,9 +2234,11 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     if preserve_physics:
         from costume_transplant import repair_transplant_physics
         repair_transplant_physics(out_path, donor_path, target_path, new_map if inject_names else (),
-                                  restore_collision=restore_collision, verbose=verbose)
+                                  restore_collision=restore_collision, verbose=verbose,
+                                  provenance=physics_provenance)
     # read-only: warn if the grown body renderer blew past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
+    finish_working_bundle(out_path, output_packer)
     log(f"[done] {out_path}")
     return out_path
 

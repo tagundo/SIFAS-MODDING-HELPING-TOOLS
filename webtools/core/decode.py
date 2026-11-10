@@ -122,7 +122,12 @@ def _android_image(texture, deadline):
             with open(source, "wb") as stream:
                 stream.write(header)
                 stream.write(data[:needed])  # the remaining bytes are lower mip levels
-            subprocess.run([binary, "-dl", source, output], check=True,
+            # The CLI otherwise launches one worker per reported CPU, even for
+            # a 1x1 authored mip. Thread startup then dominates a whole costume.
+            # Decoding blocks is pixel-exact at every thread count; retain up
+            # to four workers only for images large enough to use them.
+            threads = max(1, min(4, os.cpu_count() or 1, (width * height + 8191) // 8192))
+            subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            timeout=_remaining(deadline))
             # This output is always TGA. Generic Image.open falls back to

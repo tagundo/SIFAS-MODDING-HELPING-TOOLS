@@ -77,8 +77,9 @@ class TransplantPhysicsGraphTests(unittest.TestCase):
                 self.assertTrue({"TailA1_Dyna", "TailA2_Dyna", "TailA_End"} <= set(new))
                 part.wire_child_adds(index, children)
                 out_path.write_bytes(target.file.save(packer="original"))
+                origins = {}
                 full.repair_transplant_physics(str(out_path), str(donor_path), str(target_path), new,
-                                               restore_collision=False, verbose=False)
+                                               restore_collision=False, verbose=False, provenance=origins)
                 saved = UnityPy.load(str(out_path))
                 objects, index = part._index(saved)
                 scripts = part._scriptname_map(objects)
@@ -89,6 +90,11 @@ class TransplantPhysicsGraphTests(unittest.TestCase):
                            for obj in objects if obj.type.name == "MonoBehaviour"
                            and scripts.get(obj.read_typetree()["m_Script"]["m_PathID"]) == "SwingBone"}
                 first, second = (by_name[name] for name in ("TailA1_Dyna", "TailA2_Dyna"))
+                original_components = {row['componentId']: row for row in origins['components']}
+                for component, original in ((first, '221'), (second, '252')):
+                    self.assertEqual(original_components[str(component.path_id)], {
+                        'componentId': str(component.path_id), 'serializedFile': 0,
+                        'source': 'donor', 'sourceComponentId': original, 'sourceSerializedFile': 0})
                 a, b = first.read_typetree(), second.read_typetree()
                 self.assertEqual(index[a["child"]["m_PathID"]].type.name, "Transform")
                 self.assertEqual(index[a["sibling"]["m_PathID"]].type.name, "MonoBehaviour")
@@ -104,6 +110,15 @@ class TransplantPhysicsGraphTests(unittest.TestCase):
                 catalog = viewer_physics.make_catalog(viewer_physics.inspect_info(info, 0, bones),
                                                       viewer_physics.native_managers(info, 0, bones))
                 self.assertTrue(catalog["native"]["available"], catalog["native"])
+                records = {row["componentId"]: row for row in catalog["components"]}
+                first_record, second_record = records[str(first.path_id)], records[str(second.path_id)]
+                manager_record = catalog["managers"][0]
+                self.assertEqual(first_record["simulation"]["manager"], manager_record["id"])
+                self.assertEqual(second_record["simulation"]["manager"], manager_record["id"])
+                self.assertEqual(first_record["simulation"]["order"], 1)
+                self.assertEqual(second_record["simulation"]["order"], 2)
+                self.assertEqual(first_record["simulation"]["child"], second_record["id"])
+                self.assertEqual(second_record["simulation"]["parent"], first_record["id"])
                 self.assertEqual(target_path.read_bytes(), target_raw)
                 self.assertEqual(donor_path.read_bytes(), donor_raw)
                 # Re-saving/re-opening must retain typed references; an in-memory

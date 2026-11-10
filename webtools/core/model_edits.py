@@ -417,6 +417,7 @@ def mod_source_context(token):
             "variants": dict(session["variants"]),
             "physics": copy.deepcopy(session.get("physics", {})),
             "outlines": copy.deepcopy(session.get("outlines", {})),
+            "outline_only_sources": sorted(session.get("outlineOnlySources", set())),
             "nodes": [{key: copy.deepcopy(target[key]) for key in
                        ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
                       for target in session["targets"].values()],
@@ -960,7 +961,7 @@ def _recipe(session, state):
     return recipe
 
 
-def restore(token, recipe):
+def restore(token, recipe, *, allow_empty=False):
     session = _session(token)
     if not isinstance(recipe, dict) or set(recipe) - {"format", "version", "sources", "originals", "state", "nodeIdentities"}:
         _fail("Choose an original viewer body-edit recipe.")
@@ -1019,7 +1020,7 @@ def restore(token, recipe):
             row["node"] = mapping[row["node"]]
     except (TypeError, KeyError):
         _fail("The recipe contains an unbound body node.")
-    return validate_state(token, state)
+    return validate_state(token, state, allow_empty=allow_empty)
 
 
 def _safe_root(directory):

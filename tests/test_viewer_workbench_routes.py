@@ -86,7 +86,8 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
     def test_mesh_routes_forward_identity_and_fixed_output_folder(self):
         inspect = self.backend_patch(viewer_mesh_tools, 'inspect', return_value={'meshes': []})
         data = self.backend_patch(viewer_mesh_tools, 'data', return_value={'positions': []})
-        export = self.backend_patch(viewer_mesh_tools, 'export', return_value={'preview_paths': []})
+        from webtools.core import viewer_mod_flow
+        export = self.backend_patch(viewer_mod_flow, 'export_current', return_value={'preview_paths': []})
         for operation, payload in (
             ('inspect', {'token': self.token}),
             ('data', {'token': self.token, 'mesh': self.mesh}),
@@ -95,7 +96,9 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
             self.assertEqual(self.request('/api/viewer/mesh/' + operation, payload, headers={'Origin': self.url})[0], 200)
         inspect.assert_called_once_with(self.token)
         data.assert_called_once_with(self.token, self.mesh)
-        export.assert_called_once_with(self.token, self.mesh_state, self.library / 'modded/viewer', body_state=self.body)
+        export.assert_called_once_with(self.token, self.body, self.library / 'modded/viewer',
+            mesh_state=self.mesh_state, allow_empty=True, repo_root=Path.cwd(),
+            cache_root=self.library / 'extracted/game-models')
 
     def test_motion_catalog_bounds_queries_and_preserves_keyword_signature(self):
         catalog = self.backend_patch(game_motions, 'catalog', return_value={'motions': []})
@@ -132,7 +135,8 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         self.assertEqual(status, 200, response)
         job = self.finish(response['job_id'])
         validate.assert_called_once_with(self.transplant)
-        run.assert_called_once_with(job, {'validated': True}, output_root=self.library / 'modded/viewer', cache_root=self.library / '.viewer-cache')
+        run.assert_called_once_with(job, {'validated': True}, output_root=self.library / 'modded/viewer',
+            cache_root=self.library / '.viewer-cache', repo_root=Path.cwd(), physics_cache_root=self.library / 'extracted/game-models')
         validate.side_effect = ValueError('Cut planes are reversed')
         with patch.object(MANAGER, 'create') as create:
             self.assertEqual(self.request('/api/viewer/transplant/run', self.transplant)[0], 400)
@@ -151,7 +155,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         validate.assert_called_once_with(payload)
         self.assertEqual(run.call_count, 1)
         validate.reset_mock()
-        self.assertEqual(self.headers_only('/api/viewer/transplant/run', [('Content-Length', str(4 * 1024 * 1024 + 1))])[0], 400)
+        self.assertEqual(self.headers_only('/api/viewer/transplant/run', [('Content-Length', str(16 * 1024 * 1024 + 1))])[0], 400)
         validate.assert_not_called()
 
     def test_all_feature_posts_reject_extra_paths_and_cross_origin_calls(self):
@@ -177,7 +181,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         for route in ('/api/viewer/game/motions/import', '/api/viewer/mesh/export', '/api/viewer/transplant/run'):
             for headers in (
                 [('Content-Length', '0')], [('Content-Length', '-1')], [('Content-Length', 'invalid')],
-                [('Content-Length', str(viewer_mesh_tools.MAX_REQUEST_BYTES + 1))],
+                [('Content-Length', str((16 * 1024 * 1024 if route.endswith('/transplant/run') else viewer_mesh_tools.MAX_REQUEST_BYTES) + 1))],
                 [('Content-Length', '12'), ('Transfer-Encoding', 'chunked')],
                 [('Content-Length', '12'), ('Origin', self.url), ('Origin', self.url)],
             ):

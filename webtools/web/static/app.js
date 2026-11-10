@@ -285,10 +285,10 @@ function switchTab(name, options = {}) {
   return showSection(name, { notify: !options.native });
 }
 
-function openModelViewer(paths, variants) {
+function openModelViewer(paths, variants, importOptions) {
   switchTab("viewer");
   $("#console").classList.add("hidden");
-  return window.ModelViewer ? window.ModelViewer.open(paths, variants) : Promise.resolve();
+  return window.ModelViewer ? window.ModelViewer.open(paths, variants, importOptions) : Promise.resolve();
 }
 
 // ------------------------------------------------------------------- tools

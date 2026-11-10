@@ -2359,6 +2359,13 @@ _VIEWER_TRANSLATIONS.update({
     "An original gaze target is unavailable in this single-model preview.": ["단일 모델 미리보기에는 일부 원본 시선 대상이 없습니다.", "単一モデルのプレビューには一部の元の視線対象がありません。"],
 })
 
+_VIEWER_TRANSLATIONS.update({
+    "UV line color": ["UV 선 색상", "UV線の色"],
+    "Reimport must be on or off.": ["Reimport는 켜기 또는 끄기로 지정하세요.", "Reimportはオンまたはオフで指定してください。"],
+    "Reimport": ["원본 다시 불러오기 (Reimport)", "元データを再読み込み (Reimport)"],
+    "Read the source again and rebuild the preview without reusing prepared data.": ["원본 파일을 다시 읽고 준비 캐시를 재사용하지 않고 미리보기를 만듭니다.", "元ファイルを読み直し、準備済みキャッシュを使わずにプレビューを作成します。"],
+})
+
 for _source, _translated in _VIEWER_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
@@ -2411,5 +2418,31 @@ _VIEWER_ACCESSORY_TRANSLATIONS = {
     "The accessory lift exceeds its supported numeric range.": ["액세서리 보정값이 지원하는 범위를 벗어납니다.", "アクセサリーの補正値が対応範囲を超えています。"],
 }
 for _source, _translated in _VIEWER_ACCESSORY_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _translated[0]
+    _TABLES["ja"][_source] = _translated[1]
+
+_VIEWER_MODEL_SAVE_TRANSLATIONS = {
+    "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.": ["이 ZIP의 의상은 포함된 얼굴 파일과 연결되어 있습니다. 얼굴을 제외하려면 원본 의상을 다시 가져온 뒤 저장하세요. 모드 ZIP은 생성하지 않았습니다.", "このZIPの衣装は同梱された顔ファイルと結び付いています。顔を除外するには元の衣装を再インポートしてから保存してください。Mod ZIPは作成されていません。"],
+    "Choose whether to include this costume's verified face companion.": ["이 코스튬에 얼굴·입 편집을 포함할지 선택하세요.", "この衣装に顔・口の編集を含めるか選んでください。"],
+    "Open the original model before saving model edits.": ["원본 모델을 열고 모델 편집을 저장하세요.", "元のモデルを開いてからモデル編集を保存してください。"],
+    "The model edit recipe is invalid.": ["모델 편집 기록이 올바르지 않습니다.", "モデル編集レシピが無効です。"],
+    "Save current model changes before opening the saved result.": ["현재 모델 변경을 먼저 저장한 뒤 저장 결과를 여세요.", "現在のモデルの変更を先に保存してから保存結果を開いてください。"],
+    "Save model edits": ["모델 편집 저장", "モデル編集を保存"],
+    "Model changes": ["모델 변경", "モデルの変更"],
+    "Open a model to save model edits.": ["모델을 열면 편집 내용을 저장할 수 있습니다.", "モデルを開くと編集内容を保存できます。"],
+    "Model saving is unavailable for this model.": ["이 모델은 편집 내용을 저장할 수 없습니다.", "このモデルの編集内容は保存できません。"],
+    "Save body, mesh, outline and physics edits together with transplanted clothing. Pose, expression, visibility and camera choices are preview-only.": ["이식된 의상과 체형·메시·외곽선·물리 편집을 함께 저장합니다. 포즈·표정·표시 여부·카메라 설정은 미리보기에만 적용됩니다.", "移植した衣装と体型・メッシュ・輪郭線・物理の編集をまとめて保存します。ポーズ・表情・表示・カメラ設定はプレビュー専用です。"],
+    "Add to game packages the current model edits and installs a new costume.": ["현재 모델의 편집 내용을 모드로 묶어 새 코스튬으로 설치합니다.", "現在のモデルの編集内容をModにまとめ、新しい衣装としてインストールします。"],
+    "Include face and mouth edits for this costume": ["이 코스튬의 얼굴·입 편집 포함", "この衣装の顔・口の編集を含める"],
+    "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.": ["포함한 얼굴은 이 코스튬만 사용합니다. 다른 의상과 캐릭터의 공용 얼굴에는 적용되지 않습니다.", "含めた顔はこの衣装だけが使用します。他の衣装やキャラクター共通の顔には適用されません。"],
+    "Face and mouth edits will not be applied in game. This costume uses the game's original face.": ["게임에 얼굴·입 편집을 적용하지 않습니다. 이 코스튬은 게임의 원래 얼굴을 사용합니다.", "ゲームに顔・口の編集を適用しません。この衣装はゲームの元の顔を使用します。"],
+    "Open the original face with this costume to include face and mouth edits.": ["얼굴·입 편집을 포함하려면 이 의상의 원래 얼굴 파일도 함께 불러오세요.", "顔・口の編集を含めるには、この衣装の元の顔ファイルも一緒に開いてください。"],
+    "Choose whether to include face and mouth edits for this costume.": ["이 코스튬의 얼굴·입 편집을 포함할지 선택하세요.", "この衣装の顔・口の編集を含めるか選んでください。"],
+    "Apply selected face deletions before saving.": ["칠한 면의 삭제를 적용한 뒤 저장하세요.", "塗った面の削除を適用してから保存してください。"],
+    "Vertex positions": ["정점 위치", "頂点の位置"],
+    "Skin weights": ["스킨 가중치", "スキンウェイト"],
+    "Outlines": ["외곽선", "輪郭線"],
+}
+for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]

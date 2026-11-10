@@ -5,6 +5,26 @@
     var panel = document.getElementById("viewer-adjustments");
     if (!panel || document.getElementById("viewer-game-motions")) return;
     function t(key) { return typeof window.T === "function" ? window.T(key) : key; }
+    function format(key, values) {
+      return t(key).replace(/\{([A-Za-z]+)\}/g, function (match, name) { return Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match; });
+    }
+    async function jsonResponse(response) {
+      var data;
+      try { data = await response.json(); }
+      catch (_) { throw new Error(format("The motion server returned an unreadable response (HTTP {status}).", { status: response.status })); }
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(format("The motion server returned an unreadable response (HTTP {status}).", { status: response.status }));
+      if (!response.ok || data.error) throw new Error(data.error ? format("The motion server returned HTTP {status}: {reason}", { status: response.status, reason: t(String(data.error)) }) : format("The motion server returned HTTP {status}.", { status: response.status }));
+      return data;
+    }
+    function failure(error, detail, stage) {
+      var reason = detail && detail.reason || error && error.message || String(error || "");
+      if (!reason) reason = t("The motion import returned no failure details.");
+      if (error && error.name === "TypeError" && /fetch|network|load failed/i.test(reason)) reason = t("The motion server could not be reached. Check that the asset tools server is running.");
+      if (detail && detail.httpStatus) reason = format("The motion server returned HTTP {status}.", { status: detail.httpStatus }) + " " + t(reason);
+      var message = format("Game motion import failed during {stage}: {reason}", { stage: t(detail && detail.stage || stage), reason: t(reason) });
+      if (detail && detail.pack) message += " " + format("Motion pack: {pack}", { pack: detail.pack });
+      return message;
+    }
     function make(tag, props, children) {
       var node = document.createElement(tag);
       Object.keys(props || {}).forEach(function (key) {
@@ -78,9 +98,8 @@
       var query = new URLSearchParams({ lang: document.documentElement.lang || "en", region: region.value || "", character: current, category: category.value || "home", search: search.value.trim(), offset: String(pageOffset), song_type: songType.value || "all" });
       try {
         var response = await fetch("/api/viewer/game/motions/catalog?" + query, { signal: controller.signal });
-        var data = await response.json();
+        var data = await jsonResponse(response);
         if (token !== generation || !dialog.open) return;
-        if (!response.ok || data.error) throw new Error(data.error || "Game motions are unavailable.");
         fill(region, data.regions, null, data.region); fill(character, data.characters, "Choose a character", current);
         fill(category, data.categories, null, category.value || "home");
         songType.parentNode.hidden = category.value !== "mv";
@@ -101,7 +120,7 @@
       if (busy || !motion.value) return;
       if (!window.ModelViewer || !window.ModelViewer.getState().loaded) { message("Open a model before loading a motion.", true); return; }
       var token = ++generation;
-      var importedDescriptor = null;
+      var importedDescriptor = null, importFailure = null, lastActivity = "", stage = "Preparing game motion…";
       var targetState = window.ModelViewer.getState();
       var targetOwners = targetState.faces && targetState.faces.characters || [];
       var targetCharacter = targetOwners.length === 1 ? String(targetOwners[0]) : character.value;
@@ -111,30 +130,35 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ region: region.value, character: character.value, category: category.value, motion: motion.value, target_character: targetCharacter, performer: category.value === "mv" ? performer.value : "", audio: linkedAudio.checked, download: download.checked })
         });
-        var data = await response.json();
-        if (!response.ok || data.error || !/^[a-f0-9]{12}$/.test(data.job_id || "")) throw new Error(data.error || "The game motion could not be loaded.");
+        var data = await jsonResponse(response);
+        if (!/^[a-f0-9]{12}$/.test(data.job_id || "")) throw new Error("The motion server returned an invalid job identity.");
         if (token !== generation || !dialog.open) { fetch("/api/jobs/" + data.job_id + "/cancel", { method: "POST" }).catch(function () {}); return; }
         job = data.job_id;
         var events = new EventSource("/api/jobs/" + job + "/events"), complete = false; stream = events;
+        events.onopen = function () { if (!complete && token === generation) message(lastActivity || stage); };
         events.onmessage = async function (event) {
           if (complete || token !== generation || !dialog.open) return;
           try {
-            var item = JSON.parse(event.data);
-            if (item.type === "log") message(String(item.line || ""));
+            var item;
+            try { item = JSON.parse(event.data); }
+            catch (_) { throw new Error("The motion event stream returned unreadable data."); }
+            if (item.type === "log") { lastActivity = String(item.line || "").slice(-500); message(lastActivity); }
+            else if (item.type === "motion_error") importFailure = item;
             else if (item.type === "motion") importedDescriptor = item.motion;
             else if (item.type === "progress" && item.total > 0) { progress.max = item.total; progress.value = item.done; }
             else if (item.type === "done") {
               complete = true; stopStream(); job = "";
               if (item.status === "cancelled") { setBusy(false); progress.hidden = true; message("Cancelled"); return; }
-              if (item.status !== "done") throw new Error(item.summary || "The game motion could not be loaded.");
-              if (!Array.isArray(item.output_paths) || !item.output_paths.length || item.output_paths.some(function (path) { return typeof path !== "string" || !path; })) throw new Error("The game motion could not be loaded.");
+              if (item.status !== "done") throw new Error(item.summary || "The motion import returned no failure details.");
+              if (!Array.isArray(item.output_paths) || !item.output_paths.length || item.output_paths.some(function (path) { return typeof path !== "string" || !path; })) throw new Error("The motion job returned no animation files.");
               if (window.ModelViewer.getState().modelId !== targetState.modelId) throw new Error(t("The model changed while loading this motion. Load the motion again for the current model."));
-              message("Adding motion to the model…");
+              stage = "Adding motion to the model…"; message(stage);
               var previousState = window.ModelViewer.getState();
               var previousClips = previousState.rig && previousState.rig.clipNames || [];
               var alreadyLoaded = item.output_paths.every(function (path) { return previousState.loadedPaths.indexOf(path) >= 0; });
-              await window.ModelViewer.addMotion(item.output_paths, { replaceGame: true });
+              var added = await window.ModelViewer.addMotion(item.output_paths, { replaceGame: true });
               if (token !== generation) return;
+              if (added === false && !alreadyLoaded) throw new Error(window.ModelViewer.getState().error || "The selected motion files could not be added to the current model.");
               var composed = null;
               if (importedDescriptor && window.ModelViewer.setMotionTimeline) composed = await window.ModelViewer.setMotionTimeline(importedDescriptor);
               if (token !== generation) return;
@@ -145,7 +169,7 @@
               var currentState = window.ModelViewer.getState();
               var compatible = !!actualClip || alreadyLoaded || currentState.rig && currentState.rig.clipNames.some(function (name) { return previousClips.indexOf(name) < 0; });
               var note = document.getElementById("viewer-game-motion-note");
-              note.textContent = t(compatible ? "Motion ready. Press Play in Pose / motion." : "No compatible clips were found in this motion.");
+              note.textContent = t(compatible ? "Motion ready. Press Play in Pose / motion." : "The selected game motion is incompatible with this model. Its body tracks do not bind to the current skeleton.");
               note.classList.toggle("viewer-warning", !compatible);
               if (compatible && importedDescriptor) {
                 var warnings = (importedDescriptor.warnings || []).concat(composed && composed.warnings || [], importedDescriptor.audio && importedDescriptor.audio.warnings || []);
@@ -153,12 +177,17 @@
               }
               panel.open = true;
             }
-          } catch (error) { complete = true; stopStream(); cancelJob(); progress.hidden = true; setBusy(false); message(error.message || "The game motion could not be loaded.", true); }
+          } catch (error) { if (token !== generation || !dialog.open) return; complete = true; stopStream(); cancelJob(); progress.hidden = true; setBusy(false); message(failure(error, importFailure, stage), true); }
         };
         events.onerror = function () {
-          if (!complete && token === generation && events.readyState === EventSource.CLOSED) { complete = true; stopStream(); cancelJob(); setBusy(false); progress.hidden = true; message("The game motion could not be loaded.", true); }
+          if (complete || token !== generation) return;
+          if (events.readyState === EventSource.CLOSED) {
+            complete = true; stopStream(); cancelJob(); setBusy(false); progress.hidden = true;
+            message(failure(new Error(t("The motion event stream closed before the result arrived. Load the motion again.") +
+              (lastActivity ? " " + format("Last activity: {activity}", { activity: lastActivity }) : "")), importFailure, stage), true);
+          } else message("The motion event connection was interrupted. Waiting to reconnect…", true);
         };
-      } catch (error) { if (token === generation) { setBusy(false); progress.hidden = true; message(error.message || "The game motion could not be loaded.", true); } }
+      } catch (error) { if (token === generation) { setBusy(false); progress.hidden = true; message(failure(error, importFailure, stage), true); } }
     }
     function build() {
       dialog.replaceChildren(); busy = false;

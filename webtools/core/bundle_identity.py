@@ -111,7 +111,7 @@ def isolate_bundle(data, namespace, _identities=None, _bundle_names=None):
     return result
 
 
-def verify_identity_only(original, isolated, namespace):
+def verify_identity_only(original, isolated, namespace, _identities=None, _bundle_names=None):
     """Reject any change outside the reviewed CAB/stream/runtime-name contract.
 
     Raw object payloads are compared after replacing only fixed-width CAB
@@ -123,7 +123,8 @@ def verify_identity_only(original, isolated, namespace):
     _, target_bundle, targets = _bundle(isolated)
     if len(sources) != len(targets):
         raise ValueError("Identity isolation changed serialized file count.")
-    identities = _cab_mapping([file.name for file in sources], namespace)
+    identities = dict(_identities or {})
+    identities.update(_cab_mapping([file.name for file in sources], namespace))
 
     def rename(raw):
         for old, new in identities.items():
@@ -162,6 +163,9 @@ def verify_identity_only(original, isolated, namespace):
                 for field in ("m_Name", "m_AssetBundleName"):
                     if field in expected:
                         expected[field] = _runtime_name(namespace, source.name, expected[field])
+                if _bundle_names:
+                    expected["m_Dependencies"] = [_bundle_names.get(name, name)
+                                                   for name in expected.get("m_Dependencies", [])]
                 if expected != other.read_typetree():
                     raise ValueError("Identity isolation changed non-identity AssetBundle metadata.")
             elif rename(obj.get_raw_data()) != other.get_raw_data():

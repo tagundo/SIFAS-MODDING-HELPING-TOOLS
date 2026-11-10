@@ -98,14 +98,21 @@ def _tool_options(params):
         ("manual_chara_id", 0), ("thumbnail_size", 256), ("combine_pairs", True))}
 
 
-def _viewer_binding(token, state, character_id, counterpart_path, selected_variant):
-    from . import model_edits
-    normalized = model_edits.validate_state(token, state)
+def _viewer_binding(token, state, character_id, counterpart_path, selected_variant, mesh_state=None, include_face_edits=None):
+    from . import model_edits, viewer_mod_flow
+    normalized = model_edits.validate_state(token, state, allow_empty=True)
+    mesh = viewer_mod_flow.normalize_mesh_state(mesh_state)
+    _require(include_face_edits is None or isinstance(include_face_edits, bool), "Choose whether to include this costume's verified face companion.")
     context = model_edits.mod_source_context(token)
-    return {"token": token, "state": normalized, "sources": [
+    binding = {"token": token, "state": normalized, "sources": [
         {key: source[key] for key in ("name", "container", "member", "sha256")} for source in context["sources"]],
         "character_id": character_id, "counterpart_path": counterpart_path,
-        "selected_variant": selected_variant}, context, normalized
+        "selected_variant": selected_variant}
+    if mesh is not None:
+        binding["mesh_state"] = mesh
+    if include_face_edits is not None:
+        binding["include_face_edits"] = include_face_edits
+    return binding, context, normalized
 
 
 def _viewer_owner(context, requested):
@@ -192,16 +199,21 @@ def plan(params):
                 item["characterId"] = _owner(item["characterId"])
                 _unchanged(item)
         else:
-            _require(set(params) == {"kind", "token", "state", "character_id", "counterpart_path", "selected_variant"}, "Invalid viewer thumbnail options.")
-            binding, context, normalized = _viewer_binding(params["token"], params["state"], params["character_id"], params["counterpart_path"], params["selected_variant"])
+            fields = {"kind", "token", "state", "character_id", "counterpart_path", "selected_variant"}
+            _require(fields <= set(params) <= fields | {"mesh_state", "include_face_edits"}, "Invalid viewer thumbnail options.")
+            binding, context, normalized = _viewer_binding(params["token"], params["state"], params["character_id"], params["counterpart_path"], params["selected_variant"], params.get("mesh_state"), params.get("include_face_edits"))
             owner = _viewer_owner(context, params["character_id"])
-            from . import model_edits
+            from . import viewer_mod_flow, viewer_scene_roles
+            mesh = binding.get("mesh_state")
+            _require(mesh is None or not (params["counterpart_path"] or viewer_scene_roles.session_metadata(params["token"])),
+                     "Mesh edits cannot be propagated to paired or scene costumes. Save an individual edited Unity bundle instead.")
             from .sukusta import default_sukusta_dir
             root = Path(default_sukusta_dir("")) / ".viewer-cache" / "thumbnails"
             _require(not root.is_symlink(), "The thumbnail cache cannot be a symbolic link.")
             root.mkdir(parents=True, exist_ok=True)
             temporary = tempfile.mkdtemp(prefix="render-", dir=root)
-            result = model_edits.export(params["token"], normalized, temporary, allow_empty=True)
+            result = viewer_mod_flow.export_current(params["token"], normalized, temporary, mesh_state=mesh, allow_empty=True,
+                repo_root=Path.cwd(), cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
             paths = list(result["preview_paths"])
             items = [{"paths": paths, "source_hashes": [[row["path"], row["sha256"]] for row in context["containers"]], "characterId": owner}]
             size = 256
@@ -391,10 +403,10 @@ def updater_provider(params):
     return provide
 
 
-def for_viewer_package(thumbnail_token, source_token, state, character_id, counterpart_path, selected_variant):
+def for_viewer_package(thumbnail_token, source_token, state, character_id, counterpart_path, selected_variant, *, mesh_state=None, include_face_edits=None):
     if not thumbnail_token:
         return None
-    binding, context, _ = _viewer_binding(source_token, state, character_id, counterpart_path, selected_variant)
+    binding, context, _ = _viewer_binding(source_token, state, character_id, counterpart_path, selected_variant, mesh_state, include_face_edits)
     with _LOCK:
         value = _plan(thumbnail_token)
         _require(value["kind"] == "viewer" and value["binding"] == binding and value["profile"] == _profile()[1], "The model, target member, edits or template changed. Render the thumbnail again.")

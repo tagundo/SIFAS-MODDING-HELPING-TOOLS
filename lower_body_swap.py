@@ -258,8 +258,8 @@ WAIST = 0.92            # world Y near the top of the hips; default band top
 #   0.00  발바닥 / 바닥       sole / floor
 #
 # A replaced band is [cut_low, cut_high].  cut_low = bottom of the swap,
-# cut_high = top.  Example: cut_low 0.50, cut_high 0.96  ->  swap from the
-# knee up to just below the waist (the classic "11-shape thigh" fix).
+# cut_high = top.  Example: cut_low 0.50, cut_high 0.92  ->  swap from the
+# knee up to the top of the pelvis (the classic "11-shape thigh" fix).
 # SIFAS legs are vertex-coincident from ~0.40 to ~0.80, so a cut placed there
 # joins seamlessly; the graft auto-snaps cut_low to the best ring near it.
 # A "cut" preset is just a named (cut_low, cut_high) pair.  hip_fix only
@@ -267,7 +267,7 @@ WAIST = 0.92            # world Y near the top of the hips; default band top
 # ---------------------------------------------------------------------------
 # (cut_low, cut_high) in the rest-pose Y units of the chart above.
 CUT_PRESETS = {
- "hip_fix":     (0.500, 0.96),   # knee(0.50) -> just below waist(0.96).
+ "hip_fix":     (0.500, 0.92),   # knee(0.50) -> top of pelvis(0.92).
                                  #  RECOMMENDED: join at the knee (a clean
                                  #  vertex-coincident ring), graft thigh+hip+
                                  #  buttocks up to the waist.  The graft also
@@ -600,10 +600,28 @@ def _open_cap(pos, tris, dom_names, lift, edge_front=0.0, edge_back=0.0,
 # --------------------------------------------------------------------------- #
 #  Core graft                                                                  #
 # --------------------------------------------------------------------------- #
-def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=True,
-                   selection_scope="skin"):
-    """One deterministic face selection shared by preview and export.
+def _band_faces(positions, triangles, cut_low, cut_high, boundary):
+    """Use complementary face rules instead of discarding both seam surfaces.
 
+    A donor face touching the band supplies its complete original geometry.
+    A wearer face is removed only when it is wholly inside the band. Keeping
+    straddling wearer faces makes the boundary overlap rather than leave a hole
+    when the two costumes have different triangle layouts. UVs/skin stay exact.
+    """
+    import numpy as np
+    heights = np.asarray(positions)[triangles, 1]
+    if boundary == "inside":
+        return (heights.min(axis=1) >= cut_low) & (heights.max(axis=1) <= cut_high)
+    if boundary == "intersect":
+        return (heights.max(axis=1) >= cut_low) & (heights.min(axis=1) <= cut_high)
+    raise ValueError("Choose donor intersection or wearer interior selection.")
+
+
+def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=True,
+                   selection_scope="skin", *, boundary="intersect"):
+    """Boundary-safe face selection shared by donor preview and export.
+
+    Donor previews use ``intersect``; wearer removal explicitly uses ``inside``.
     Islands are assessed inside the requested band. The largest island of an
     entire costume can be its upper torso, with no legs at all.
     """
@@ -630,8 +648,7 @@ def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=
         weights = np.where(body.bi == index, body.bw, 0).sum(axis=1)
         posed += (homogeneous @ (matrix @ cpt.mat_from(bindposes[index])).T)[:, :3] * weights[:, None]
     if len(bindposes): positions = posed
-    centroids = positions[tris, 1].mean(axis=1)
-    selected = (centroids >= cut_low) & (centroids <= cut_high)
+    selected = _band_faces(positions, tris, cut_low, cut_high, boundary)
     if selection_scope == "skin":
         selected &= anatomy[tris].all(axis=1) & (region_mask[tris].sum(axis=1) >= 2)
         if exclude_accessories and np.any(selected):
@@ -652,7 +669,7 @@ def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=
 
 def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
                      exclude_accessories, selection_scope, donor_renderer, target_renderer,
-                     dry_run, log):
+                     dry_run, log, physics_provenance=None):
     """Keep original UVs/textures and append each donor material independently."""
     import copy
     import tempfile
@@ -661,7 +678,8 @@ def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, regio
     up = _require_unitypy()
     target = BodyMesh(up.load(target_path), target_path, target_renderer)
     donor = BodyMesh(up.load(donor_path), donor_path, donor_renderer)
-    drop, _ = band_selection(target, cut_low, cut_high, region, exclude_accessories, selection_scope)
+    drop, _ = band_selection(target, cut_low, cut_high, region, exclude_accessories, selection_scope,
+                             boundary="inside")
     take, _ = band_selection(donor, cut_low, cut_high, region, exclude_accessories, selection_scope)
     if not np.any(take):
         raise ValueError("No donor triangles are selected in this band. Choose a wider band or select Whole mesh to include clothing/accessories.")
@@ -681,13 +699,17 @@ def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, regio
     target.tt["m_IndexBuffer"] = bytes(data)
     target.mesh_obj.save_typetree(target.tt)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    from transplant_bundle_io import write_working_bundle, finish_working_bundle, original_packer
+    output_packer = original_packer(target.env.file)
     with tempfile.TemporaryDirectory(prefix="lower-graft-") as temporary:
         removed = os.path.join(temporary, "wearer.unity")
-        with open(removed, "wb") as stream: stream.write(target.env.file.save(packer="original"))
+        write_working_bundle(target.env.file, removed)
         cpt.transplant_part(donor_path, removed, out_path,
             triangle_indices=np.flatnonzero(take), new_submesh=True,
             donor_renderer=donor.smr_obj.path_id, target_renderer=target.smr_obj.path_id,
-            worldspace=False, fix_nodescaling=False, verbose=False)
+            worldspace=False, fix_nodescaling=False, verbose=False,
+            physics_provenance=physics_provenance)
+    finish_working_bundle(out_path, output_packer)
     log("  donor UVs, materials and texture bytes preserved; original wearer materials retained")
     return out_path
 
@@ -698,12 +720,14 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               open_cap_edge_left=None, open_cap_edge_right=None,
               exclude_accessories=True, merge_rim=True, mipmaps=True,
               dry_run=False, log=print, selection_scope="skin", donor_renderer=None,
-              target_renderer=None, preserve_materials=True):
+              target_renderer=None, preserve_materials=True, physics_provenance=None):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
     target.  `region` ("lower" / "lower_belly" / "central") bounds which bones
-    may be replaced so arms/head are never touched.  When `weld` is on, cut_low
-    is snapped to the nearest vertex-coincident ring so the seam lines up
-    exactly (no flaps/gap)."""
+    may be replaced so arms/head are never touched. Material-preserving grafts
+    retain wearer faces crossing the cut and include crossing donor faces, so
+    different triangle layouts meet with a small overlap while keeping their
+    original UVs and skin weights. The atlas/cap mode can additionally snap its
+    lower cut to a coincident vertex ring when ``weld`` is enabled."""
     import numpy as np
     from PIL import Image
     from UnityPy.enums import TextureFormat
@@ -716,7 +740,8 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     if preserve_materials and not any((open_cap_lift, open_cap_edge, open_cap_edge_front,
                                       open_cap_edge_back, open_cap_edge_left, open_cap_edge_right)):
         return _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
-            exclude_accessories, selection_scope, donor_renderer, target_renderer, dry_run, log)
+            exclude_accessories, selection_scope, donor_renderer, target_renderer, dry_run, log,
+            physics_provenance=physics_provenance)
 
     bones = REGIONS.get(region, LOWER)
     T = BodyMesh(up.load(target_path), target_path)
@@ -744,7 +769,6 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
             % (cut_low, snapped, frac*100))
         cut_low = snapped
 
-    cyT = T.pos[trisT, 1].mean(1); cyD = D.pos[trisD, 1].mean(1)
     regT = regTv; regD = regDv
 
     # TARGET: only cut into BODY-SKIN connected components, never costume pieces
@@ -798,8 +822,8 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     if capset:
         capT[list(capset)] = True
 
-    bandT = (cyT >= cut_low) & (cyT <= cut_high)
-    bandD = (cyD >= cut_low) & (cyD <= cut_high)
+    bandT = _band_faces(T.pos, trisT, cut_low, cut_high, "inside")
+    bandD = _band_faces(D.pos, trisD, cut_low, cut_high, "intersect")
     tdrop = (regT[trisT].sum(1) >= 2) & bandT & skinT[trisT].all(1) & (~capT[trisT].any(1))
     keepT = trisT[~tdrop]
     ttake = (regD[trisD].sum(1) >= 2) & skinD[trisD].all(1) & bandD

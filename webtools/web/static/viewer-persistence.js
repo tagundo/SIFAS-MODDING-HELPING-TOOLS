@@ -1,19 +1,21 @@
-/* Source-bound body edits. Saving always creates copies and a portable recipe. */
+/* Source-bound model edits. Saving always creates copies and a portable recipe. */
 (function (global) {
   "use strict";
-  var MAX_RECIPE_BYTES = 1024 * 1024;
+  var MAX_RECIPE_BYTES = 16 * 1024 * 1024;
   function element(id) { return document.getElementById(id); }
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
   function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.accessoryUnclip ? 1 : 0); }
   function create(options) {
-    var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save body edits.", error = "";
+    var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save model edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
     var outputPaths = [], previewPaths = [], originalPaths = [], recipePath = "", events = [], lastContextId = "", lastAuthoringFingerprint = "";
     var modContext = "", manualModName = false, counterpartPath = "", modCharacters = "", lastPackage = null;
     var suggestedNameKey = "", suggestedName = "";
     var installedFingerprint = "", alreadyAdded = false;
+    var resultBodyState = null, resultMeshState = null;
+    var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
     function thumbnailMode() { var select = element("viewer-mod-thumbnail-mode"); return select && select.value === "3d" ? "3d" : "texture"; }
@@ -51,6 +53,15 @@
       var c = context();
       return c.rig && c.rig.getAuthoringState ? c.rig.getAuthoringState() : { version: 1, edits: [], unsupported: [] };
     }
+    function editingMeshState() {
+      var c = context(), tool = c.meshTools;
+      if (!tool || !tool.getEdits) return null;
+      var revision = tool.getEditRevision ? tool.getEditRevision() : null;
+      if (meshContext !== c.modelId || meshOwner !== tool || revision === null || meshRevision !== revision) {
+        meshContext = c.modelId; meshOwner = tool; meshRevision = revision; meshSnapshot = tool.getEdits();
+      }
+      return meshSnapshot && meshSnapshot.meshes && meshSnapshot.meshes.length ? meshSnapshot : null;
+    }
     function refresh() {
       if (disposed) return;
       var c = context(), metadata = c.editing || {}, rigState = c.rig && c.rig.getState ? c.rig.getState() : {};
@@ -60,18 +71,19 @@
       }
       if (c.rig && c.rig.setAuthoringEnabled) c.rig.setAuthoringEnabled(!reviewingSaved);
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
-      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !c.pendingMeshEdits;
-      var authored = editingState(), fingerprint = JSON.stringify(authored);
+      var mesh = editingMeshState(), unresolvedMesh = c.pendingMeshSelection || c.pendingMeshEdits && !mesh;
+      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !unresolvedMesh;
+      var authored = editingState(), fingerprint = JSON.stringify([authored, mesh]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
-      element("viewer-save").disabled = !authoring || (!editCount(authored) && !metadata.allowEmptySceneReset) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
+      element("viewer-save").disabled = !authoring || (!editCount(authored) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : accessoryBlocked ? accessories.errorText || translate(accessories.error || "Wait for the accessory check before saving.") : "";
-      refreshModForm(c, rigState, authored, authoring);
+      refreshModForm(c, rigState, authored, ready && !busy && !unresolvedMesh);
       element("viewer-recipe-open").disabled = !authoring;
       element("viewer-open-saved").hidden = !previewPaths.length;
-      element("viewer-open-saved").disabled = busy || !c.current || !!c.pendingMeshEdits;
+      element("viewer-open-saved").disabled = busy || !c.current || !!unresolvedMesh;
       element("viewer-reedit-original").hidden = !originalPaths.length || !result || !result.recipe;
       element("viewer-reedit-original").disabled = busy;
       var method = element("viewer-save-method"), selected = String(rigState.selectedNode || "");
@@ -106,9 +118,9 @@
       if (rigState.restoredCompensationReference) evaluationText += " " + translate("The recipe's saved child-compensation baseline is retained.");
       element("viewer-edit-evaluation-status").textContent = evaluationText;
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
-        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : c.pendingMeshEdits ? "Save from the mesh panel to include all current edits." : !ready ? (c.current ? "Body saving is unavailable for this model." : "Open a model to save body edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Body changes";
+        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
         statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle";
-        element("viewer-save-status").textContent = translate(key) + (key === "Body changes" ? ": " + editCount(authored) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
+        element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
       }
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
     }
@@ -164,7 +176,21 @@
         });
         return translate(label) + " " + (transforms.every(function (part) { return part === transforms[0]; }) ? transforms[0] : translate("Custom adjustment"));
       });
-      if (authored.accessoryUnclip) details.push(translate("Accessory Un-clip"));
+      var kinds = [], mesh = editingMeshState(), derived = packaging.derivedOwner || {};
+      (derived.operations || []).forEach(function (operation) {
+        var title = { costume: "Costume transplant", part: "Costume part transplant", lower: "Lower body replacement", mesh: "Mesh editing" }[operation];
+        if (title && kinds.indexOf(translate(title)) < 0) kinds.push(translate(title));
+      });
+      (c.transplantEdits || []).forEach(function (title) { if (kinds.indexOf(translate(title)) < 0) kinds.push(translate(title)); });
+      if (mesh) {
+        if (mesh.meshes.some(function (row) { return row.deleteFaces && row.deleteFaces.length; })) kinds.push(translate("Mesh deletion"));
+        if (mesh.meshes.some(function (row) { return row.positions && row.positions.length; })) kinds.push(translate("Vertex positions"));
+        if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push(translate("Skin weights"));
+      }
+      if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
+      if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
+      if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
+      details = kinds.concat(details);
       return [base].concat(details).join(" · ").slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
     }
     function refreshModForm(c, rigState, authored, authoring) {
@@ -172,6 +198,7 @@
       if (key !== modContext) {
         modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = ""; clearThumbnail();
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
+        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = true;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
       }
       var name = element("viewer-mod-name");
@@ -200,6 +227,9 @@
       var validName = !!name.value.trim() && name.value.trim().length <= 120;
       name.disabled = !authoring; element("viewer-mod-name-auto").disabled = !authoring || !manualModName;
       if (element("viewer-mod-thumbnail-mode")) element("viewer-mod-thumbnail-mode").disabled = !authoring;
+      var faceOption = element("viewer-mod-include-face"), faceHelp = element("viewer-mod-face-help");
+      if (faceOption) { faceOption.disabled = !authoring || !metadata.hasFaceCompanions; if (!metadata.hasFaceCompanions) faceOption.checked = false; }
+      if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
       characters.disabled = !authoring; element("viewer-mod-character-field").hidden = !choices.length;
       element("viewer-mod-variant").disabled = !authoring;
       element("viewer-mod-counterpart").value = counterpartPath ? basename(counterpartPath) : "";
@@ -210,10 +240,10 @@
       var owner = characters.value || metadata.characterId;
       element("viewer-mod-rina-fields").hidden = !!owner && Number(owner) !== 209;
       var accessories = c.accessories || {};
-      var enabled = authoring && validName && (editCount(authored) || (c.editing || {}).allowEmptySceneReset || (c.editing || {}).allowEmptyScenePackage) && !(authored.unsupported || []).length && !(authored.accessoryUnclip && (accessories.pending || accessories.error));
+      var enabled = authoring && validName && !(authored.unsupported || []).length && !(authored.accessoryUnclip && (accessories.pending || accessories.error));
       ["viewer-save-mod", "viewer-add-to-game"].forEach(function (id) { element(id).disabled = !enabled; element(id).title = element("viewer-save").title; });
       var body = Object.assign({}, authored); delete body.unsupported;
-      alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions())]);
+      alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState())]);
       if (alreadyAdded) {
         element("viewer-add-to-game").disabled = true;
         if (!(authored.unsupported || []).length) element("viewer-add-to-game").title = translate("Already added to game. Change the edits or mod name to add another copy.");
@@ -294,35 +324,42 @@
         return { node: entry.node, scale: vector(entry.scale), position: vector(entry.position), rotation: vector(entry.rotation) };
       }).sort(function (a, b) { return a.node - b.node; });
       if (input.physics && input.physics.length) canonical.physics = input.physics;
-      if (input.outlines && input.outlines.length) canonical.outlines = input.outlines.map(function (value) { return { id: value.id, factor: numeric(value.factor) }; }).sort(function (a, b) { return a.id.localeCompare(b.id); });
+      if (input.outlines && input.outlines.length) canonical.outlines = input.outlines.map(function (value) {
+        var row = { id: value.id, factor: numeric(value.factor) };
+        if (value.absolute !== undefined) row.absolute = value.absolute;
+        if (value.vertices && value.vertices.length) row.vertices = value.vertices.map(function (vertex) { return { vertex: vertex.vertex, value: numeric(vertex.value) }; }).sort(function (a, b) { return a.vertex - b.vertex; });
+        return row;
+      }).sort(function (a, b) { return a.id.localeCompare(b.id); });
       if (input.accessoryUnclip) canonical.accessoryUnclip = { strength: numeric(input.accessoryUnclip.strength), overlap: numeric(input.accessoryUnclip.overlap), closeGaps: input.accessoryUnclip.closeGaps };
       return JSON.stringify(canonical);
     }
     function captureSave(forPackage) {
-      var c = context(), authored = editingState();
-      if (!c.current || !c.editing || !c.editing.available || reviewingSaved) throw new Error("Open the original model before saving body edits.");
-      if (c.pendingMeshEdits) throw new Error("Save from the mesh panel to include all current edits.");
+      var c = context(), authored = editingState(), mesh = editingMeshState();
+      if (!c.current || !c.editing || !c.editing.available || reviewingSaved && !forPackage) throw new Error("Open the original model before saving model edits.");
+      if (c.pendingMeshSelection || c.pendingMeshEdits && !mesh) throw new Error("Apply selected face deletions before saving.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
       if (authored.accessoryUnclip && c.accessories && (c.accessories.pending || c.accessories.error)) throw new Error(c.accessories.error || "Wait for the accessory check before saving.");
-      if (!editCount(authored) && !c.editing.allowEmptySceneReset && !(forPackage && c.editing.allowEmptyScenePackage)) throw new Error("Change a body value before saving.");
+      if (!forPackage && !editCount(authored) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
       var body = JSON.parse(JSON.stringify(authored)); delete body.unsupported;
-      return { body: body, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
+      return { body: body, meshState: mesh ? JSON.parse(JSON.stringify(mesh)) : null, rawMesh: JSON.stringify(mesh), reviewingSaved: reviewingSaved, modelId: c.modelId, token: c.editing.token, paths: (c.loadedPaths || []).slice(),
         contextKey: modContextKey(c), canonical: canonicalBody(body, c.editing), rawBody: JSON.stringify(body),
         inspection: options.captureInspection ? options.captureInspection() : null };
     }
     function stillCurrent(snapshot) {
       var c = context(), authored = editingState();
       var body = Object.assign({}, authored); delete body.unsupported;
-      return c.current && !reviewingSaved && modContextKey(c) === snapshot.contextKey &&
+      return c.current && reviewingSaved === snapshot.reviewingSaved && modContextKey(c) === snapshot.contextKey &&
         !(authored.unsupported || []).length && JSON.stringify(body) === snapshot.rawBody &&
+        JSON.stringify(editingMeshState()) === snapshot.rawMesh &&
         canonicalBody(authored, c.editing) === snapshot.canonical &&
         (!snapshot.modOptions || JSON.stringify(modOptions()) === snapshot.modOptions);
     }
     function modOptions() {
       var character = element("viewer-mod-character").value;
-      return { display_name: element("viewer-mod-name").value.trim(), character_id: character ? Number(character) : null,
+      var suggested = ((context().editing || {}).modPackaging || {}).characterId;
+      return { display_name: element("viewer-mod-name").value.trim(), character_id: character ? Number(character) : suggested ? Number(suggested) : null,
         counterpart_path: counterpartPath || null, selected_variant: element("viewer-mod-variant").value || null,
-        thumbnail_mode: thumbnailMode() };
+        thumbnail_mode: thumbnailMode(), include_face_edits: !!(element("viewer-mod-include-face") && element("viewer-mod-include-face").checked) };
     }
     function modChanged() {
       lastPackage = null; clearThumbnail();
@@ -344,6 +381,7 @@
       var savedPaths = paths(data.output_paths), models = paths(data.preview_paths);
       if (!savedPaths.length || !models.length || typeof data.recipe_path !== "string") throw new Error("The save response is invalid.");
       result = data; resultSourcePaths = snapshot.paths; sourceInspection = snapshot.inspection; authoringInspection = snapshot.inspection;
+      resultBodyState = JSON.parse(JSON.stringify(snapshot.body)); resultMeshState = snapshot.meshState ? JSON.parse(JSON.stringify(snapshot.meshState)) : null;
       outputPaths = savedPaths; previewPaths = models; originalPaths = paths(data.original_paths); recipePath = data.recipe_path; resultModelId = snapshot.modelId;
       if (outputPaths.indexOf(recipePath) < 0) outputPaths.push(recipePath);
       renderOutputs();
@@ -355,7 +393,9 @@
       requestController = new global.AbortController(); var signal = requestController.signal;
       setBusy(true); say("Saving a new costume copy…", "saving");
       try {
-        var data = await runJob("/api/viewer/edit/export", { token: snapshot.token, state: snapshot.body }, signal);
+        var request = { token: snapshot.token, state: snapshot.body };
+        if (snapshot.meshState) request.mesh_state = snapshot.meshState;
+        var data = await runJob("/api/viewer/edit/export", request, signal);
         rememberResult(data, snapshot); lastPackage = null;
         say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done");
       } catch (failure) {
@@ -370,9 +410,10 @@
         if (!name || name.length > 120) throw new Error("Enter a mod name of 1 to 120 characters.");
       } catch (failure) { say(failure.message, "error"); return; }
       snapshot.modOptions = JSON.stringify(parameters);
-      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions]);
+      var binding = JSON.stringify([snapshot.contextKey, snapshot.rawBody, snapshot.modOptions, snapshot.rawMesh]);
       if (install && installedFingerprint === binding) { say("Already added to game. Change the edits or mod name to add another copy.", "done"); return; }
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
+      if (snapshot.meshState) body.mesh_state = snapshot.meshState;
       delete body.thumbnail_mode;
       requestController = new global.AbortController(); var signal = requestController.signal;
       lastPackage = null; setBusy(true); say("Saving an installer-ready mod ZIP…", "saving");
@@ -425,15 +466,24 @@
       var raw = await response.arrayBuffer();
       if (raw.byteLength > MAX_RECIPE_BYTES) throw new Error("The edit recipe is too large or empty.");
       try { return JSON.parse(new global.TextDecoder("utf-8", { fatal: true }).decode(raw)); }
-      catch (_) { throw new Error("The body edit recipe is invalid."); }
+      catch (_) { throw new Error("The model edit recipe is invalid."); }
     }
     async function restoreRecipe(recipe) {
       var c = context();
       if (!c.current || !c.editing || !c.editing.token || reviewingSaved) throw new Error("Open the original model before loading its recipe.");
       var modelId = c.modelId, response = await jsonRequest("/api/viewer/edit/restore", { token: c.editing.token, recipe: recipe });
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
-      if (!response.state) throw new Error("The body edit recipe is invalid.");
-      c.rig.restoreAuthoringState(response.state); say("Edit recipe restored from the original model.", "restored");
+      if (!response.state) throw new Error("The model edit recipe is invalid.");
+      var previous = c.rig.getAuthoringState();
+      try {
+        c.rig.restoreAuthoringState(response.state);
+        if (response.mesh_state && options.restoreMeshState) await options.restoreMeshState(response.mesh_state);
+      } catch (error) {
+        if (context().modelId === modelId) c.rig.restoreAuthoringState(previous);
+        throw error;
+      }
+      if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
+      say("Edit recipe restored from the original model.", "restored");
     }
     function pickRecipe() {
       if (busy || disposed || reviewingSaved) return;
@@ -449,9 +499,11 @@
       if (busy || !previewPaths.length) return;
       var c = context(), current = editingState();
       var ownOriginal = samePaths(c.loadedPaths, resultSourcePaths) || samePaths(c.loadedPaths, originalPaths);
-      if (!reviewingSaved && editCount(current) && (!ownOriginal || !result || !result.recipe ||
-          canonicalBody(current, c.editing) !== canonicalBody(result.recipe.state || {}, c.editing))) {
-        say("Save current body changes before opening the saved result.", "error"); return;
+      var mesh = editingMeshState();
+      if (!reviewingSaved && (editCount(current) || mesh) && (!ownOriginal || !result || !result.recipe ||
+          canonicalBody(current, c.editing) !== canonicalBody(resultBodyState || result.recipe.state || {}, c.editing) ||
+          JSON.stringify(mesh) !== JSON.stringify(resultMeshState))) {
+        say("Save current model changes before opening the saved result.", "error"); return;
       }
       authoringInspection = ownOriginal && options.captureInspection ? options.captureInspection() : sourceInspection;
       setBusy(true);
@@ -491,7 +543,7 @@
     listen("viewer-add-to-game", "click", function () { saveMod(true); });
     listen("viewer-mod-name", "input", function () { manualModName = true; modChanged(); });
     listen("viewer-mod-name-auto", "click", function () { manualModName = false; modChanged(); });
-    ["viewer-mod-character", "viewer-mod-variant"].forEach(function (id) { listen(id, "change", modChanged); });
+    ["viewer-mod-character", "viewer-mod-variant", "viewer-mod-include-face"].forEach(function (id) { listen(id, "change", modChanged); });
     var thumbnailChoice = element("viewer-mod-thumbnail-mode");
     if (thumbnailChoice) {
       try { if (global.localStorage.getItem("sifas_costume_thumbnail_mode") === "3d") thumbnailChoice.value = "3d"; } catch (_) {}

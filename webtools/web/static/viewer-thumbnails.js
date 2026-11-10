@@ -215,9 +215,12 @@
     return renderPlan(plan, options);
   }
   async function prepareViewer(snapshot, parameters, options) {
-    var plan = await api('plan', { kind: 'viewer', token: snapshot.token, state: snapshot.body,
+    var request = { kind: 'viewer', token: snapshot.token, state: snapshot.body,
       character_id: parameters.character_id, counterpart_path: parameters.counterpart_path,
-      selected_variant: parameters.selected_variant }, options && options.signal);
+      selected_variant: parameters.selected_variant };
+    if (typeof parameters.include_face_edits === 'boolean') request.include_face_edits = parameters.include_face_edits;
+    if (snapshot.meshState && snapshot.meshState.meshes && snapshot.meshState.meshes.length) request.mesh_state = snapshot.meshState;
+    var plan = await api('plan', request, options && options.signal);
     return renderPlan(plan, options);
   }
   async function prepareUpdater(params, options) {

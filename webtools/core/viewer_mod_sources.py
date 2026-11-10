@@ -307,6 +307,8 @@ def resolve_pair(context, export_result, *, repo_root, output_root, job, selecti
     rina = []
     declared_families = {}
     for source in sources:
+        if source["source"] in context.get("outline_only_sources", []):
+            continue
         container = containers[source["container"]]
         if source["member"] is not None:
             # A validated dual-platform manifest also establishes the family

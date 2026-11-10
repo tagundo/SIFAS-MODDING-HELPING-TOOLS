@@ -101,6 +101,7 @@
       transplantController && transplantController.getState().busy);
   }
   function meshDraftPending() { return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).dirty); }
+  function meshSelectionPending() { return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).hasUnappliedSelection); }
   function workbenchChanged() {
     if (rigController) rigController.setInteractive(!loading && !lost && !workbenchBusy() &&
       !(persistenceController && persistenceController.getState().busy));
@@ -411,7 +412,7 @@
       list.classList.toggle("viewer-model-files-embedded", hideList);
     }
     moveLayoutElement(list, hideList ? options.querySelector(".viewer-file-options-panel") : options.parentNode,
-      hideList ? null : options);
+      hideList ? node("viewer-file-help") : options);
     positionModelFilePopup();
     refreshPopoverStack(menu.open ? menu : null);
   }
@@ -1383,7 +1384,7 @@
 
   function captureViewerCheckpoint() {
     if (!model || loading || lost || !metadata || !metadata.editing || !metadata.editing.available ||
-        !sameSelection(loadedPaths, loadedAutoFace, loadedVariants) || meshDraftPending()) {
+        !sameSelection(loadedPaths, loadedAutoFace, loadedVariants) || meshSelectionPending()) {
       throw new Error(t("Save mesh edits and finish loading before restoring a transplant."));
     }
     var fingerprint = metadata.editing.sourceFingerprint;
@@ -1396,7 +1397,9 @@
     });
     return cloneCheckpoint({ version: 1, modelId: metadata.id, loadEpoch: generation,
       sourceFingerprint: fingerprint, paths: loadedPaths.slice(), variants: loadedVariants.slice(), archiveChoices: choices,
-      autoFace: loadedAutoFace, authoring: authoring, pose: rigController && rigController.getState(),
+      autoFace: loadedAutoFace, authoring: authoring, meshState: meshToolsController && meshToolsController.getEdits ? meshToolsController.getEdits() : null,
+      meshRevision: meshToolsController && meshToolsController.getEditRevision ? meshToolsController.getEditRevision() : null,
+      pose: rigController && rigController.getState(),
       camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), up: camera.up.toArray(), fov: camera.fov } : null,
       importedGameMotionPaths: importedGameMotionPaths.slice(),
       motionLibraryPaths: motionLibraryPaths.slice(),
@@ -1407,7 +1410,8 @@
     return !!value && !!model && !loading && !lost && !destroyed && value.modelId === (metadata && metadata.id) &&
       value.loadEpoch === generation && value.sourceFingerprint === (metadata && metadata.editing && metadata.editing.sourceFingerprint) &&
       JSON.stringify(value.paths) === JSON.stringify(loadedPaths) && value.autoFace === loadedAutoFace &&
-      JSON.stringify(value.variants) === JSON.stringify(loadedVariants) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants);
+      JSON.stringify(value.variants) === JSON.stringify(loadedVariants) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) &&
+      (value.meshRevision === undefined || value.meshRevision === null || !meshToolsController || value.meshRevision === meshToolsController.getEditRevision());
   }
 
   function selectCheckpointInputs(value) {
@@ -1437,7 +1441,7 @@
   async function loadViewerCheckpoint(value, expectedCurrent, options) {
     options = options || {};
     if (expectedCurrent && !checkpointIsCurrent(expectedCurrent)) return false;
-    if (meshDraftPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Save mesh edits before transplanting."));
+    if (meshSelectionPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Apply selected face deletions before saving."));
     var before = expectedCurrent || captureViewerCheckpoint();
     var oldSelection = { paths: paths.slice(), choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
       autoFace: node("viewer-auto-face").checked, imported: importedGameMotionPaths.slice(), motions: motionLibraryPaths.slice() };
@@ -1452,6 +1456,10 @@
       var committed = await promise;
       if (requestEpoch !== generation || destroyed || !sameSelection(value.paths, value.autoFace, value.variants)) return false;
       if (committed !== true) throw new Error(statusDetail || t(statusKey) || t("The model could not be displayed."));
+      if (!options.graft && value.meshState && meshToolsController && meshToolsController.restoreEdits) {
+        await meshToolsController.restoreEdits(value.meshState);
+        if (requestEpoch !== generation || destroyed) return false;
+      }
       importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return loadedMotionPaths.indexOf(path) >= 0; });
       requestRender(); return true;
     } catch (error) {
@@ -1499,6 +1507,7 @@
       if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) archiveVariants[index] = selectedVariants[index];
     });
     var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
+    if (node("viewer-reimport") && node("viewer-reimport").checked) payload.reimport = true;
     if (selectedMotions.length) payload.motion_paths = selectedMotions;
     if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
     var pendingModel = null;
@@ -1932,7 +1941,9 @@
       translate: t,
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
         accessories: accessoryController && accessoryController.getState(),
-        loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), pendingMeshEdits: meshDraftPending(),
+        meshTools: meshToolsController,
+        transplantEdits: transplantController && transplantController.getEditHistory ? transplantController.getEditHistory() : [],
+        loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), pendingMeshEdits: meshDraftPending(), pendingMeshSelection: meshSelectionPending(),
         current: !!model && !loading && !lost && !workbenchBusy() && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
       busyChanged: function (busy) {
         if (rigController) rigController.setInteractive(!busy && !loading && !lost && !workbenchBusy());
@@ -1950,6 +1961,10 @@
         var pose = rigController && rigController.getState();
         return { pose: pose ? { selectedClip: pose.selectedClip, time: pose.time, playing: pose.playing, evaluationMode: pose.evaluation && pose.evaluation.mode, editorGroup: pose.editorGroup, selectedNode: pose.selectedNode } : null,
           camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null };
+      },
+      restoreMeshState: function (state) {
+        if (!meshToolsController || !meshToolsController.restoreEdits) throw new Error(t("Mesh editing is unavailable for this model."));
+        return meshToolsController.restoreEdits(state);
       },
       openFiles: async function (nextPaths, nextVariants, inspection) {
         var previousPose = inspection ? inspection.pose : rigController && rigController.getState();
@@ -2017,6 +2032,7 @@
         authoring: rigController && rigController.getAuthoringState(), loadedPaths: loadedPaths.slice(),
         loadedVariants: loadedVariants.slice(), autoFace: loadedAutoFace, loadEpoch: generation,
         persistence: persistenceController && persistenceController.getState(),
+        getMeshEdits: function () { return meshToolsController && meshToolsController.getEdits ? meshToolsController.getEdits() : null; },
         meshTools: meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()),
         current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
       pickFile: function (callback) { containViewerPicker(); config.pickFile(callback); },
@@ -2155,7 +2171,7 @@
     if (pendingOpen) {
       var pending = pendingOpen;
       pendingOpen = null;
-      Promise.resolve(open(pending.paths, pending.variants)).then(pending.resolve, pending.resolve);
+      Promise.resolve(open(pending.paths, pending.variants, pending.importOptions)).then(pending.resolve, pending.resolve);
     }
   }
 
@@ -2210,12 +2226,13 @@
     window.requestAnimationFrame(function () { resize(); requestRender(); });
   }
 
-  function open(nextPaths, nextVariants) {
+  function open(nextPaths, nextVariants, importOptions) {
     if (!mounted) return new Promise(function (resolve) {
       if (pendingOpen) pendingOpen.resolve();
-      pendingOpen = { paths: nextPaths, variants: nextVariants, resolve: resolve };
+      pendingOpen = { paths: nextPaths, variants: nextVariants, importOptions: importOptions, resolve: resolve };
     });
     var unique = [];
+    if (importOptions && typeof importOptions.reimport === "boolean" && node("viewer-reimport")) node("viewer-reimport").checked = importOptions.reimport;
     (Array.isArray(nextPaths) ? nextPaths : [nextPaths]).forEach(function (path) {
       if (typeof path === "string" && path.trim() && unique.indexOf(path) < 0) unique.push(path);
     });

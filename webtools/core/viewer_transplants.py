@@ -20,18 +20,19 @@ from webtools import filebrowser
 from webtools.core import model_edits, viewer_archive
 
 MAX_DONOR_BYTES = 96 * 1024 * 1024
+COMPANION_HINT = "viewer-companions.json"
 OPERATIONS = {"costume", "part", "lower"}
 MAX_PART_BONES = 512
 MAX_PART_TRIANGLES = 200000
 PART_SELECTION_FIELDS = {"partSelectionMode", "partRoots", "includeDescendants", "triangleIndices", "donorSha256", "donorMesh", "donorSelectionFingerprint"}
-OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer"} | PART_SELECTION_FIELDS
+OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer", "mesh_state"} | PART_SELECTION_FIELDS
 
 
-def _geometry(model, renderer=None):
+def _geometry(model, renderer=None, *, environment=None):
     import UnityPy
     import numpy as np
     import lower_body_swap as lower
-    body = lower.BodyMesh(UnityPy.load(model), model, renderer)
+    body = lower.BodyMesh(environment if environment is not None else UnityPy.load(model), model, renderer)
     if body.n > 100000 or len(body.tris()) > 200000:
         raise ValueError("The donor mesh exceeds the transplant preview limits.")
     _, positions = lower.band_selection(body, -10, 10, "central", False, "mesh")
@@ -66,20 +67,22 @@ def _read_donor(path):
     return value, raw
 
 
-def _platform(path):
+def _platform(path, *, environment=None):
     import UnityPy
-    environment = UnityPy.load(str(path))
+    environment = environment if environment is not None else UnityPy.load(str(path))
     values = {int(asset.target_platform) for asset in environment.assets}
     if len(values) != 1:
         raise ValueError("The selected costume has an ambiguous Unity platform.")
     return next(iter(values))
 
 
-def _donor_model(expanded):
+def _donor_model(expanded, *, environments=None):
     import UnityPy
     candidates = []
     for path in expanded.paths:
         environment = UnityPy.load(path)
+        if environments is not None:
+            environments[path] = environment
         if any(obj.type.name == "SkinnedMeshRenderer" for obj in environment.objects):
             candidates.append(path)
     if len(candidates) != 1:
@@ -104,10 +107,10 @@ def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
         original.write_bytes(raw)
         choices = {str(original): variant} if zipfile.is_zipfile(original) and variant == "unmasked" else None
         with viewer_archive.expand_inputs([str(original)], root, choices) as expanded:
-            model = _donor_model(expanded)
-            from webtools.tools.costume import part_root_options
-            import UnityPy
-            env = UnityPy.load(model)
+            environments = {}
+            model = _donor_model(expanded, environments=environments)
+            import costume_part_transplant as cpt
+            env = environments[model]
             renderers = []
             for obj in env.objects:
                 if obj.type.name != "SkinnedMeshRenderer": continue
@@ -118,15 +121,15 @@ def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
                     renderers.append({"value": str(obj.path_id), "label": mesh.read_typetree().get("m_Name", "Mesh")})
             if renderer is not None and renderer not in {row["value"] for row in renderers}:
                 raise ValueError("Choose a valid skinned donor mesh.")
-            geometry = _geometry(model, renderer)
-            parts = part_root_options({"donor": model, "donor_renderer": geometry["renderer"]})
+            geometry = _geometry(model, renderer, environment=env)
+            parts = cpt.part_hierarchy(model, renderer=geometry["renderer"], environment=env)
             digest = hashlib.sha256(raw).hexdigest()
-            return {"name": donor.name, "parts": parts, "platform": _platform(model), "geometry": geometry,
+            return {"name": donor.name, "parts": parts, "platform": _platform(model, environment=env), "geometry": geometry,
                     "renderers": renderers,
                     "sha256": digest,
                     "selectionFingerprint": _selection_fingerprint(model, digest, variant, geometry),
                     "cutPresets": [
-                        {"value": "hip_fix", "label": "Knee to waist", "low": .5, "high": .96},
+                        {"value": "hip_fix", "label": "Knee to waist", "low": .5, "high": .92},
                         {"value": "calf", "label": "Calf to waist", "low": .3, "high": .96},
                         {"value": "ankle", "label": "Ankle to waist", "low": .11, "high": .96},
                         {"value": "whole", "label": "Whole lower body", "low": -.05, "high": 1.06},
@@ -135,8 +138,10 @@ def inspect_donor(path, variant="primary", *, cache_root, renderer=None):
 
 def _part_selection(model, params):
     """Resolve a checked UI selection against the immutable donor model."""
-    from webtools.tools.costume import part_root_options
-    geometry = _geometry(model, params["donorRenderer"] or None)
+    import UnityPy
+    import costume_part_transplant as cpt
+    environment = UnityPy.load(model)
+    geometry = _geometry(model, params["donorRenderer"] or None, environment=environment)
     if params["donorMesh"] and geometry["mesh"] != params["donorMesh"]:
         raise ValueError("The selected donor mesh changed. Load the donor again.")
     fingerprint = _selection_fingerprint(model, params["donorSha256"], params["variant"], geometry)
@@ -147,7 +152,7 @@ def _part_selection(model, params):
         if any(index >= len(geometry["triangles"]) for index in params["triangleIndices"]):
             raise ValueError("A selected triangle is outside the original donor mesh.")
         return {**selected, "partBones": [], "triangleIndices": params["triangleIndices"]}
-    choices = part_root_options({"donor": model, "donor_renderer": geometry["renderer"]})
+    choices = cpt.part_hierarchy(model, renderer=geometry["renderer"], environment=environment)
     available = {item["value"]: item for item in choices}
     roots = params["partRoots"] or [params["partRoot"]]
     if any(root not in available for root in roots):
@@ -166,6 +171,73 @@ def _resolve_snapshot_selection(raw, name, params):
         choices = {str(donor): params["variant"]} if zipfile.is_zipfile(donor) and params["variant"] == "unmasked" else None
         with viewer_archive.expand_inputs([str(donor)], root / "cache", choices) as expanded:
             return _part_selection(_donor_model(expanded), {**params, "donorSha256": hashlib.sha256(raw).hexdigest()})
+
+
+def _preserve_face_companions(context, saved, models, body, body_platform):
+    """Publish only server-verified automatic faces next to the sole body output."""
+    indices = context.get("outline_only_sources", [])
+    if not indices:
+        return []
+    sources, containers = context["sources"], context["containers"]
+    recipe = saved.get("recipe", {})
+    if recipe.get("tool") == "mesh-tools":
+        recipe = recipe.get("bodyRecipe", {})
+    previews = saved.get("preview_paths", [])
+    if (not isinstance(indices, list) or len(indices) > 4
+            or any(type(index) is not int or not 0 <= index < len(sources) for index in indices)
+            or len(set(indices)) != len(indices)
+            or len(previews) != len(containers)
+            or recipe.get("sources") != sources):
+        raise ValueError("The edited facial companions lost their original source identities.")
+    original_records = [{"name": row["name"], "sha256": row["sha256"]} for row in containers]
+    if recipe.get("originals") != original_records:
+        raise ValueError("The edited facial companions do not match their original files.")
+    import unicodedata
+    import UnityPy
+    def key(name):
+        return unicodedata.normalize("NFC", name).casefold()
+    used = {key(path.name) for path in models.iterdir()} | {key(COMPANION_HINT)}
+    copied = []
+    for index in indices:
+        source = sources[index]
+        ci, member = source["container"], source["member"]
+        if type(ci) is not int or not 0 <= ci < len(containers):
+            raise ValueError("A facial companion is outside its original export.")
+        exported = Path(previews[ci])
+        raw = model_edits._read(exported)
+        if member is not None:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                entry = archive.getinfo(member)
+                if not 0 < entry.file_size <= 16 * 1024 * 1024:
+                    raise ValueError("The edited facial companion exceeds the face preview limit.")
+                raw = archive.read(entry)
+        if not 0 < len(raw) <= 16 * 1024 * 1024:
+            raise ValueError("The edited facial companion exceeds the face preview limit.")
+        if _platform(str(exported), environment=UnityPy.load(raw)) != body_platform:
+            raise ValueError("The edited facial companion and wearer use different Unity platforms.")
+        name = str(source["name"])
+        if not name or name in (".", "..") or len(name) > 256 or any(char in name for char in ("/", "\\", "\0")):
+            raise ValueError("The facial companion has an invalid original filename.")
+        original_name, ordinal = name, 0
+        while key(name) in used:
+            ordinal += 1
+            name = f"face-{index + 1}-{ordinal}-" + original_name
+        used.add(key(name))
+        digest = hashlib.sha256(raw).hexdigest()
+        destination = models / name
+        with destination.open("xb") as stream:
+            stream.write(raw)
+        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+            raise ValueError("The edited facial companion changed while publishing.")
+        copied.append({"file": name, "sha256": digest})
+    hint = models / COMPANION_HINT
+    if hint.exists():
+        raise ValueError("The costume uses a reserved facial companion metadata filename.")
+    hint.write_text(json.dumps({"version": 1,
+        "body": {"file": unicodedata.normalize("NFC", body.name),
+                 "sha256": hashlib.sha256(body.read_bytes()).hexdigest()},
+        "companions": copied}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return copied
 
 
 def validate_request(params):
@@ -224,6 +296,8 @@ def validate_request(params):
             raise ValueError("Cut heights must be finite numbers between -10 and 10.")
     if params["cutLow"] >= params["cutHigh"]:
         raise ValueError("The lower cut must be below the upper cut.")
+    from .viewer_mod_flow import normalize_mesh_state
+    mesh_state = normalize_mesh_state(params.get("mesh_state"))
     state = model_edits.validate_state(params["token"], params["state"], allow_empty=True)
     context = model_edits.mod_source_context(params["token"])
     # Separate face/motion inputs have no body joints and are retained by export.
@@ -253,15 +327,17 @@ def validate_request(params):
     if params["donorSha256"] and params["donorSha256"] != digest:
         raise ValueError("The donor changed after selection. Load it again.")
     selection = _resolve_snapshot_selection(raw, donor.name, params) if operation == "part" else {}
-    return {**copy.deepcopy(params), **selection, "state": state, "donorSha256": digest, "donorName": donor.name,
+    return {**copy.deepcopy(params), **selection, "state": state, "mesh_state": mesh_state,
+            "donorSha256": digest, "donorName": donor.name,
             "donorRaw": raw, "sourceIndex": source_index, "context": context}
 
 
-def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
+def run_transplant(job, request, *, output_root, cache_root, export_fn=None, repo_root=None,
+                   physics_cache_root=None):
     """Save the present edits, graft on a copy, and publish completed outputs.
 
-    ``export_fn`` may include additional physics/mesh edits in the app's combined
-    exporter. Its return shape matches model_edits.export.
+    ``export_fn`` may replace the pre-exporter. It receives ``mesh_state`` when
+    mesh edits are present; its return shape matches model_edits.export.
     """
     root = model_edits._safe_root(output_root)
     cache = model_edits._safe_root(cache_root)
@@ -272,7 +348,18 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
         return "Cancelled"
     job.progress(0, 3)
     job.log("Saving current model edits before transplanting…")
-    saved = (export_fn or model_edits.export)(request["token"], request["state"], str(root), log=job.log, allow_empty=True)
+    mesh_state = request.get("mesh_state")
+    export_options = {"log": job.log, "allow_empty": True}
+    if mesh_state is not None:
+        from .viewer_mod_flow import export_current
+        exporter = export_fn or export_current
+        export_options["mesh_state"] = mesh_state
+        if export_fn is None:
+            export_options.update(repo_root=repo_root if repo_root is not None else Path.cwd(),
+                cache_root=physics_cache_root if physics_cache_root is not None else cache)
+    else:
+        exporter = export_fn or model_edits.export
+    saved = exporter(request["token"], request["state"], str(root), **export_options)
     saved_path = Path(saved["preview_paths"][source["container"]])
     pending = Path(tempfile.mkdtemp(prefix=".viewer-transplant-", dir=root))
     try:
@@ -283,24 +370,28 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
         donor.write_bytes(request["donorRaw"])
         choices = {str(donor): request["variant"]} if zipfile.is_zipfile(donor) and request["variant"] == "unmasked" else None
         with viewer_archive.expand_inputs([str(donor)], cache, choices) as expanded:
-            donor_model = _donor_model(expanded)
+            donor_environments = {}
+            donor_model = _donor_model(expanded, environments=donor_environments)
+            donor_member = expanded.archive_members.get(donor_model)
             wearer = inputs / "wearer.unity"
             if source["member"] is None:
                 shutil.copyfile(saved_path, wearer)
             else:
                 with zipfile.ZipFile(saved_path) as archive:
                     wearer.write_bytes(archive.read(source["member"]))
-            if _platform(wearer) != _platform(donor_model):
+            if _platform(wearer) != _platform(donor_model, environment=donor_environments[donor_model]):
                 raise ValueError("The donor and wearer need matching Unity platforms (Android or iOS).")
             if job.should_stop():
                 return "Cancelled"
             job.progress(1, 3)
             from webtools.tools import costume
+            physics_provenance = {}
             params = {"mode": "single", "donor": donor_model, "target": str(wearer),
                       "out_dir": str(models), "suffix": "_transplant", "preserve_physics": True,
                       "restore_collision": True, "worldspace": True, "fix_nodescaling": True,
                       "match_skin": request["matchSkin"], "skin_only": request["skinOnly"],
-                      "skin_colour_guard": request["skinOnly"], "match_thigh": False}
+                      "skin_colour_guard": request["skinOnly"], "match_thigh": False,
+                      "_physics_provenance": physics_provenance}
             if operation == "costume":
                 costume.run_costume_transplant(job, params)
             elif operation == "part":
@@ -319,7 +410,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
             raise ValueError("The costume operation did not create a model.")
         # Actual Unity deserialization verifies the resulting bundle before it
         # becomes a selectable viewer output.
-        _platform(changed)
+        output_platform = _platform(changed)
         from costume_transplant import validate as validate_model
         if not validate_model(str(changed), verbose=False):
             raise ValueError("The transplanted model has unresolved mesh or bone references. No result was published.")
@@ -333,17 +424,33 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None):
                 for entry in incoming.infolist():
                     outgoing.writestr(copy.copy(entry), changed.read_bytes() if entry.filename == source["member"] else incoming.read(entry))
             changed.unlink()
+        companions = _preserve_face_companions(context, saved, models, result, output_platform)
         shutil.rmtree(inputs)
         if job.should_stop():
             return "Cancelled"
         final = root / ("transplant-" + secrets.token_hex(8))
         pending.rename(final); pending = None
         output = str(final / "models" / result.name)
+        if repo_root is not None:
+            from webtools.core import viewer_physics_runtime
+            try:
+                viewer_physics_runtime.record_transplant(output, wearer_context=context,
+                    wearer_source=request["sourceIndex"], donor_path=request["donor"], donor_member=donor_member,
+                    donor_sha256=request["donorSha256"], operation=operation,
+                    component_origins=physics_provenance.get("components", []),
+                    repo_root=repo_root, cache_root=physics_cache_root if physics_cache_root is not None else cache)
+            except Exception:
+                # No source-bound runtime receipt means this result has not
+                # completed. Never leave a selectable half-published graft.
+                shutil.rmtree(final, ignore_errors=True)
+                raise
         job.add_output(output)
         job.progress(3, 3)
         job.emit({"type": "transplant", "path": output,
                   "variant": context.get("variants", {}).get(str(source["container"]), "primary"),
                   "archived": source["member"] is not None,
+                  "operation": operation,
+                  "preserved_face_companions": len(companions),
                   "body_recipe": saved.get("recipe_path")})
         return "Costume transplanted onto the displayed model."
     finally:

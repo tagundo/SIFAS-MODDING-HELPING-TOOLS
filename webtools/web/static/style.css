@@ -975,3 +975,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 /* The macOS sidebar owns editor navigation; keep one shared document alive. */
 .elichika-native-editor-navigation body > header { display: none; }
 #tool-gallery-panel[hidden], #tool-form-panel[hidden] { display: none; }
+
+.viewer-uv-color-control { display: inline-flex; align-items: center; gap: .45rem; }
+.viewer-uv-color-control input[type="color"] { width: 44px; min-width: 44px; height: 34px; padding: 3px; cursor: pointer; }
+@media (pointer: coarse) { .viewer-uv-color-control input[type="color"] { height: 44px; } }

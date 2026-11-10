@@ -278,6 +278,22 @@ class PairedBodyEditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified matching vertex order"):
             paired._map_state(context, state, 0, edits._inspect(primary.read_bytes()), altered, edits._inspect(other_raw))
 
+    def test_absolute_outline_pair_sets_both_platform_masks_to_the_native_byte_value(self):
+        primary = self.write("absolute-board.unity", self.outline_red(self.fixture(), values=[0, 80, 255, 190, 30, 1]))
+        other_raw = self.outline_red(self.fixture(other=True, offset=1000), values=[20, 140, 0, 180, 255, 37])
+        other = self.write("absolute-bare.unity", other_raw)
+        token, _ = self.register(primary)
+        context = edits.mod_source_context(token)
+        identity = context["outlines"]["meshes"][0]["id"]
+        state = edits.validate_state(token, self.state(outlines=[{"id": identity, "factor": 1, "absolute": 37}]))
+        result = edits.export(token, state, self.root / "absolute-source")
+        output = self.apply_raw(context, result, state, other)
+        actual = Path(output["pair"]["unmasked"]["path"]).read_bytes()
+        self.assertEqual(self.outline_red(actual), [37] * 6)
+        self.assertEqual(other.read_bytes(), other_raw)
+        recipe = json.loads(Path(output["result"]["paired_recipe_paths"][0]).read_text())
+        self.assertEqual(recipe["state"]["outlines"][0]["absolute"], 37)
+
     def test_outline_only_paired_mod_zip_propagates_all_platform_variants(self):
         path, original = self.paired_zip(four=True)
         token, _ = self.register(path, archive=True)

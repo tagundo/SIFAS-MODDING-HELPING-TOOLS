@@ -255,6 +255,7 @@ if(require.main===module)(async()=>{
     const pressed=()=>page.evaluate(()=>['viewer-pose-basic','viewer-pose-preview'].map(id=>document.getElementById(id).getAttribute('aria-pressed')));
     const slider=async(id,value)=>{
       if(id==='viewer-expression-value'){
+        if(!await page.locator('#viewer-expression-adjustments').evaluate(panel=>panel.open)) await page.locator('#viewer-expression-adjustments > summary').click();
         await page.locator('#viewer-expression-advanced').evaluate(e=>e.open=true);
         if(!await page.locator('#viewer-expression').inputValue()){
           const first=await page.locator('#viewer-expression option').evaluateAll(options=>options.find(option=>option.value).value);
@@ -358,6 +359,8 @@ if(require.main===module)(async()=>{
     const scaledProbe=await page.evaluate(()=>ModelViewer.renderProbe(33));
     await page.locator('#viewer-fit').click();
     assert.notDeepEqual((await state()).camera.position,initial.camera.position,'Fit should account for posed/skinned body bounds');
+    assert.equal(await page.locator('#viewer-adjustments').evaluate(panel=>panel.open),false,'Pose and motion initially stay collapsed');
+    await page.locator('#viewer-adjustments > summary').click();
     await page.locator('#viewer-motion').selectOption('Synthetic test motion');await slider('viewer-time',.5);
     const posed=await state();assert(posed.rig.bones.find(b=>b.name==='BreastSize').quaternion[2]>.2);assert.equal(posed.rig.bones.find(b=>b.name==='BreastSize').scale[0],.72);
     await page.locator('#viewer-node').selectOption('2');
@@ -375,7 +378,9 @@ if(require.main===module)(async()=>{
     assert.notEqual(await page.locator('[data-viewer-value-source="pose"][data-viewer-value-kind="rotation"]').innerText(),poseReadoutBeforePlay,'Playback refreshes the selected live pose readout without rebuilding static inputs');
     nearVector(await page.locator('[data-viewer-node-kind="rotation"]').evaluateAll(inputs=>inputs.map(input=>Number(input.value))),[0,0,0],'Playback preserves static editor values');
     await page.locator('[data-tab="tools"]').click();await page.waitForTimeout(80);const hidden=await state();await page.waitForTimeout(150);assert.equal((await state()).rig.time,hidden.rig.time,'Hidden viewer must not advance animation');
-    await page.locator('[data-tab="viewer"]').click();await page.waitForTimeout(120);assert.notEqual((await state()).rig.time,hidden.rig.time,'Visible viewer resumes playback');
+    await page.locator('[data-tab="viewer"]').click();
+    await page.waitForFunction(previous=>ModelViewer.getState().rig.time!==previous,hidden.rig.time,{timeout:5000});
+    assert.notEqual((await state()).rig.time,hidden.rig.time,'Visible viewer resumes playback');
     await page.locator('#viewer-play').click();const paused=await state();await page.waitForTimeout(130);assert.equal((await state()).rig.time,paused.rig.time);
     await slider('viewer-expression-value',75);assert.equal((await state()).rig.expressions[0].weight,.75);
     await page.locator('.viewer-node-editor').evaluate(e=>e.open=true);

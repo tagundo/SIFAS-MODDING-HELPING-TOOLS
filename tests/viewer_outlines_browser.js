@@ -161,6 +161,49 @@ print(json.dumps(result))`, JSON.stringify(catalogue), JSON.stringify(sources), 
     const detailSaved = await page.evaluate(() => ModelViewer.getState().persistence), detailRecipe = JSON.parse(fs.readFileSync(detailSaved.recipePath, 'utf8'));
     assert.deepStrictEqual(detailRecipe.state.outlines, paintedDetail, 'Sparse detailed edits survive the actual Save recipe');
     report.cases.push({ name: 'Sparse zero-mask vertex width, actual GPU override, 3D brush/cursor, Ctrl+Z/Redo and real detail export', exactDetail, detailGpu, paintedDetail, detailSaved });
+    await open(page, sources); await choose(page, '#viewer-outline-mesh', '');
+    const absoluteCatalogue = await page.evaluate(() => ModelViewer.getEditingMetadata().outlines);
+    await field(page, '#viewer-outline-absolute', 37); await page.locator('#viewer-outline-absolute-apply').click();
+    const absoluteState = await page.evaluate(() => ModelViewer.getAuthoringState().outlines);
+    assert.deepStrictEqual(absoluteState, absoluteCatalogue.meshes.map(mesh => ({ id: mesh.id, factor: 1, absolute: 37 })).sort((a, b) => a.id.localeCompare(b.id)));
+    await field(page, '#viewer-outline-absolute', 1.5); assert(await page.locator('#viewer-save').isDisabled(), 'An invalid absolute raw byte must not serialize');
+    await field(page, '#viewer-outline-absolute', 37); assert(!(await page.locator('#viewer-save').isDisabled()));
+    const absoluteGPU = await page.evaluate(() => {
+      ModelViewer.renderProbe(); const result = [];
+      window.__outlineRoot.traverse(mesh => { if (!mesh.isMesh || mesh.userData.viewerHelper) return; const source = mesh.geometry.attributes._sifas_color, width = mesh.geometry.attributes._sifas_outline_width;
+        result.push({ source: Array.from({ length: source.count }, (_, i) => source.getX(i)), width: width && Array.from(width.array) });
+      }); return result;
+    });
+    assert(absoluteGPU.length === 2 && absoluteGPU.every(mesh => mesh.width.every(value => Math.abs(value - 37 / 255) < 1e-7)), 'Absolute raw 37 paints all source vertices, including original zero-red vertices');
+    assert(absoluteGPU.every(mesh => mesh.source[0] === 0 && mesh.source[4] === 1), 'Absolute preview retains every immutable source mask');
+    await page.locator('#viewer-outline-undo').click(); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines || []), []);
+    await page.locator('#viewer-outline-redo').click(); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines), absoluteState);
+    await choose(page, '#viewer-outline-mesh', absoluteCatalogue.meshes[0].id); await field(page, '#viewer-outline-vertex-index', 0); await page.locator('#viewer-outline-vertex-reset').click();
+    const originalRestored = await page.evaluate(() => { ModelViewer.renderProbe(); let result; window.__outlineRoot.traverse(mesh => { const map = mesh.geometry && (mesh.geometry.userData.viewerMesh || mesh.userData.viewerMesh); if (mesh.isMesh && !mesh.userData.viewerHelper && map && map.mesh.source === 0) { window.__widthBufferBefore = mesh.geometry.attributes._sifas_outline_width; result = Array.from(window.__widthBufferBefore.array); } }); return result; });
+    assert.equal(originalRestored[0], 0, 'Restore vertex recovers its original zero mask after an absolute fill'); assert(originalRestored.slice(1).every(value => Math.abs(value - 37 / 255) < 1e-7));
+    await field(page, '#viewer-outline-vertex-width', 25); await page.locator('#viewer-outline-vertex-apply').click();
+    const bufferReused = await page.evaluate(() => { ModelViewer.renderProbe(); let value; window.__outlineRoot.traverse(mesh => { const map = mesh.geometry && (mesh.geometry.userData.viewerMesh || mesh.userData.viewerMesh); if (mesh.isMesh && !mesh.userData.viewerHelper && map && map.mesh.source === 0) value = mesh.geometry.attributes._sifas_outline_width === window.__widthBufferBefore; }); return value; });
+    assert(bufferReused, 'A sparse width update reuses its live GPU attribute instead of rebuilding geometry');
+    await choose(page, '#viewer-outline-mesh', ''); await page.locator('#viewer-outline-absolute-apply').click();
+    const absoluteResponse = page.waitForResponse(response => response.url().endsWith('/api/viewer/edit/export')); await (await show(page.locator('#viewer-save'))).click(); assert.equal((await absoluteResponse).status(), 200);
+    await page.waitForFunction(() => !ModelViewer.getState().persistence.busy && ModelViewer.getState().persistence.previewPaths.length === 2);
+    const absoluteSaved = await page.evaluate(() => ModelViewer.getState().persistence);
+    const absolutePreservation = JSON.parse(execFileSync(python, ['-c', `import json,sys
+from pathlib import Path
+from webtools.core.model_edits import _inspect
+from webtools.core.model_outlines import _layout
+catalog=json.loads(sys.argv[1]);before_paths=json.loads(sys.argv[2]);after_paths=json.loads(sys.argv[3]);out=[]
+for index,(before_path,after_path) in enumerate(zip(before_paths,after_paths)):
+ a,b=_inspect(Path(before_path).read_bytes()),_inspect(Path(after_path).read_bytes());keys={(r['file'],int(r['meshId'])) for r in catalog['meshes'] if r['sourceIndex']==index}
+ for key,obj in a['objects'].items():
+  if key not in keys:assert obj.get_raw_data()==b['objects'][key].get_raw_data();continue
+  x,y=obj.read_typetree(),b['objects'][key].read_typetree();expected=bytearray(x['m_VertexData']['m_DataSize']);count,start,stride=_layout(x)
+  for vertex in range(count):expected[start+vertex*stride]=37
+  assert bytes(expected)==y['m_VertexData']['m_DataSize'];x['m_VertexData']['m_DataSize']=y['m_VertexData']['m_DataSize'];assert x==y
+ out.append({'source':before_path,'saved':after_path,'onlyRedChanged':True,'allAbsolute':37})
+print(json.dumps(out))`, JSON.stringify(absoluteCatalogue), JSON.stringify(sources), JSON.stringify(absoluteSaved.previewPaths)], { cwd: product, env: pythonEnv }).toString());
+    await open(page, absoluteSaved.previewPaths); assert.deepStrictEqual(await page.evaluate(() => ModelViewer.getAuthoringState().outlines || []), []);
+    report.cases.push({ name: 'Compact absolute native width, original-zero restoration, GPU buffer reuse, Undo/Redo and actual red-only two-source export', absoluteState, absoluteGPU, originalRestored, bufferReused, absoluteSaved, absolutePreservation });
     await open(page, [sources[0]]); const before = await geometry(page); assert(before.length && before.every(value => value.same));
     await page.locator('#viewer-mesh-deleter').evaluate(node => node.open = true);
     const inspectResponse = page.waitForResponse(r => r.url().endsWith('/api/viewer/mesh/inspect')); await page.locator('#viewer-mesh-deleter-load').click();

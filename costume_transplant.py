@@ -1134,7 +1134,8 @@ def physics_dependency_names(objs, id2, scriptnames, names, existing):
     return [name for name in dict.fromkeys(list(names) + list(transforms)) if name in chosen]
 
 
-def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *, restore_collision=True, verbose=True):
+def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *, restore_collision=True, verbose=True,
+                             provenance=None):
     """Rebind the saved graph by typed source references and manager identities.
 
     The source indices address bones+lodBones, and sibling PPtrs address
@@ -1151,8 +1152,9 @@ def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *,
         sn = _scriptname_map(os)
         manager = _find_swingbone_manager(os, sn)
         mt = manager.read_typetree() if manager else {}
-        owners, transforms, swings, colliders = {}, {}, {}, {}
+        owners, transforms, swings, colliders, files = {}, {}, {}, {}, {}
         for o in os:
+            files.setdefault(id(o.assets_file), len(files))
             if o.type.name not in ("Transform", "MonoBehaviour"):
                 continue
             t = o.read_typetree()
@@ -1166,9 +1168,11 @@ def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *,
                 elif cls == "SwingCollider": colliders[name] = o
         combined = [owners.get(p.get("m_PathID")) for p in mt.get("bones", []) + mt.get("lodBones", [])]
         return dict(manager=manager, tree=mt, owners=owners, transforms=transforms,
-                    swings=swings, colliders=colliders, combined=combined)
+                    swings=swings, colliders=colliders, combined=combined, files=files)
 
     out, donor, target = graph(env), graph(UnityPy.load(donor_path)), graph(UnityPy.load(target_path))
+    if provenance is not None:
+        provenance["components"] = []
     if not out["manager"]:
         return 0
     names = set(donor_names)
@@ -1192,6 +1196,14 @@ def repair_transplant_physics(out_path, donor_path, target_path, donor_names, *,
         original = source["swings"].get(name)
         if original is None:
             continue
+        if provenance is not None:
+            provenance["components"].append({
+                "componentId": str(obj.path_id),
+                "serializedFile": out["files"][id(obj.assets_file)],
+                "source": "donor" if source is donor else "wearer",
+                "sourceComponentId": str(original.path_id),
+                "sourceSerializedFile": source["files"][id(original.assets_file)],
+            })
         before = obj.read_typetree()
         tree, source_tree = copy.deepcopy(before), original.read_typetree()
         for field, objects in (("child", out["transforms"]), ("sibling", out["swings"])):
@@ -1986,7 +1998,7 @@ def transplant(donor_path, target_path, out_path, verbose=True,
                preserve_physics=False, realign=True, restore_collision=True,
                worldspace=True, fix_nodescaling=True, mask_handling="auto",
                costume_physics="donor", sync_textures=True,
-               scale_swing_physics=True):
+               scale_swing_physics=True, physics_provenance=None):
     def log(*a):
         if verbose:
             print(*a)
@@ -2181,8 +2193,8 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     # ---- write ----
     bf, _ = _serialized_file(target)
     bf.mark_changed()
-    with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
+    from transplant_bundle_io import write_working_bundle, finish_working_bundle
+    output_packer = write_working_bundle(bf, out_path)
 
     # ---- 6) bake the grafted body mesh into world space (re-read so it reflects the
     #         graft; needed so SwingBone-driven pieces like the ribbon render in the
@@ -2234,11 +2246,13 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     if preserve_physics:
         repair_transplant_physics(out_path, donor_path, target_path,
                                   costume_dyn if costume_physics == "donor" else (),
-                                  restore_collision=restore_collision, verbose=verbose)
+                                  restore_collision=restore_collision, verbose=verbose,
+                                  provenance=physics_provenance)
 
     # ---- 8) warn (read-only) if the result blows past the runtime combine limits
     check_combine_limits(out_path, verbose=verbose)
 
+    finish_working_bundle(out_path, output_packer)
     log(f"[done] wrote {out_path}")
     return out_path
 

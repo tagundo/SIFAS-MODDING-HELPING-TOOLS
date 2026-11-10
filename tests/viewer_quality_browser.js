@@ -239,8 +239,14 @@ async function exercisePage(browser, forceWebGL1, forceNoAA = false) {
     assert.equal(await page.locator('#viewer-height,#viewer-height-number,#viewer-breast,#viewer-breast-number').count(), 0,
       'Quality tests use discrete source profiles, without arbitrary height or breast percentages');
     await page.locator('#viewer-breast-preset').selectOption('emma');
+    assert.equal(await page.locator('#viewer-adjustments').evaluate(element => element.open), false, 'Pose / motion starts collapsed');
+    await page.locator('#viewer-adjustments > summary').click();
+    assert(await page.locator('#viewer-time').isVisible(), 'Open Pose / motion before changing the playhead');
     await slider('viewer-time', .37);
-    await page.locator('#viewer-expression-advanced').evaluate(element => { element.open = true; });
+    assert.equal(await page.locator('#viewer-expression-adjustments').evaluate(element => element.open), false, 'Expression starts collapsed');
+    await page.locator('#viewer-expression-adjustments > summary').click();
+    if (!(await page.locator('#viewer-expression-advanced').evaluate(element => element.open))) await page.locator('#viewer-expression-advanced > summary').click();
+    assert(await page.locator('#viewer-expression').isVisible(), 'Open Expression and its advanced choices before selecting an expression');
     const firstExpression = await page.locator('#viewer-expression option').evaluateAll(options => options.find(option => option.value).value);
     await page.locator('#viewer-expression').selectOption(firstExpression);
     await slider('viewer-expression-value', 65);

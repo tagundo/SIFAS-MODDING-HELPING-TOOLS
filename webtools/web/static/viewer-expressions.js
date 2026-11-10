@@ -19,7 +19,8 @@
       strength: element("viewer-expression-value"), number: element("viewer-expression-number"),
       output: element("viewer-expression-output"), source: element("viewer-expression-source"),
       status: element("viewer-expression-status"), reset: element("viewer-expression-reset"),
-      selection: element("viewer-expression-selection"), advanced: element("viewer-expression-advanced") };
+      selection: element("viewer-expression-selection"), advanced: element("viewer-expression-advanced"),
+      gazeHost: element("viewer-pose-gaze") };
     function finite(value) { return typeof value === "number" && isFinite(value); }
     function percentNumber(value) { return finite(value) ? String(Number((value * 100).toFixed(2))) : ""; }
     function percent(value) { return finite(value) ? percentNumber(value) + "%" : "—"; }
@@ -200,7 +201,7 @@
     function gazeAvailable() { return !!gaze && gaze.getState().available; }
     function gazeChanged() { gazeOperations = []; changed(); }
     function makeGazeUi() {
-      if (!ui.panel || !gaze) return;
+      if (!(ui.gazeHost || ui.panel) || !gaze) return;
       var holder = document.createElement("details"), heading = document.createElement("summary"), fields = document.createElement("div");
       holder.id = "viewer-expression-gaze"; holder.className = "viewer-expression-advanced viewer-expression-gaze";
       holder.appendChild(heading); fields.className = "viewer-expression-controls"; holder.appendChild(fields);
@@ -227,7 +228,8 @@
       });
       var resetButton = document.createElement("button"), status = document.createElement("p"); resetButton.type = "button"; resetButton.id = "viewer-gaze-reset";
       status.id = "viewer-gaze-status"; status.className = "viewer-info"; fields.appendChild(resetButton); fields.appendChild(status);
-      ui.panel.insertBefore(holder, ui.panel.firstChild);
+      var host = ui.gazeHost || ui.panel;
+      host.insertBefore(holder, host.firstChild);
       gazeUi = { holder: holder, heading: heading, mode: mode, modeTitle: modeTitle, controls: controls, reset: resetButton, status: status };
       listen(mode, "change", function () { if (!interactive || !gazeAvailable()) return; gazeSettings.mode = mode.value; gazeChanged(); });
       listen(resetButton, "click", function () { if (!interactive) return; gazeSettings = { mode: "motion", horizontal: 0, vertical: 0, strength: 1 }; gazeChanged(); });
@@ -343,7 +345,7 @@
     function refresh() {
       if (disposed) return;
       var enabled = interactive && channels.length > 0;
-      if (ui.panel) property(ui.panel, "hidden", !channels.length && !gazeAvailable());
+      if (ui.panel) property(ui.panel, "hidden", !channels.length && (!!ui.gazeHost || !gazeAvailable()));
       refreshGazeUi();
       groupButtons.forEach(function (entry) { property(entry.element, "disabled", !enabled); attribute(entry.element, "aria-pressed", String(entry.group === currentGroup)); });
       presetButtons.forEach(function (entry) {

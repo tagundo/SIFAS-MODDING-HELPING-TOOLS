@@ -48,7 +48,7 @@
     "Whole lower body": ["하체 전체", "下半身全体"],
     "Preview height": ["미리보기 높이", "プレビューの高さ"],
     "Click a part on the donor model to select its bone subtree.": ["Donor 모델의 이식할 부분을 클릭하면 해당 부분의 본 묶음을 선택합니다.", "ドナーモデルの移植する部分をクリックしてボーン群を選択します。"],
-    "The highlighted donor triangles will be inserted. Cut boundaries follow triangle centres.": ["강조된 Donor 삼각형을 이식합니다. 절단 범위는 삼각형 중심을 기준으로 선택합니다.", "強調されたドナーの三角形を移植します。切断範囲は三角形の中心で選択します。"],
+    "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.": ["강조된 Donor 면을 이식합니다. 절단면에 걸친 착용자 면은 틈이 생기지 않도록 유지합니다.", "強調されたドナー面を移植します。切断面をまたぐ着用者の面は隙間を防ぐため残します。"],
     "No selectable costume part at this point.": ["이 지점에서 선택할 수 있는 의상 부분이 없습니다.", "この位置に選択可能な衣装パーツがありません。"]
   });
   Object.assign(TEXT, {
@@ -218,7 +218,7 @@
       var c = context(), body = authoring(c), locked = busy || !!(c.persistence && c.persistence.busy) || !!(c.meshTools && c.meshTools.busy);
       synchronizeHistory(c);
       var ready = c.current && c.editing && c.editing.available && body && !(body.unsupported || []).length;
-      var meshDirty = !!(c.meshTools && c.meshTools.dirty);
+      var meshDirty = !!(c.meshTools && c.meshTools.dirty && (!c.getMeshEdits || c.meshTools.hasUnappliedSelection));
       ready = ready && !meshDirty;
       entries.forEach(function (entry) {
         var targets = c.targetMeshes || [], targetKey = JSON.stringify(targets);
@@ -312,7 +312,7 @@
         var image = binding.texture && binding.texture.image;
         if (image) { try { ctx.imageSmoothingEnabled = view.zoom < 2; ctx.drawImage(image, view.x * width, view.y * width, view.zoom * width, view.zoom * width); } catch (_) {} }
         var index = binding.mesh.geometry.index, faces = entry.highlightedFaces;
-        ctx.lineWidth = .65; ctx.strokeStyle = "rgba(235,242,255,.25)";
+        ctx.lineWidth = .65; ctx.strokeStyle = global.ViewerUVColor ? global.ViewerUVColor.stroke(.55) : "rgba(235,242,255,.25)";
         for (var offset = 0; offset < index.count; offset += 3) {
           var points = [0, 1, 2].map(function (slot) { return uvPoint(textureUV(binding, index.getX(offset + slot))); });
           if (points.every(function (p) { return p[0] < 0; }) || points.every(function (p) { return p[0] > width; }) || points.every(function (p) { return p[1] < 0; }) || points.every(function (p) { return p[1] > width; })) continue;
@@ -328,7 +328,7 @@
         if (entry.operation === "lower") {
           var g = entry.geometry, scores = {}, mask = [], low = Number(entry.low.value), high = Number(entry.high.value);
           g.triangles.forEach(function (face, index) {
-            var y = face.reduce(function (sum, v) { return sum + g.positions[v][1]; }, 0) / 3, take = y >= low && y <= high;
+            var heights = face.map(function (v) { return g.positions[v][1]; }), take = Math.max.apply(null, heights) >= low && Math.min.apply(null, heights) <= high;
             if (entry.scope.value === "skin") take = take && face.every(function (v) { return g.anatomy[v]; }) && face.filter(function (v) { return g.regions[entry.region.value][v]; }).length >= 2;
             mask[index] = take; if (take) { var component = g.components[face[0]]; scores[component] = (scores[component] || 0) + 1; }
           });
@@ -504,7 +504,7 @@
       }
       controls.addEventListener("change", function () { invalidateProjection(); draw(); }); var observer = new ResizeObserver(draw); observer.observe(entry.stage); entry.panel.addEventListener("toggle", draw);
       entry.preview = {
-        draw: draw, cuts: cuts, rebind: rebind, selectionModeChanged: selectionModeChanged,
+        draw: draw, cuts: cuts, rebind: rebind, drawTexture: drawTexture, selectionModeChanged: selectionModeChanged,
         getTextureView: function () { return { zoom: view.zoom, x: view.x, y: view.y, submesh: textureBinding() && textureBinding().map.submesh }; },
         set: function (object) {
           if (model) { scene.remove(model); disposeObject(model); } model = object; scene.add(model); model.updateMatrixWorld(true);
@@ -564,7 +564,7 @@
       if (entry.run.disabled || busy) return;
       var c = context(), authored = authoring(c);
       if (!c.current || !c.editing || !authored) return;
-      if (c.meshTools && (c.meshTools.dirty || c.meshTools.busy)) { status(entry, "Save mesh edits before transplanting.", true); return; }
+      if (c.meshTools && (c.meshTools.busy || c.meshTools.dirty && (!c.getMeshEdits || c.meshTools.hasUnappliedSelection))) { status(entry, "Save mesh edits before transplanting.", true); return; }
       if (authored.unsupported && authored.unsupported.length) { status(entry, authored.unsupported[0], true); return; }
       var low = Number(entry.low.value), high = Number(entry.high.value);
       if (!isFinite(low) || !isFinite(high) || low >= high) { status(entry, "The lower cut must be below the upper cut.", true); return; }
@@ -573,6 +573,8 @@
         partRoot: entry.operation === "part" ? entry.parts.value : "", cutLow: low, cutHigh: high, region: entry.region.value,
         matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, excludeAccessories: entry.exclude.checked,
         selectionScope: entry.scope.value, donorRenderer: entry.geometry && entry.geometry.renderer || "", targetRenderer: entry.targetMesh.value };
+      var meshState = c.getMeshEdits ? c.getMeshEdits() : null;
+      if (meshState && meshState.meshes && meshState.meshes.length) payload.mesh_state = meshState;
       if (entry.operation === "part") {
         var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones);
         payload.partRoot = manifest.partRoots[0] || ""; payload.partSelectionMode = entry.selectionMode.value;
@@ -602,7 +604,8 @@
             if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string") throw new Error("The costume operation did not publish a model.");
             entry.resultPaths = paths; entry.result.hidden = false;
             var now = context();
-            if (now.current && now.modelId === modelId && identity(now) === sourceIdentity && JSON.stringify(authoring(now)) === fingerprint) {
+            if (now.current && now.modelId === modelId && identity(now) === sourceIdentity && JSON.stringify(authoring(now)) === fingerprint &&
+                (!c.getMeshEdits || JSON.stringify(now.getMeshEdits && now.getMeshEdits()) === JSON.stringify(meshState))) {
               await openResult(entry, before, sourceIdentity); status(entry, "Transplanted. The result is now displayed.");
             } else { finish(entry); status(entry, "The result was saved. Open it to inspect the transplant."); }
           } catch (error) { finish(entry); status(entry, error.message, true); }
@@ -613,7 +616,7 @@
     async function openResult(entry, before, expectedIdentity) {
       if (historySwitch || busy && !entry.running) return;
       var c = context();
-      if (!entry.running && (!c.current || c.meshTools && (c.meshTools.dirty || c.meshTools.busy))) { status(entry, "Save mesh edits before transplanting.", true); return; }
+      if (!entry.running && (!c.current || c.meshTools && (c.meshTools.busy || c.meshTools.dirty && (!c.getMeshEdits || c.meshTools.hasUnappliedSelection)))) { status(entry, "Save mesh edits before transplanting.", true); return; }
       before = before || checkpoint(); expectedIdentity = expectedIdentity || identity(c);
       var variants = /\.zip$/i.test(entry.resultPaths[0]) && entry.resultVariant === "unmasked" ? { 0: "unmasked" } : null;
       busy = true; historySwitch = true; entry.opening = true; if (options.busyChanged) options.busyChanged(true); refresh();
@@ -686,6 +689,8 @@
         entry.textureFit = element("button", { type: "button", text: "Fit texture", id: id + "-texture-fit" });
         entry.textureCanvas = element("canvas", { width: "768", height: "768", id: id + "-texture", tabindex: "0", "aria-label": t("Donor texture") });
         entry.textureStatus = element("p", { className: "viewer-render-note" });
+        if (global.ViewerUVColor) entry.uvColor = global.ViewerUVColor.control(entry.texturePanel, { id: id + "-uv-color", translate: t,
+          onChange: function () { if (entry.preview) entry.preview.drawTexture(); } });
         entry.texturePanel.append(label("Material / submesh", entry.textureMaterial), label("Move texture", entry.texturePan), element("div", { className: "viewer-transplant-texture-zoom" }, [label("Texture zoom", entry.textureZoom), entry.textureZoomText, entry.textureFit]), entry.textureCanvas, entry.textureStatus,
           element("p", { className: "viewer-render-note", "data-transplant-label": "UV overlaps select every face at that texture position. Use the 3D model to select only the visible surface.", text: "UV overlaps select every face at that texture position. Use the 3D model to select only the visible surface." })); entry.panel.appendChild(entry.texturePanel);
         entry.selectionClear = element("button", { type: "button", text: "Clear part selection", id: id + "-selection-clear" });
@@ -705,7 +710,7 @@
       entry.panel.appendChild(element("div", { className: "viewer-transplant-options" }, [label("Match skin colour", entry.matchSkin), label("Skin only (preserve outfit colours)", entry.skinOnly)]));
       entry.matchSkin.addEventListener("change", function () { entry.skinOnly.disabled = !entry.matchSkin.checked; });
       entry.low = element("input", { type: "number", step: ".005", min: "-10", max: "10", value: ".5", id: id + "-low" });
-      entry.high = element("input", { type: "number", step: ".005", min: "-10", max: "10", value: ".96", id: id + "-high" });
+      entry.high = element("input", { type: "number", step: ".005", min: "-10", max: "10", value: ".92", id: id + "-high" });
       entry.preset = element("select", {});
       [{ value: "hip_fix", label: "Knee to waist" }, { value: "calf", label: "Calf to waist" }, { value: "ankle", label: "Ankle to waist" }, { value: "whole", label: "Whole lower body" }, { value: "custom", label: "Custom range" }].forEach(function (value) { entry.preset.appendChild(element("option", { value: value.value, "data-transplant-label": value.label, text: value.label })); });
       entry.region = element("select", {});
@@ -718,7 +723,7 @@
       var cuts = element("div", { className: "viewer-transplant-cuts" }, [label("Cut preset", entry.preset), label("Upper cut Y", entry.high), label("Lower cut Y", entry.low), label("Replacement region", entry.region), label("Donor mesh", entry.donorMesh), label("Wearer mesh", entry.targetMesh), label("Replacement selection", entry.scope), label("Exclude separate accessories", entry.exclude)]); cuts.hidden = operation !== "lower"; entry.panel.appendChild(cuts);
       if (operation === "part") entry.panel.insertBefore(element("div", { className: "viewer-transplant-cuts" }, [label("Donor mesh", entry.donorMesh), label("Wearer mesh", entry.targetMesh)]), entry.boneControls);
       var hint = element("p", { className: "viewer-render-note", "data-transplant-label": "The mesh between the blue lower plane and orange upper plane is replaced.", text: "The mesh between the blue lower plane and orange upper plane is replaced." }); hint.hidden = operation !== "lower"; entry.panel.appendChild(hint);
-      var selectedHint = element("p", { className: "viewer-render-note", "data-transplant-label": "The highlighted donor triangles will be inserted. Cut boundaries follow triangle centres.", text: "The highlighted donor triangles will be inserted. Cut boundaries follow triangle centres." }); selectedHint.hidden = operation !== "lower"; entry.panel.appendChild(selectedHint);
+      var selectedHint = element("p", { className: "viewer-render-note", "data-transplant-label": "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps.", text: "Highlighted donor faces are inserted. Wearer faces crossing either cut are retained to prevent gaps." }); selectedHint.hidden = operation !== "lower"; entry.panel.appendChild(selectedHint);
       entry.run = element("button", { type: "button", className: "viewer-primary", "data-transplant-label": operation === "lower" ? "Replace lower body" : "Transplant", text: operation === "lower" ? "Replace lower body" : "Transplant", disabled: "" });
       entry.cancel = element("button", { type: "button", text: "Cancel", hidden: "" });
       entry.result = element("button", { type: "button", "data-transplant-label": "Open transplant result", text: "Open transplant result", hidden: "" });
@@ -755,7 +760,7 @@
       entry.redo.addEventListener("click", function () { restoreHistory(entry, true); });
       entry.cancel.addEventListener("click", function () { if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); });
       entry.preset.addEventListener("change", function () {
-        var preset = { hip_fix: [.5, .96], calf: [.3, .96], ankle: [.11, .96], whole: [-.05, 1.06] }[entry.preset.value];
+        var preset = { hip_fix: [.5, .92], calf: [.3, .96], ankle: [.11, .96], whole: [-.05, 1.06] }[entry.preset.value];
         if (preset) { entry.low.value = preset[0]; entry.high.value = preset[1]; if (entry.preview) entry.preview.cuts(); }
       });
       [entry.low, entry.high].forEach(function (input) { input.addEventListener("input", function () { entry.preset.value = "custom"; if (entry.preview) entry.preview.cuts(); }); });
@@ -767,12 +772,13 @@
     refresh();
     return {
       refresh: refresh,
+      getEditHistory: function () { return undoHistory.map(function (entry) { return entry.title; }); },
       updateLanguage: function () {
-        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
+        entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
         if (entry.operation === "part") Object.assign(result, { selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
-      dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
+      dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }
   global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection };

@@ -446,20 +446,39 @@
           entry.outlineEdited = !!(key && Object.prototype.hasOwnProperty.call(outlineFactors, key));
           var edit = entry.outlineEdited ? outlineFactors[key] : null;
           entry.outlineFactor = edit ? edit.factor : 1;
-          var vertices = edit && edit.vertices || [], signature = vertices.length ? edit.signature : "";
+          var vertices = edit && edit.vertices || [], absolute = edit ? edit.absolute : undefined;
+          var hasWidth = vertices.length || absolute !== undefined, signature = hasWidth ? edit.signature : "";
           if (entry.widthGeometry !== entry.mesh.geometry || entry.widthSignature !== signature) {
+            var changedGeometry = entry.widthGeometry !== entry.mesh.geometry;
             entry.widthGeometry = entry.mesh.geometry; entry.widthSignature = signature;
-            if (vertices.length && mapping && mapping.vertexOrder === "identity") {
-              var count = entry.mesh.geometry.attributes.position.count, values = new Float32Array(count); values.fill(-1);
-              vertices.forEach(function (row) { if (row.vertex >= 0 && row.vertex < count) values[row.vertex] = Math.min(255, Math.max(0, Math.floor(row.value * 255 * edit.factor + .5))) / 255; });
-              entry.mesh.geometry.setAttribute("_sifas_outline_width", new T.BufferAttribute(values, 1));
-            } else if (entry.mesh.geometry.getAttribute("_sifas_outline_width")) entry.mesh.geometry.deleteAttribute("_sifas_outline_width");
+            if (hasWidth && mapping && mapping.vertexOrder === "identity") {
+              var count = entry.mesh.geometry.attributes.position.count;
+              var base = absolute === undefined ? -1 : Math.min(255, Math.max(0, Math.floor(absolute * edit.factor + .5))) / 255;
+              var attribute = entry.widthAttribute, full = changedGeometry || !attribute || attribute.count !== count || entry.widthBase !== base;
+              if (!attribute || changedGeometry || attribute.count !== count) {
+                attribute = new T.BufferAttribute(new Float32Array(count), 1);
+                if (T.DynamicDrawUsage !== undefined) attribute.setUsage(T.DynamicDrawUsage);
+                entry.mesh.geometry.setAttribute("_sifas_outline_width", attribute);
+              }
+              var values = attribute.array, low = count, high = -1;
+              if (full) { values.fill(base); low = 0; high = count - 1; }
+              else (entry.widthVertices || []).forEach(function (row) { if (row.vertex < count) { values[row.vertex] = base; low = Math.min(low, row.vertex); high = Math.max(high, row.vertex); } });
+              vertices.forEach(function (row) { if (row.vertex >= 0 && row.vertex < count) { values[row.vertex] = Math.min(255, Math.max(0, Math.floor(row.value * 255 * edit.factor + .5))) / 255; low = Math.min(low, row.vertex); high = Math.max(high, row.vertex); } });
+              // Several pointer samples can arrive before the next GPU upload.
+              // Upload the retained buffer together so a later sparse sample
+              // cannot hide an earlier whole-mesh change.
+              if (high >= low) { attribute.updateRange.offset = 0; attribute.updateRange.count = -1; attribute.needsUpdate = true; }
+              entry.widthAttribute = attribute; entry.widthBase = base; entry.widthVertices = vertices;
+            } else {
+              if (entry.mesh.geometry.getAttribute("_sifas_outline_width")) entry.mesh.geometry.deleteAttribute("_sifas_outline_width");
+              entry.widthAttribute = null; entry.widthVertices = null; entry.widthBase = undefined;
+            }
           }
         });
       },
       setOutlineEdits: function (values) {
         outlineFactors = {};
-        (values || []).forEach(function (value) { var edit = { factor: value.factor, vertices: (value.vertices || []).map(function (row) { return { vertex: row.vertex, value: row.value }; }) }; edit.signature = JSON.stringify([edit.factor, edit.vertices]); outlineFactors[value.id] = edit; });
+        (values || []).forEach(function (value) { var edit = { factor: value.factor, vertices: (value.vertices || []).map(function (row) { return { vertex: row.vertex, value: row.value }; }) }; if (value.absolute !== undefined) edit.absolute = value.absolute; edit.signature = JSON.stringify([edit.factor, edit.absolute, edit.vertices]); outlineFactors[value.id] = edit; });
         controller.syncGeometry();
         if (options.onChange) options.onChange();
       },

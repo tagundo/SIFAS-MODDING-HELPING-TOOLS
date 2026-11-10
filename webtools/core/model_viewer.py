@@ -45,6 +45,14 @@ FINAL_BINDING_SECONDS = 20
 _BUILD_LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
 _SESSIONS = OrderedDict()
+_CONVERSION_LOCK = threading.Lock()
+_REQUEST_STATE = threading.local()
+_TEXTURE_PNGS = OrderedDict()
+_NORMALIZED_BUNDLES = OrderedDict()
+MAX_TEXTURE_CACHE_BYTES = 24 * 1024 * 1024
+MAX_TEXTURE_CACHE_ENTRIES = 64
+MAX_BUNDLE_CACHE_BYTES = 8 * 1024 * 1024
+MAX_BUNDLE_CACHE_ENTRIES = 4
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -59,6 +67,51 @@ class ViewerBusyError(ModelViewerError):
 def _remaining(deadline):
     if time.monotonic() >= deadline:
         raise ModelViewerError("Model preview took too long. Try opening fewer model files.")
+
+
+def _conversion_get(cache, key, deadline):
+    """Share only immutable conversion bytes, never rigs, trees or edit state."""
+    _remaining(deadline)
+    if getattr(_REQUEST_STATE, "reimport", False):
+        return None
+    with _CONVERSION_LOCK:
+        now = time.monotonic()
+        for previous, value in list(cache.items()):
+            if value[0] <= now:
+                del cache[previous]
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+    if value is not None:
+        _remaining(deadline)
+        return value[1]
+    return None
+
+
+def _conversion_put(cache, key, data, *, max_bytes, max_entries):
+    if not isinstance(data, bytes) or len(data) > max_bytes:
+        return
+    with _CONVERSION_LOCK:
+        cache[key] = (time.monotonic() + CACHE_SECONDS, data)
+        cache.move_to_end(key)
+        while len(cache) > max_entries or sum(len(value[1]) for value in cache.values()) > max_bytes:
+            cache.popitem(last=False)
+
+
+def _normalized_bundle(data, layout, deadline):
+    # Preflight is always performed by _environment before consulting this
+    # content-addressed cache. Raw/LZ4 inputs already avoid normalization.
+    if layout is None or (layout["flags"] & 0x3f != 1
+                          and not any(flags & 0x3f == 1 for _, _, flags in layout["blocks"])):
+        return _bounded_bundle(data, layout, deadline)
+    key = (hashlib.sha256(data).digest(), id(_bounded_bundle))
+    value = _conversion_get(_NORMALIZED_BUNDLES, key, deadline)
+    if value is None:
+        value = _bounded_bundle(data, layout, deadline)
+        _conversion_put(_NORMALIZED_BUNDLES, key, value,
+                        max_bytes=MAX_BUNDLE_CACHE_BYTES, max_entries=MAX_BUNDLE_CACHE_ENTRIES)
+    _remaining(deadline)
+    return value
 
 
 def _paths(paths, *, internal=False):
@@ -269,7 +322,7 @@ def _environment(paths, deadline, base_env=None):
             raise ModelViewerError("The selected models exceed the preview memory limit.")
         # The input has already been jailed by the server. Loading bytes rather
         # than a filename prevents UnityPy from walking neighbouring directories.
-        loaded = env.load_file(_bounded_bundle(data, layout, deadline), name=f"preview-{index}-{os.path.basename(path)}")
+        loaded = env.load_file(_normalized_bundle(data, layout, deadline), name=f"preview-{index}-{os.path.basename(path)}")
         loaded.preview_source_name = os.path.basename(path)
         loaded.preview_source_path = path
         loaded.preview_source_hash = hashlib.sha256(data).hexdigest()
@@ -631,12 +684,131 @@ def _png_texture(image, deadline):
         return output.getvalue()
 
 
+def _texture_png(texture, deadline):
+    """Decode original texture bytes once, including across ZIP temp paths.
+
+    Source hashes belong to the actual encoded pixels, not file timestamps or
+    mutable preview objects. Material/sampler metadata is rebuilt each time.
+    Reimport bypasses reads and replaces successful entries with fresh results.
+    """
+    _remaining(deadline)
+    width, height = texture.m_Width, texture.m_Height
+    stream = getattr(texture, "m_StreamData", None)
+    inline = getattr(texture, "image_data", b"") or b""
+    reader = getattr(texture, "object_reader", None)
+    platform = getattr(reader, "platform", None)
+    blob = getattr(texture, "m_PlatformBlob", None)
+    try:
+        from UnityPy.enums import TextureFormat
+        name = TextureFormat(texture.m_TextureFormat).name
+        supported = name in decode._RAW_FORMATS or bool(re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name))
+    except (AttributeError, TypeError, ValueError):
+        supported = False
+    bounded = (callable(getattr(texture, "get_image_data", None))
+               and isinstance(getattr(texture, "m_TextureFormat", None), int)
+               and supported and getattr(texture, "m_ImageCount", 1) == 1
+               and getattr(texture, "m_TextureDimension", 2) == 2
+               and platform != 11 and not (platform == 38 and blob)
+               and isinstance(width, int) and not isinstance(width, bool)
+               and isinstance(height, int) and not isinstance(height, bool)
+               and 0 < width <= decode._MAX_DIMENSION and 0 < height <= decode._MAX_DIMENSION
+               and width * height <= decode._MAX_PIXELS
+               and getattr(stream, "size", 0) <= decode._MAX_SOURCE_BYTES
+               and len(inline) <= decode._MAX_SOURCE_BYTES)
+    if not bounded:
+        # The decoder supplies the existing detailed validation error without
+        # reading an oversized external stream just to construct a cache key.
+        image = decode._android_image(texture, deadline)
+        try:
+            return _png_texture(image, deadline)
+        finally:
+            image.close()
+    data = texture.get_image_data()
+    if len(data) > decode._MAX_SOURCE_BYTES:
+        raise ValueError("Texture data exceeds the preview limit")
+    binary = os.environ.get("ASTCENC_BIN", "")
+    try:
+        stat = os.stat(binary)
+        decoder = (os.path.realpath(binary), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    except OSError:
+        decoder = None
+    key = (width, height, int(texture.m_TextureFormat), getattr(texture, "m_ImageCount", 1),
+           getattr(texture, "m_TextureDimension", 2), platform,
+           bool(blob), hashlib.sha256(data).digest(), decoder, id(decode._android_image), id(_png_texture))
+    png = _conversion_get(_TEXTURE_PNGS, key, deadline)
+    if png is not None:
+        return png
+
+    class TextureBytes:
+        def __getattr__(self, name):
+            return getattr(texture, name)
+
+        def get_image_data(self):
+            return data
+
+    image = decode._android_image(TextureBytes(), deadline)
+    try:
+        png = _png_texture(image, deadline)
+    finally:
+        image.close()
+    _conversion_put(_TEXTURE_PNGS, key, png,
+                    max_bytes=MAX_TEXTURE_CACHE_BYTES, max_entries=MAX_TEXTURE_CACHE_ENTRIES)
+    return png
+
+
 class _Materials:
     def __init__(self, scene, glb, rigged=False):
         self.scene, self.glb = scene, glb
         self.rigged = rigged
         self.materials, self.textures = {}, {}
+        self.predecoded = {}
         self.pixels = 0
+
+    def mip_textures(self, objects):
+        """Decode at most two immutable mip slices concurrently; append in order.
+
+        Unity ObjectReaders and GLB state stay on the conversion thread. These
+        generated slice proxies already contain bounded, independent byte data.
+        """
+        if len(objects) <= 1:
+            return [self.texture(obj) for obj in objects]
+        if len(objects) > 12:
+            raise ModelViewerError("The authored mip chain exceeds the preview limits.")
+        from concurrent.futures import ThreadPoolExecutor
+        remaining, pending = MAX_TEXTURE_PIXELS - self.pixels, []
+        for obj in objects:
+            key = _key(obj)
+            if key in self.textures:
+                continue
+            texture = obj.read()
+            pixels = int(texture.m_Width) * int(texture.m_Height)
+            remaining -= pixels
+            if pixels < 1 or remaining < 0:
+                self.predecoded[key] = ModelViewerError("The model textures exceed the preview memory limit.")
+            else:
+                pending.append((key, texture))
+        reimport = getattr(_REQUEST_STATE, "reimport", False)
+
+        def convert(texture):
+            previous = getattr(_REQUEST_STATE, "reimport", False)
+            _REQUEST_STATE.reimport = reimport
+            try:
+                return _texture_png(texture, self.scene.deadline)
+            finally:
+                _REQUEST_STATE.reimport = previous
+
+        try:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="viewer-mip") as pool:
+                futures = [(key, pool.submit(convert, texture)) for key, texture in pending]
+                for key, future in futures:
+                    try:
+                        self.predecoded[key] = future.result()
+                    except Exception as error:
+                        self.predecoded[key] = error
+            return [self.texture(obj) for obj in objects]
+        finally:
+            for obj in objects:
+                self.predecoded.pop(_key(obj), None)
 
     def texture(self, obj):
         key = _key(obj)
@@ -650,11 +822,11 @@ class _Materials:
         if pixels < 1 or self.pixels + pixels > MAX_TEXTURE_PIXELS:
             raise ModelViewerError("The model textures exceed the preview memory limit.")
         self.pixels += pixels
-        image = decode._android_image(texture, self.scene.deadline)
-        try:
-            png = _png_texture(image, self.scene.deadline)
-        finally:
-            image.close()
+        png = self.predecoded.pop(key, None)
+        if isinstance(png, Exception):
+            raise png
+        if png is None:
+            png = _texture_png(texture, self.scene.deadline)
         image_index = len(self.glb.doc["images"])
         self.glb.doc["images"].append({"bufferView": self.glb.view(png), "mimeType": "image/png",
                                        "name": str(texture.m_Name)})
@@ -722,7 +894,7 @@ class _Materials:
             self.scene.warn("linked_texture_missing", tree.get("m_Name", ""))
         if self.rigged and _as_member_material(self.scene, obj, tree):
             from .model_materials import attach_member_metadata
-            attach_member_metadata(self.scene, obj, tree, material, self.texture)
+            attach_member_metadata(self.scene, obj, tree, material, self.texture, mip_resolver=self.mip_textures)
         index = len(self.glb.doc["materials"])
         self.glb.doc["materials"].append(material)
         self.materials[key] = index
@@ -1276,10 +1448,12 @@ def _prune(now):
         _SESSIONS.popitem(last=False)
 
 
-def prepare(paths, *, face_context=None, rigged=False, motion_paths=None):
+def prepare(paths, *, face_context=None, rigged=False, motion_paths=None, reimport=False):
     """Convert selected, already-jailed bundle paths and create a short-lived GLB."""
     if not isinstance(rigged, bool):
         raise ModelViewerError("The rigged preview setting must be true or false.")
+    if not isinstance(reimport, bool):
+        raise ModelViewerError("Reimport must be on or off.")
     paths = _paths(paths)
     if motion_paths is not None and (not rigged or not isinstance(motion_paths, (list, tuple))
                                      or len(motion_paths) > MAX_MOTION_FILES):
@@ -1289,6 +1463,8 @@ def prepare(paths, *, face_context=None, rigged=False, motion_paths=None):
     combined_paths = _paths(paths + library_paths, internal=True)
     if not _BUILD_LOCK.acquire(timeout=1):
         raise ViewerBusyError("Another model is opening. Wait for it to finish and try again.")
+    previous_reimport = getattr(_REQUEST_STATE, "reimport", False)
+    _REQUEST_STATE.reimport = reimport
     try:
         deadline = time.monotonic() + BUILD_SECONDS
         try:
@@ -1330,6 +1506,7 @@ def prepare(paths, *, face_context=None, rigged=False, motion_paths=None):
                 "source_names": [os.path.basename(path) for path in paths],
                 "stats": dict(stats), "warnings": warnings, "faces": faces, "rig": rig}
     finally:
+        _REQUEST_STATE.reimport = previous_reimport
         _BUILD_LOCK.release()
 
 

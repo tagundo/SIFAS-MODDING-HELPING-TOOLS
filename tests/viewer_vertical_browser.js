@@ -176,6 +176,9 @@ function assertFrame(value, label) {
       await page.waitForFunction(code => document.documentElement.lang === code, language);
       await page.locator('#viewer-breast-preset').selectOption('rin');
       await page.locator('#viewer-skirt-number').fill('.9'); await page.locator('#viewer-skirt-apply').click();
+      assert.equal(await page.locator('#viewer-expression-adjustments').evaluate(element => element.open), false, 'Expression starts collapsed');
+      await page.locator('#viewer-expression-adjustments > summary').click();
+      assert(await page.locator('[data-viewer-expression-group="eyes"]').isVisible(), 'Open Expression before choosing an eye preset');
       await page.locator('[data-viewer-expression-group="eyes"]').click();
       await page.locator('[data-viewer-expression-preset="fixture-eyes-closed"]').click();
       assert.equal(await page.locator('#viewer-adjustments').evaluate(element => element.open), false, 'Pose / motion starts collapsed');
@@ -287,6 +290,8 @@ function assertFrame(value, label) {
       assert(await page.locator('#viewer-time').isVisible(), 'Open Pose / motion before changing its playhead');
       await page.locator('#viewer-time').evaluate(element => { element.value = '.55'; element.dispatchEvent(new Event('input', { bubbles: true })); });
       await page.locator('#viewer-adjustments > summary').click();
+      if (!(await page.locator('#viewer-expression-adjustments').evaluate(element => element.open))) await page.locator('#viewer-expression-adjustments > summary').click();
+      assert(await page.locator('[data-viewer-expression-group="eyes"]').isVisible(), 'Open Expression before choosing the authored eye morph');
       await page.locator('[data-viewer-expression-group="eyes"]').click();
       await page.locator('[data-viewer-expression-preset="fixture-eyes-closed"]').click();
       assert((await state(page)).rig.expressions.some(expression => expression.weight > .99), 'Use an actually enabled authored morph for the independent vertex projection');

@@ -2,6 +2,7 @@
 import os
 import hashlib
 import copy
+import json
 from pathlib import Path
 import secrets
 import struct
@@ -108,6 +109,111 @@ class ViewerTransplantTests(unittest.TestCase):
         logs = "\n".join(event.get("line", "") for event in self.last_job._events)
         self.assertIn("donor UVs, materials and texture bytes preserved", logs)
         self.assertGreater(output.stat().st_size, 0)
+
+    def test_mesh_edits_are_baked_before_each_graft_and_retained_outside_replaced_geometry(self):
+        from webtools.core import viewer_mesh_tools as mesh, viewer_mod_flow as flow
+        import numpy as np
+        identity = mesh.inspect(self.token)['meshes'][0]['mesh']
+        state = {'version': 1, 'meshes': [{'mesh': identity, 'deleteFaces': [6],
+            'positions': [{'vertex': 21, 'position': [.7, 1.7, .2]}],
+            'weights': [{'vertex': 21, 'influences': [[6, .25], [7, .75]]}]}]}
+        original_export = flow.export_current
+        for operation in ('costume', 'part', 'lower'):
+            exported = []
+            def capture(*args, **kwargs):
+                result = original_export(*args, **kwargs)
+                exported.append(result)
+                return result
+            with self.subTest(operation=operation), patch.object(flow, 'export_current', side_effect=capture):
+                output = self.run_graft(self.request(operation=operation, partRoot='BreastSize',
+                    cutHigh=.92, mesh_state=state))
+                self.assertEqual(len(exported), 1)
+                _, records = mesh._mesh_records(Path(exported[0]['preview_paths'][0]).read_bytes(), 0)
+                record = records[0]
+                positions, _, weights, indices = mesh._arrays(record[1], record[2])
+                self.assertEqual(len(mesh._triangles(record[2], len(positions))[0]), 19)
+                np.testing.assert_allclose(positions[21], [.7, 1.7, .2], atol=1e-6)
+                influences = {int(i): float(w) for i, w in zip(indices[21], weights[21]) if w > 0}
+                self.assertEqual(influences, {6: .25, 7: .75})
+                self.assertEqual(exported[0]['recipe']['state'], state)
+                if operation != 'costume':
+                    _, final_records = mesh._mesh_records(output.read_bytes(), 0)
+                    record = final_records[0]
+                    positions, _, weights, indices = mesh._arrays(record[1], record[2])
+                    np.testing.assert_allclose(positions[21], [.7, 1.7, .2], atol=1e-6)
+                    self.assertFalse(any(set(face) == {18, 19, 20}
+                        for face in mesh._triangles(record[2], len(positions))[0]))
+                    influences = {int(i): float(w) for i, w in zip(indices[21], weights[21]) if w > 0}
+                    self.assertEqual(influences, {6: .25, 7: .75})
+
+    def test_invalid_mesh_channel_is_rejected_before_donor_or_output_writes(self):
+        for state in ({'version': 2, 'meshes': []}, {'version': True, 'meshes': []},
+                      {'version': 1, 'meshes': [], 'path': '/outside'},
+                      {'version': 1, 'meshes': [{'position': float('nan')}]}):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                viewer_transplants.validate_request(self.request(mesh_state=state))
+        self.assertFalse((self.root / 'modded').exists())
+
+    def test_verified_auto_face_outline_companion_survives_body_and_mesh_preexport(self):
+        from test_model_outlines import colored_fixture, colors
+        from webtools.core import viewer_mesh_tools as mesh
+        face = self.source.with_name('custom-edited-face.unity')
+        original_face = colored_fixture(); face.write_bytes(original_face)
+        self.metadata = model_edits.register_session(self.token, [str(self.source)], self.rig,
+            companions=[{'path': str(face), 'sha256': hashlib.sha256(original_face).hexdigest(), 'sourceIndex': 1}])
+        outline = next(row for row in self.metadata['outlines']['meshes'] if row['sourceIndex'] == 1)
+        state = {'version': 1, 'savedSettingsEnabled': True, 'edits': [],
+            'outlines': [{'id': outline['id'], 'factor': 1, 'absolute': 19}]}
+        identity = mesh.inspect(self.token)['meshes'][0]['mesh']
+        for mesh_state in (None, {'version': 1, 'meshes': [{'mesh': identity, 'deleteFaces': [6]}]}):
+            with self.subTest(mesh=mesh_state is not None):
+                output = self.run_graft(self.request(operation='part', partRoot='BreastSize',
+                    state=state, mesh_state=mesh_state))
+                hint = json.loads((output.parent / viewer_transplants.COMPANION_HINT).read_text())
+                self.assertEqual(hint['body'], {'file': output.name,
+                    'sha256': hashlib.sha256(output.read_bytes()).hexdigest()})
+                self.assertEqual(len(hint['companions']), 1)
+                copied = output.parent / hint['companions'][0]['file']
+                self.assertEqual(copied.name, face.name)
+                self.assertEqual(hashlib.sha256(copied.read_bytes()).hexdigest(), hint['companions'][0]['sha256'])
+                saved_mesh = next(obj for obj in UnityPy.load(str(copied)).objects if obj.type.name == 'Mesh')
+                self.assertTrue((colors(saved_mesh)[:, 0] == 19).all())
+                self.assertEqual(face.read_bytes(), original_face)
+                self.assertFalse((output.parent.parent / 'inputs').exists())
+
+    def test_runtime_receipt_binds_the_published_output_and_original_sources(self):
+        validated = viewer_transplants.validate_request(self.request())
+        job = Job(secrets.token_hex(6), 'viewer_transplant')
+        physics_cache = self.root / 'extracted/game-models'
+        observed = {}
+        def record(output, **values):
+            self.assertTrue(Path(output).is_file())
+            self.assertFalse(any(p.name == 'inputs' for p in Path(output).parents))
+            self.assertEqual(Path(values['donor_path']), self.donor)
+            self.assertEqual(values['donor_sha256'], hashlib.sha256(self.raw).hexdigest())
+            self.assertEqual(values['cache_root'], physics_cache)
+            self.assertIsNone(values['donor_member'])
+            observed.update(values)
+        with patch('webtools.core.viewer_physics_runtime.record_transplant', side_effect=record):
+            viewer_transplants.run_transplant(job, validated, output_root=self.root / 'modded/viewer',
+                cache_root=self.root / '.viewer-cache', repo_root=self.root, physics_cache_root=physics_cache)
+        self.assertEqual(len(job.output_paths()), 1)
+        self.assertEqual(observed['operation'], 'costume')
+        self.assertEqual(observed['wearer_source'], validated['sourceIndex'])
+        self.assertIsInstance(observed['component_origins'], list)
+
+    def test_failed_runtime_receipt_does_not_publish_a_partial_graft(self):
+        validated = viewer_transplants.validate_request(self.request())
+        job = Job(secrets.token_hex(6), 'viewer_transplant')
+        output_root = self.root / 'modded/viewer'
+        with patch('webtools.core.viewer_physics_runtime.record_transplant', side_effect=ValueError('The donor changed')):
+            with self.assertRaisesRegex(ValueError, 'donor changed'):
+                viewer_transplants.run_transplant(job, validated, output_root=output_root,
+                    cache_root=self.root / '.viewer-cache', repo_root=self.root)
+        self.assertEqual(job.output_paths(), [])
+        self.assertEqual(list(output_root.glob('transplant-*')), [])
+        self.assertEqual(self.source.read_bytes(), self.raw)
+        self.assertEqual(self.donor.read_bytes(), self.raw)
 
     def test_inspection_returns_real_donor_part_roots(self):
         result = viewer_transplants.inspect_donor(str(self.donor), cache_root=self.root / ".viewer-cache")

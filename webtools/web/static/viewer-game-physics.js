@@ -163,7 +163,7 @@
       return [null, null];
     }
     function configure(settings) {
-      profile = settings.profile || 'navi'; var sourceFlags = settings.skirtsafeDisableBySource || {};
+      profile = settings.profile || 'navi'; var sourceFlags = settings.skirtsafeDisableBySource || {}, componentFlags = settings.skirtsafeDisableByComponent || {};
       missing = (catalog.native && catalog.native.available ? [] : (catalog.native && catalog.native.missing || ['native-catalog'])).slice();
       if (!THREE || !math || !global.ViewerGamePhysicsCollision || !global.ViewerGamePhysicsCollision.forJob) missing.push('native-math-module');
       if (profile !== 'navi' && profile !== 'live') missing.push('runtime-profile');
@@ -171,7 +171,7 @@
       managers = (catalog.managers || []).map(function (record) {
         var ids = (record.bones || []).concat(settings.enableLod === false ? [] : record.lodBones || []);
         var disable = profile === 'navi' ? true : sourceFlags[String(record.sourceIndex)];
-        if (profile === 'live' && typeof disable !== 'boolean') missing.push('source-skirt-runtime:' + record.sourceIndex);
+        if (profile === 'live' && typeof disable !== 'boolean' && ids.some(function (id) { return typeof componentFlags[id] !== 'boolean'; })) missing.push('source-skirt-runtime:' + record.sourceIndex);
         var knees = resolveKnees(record);
         if (profile === 'live' && (!knees[0] || !knees[1])) missing.push('source-knee-transforms:' + record.sourceIndex);
         return { record: record, boneIds: ids, colliderIds: record.colliders || [], knees: knees, skirtsafeDisable: disable === true };
@@ -218,11 +218,13 @@
       var enabled = typeof settings.safeSwingBone === 'boolean' ? settings.safeSwingBone : context.safeSwingBone;
       if (!force && enabled !== true) return;
       managers.forEach(function (manager) {
-        if (manager.skirtsafeDisable && !force) return;
+        var componentFlags = settings.skirtsafeDisableByComponent || {};
+        if (manager.skirtsafeDisable && !force && manager.boneIds.every(function (id) { return componentFlags[id] !== false; })) return;
         if (!manager.knees[0] || !manager.knees[1]) return;
         var left = quatRotate(unityRotation(manager.knees[0]), [1, 0, 0]), right = quatRotate(unityRotation(manager.knees[1]), [1, 0, 0]);
         entries.forEach(function (entry) {
           if (entry.manager !== manager) return;
+          if (!force && (typeof componentFlags[entry.record.id] === 'boolean' ? componentFlags[entry.record.id] : manager.skirtsafeDisable)) return;
           var sim = entry.record.simulation || {}, base = entry.base, o = entry.object;
           var state = Object.assign({}, sim, { hasTrans: true, skirtData: base.skirtData, skirtSafeEnable: sim.skirtSafeEnable, parentForward: o.parent ? quatRotate(unityRotation(o.parent), [0, 0, 1]) : [0, 0, 1], parentMatrix: o.parent ? unityMatrix(o.parent) : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], pivot: unityPosition(o), childPosition: unityPosition(entry.child), rotation: unityRotation(o), boneAxis: data[entry.index].boneAxis, length: base.boneLength, safeCorrectAdjust: base.safeCorrectAdjust });
           if (safeCorrect(state, left, right, force, math, THREE)) { setWorldRotation(o, state.rotation); setWorldPosition(entry.child, state.childPosition); base.childPoseActive = true; stats.safeCorrections++; }
@@ -238,7 +240,7 @@
       if (!captured) captureAnimationPose({});
       missing = missing.filter(function (reason) { return reason !== 'motion-skirt-runtime'; });
       if (profile === 'live' && typeof settings.safeSwingBone !== 'boolean' && typeof context.safeSwingBone !== 'boolean') { missing.push('motion-skirt-runtime'); stats.frameMs = now() - start; return; }
-      var nextSignature = JSON.stringify([profile, settings.enableLod !== false, settings.skirtsafeDisableBySource || {}]);
+      var nextSignature = JSON.stringify([profile, settings.enableLod !== false, settings.skirtsafeDisableBySource || {}, settings.skirtsafeDisableByComponent || {}]);
       if (nextSignature !== signature) { pending = true; initialized = false; startupCorrection = profile === 'live'; signature = nextSignature; }
       if (pending && !initialize(settings)) return;
       if (!(delta > 0)) { reapplyOutput(); stats.frameMs = now() - start; return; }

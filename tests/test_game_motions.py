@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -133,6 +134,49 @@ class GameMotionTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), b"user edited")
         self.assert_motion_only(second)
 
+    def test_original_style_action_retains_more_than_six_selected_bundles(self):
+        from webtools.core import game_motion_selection as selection
+        # Independent serialized files model an action's separate body/facial
+        # sources. They contain real AnimationClips, not successful API stubs.
+        selected = {"timeline": None, "selected": {}, "segments": []}
+        for index in range(8):
+            env = UnityPy.load(self.payload)
+            clip = next(obj for obj in env.objects if obj.type.name == "AnimationClip")
+            tree = clip.read_typetree()
+            tree["m_Name"] = f"Selected action {index}"
+            clip.save_typetree(tree)
+            path = self.root / f"selected-source-{index}.unity"
+            path.write_bytes(next(iter(env.files.values())).save())
+            part = selection.animation_only(path, deadline=time.monotonic() + 10)
+            selected["selected"].update(part["selected"])
+            selected["segments"].extend(part["segments"])
+        with patch.object(selection, "animation_only", return_value=selected):
+            paths = self.run_import().output_paths()
+        self.assertEqual(len(paths), 8)
+        names = []
+        for path in paths:
+            objects = list(UnityPy.load(str(path)).objects)
+            self.assertEqual([obj.type.name for obj in objects], ["AnimationClip"])
+            names.extend(obj.peek_name() for obj in objects)
+        self.assertEqual(names, [f"Selected action {index}" for index in range(8)])
+        # The larger, verified action is also reusable without losing clips.
+        self.assertEqual(self.run_import().output_paths(), paths)
+
+    def test_same_size_source_pack_change_with_restored_mtime_is_not_reused(self):
+        original = Path(self.run_import().output_paths()[0])
+        source = self.packs / "pack0"
+        before = source.stat()
+        replacement = bytearray(self.payload.replace(b"Neutral swing", b"Changed swing"))
+        self.assertEqual(len(replacement), len(self.encrypted))
+        extractor.decrypt_section(replacement, extractor.FIXED_KEY0, 7, 11)
+        source.write_bytes(replacement)
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        changed = Path(self.run_import().output_paths()[0])
+        self.assertNotEqual(original, changed)
+        env = UnityPy.load(changed.read_bytes())
+        self.assertEqual([obj.peek_name() for obj in env.objects], ["Changed swing"])
+        self.assert_motion_only(original)
+
     def test_missing_pack_does_not_download_without_option_and_cleans_partial_output(self):
         (self.packs / "pack0").unlink()
         with patch.object(motion.game, "_remote_pack") as remote:
@@ -162,6 +206,49 @@ class GameMotionTests(unittest.TestCase):
             motion.catalog(self.root, category=[])
         with self.assertRaises(ValueError):
             motion.catalog(self.root, search="a" * 121)
+
+    def test_picker_reuses_choices_but_not_mutable_public_results_or_changed_dictionary(self):
+        with patch.object(motion, "_choices", wraps=motion._choices) as queried:
+            first = motion.catalog(self.root, character="1")
+            first["motions"][0]["label"] = "caller changed its own result"
+            again = motion.catalog(self.root, character="1", search="greeting")
+            self.assertEqual(again["motions"][0]["label"], "Home greeting")
+            self.assertEqual(queried.call_count, 1)
+            dictionary = self.root / "assets/db/gl/dictionary_en_k.db"
+            before = dictionary.stat()
+            with sqlite3.connect(dictionary) as db:
+                db.execute("UPDATE m_dictionary SET message='New greeting' WHERE id='home'")
+            os.utime(dictionary, ns=(before.st_atime_ns, before.st_mtime_ns))
+            changed = motion.catalog(self.root, character="1", search="greeting")
+            self.assertEqual(changed["motions"][0]["label"], "New greeting")
+            self.assertEqual(queried.call_count, 2, "Restoring mtime must not conceal committed dictionary changes")
+
+    def test_picker_invalidates_when_master_changes_only_in_sqlite_wal(self):
+        with sqlite3.connect(self.master) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            with patch.object(motion, "_choices", wraps=motion._choices) as queried:
+                before = motion.catalog(self.root, character="1", search="greeting")
+                self.assertEqual(before["motions"][0]["label"], "Home greeting")
+                writer.execute("UPDATE m_navi_action_comment SET comment='WAL greeting' WHERE navi_action_comment_id=1000")
+                writer.commit()
+                after = motion.catalog(self.root, character="1", search="greeting")
+                self.assertEqual(after["motions"][0]["label"], "WAL greeting")
+                self.assertEqual(queried.call_count, 2)
+
+    def test_failed_download_reports_exact_stage_pack_and_http_reason(self):
+        from urllib.error import HTTPError
+        (self.packs / "pack0").unlink()
+        job = Job("failed-http", "motion")
+        with patch.object(motion.game, "_remote_pack", side_effect=HTTPError("https://example.invalid/pack0", 404, "Not Found", {}, None)):
+            with self.assertRaisesRegex(ValueError, "Downloading motion pack.*pack0.*404"):
+                self.run_import(self.select(download=True), job)
+        errors = [job.event_at(index, 0) for index in range(job.event_count) if job.event_at(index, 0).get("type") == "motion_error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["stage"], "Downloading motion pack")
+        self.assertEqual(errors[0]["pack"], "pack0")
+        self.assertEqual(errors[0]["httpStatus"], 404)
+        self.assertIn("Not Found", errors[0]["reason"])
+        self.assertEqual(job.output_paths(), [])
 
     def test_missing_or_too_many_dependencies_are_reported(self):
         with sqlite3.connect(self.assets) as db:

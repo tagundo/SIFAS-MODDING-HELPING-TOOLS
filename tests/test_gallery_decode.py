@@ -210,6 +210,46 @@ class SafeDecoderTests(unittest.TestCase):
         self.assertEqual(texture.reads, 0)
 
     @unittest.skipUnless(Image, "Pillow is required for pixel assertions")
+    def test_astc_cli_workers_are_bounded_and_scaled_to_mip_size(self):
+        for size, cores, expected in ((4, 128, 1), (64, 128, 1), (128, 128, 2),
+                                      (256, 128, 4), (512, 128, 4), (512, 2, 2), (512, None, 1)):
+            commands = []
+
+            def worker(command, **options):
+                commands.append(command)
+                Image.new("RGBA", (size, size), (20, 40, 60, 80)).save(command[3], format="TGA")
+                return SimpleNamespace(returncode=0)
+
+            with self.subTest(size=size, cores=cores), tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "astcenc"
+                binary.touch()
+                with patch.dict(os.environ, {"ASTCENC_BIN": str(binary)}), \
+                        patch.object(decode.os, "cpu_count", return_value=cores), \
+                        patch.object(decode.subprocess, "run", side_effect=worker):
+                    data = bytes(((size + 3) // 4) ** 2 * 16)
+                    image = self.image(Texture(data, m_Width=size, m_Height=size, m_TextureFormat="ASTC_RGBA_4x4"))
+                    self.assertEqual(image.getpixel((0, 0)), (20, 40, 60, 80))
+                    image.close()
+                self.assertEqual(commands[0][1], "-dl")
+                self.assertEqual(commands[0][-2:], ["-j", str(expected)])
+
+    @unittest.skipUnless(Image and os.environ.get("ASTCENC_HOST_TEST_BIN"),
+                         "Set ASTCENC_HOST_TEST_BIN for real bounded-worker pixel assertions")
+    def test_actual_astc_mip_sizes_keep_exact_rgba_with_bounded_workers(self):
+        colors = [(255, 0, 0, 255), (0, 255, 0, 127), (0, 0, 255, 0), (255, 0, 255, 255)]
+        for size in (4, 128, 256, 512):
+            blocks = (size + 3) // 4
+            data = b"".join(bytes.fromhex("fcfdffffffffffff") + struct.pack("<4H", *(value * 257 for value in colors[(x + y) % 4]))
+                            for y in range(blocks) for x in range(blocks))
+            with self.subTest(size=size), patch.dict(os.environ, {"ASTCENC_BIN": os.environ["ASTCENC_HOST_TEST_BIN"]}):
+                texture = Texture(data, m_Width=size, m_Height=size, m_TextureFormat="ASTC_RGBA_4x4")
+                with self.image(texture) as image:
+                    expected = bytes(channel for y in range(size) for x in range(size)
+                                     for channel in colors[((size - 1 - y) // 4 + x // 4) % 4])
+                    self.assertEqual(image.tobytes(), expected)
+                self.assertEqual(texture.reads, 1)
+
+    @unittest.skipUnless(Image, "Pillow is required for pixel assertions")
     def test_raw_channels_flip_once_and_ignore_lower_mipmap_bytes(self):
         pixels = [(240, 10, 20, 11), (30, 220, 40, 22), (50, 60, 200, 33), (70, 80, 90, 44)]
         channels = {"RGBA32": lambda p: p, "ARGB32": lambda p: (p[3], *p[:3]),

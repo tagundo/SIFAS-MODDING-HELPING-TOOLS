@@ -176,8 +176,9 @@ async function downloads(page, modPath, locale) {
       await page.goto(server.url); await page.waitForFunction(() => typeof openModelViewer === 'function');
       await open(page, fixture.archive, profile.variant); const initial = await page.evaluate(() => ModelViewer.getState());
       await page.locator('#viewer-save-panel > summary').click();
-      const guidance = await page.locator('[data-i18n="Add to game saves your current body edits as a mod and installs it. Rina\'s board and unmasked models receive the same body edits."]').innerText();
-      assert(guidance.includes(profile.locale === 'ko' ? '리나' : '璃奈'), 'The two-variant editing explanation is translated: ' + JSON.stringify({ guidance, language: await page.evaluate(() => document.documentElement.lang), expected: profile.locale }));
+      const guidance = await page.locator('[data-i18n="Add to game packages the current model edits and installs a new costume."]').innerText();
+      assert.equal(guidance, profile.locale === 'ko' ? '현재 모델의 편집 내용을 모드로 묶어 새 코스튬으로 설치합니다.' : '現在のモデルの編集内容をModにまとめ、新しい衣装としてインストールします。',
+        'The model-edit installation explanation is translated: ' + JSON.stringify({ guidance, language: await page.evaluate(() => document.documentElement.lang), expected: profile.locale }));
       await breast(page, 1.17); await show(page, '#viewer-save-mod');
       const suggested = await page.locator('#viewer-mod-name').inputValue(); assert(suggested.includes('Neutral costume') && suggested.includes('1.17×'), suggested);
       await page.locator('#viewer-mod-name').fill('Manual costume'); await breast(page, 1.18);

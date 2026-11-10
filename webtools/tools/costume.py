@@ -97,6 +97,7 @@ def run_costume_transplant(job, params):
         costume_physics="donor" if bool(params.get("donor_costume_physics", True)) else "target",
         sync_textures=not bool(params.get("no_textures", False)),
         scale_swing_physics=bool(params.get("scale_swing_physics", True)),
+        physics_provenance=params.get("_physics_provenance"),
     )
 
     # Optionally match the transplanted costume to the target character: thigh size
@@ -193,6 +194,7 @@ def run_costume_part_transplant(job, params):
         patch_texture=bool(params.get("patch_texture", False)),
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,
+        physics_provenance=params.get("_physics_provenance"),
     )
     _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)
@@ -215,7 +217,8 @@ def run_lower_body_swap(job, params):
     exclude_acc = bool(params.get("exclude_accessories", True))
     kw = dict(exclude_accessories=exclude_acc, log=job.log,
               selection_scope=params.get("selection_scope", "skin"),
-              donor_renderer=params.get("donor_renderer"), target_renderer=params.get("target_renderer"))
+              donor_renderer=params.get("donor_renderer"), target_renderer=params.get("target_renderer"),
+              physics_provenance=params.get("_physics_provenance"))
 
     # Band: a named preset (like the desktop tool), unless 'custom', in which case
     # the raw Cut low/high Y + Region fields are used. Presets always graft the

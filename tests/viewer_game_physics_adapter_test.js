@@ -60,6 +60,42 @@ function setup(skirt = false) {
   assert(s.engine.getState().unsupported.includes('source-knee-transforms:0'),'original AllSafeCorrect dereferences both knees; a missing graph is not silently simulated');
 }
 {
+  // A derived costume can contain exact caller flags from more than one
+  // original source. A complete component map must behave identically to the
+  // source-wide flag when they are equal, without fabricating a suit identity.
+  for(const flag of [false,true]) {
+    const original=setup(true),derived=setup(true);
+    original.capture();derived.capture();
+    const a={...original.live,skirtsafeDisableBySource:{0:flag},safeSwingBone:true};
+    const b={...derived.live,skirtsafeDisableBySource:{},skirtsafeDisableByComponent:{b:flag},safeSwingBone:true};
+    for(const delta of [0,1/30,1/30]) { original.engine.apply(delta,a);derived.engine.apply(delta,b); }
+    assert.deepStrictEqual(derived.engine.getState().unsupported,[]);
+    assert.deepStrictEqual(derived.engine.getState().bones,original.engine.getState().bones);
+    assert.deepStrictEqual(derived.bone.quaternion.toArray(),original.bone.quaternion.toArray());
+    assert.deepStrictEqual(derived.child.position.toArray(),original.child.position.toArray());
+  }
+  const unknown=setup();unknown.capture();unknown.engine.apply(1/30,
+    {...unknown.live,skirtsafeDisableBySource:{},skirtsafeDisableByComponent:{another:false}});
+  assert(unknown.engine.getState().unsupported.includes('source-skirt-runtime:0'));
+  assert.equal(unknown.engine.getState().totalNativeSteps,0,'an unrelated derived component cannot authorize a manager');
+}
+{
+  const s=setup(true),other=new THREE.Bone(),tip=new THREE.Bone();
+  other.userData.elichika_node=5;tip.userData.elichika_node=6;other.position.x=.3;tip.position.set(-1,0,-.1);
+  s.parent.add(other);other.add(tip);s.record.simulation.externalForce=[0,0,0];
+  const record={...s.record,id:'mixed',node:5,name:'SkirtE1_Dyna',simulation:{...s.record.simulation,childNode:6}};
+  s.catalog.components.push(record);s.catalog.managers[0].bones.push(record.id);s.root.updateMatrixWorld(true);
+  const rest={};s.root.traverse(o=>{if(o.userData.elichika_node!==undefined)rest[o.userData.elichika_node]={position:o.position.toArray(),quaternion:o.quaternion.toArray(),scale:o.scale.toArray()}});
+  s.engine.dispose();const engine=API.create(s.root,s.catalog,r=>r.values,{getInitializationPose:()=>rest});
+  const live={...s.live,skirtsafeDisableBySource:{},skirtsafeDisableByComponent:{b:false,mixed:true},safeSwingBone:true};
+  engine.captureAnimationPose({});engine.apply(1/30,live);
+  assert.equal(engine.getState().safeCorrections,2,'the original forced load correction still affects both source chains');
+  s.root.traverse(o=>{const p=rest[o.userData.elichika_node];if(p){o.position.fromArray(p.position);o.quaternion.fromArray(p.quaternion);o.scale.fromArray(p.scale)}});
+  s.root.updateMatrixWorld(true);engine.resetSimulation('seek');engine.captureAnimationPose({});engine.apply(1/30,live);
+  assert.equal(engine.getState().safeCorrections,1,'a mixed manager retains each component original costume caller flag');
+  assert.deepStrictEqual(engine.getState().unsupported,[]);
+}
+{
   const s=setup();s.capture();s.engine.apply(1/30,s.live);
   const before=s.engine.getState().totalNativeSteps, generation=s.engine.getState().dynamicGeneration;
   s.engine.captureAnimationPose({});s.engine.apply(1/30,{...s.live,safeSwingBone:undefined});

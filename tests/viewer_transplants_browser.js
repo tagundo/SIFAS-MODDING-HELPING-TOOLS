@@ -15,6 +15,7 @@ const models = path.join(library, 'extracted/3d_model');
 fs.mkdirSync(models, { recursive: true }); fs.mkdirSync(evidence, { recursive: true });
 const source = path.join(models, 'wearer.unity'), donor = path.join(models, 'donor.unity');
 const realRoot = process.env.VIEWER_REAL_COSTUME_ROOT;
+const meshGrafts = process.env.VIEWER_GRAFT_MESH_EDITS === '1';
 let realModels = null;
 if (realRoot) {
   const find = suit => path.join(realRoot, fs.readdirSync(realRoot).find(name => name.startsWith('gl-' + suit + '-')), 'ch0101_suit' + suit + '_primary.unity');
@@ -49,6 +50,13 @@ async function start() {
     browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
       args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); const errors = [], requests = [];
+    if (meshGrafts) await page.addInitScript(() => {
+      let api;
+      Object.defineProperty(window, 'ViewerMeshTools', { configurable: true, get: () => api, set: value => {
+        api = value; const create = value.create;
+        value.create = function () { const tool = create.apply(this, arguments); window.__graftMeshTool = tool; return tool; };
+      } });
+    });
     page.on('pageerror', error => errors.push(String(error)));
     page.on('request', request => { if (request.url().endsWith('/api/viewer/transplant/run')) requests.push(JSON.parse(request.postData())); });
     page.setDefaultTimeout(45000); await page.goto(server.url);
@@ -68,6 +76,21 @@ async function start() {
         const breast = metadata.nodes.find(entry => entry.name === 'BreastSize');
         if (breast) { state.edits.push({ node: breast.node, method: 'node', scale: [1.08, 1.04, .98] }); ModelViewer.restoreAuthoringState(state); }
       });
+      if (meshGrafts) {
+        assert(!realModels, 'The optional exact mesh regression uses neutral, known original vertices and skin');
+        await page.evaluate(async () => {
+          const token = ModelViewer.getEditingMetadata().token;
+          const response = await fetch('/api/viewer/mesh/inspect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+          if (!response.ok) throw Error(await response.text());
+          const mesh = (await response.json()).meshes.find(row => row.available).mesh;
+          await __graftMeshTool.restoreEdits({ version: 1, meshes: [{ mesh, deleteFaces: [6],
+            positions: [{ vertex: 21, position: [.7, 1.7, .2] }],
+            weights: [{ vertex: 21, influences: [[6, .25], [7, .75]] }] }] });
+        });
+        const applied = await page.evaluate(() => ModelViewer.getState().meshTools);
+        assert(applied.dirty); assert.equal(applied.hasUnappliedSelection, false);
+        assert.equal(applied.runtime.bindings.reduce((count, mesh) => count + mesh.triangles, 0), 19);
+      }
       const before = await page.evaluate(() => ({ state: ModelViewer.getState(), edits: ModelViewer.getAuthoringState() }));
       assert(before.edits.edits.length > 0, 'The pre-transplant body draft must be restored by Undo');
       const panel = page.locator('#' + operation.id);
@@ -135,11 +158,11 @@ async function start() {
         selectedPart = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'part').partRoots[0]);
       }
       if (operation.value === 'lower') {
+        assert.equal(await panel.locator('#' + operation.id + '-high').inputValue(), '.92', 'The default upper cut is .92');
         await panel.locator('#' + operation.id + '-low').fill(realModels ? '.38' : '.5');
         if (realModels) await panel.locator('.viewer-transplant-cuts select').nth(1).selectOption('lower_belly');
-        await panel.locator('#' + operation.id + '-high').fill('.96');
         const cuts = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'lower'));
-        assert.equal(cuts.cutLow, realModels ? .38 : .5); assert.equal(cuts.cutHigh, .96);
+        assert.equal(cuts.cutLow, realModels ? .38 : .5); assert.equal(cuts.cutHigh, .92);
         assert(cuts.selectedTriangles > 0, 'Exact highlighted donor selection must be nonempty');
         previewSelectedTriangles = cuts.selectedTriangles;
         await panel.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(evidence, 'lower-cut-preview.png') });
@@ -157,9 +180,25 @@ async function start() {
       assert.equal(requests.at(-1).operation, operation.value);
       assert.equal(requests.at(-1).matchSkin, false, 'Colour correction is opt-in');
       assert.equal(requests.at(-1).skinOnly, true);
+      if (meshGrafts) {
+        assert.deepEqual(requests.at(-1).mesh_state, before.state.meshTools.edits, 'The actual HTTP request includes every source-bound mesh change');
+        assert.deepEqual(after.meshTools.edits.meshes, [], 'Reloaded graft contains baked mesh data and no duplicate live draft');
+        const mesh = await page.evaluate(async () => {
+          const token = ModelViewer.getEditingMetadata().token;
+          async function request(endpoint, value) { const response = await fetch('/api/viewer/mesh/' + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }); if (!response.ok) throw Error(await response.text()); return response.json(); }
+          const identity = (await request('inspect', { token })).meshes.find(row => row.available).mesh;
+          return request('data', { token, mesh: identity });
+        });
+        if (operation.value !== 'costume') {
+          mesh.positions[21].forEach((actual, index) => assert(Math.abs(actual - [.7, 1.7, .2][index]) < 1e-6, 'Retained wearer vertex position is serialized'));
+          assert(!mesh.triangles.some(face => face.slice().sort((a, b) => a - b).join(',') === '18,19,20'), 'Deleted wearer head triangle remains absent');
+          assert(mesh.skin[21].some(([bone, weight]) => bone === 6 && Math.abs(weight - .25) < 1e-6));
+          assert(mesh.skin[21].some(([bone, weight]) => bone === 7 && Math.abs(weight - .75) < 1e-6));
+        } else assert.equal(mesh.triangles.length, 20, 'A full costume transplant replaces Body geometry with the chosen donor');
+      }
       if (operation.value === 'part') { assert.equal(requests.at(-1).partRoot, selectedPart); assert.equal(requests.at(-1).partSelectionMode, 'bones'); assert(requests.at(-1).partRoots.includes(selectedPart)); }
       if (operation.value === 'lower') {
-        assert.equal(requests.at(-1).cutLow, realModels ? .38 : .5); assert.equal(requests.at(-1).cutHigh, .96);
+        assert.equal(requests.at(-1).cutLow, realModels ? .38 : .5); assert.equal(requests.at(-1).cutHigh, .92);
         assert((await panel.locator('.viewer-transplant-log').innerText()).includes('donor UVs, materials and texture bytes preserved'));
         const selected = (await panel.locator('.viewer-transplant-log').innerText()).match(/donor take: (\d+) tris/);
         assert(selected); assert.equal(Number(selected[1]), previewSelectedTriangles, 'Preview and written donor triangle counts match');
@@ -174,6 +213,10 @@ async function start() {
       assert.equal(undone.state.loadedAutoFace, before.state.loadedAutoFace, 'Undo restores automatic face selection');
       assert.equal(undone.state.stats.triangles, before.state.stats.triangles);
       assert.deepEqual(undone.edits, before.edits, 'Undo restores unsaved body authoring');
+      if (meshGrafts) {
+        assert.deepEqual(undone.state.meshTools.edits, before.state.meshTools.edits, 'Undo restores unsaved deletion, positions and weights');
+        assert.equal(undone.state.meshTools.runtime.bindings.reduce((count, mesh) => count + mesh.triangles, 0), 19, 'Undo restores the applied GPU deletion');
+      }
       assert.deepEqual(undone.state.rig.bones, before.state.rig.bones, 'Undo restores actual live bone transforms');
       assert.deepEqual(undone.state.camera, before.state.camera, 'Undo restores camera');
       assert.equal(undone.state.transplants.undoCount, 0); assert.equal(undone.state.transplants.redoCount, 1);
@@ -182,7 +225,9 @@ async function start() {
       await panel.getByRole('button', { name: 'Redo transplant', exact: true }).click();
       await page.waitForFunction(output => ModelViewer.getState().loadedPaths[0] === output && !ModelViewer.getState().loading && !ModelViewer.getState().transplants.busy, output);
       assert.equal((await page.evaluate(() => ModelViewer.getState())).stats.triangles, after.stats.triangles);
-      report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, undoRestoredOriginal: true, authoringRestored: true, cameraRestored: true, redoRestoredOutput: true, originalUnchanged: true, donorUnchanged: true });
+      if (meshGrafts) assert.deepEqual((await page.evaluate(() => ModelViewer.getState())).meshTools.edits.meshes, [], 'Redo opens the baked graft once');
+      report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, undoRestoredOriginal: true, authoringRestored: true, cameraRestored: true, redoRestoredOutput: true, originalUnchanged: true, donorUnchanged: true,
+        ...(meshGrafts ? { meshChannelSent: true, meshDraftRestoredByUndo: true, bakedOnceOnRedo: true, retainedGeometryVerified: operation.value !== 'costume' } : {}) });
     }
     if (!realModels) {
       await page.evaluate(source => openModelViewer([source]), source);

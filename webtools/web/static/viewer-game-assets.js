@@ -10,7 +10,7 @@
     var preferredRegion = "";
     try { preferredRegion = localStorage.getItem("elichika.game-assets.region.v1") || ""; } catch (_) {}
     if (["gl", "jp"].indexOf(preferredRegion) < 0) preferredRegion = "";
-    var region, platform, character, search, costume, variant, download, status, log, progress, submit, closeButton, cancel;
+    var region, platform, character, search, costume, variant, download, reimport, status, log, progress, submit, closeButton, cancel;
     function t(value) { return typeof window.T === "function" ? window.T(value) : value; }
     function language() { return document.documentElement.lang || "en"; }
     function element(tag, attributes, children) {
@@ -32,7 +32,7 @@
     }
     function setBusy(value) {
       busy = value;
-      [region, platform, character, search, costume, variant, download].forEach(function (node) { if (node) node.disabled = value; });
+      [region, platform, character, search, costume, variant, download, reimport].forEach(function (node) { if (node) node.disabled = value; });
       submit.disabled = value || !costume.value;
       cancel.textContent = t(value ? "Cancel" : "Close");
       dialog.setAttribute("aria-busy", String(value));
@@ -117,6 +117,9 @@
       }
       download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = true;
       var downloadLabel = element("label", { className: "viewer-game-assets-download" }, [download, element("span", { text: t("Download missing assets") })]);
+      reimport = element("input", { id: "viewer-game-reimport", type: "checkbox" });
+      reimport.checked = !!(document.getElementById("viewer-reimport") && document.getElementById("viewer-reimport").checked);
+      var reimportLabel = element("label", { className: "viewer-game-assets-download" }, [reimport, element("span", { text: t("Reimport") })]);
       status = element("p", { id: "viewer-game-assets-status", role: "status", "aria-live": "polite" });
       log = element("pre", { id: "viewer-game-assets-log", hidden: "", "aria-label": t("Console") });
       progress = element("progress", { id: "viewer-game-assets-progress", hidden: "", "aria-label": t("Progress") });
@@ -125,7 +128,7 @@
       submit.addEventListener("click", runImport); cancel.addEventListener("click", close);
       var purposeHint = element("p", { className: "viewer-render-note", text: t("Fills this model field with one body bundle. Your 3D preview stays open as it is.") });
       purposeHint.hidden = consumer.purpose !== "transplant";
-      dialog.append(header, fields, downloadLabel,
+      dialog.append(header, fields, downloadLabel, reimportLabel,
         element("p", { className: "viewer-render-note", text: t("Uses downloaded game packs first. Missing assets can be downloaded.") }),
         purposeHint,
         status, progress, log, element("div", { className: "viewer-game-assets-actions" }, [submit, cancel]));
@@ -149,8 +152,10 @@
       var token = ++generation;
       var importedVariant = variant.value || "primary";
       var importedPlatform = platform ? platform.value : null;
+      var importedReimport = reimport.checked;
       if (selection.purpose === "transplant" && ["android", "ios"].indexOf(importedPlatform) < 0) return;
       var payload = { region: region.value, suit: costume.value, variant: importedVariant, download: download.checked };
+      if (importedReimport) payload.reimport = true;
       if (selection.purpose === "transplant") { payload.purpose = "transplant"; payload.platform = importedPlatform; }
       clearTimeout(timer); stopRequest(); setBusy(true); setStatus("Preparing game assets…"); log.textContent = ""; log.hidden = false; progress.hidden = false; progress.removeAttribute("value");
       try {
@@ -183,7 +188,7 @@
               var paths = item.output_paths;
               if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string" || !paths[0]) throw new Error("The game model could not be loaded.");
               if (selection.purpose === "transplant" && (!/\.unity$/i.test(paths[0]) || paths[0].charAt(0) !== "/" || paths[0].indexOf("\0") >= 0 || paths[0].length > 8192)) throw new Error("The selected game asset is not a body bundle.");
-              var result = selection.onSelect(paths[0], { variant: importedVariant, platform: importedPlatform });
+              var result = selection.onSelect(paths[0], { variant: importedVariant, platform: importedPlatform, reimport: importedReimport });
               close();
               if (result && typeof result.then === "function") await result;
             }
@@ -226,8 +231,8 @@
           (!originalModel || window.ModelViewer && window.ModelViewer.getState().modelId === originalModel);
       }, onSelect: function (path, info) {
         var variants = /\.zip$/i.test(path) ? { 0: info.variant } : null;
-        if (typeof callback === "function") return callback([path], variants);
-        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], variants);
+        if (typeof callback === "function") return callback([path], variants, { reimport: info.reimport });
+        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], variants, { reimport: info.reimport });
       } });
     } });
 
@@ -235,7 +240,7 @@
       open({ trigger: button, purpose: "viewer", isCurrent: function () {
         return document.getElementById("tab-viewer").classList.contains("active");
       }, onSelect: function (path, info) {
-        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], /\.zip$/i.test(path) ? { 0: info.variant } : null);
+        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], /\.zip$/i.test(path) ? { 0: info.variant } : null, { reimport: info.reimport });
       } });
     });
     dialog.addEventListener("cancel", function (event) { event.preventDefault(); close(); });

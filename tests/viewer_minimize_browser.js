@@ -162,6 +162,8 @@ async function main() {
       await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; openModelViewer([source]); }, source);
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && !!window.__minimizeCamera);
       const initial = await snapshot(page); assert.equal(initial.layout.minimized, false); assert(initial.stage.visible && !initial.restore.visible);
+      assert.equal(initial.panels['viewer-adjustments'], false, 'Pose / motion starts collapsed');
+      assert.equal(initial.panels['viewer-expression-adjustments'], false, 'Expression starts collapsed');
       if (profile.short) assert.equal(initial.layout.shortHeight, true, 'This case actually enters the short workspace drawer');
       const initialProbe = await page.evaluate(() => ModelViewer.renderProbe(13)); assert(initialProbe.ready && initialProbe.glError === 0 && initialProbe.nonBackgroundSamples > 0);
       // Use real view/FOV controls so restoration must preserve a non-default camera.
@@ -180,7 +182,10 @@ async function main() {
       const clip = await page.locator('#viewer-motion option').evaluateAll(options => options.find(option => option.value).value);
       await (await show(page, '#viewer-motion')).selectOption(clip); await page.locator('#viewer-time').press('Home');
       await page.locator('#viewer-play').click(); await page.waitForFunction(() => ModelViewer.getState().rig.playing && ModelViewer.getState().rig.time > .05);
-      await page.locator('#viewer-adjustments > summary').click(); await page.locator('#viewer-expression-adjustments > summary').click();
+      await page.locator('#viewer-adjustments > summary').click();
+      await page.locator('#viewer-expression-adjustments > summary').click();
+      assert.equal(await page.locator('#viewer-expression-adjustments').evaluate(element => element.open), true, 'Expression can be opened through its summary');
+      await page.locator('#viewer-expression-adjustments > summary').click();
       const before = await snapshot(page); assert(before.motion.playing && !before.panels['viewer-adjustments'] && !before.panels['viewer-expression-adjustments']);
       const first = await minimize(page, profile.direction); retained(before, first, 'Minimize');
       assert.deepStrictEqual(first.panels, before.panels, 'Minimize preserves manual panel folds');

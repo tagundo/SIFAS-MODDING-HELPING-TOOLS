@@ -215,7 +215,12 @@ def inspect_info(info, source_index, bones):
             continue
     by_id = {record["id"]: record for record in records}
     for key, tree in managers:
-        bone_ids = [reference(key, pointer) for pointer in (_field(tree, "bones") or [])[:MAX_COMPONENTS]]
+        # The game's integer links address the concatenation of the main and
+        # LOD arrays. Grafts append donor chains to lodBones, so resolving only
+        # the main array drops their manager/parent/collider graph even though
+        # their serialized SwingBone components and transforms are present.
+        bone_pointers = (_field(tree, "bones") or []) + (_field(tree, "lodBones") or [])
+        bone_ids = [reference(key, pointer) for pointer in bone_pointers[:MAX_COMPONENTS]]
         collider_ids = [reference(key, pointer) for pointer in (_field(tree, "colliders") or [])[:MAX_COMPONENTS]]
         for ident in collider_ids:
             record = by_id.get(ident)

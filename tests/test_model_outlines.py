@@ -240,6 +240,47 @@ class OutlineTests(unittest.TestCase):
             with self.subTest(vertices=vertices), self.assertRaises(ValueError):
                 outlines.validate(metadata["outlines"], [{**base, "vertices": vertices}])
 
+    def test_absolute_raw_width_sets_every_vertex_and_preserves_source_and_other_channels(self):
+        raw = colored_fixture(separate_color_stream=True)
+        original, token, metadata = self.register(raw)
+        record = metadata["outlines"]["meshes"][0]
+        key = record["file"], int(record["meshId"])
+        self.assertEqual(record["originalWidth"], {"min": 0, "max": 255, "mean": sum((0, 51, 128, 191, 255, 37)) / 6})
+        for absolute in (0, 1, 128, 255):
+            with self.subTest(absolute=absolute):
+                row = {"id": record["id"], "factor": 1, "absolute": absolute}
+                state = edits.validate_state(token, {"version": 1, "edits": [], "outlines": [row]})
+                self.assertEqual(state["outlines"], [row])
+                output = edits.export(token, state, self.root / ("absolute-" + str(absolute)))
+                saved = Path(output["preview_paths"][0]).read_bytes()
+                before, after = edits._inspect(raw), edits._inspect(saved)
+                source_tree, target_tree = before["objects"][key].read_typetree(), after["objects"][key].read_typetree()
+                expected = bytearray(source_tree["m_VertexData"]["m_DataSize"])
+                count, start, stride = outlines._layout(source_tree)
+                for vertex in range(count):
+                    expected[start + vertex * stride] = absolute
+                self.assertEqual(bytes(expected), target_tree["m_VertexData"]["m_DataSize"])
+                source_tree["m_VertexData"]["m_DataSize"] = target_tree["m_VertexData"]["m_DataSize"]
+                self.assertEqual(source_tree, target_tree)
+                for other in set(before["objects"]) - {key}:
+                    self.assertEqual(before["objects"][other].get_raw_data(), after["objects"][other].get_raw_data())
+                recipe = json.loads(Path(output["recipe_path"]).read_text())
+                self.assertEqual(edits.restore(token, recipe)["outlines"], [row])
+        self.assertEqual(original.read_bytes(), raw)
+        for invalid in (-1, 256, 1.5, True, None, "128"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                outlines.validate(metadata["outlines"], [{"id": record["id"], "factor": 1, "absolute": invalid}])
+
+    def test_sparse_vertex_override_after_absolute_width_keeps_native_rounding(self):
+        raw = colored_fixture()
+        catalog = outlines.catalogue(edits._inspect(raw), 0)
+        record = catalog["meshes"][0]
+        row = {"id": record["id"], "factor": .5, "absolute": 200,
+               "vertices": [{"vertex": 0, "value": 1}, {"vertex": 1, "value": 0}]}
+        saved = outlines.apply_edits(raw, 0, [row], catalog)
+        data = colors(edits._inspect(saved)["objects"][record["file"], int(record["meshId"])])
+        self.assertEqual(data[:, 0].tolist(), [128, 0, 100, 100, 100, 100])
+
     def test_runtime_member_face_requires_exact_original_body_binding(self):
         body = edits._inspect(colored_fixture())
         face_env = UnityPy.load(colored_fixture())

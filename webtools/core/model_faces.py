@@ -18,6 +18,8 @@ import time
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from .member_identity import member_from_native, native_from_member
+
 
 MAX_PACK_BYTES = 16 * 1024 * 1024
 MAX_TRANSFER_BYTES = 32 * 1024 * 1024
@@ -26,6 +28,8 @@ MAX_CANDIDATES = 32
 MAX_DESCRIPTOR_CANDIDATES = 64
 MAX_LOCAL_FILES = 512
 MAX_AUTO_FILES = 4
+COMPANION_HINT = "viewer-companions.json"
+MAX_HINT_BYTES = 64 * 1024
 FACE_SECONDS = 40
 _DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 _OWNER = re.compile(r"(?:^|[^a-z0-9])ch(\d{4})(?=[^0-9]|$)", re.I)
@@ -101,7 +105,8 @@ def _names(scene, source=None):
                 dynamic.add(_source_path(obj))
         target = strong if obj.type.name in ("AssetBundle", "GameObject") else weak
         for value in values:
-            target.update(int(match) for match in _OWNER.findall(value))
+            # Unity names use native chXXXX IDs; catalogs and UI use members.
+            target.update(member_from_native(int(match)) for match in _OWNER.findall(value))
     owners = strong or weak
     # The game's masked Rina models use ch9999 as a pseudo-character. Only
     # normalize it when that same source has real native board geometry, and
@@ -138,7 +143,7 @@ def _raw_source_has_pseudo(scene, source):
 
 
 def source_owner(scene, source, metadata=None):
-    """Return canonical owner IDs, given already validated manifest ID metadata.
+    """Return runtime member IDs, given already validated runtime metadata.
 
     Internal identity wins. A manifest declaring Rina can identify a stripped
     ch9999 board mod whose actual board geometry was removed by the modder.
@@ -183,7 +188,9 @@ def _manifest_owners(paths, manifests, origins=None):
             if manifest in origins or candidate in origins:
                 if manifest not in origins or candidate not in origins or origins[manifest] != origins[candidate]:
                     continue
-            owners[candidate].add(owner)
+            # Legacy installer literals are native IDs (the installer swaps
+            # Mia/Lanzhu before looking up runtime member rows).
+            owners[candidate].add(member_from_native(owner))
         except (OSError, SyntaxError, ValueError, TypeError, UnicodeError):
             continue
     return owners
@@ -524,6 +531,8 @@ class FacePlan:
         self.target_anchor, self.head_material = None, None
         self.source_adjustments = {}
         self.database_paths = set()
+        self._hint_sources = {}
+        self._body_platforms = set()
         self.initial_roles = roles(scene) if self.enabled else set()
         if not self.enabled:
             return
@@ -533,7 +542,16 @@ class FacePlan:
             return
         manifest_owners = _manifest_owners(paths, self.context.get("manifest_paths"), self.context.get("origins"))
         source_owners = []
-        for source in _body_sources(scene):
+        body_sources = _body_sources(scene)
+        from .model_viewer import _source_path
+        for obj in scene.env.objects:
+            if _source_path(obj) in body_sources:
+                platform = getattr(obj.assets_file, "target_platform", None)
+                try:
+                    self._body_platforms.add(int(platform))
+                except (ValueError, TypeError):
+                    pass
+        for source in body_sources:
             internal, _ = _names(scene, source)
             metadata = manifest_owners.get(source, set())
             if internal == {9999} and metadata == {209}:
@@ -590,12 +608,18 @@ class FacePlan:
         return best, material
 
     def _inspect(self, path):
-        from .model_viewer import _environment, _Scene
+        from .model_viewer import _environment, _Scene, _source_hash
         _check(self.deadline)
         cache = self.context.get("cache_dir")
         if cache and _inside(path, [os.path.join(os.path.realpath(cache), "models")]) and _cached(path) is None:
             return None
         scene = _Scene(_environment([path], self.deadline), self.deadline)
+        hint = self._hint_sources.get(os.path.realpath(path))
+        if hint is not None:
+            hashes = {_source_hash(obj) for obj in scene.env.objects}
+            platforms = {int(asset.target_platform) for asset in scene.env.assets}
+            if hashes != {hint} or platforms != self._body_platforms:
+                return None
         owners, dynamic = _names(scene)
         if owners and owners != {self.owner}:
             return None
@@ -616,14 +640,86 @@ class FacePlan:
             return None
         return scene, dynamic, found
 
+    def _verified_companions(self):
+        """Prefer a saved, body-bound facial copy without trusting its filename."""
+        import unicodedata
+        if len(self._body_platforms) != 1:
+            return
+        def name(value):
+            return (isinstance(value, str) and value not in ("", ".", "..")
+                    and len(value) <= 256 and not any(char in value for char in ("/", "\\", "\0")))
+        def digest(path, limit):
+            if os.path.islink(path) or not os.path.isfile(path) or not 0 < os.path.getsize(path) <= limit:
+                return None
+            result, total = hashlib.sha256(), 0
+            with open(path, "rb") as stream:
+                while True:
+                    _check(self.deadline)
+                    block = stream.read(min(1024 * 1024, limit + 1 - total))
+                    if not block:
+                        break
+                    total += len(block)
+                    if total > limit:
+                        return None
+                    result.update(block)
+            return result.hexdigest()
+        origins = self.context.get("origins", {})
+        seen, candidates = set(), 0
+        for selected in self.paths:
+            body = os.path.realpath(origins.get(selected, selected))
+            if body in seen:
+                continue
+            seen.add(body)
+            parent = os.path.dirname(body)
+            hint_path = os.path.join(parent, COMPANION_HINT)
+            try:
+                _check(self.deadline)
+                if os.path.islink(hint_path) or not os.path.isfile(hint_path) or os.path.getsize(hint_path) > MAX_HINT_BYTES:
+                    continue
+                with open(hint_path, "rb") as stream:
+                    raw = stream.read(MAX_HINT_BYTES + 1)
+                if len(raw) > MAX_HINT_BYTES:
+                    continue
+                hint = json.loads(raw)
+                if (not isinstance(hint, dict) or set(hint) != {"version", "body", "companions"}
+                        or type(hint.get("version")) is not int or hint["version"] != 1):
+                    continue
+                identity, companions = hint["body"], hint["companions"]
+                if (not isinstance(identity, dict) or set(identity) != {"file", "sha256"}
+                        or not name(identity["file"])
+                        or unicodedata.normalize("NFC", identity["file"]) != unicodedata.normalize("NFC", os.path.basename(body))
+                        or not isinstance(identity["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", identity["sha256"])
+                        or digest(body, MAX_CACHE_BYTES) != identity["sha256"]
+                        or not isinstance(companions, list) or not 1 <= len(companions) <= MAX_AUTO_FILES):
+                    continue
+                for row in companions:
+                    if (not isinstance(row, dict) or set(row) != {"file", "sha256"}
+                            or not name(row["file"]) or not isinstance(row["sha256"], str)
+                            or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])):
+                        continue
+                    candidate = os.path.join(parent, row["file"])
+                    real = os.path.realpath(candidate)
+                    if (real in seen or not _inside(real, [parent]) or os.path.dirname(real) != parent
+                            or digest(candidate, MAX_PACK_BYTES) != row["sha256"]):
+                        continue
+                    seen.add(real)
+                    self._hint_sources[real] = row["sha256"]
+                    yield real
+                    candidates += 1
+                    if candidates >= MAX_AUTO_FILES:
+                        return
+            except (OSError, ValueError, TypeError, KeyError, FaceUnavailable):
+                continue
+
     def _known_local(self):
-        """Probe owner-named originals before opening optional asset catalogs."""
+        """Probe native-ID filenames for the runtime member before catalogs."""
         roots = [os.path.dirname(path) for path in self.paths]
         roots.extend(os.path.dirname(os.path.realpath(origin)) for path, origin in self.context.get("origins", {}).items()
                      if path in self.paths)
         roots.extend(os.path.realpath(root) for root in self.context.get("library_roots", []))
         seen, probes, candidates = set(self.paths), 0, 0
-        names = [f"ch{self.owner:04}_facedynamic.unity", f"ch{self.owner:04}_face.unity"]
+        native_owner = native_from_member(self.owner)
+        names = [f"ch{native_owner:04}_facedynamic.unity", f"ch{native_owner:04}_face.unity"]
         for root in dict.fromkeys(os.path.realpath(path) for path in roots):
             for relative in ("", "3d_model", os.path.join("extracted", "3d_model")):
                 for name in names:
@@ -652,7 +748,10 @@ class FacePlan:
             directory = _cache_root(cache) / "models"
             if directory.is_symlink() or directory.resolve() != directory:
                 return
-            pattern = re.compile(rf"ch{self.owner:04}_[0-9a-f]{{24}}\.unity", re.I)
+            # Accept previous app cache prefixes too; _inspect always verifies
+            # the source's actual runtime owner before adding any geometry.
+            prefixes = "|".join(str(value).zfill(4) for value in dict.fromkeys((native_owner, self.owner)))
+            pattern = re.compile(rf"ch(?:{prefixes})_[0-9a-f]{{24}}\.unity", re.I)
             found = []
             with os.scandir(directory) as entries:
                 for entry in islice(entries, MAX_LOCAL_FILES - probes):
@@ -688,7 +787,7 @@ class FacePlan:
 
         def rank_name(name):
             lower = name.lower()
-            return 0 if (f"ch{self.owner:04}" in lower or f"{self.owner}_" in lower
+            return 0 if (f"ch{native_from_member(self.owner):04}" in lower or f"{self.owner}_" in lower
                          or (character_name and re.match(re.escape(character_name) + r"(?:[^a-z]|$)", lower))) else 1
 
         # Selected files' parents are already jailed by the server.
@@ -805,7 +904,7 @@ class FacePlan:
                 or (pack_size is not None and not head + size <= pack_size <= MAX_PACK_BYTES):
             raise FaceUnavailable("The original face exceeds the mobile download limit.")
         identity = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()[:24]
-        output = _managed_dir(root, "models") / f"ch{self.owner:04}_{identity}.unity"
+        output = _managed_dir(root, "models") / f"ch{native_from_member(self.owner):04}_{identity}.unity"
         plain = _cached(output, size)
         if plain is not None:
             _preflight_bundle(plain)
@@ -895,12 +994,19 @@ class FacePlan:
             return []
         try:
             pending = []
+            try:
+                for path in self._verified_companions():
+                    if self._accept(path):
+                        break
+            except Exception:
+                pass
             # A downloaded same-owner original must not wait behind catalog
             # scans. Names only select candidates; _accept validates contents.
             try:
-                for path in self._known_local():
-                    if self._accept(path):
-                        break
+                if self.needed:
+                    for path in self._known_local():
+                        if self._accept(path):
+                            break
             except Exception:
                 pass
             # Exact original/cache identities come before the broad Unity-file

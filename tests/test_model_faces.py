@@ -154,6 +154,67 @@ class FaceTests(unittest.TestCase):
         scene = viewer._Scene(viewer._environment([str(self.body)], deadline), deadline)
         return faces.FacePlan(scene, [str(self.body)], self.context, deadline)
 
+    def write_companion_hint(self, companion, *, body_digest=None, face_digest=None, file_name=None):
+        hint = {"version": 1, "body": {"file": self.body.name,
+            "sha256": body_digest or hashlib.sha256(self.body.read_bytes()).hexdigest()},
+            "companions": [{"file": file_name or companion.name,
+                "sha256": face_digest or hashlib.sha256(companion.read_bytes()).hexdigest()}]}
+        (self.selected / faces.COMPANION_HINT).write_text(json.dumps(hint), encoding='utf-8')
+
+    def test_verified_saved_face_precedes_owner_named_original_and_catalog(self):
+        edited = self.selected / 'custom-edited-face.unity'
+        edited.write_bytes(self.donor())
+        (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor())
+        self.write_companion_hint(edited)
+        plan = self.plan()
+        with patch.object(plan, '_known_local') as known, patch.object(plan, '_descriptor_iter') as catalog:
+            self.assertEqual(plan.resolve(), [str(edited)])
+        known.assert_not_called(); catalog.assert_not_called()
+        self.assertEqual(plan.status, 'added')
+
+    def test_saved_face_hint_requires_both_current_body_and_face_hashes(self):
+        edited = self.selected / 'edited.unity'
+        edited.write_bytes(self.donor())
+        for body_digest, face_digest in (('0' * 64, None), (None, '0' * 64)):
+            with self.subTest(body=body_digest, face=face_digest):
+                self.write_companion_hint(edited, body_digest=body_digest, face_digest=face_digest)
+                plan = self.plan()
+                self.assertEqual(list(plan._verified_companions()), [])
+                self.assertEqual(plan._hint_sources, {})
+
+    def test_saved_face_hint_rejects_outside_paths_symlinks_and_large_json(self):
+        outside = self.root / 'outside.unity'
+        outside.write_bytes(self.donor())
+        link = self.selected / 'linked.unity'
+        link.symlink_to(outside)
+        for name in ('../outside.unity', str(outside), 'linked.unity'):
+            with self.subTest(name=name):
+                self.write_companion_hint(outside, file_name=name)
+                self.assertEqual(list(self.plan()._verified_companions()), [])
+        (self.selected / faces.COMPANION_HINT).write_bytes(b' ' * (faces.MAX_HINT_BYTES + 1))
+        self.assertEqual(list(self.plan()._verified_companions()), [])
+
+    def test_saved_face_hint_still_rejects_wrong_character_and_platform(self):
+        edited = self.selected / 'edited.unity'
+        for change in ('owner', 'platform'):
+            with self.subTest(change=change):
+                raw = self.donor(208 if change == 'owner' else 207)
+                if change == 'platform':
+                    env = self.UnityPy.load(raw)
+                    current = next(iter(self.plan()._body_platforms))
+                    for asset in env.assets:
+                        asset.target_platform = 13 if current != 13 else 9
+                        asset._m_target_platform = int(asset.target_platform)
+                        asset.mark_changed()
+                    raw = env.file.save(packer='original')
+                edited.write_bytes(raw)
+                self.write_companion_hint(edited)
+                plan = self.plan()
+                candidates = list(plan._verified_companions())
+                self.assertEqual(candidates, [str(edited)])
+                self.assertFalse(plan._accept(candidates[0]))
+                self.assertEqual(plan.auto_paths, [])
+
     def descriptor(self, data, name="pack207"):
         return {"asset_path": "face207", "pack_name": name, "head": 0, "size": len(data),
                 "key1": -12345, "key2": 23456, "pack_size": len(data)}
@@ -601,11 +662,12 @@ class FaceTests(unittest.TestCase):
     def test_all_member_groups_complete_faces_from_automatic_download_only(self):
         # Different character ranges, including Rina and the final roster
         # member, must use their own model and must not depend on a 207 file.
-        for owner in (1, 101, 209, 212):
-            with self.subTest(owner=owner):
-                self.body.write_bytes(self.scene("Body", owner=owner))
-                data = self.donor(owner=owner)
-                descriptor = self.descriptor(data, name=f"pack{owner}")
+        for native_owner in (1, 101, 209, 211, 212):
+            owner = faces.member_from_native(native_owner)
+            with self.subTest(native_owner=native_owner, runtime_member=owner):
+                self.body.write_bytes(self.scene("Body", owner=native_owner))
+                data = self.donor(owner=native_owner)
+                descriptor = self.descriptor(data, name=f"pack{native_owner}")
                 plan = self.plan()
                 self.assertEqual(plan.owner, owner)
                 self.context["allow_download"] = True
@@ -615,7 +677,7 @@ class FaceTests(unittest.TestCase):
                 self.assertEqual(metadata["faces"], {"enabled": True, "status": "added", "added": 2, "characters": [owner]})
                 self.assertEqual(glb_names(metadata), ["Body", "Face", "Eyes"])
                 fetch.assert_called_once()
-                self.assertTrue(fetch.call_args.args[0].endswith(f"/pack{owner}"))
+                self.assertTrue(fetch.call_args.args[0].endswith(f"/pack{native_owner}"))
         self.assertEqual(list(self.library.iterdir()), [])
 
     @EXTRACTOR_REQUIRED
@@ -1033,6 +1095,34 @@ class FaceTests(unittest.TestCase):
         metadata = viewer.prepare([str(self.body)], face_context=self.context)
         self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
         self.assertEqual(metadata["faces"]["status"], "added")
+
+    def test_mia_lanzhu_native_names_and_known_local_faces_use_runtime_members(self):
+        for native_owner, runtime_member in ((212, 211), (211, 212)):
+            with self.subTest(native_owner=native_owner, runtime_member=runtime_member):
+                self.body.write_bytes(self.scene("Body", owner=native_owner))
+                correct = self.library / f"ch{native_owner:04}_facedynamic.unity"
+                other = self.library / f"ch{runtime_member:04}_facedynamic.unity"
+                correct.write_bytes(self.donor(owner=native_owner))
+                other.write_bytes(self.donor(owner=runtime_member))
+                plan = self.plan()
+                self.assertEqual(plan.owner, runtime_member)
+                self.assertIn(str(correct), list(plan._known_local()))
+                self.assertNotIn(str(other), list(plan._known_local()))
+                self.assertIsNone(plan._inspect(str(other)), "The other member's face is rejected")
+                metadata = viewer.prepare([str(self.body)], face_context=self.context)
+                self.assertEqual(metadata["faces"]["characters"], [runtime_member])
+                self.assertEqual(metadata["faces"]["status"], "added")
+                self.assertEqual(set(glb_names(metadata)), {"Body", "Face", "Eyes"})
+                correct.unlink()
+                other.unlink()
+
+    def test_legacy_installer_manifest_native_owner_is_converted_exactly_once(self):
+        for native_owner, runtime_member in ((212, 211), (211, 212), (209, 209)):
+            with self.subTest(native_owner=native_owner):
+                manifest = self.selected / "modinstall.txt"
+                manifest.write_text(f"chara_id = {native_owner}\ncostume_file = 'costume.unity'\n")
+                owners = faces._manifest_owners([str(self.body)], [str(manifest)])
+                self.assertEqual(owners[str(self.body)], {runtime_member})
 
 
 class DownloadTests(unittest.TestCase):

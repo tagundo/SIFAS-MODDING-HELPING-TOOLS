@@ -33,6 +33,45 @@
     if (mesh.isSkinnedMesh) target.applyMatrix4(skinMatrix(mesh, index));
     return target.applyMatrix4(mesh.matrixWorld);
   }
+  function worldSnapshot(mesh, indices) {
+    // Read one immutable pose for a batch. Bone world/inverse products and
+    // temporary matrices are shared, while weighted additions and bind-matrix
+    // multiplication retain vertexWorld's original arithmetic order.
+    var T = global.THREE, geometry = mesh.geometry, base = geometry.attributes.position, result = new Array(base.count);
+    var morphs = geometry.morphAttributes.position || [], influences = mesh.morphTargetInfluences || [];
+    var morph = new T.Vector3(), original = new T.Vector3(), blend = new T.Matrix4(), transform = new T.Matrix4();
+    var skin = geometry.attributes.skinIndex, weights = geometry.attributes.skinWeight, matrices = [], weightValues = [0, 0, 0, 0], boneValues = [0, 0, 0, 0];
+    var canSkin = !!(mesh.isSkinnedMesh && mesh.skeleton && skin && weights);
+    if (canSkin) mesh.skeleton.bones.forEach(function (bone, index) {
+      var inverse = mesh.skeleton.boneInverses[index];
+      if (bone && inverse) matrices[index] = new T.Matrix4().multiplyMatrices(bone.matrixWorld, inverse);
+    });
+    var count = indices ? indices.length : base.count;
+    for (var slot = 0; slot < count; slot++) {
+      var index = indices ? indices[slot] : slot;
+      if (!Number.isInteger(index) || index < 0 || index >= base.count) throw new Error('The source vertex index is invalid.');
+      var point = new T.Vector3().fromBufferAttribute(base, index); original.copy(point);
+      for (var target = 0; target < morphs.length; target++) {
+        var influence = influences[target] || 0; if (!influence) continue;
+        morph.fromBufferAttribute(morphs[target], index); if (!geometry.morphTargetsRelative) morph.sub(original);
+        point.addScaledVector(morph, influence);
+      }
+      if (canSkin) {
+        blend.elements.fill(0);
+        weightValues[0] = weights.getX(index); weightValues[1] = weights.getY(index); weightValues[2] = weights.getZ(index); weightValues[3] = weights.getW(index);
+        boneValues[0] = skin.getX(index); boneValues[1] = skin.getY(index); boneValues[2] = skin.getZ(index); boneValues[3] = skin.getW(index);
+        for (var axis = 0; axis < 4; axis++) {
+          var weight = weightValues[axis], matrix = matrices[boneValues[axis]];
+          if (!weight || !matrix) continue;
+          for (var element = 0; element < 16; element++) blend.elements[element] += matrix.elements[element] * weight;
+        }
+        transform.copy(mesh.bindMatrixInverse).multiply(blend).multiply(mesh.bindMatrix);
+        point.applyMatrix4(transform);
+      } else if (mesh.isSkinnedMesh) point.applyMatrix4(transform.identity());
+      result[index] = point.applyMatrix4(mesh.matrixWorld);
+    }
+    return result;
+  }
   function identityKey(value) { return JSON.stringify(value); }
   function mapping(mesh) { return mesh && (mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.viewerMesh || mesh.userData && mesh.userData.viewerMesh); }
   function validMapping(mesh) {
@@ -358,5 +397,5 @@
     return { sync: sync, beforeRender: beforeRender, reset: reset, getState: inspect, projectVertex: screenVertex,
       dispose: function () { disposed = true; reset(); } };
   }
-  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, skinMatrix: skinMatrix, raycastMesh: raycastMesh };
+  global.ViewerMeshRuntime = { create: create, vertexLocal: vertexLocal, vertexWorld: vertexWorld, worldSnapshot: worldSnapshot, skinMatrix: skinMatrix, raycastMesh: raycastMesh };
 })(window);

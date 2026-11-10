@@ -138,7 +138,7 @@ def _original_mips(obj, texture):
     return output
 
 
-def attach_member_metadata(scene, obj, tree, material, texture_resolver):
+def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_resolver=None):
     """Attach JSON-safe inputs; caller invokes only for verified AS/Member.
 
     The supported APK uses Gamma rendering (PlayerSettings.m_ActiveColorSpace0).
@@ -204,7 +204,8 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver):
             try:
                 mips = _original_mips(target, texture)
                 if mips:
-                    entry["mipmaps"] = [index] + [texture_resolver(level) for level in mips]
+                    entry["mipmaps"] = [index] + (mip_resolver(mips) if mip_resolver is not None else
+                                                 [texture_resolver(level) for level in mips])
                     entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
                     entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
             except Exception:

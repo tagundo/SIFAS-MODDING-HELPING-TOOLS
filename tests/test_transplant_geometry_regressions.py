@@ -98,7 +98,7 @@ class ActualGameCostumeTests(unittest.TestCase):
     def test_actual_reported_lower_band_has_matching_selection_and_preserved_materials(self):
         target = lower.BodyMesh(UnityPy.load(self.target), self.target)
         donor = lower.BodyMesh(UnityPy.load(self.splash), self.splash)
-        drop, _ = lower.band_selection(target, .38, .96, 'lower_belly', True)
+        drop, _ = lower.band_selection(target, .38, .96, 'lower_belly', True, boundary='inside')
         take, _ = lower.band_selection(donor, .38, .96, 'lower_belly', True)
         self.assertGreater(take.sum(), 0)
         lower.graft_one(self.target, self.splash, self.out, cut_low=.38, cut_high=.96, region='lower_belly', log=lambda *a: None)

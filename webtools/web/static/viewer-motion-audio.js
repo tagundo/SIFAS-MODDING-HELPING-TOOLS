@@ -42,7 +42,7 @@
     var preferenceKey = "elichika.viewer.motion-audio.v2";
     try { var preference = JSON.parse(localStorage.getItem(preferenceKey) || "null"); if (preference) { enabled.checked = preference.enabled !== false; muted.checked = preference.muted === true; if (typeof preference.volume === "number" && preference.volume >= 0 && preference.volume <= 1) volume.value = String(preference.volume); } } catch (_) {}
     function savePreference() { try { localStorage.setItem(preferenceKey, JSON.stringify({ enabled: enabled.checked, muted: muted.checked, volume: Number(volume.value) })); } catch (_) {} }
-    function message(key) { currentStatus = key; status.textContent = t(key) + (warnings.length ? " " + warnings.join(" ") : ""); }
+    function message(key) { currentStatus = key; status.textContent = t(key) + (warnings.length ? " " + warnings.map(t).join(" ") : ""); }
     function state() { return window.ModelViewer && (window.ModelViewer.getMotionState ? window.ModelViewer.getMotionState() : window.ModelViewer.getState()); }
     function chosen() { return select.value === "local" ? local ? [local] : [] : tracks; }
     function pauseAll() { tracks.concat(local ? [local] : []).forEach(function (track) { track.audio.pause(); }); }

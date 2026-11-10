@@ -8,6 +8,7 @@ The resolver supplies their explicit primary/unmasked roles and hashes.
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,7 @@ import unicodedata
 import zipfile
 
 from . import viewer_archive
+from .member_identity import member_from_native, native_from_member
 
 _NAMES = ("costume_name_en", "costume_name_ko", "costume_name_zh",
           "costume_name_ja", "costume_description")
@@ -94,7 +96,7 @@ def _raw_identity(path, packer, requested=None):
     else:
         _require(len(owners) <= 1, "This model has ambiguous costume characters. Package one costume at a time.")
         observed = next(iter(owners), None)
-        owner = _owner(observed if observed is not None else packer.extract_chara_id_from_filename(path.stem))
+        owner = _owner(member_from_native(observed if observed is not None else packer.extract_chara_id_from_filename(path.stem)))
     platform = packer.detect_bundle_platform(str(path))
     _require(platform in ("android", "ios"), "The model platform is unknown. Choose an original Android or iOS costume bundle.")
     return owner, platform
@@ -209,7 +211,8 @@ def _existing(source, target, temporary, display_name, requested, packer, should
         manifest = manifests[0]
         source_manifest = incoming.read(manifest)
         values, renamed = _manifest(source_manifest, display_name)
-        owner = _owner(values.get("chara_id"))
+        owner = _owner(values.get("chara_id_append") if values.get("chara_id_append") is not None
+                       else member_from_native(values.get("chara_id")))
         _require(requested is None or _owner(requested) == owner, "The selected character differs from the costume manifest.")
         exact = {str(viewer_archive._entry_path(info)): info for info in infos if not info.is_dir()}
         references, platforms = {}, {}
@@ -430,7 +433,7 @@ def _raw(paths, target, temporary, display_name, requested, pair, packer, should
             arcs["rina_unmask_costume_file"] = "unmasked" + arcs["rina_unmask_costume_file"]
     # Escape the argument inserted by the existing literal-format generator.
     escaped = json.dumps(display_name, ensure_ascii=False)[1:-1]
-    manifest = packer.generate_modinstall_txt(escaped, arcs["costume_file"], "thumbnail.png", owner,
+    manifest = packer.generate_modinstall_txt(escaped, arcs["costume_file"], "thumbnail.png", native_from_member(owner),
                                              arcs.get("rina_unmask_costume_file"))
     _manifest(manifest.encode("utf-8"), display_name)  # Verify generated literals too.
     _stop(should_stop)
@@ -476,8 +479,224 @@ def _replace_thumbnail(target, png, should_stop):
             outgoing.writestr(name, png)
     modified.replace(target)
 
+def _verified_face_companions(export_result, records):
+    """Bind internal automatic-face records to preserved recipe originals."""
+    if records is None:
+        return []
+    _require(isinstance(records, list) and len(records) <= 2, "The costume has ambiguous automatic face companions.")
+    recipe = export_result.get("recipe", {})
+    if recipe.get("tool") == "mesh-tools":
+        recipe = recipe.get("bodyRecipe", {})
+    sources, originals = recipe.get("sources", []), recipe.get("originals", [])
+    result, seen = [], set()
+    for record in records:
+        fields = {"path", "sha256", "original_path", "original_sha256", "source_sha256", "source_index",
+                  "container", "member", "owner", "platform", "body_source_sha256"}
+        _require(isinstance(record, dict) and set(record) == fields, "The automatic face proof is invalid.")
+        index, container = record["source_index"], record["container"]
+        _require(type(index) is int and 0 <= index < len(sources) and type(container) is int and 0 <= container < len(originals),
+                 "The automatic face is outside its original costume sources.")
+        source = sources[index]
+        _require(source.get("sha256") == record["source_sha256"] and source.get("container") == container
+                 and source.get("member") == record["member"] and originals[container].get("sha256") == record["original_sha256"]
+                 and any(row.get("sha256") == record["body_source_sha256"] for row in sources),
+                 "The automatic face is not bound to its original body and face bytes.")
+        original = _file(record["original_path"])
+        _require(_sha(original) == record["original_sha256"], "The preserved original face changed.")
+        original_raw = original.read_bytes()
+        if record["member"] is not None:
+            with zipfile.ZipFile(io.BytesIO(original_raw)) as archive:
+                original_raw = archive.read(record["member"])
+        _require(hashlib.sha256(original_raw).hexdigest() == record["source_sha256"], "The original face source hash does not match.")
+        path = _file(record["path"])
+        _require(isinstance(record["sha256"], str) and _SHA.fullmatch(record["sha256"]) and _sha(path) == record["sha256"], "The saved automatic face changed.")
+        from . import viewer_mod_sources
+        facts = viewer_mod_sources._model_facts(original_raw)
+        current = viewer_mod_sources._model_facts(path.read_bytes())
+        owner = _owner(record["owner"])
+        _require(record["platform"] in ("android", "ios") and facts["platform"] == current["platform"] == record["platform"]
+                 and member_from_native(facts["owner"]) in (None, owner) and current["owner"] == facts["owner"],
+                 "The automatic face changed its original member or native platform.")
+        _require(record["platform"] not in seen, "Choose one verified face per native platform.")
+        seen.add(record["platform"])
+        result.append({"path": path, "sha256": record["sha256"], "original": original,
+                       "original_sha256": record["original_sha256"], "owner": owner, "platform": record["platform"],
+                       "changed": record["sha256"] != record["source_sha256"]})
+    return result
+
+
+
+def _check_face_exclusion(target):
+    """Never leave a private face dependency dangling after explicit exclusion."""
+    from . import bundle_identity
+    with zipfile.ZipFile(target) as archive:
+        manifest = next(name for name in archive.namelist() if PurePosixPath(name).name.lower() == "modinstall.txt")
+        fields, _ = _manifest(archive.read(manifest), "Face exclusion")
+        face_ids, face_names = set(), set()
+        for key in ("costume_facedynamic_file", "costume_facedynamic_file_ios"):
+            if not fields.get(key):
+                continue
+            raw = archive.read(fields[key])
+            if not raw.startswith(b"UnityFS\0"):
+                continue
+            _, _, files = bundle_identity._bundle(raw)
+            face_ids.update(sf.name.lower() for sf in files)
+            for sf in files:
+                for obj in sf.objects.values():
+                    if obj.type.name == "AssetBundle":
+                        name = obj.read_typetree().get("m_AssetBundleName")
+                        if name:
+                            face_names.add(name)
+        for key in _MODELS:
+            if not fields.get(key):
+                continue
+            raw = archive.read(fields[key])
+            if not raw.startswith(b"UnityFS\0"):
+                continue
+            _, _, files = bundle_identity._bundle(raw)
+            for sf in files:
+                references_face = any(any(cab in row.path.lower() for cab in face_ids) for row in sf.externals)
+                for obj in sf.objects.values():
+                    if obj.type.name == "AssetBundle":
+                        references_face |= bool(face_names.intersection(obj.read_typetree().get("m_Dependencies", [])))
+                _require(not references_face,
+                    "This saved ZIP binds its body to the included face. Reimport the original body before excluding the face; no Mod ZIP was created.")
+
+
+def _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits=None):
+    # A reopened, already-baked mouth file may have no new authoring delta.
+    # Explicit inclusion must still carry that exact current face into game.
+    active = list(faces)
+    if include_face_edits is False:
+        _check_face_exclusion(target)
+    if not active and include_face_edits is not False:
+        return
+    platforms = {"android", "ios"} if platform == "android+ios" else {platform}
+    for row in active:
+        _require(row["owner"] == owner and row["platform"] in platforms,
+                 "The edited face must match this costume's member and native platform.")
+    replacement = temporary / "with-face.zip"
+    with zipfile.ZipFile(target) as incoming, zipfile.ZipFile(replacement, "w") as outgoing:
+        outgoing.comment = incoming.comment
+        names = set(incoming.namelist())
+        manifests = [name for name in names if PurePosixPath(name).name.lower() == "modinstall.txt"]
+        _require(len(manifests) == 1, "The costume needs one manifest before adding its edited face.")
+        manifest = manifests[0]; encoded = incoming.read(manifest)
+        additions = {}
+        assignments = ({"costume_facedynamic_file": "", "costume_facedynamic_file_ios": ""}
+                       if include_face_edits is False else {})
+        for row in active:
+            field = "costume_facedynamic_file_ios" if row["platform"] == "ios" and "android" in platforms else "costume_facedynamic_file"
+            name = "edited-face-" + secrets.token_hex(8) + ".unity"
+            _require(name not in names, "The edited face asset name collided. Create another copy.")
+            assignments[field] = name
+            additions[name] = row
+        # Replace existing literal face references rather than introducing
+        # duplicate assignments; preserve every other source manifest byte.
+        program = ast.parse(encoded.decode("utf-8-sig"))
+        offsets = [0]
+        for line in encoded.splitlines(keepends=True):
+            offsets.append(offsets[-1] + len(line))
+        changes = []
+        for node in program.body:
+            key = node.targets[0].id
+            if key in assignments:
+                changes.append((offsets[node.value.lineno - 1] + node.value.col_offset,
+                    offsets[node.value.end_lineno - 1] + node.value.end_col_offset,
+                    repr(assignments.pop(key)).encode()))
+        for start, end, value in sorted(changes, reverse=True):
+            encoded = encoded[:start] + value + encoded[end:]
+        for field, name in assignments.items():
+            encoded += ("\n" + field + " = " + repr(name) + "\n").encode()
+        _manifest(encoded, "Face proof")
+        for info in incoming.infolist():
+            _stop(should_stop)
+            outgoing.writestr(copy.copy(info), encoded if info.filename == manifest else incoming.read(info))
+        for name, row in additions.items():
+            _stop(should_stop); outgoing.writestr(name, row["path"].read_bytes())
+    replacement.replace(target)
+
+
+
+def _isolate_face_graph(target, temporary, should_stop):
+    """Give this costume's body/face graph private runtime identities.
+
+    File names do not isolate Unity's CAB and AssetBundle caches. Build one
+    dependency map per native platform and verify every execution copy against
+    its saved source; only identity strings and dependencies may change.
+    """
+    from . import bundle_identity, viewer_mod_sources
+    with zipfile.ZipFile(target) as incoming:
+        manifest = next(name for name in incoming.namelist() if PurePosixPath(name).name.lower() == "modinstall.txt")
+        fields, _ = _manifest(incoming.read(manifest), "Identity proof")
+        face_fields = ("costume_facedynamic_file", "costume_facedynamic_file_ios")
+        if not any(fields.get(key) for key in face_fields):
+            return []
+        namespace = "viewer-face-" + secrets.token_hex(16)
+        rows, by_platform = [], {}
+        for key in _MODELS + face_fields:
+            member = fields.get(key)
+            if not member:
+                continue
+            _stop(should_stop)
+            raw = incoming.read(member)
+            facts = viewer_mod_sources._model_facts(raw)
+            _require(facts["platform"] in ("android", "ios") and
+                     (key not in face_fields or facts["owner"] in (None, fields["chara_id"])),
+                     "The costume body and face must use their original member and native platform.")
+            own_namespace = namespace + ":" + key
+            row = {"role": key, "member": member, "raw": raw, "platform": facts["platform"], "namespace": own_namespace}
+            rows.append(row); by_platform.setdefault(facts["platform"], []).append(row)
+        _require(len({row["member"] for row in rows}) == len(rows),
+                 "Use distinct body and face assets for each native costume role.")
+        body_platform = next(row["platform"] for row in rows if row["role"] == "costume_file")
+        for row in rows:
+            if row["role"] in face_fields:
+                expected = "ios" if row["role"].endswith("_ios") else body_platform
+                _require(row["platform"] == expected,
+                         "The included face does not match its costume's Android or iOS role.")
+        for platform, group in by_platform.items():
+            identities, runtime_names, cab_targets, runtime_targets = {}, {}, {}, {}
+            for row in group:
+                cabs = bundle_identity._cab_mapping(bundle_identity._cab_names(row["raw"]), row["namespace"])
+                runtime = bundle_identity._runtime_names(row["raw"], row["namespace"])
+                for old, new in cabs.items():
+                    cab_targets.setdefault(old, set()).add(new); identities.setdefault(old, new)
+                for old, new in runtime.items():
+                    runtime_targets.setdefault(old, set()).add(new); runtime_names.setdefault(old, new)
+            for row in group:
+                _, _, files = bundle_identity._bundle(row["raw"])
+                for sf in files:
+                    for external in sf.externals:
+                        ambiguous = [cab for cab, targets in cab_targets.items() if len(targets) > 1 and cab in external.path.lower()]
+                        _require(not ambiguous, "The costume has ambiguous shared body/face CAB dependencies.")
+                    for obj in sf.objects.values():
+                        if obj.type.name == "AssetBundle":
+                            dependencies = obj.read_typetree().get("m_Dependencies", [])
+                            _require(not any(len(runtime_targets.get(name, ())) > 1 for name in dependencies),
+                                     "The costume has ambiguous shared body/face runtime dependencies.")
+                row["execution"] = bundle_identity.isolate_bundle(row["raw"], row["namespace"],
+                    _identities=identities, _bundle_names=runtime_names)
+                row["proof"] = bundle_identity.verify_identity_only(row["raw"], row["execution"], row["namespace"],
+                    _identities=identities, _bundle_names=runtime_names)
+                row["proof"].update(role=row["role"], platform=platform, namespace=row["namespace"])
+            # Each active bundle has a distinct own identity, even when a
+            # neutral/custom source reused another file's original CAB name.
+            execution_cabs = [cab.lower() for row in group for cab in bundle_identity._cab_names(row["execution"])]
+            _require(len(execution_cabs) == len(set(execution_cabs)), "The private body/face CAB graph is ambiguous.")
+        replacements = {row["member"]: row["execution"] for row in rows}
+        replacement = temporary / "private-face-graph.zip"
+        with zipfile.ZipFile(replacement, "w") as outgoing:
+            outgoing.comment = incoming.comment
+            for info in incoming.infolist():
+                _stop(should_stop)
+                outgoing.writestr(copy.copy(info), replacements.get(info.filename, incoming.read(info)))
+    replacement.replace(target)
+    return [row["proof"] for row in rows]
+
+
 def package_saved_export(export_result, output_dir, *, display_name, chara_id=None,
-                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None):
+                         pair=None, log=lambda message: None, should_stop=lambda: False, thumbnail=None, face_companions=None, include_face_edits=None):
     """Return an atomic installer ZIP receipt; authorization belongs to the caller.
 
     Generic ZIPs require exactly one Unity model. Their other non-model files
@@ -487,6 +706,9 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
     unreferenced entries retain their original names and bytes.
     """
     display_name = _display(display_name)
+    _require(include_face_edits is None or isinstance(include_face_edits, bool),
+             "Choose whether to include this costume's verified face companion.")
+    _require(include_face_edits is not False or not face_companions, "Excluded faces cannot be added to this costume.")
     if thumbnail is not None:
         _require(isinstance(thumbnail, dict) and isinstance(thumbnail.get("png"), bytes) and
                  thumbnail["png"].startswith(b"\x89PNG\r\n\x1a\n") and
@@ -501,6 +723,10 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
     paths = [_file(path) for path in selected]
     _require(len(set(paths)) == len(paths), "The saved costume outputs contain duplicate paths.")
     snapshots = {path: _sha(path) for path in paths}
+    faces = _verified_face_companions(export_result, face_companions)
+    for face in faces:
+        snapshots[face["path"]] = face["sha256"]
+        snapshots[face["original"]] = face["original_sha256"]
     _require(sum(path.stat().st_size for path in paths) <= viewer_archive.MAX_UNPACKED_BYTES,
              "The saved costumes exceed the packaging limit.")
     _stop(should_stop)
@@ -524,6 +750,9 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
             _require(thumbnail.get("character_id") == owner, "The rendered thumbnail belongs to another target member.")
             if any(zipfile.is_zipfile(path) for path in paths):
                 _replace_thumbnail(target, thumbnail["png"], should_stop)
+        _attach_edited_faces(target, temporary, faces, owner, platform, should_stop, include_face_edits)
+        face_identity = (_isolate_face_graph(target, temporary, should_stop)
+                         if include_face_edits is True or faces else [])
         asset_references, asset_namespace, metadata_member = _namespace_assets(target, temporary, display_name, should_stop, source_manifest)
         if thumbnail is not None:
             with zipfile.ZipFile(target) as archive:
@@ -550,7 +779,7 @@ def package_saved_export(export_result, output_dir, *, display_name, chara_id=No
                 "display_name": display_name, "chara_id": owner, "platform": platform,
                 "mode": mode, "model_members": references, "members": members,
                 "asset_members": asset_references, "asset_namespace": asset_namespace,
-                "source_manifest_member": metadata_member,
+                "source_manifest_member": metadata_member, "face_identity": face_identity,
                 "thumbnail": ({"mode": "3d", "sha256": thumbnail["sha256"], "member": asset_references["thumbnail_file"],
                                "characterId": owner, "profileDigest": thumbnail["profile_digest"],
                                "cacheKey": thumbnail["cache_key"], "quality": thumbnail["quality"]} if thumbnail else None),
