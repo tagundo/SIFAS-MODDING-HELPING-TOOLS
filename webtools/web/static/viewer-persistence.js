@@ -198,7 +198,7 @@
       if (key !== modContext) {
         modContext = key; manualModName = false; counterpartPath = ""; lastPackage = null; installedFingerprint = ""; clearThumbnail();
         element("viewer-mod-character").value = ""; element("viewer-mod-variant").value = "";
-        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = true;
+        if (element("viewer-mod-include-face")) element("viewer-mod-include-face").checked = false;
         element("viewer-mod-target").open = !!metadata.requiresCounterpart;
       }
       var name = element("viewer-mod-name");

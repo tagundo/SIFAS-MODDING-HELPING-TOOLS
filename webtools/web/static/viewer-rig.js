@@ -1597,6 +1597,15 @@
         return { clipName: existing.name, warnings: existing.timeline.warnings.slice() };
       },
       getMotionTimelines: function () { return JSON.parse(JSON.stringify(timelineDescriptors)); },
+      getMotionAudio: function (name) {
+        if (typeof name !== "string") return null;
+        var descriptor = timelineDescriptors.filter(function (item) {
+          return "game-timeline:" + String(item.category) + ":" + String(item.motion) + ":" + String(item.performerPosition || 1) === name;
+        })[0];
+        // Audio binding does not need the body's complete timeline and curves.
+        // Retain the same independent-copy boundary as the full export API.
+        return descriptor && descriptor.audio ? JSON.parse(JSON.stringify(descriptor.audio)) : null;
+      },
       refreshGaze: function () {
         if (!options.getGazeContext) return false;
         var key = JSON.stringify(options.getGazeContext());

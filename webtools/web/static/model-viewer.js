@@ -1286,11 +1286,16 @@
     var playback = rigController.getPlaybackState(), key = metadata.id + ":" + playback.selectedClip;
     if (key === audioBindingKey) return;
     audioBindingKey = key;
-    var timelines = rigController.getMotionTimelines ? rigController.getMotionTimelines() : metadata.rig && metadata.rig.motionTimelines || [];
-    var descriptor = timelines.filter(function (item) {
-      return "game-timeline:" + String(item.category) + ":" + String(item.motion) + ":" + String(item.performerPosition || 1) === playback.selectedClip;
-    })[0];
-    if (descriptor && descriptor.audio) window.ViewerMotionAudio.load(descriptor.audio, { modelId: metadata.id, clipNames: [playback.selectedClip] });
+    var audio;
+    if (rigController.getMotionAudio) audio = rigController.getMotionAudio(playback.selectedClip);
+    else {
+      var timelines = rigController.getMotionTimelines ? rigController.getMotionTimelines() : metadata.rig && metadata.rig.motionTimelines || [];
+      var descriptor = timelines.filter(function (item) {
+        return "game-timeline:" + String(item.category) + ":" + String(item.motion) + ":" + String(item.performerPosition || 1) === playback.selectedClip;
+      })[0];
+      audio = descriptor && descriptor.audio;
+    }
+    if (audio) window.ViewerMotionAudio.load(audio, { modelId: metadata.id, clipNames: [playback.selectedClip] });
     else window.ViewerMotionAudio.clear();
   }
 
