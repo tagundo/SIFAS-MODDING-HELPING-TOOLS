@@ -45,19 +45,38 @@
     function message(key) { currentStatus = key; status.textContent = t(key) + (warnings.length ? " " + warnings.map(t).join(" ") : ""); }
     function state() { return window.ModelViewer && (window.ModelViewer.getMotionState ? window.ModelViewer.getMotionState() : window.ModelViewer.getState()); }
     function chosen() { return select.value === "local" ? local ? [local] : [] : tracks; }
-    function pauseAll() { tracks.concat(local ? [local] : []).forEach(function (track) { track.audio.pause(); }); }
+    function pauseTrack(track) { if (track.starting) { track.playToken++; track.starting = false; } track.audio.pause(); }
+    function pauseAll() { tracks.concat(local ? [local] : []).forEach(pauseTrack); }
     function stopTick() { if (frame) cancelAnimationFrame(frame); if (timer) clearTimeout(timer); frame = timer = 0; }
-    function disposeTrack(track) { track.audio.pause(); track.audio.removeAttribute("src"); track.audio.load(); track.audio.remove(); }
-    function audioTrack(data) {
-      var audio = make("audio", null, box); audio.className = "viewer-motion-audio-player"; audio.preload = "auto"; audio.hidden = true;
-      audio.src = data.url; audio.dataset.motionCue = data.cue || "";
-      // The media decoder runs independently of rendering. Repeatedly seeking
-      // it to a stepped/slow render clock cuts PCM even when all bytes are
-      // already buffered. Only transport discontinuities seek; while playing,
-      // the rig samples the active media clock through getPlaybackClock().
-      var track = { data: data, audio: audio, starting: false, failed: false, synchronized: false, active: false, seeks: 0 };
-      audio.addEventListener("loadedmetadata", arm);
-      audio.addEventListener("error", function () { track.failed = true; message("This audio format could not be played. Choose WAV, MP3 or OGG."); });
+    function disposeTrack(track) { track.disposed = true; pauseTrack(track); if (track.audio.dispose) track.audio.dispose(); else { track.audio.removeAttribute("src"); track.audio.load(); track.audio.remove(); } }
+    function audioTrack(data, nativePCM) {
+      function htmlPlayer() {
+        var html = make("audio", null, box); html.className = "viewer-motion-audio-player"; html.preload = "auto"; html.hidden = true;
+        html.dataset.motionCue = data.cue || ""; return html;
+      }
+      var track = { data: data, audio: null, starting: false, failed: false, synchronized: false, active: false, seeks: 0, playToken: 0, disposed: false, startBinding: null };
+      function preStart() {
+        var playback = state(), rig = playback && playback.rig, attempt = track.startBinding;
+        if (track.disposed || !attempt || attempt.token !== track.playToken || chosen().indexOf(track) < 0 ||
+            !isValid(playback, rig) || !rig.playing || attempt.clip !== rig.selectedClip || attempt.modelId !== playback.modelId ||
+            attempt.revision !== rig.playbackRevision || attempt.source !== select.value) throw Object.assign(new Error("Audio request was superseded."), { name: "AbortError" });
+        var clock = Math.max(0, Number(rig.time) || 0), start = data.startTime || 0, offset = data.offset || 0, rate = data.playbackRate || 1;
+        var target = offset + Math.max(0, clock - start) * rate;
+        if (clock < start || Number.isFinite(data.playDuration) && clock >= start + data.playDuration ||
+            Number.isFinite(track.audio.duration) && target >= track.audio.duration - .002) throw Object.assign(new Error("Audio cue is inactive."), { name: "AbortError" });
+        return target;
+      }
+      var audio = nativePCM ? window.ViewerNativePCM.create(data, { createHTML: htmlPlayer, preStart: preStart }) : htmlPlayer();
+      if (!nativePCM) audio.src = data.url;
+      track.audio = audio;
+      // Continuous playback follows the decoder/DSP. Only transport changes seek.
+      audio.addEventListener("loadedmetadata", function () { if (!track.disposed) arm(); });
+      audio.addEventListener("error", function () {
+        if (track.disposed) return;
+        var selected = chosen().indexOf(track) >= 0, playback = state(), rig = playback && playback.rig;
+        if (track === local) { track.failed = true; if (selected) message("This audio format could not be played. Choose WAV, MP3 or OGG."); }
+        else if (selected && rig && (!binding.modelId || !playback.modelId || binding.modelId === playback.modelId) && (!binding.clipNames.length || binding.clipNames.indexOf(rig.selectedClip) >= 0)) { track.failed = true; message("This audio format could not be played. Choose WAV, MP3 or OGG."); }
+      });
       return track;
     }
     function isValid(playback, rig) {
@@ -91,13 +110,13 @@
       tracks.concat(local ? [local] : []).forEach(function (track) {
         var audio = track.audio, data = track.data;
         audio.volume = Number(volume.value); audio.muted = muted.checked;
-        if (!valid || selected.indexOf(track) < 0 || track.failed) { audio.pause(); track.synchronized = false; track.active = false; return; }
+        if (!valid || selected.indexOf(track) < 0 || track.failed) { pauseTrack(track); track.synchronized = false; track.active = false; return; }
         var duration = Number.isFinite(data.playDuration) ? data.playDuration : Number.isFinite(audio.duration) ? audio.duration : Infinity;
         var start = data.startTime || 0, offset = data.offset || 0, rate = data.playbackRate || 1;
         var waiting = clock < start, finished = clock >= start + duration, position = offset + Math.max(0, clock - start) * rate;
         if (Number.isFinite(audio.duration) && position >= audio.duration - .002) finished = true;
         if (audio.playbackRate !== rate) audio.playbackRate = rate;
-        if (waiting || finished || !playing) audio.pause();
+        if (waiting || finished || !playing) pauseTrack(track);
         // A retry after an interrupted play promise must not restart an
         // asynchronous seek every render frame and starve the decoder.
         var active = playing && !waiting && !finished, beginning = active && !track.active;
@@ -116,8 +135,11 @@
         }
         if (playing && !waiting && !finished && audio.paused && !track.starting && !blocked && audio.readyState >= 2) {
           track.starting = true;
+          var token = ++track.playToken;
+          track.startBinding = { token: token, clip: rig.selectedClip, modelId: playback.modelId, revision: rig.playbackRevision, source: select.value };
           var play = audio.play();
-          if (play && play.then) play.then(function () { track.starting = false; }).catch(function (error) { track.starting = false; if (error.name !== "AbortError") { blocked = true; message("Press Play to allow accompanying audio."); } });
+          function currentAttempt() { var now = state(), currentRig = now && now.rig; return !track.disposed && token === track.playToken && chosen().indexOf(track) >= 0 && isValid(now, currentRig) && currentRig.playing && track.startBinding.clip === currentRig.selectedClip && track.startBinding.modelId === now.modelId && track.startBinding.revision === currentRig.playbackRevision && track.startBinding.source === select.value; }
+          if (play && play.then) play.then(function () { if (!track.disposed && token === track.playToken) track.starting = false; }).catch(function (error) { if (track.disposed || token !== track.playToken) return; track.starting = false; if (currentAttempt() && error.name !== "AbortError") { blocked = true; message("Press Play to allow accompanying audio."); } });
           else track.starting = false;
         }
       });
@@ -141,7 +163,9 @@
             ![data.startTime, data.offset, data.playDuration, data.playbackRate].every(function (number) { return typeof number === "number" && Number.isFinite(number) && number >= 0; }) || data.playbackRate < .05 || data.playbackRate > 8) throw new Error(t("The linked audio response is invalid."));
         return data;
       });
-      pauseAll(); tracks.forEach(disposeTrack); tracks = next.map(audioTrack); transport = null;
+      pauseAll(); tracks.forEach(disposeTrack);
+      var nativePCM = !!(window.ViewerNativePCM && window.ViewerNativePCM.eligible(descriptor));
+      tracks = next.map(function (data) { return audioTrack(data, nativePCM); }); transport = null;
       warnings = Array.isArray(descriptor.warnings) ? descriptor.warnings.filter(function (w) { return typeof w === "string"; }).slice(0, 32) : [];
       select.value = "game"; blocked = false; bind(options); message(tracks.length ? "Linked audio ready." : "No linked audio in this motion."); arm();
     }
@@ -152,16 +176,16 @@
       if (selected) { localUrl = URL.createObjectURL(selected); local = audioTrack({ url: localUrl, cue: selected.name, startTime: 0, offset: 0, playbackRate: 1 }); enabled.checked = true; select.value = "local"; blocked = false; warnings = []; status.textContent = selected.name; }
       arm();
     });
-    [enabled, muted, volume, select].forEach(function (input) { input.addEventListener(input === volume ? "input" : "change", function () { blocked = false; savePreference(); arm(); }); });
+    [enabled, muted, volume, select].forEach(function (input) { input.addEventListener(input === volume ? "input" : "change", function () { blocked = false; savePreference(); if (input === select && select.value === "local" && local && local.failed) message("This audio format could not be played. Choose WAV, MP3 or OGG."); arm(); }); });
     document.addEventListener("visibilitychange", arm);
-    document.addEventListener("click", function (event) { if (event.target.closest && event.target.closest("#viewer-play, #viewer-pose-basic, #viewer-pose-preview")) { blocked = false; arm(); } });
+    document.addEventListener("click", function (event) { if (event.target.closest && event.target.closest("#viewer-play, #viewer-pose-basic, #viewer-pose-preview")) { blocked = false; if (event.isTrusted && window.ViewerNativePCM && chosen().some(function (track) { return !!track.audio.getState; })) window.ViewerNativePCM.resumeGesture().catch(function () {}); arm(); } });
     document.addEventListener("input", function (event) { if (event.target.id === "viewer-time") arm(true); });
     document.addEventListener("change", function (event) { if (event.target.id === "viewer-motion") { blocked = false; arm(true); } });
     new MutationObserver(function () { box.querySelectorAll("[data-motion-audio-label]").forEach(function (el) { el.textContent = t(el.dataset.motionAudioLabel); }); message(currentStatus); }).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
     window.addEventListener("pagehide", function () { dead = true; stopTick(); pauseAll(); if (localUrl) URL.revokeObjectURL(localUrl); });
     api = { load: load, clear: function () { pauseAll(); tracks.forEach(disposeTrack); tracks = []; warnings = []; message("No linked audio in this motion."); arm(); },
       sync: function () { arm(true); }, getPlaybackClock: playbackClock,
-      getState: function () { var selected = chosen(), first = selected[0]; return { enabled: enabled.checked, loaded: !!selected.length, paused: !selected.some(function (track) { return !track.audio.paused; }), time: first ? first.audio.currentTime : 0, blocked: blocked, source: select.value, muted: muted.checked, volume: Number(volume.value), tracks: selected.map(function (track) { return { cue: track.data.cue, paused: track.audio.paused, time: track.audio.currentTime, startTime: track.data.startTime, duration: track.audio.duration, readyState: track.audio.readyState, seeks: track.seeks, lastSeekReason: track.lastSeekReason || null, error: track.failed }; }), warnings: warnings.slice() }; } };
+      getState: function () { var selected = chosen(), first = selected[0]; return { enabled: enabled.checked, loaded: !!selected.length, paused: !selected.some(function (track) { return !track.audio.paused; }), time: first ? first.audio.currentTime : 0, blocked: blocked, source: select.value, muted: muted.checked, volume: Number(volume.value), tracks: selected.map(function (track) { return { cue: track.data.cue, paused: track.audio.paused, time: track.audio.currentTime, startTime: track.data.startTime, duration: track.audio.duration, readyState: track.audio.readyState, seeks: track.seeks, lastSeekReason: track.lastSeekReason || null, error: track.failed, backend: track.audio.getState ? track.audio.getState().backend : "html-media", player: track.audio.getState ? track.audio.getState() : null }; }), warnings: warnings.slice() }; } };
     message(currentStatus);
     if (pending) { var request = pending; pending = null; load(request.descriptor, request.options); }
   }

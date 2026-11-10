@@ -53,11 +53,12 @@ function setup(skirt = false) {
 }
 {
   const s=setup();s.capture();s.engine.apply(0,{...s.live,skirtsafeDisableBySource:{}});
-  assert(s.engine.getState().unsupported.includes('source-skirt-runtime:0'));
+  assert(s.engine.getState().skirtCorrectionMissing.includes('source-skirt-runtime:0'));
   s.engine.apply(0,{...s.live,safeSwingBone:undefined});
-  assert(s.engine.getState().unsupported.includes('motion-skirt-runtime'),'unknown global MV setting requires source data or explicit override');
+  assert.deepStrictEqual(s.engine.getState().skirtCorrectionMissing,['motion-skirt-runtime'],'unknown song metadata is separate from core initialization');
+  assert(!s.engine.getState().unsupported.includes('motion-skirt-runtime'),'the native core does not depend on the LateUpdate correction switch');
   s.catalog.managers[0].kneeTransforms=[];s.engine.resetSimulation('source-change');s.engine.apply(0,s.live);
-  assert(s.engine.getState().unsupported.includes('source-knee-transforms:0'),'original AllSafeCorrect dereferences both knees; a missing graph is not silently simulated');
+  assert(s.engine.getState().skirtCorrectionMissing.includes('source-knee-transforms:0'),'missing knees disable their correction pass without stopping the native core');
 }
 {
   // A derived costume can contain exact caller flags from more than one
@@ -76,8 +77,8 @@ function setup(skirt = false) {
   }
   const unknown=setup();unknown.capture();unknown.engine.apply(1/30,
     {...unknown.live,skirtsafeDisableBySource:{},skirtsafeDisableByComponent:{another:false}});
-  assert(unknown.engine.getState().unsupported.includes('source-skirt-runtime:0'));
-  assert.equal(unknown.engine.getState().totalNativeSteps,0,'an unrelated derived component cannot authorize a manager');
+  assert(unknown.engine.getState().skirtCorrectionMissing.includes('source-skirt-runtime:0'));
+  assert.equal(unknown.engine.getState().totalNativeSteps,1,'an unrelated derived component cannot authorize correction, but cannot stop the native core');
 }
 {
   const s=setup(true),other=new THREE.Bone(),tip=new THREE.Bone();
@@ -99,12 +100,12 @@ function setup(skirt = false) {
   const s=setup();s.capture();s.engine.apply(1/30,s.live);
   const before=s.engine.getState().totalNativeSteps, generation=s.engine.getState().dynamicGeneration;
   s.engine.captureAnimationPose({});s.engine.apply(1/30,{...s.live,safeSwingBone:undefined});
-  assert.equal(s.engine.getState().totalNativeSteps,before,'losing trusted MV global flags blocks further native updates');
-  assert(s.engine.getState().unsupported.includes('motion-skirt-runtime'));
+  assert.equal(s.engine.getState().totalNativeSteps,before+1,'losing only MV correction metadata must not stop original group-job integration');
+  assert.deepStrictEqual(s.engine.getState().skirtCorrectionMissing,['motion-skirt-runtime']);
   s.engine.apply(1/30,s.live);
-  assert.equal(s.engine.getState().totalNativeSteps,before+1);
-  assert.equal(s.engine.getState().dynamicGeneration,generation,'known global mode can resume without rebasing native history');
-  assert(!s.engine.getState().unsupported.includes('motion-skirt-runtime'));
+  assert.equal(s.engine.getState().totalNativeSteps,before+2);
+  assert.equal(s.engine.getState().dynamicGeneration,generation,'known global mode resumes correction without rebasing native history');
+  assert.deepStrictEqual(s.engine.getState().skirtCorrectionMissing,[]);
 }
 {
   const s=setup();s.parent.matrixAutoUpdate=false;

@@ -117,8 +117,22 @@
     state.rotation = quatMul(math.fromToRotation(quatRotate(state.rotation, state.boneAxis), sub(target, state.pivot)), state.rotation);
     state.childPosition = target; state.safeCorrectAdjust = true; return true;
   }
+  function catalogReadiness(catalog) {
+    var native = catalog && catalog.native, managers = catalog && catalog.managers || [];
+    var reasons = native && Array.isArray(native.missing) ? native.missing.slice() : native && native.available === true ? [] : ['native-catalog'];
+    if (!native || native.available !== true && !reasons.length) reasons.push('native-catalog');
+    var missing = [], skirt = [];
+    reasons.forEach(function (reason) {
+      // Only this explicitly identified serialized field is optional for the
+      // native core. Every other constructor/graph diagnostic remains fatal.
+      var manager = managers.filter(function (row) { return typeof row.id === 'string' && reason === row.id + ':kneeTransforms'; })[0];
+      var target = manager ? skirt : missing, value = manager ? 'source-knee-transforms:' + manager.sourceIndex : reason;
+      if (target.indexOf(value) < 0) target.push(value);
+    });
+    return { coreAvailable: !missing.length, missing: missing, skirtCorrectionMissing: skirt };
+  }
   function create(root, catalog, current, options) {
-    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, profile = 'navi', missing = [];
+    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, profile = 'navi', missing = [], skirtCorrectionMissing = [], configuredCorrectionMissing = [];
     var stats = { mode: 'game', profile: profile, nativeSteps: 0, totalNativeSteps: 0, resets: 0, initializationGeneration: 0, dynamicGeneration: 0, contacts: 0, safeCorrections: 0, delta: 0, substeps: 0, frameMs: 0 };
     function helper(o) { while (o) { if (o.userData && o.userData.viewerHelper) return true; o = o.parent; } return false; }
     root.traverse(function (o) { if (!helper(o) && o.userData && o.userData.elichika_node !== undefined) nodes[String(o.userData.elichika_node)] = o; });
@@ -164,20 +178,24 @@
     }
     function configure(settings) {
       profile = settings.profile || 'navi'; var sourceFlags = settings.skirtsafeDisableBySource || {}, componentFlags = settings.skirtsafeDisableByComponent || {};
-      missing = (catalog.native && catalog.native.available ? [] : (catalog.native && catalog.native.missing || ['native-catalog'])).slice();
+      var readiness = catalogReadiness(catalog); missing = readiness.missing.slice(); configuredCorrectionMissing = readiness.skirtCorrectionMissing.slice();
       if (!THREE || !math || !global.ViewerGamePhysicsCollision || !global.ViewerGamePhysicsCollision.forJob) missing.push('native-math-module');
       if (profile !== 'navi' && profile !== 'live') missing.push('runtime-profile');
-      if (profile === 'live' && typeof settings.safeSwingBone !== 'boolean' && typeof context.safeSwingBone !== 'boolean') missing.push('motion-skirt-runtime');
       managers = (catalog.managers || []).map(function (record) {
         var ids = (record.bones || []).concat(settings.enableLod === false ? [] : record.lodBones || []);
         var disable = profile === 'navi' ? true : sourceFlags[String(record.sourceIndex)];
-        if (profile === 'live' && typeof disable !== 'boolean' && ids.some(function (id) { return typeof componentFlags[id] !== 'boolean'; })) missing.push('source-skirt-runtime:' + record.sourceIndex);
+        if (profile === 'live' && typeof disable !== 'boolean' && ids.some(function (id) { return typeof componentFlags[id] !== 'boolean'; })) configuredCorrectionMissing.push('source-skirt-runtime:' + record.sourceIndex);
         var knees = resolveKnees(record);
-        if (profile === 'live' && (!knees[0] || !knees[1])) missing.push('source-knee-transforms:' + record.sourceIndex);
-        return { record: record, boneIds: ids, colliderIds: record.colliders || [], knees: knees, skirtsafeDisable: disable === true };
+        if (profile === 'live' && (!knees[0] || !knees[1])) configuredCorrectionMissing.push('source-knee-transforms:' + record.sourceIndex);
+        return { record: record, boneIds: ids, colliderIds: record.colliders || [], knees: knees, skirtsafeDisable: typeof disable === 'boolean' ? disable : null };
       });
       if (!managers.length) missing.push('native-manager');
+      refreshCorrectionMissing(settings);
       return missing.length === 0;
+    }
+    function refreshCorrectionMissing(settings) {
+      skirtCorrectionMissing = configuredCorrectionMissing.filter(function (reason, index, rows) { return rows.indexOf(reason) === index; });
+      if (profile === 'live' && typeof settings.safeSwingBone !== 'boolean' && typeof context.safeSwingBone !== 'boolean') skirtCorrectionMissing.push('motion-skirt-runtime');
     }
     function initialize(settings) {
       if (!configure(settings)) return false;
@@ -224,7 +242,10 @@
         var left = quatRotate(unityRotation(manager.knees[0]), [1, 0, 0]), right = quatRotate(unityRotation(manager.knees[1]), [1, 0, 0]);
         entries.forEach(function (entry) {
           if (entry.manager !== manager) return;
-          if (!force && (typeof componentFlags[entry.record.id] === 'boolean' ? componentFlags[entry.record.id] : manager.skirtsafeDisable)) return;
+          var disabled = typeof componentFlags[entry.record.id] === 'boolean' ? componentFlags[entry.record.id] : manager.skirtsafeDisable;
+          // An unknown caller flag is not an invented false. Keep verified
+          // mixed-source chains active and skip only unverified correction.
+          if (!force && disabled !== false) return;
           var sim = entry.record.simulation || {}, base = entry.base, o = entry.object;
           var state = Object.assign({}, sim, { hasTrans: true, skirtData: base.skirtData, skirtSafeEnable: sim.skirtSafeEnable, parentForward: o.parent ? quatRotate(unityRotation(o.parent), [0, 0, 1]) : [0, 0, 1], parentMatrix: o.parent ? unityMatrix(o.parent) : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], pivot: unityPosition(o), childPosition: unityPosition(entry.child), rotation: unityRotation(o), boneAxis: data[entry.index].boneAxis, length: base.boneLength, safeCorrectAdjust: base.safeCorrectAdjust });
           if (safeCorrect(state, left, right, force, math, THREE)) { setWorldRotation(o, state.rotation); setWorldPosition(entry.child, state.childPosition); base.childPoseActive = true; stats.safeCorrections++; }
@@ -238,11 +259,13 @@
       if (disposed) return; var start = now(); settings = settings || {}; stats.nativeSteps = 0; stats.substeps = 0; stats.contacts = 0; stats.safeCorrections = 0; stats.delta = Number(delta) || 0; profile = settings.profile || 'navi'; stats.profile = profile;
       if (!settings.bones) return;
       if (!captured) captureAnimationPose({});
-      missing = missing.filter(function (reason) { return reason !== 'motion-skirt-runtime'; });
-      if (profile === 'live' && typeof settings.safeSwingBone !== 'boolean' && typeof context.safeSwingBone !== 'boolean') { missing.push('motion-skirt-runtime'); stats.frameMs = now() - start; return; }
+      // Native Update/group jobs do not depend on the song's LateUpdate
+      // correction switch. Unknown caller metadata disables only that optional
+      // non-forced correction; it must not freeze hair, ribbons or colliders.
       var nextSignature = JSON.stringify([profile, settings.enableLod !== false, settings.skirtsafeDisableBySource || {}, settings.skirtsafeDisableByComponent || {}]);
       if (nextSignature !== signature) { pending = true; initialized = false; startupCorrection = profile === 'live'; signature = nextSignature; }
       if (pending && !initialize(settings)) return;
+      refreshCorrectionMissing(settings);
       if (!(delta > 0)) { reapplyOutput(); stats.frameMs = now() - start; return; }
       refreshInputs();
       if (profile === 'live') { var result = stepJob(data, buffers, colliders, matrices, { kind: 'group', math: math, colliders: settings.colliders !== false }); stats.contacts += result.contacts; }
@@ -258,9 +281,9 @@
     function state() {
       var boneRows = initialized ? entries.map(function (entry) { var b = buffers[entry.index], d = data[entry.index]; return { id: entry.record.id, node: entry.record.node, childNode: (entry.record.simulation || {}).childNode, origin: mirrored(b.position), tip: mirrored(b.currentTipPosition), radius: d.radius, colliders: (entry.record.simulation || {}).colliders || [] }; }) : [];
       var capsuleRows = initialized ? colliders.map(function (d, index) { var a = point(matrices[index], d.offset), base = d.managerOffset || 0, sibling = d.siblingIndex >= 0 ? colliders[base + d.siblingIndex] : null, b = sibling ? point(matrices[base + d.siblingIndex], sibling.offset) : a; return { id: d.record.id, a: mirrored(a), b: mirrored(b), ra: d.radius, rb: sibling ? d.siblingRadius : d.radius }; }) : [];
-      return Object.assign({}, stats, { available: missing.length === 0 && !!(catalog.native && catalog.native.available), initialized: initialized, initializationMissing: missing.slice(), unsupported: missing.slice(), mode: 'game', profile: profile, dynamicBones: entries.length, components: (catalog.components || []).length, bones: boneRows, capsules: capsuleRows, runtimeProfile: { job: profile === 'live' ? 'SwingBoneGroupJob' : 'SwingBoneJob', callerFlags: true } });
+      return Object.assign({}, stats, { available: missing.length === 0 && catalogReadiness(catalog).coreAvailable, nativeCatalogAvailable: !!(catalog.native && catalog.native.available), initialized: initialized, initializationMissing: missing.slice(), unsupported: missing.slice(), skirtCorrectionMissing: skirtCorrectionMissing.slice(), mode: 'game', profile: profile, dynamicBones: entries.length, components: (catalog.components || []).length, bones: boneRows, capsules: capsuleRows, runtimeProfile: { job: profile === 'live' ? 'SwingBoneGroupJob' : 'SwingBoneJob', callerFlags: true } });
     }
     return { captureAnimationPose: captureAnimationPose, resetSimulation: resetSimulation, setInitializationPose: function (pose) { options.initializationPose = pose; pendingBase = true; resetSimulation('initialization-pose'); }, apply: apply, getState: state, getTimingState: function () { return Object.assign({}, stats); }, dispose: function () { disposed = true; output = {}; captured = null; buffers = []; data = []; entries = []; } };
   }
-  global.ViewerGamePhysics = { create: create, profiles: { navi: { job: 'single', enableJob: true, enableLod: true, skirtsafeDisable: true }, live: { job: 'group', flagsFromCaller: true } }, reference: { stepJob: stepJob, constraint: constraint, quatMul: quatMul, quatRotate: quatRotate, point: point, classify: classify, safeCorrect: safeCorrect } };
+  global.ViewerGamePhysics = { create: create, catalogReadiness: catalogReadiness, profiles: { navi: { job: 'single', enableJob: true, enableLod: true, skirtsafeDisable: true }, live: { job: 'group', flagsFromCaller: true } }, reference: { stepJob: stepJob, constraint: constraint, quatMul: quatMul, quatRotate: quatRotate, point: point, classify: classify, safeCorrect: safeCorrect } };
 }(typeof window !== 'undefined' ? window : globalThis));

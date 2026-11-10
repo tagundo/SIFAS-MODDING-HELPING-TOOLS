@@ -24,6 +24,8 @@
     "MV motion skirt correction": ["MV 모션 치마 보정", "MVモーションのスカート補正"],
     "Use the game's motion setting": ["게임의 모션 설정 사용", "ゲームのモーション設定を使用"],
     "Import this motion from game assets or select its skirt correction setting.": ["곡별 게임 설정을 확인할 수 없습니다. 게임 에셋에서 모션을 불러오거나 모션 치마 보정 설정을 선택하세요.", "曲別のゲーム設定を確認できません。ゲームアセットからモーションを読み込むか、モーションのスカート補正設定を選択してください。"],
+    "The motion skirt correction setting is separate from SwingBone and collider simulation.": ["모션의 치마 보정 설정은 스윙본·콜라이더 계산과 별도로 적용됩니다.", "モーションのスカート補正設定はSwingBone・コライダーの計算と個別に適用されます。"],
+    "Knee transforms are unavailable; only skirt correction is skipped for those managers.": ["무릎 본 정보가 없는 물리 그룹은 치마 보정만 생략합니다.", "膝ボーン情報がない物理グループではスカート補正のみを省略します。"],
     "Import this costume from game assets or select its skirt correction setting.": ["의상별 게임 설정을 확인할 수 없습니다. 게임 에셋에서 의상을 불러오거나 치마 보정 설정을 선택하세요.", "衣装別のゲーム設定を確認できません。ゲームアセットから衣装を読み込むか、スカート補正設定を選択してください。"],
     "The motion's original screen is unknown. Home/member settings are used; select MV when needed.": ["모션의 원본 화면 정보가 없어 홈·멤버 설정을 사용합니다. MV 모션이면 화면 설정을 바꾸세요.", "元の画面情報がないため、ホーム・メンバー設定を使用します。MVモーションの場合は画面設定を変更してください。"],
     "Original game equations and update order are used. Match the frame setting to the game. This does not reproduce the entire Unity engine.": ["원본 게임의 계산식과 갱신 순서를 사용합니다. 프레임 설정을 게임과 맞추세요. Unity 엔진 전체를 재현하는 기능은 아닙니다.", "元のゲームの計算式と更新順を使用します。フレーム設定をゲームに合わせてください。Unityエンジン全体を再現する機能ではありません。"],
@@ -470,7 +472,7 @@
     var applyBones = components.some(function (r) { return r.kind === "bone" && r.node !== null && r.enabled; });
     var applyColliders = components.some(function (r) { return r.kind === "collider" && r.node !== null && r.enabled; });
     var showColliders = false, spheres = [], springs = [], helperGroup = new THREE.Group();
-    var nativeAvailable = !!(catalog && catalog.native && catalog.native.available && window.ViewerGamePhysics);
+    var nativeAvailable = !!(window.ViewerGamePhysics && window.ViewerGamePhysics.catalogReadiness(catalog).coreAvailable);
     var mode = nativeAvailable ? "game" : "enhanced", frameRate = 0, qualityMode = 20, profile = "auto", skirtCorrection = "auto", motionCorrection = "auto", frameElapsed = 0;
     var engines = {}, frameContext = null, modeSelect = null, frameSelect = null, profileSelect = null, qualitySelect = null, skirtSelect = null, motionSelect = null, modeNote = null;
     var autoBreastLimits = false, breastLimitBases = {}, breastLimitState = [], breastAutoInput = null, breastAutoNote = null, breastSizeSignature = null;
@@ -512,7 +514,11 @@
         var flags = runtimeFlags();
         if ((catalog.managers || []).some(function (manager) { return flags.skirtsafeDisableBySource[manager.sourceIndex] === undefined &&
           (manager.bones || []).concat(manager.lodBones || []).some(function (id) { return typeof flags.skirtsafeDisableByComponent[id] !== "boolean"; }); })) modeNote.textContent += " " + t("Import this costume from game assets or select its skirt correction setting.");
-        if (flags.safeSwingBone === undefined) modeNote.textContent += " " + t("Import this motion from game assets or select its skirt correction setting.");
+        if ((catalog.managers || []).some(function (manager) {
+          var ids = manager.kneeTransforms && manager.kneeTransforms.length ? manager.kneeTransforms : manager.resolvedKneeTransforms;
+          return !Array.isArray(ids) || !nodes[String(ids[0])] || !nodes[String(ids[1])];
+        })) modeNote.textContent += " " + t("Knee transforms are unavailable; only skirt correction is skipped for those managers.");
+        if (flags.safeSwingBone === undefined) modeNote.textContent += " " + t("The motion skirt correction setting is separate from SwingBone and collider simulation.") + " " + t("Import this motion from game assets or select its skirt correction setting.");
       }
     }
     function resolvedProfile() { return profile === "auto" ? frameContext && frameContext.motionCategory === "mv" ? "live" : "navi" : profile; }

@@ -50,6 +50,7 @@
   var stageObserver = null;
   var stageVisible = true;
   var bounds = null;
+  var cameraClipRadius = 0.01;
   var expanded = false;
   var minimized = false;
   var minimizedControlsEnabled = true;
@@ -570,7 +571,23 @@
     if (qualityFailure !== limited) { qualityFailure = limited; refreshInfoVisibility(); }
   }
 
+  // Improve distant depth precision without changing the view. At the supported
+  // minimum orbit distance (0.12 * radius), /120 preserves the original near floor.
+  function updateCameraClipNear() {
+    if (!camera || !controls || !model) return;
+    var radius = cameraClipRadius;
+    var distance = camera.position.distanceTo(controls.target);
+    var floor = Math.max(0.001, radius / 1000);
+    var near = isFinite(distance) && distance > 0
+      ? Math.max(floor, Math.min(radius / 100, distance / 120)) : floor;
+    if (Math.abs(camera.near - near) > Math.max(1e-9, Math.abs(camera.near) * 1e-6)) {
+      camera.near = near;
+      camera.updateProjectionMatrix();
+    }
+  }
+
   function renderScene() {
+    updateCameraClipNear();
     if (materialController && materialController.syncGeometry) materialController.syncGeometry();
     modelRenderInfo = qualityController.render(scene, camera);
     refreshQualityStatus();
@@ -986,6 +1003,7 @@
     if (posed && !posed.isEmpty() && [posed.min.x, posed.min.y, posed.min.z, posed.max.x, posed.max.y, posed.max.z].every(isFinite)) bounds = posed;
     if (invalid) precise = false;
     var sphere = bounds.getBoundingSphere(new window.THREE.Sphere()), radius = Math.max(sphere.radius, 0.01);
+    cameraClipRadius = radius;
     var centre = sphere.center, target = centre.clone(), centreR = centre.dot(right), centreU = centre.dot(up), centreV = centre.dot(view);
     var safeX = Math.max(1, width - insets.left - insets.right) / width;
     var safeY = Math.max(1, height - insets.top - insets.bottom) / height;
