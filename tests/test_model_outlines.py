@@ -1,5 +1,6 @@
 """Original Unity outline masks: real bytes, source identity and round trips."""
 import copy
+import hashlib
 import json
 import math
 import os
@@ -132,6 +133,31 @@ class OutlineTests(unittest.TestCase):
                     saved = outlines.apply_edits(raw, 0, [{"id": record["id"], "factor": factor}], catalog)
                     self.assert_only_red_changed(raw, saved, {key: factor})
             self.assertEqual(outlines.apply_edits(raw, 0, [{"id": record["id"], "factor": 1}], catalog), raw)
+
+    def test_diagnostic_sources_match_captured_bytes_and_change_with_new_model(self):
+        original = colored_fixture()
+        path, token, metadata = self.register(original)
+        self.assertEqual(metadata["outlines"]["sources"], [{
+            "sourceIndex": 0, "name": path.name, "sha256": hashlib.sha256(original).hexdigest()}])
+        self.assertNotIn(str(self.root), json.dumps(metadata["outlines"]))
+        first = metadata["outlines"]["meshes"][0]
+        self.assertEqual(first["vertexCount"], 6)
+        self.assertEqual(first["originalWidth"], {"min": 0, "max": 255, "mean": sum([0, 51, 128, 191, 255, 37]) / 6})
+        self.assertEqual(first["sourceIndex"], metadata["outlines"]["sources"][0]["sourceIndex"])
+
+        env = UnityPy.load(original)
+        mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
+        tree = mesh.read_typetree(); tree["m_Name"] = "Second outline model"
+        mesh.save_typetree(tree)
+        other = env.file.save()
+        other_path, _, other_metadata = self.register(other)
+        self.assertNotEqual(hashlib.sha256(original).hexdigest(), hashlib.sha256(other).hexdigest())
+        self.assertEqual(other_metadata["outlines"]["sources"], [{
+            "sourceIndex": 0, "name": other_path.name, "sha256": hashlib.sha256(other).hexdigest()}])
+        self.assertEqual(other_metadata["outlines"]["meshes"][0]["name"], "Second outline model")
+        self.assertEqual(edits.mod_source_context(token)["outlines"], metadata["outlines"])
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(other_path.read_bytes(), other)
 
     def test_rejects_forged_duplicate_nonfinite_bool_and_unknown_settings(self):
         _, token, metadata = self.register(colored_fixture())

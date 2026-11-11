@@ -61,6 +61,27 @@ async function start() {
     page.on('request', request => { if (request.url().endsWith('/api/viewer/transplant/run')) requests.push(JSON.parse(request.postData())); });
     page.setDefaultTimeout(45000); await page.goto(server.url);
     await page.waitForFunction(() => window.ModelViewer && typeof openModelViewer === 'function');
+    report.uvOptionsForm = { defaultReuse: true, defaultRelocate: false, locales: [] };
+    for (const [language, reuseLabel, moveLabel, noPadding] of [
+      ['ko', '빈 UV 영역 재사용', '다른 빈 UV 영역으로 옮기기', '패딩은 추가하지 않습니다.'],
+      ['ja', '空きUV領域を再利用', '別の空きUV領域へ移動', 'パディングは追加しません。'],
+      ['en', 'Reuse empty UV areas', 'Move to another empty UV area', 'No padding is added.']
+    ]) {
+      await page.evaluate(async language => { await changeLang(language); selectTool('costume_part_transplant'); }, language);
+      const form = page.locator('#tool-form'), reuse = form.locator('#f_reuse_empty_uv'), relocate = form.locator('#f_relocate_empty_uv');
+      assert((await form.innerText()).includes(reuseLabel)); assert((await form.innerText()).includes(moveLabel));
+      assert((await form.innerText()).includes(noPadding));
+      assert.equal(await reuse.isChecked(), true); assert.equal(await relocate.isChecked(), false); assert.equal(await relocate.isDisabled(), false);
+      await relocate.check(); await reuse.uncheck();
+      assert.equal(await relocate.isChecked(), false); assert.equal(await relocate.isDisabled(), true);
+      const disabled = await page.evaluate(() => collectParams());
+      assert.equal(disabled.reuse_empty_uv, false); assert.equal(disabled.relocate_empty_uv, false);
+      await reuse.check(); await relocate.check();
+      const enabled = await page.evaluate(() => collectParams());
+      assert.equal(enabled.reuse_empty_uv, true); assert.equal(enabled.relocate_empty_uv, true);
+      report.uvOptionsForm.locales.push({ language, reuseLabel, moveLabel, dependentCheckboxReset: true, valuesCollected: true });
+    }
+    if (process.env.VIEWER_UV_OPTIONS_ONLY === '1') { assert.deepEqual(errors, []); report.pageErrors = errors; report.status = 'PASS'; return; }
     await page.evaluate(() => { document.getElementById('viewer-auto-face').checked = false; });
     for (const operation of [
       { id: 'viewer-costume-transplant', value: 'costume', button: 'Transplant' },
@@ -115,6 +136,20 @@ async function start() {
       await page.waitForFunction(({ operation }) => ModelViewer.getState().transplants.donors.some(entry => entry.operation === operation && entry.donor), { operation: operation.value });
       await panel.locator('.viewer-transplant-stage canvas').waitFor({ state: 'visible' });
       if (operation.value === 'part') {
+        const reuseEmptyUV = panel.locator('#viewer-part-transplant-reuse-empty-uv');
+        const relocateEmptyUV = panel.locator('#viewer-part-transplant-relocate-empty-uv');
+        assert.equal(await reuseEmptyUV.isChecked(), true, 'Empty UV reuse is on by default');
+        assert.equal(await relocateEmptyUV.isChecked(), false, 'Moving UV regions is opt-in');
+        assert.equal(await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'part').reuseEmptyUV), true);
+        assert.equal(await relocateEmptyUV.isDisabled(), false);
+        await relocateEmptyUV.check();
+        await reuseEmptyUV.uncheck();
+        assert.equal(await relocateEmptyUV.isChecked(), false, 'Disabling reuse clears moving UV regions');
+        assert.equal(await relocateEmptyUV.isDisabled(), true);
+        await reuseEmptyUV.check();
+        assert.equal(await relocateEmptyUV.isChecked(), false);
+        assert.equal(await relocateEmptyUV.isDisabled(), false);
+        await relocateEmptyUV.check();
         if (!realModels) await panel.locator('#viewer-part-transplant-part').selectOption('BreastSize');
         else {
           const canvas = panel.locator('.viewer-transplant-stage canvas');
@@ -196,10 +231,10 @@ async function start() {
           assert(mesh.skin[21].some(([bone, weight]) => bone === 7 && Math.abs(weight - .75) < 1e-6));
         } else assert.equal(mesh.triangles.length, 20, 'A full costume transplant replaces Body geometry with the chosen donor');
       }
-      if (operation.value === 'part') { assert.equal(requests.at(-1).partRoot, selectedPart); assert.equal(requests.at(-1).partSelectionMode, 'bones'); assert(requests.at(-1).partRoots.includes(selectedPart)); }
+      if (operation.value === 'part') { assert.equal(requests.at(-1).partRoot, selectedPart); assert.equal(requests.at(-1).partSelectionMode, 'bones'); assert(requests.at(-1).partRoots.includes(selectedPart)); assert.equal(requests.at(-1).reuseEmptyUV, true, 'The checked empty UV option reaches the actual graft request'); assert.equal(requests.at(-1).relocateEmptyUV, true, 'The checked move option reaches the actual graft request'); }
       if (operation.value === 'lower') {
         assert.equal(requests.at(-1).cutLow, realModels ? .38 : .5); assert.equal(requests.at(-1).cutHigh, .92);
-        assert((await panel.locator('.viewer-transplant-log').innerText()).includes('donor UVs, materials and texture bytes preserved'));
+        assert((await panel.locator('.viewer-transplant-log').innerText()).includes('one game-compatible submesh'));
         const selected = (await panel.locator('.viewer-transplant-log').innerText()).match(/donor take: (\d+) tris/);
         assert(selected); assert.equal(Number(selected[1]), previewSelectedTriangles, 'Preview and written donor triangle counts match');
       }
@@ -227,6 +262,7 @@ async function start() {
       assert.equal((await page.evaluate(() => ModelViewer.getState())).stats.triangles, after.stats.triangles);
       if (meshGrafts) assert.deepEqual((await page.evaluate(() => ModelViewer.getState())).meshTools.edits.meshes, [], 'Redo opens the baked graft once');
       report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, undoRestoredOriginal: true, authoringRestored: true, cameraRestored: true, redoRestoredOutput: true, originalUnchanged: true, donorUnchanged: true,
+        ...(operation.value === 'part' ? { reuseEmptyUV: requests.at(-1).reuseEmptyUV, relocateEmptyUV: requests.at(-1).relocateEmptyUV, defaultReuse: true, defaultRelocate: false, dependentCheckboxReset: true } : {}),
         ...(meshGrafts ? { meshChannelSent: true, meshDraftRestoredByUndo: true, bakedOnceOnRedo: true, retainedGeometryVerified: operation.value !== 'costume' } : {}) });
     }
     if (!realModels) {

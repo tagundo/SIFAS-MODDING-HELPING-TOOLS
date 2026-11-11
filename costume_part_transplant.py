@@ -28,15 +28,15 @@ So a part transplant is mesh surgery:
     4. append the part's vertices + triangles to the target Body mesh, remapping
        their bone indices to the target's (extended) bone list and their bind
        poses alongside;
-    5. give the part its material/texture: if the part is its own sub-mesh in the
-       donor it is copied as a new sub-mesh + material (clean); if it shares the
-       body atlas you can optionally patch its UV region across so it keeps its
-       look on the target's own body texture;
+    5. combine source textures and remap UVs into an atlas with no padding,
+       retaining the target's original Body material and one sub-mesh so the
+       game's CombineBody includes the transplanted faces. The optional empty
+       UV mode first tries the donor's existing coordinates without atlas growth;
     6. world-space the result and re-anchor NodeScaling, exactly like
        costume_transplant, so swinging pieces render where they were modelled.
 
-What is kept (target identity): the entire target Body mesh, its bones,
-textures, face, hair — nothing of the target is replaced, the part is *added*.
+The target keeps its body geometry, bones, material identity, face and hair.
+Its Body texture references and UVs change when a combined atlas is needed.
 
 Usage
 -----
@@ -130,6 +130,9 @@ _TRANSLATIONS = {
             "부위를 별도 서브메시 + 머티리얼로 추가 (텍스처 유지)",
         "Patch the part's texture region onto the target body atlas":
             "부위 텍스처 영역을 대상 바디 아틀라스에 합성",
+        "Reuse empty UV areas (otherwise build a texture atlas)":
+            "빈 UV 영역 재사용 (겹치면 텍스처 아틀라스로 합침)",
+        "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
         "World-space the body mesh (so swinging parts render correctly)":
             "바디 메시를 월드 공간으로 (흔들리는 부위가 올바르게 렌더링되도록)",
         "Re-anchor NodeScaling to keep the wearer's body shape":
@@ -164,6 +167,9 @@ _TRANSLATIONS = {
             "パーツを独立したサブメッシュ + マテリアルとして追加（テクスチャを保持）",
         "Patch the part's texture region onto the target body atlas":
             "パーツのテクスチャ領域を対象ボディアトラスに合成",
+        "Reuse empty UV areas (otherwise build a texture atlas)":
+            "空きUV領域を再利用（重なる場合はテクスチャアトラスに結合）",
+        "Move to another empty UV area": "別の空きUV領域へ移動",
         "World-space the body mesh (so swinging parts render correctly)":
             "ボディメッシュをワールド空間に（揺れるパーツが正しく描画されるよう）",
         "Re-anchor NodeScaling to keep the wearer's body shape":
@@ -1953,14 +1959,17 @@ def part_hierarchy(bundle_path, renderer=None, *, environment=None):
 def transplant_part(donor_path, target_path, out_path, part_root=None,
                     part_bones=None, auto=False, weight_threshold=0.5,
                     tri_mode="all", preserve_physics=True, restore_collision=True,
-                    new_submesh="auto", patch_texture=False, worldspace=True,
+                    new_submesh="atlas", patch_texture=False, worldspace=True,
                     fix_nodescaling=True, mask_handling="auto", scale_swing_physics=True,
                     dry_run=False, verbose=True, triangle_indices=None,
-                    donor_renderer=None, target_renderer=None, physics_provenance=None):
+                    donor_renderer=None, target_renderer=None, physics_provenance=None,
+                    log_callback=None, reuse_empty_uv=True, relocate_empty_uv=False):
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target."""
     def log(*a):
-        if verbose:
+        if log_callback is not None:
+            log_callback(" ".join(map(str, a)))
+        elif verbose:
             print(*a)
     UP = _require_unitypy()
     donor = UP.load(donor_path)
@@ -2095,12 +2104,28 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     d_mats = d_smr_tt.get("m_Materials", [])
     own_material = (part_submesh is not None and part_submesh < len(d_mats)
                     and len(d_mats) > 1)
-    if new_submesh == "auto":
+    game_atlas = new_submesh == "atlas"
+    if reuse_empty_uv and not game_atlas:
+        if relocate_empty_uv:
+            raise ValueError("Empty UV relocation requires the game-compatible atlas export mode.")
+        # Explicit standalone export modes retain their existing behavior.
+        reuse_empty_uv = False
+    if relocate_empty_uv and not reuse_empty_uv:
+        raise ValueError("Enable empty UV reuse before moving to another empty UV area.")
+    if game_atlas:
+        # Keep source material groups separate only while building the mesh.
+        # The original client's CombineBody reads submesh 0 and sharedMaterial;
+        # the final atlas pass folds every group into that existing body slot.
+        use_new_submesh = True
+    elif new_submesh == "auto":
         use_new_submesh = bool(own_material)
     else:
         use_new_submesh = bool(new_submesh)
-    log(f"[info] part lives in donor sub-mesh {part_submesh}; "
-        f"{'own material -> new sub-mesh' if use_new_submesh else 'merging into body sub-mesh'}")
+    if game_atlas:
+        log("[info] combining source textures and UVs into the original Body material and submesh")
+    else:
+        log(f"[info] part lives in donor sub-mesh {part_submesh}; "
+            f"{'own material -> new sub-mesh' if use_new_submesh else 'merging into body sub-mesh'}")
 
     if dry_run:
         log("\n[dry-run] no file written. Summary:")
@@ -2108,7 +2133,9 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         log(f"  bones to inject  : {len(inject_names)} ({', '.join(inject_names) or 'none — all shared'})")
         log(f"  vertices added   : {len(used)}")
         log(f"  triangles added  : {len(ptris)}")
-        log(f"  new sub-mesh     : {use_new_submesh}")
+        log(f"  new sub-mesh     : {use_new_submesh and not game_atlas}")
+        if game_atlas:
+            log(f"  game texture mode: {'try empty UV reuse, then atlas' if reuse_empty_uv else 'texture atlas'}")
         log(f"  preserve physics : {preserve_physics}")
         bbox = _uv_bbox(d_mesh_tt, used)
         if bbox is not None:
@@ -2183,7 +2210,17 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         t_mesh.save_typetree(t_mesh_tt)
 
     # add the part material to the SMR if a new sub-mesh was created
-    if use_new_submesh:
+    if game_atlas:
+        from graft_game_compat import bake_renderer_for_game
+        if any(index >= len(d_mats) for index, _ in selected_groups):
+            raise ValueError("The selected donor submesh has no material for its game atlas.")
+        bake_renderer_for_game(target, t_smr, t_mesh,
+            mesh_tree=t_mesh_tt, renderer_tree=t_smr_tt,
+            additional_sources=[(donor, d_mats[index]) for index, _ in selected_groups],
+            reuse_empty_uv=reuse_empty_uv, relocate_empty_uv=relocate_empty_uv, log=log)
+        # The helper updates these detached trees too. Re-reading ObjectReader
+        # here can return the pre-save reader bytes until the bundle reopens.
+    elif use_new_submesh:
         mats = t_smr_tt.get("m_Materials", [])
         for material_index, _ in selected_groups:
             if material_index >= len(d_mats):
@@ -2201,7 +2238,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     wire_child_adds(tid, child_adds, log)
 
     # ---- optional: patch the part's texture region onto the target atlas ----
-    if patch_texture and not use_new_submesh:
+    if patch_texture and not use_new_submesh and not game_atlas:
         try:
             _patch_uv_region(donor, target, d_smr_tt, t_smr_tt, used, d_mesh_tt, log)
         except Exception as e:  # noqa: BLE001
@@ -2587,10 +2624,16 @@ def build_parser():
                     help="'all' corners are part verts (clean) or 'any' (greedy)")
     pt.add_argument("--no-physics", action="store_true", help="don't copy SwingBone jiggle")
     pt.add_argument("--no-collision", action="store_true", help="don't restore body collision")
-    pt.add_argument("--submesh", choices=("auto", "new", "merge"), default="auto",
-                    help="add as its own sub-mesh+material, merge into body, or auto")
+    pt.add_argument("--submesh", choices=("atlas", "auto", "new", "merge"), default="atlas",
+                    help="atlas: game-compatible combined body (default); other modes are standalone Unity exports")
     pt.add_argument("--patch-texture", action="store_true",
                     help="copy the part's UV region onto the target body atlas (needs Pillow)")
+    pt.add_argument("--reuse-empty-uv", action="store_true", default=True,
+                    help="reuse unoccupied wearer UV positions before building a larger atlas (default on)")
+    pt.add_argument("--no-reuse-empty-uv", action="store_false", dest="reuse_empty_uv",
+                    help="always use the ordinary texture atlas path")
+    pt.add_argument("--relocate-empty-uv", action="store_true",
+                    help="also try moving the selected texture and UVs to another free area (default off)")
     pt.add_argument("--no-worldspace", action="store_true")
     pt.add_argument("--no-nodescaling", action="store_true")
     pt.add_argument("--mask-handling", choices=("auto", "on", "off"), default="auto",
@@ -2613,7 +2656,7 @@ def run_cli(args):
     if args.cmd == "selftest":
         return 0 if selftest() else 1
     if args.cmd == "transplant":
-        new_submesh = {"auto": "auto", "new": True, "merge": False}[args.submesh]
+        new_submesh = {"atlas": "atlas", "auto": "auto", "new": True, "merge": False}[args.submesh]
         out = transplant_part(
             args.donor, args.target, args.out,
             part_root=args.part_root,
@@ -2622,6 +2665,8 @@ def run_cli(args):
             weight_threshold=args.weight_threshold, tri_mode=args.tri_mode,
             preserve_physics=not args.no_physics, restore_collision=not args.no_collision,
             new_submesh=new_submesh, patch_texture=args.patch_texture,
+            reuse_empty_uv=args.reuse_empty_uv,
+            relocate_empty_uv=args.relocate_empty_uv,
             worldspace=not args.no_worldspace, fix_nodescaling=not args.no_nodescaling,
             mask_handling=args.mask_handling, scale_swing_physics=not args.no_swing_scale,
             dry_run=args.dry_run)
@@ -2760,15 +2805,17 @@ def run_gui():
     ttk.Spinbox(self_, textvariable=thr_v, from_=0.0, to=1.0, increment=0.05,
                 width=6).pack(side="left", padx=(4, 12))
     _reg(ttk.Label(self_, text=""), "Sub-mesh handling").pack(side="left")
-    submesh_v = tk.StringVar(value="auto")
+    submesh_v = tk.StringVar(value="atlas")
     ttk.Combobox(self_, textvariable=submesh_v, state="readonly", width=7,
-                 values=("auto", "new", "merge")).pack(side="left", padx=(4, 0))
+                 values=("atlas", "auto", "new", "merge")).pack(side="left", padx=(4, 0))
 
     opt = ttk.LabelFrame(frm, text="", padding=8); _reg(opt, "Options")
     opt.pack(fill="x", pady=8)
     phys_v = tk.BooleanVar(value=True)
     coll_v = tk.BooleanVar(value=True)
     patch_v = tk.BooleanVar(value=False)
+    reuse_v = tk.BooleanVar(value=True)
+    relocate_v = tk.BooleanVar(value=False)
     ws_v = tk.BooleanVar(value=True)
     ns_v = tk.BooleanVar(value=True)
     dry_v = tk.BooleanVar(value=False)
@@ -2776,11 +2823,30 @@ def run_gui():
         (phys_v, "Preserve the part's jiggle physics (SwingBone)"),
         (coll_v, "Restore body collision for the part's bones"),
         (patch_v, "Patch the part's texture region onto the target body atlas"),
+        (reuse_v, "Reuse empty UV areas (otherwise build a texture atlas)"),
+        (relocate_v, "Move to another empty UV area"),
         (ws_v, "World-space the body mesh (so swinging parts render correctly)"),
         (ns_v, "Re-anchor NodeScaling to keep the wearer's body shape"),
         (dry_v, "Preview only (dry-run) — report what would change, write nothing"),
     ):
-        _reg(ttk.Checkbutton(opt, text="", variable=var), label).pack(anchor="w")
+        checkbox = _reg(ttk.Checkbutton(opt, text="", variable=var), label)
+        checkbox.pack(anchor="w")
+        if var is reuse_v:
+            reuse_checkbox = checkbox
+        elif var is relocate_v:
+            relocate_checkbox = checkbox
+
+    def sync_uv_options(*_):
+        atlas_mode = submesh_v.get() == "atlas"
+        reuse_checkbox.state(["!disabled"] if atlas_mode else ["disabled"])
+        enabled = atlas_mode and reuse_v.get()
+        if not enabled:
+            relocate_v.set(False)
+        relocate_checkbox.state(["!disabled"] if enabled else ["disabled"])
+
+    reuse_v.trace_add("write", sync_uv_options)
+    submesh_v.trace_add("write", sync_uv_options)
+    sync_uv_options()
 
     out_txt = tk.Text(frm, height=12, wrap="word")
     out_txt.pack(fill="both", expand=True, pady=6)
@@ -2806,7 +2872,7 @@ def run_gui():
             thr = float(thr_v.get())
         except (TypeError, ValueError):
             thr = 0.5
-        submesh_choice = {"auto": "auto", "new": True, "merge": False}.get(submesh_v.get(), "auto")
+        submesh_choice = {"atlas": "atlas", "auto": "auto", "new": True, "merge": False}.get(submesh_v.get(), "atlas")
 
         class _W:
             def write(self, s):
@@ -2823,6 +2889,8 @@ def run_gui():
                 preserve_physics=phys_v.get(), restore_collision=coll_v.get(),
                 new_submesh=submesh_choice,
                 patch_texture=patch_v.get(),
+                reuse_empty_uv=reuse_v.get(),
+                relocate_empty_uv=relocate_v.get(),
                 worldspace=ws_v.get(), fix_nodescaling=ns_v.get(),
                 dry_run=dry_v.get())
             if out and not dry_v.get():

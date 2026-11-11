@@ -162,6 +162,12 @@ def _match_to_target(job, params, donor, target, out_path):
 
 # ------------------------------------------------- costume part transplant
 def run_costume_part_transplant(job, params):
+    reuse_empty_uv = params.get("reuse_empty_uv", True)
+    relocate_empty_uv = params.get("relocate_empty_uv", False)
+    if type(reuse_empty_uv) is not bool or type(relocate_empty_uv) is not bool:
+        raise ValueError("Empty UV options must be true or false.")
+    if relocate_empty_uv and not reuse_empty_uv:
+        raise ValueError("Enable empty UV reuse before moving to another empty UV area.")
     # decodes + re-encodes textures, so wire the ASTC CLI bridge first
     from webtools.tools.texture import ensure_astc_cli
     ensure_astc_cli()
@@ -177,8 +183,9 @@ def run_costume_part_transplant(job, params):
     part_bones = params.get("part_bones")
     triangle_indices = params.get("triangle_indices")
 
-    # GUI maps the unchecked "own sub-mesh" box to new_submesh="auto"; checked -> True
-    new_submesh = True if params.get("new_submesh") else "auto"
+    # Game body combination consumes only the original shared material/submesh.
+    # Standalone CLI modes remain available outside game-facing app workflows.
+    new_submesh = "atlas"
     job.progress(0, 1)
     job.log(f"transplanting part from {Path(donor).name} onto {Path(target).name} …")
     m.transplant_part(
@@ -191,10 +198,13 @@ def run_costume_part_transplant(job, params):
         preserve_physics=bool(params.get("preserve_physics", True)),
         restore_collision=bool(params.get("restore_collision", True)),
         new_submesh=new_submesh,
+        reuse_empty_uv=reuse_empty_uv,
+        relocate_empty_uv=relocate_empty_uv,
         patch_texture=bool(params.get("patch_texture", False)),
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,
         physics_provenance=params.get("_physics_provenance"),
+        log_callback=job.log,
     )
     _match_to_target(job, params, donor, target, out_path)
     job.progress(1, 1)

@@ -26,7 +26,7 @@ OPERATIONS = {"costume", "part", "lower"}
 MAX_PART_BONES = 512
 MAX_PART_TRIANGLES = 200000
 PART_SELECTION_FIELDS = {"partSelectionMode", "partRoots", "includeDescendants", "triangleIndices", "donorSha256", "donorMesh", "donorSelectionFingerprint"}
-OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer", "mesh_state"} | PART_SELECTION_FIELDS
+OPTIONAL_FIELDS = {"matchSkin", "skinOnly", "excludeAccessories", "selectionScope", "donorRenderer", "targetRenderer", "mesh_state", "reuseEmptyUV", "relocateEmptyUV"} | PART_SELECTION_FIELDS
 _OS_PATH_ALIASES = (("/var", "/private/var"), ("/tmp", "/private/tmp"),
                     ("/data/user/0", "/data/data"))
 
@@ -280,12 +280,14 @@ def validate_request(params):
     if not isinstance(params, dict) or not required <= set(params) or set(params) - required - OPTIONAL_FIELDS:
         raise ValueError("Unsupported costume transplant request.")
     source_bound = bool(set(params) & PART_SELECTION_FIELDS)
-    params = {"matchSkin": False, "skinOnly": True, "excludeAccessories": True,
+    params = {"matchSkin": False, "skinOnly": True, "excludeAccessories": True, "reuseEmptyUV": True, "relocateEmptyUV": False,
               "selectionScope": "skin", "donorRenderer": "", "targetRenderer": "",
               "partSelectionMode": "bones", "partRoots": [], "includeDescendants": True,
               "triangleIndices": [], "donorSha256": "", "donorMesh": "", "donorSelectionFingerprint": "", **params}
-    for key in ("matchSkin", "skinOnly", "excludeAccessories"):
+    for key in ("matchSkin", "skinOnly", "excludeAccessories", "reuseEmptyUV", "relocateEmptyUV"):
         if not isinstance(params[key], bool): raise ValueError("Transplant options must be true or false.")
+    if params["relocateEmptyUV"] and not params["reuseEmptyUV"]:
+        raise ValueError("Enable empty UV reuse before moving to another empty UV area.")
     if params["selectionScope"] not in ("skin", "mesh"):
         raise ValueError("Choose body skin or the selected whole mesh.")
     for key in ("donorRenderer", "targetRenderer", "donorMesh"):
@@ -433,7 +435,8 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     "part_bones": request["partBones"] or None,
                     "triangle_indices": request["triangleIndices"] if request["partSelectionMode"] == "triangles" else None,
                     "donor_renderer": request["donorRenderer"],
-                    "target_renderer": request["targetRenderer"] or None, "new_submesh": True})
+                    "target_renderer": request["targetRenderer"] or None, "new_submesh": "atlas",
+                    "reuse_empty_uv": request["reuseEmptyUV"], "relocate_empty_uv": request["relocateEmptyUV"]})
             else:
                 costume.run_lower_body_swap(job, {**params, "cut": "custom", "region": request["region"],
                     "cut_low": request["cutLow"], "cut_high": request["cutHigh"],

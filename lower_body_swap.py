@@ -672,7 +672,7 @@ def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=
 def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
                      exclude_accessories, selection_scope, donor_renderer, target_renderer,
                      dry_run, log, physics_provenance=None):
-    """Keep original UVs/textures and append each donor material independently."""
+    """Keep the selected skin/physics, then bake materials into the game body atlas."""
     import copy
     import tempfile
     import numpy as np
@@ -707,12 +707,12 @@ def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, regio
         removed = os.path.join(temporary, "wearer.unity")
         write_working_bundle(target.env.file, removed)
         cpt.transplant_part(donor_path, removed, out_path,
-            triangle_indices=np.flatnonzero(take), new_submesh=True,
+            triangle_indices=np.flatnonzero(take), new_submesh="atlas", reuse_empty_uv=False,
             donor_renderer=donor.smr_obj.path_id, target_renderer=target.smr_obj.path_id,
             worldspace=False, fix_nodescaling=False, verbose=False,
-            physics_provenance=physics_provenance)
+            physics_provenance=physics_provenance, log_callback=log)
     finish_working_bundle(out_path, output_packer)
-    log("  donor UVs, materials and texture bytes preserved; original wearer materials retained")
+    log("  wearer and donor textures baked into the original body material; one game-compatible submesh")
     return out_path
 
 
@@ -725,10 +725,11 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               target_renderer=None, preserve_materials=True, physics_provenance=None):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
     target.  `region` ("lower" / "lower_belly" / "central") bounds which bones
-    may be replaced so arms/head are never touched. Material-preserving grafts
-    retain wearer faces crossing the cut and include crossing donor faces, so
-    different triangle layouts meet with a small overlap while keeping their
-    original UVs and skin weights. The atlas/cap mode can additionally snap its
+    may be replaced so arms/head are never touched. Default grafts retain wearer
+    faces crossing the cut and include crossing donor faces, so different
+    triangle layouts meet with a small overlap while keeping skin weights.
+    Source textures and remapped UVs share the original game Body material and
+    one submesh. The legacy atlas/cap mode can additionally snap its
     lower cut to a coincident vertex ring when ``weld`` is enabled."""
     import numpy as np
     from PIL import Image

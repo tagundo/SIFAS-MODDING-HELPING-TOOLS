@@ -95,19 +95,19 @@ class ActualGameCostumeTests(unittest.TestCase):
         # Only textures of the chosen body material are copied, not donor hair.
         self.assertTrue(self.textures(self.wolf) & self.textures(self.out))
 
-    def test_actual_reported_lower_band_has_matching_selection_and_preserved_materials(self):
+    def test_actual_reported_lower_band_has_matching_selection_and_one_game_material(self):
         target = lower.BodyMesh(UnityPy.load(self.target), self.target)
         donor = lower.BodyMesh(UnityPy.load(self.splash), self.splash)
         drop, _ = lower.band_selection(target, .38, .96, 'lower_belly', True, boundary='inside')
         take, _ = lower.band_selection(donor, .38, .96, 'lower_belly', True)
         self.assertGreater(take.sum(), 0)
         lower.graft_one(self.target, self.splash, self.out, cut_low=.38, cut_high=.96, region='lower_belly', log=lambda *a: None)
-        _, mesh = self.check_model(self.out)
+        renderer, mesh = self.check_model(self.out)
         groups = part.submesh_triangles(mesh)
-        self.assertEqual(len(groups[-1]), take.sum())
-        self.assertEqual(sum(map(len, groups[:-1])), len(target.tris()) - drop.sum())
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]), len(target.tris()) - drop.sum() + take.sum())
+        self.assertEqual(renderer['m_Materials'], target.smr['m_Materials'])
         self.assertTrue(self.textures(self.target) <= self.textures(self.out))
-        self.assertTrue(self.textures(self.splash) & self.textures(self.out))
 
     def test_whole_mesh_scope_includes_garment_faces_and_retains_original_materials(self):
         donor = lower.BodyMesh(UnityPy.load(self.wolf), self.wolf)

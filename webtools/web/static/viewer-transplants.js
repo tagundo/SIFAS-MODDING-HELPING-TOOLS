@@ -79,6 +79,12 @@
     "No UV texture is available for this material.": ["이 머티리얼에는 표시할 UV 텍스처가 없습니다.", "このマテリアルには表示できるUVテクスチャがありません。"],
     "Select a donor region first.": ["먼저 이식할 Donor 부위를 선택하세요.", "移植するドナー領域を選択してください。"]
   });
+  Object.assign(TEXT, {
+    "Reuse empty UV areas": ["빈 UV 영역 재사용", "空きUV領域を再利用"],
+    "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.": ["Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.", "ドナーの元のUV位置を優先します。重なる場合はアトラスに結合するか、別の空きUV領域への移動を有効にしてください。パディングは追加しません。"],
+    "Move to another empty UV area": ["다른 빈 UV 영역으로 옮기기", "別の空きUV領域へ移動"],
+    "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.": ["원래 UV 위치가 사용 중이면 원본 픽셀의 세부 표현을 유지한 채 다른 빈 영역을 찾습니다. 패딩은 추가하지 않습니다.", "元のUV位置が使用中なら、元画像の細部を維持して別の空き領域を探します。パディングは追加しません。"]
+  });
   TEXT["Selected bones"] = ["선택 본", "選択ボーン"];
   TEXT["Selected faces"] = ["이식할 면", "移植する面"];
   function selectedBoneManifest(parts, selected) {
@@ -235,7 +241,8 @@
         entry.targetMesh.disabled = locked || entry.inspecting || !ready;
         if (entry.operation === "part") {
           var selectionLocked = locked || entry.inspecting || !entry.donor;
-          [entry.selectionMode, entry.parts, entry.includeChildren, entry.boneSearch, entry.sceneAction, entry.brushRadius, entry.fromBones, entry.textureMaterial, entry.textureZoom, entry.texturePan, entry.textureFit, entry.selectionClear].forEach(function (control) { control.disabled = selectionLocked; });
+          [entry.selectionMode, entry.parts, entry.includeChildren, entry.boneSearch, entry.sceneAction, entry.brushRadius, entry.fromBones, entry.textureMaterial, entry.textureZoom, entry.texturePan, entry.textureFit, entry.selectionClear, entry.reuseEmptyUV].forEach(function (control) { control.disabled = selectionLocked; });
+          entry.relocateEmptyUV.disabled = selectionLocked || !entry.reuseEmptyUV.checked;
           (entry.boneRows || []).forEach(function (row) { row.input.disabled = selectionLocked; });
           entry.selectionUndo.disabled = selectionLocked || !entry.selectionHistory.length; entry.selectionRedo.disabled = selectionLocked || !entry.selectionFuture.length;
         }
@@ -576,6 +583,8 @@
       var meshState = c.getMeshEdits ? c.getMeshEdits() : null;
       if (meshState && meshState.meshes && meshState.meshes.length) payload.mesh_state = meshState;
       if (entry.operation === "part") {
+        payload.reuseEmptyUV = entry.reuseEmptyUV.checked;
+        payload.relocateEmptyUV = entry.relocateEmptyUV.checked;
         var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones);
         payload.partRoot = manifest.partRoots[0] || ""; payload.partSelectionMode = entry.selectionMode.value;
         payload.partRoots = manifest.partRoots; payload.includeDescendants = manifest.includeDescendants;
@@ -709,6 +718,20 @@
       entry.skinOnly = element("input", { type: "checkbox", checked: "" }); entry.skinOnly.disabled = true;
       entry.panel.appendChild(element("div", { className: "viewer-transplant-options" }, [label("Match skin colour", entry.matchSkin), label("Skin only (preserve outfit colours)", entry.skinOnly)]));
       entry.matchSkin.addEventListener("change", function () { entry.skinOnly.disabled = !entry.matchSkin.checked; });
+      if (operation === "part") {
+        entry.reuseEmptyUV = element("input", { type: "checkbox", checked: "", id: id + "-reuse-empty-uv" });
+        entry.panel.appendChild(label("Reuse empty UV areas", entry.reuseEmptyUV));
+        var reuseHint = "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.";
+        entry.panel.appendChild(element("p", { className: "viewer-render-note", "data-transplant-label": reuseHint, text: reuseHint }));
+        entry.relocateEmptyUV = element("input", { type: "checkbox", id: id + "-relocate-empty-uv" });
+        entry.panel.appendChild(label("Move to another empty UV area", entry.relocateEmptyUV));
+        var relocateHint = "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.";
+        entry.panel.appendChild(element("p", { className: "viewer-render-note", "data-transplant-label": relocateHint, text: relocateHint }));
+        entry.reuseEmptyUV.addEventListener("change", function () {
+          if (!entry.reuseEmptyUV.checked) entry.relocateEmptyUV.checked = false;
+          refresh();
+        });
+      }
       entry.low = element("input", { type: "number", step: ".005", min: "-10", max: "10", value: ".5", id: id + "-low" });
       entry.high = element("input", { type: "number", step: ".005", min: "-10", max: "10", value: ".92", id: id + "-high" });
       entry.preset = element("select", {});
@@ -777,7 +800,7 @@
         entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
-        if (entry.operation === "part") Object.assign(result, { selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
+        if (entry.operation === "part") Object.assign(result, { reuseEmptyUV: entry.reuseEmptyUV.checked, relocateEmptyUV: entry.relocateEmptyUV.checked, selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
       dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }

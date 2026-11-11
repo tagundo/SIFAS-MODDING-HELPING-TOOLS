@@ -7,6 +7,10 @@
     "Outline mesh": ["외곽선 조절 메시", "輪郭線を調整するメッシュ"],
     "Outline thickness": ["외곽선 두께", "輪郭線の太さ"],
     "Reset outline": ["외곽선 원본값으로", "輪郭線を元の値に戻す"],
+    "Copy outline diagnostics": ["외곽선 진단 복사", "輪郭線の診断をコピー"],
+    "Outline diagnostics": ["외곽선 진단", "輪郭線の診断"],
+    "Outline diagnostics copied.": ["외곽선 진단을 복사했습니다.", "輪郭線の診断をコピーしました。"],
+    "Select and copy the diagnostics below.": ["아래 진단 내용을 선택해 복사하세요.", "下の診断内容を選択してコピーしてください。"],
     "No editable original outline data is available.": ["편집할 수 있는 원본 외곽선 데이터가 없습니다.", "編集可能な元の輪郭線データがありません。"],
     "Open a character model to adjust its outline.": ["캐릭터 모델을 불러오면 외곽선을 조절할 수 있습니다.", "キャラクターモデルを読み込むと輪郭線を調整できます。"],
     "Original maximum thickness can limit increases.": ["원본의 최대 두께에 도달한 부분은 더 굵어지지 않습니다.", "元の最大値に達した部分はそれ以上太くなりません。"],
@@ -92,16 +96,21 @@
     detailBody.append(field("3D editing", sceneMode), field("Brush radius", radius), field("Vertex width", width), field("Restore original with brush", restoreBrush), field("Show edited vertices", showVertices), exact,
       make("p", "Paint individual source vertices. Shift restores originals; Alt or right-drag rotates the model."), make("p", "Local widths are applied before the whole-mesh percentage. Zero-width vertices can also be painted."), count);
     var status = make("p"); status.id = "viewer-outline-status"; status.setAttribute("role", "status"); status.className = "viewer-render-note";
+    var copyDiagnostics = button("Copy outline diagnostics", "viewer-outline-diagnostics-copy", copyOutlineDiagnostics);
+    var diagnosticsStatus = make("p"); diagnosticsStatus.id = "viewer-outline-diagnostics-status"; diagnosticsStatus.setAttribute("role", "status"); diagnosticsStatus.className = "viewer-render-note"; diagnosticsStatus.hidden = true;
+    var diagnosticsText = make("textarea"); diagnosticsText.id = "viewer-outline-diagnostics-text"; diagnosticsText.readOnly = true; diagnosticsText.rows = 10; diagnosticsText.hidden = true; diagnosticsText.spellcheck = false;
+    Object.assign(diagnosticsText.style, { width: "100%", maxWidth: "100%", boxSizing: "border-box", resize: "vertical" });
     var bounds = make("p", "Original maximum thickness can limit increases."); bounds.className = "viewer-render-note";
     var scope = make("p", "Verified companion face meshes include the jaw. Saving writes new model and face copies."); scope.className = "viewer-render-note";
     var sourceWidth = make("p"); sourceWidth.id = "viewer-outline-source-width"; sourceWidth.className = "viewer-render-note";
-    body.append(field("Outline mesh", select), strength, reset, sourceWidth, field("All vertex width to apply (0–255)", absolute), absoluteApply, absoluteHelp, detail, historyButtons, status, bounds, scope); panel.append(summary, body);
+    body.append(field("Outline mesh", select), strength, reset, sourceWidth, field("All vertex width to apply (0–255)", absolute), absoluteApply, absoluteHelp, detail, historyButtons, status, copyDiagnostics, diagnosticsStatus, diagnosticsText, bounds, scope); panel.append(summary, body);
     host.insertBefore(panel, document.getElementById("viewer-body-adjustments"));
     var disposed = false, refreshing = false, updating = false, currentRig = null, cacheKey = "", applied = "", controlBefore = null, cachedCatalogue = null, languageKey = "";
     var editRig = null, editRevision = null, editValues = [], editJSON = "[]", pickCache = null, paintFrame = 0, pendingPaint = [], pointPoseKey = "";
     var performanceState = { cacheBuilds: 0, worldVertices: 0, rayQueries: 0, triangleTests: 0, paintSamples: 0, lastPaintMs: 0 };
     var past = [], future = [], runtime = null, canvas = null, removers = [], cursor = null, stroke = null;
     var pointRoot = null, pointGeometry = null, pointRefs = [], pointKey = "", scratch = null, indexKeys = new WeakMap(), indexGeneration = 0;
+    var copyingDiagnostics = false;
     function context() { return options.context() || {}; }
     function t(key) { return translated(key, options.translate); }
     function catalogue(c) { return c.editing && c.editing.outlines || { meshes: [] }; }
@@ -117,6 +126,60 @@
     function json() { edits(context()); return editJSON; }
     function vertexCount(values, c) { var records = {}; catalogue(c).meshes.forEach(function (row) { records[row.id] = row.vertexCount; }); return values.reduce(function (sum, row) { return sum + (row.absolute !== undefined ? records[row.id] || 0 : (row.vertices || []).length); }, 0); }
     function notify() { if (options.onChange) options.onChange(); }
+    function outlineDiagnostics(c) {
+      var data = catalogue(c), values = c.rig && c.rig.getOutlineEdits ? c.rig.getOutlineEdits() : [], byId = Object.create(null), roles = Object.create(null);
+      values.forEach(function (value) { byId[value.id] = value; });
+      var current = options.getRuntime && options.getRuntime();
+      if (current && current.model) current.model.traverse(function (mesh) {
+        if (!mesh.isMesh || mesh.userData.viewerHelper) return;
+        var identity = sourceId(mesh); if (!identity) return;
+        for (var parent = mesh; parent; parent = parent.parent) {
+          var role = parent.userData && parent.userData.viewerFacialRole;
+          if (typeof role === "string" && role) {
+            if (!roles[identity]) roles[identity] = [];
+            if (roles[identity].indexOf(role) < 0) roles[identity].push(role);
+          }
+        }
+      });
+      var result = { format: "elichika-outline-diagnostics", version: 1,
+        sources: (data.sources || []).map(function (source) {
+          return { sourceIndex: source.sourceIndex, name: String(source.name || "").split(/[\\/]/).pop(), sha256: source.sha256 };
+        }),
+        rendering: { sifasEnabled: !!(c.materials && c.materials.getState && c.materials.getState().enabled) },
+        selection: { meshId: select.value || null, meshCount: targets(c).length },
+        editedMeshCount: values.length,
+        meshes: (data.meshes || []).map(function (mesh) {
+          var edit = byId[mesh.id], row = { id: mesh.id, name: mesh.name, sourceIndex: mesh.sourceIndex,
+            semantic: mesh.semantic || null, renderRoles: roles[mesh.id] || [],
+            originalWidth: mesh.originalWidth ? { min: mesh.originalWidth.min, max: mesh.originalWidth.max, mean: mesh.originalWidth.mean } : null,
+            factor: edit ? edit.factor : 1, localVertexEditCount: edit && edit.vertices ? edit.vertices.length : 0 };
+          if (edit && edit.absolute !== undefined) row.absolute = edit.absolute;
+          return row;
+        }) };
+      var appVersion = c.appVersion || global.ElichikaDesktop && global.ElichikaDesktop.appVersion;
+      if (typeof appVersion === "string" && appVersion) result.appVersion = appVersion;
+      return result;
+    }
+    async function copyOutlineDiagnostics() {
+      var c = context(); if (disposed || copyingDiagnostics || !c.current || !catalogue(c).meshes.length) return;
+      var sourceRig = c.rig, text = JSON.stringify(outlineDiagnostics(c), null, 2);
+      copyingDiagnostics = true; copyDiagnostics.disabled = true;
+      try {
+        try {
+          if (!global.navigator.clipboard || !global.navigator.clipboard.writeText) throw new Error("Clipboard unavailable");
+          await global.navigator.clipboard.writeText(text);
+          if (disposed || context().rig !== sourceRig) return;
+          diagnosticsText.hidden = true; diagnosticsText.value = "";
+          diagnosticsStatus.textContent = t("Outline diagnostics copied.");
+        } catch (_) {
+          if (disposed || context().rig !== sourceRig) return;
+          diagnosticsText.value = text; diagnosticsText.hidden = false; diagnosticsText.focus(); diagnosticsText.select();
+          var copied = false; try { copied = !!(document.execCommand && document.execCommand("copy")); } catch (_) {}
+          diagnosticsStatus.textContent = t(copied ? "Outline diagnostics copied." : "Select and copy the diagnostics below.");
+        }
+        diagnosticsStatus.hidden = false;
+      } finally { copyingDiagnostics = false; refresh(); }
+    }
     function remember(before) {
       if (before === json()) return; past.push(before); future = [];
       var bytes = past.reduce(function (sum, value) { return sum + value.length; }, 0);
@@ -169,7 +232,7 @@
       try {
         var c = context(), data = catalogue(c), values = edits(c), newRig = c.rig !== currentRig;
         var key = data === cachedCatalogue ? cacheKey : JSON.stringify(data.meshes || []); cachedCatalogue = data;
-        if (newRig) { currentRig = c.rig; applied = ""; past = []; future = []; controlBefore = null; number.setCustomValidity(""); range.setCustomValidity(""); pointKey = ""; }
+        if (newRig) { currentRig = c.rig; applied = ""; past = []; future = []; controlBefore = null; number.setCustomValidity(""); range.setCustomValidity(""); pointKey = ""; diagnosticsStatus.hidden = true; diagnosticsText.hidden = true; diagnosticsText.value = ""; }
         if (key !== cacheKey) {
           cacheKey = key; var previous = select.value; select.textContent = "";
           var all = make("option"); all.value = ""; all.textContent = t("All editable meshes"); select.appendChild(all);
@@ -187,6 +250,7 @@
         if (newRig || document.activeElement !== number || number.disabled) number.value = display;
         number.placeholder = t("Different values"); range.value = uniform ? String(factors[0] * 100) : "100"; output.textContent = uniform ? display + "%" : t("Different values");
         var enabled = !!(c.current && c.rig && c.rig.setOutlineEdits && eligible.length && !c.busy);
+        copyDiagnostics.disabled = !c.current || !data.meshes.length || copyingDiagnostics;
         [select, range, number, reset, absolute, absoluteApply, sceneMode, radius, width, restoreBrush, showVertices].forEach(function (node) { node.disabled = !enabled; });
         [vertex, applyVertex, restoreVertex].forEach(function (node) { node.disabled = !enabled || !select.value; }); vertex.max = eligible.length === 1 ? String(eligible[0].vertexCount - 1) : "0";
         reset.disabled = !enabled || !number.validationMessage && !eligible.some(function (mesh) { return values.some(function (value) { return value.id === mesh.id; }); });
@@ -197,7 +261,7 @@
         status.textContent = t(!c.rig ? "Open a character model to adjust its outline." : !eligible.length ? "No editable original outline data is available." : materialState && !materialState.enabled ? "Enable SIFAS rendering to preview the outline." : "Use Save to write the outline into a new model copy.");
         count.textContent = t("Edited vertices") + ": " + vertexCount(values, c);
         var language = document.documentElement.lang || "en";
-        if (languageKey !== language) { languageKey = language; panel.querySelectorAll("[data-outline-text]").forEach(function (node) { node.textContent = t(node.dataset.outlineText); }); }
+        if (languageKey !== language) { languageKey = language; panel.querySelectorAll("[data-outline-text]").forEach(function (node) { node.textContent = t(node.dataset.outlineText); }); diagnosticsText.setAttribute("aria-label", t("Outline diagnostics")); }
         adoptRuntime();
       } finally { refreshing = false; }
     }

@@ -207,6 +207,9 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
             force_rgba32 = None
 
     env = UnityPy.load(str(in_path))
+    from unity_costumemod_packer import _active_body_texture_objects
+    active_body_textures = _active_body_texture_objects(env)
+    active_texture_ids = {id(obj) for obj in active_body_textures}
     # Prefer a UV/bone-derived skin region (excludes skirt/sleeve/ribbon/accessory
     # geometry even when it is skin-coloured) over the pixel-colour detector. Built
     # lazily per texture size and cached (body textures share the mesh UV). None ->
@@ -225,9 +228,11 @@ def apply_skin_match(in_path, out_path, src_tone, dst_tone, skin_only=True,
     for obj in env.objects:
         if getattr(obj.type, "name", "") != "Texture2D":
             continue
+        if active_texture_ids and id(obj) not in active_texture_ids:
+            continue
         data = obj.read()
         name = getattr(data, "m_Name", "") or ""
-        if not _BODY_RE.search(name) or _AUX_RE.search(name):
+        if not active_texture_ids and (not _BODY_RE.search(name) or _AUX_RE.search(name)):
             continue
         try:
             pil = data.image

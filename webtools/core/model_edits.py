@@ -387,6 +387,11 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
         return {"available": False, "reason": "No original writable body nodes were found."}
     physics = viewer_physics.make_catalog(physics_records, physics_managers)
     outlines = model_outlines.catalogue_sources(inspected_sources)
+    # The outline diagnostic identifies the bytes already captured for this
+    # preview. Reuse their hashes; copying diagnostics never rereads a file or
+    # exposes a user's local directory.
+    outlines["sources"] = [{"sourceIndex": index, "name": source["name"], "sha256": source["sha256"]}
+                           for index, source in enumerate(sources)]
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
                "containers": containers, "sources": sources, "targets": targets,
                "outlineOnlySources": set(range(selected_count, len(paths))),

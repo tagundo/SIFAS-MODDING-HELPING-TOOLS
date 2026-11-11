@@ -410,6 +410,18 @@ function renderForm() {
   }
   wireDynamicSelects(tool);
   wireBoneTargets(tool);
+  if (tool.id === "costume_part_transplant") {
+    const reuse = form.querySelector('[data-name="reuse_empty_uv"]');
+    const relocate = form.querySelector('[data-name="relocate_empty_uv"]');
+    if (reuse && relocate) {
+      const updateUVOptions = () => {
+        relocate.disabled = !reuse.checked;
+        if (!reuse.checked) relocate.checked = false;
+      };
+      reuse.addEventListener("change", updateUVOptions);
+      updateUVOptions();
+    }
+  }
 }
 
 function meshReferencePath() {

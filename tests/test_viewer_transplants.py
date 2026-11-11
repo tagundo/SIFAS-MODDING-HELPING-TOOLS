@@ -104,10 +104,23 @@ class ViewerTransplantTests(unittest.TestCase):
         output = self.run_graft(self.request(operation="part", partRoot="BreastSize"))
         self.assertGreater(output.stat().st_size, 0)
 
+    def test_part_uv_options_defaults_and_values_are_forwarded_unchanged(self):
+        import costume_part_transplant as part
+        for options, reuse, relocate in (({}, True, False), ({"reuseEmptyUV": False}, False, False),
+                                         ({"relocateEmptyUV": True}, True, True)):
+            with self.subTest(options=options), patch.object(part, "transplant_part", wraps=part.transplant_part) as transplant:
+                request = self.request(operation="part", partRoot="BreastSize", **options)
+                validated = viewer_transplants.validate_request(request)
+                self.assertIs(validated["reuseEmptyUV"], reuse)
+                self.assertIs(validated["relocateEmptyUV"], relocate)
+                self.run_graft(request)
+                self.assertIs(transplant.call_args.kwargs["reuse_empty_uv"], reuse)
+                self.assertIs(transplant.call_args.kwargs["relocate_empty_uv"], relocate)
+
     def test_real_lower_body_swap_replaces_only_the_selected_vertical_band(self):
         output = self.run_graft(self.request(operation="lower", cutLow=.5, cutHigh=.96))
         logs = "\n".join(event.get("line", "") for event in self.last_job._events)
-        self.assertIn("donor UVs, materials and texture bytes preserved", logs)
+        self.assertIn("one game-compatible submesh", logs)
         self.assertGreater(output.stat().st_size, 0)
 
     def test_mesh_edits_are_baked_before_each_graft_and_retained_outside_replaced_geometry(self):
@@ -295,7 +308,7 @@ class ViewerTransplantTests(unittest.TestCase):
         import numpy as np
         np.testing.assert_array_equal(uv(result)[60:], uv(source)[[0, 1, 2, 15, 16, 17, 57, 58, 59]])
 
-    def test_surface_patches_keep_each_source_material_and_its_texture(self):
+    def test_surface_patches_bake_each_source_texture_into_original_game_material(self):
         import costume_part_transplant as part
         env = UnityPy.load(self.raw); objects, index = part._index(env)
         asset = index[13].assets_file
@@ -305,8 +318,13 @@ class ViewerTransplantTests(unittest.TestCase):
             tree['m_Name'] = 'Second Donor Material' if old_id == 13 else 'Second Donor Texture'
             if old_id == 13:
                 tree['m_SavedProperties']['m_TexEnvs'][0][1]['m_Texture']['m_PathID'] = 1001
-                tree['m_SavedProperties']['m_Colors'][0][1]['g'] = .3
             obj.save_typetree(tree)
+        texture = asset.objects[1001].read_typetree()
+        texture.update(m_Width=2, m_Height=2, m_TextureFormat=4,
+                       m_MipCount=1, m_CompleteImageSize=16)
+        texture['image data'] = bytes((20, 180, 60, 255)) * 4
+        texture['m_StreamData'] = {'offset': 0, 'size': 0, 'path': ''}
+        asset.objects[1001].save_typetree(texture)
         mesh = index[1].read_typetree(); first = copy.deepcopy(mesh['m_SubMeshes'][0]); second = copy.deepcopy(first)
         first['indexCount'] = 30; second.update(firstByte=60, indexCount=30)
         mesh['m_SubMeshes'] = [first, second]; index[1].save_typetree(mesh)
@@ -321,12 +339,23 @@ class ViewerTransplantTests(unittest.TestCase):
         output = Path(job.output_paths()[0]); saved = UnityPy.load(str(output)); saved_objects, saved_index = part._index(saved)
         result_renderer = part._body_smr(saved_objects).read_typetree()
         result_mesh = saved_index[result_renderer['m_Mesh']['m_PathID']].read_typetree()
-        self.assertEqual([len(group) for group in part.submesh_triangles(result_mesh)], [20, 1, 1])
+        self.assertEqual([len(group) for group in part.submesh_triangles(result_mesh)], [22])
         materials = [saved_index[p['m_PathID']].read_typetree() for p in result_renderer['m_Materials']]
-        self.assertEqual([m['m_Name'] for m in materials[-2:]], ['Neutral AS Member test material', 'Second Donor Material'])
-        for material, original_id in zip(materials[-2:], [14, 1001]):
-            tex_id = material['m_SavedProperties']['m_TexEnvs'][0][1]['m_Texture']['m_PathID']
-            self.assertEqual(saved_index[tex_id].read().get_image_data(), asset.objects[original_id].read().get_image_data())
+        self.assertEqual([m['m_Name'] for m in materials], ['Neutral AS Member test material'])
+        self.assertEqual(result_renderer['m_Materials'], [{'m_FileID': 0, 'm_PathID': 13}])
+        self.assertEqual(materials[0]['m_Shader'], index[13].read_typetree()['m_Shader'])
+        tex_id = dict(materials[0]['m_SavedProperties']['m_TexEnvs'])['_MainTex']['m_Texture']['m_PathID']
+        atlas = saved_index[tex_id].read().image.convert('RGBA')
+        count, channels, strides, starts, _ = part.stream_layout(result_mesh)
+        import numpy as np
+        uv = part.read_attr(np.frombuffer(bytes(result_mesh['m_VertexData']['m_DataSize']), np.uint8),
+                            4, channels, strides, starts, count)
+        # Sample inside the donor's second patch using its saved, remapped UVs.
+        face = part.submesh_triangles(result_mesh)[0][-1]
+        u, v = uv[face, :2].mean(axis=0)
+        x = min(atlas.width - 1, max(0, int(u * atlas.width)))
+        y = min(atlas.height - 1, max(0, int((1 - v) * atlas.height)))
+        self.assertEqual(atlas.getpixel((x, y)), (20, 180, 60, 255))
         self.assertEqual(self.donor.read_bytes(), donor_raw)
         self.assertEqual(self.source.read_bytes(), self.raw)
 
@@ -371,8 +400,14 @@ class ViewerTransplantTests(unittest.TestCase):
         defaults = viewer_transplants.validate_request(self.request())
         self.assertFalse(defaults["matchSkin"])
         self.assertTrue(defaults["skinOnly"])
+        self.assertTrue(defaults["reuseEmptyUV"])
+        self.assertFalse(defaults["relocateEmptyUV"])
         for changes in ({"matchSkin": "false"}, {"skinOnly": 1}, {"selectionScope": "all"},
-                        {"donorRenderer": "not-a-renderer"}, {"excludeAccessories": None}):
+                        {"donorRenderer": "not-a-renderer"}, {"excludeAccessories": None},
+                        {"reuseEmptyUV": "false"}, {"reuseEmptyUV": 0}, {"reuseEmptyUV": 1},
+                        {"reuseEmptyUV": None}, {"reuseEmptyUV": []}, {"relocateEmptyUV": "false"},
+                        {"relocateEmptyUV": 0}, {"relocateEmptyUV": 1}, {"relocateEmptyUV": None},
+                        {"relocateEmptyUV": []}, {"reuseEmptyUV": False, "relocateEmptyUV": True}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 viewer_transplants.validate_request(self.request(**changes))
 

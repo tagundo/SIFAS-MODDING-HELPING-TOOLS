@@ -651,11 +651,53 @@ def extract_body_texture_with_unitypy(bundle_path: str, log=None):
     return _extract_body_texture_core(bundle_path, log=log, allow_decode=(mode != "off"))
 
 
+def _active_body_texture_objects(env):
+    """Resolve the Body's used base maps before considering orphan textures.
+
+    Grafts retain source texture objects as well as their newly assigned maps.
+    Names alone cannot distinguish those objects. Local PPtrs are scoped to
+    their serialized file; incomplete/texture-only bundles keep the fallback.
+    """
+    objects = list(env.objects)
+    index = {(id(getattr(obj, "assets_file", None)), getattr(obj, "path_id", None)): obj
+             for obj in objects if getattr(obj, "path_id", None) is not None}
+
+    def resolve(owner, pointer):
+        if not isinstance(pointer, dict) or pointer.get("m_FileID", 0) != 0:
+            return None
+        return index.get((id(getattr(owner, "assets_file", None)), pointer.get("m_PathID")))
+
+    candidates = []
+    for obj in objects:
+        if getattr(obj.type, "name", "") != "SkinnedMeshRenderer":
+            continue
+        try:
+            renderer = obj.read_typetree()
+            go = resolve(obj, renderer.get("m_GameObject"))
+            named_body = go is not None and go.read_typetree().get("m_Name", "").casefold() == "body"
+            material = resolve(obj, renderer.get("m_Materials", [])[0])
+            if material is None or material.type.name != "Material":
+                continue
+            for entry in material.read_typetree().get("m_SavedProperties", {}).get("m_TexEnvs", []):
+                name, value = entry if isinstance(entry, (list, tuple)) else (entry.get("first"), entry.get("second"))
+                if name != "_MainTex" or not isinstance(value, dict):
+                    continue
+                texture = resolve(material, value.get("m_Texture"))
+                if texture is not None and texture.type.name == "Texture2D":
+                    candidates.append((named_body, len(renderer.get("m_Bones", [])), texture))
+                break
+        except Exception:
+            continue
+    candidates.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    selected = [row[2] for row in candidates if row[0]] if any(row[0] for row in candidates) else [row[2] for row in candidates[:1]]
+    return list({id(obj): obj for obj in selected}.values())
+
+
 def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True, image_decoder=None):
     """Find a body Texture2D and (when allow_decode) return (name, png_bytes).
 
     Tries hard so a real preview is produced when any texture exists:
-      1) exact 'chXXXX_coXXXX_body' texture,
+      1) active Body material's _MainTex, then exact 'chXXXX_coXXXX_body' texture,
       2) any texture whose name contains 'body',
       3) the largest decodable texture.
     The default decoder handles crunched/compressed formats. A `log` callback,
@@ -686,6 +728,9 @@ def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True, im
         r"sss|thick|alpha|_uv|toon|ramp|shadow|highlight|\bhi_|_hi\b)", re.IGNORECASE)
     exact_body_pat = re.compile(r"ch\d{4}_co\d{4}_body$", re.IGNORECASE)
     textures = []
+    active = _active_body_texture_objects(env)
+    active_ids = {id(obj) for obj in active}
+    active_textures = []
     for obj in env.objects:
         if getattr(obj.type, "name", "") != "Texture2D":
             continue
@@ -695,6 +740,8 @@ def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True, im
             continue
         name = getattr(data, "m_Name", None) or getattr(data, "name", "") or ""
         textures.append((name, data))
+        if id(obj) in active_ids:
+            active_textures.append((name, data))
 
     if not textures:
         _log("  ⚠️ thumbnail: no Texture2D in this bundle (the texture is probably "
@@ -747,6 +794,7 @@ def _extract_body_texture_core(bundle_path: str, log=None, allow_decode=True, im
     #   5) largest texture (last resort - may be a rim/mask map)
     by_area = sorted(textures, key=lambda t: area(t[1]), reverse=True)
     tiers = [
+        (active_textures, "active Body material texture"),
         ([t for t in by_area if exact_body_pat.search(t[0] or "") and not is_aux(t[0])], "body texture"),
         ([t for t in by_area if body_pat.search(t[0] or "") and not is_aux(t[0])], "body texture"),
         ([t for t in by_area if "body" in (t[0] or "").lower() and not is_aux(t[0])], "name contains 'body'"),

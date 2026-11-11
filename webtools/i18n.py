@@ -247,6 +247,12 @@ _TABLES = {
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "예: Wing_L_00; 비우면 가장 큰 코스튬 전용 부분을 자동 감지.",
         "Preserve part physics": "부분 물리 유지",
+        "Reuse empty UV areas": "빈 UV 영역 재사용",
+        "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
+            "Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
+        "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
+        "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
+            "원래 UV 위치가 사용 중이면 원본 픽셀의 세부 표현을 유지한 채 다른 빈 영역을 찾습니다. 패딩은 추가하지 않습니다.",
         "Patch part texture onto target atlas": "부분 텍스처를 대상 아틀라스에 패치",
         # Lower Body Swap
         "Donor bundle (good lower body)": "공여 번들 (정상 하체)",
@@ -748,6 +754,12 @@ _TABLES = {
         "e.g. Wing_L_00; blank = auto-detect the biggest costume-specific part.":
             "例: Wing_L_00; 空欄で最大の衣装固有パーツを自動検出。",
         "Preserve part physics": "パーツの物理を保持",
+        "Reuse empty UV areas": "空きUV領域を再利用",
+        "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
+            "ドナーの元のUV位置を優先します。重なる場合はアトラスに結合するか、別の空きUV領域への移動を有効にしてください。パディングは追加しません。",
+        "Move to another empty UV area": "別の空きUV領域へ移動",
+        "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
+            "元のUV位置が使用中なら、元画像の細部を維持して別の空き領域を探します。パディングは追加しません。",
         "Patch part texture onto target atlas": "パーツのテクスチャを対象アトラスにパッチ",
         # Lower Body Swap
         "Donor bundle (good lower body)": "提供元バンドル（正常な下半身）",
