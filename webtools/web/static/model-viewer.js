@@ -1064,6 +1064,15 @@
     var up = new window.THREE.Vector3().crossVectors(view, right).normalize();
     var tanV = Math.tan(camera.fov * Math.PI / 360), tanH = tanV * width / height;
     var insets = measureSafeInsets(), obstacles = framingObstacles(stage);
+    // A centered edge toolbar needs an asymmetric fit region. Keeping the
+    // target at canvas center would shrink the whole model repeatedly merely
+    // to lift its feet above that row, particularly in short windows.
+    var fitTop = insets.top, fitBottom = insets.bottom;
+    obstacles.forEach(function (rect) {
+      if (rect.left > width / 2 || rect.right < width / 2) return;
+      if (rect.edge === "bottom") fitBottom = Math.max(fitBottom, height - rect.top + 4);
+      else if (rect.edge === "top") fitTop = Math.max(fitTop, rect.bottom + 4);
+    });
     var records = [], byMesh = Object.create(null), vertexCount = 0, triangleCount = 0, precise = true;
     model.traverseVisible(function (mesh) {
       if (!mesh.isMesh || isViewerHelper(mesh) || !mesh.geometry || !mesh.geometry.attributes.position) return;
@@ -1096,15 +1105,18 @@
     cameraClipRadius = radius;
     var centre = sphere.center, target = centre.clone(), centreR = centre.dot(right), centreU = centre.dot(up), centreV = centre.dot(view);
     var safeX = Math.max(1, width - insets.left - insets.right) / width;
-    var safeY = Math.max(1, height - insets.top - insets.bottom) / height;
+    var safeY = Math.max(1, height - fitTop - fitBottom) / height;
+    var upperY = 1 - 2 * fitTop / height, lowerY = 1 - 2 * fitBottom / height;
     var distance = 0, visits = 0, passes = 0, summary = null;
     if (precise) records.forEach(function (record) {
       var points = record.points;
       for (var at = 0; at < points.length; at += 3) {
         // Each deformed vertex supplies its own depth. Combining the highest
         // head point with an unrelated mesh's deepest point leaves headroom.
-        distance = Math.max(distance, points[at + 2] - centreV + Math.max(
-          Math.abs(points[at] - centreR) / (tanH * safeX), Math.abs(points[at + 1] - centreU) / (tanV * safeY)));
+        var depth = points[at + 2] - centreV, vertical = points[at + 1] - centreU;
+        distance = Math.max(distance, depth + Math.abs(points[at] - centreR) / (tanH * safeX),
+          (vertical + upperY * depth * tanV) / (tanV * safeY),
+          (-vertical + lowerY * depth * tanV) / (tanV * safeY));
       }
     });
     distance = Math.max(radius * .12, distance * 1.04);
@@ -1149,6 +1161,7 @@
     }
     var method = "posed-triangles", clear = false;
     if (precise) for (passes = 1; passes <= 8; passes += 1) {
+      target.copy(centre).addScaledVector(up, (fitTop - fitBottom) / height * distance * tanV);
       summary = projectSnapshot();
       var collision = intersectsControls();
       if (collision === false && !summary.pointsOutside) { clear = true; break; }
@@ -1179,6 +1192,7 @@
       }
       distance = (Math.max(halfWidth / (tanH * availableX), halfHeight / (tanV * availableY)) + halfDepth) * 1.04;
       distance = Math.max(radius * .12, distance);
+      target.copy(centre);
       target.addScaledVector(right, -(left - rightInset) / width * distance * tanH);
       target.addScaledVector(up, (topInset - bottomInset) / height * distance * tanV);
       if (precise) summary = projectSnapshot();

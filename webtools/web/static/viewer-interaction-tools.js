@@ -121,10 +121,13 @@
         var box = element.getBoundingClientRect(); if (!box.width || !box.height || getComputedStyle(element).visibility === "hidden") return;
         obstacles.push({ left: box.left - rect.left - 5, right: box.right - rect.left + 5, top: box.top - rect.top - 5, bottom: box.bottom - rect.top + 5 });
       });
+      // In a short viewport the top-center gap leaves the lower model area
+      // available for dragging, rather than putting a row across its feet.
+      var fromTop = stage.clientHeight <= 240;
       function freePosition(lines) {
         var position = null;
         for (var line = 0; line < lines && !position; line++) {
-          var y = Math.max(4, stage.clientHeight - height - 8 - line * (height + 8));
+          var y = fromTop ? Math.min(stage.clientHeight - height - 4, 8 + line * (height + 8)) : Math.max(4, stage.clientHeight - height - 8 - line * (height + 8));
           var intervals = obstacles.filter(function (box) { return box.bottom > y && box.top < y + height; }).sort(function (a, b) { return a.left - b.left; });
           var x = 6, gaps = [];
           intervals.forEach(function (box) { if (box.left > x) gaps.push([x, Math.min(stage.clientWidth - 6, box.left)]); x = Math.max(x, box.right); });
@@ -143,9 +146,12 @@
       }
       if (!best) { if (host.style.visibility !== "hidden") host.style.visibility = "hidden"; return; }
       if (host.style.visibility) host.style.visibility = "";
+      attr(host, "data-viewer-framing-edge", fromTop ? "top" : "bottom");
       var left = Math.round(best.left) + "px", top = Math.round(best.top) + "px";
       if (host.style.left !== left) host.style.left = left; if (host.style.top !== top) host.style.top = top;
-      var menuHeight = Math.max(72, Math.min(260, best.top - 12)) + "px";
+      var menuTop = fromTop ? "calc(100% + 6px)" : "auto", menuBottom = fromTop ? "auto" : "calc(100% + 6px)";
+      if (menu.style.top !== menuTop) menu.style.top = menuTop; if (menu.style.bottom !== menuBottom) menu.style.bottom = menuBottom;
+      var menuHeight = Math.max(72, Math.min(260, fromTop ? stage.clientHeight - best.top - height - 12 : best.top - 12)) + "px";
       if (host.style.getPropertyValue("--viewer-interaction-menu-height") !== menuHeight) host.style.setProperty("--viewer-interaction-menu-height", menuHeight);
       var menuWidth = Math.max(120, Math.min(250, stage.clientWidth - 12)) + "px"; if (menu.style.width !== menuWidth) menu.style.width = menuWidth;
       var halfMenu = parseFloat(menuWidth) / 2, menuCenter = Math.max(halfMenu + 6, Math.min(stage.clientWidth - halfMenu - 6, best.left + width / 2));
