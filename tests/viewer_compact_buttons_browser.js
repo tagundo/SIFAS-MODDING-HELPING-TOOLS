@@ -32,11 +32,14 @@ async function metric(page, selector) {
   const target = await show(page, selector);
   return target.evaluate(node => {
     const box = node.getBoundingClientRect(), parent = node.parentElement.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node);
-    const text = range.getBoundingClientRect(), hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    const text = range.getBoundingClientRect(), hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2), style = getComputedStyle(node), parentStyle = getComputedStyle(node.parentElement);
+    const lines = Array.from(new Set(Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => Math.round(rect.top * 10) / 10)));
     return { text: node.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height, right: box.right, bottom: box.bottom,
       parentWidth: parent.width, textWidth: text.width, textHeight: text.height, textFits: text.width <= box.width + 1 && text.height <= box.height + 1,
       hit: hit === node || node.contains(hit), clippedX: box.left < -1 || box.right > innerWidth + 1,
-      disabled: !!node.disabled, coarse: matchMedia('(pointer:coarse)').matches };
+      disabled: !!node.disabled, coarse: matchMedia('(pointer:coarse)').matches, textLineCount: lines.length,
+      font: { family: style.fontFamily, size: style.fontSize, lineHeight: style.lineHeight, letterSpacing: style.letterSpacing, whiteSpace: style.whiteSpace, padding: style.padding },
+      parentLayout: { display: parentStyle.display, columns: parentStyle.gridTemplateColumns, flexWrap: parentStyle.flexWrap, alignItems: parentStyle.alignItems } };
   });
 }
 function checkButtons(metrics, profile, phase) {
@@ -49,6 +52,10 @@ function checkButtons(metrics, profile, phase) {
       else assert(box.height <= 40, name + ' has a compact desktop row: ' + JSON.stringify(box));
     }
   }
+  if (phase === 'after') {
+    for (const name of ['motionAdd', 'motionGame']) assert.equal(metrics[name].textLineCount, 1, name + ' keeps the Korean action label on one line when there is space');
+    if (metrics.motionAdd.width + metrics.motionGame.width + 6 <= metrics.motionAdd.parentWidth + 1) assert(Math.abs(metrics.motionAdd.y - metrics.motionGame.y) <= 1, 'Unequal natural button widths use the available row instead of wrapping a fitting action label');
+  }
 }
 async function main() {
   const report = { status: 'RUNNING', scope: 'Korean shared UI in actual host Chromium; Mac adapter selects desktop CSS only, touch profile emulates coarse pointer; not native device QA', baselineCSS: baseline || null, cases: [] };
@@ -56,11 +63,15 @@ async function main() {
   try {
     [tools, admin] = await Promise.all([boot('webtools', product, 'tools'), boot('adminui', repo, 'admin')]);
     browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-    for (const profile of [{ name: 'mac-desktop', width: 1440, height: 1100, mac: true }, { name: 'desktop', width: 1440, height: 1100 }, { name: 'phone-portrait', width: 390, height: 844, touch: true }]) {
+    for (const profile of [{ name: 'mac-desktop', width: 1440, height: 1100, mac: true }, { name: 'desktop', width: 1440, height: 1100 },
+      { name: 'mac-desktop-wider-labels', width: 1440, height: 1100, mac: true, motionLetterSpacing: '1.5px', scope: 'Synthetic label-width pressure; not an exact CI font emulation' },
+      { name: 'phone-portrait', width: 390, height: 844, touch: true }]) {
       const observations = {};
       for (const phase of baseline ? ['before', 'after'] : ['after']) {
         const context = await browser.newContext({ viewport: { width: profile.width, height: profile.height }, hasTouch: !!profile.touch });
-        await context.addInitScript(({ mac }) => { localStorage.setItem('sifas_lang', 'ko'); if (mac) { window.ElichikaDesktop = { platform: 'macos', version: 1, language: 'ko', capabilities: [] }; window.webkit = { messageHandlers: { elichika: { postMessage() {} } } }; } }, { mac: !!profile.mac });
+        await context.addInitScript(({ mac, motionLetterSpacing }) => { localStorage.setItem('sifas_lang', 'ko'); if (mac) { window.ElichikaDesktop = { platform: 'macos', version: 1, language: 'ko', capabilities: [] }; window.webkit = { messageHandlers: { elichika: { postMessage() {} } } }; }
+          if (motionLetterSpacing) document.addEventListener('DOMContentLoaded', () => { const style = document.createElement('style'); style.textContent = '.viewer-motion-import-actions > button { letter-spacing: ' + motionLetterSpacing + ' !important; }'; document.head.appendChild(style); });
+        }, { mac: !!profile.mac, motionLetterSpacing: profile.motionLetterSpacing || null });
         if (phase === 'before') {
           for (const [route, name] of [['**/static/style.css', 'style.css'], ['**/static/viewer-transplants.css', 'viewer-transplants.css'], ['**/ui/style.css', 'admin-style.css']]) {
             const file = path.join(baseline, name); assert(fs.existsSync(file), 'Frozen before CSS exists: ' + file);
@@ -98,9 +109,10 @@ async function main() {
         metrics.serverTool = await metric(adminPage, '#tool-list button[data-id="backup"]');
         assert(!(await adminPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)), 'Server content has no horizontal overflow');
         await adminPage.screenshot({ path: path.join(evidence, profile.name + '-' + phase + '-server-content.png') });
+        observations[phase] = { metrics, overflow, pageErrors: errors };
+        report.inProgress = { profile, ...observations };
         checkButtons(metrics, profile, phase); assert.deepStrictEqual(errors, []);
         assert(!requests.some(request => request.method === 'POST' && /\/api\/(?:run|viewer\/edit|viewer\/transplant\/run)/.test(request.url)), 'Measurement never executes a tool, edits, exports or transplants');
-        observations[phase] = { metrics, overflow, pageErrors: errors };
         await context.close();
       }
       if (baseline && !profile.touch) {
@@ -113,6 +125,7 @@ async function main() {
         assert(observations.after.metrics.serverRun.width < observations.before.metrics.serverRun.width * .7, 'Server tool execution no longer stretches across its form');
       }
       report.cases.push({ profile, ...observations });
+      delete report.inProgress;
     }
     assert.equal(sha(fs.readFileSync(source)), sourceHash, 'Model source is unchanged');
     report.sourceHash = sourceHash; report.status = 'PASS';

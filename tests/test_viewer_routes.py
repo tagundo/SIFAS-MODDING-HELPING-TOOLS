@@ -1,4 +1,6 @@
 """HTTP access checks for read-only model preparation and generated GLB sessions."""
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -48,6 +50,7 @@ class ViewerRouteTests(unittest.TestCase):
             prepare=Mock(return_value={"id": self.identifier,
                                        "url": "/api/viewer/model/" + self.identifier + ".glb"}),
             get_model=Mock(return_value=self.glb),
+            get_editing_companions=Mock(return_value=[]),
         )
         env = patch.dict(os.environ, {"SUKUSTA_DIR": str(self.library)})
         env.start()
@@ -91,9 +94,44 @@ class ViewerRouteTests(unittest.TestCase):
         self.assertEqual(response["variants"], [{
             "source_index": index, "source_name": source.name, "selected": selected,
             "choices": ["primary", "unmasked"]}])
-        encoded = json.dumps(response)
+        # Read-only outline diagnostics expose the selected member's basename
+        # and captured hash. Permit that exact source-bound field, while still
+        # forbidding member names in arbitrary response fields or private paths.
+        checked = copy.deepcopy(response)
+        member = "board.unity" if selected == "primary" else "normal.unity"
+        with zipfile.ZipFile(source) as archive:
+            selected_sha = hashlib.sha256(archive.read(member)).hexdigest()
+        records = checked.get("editing", {}).get("outlines", {}).get("sources", [])
+        for record in records:
+            if record.get("name") == member:
+                self.assertIs(type(record["sourceIndex"]), int)
+                self.assertGreaterEqual(record["sourceIndex"], 0)
+                self.assertEqual(record, {"sourceIndex": record["sourceIndex"],
+                                          "name": member, "sha256": selected_sha})
+                record["name"] = "<selected source basename>"
+        encoded = json.dumps(checked)
         for private in ("source_path", "viewer-zip-", "board.unity", "normal.unity", str(self.base)):
             self.assertNotIn(private, encoded)
+
+    def test_variant_diagnostics_allow_only_the_hash_bound_selected_source_name(self):
+        source, board, _, _ = self.dual_variant_zip()
+        response = {"variants": [{"source_index": 0, "source_name": source.name,
+                                  "selected": "primary", "choices": ["primary", "unmasked"]}],
+                    "editing": {"outlines": {"sources": [{"sourceIndex": 0, "name": "board.unity",
+                        "sha256": hashlib.sha256(board).hexdigest()}]}}}
+        self.assert_variant_response(response, source, "primary")
+        self.assertEqual(response["editing"]["outlines"]["sources"][0]["name"], "board.unity")
+        for field, value in (("debug", "board.unity"), ("debug", "normal.unity"),
+                             ("source_path", "hidden"), ("debug", "viewer-zip-secret"),
+                             ("debug", str(self.base))):
+            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
+                self.assert_variant_response({**response, field: value}, source, "primary")
+        for replacement in ({"sha256": "0" * 64}, {"name": "normal.unity"},
+                            {"sourceIndex": True}, {"source_path": "hidden"}):
+            changed = copy.deepcopy(response)
+            changed["editing"]["outlines"]["sources"][0].update(replacement)
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                self.assert_variant_response(changed, source, "primary")
 
     def test_prepare_resolves_and_deduplicates_only_authorized_paths(self):
         status, _, body = self.request("/api/viewer/prepare", {"paths": [str(self.model)] * 2})
@@ -139,6 +177,7 @@ class ViewerRouteTests(unittest.TestCase):
         self.backend.prepare.assert_called_once()
         self.assertIs(self.backend.prepare.call_args.kwargs["rigged"], True)
         self.assertNotIn("bone_scales", self.backend.prepare.call_args.kwargs)
+        self.backend.get_editing_companions.assert_called_once_with(self.identifier)
 
     def test_legacy_prepare_remains_static_unless_interactive_loading_is_requested(self):
         for extra in ({}, {"rigged": False}):
