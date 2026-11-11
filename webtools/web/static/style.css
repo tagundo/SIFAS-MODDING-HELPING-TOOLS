@@ -1025,6 +1025,11 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
   #viewer-workspace-menu-content input[type=search], #viewer-workspace-menu-content select,
   #viewer-workspace-menu-content .viewer-option-row label, #viewer-workspace-menu-content #viewer-parts label { min-height: 34px; }
   .viewer-adjustments input[type=range] { min-height: 28px; }
+  /* Keep the localized import pair's original horizontal inset. The shared
+     action padding otherwise consumes the space its wider font needs. */
+  .viewer-control-panel .viewer-motion-import-actions > button,
+  .elichika-desktop .viewer-control-panel .viewer-motion-import-actions > button,
+  #viewer-workspace-menu-content .viewer-motion-import-actions > button { padding-inline: 6px; }
 }
 @media (min-width: 1200px) and (hover: hover) and (pointer: fine) {
   #tab-tools .mesh-save-bar { justify-content: flex-start; }
