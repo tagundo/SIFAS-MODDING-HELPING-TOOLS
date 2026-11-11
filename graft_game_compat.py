@@ -91,7 +91,8 @@ def _check_shared(objects, renderer, mesh, first_material):
 def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tree=None,
                            renderer_tree=None, additional_sources=(), log=lambda message: None,
                            max_vertices=65535, max_dimension=4096, reuse_empty_uv=True,
-                           relocate_empty_uv=False):
+                           relocate_empty_uv=False, upscale_textures_for_uv_reuse=True,
+                           uv_placement=None):
     """Bake every Body material group into its original single material slot.
 
     ``additional_sources`` contains ``(donor_environment, material_pointer_or_id)``
@@ -105,14 +106,22 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     ``reuse_empty_uv`` first attempts donor placement at unchanged UVs when its
     texels do not overlap retained target faces. ``relocate_empty_uv`` also
     permits native-resolution placement elsewhere, then falls back to an atlas.
+    ``upscale_textures_for_uv_reuse`` first enlarges smaller corresponding
+    UV textures to the larger resolution before trying either UV path.
+    An explicit ``uv_placement`` selects same-position reuse, relocation with
+    original main dimensions, or an ordinary atlas; it overrides legacy flags.
     """
     from graft_texture_atlas import MaterialSource, bake_game_atlas
     from graft_atlas_geometry import flatten_material_groups
     from costume_part_transplant import _make_object, _rand_pids
 
-    if type(reuse_empty_uv) is not bool or type(relocate_empty_uv) is not bool:
+    if any(type(value) is not bool for value in
+           (reuse_empty_uv, relocate_empty_uv, upscale_textures_for_uv_reuse)):
         raise ValueError("UV reuse options must be true or false.")
-    if relocate_empty_uv and not reuse_empty_uv:
+    if uv_placement is not None and (not isinstance(uv_placement, str) or
+                                     uv_placement not in ("same_position", "move_to_empty", "atlas")):
+        raise ValueError("Choose same_position, move_to_empty or atlas for UV placement.")
+    if uv_placement is None and relocate_empty_uv and not reuse_empty_uv:
         raise ValueError("Enable empty UV reuse before relocating donor UVs.")
     objects = _index(environment)
     if smr_object.type.name != "SkinnedMeshRenderer":
@@ -157,9 +166,11 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
 
     fallback_diagnostics = []
     baked = None
-    if reuse_empty_uv:
+    if uv_placement != "atlas" and (uv_placement is not None or reuse_empty_uv):
         from graft_uv_reuse import prepare_uv_reuse
-        reuse_options = {"diagnostics": fallback_diagnostics}
+        reuse_options = {"diagnostics": fallback_diagnostics,
+                         "upscale_textures_for_uv_reuse": upscale_textures_for_uv_reuse,
+                         "uv_placement": uv_placement}
         if relocate_empty_uv:
             reuse_options["relocate_empty_uv"] = True
         baked = prepare_uv_reuse(sources, working_mesh, original_group_count=len(materials),
@@ -230,5 +241,6 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     log(f"Body textures: {mode_label}; {group_count} groups combined into the original material.")
     return {**geometry, "source_materials": len(sources), "materials": 1,
             "atlas_textures": len(prepared), "atlas_identity": baked.identity,
-            "atlas_sources": baked.unique_sources, "texture_mode": texture_mode, "diagnostics": diagnostics,
+            "atlas_sources": baked.unique_sources, "texture_mode": texture_mode,
+            "requested_uv_placement": uv_placement, "diagnostics": diagnostics,
             "atlas_dimensions": {slot: [texture.width, texture.height] for slot, texture in baked.textures.items()}}

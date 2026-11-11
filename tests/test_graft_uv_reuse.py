@@ -118,7 +118,8 @@ class EmptyUVReuseTests(unittest.TestCase):
         target = source("receiver", [image((32, 32), "red")], rim=[image((8, 8), "white")])
         donor = source("donor", [image((32, 32), "blue")], rim=[image((4, 4), "white")])
         reasons = []
-        self.assertIsNone(prepare_uv_reuse([target, donor], mesh([RECEIVER, DONOR]), 1, diagnostics=reasons))
+        self.assertIsNone(prepare_uv_reuse([target, donor], mesh([RECEIVER, DONOR]), 1, diagnostics=reasons,
+                                          upscale_textures_for_uv_reuse=False))
         self.assertIn("native texture dimensions", reasons[0])
         target, donor = source("receiver", [image((32, 32), "red")]), source("donor", [image((32, 32), "blue")])
         reasons = []
@@ -191,8 +192,8 @@ class RelocatedUVReuseTests(unittest.TestCase):
         triangle = ((.1, .1), (.5, .1), (.1, .5))
         geometry = mesh([triangle, triangle])
         reasons = []
-        self.assertIsNone(prepare_uv_reuse([receiver, donor], geometry, 1, diagnostics=reasons))
-        result = prepare_uv_reuse([receiver, donor], geometry, 1, relocate_empty_uv=True)
+        self.assertIsNone(prepare_uv_reuse([receiver, donor], geometry, 1, diagnostics=reasons, upscale_textures_for_uv_reuse=False))
+        result = prepare_uv_reuse([receiver, donor], geometry, 1, relocate_empty_uv=True, upscale_textures_for_uv_reuse=False)
         self.assertIsNotNone(result)
         self.assertEqual(result.transforms[0].scale, (1., 1.))
         self.assertEqual(result.transforms[1].scale, (.5, 1.))
@@ -209,8 +210,8 @@ class RelocatedUVReuseTests(unittest.TestCase):
         target = source("receiver", [image((32, 32), "red")])
         donor = source("donor", [image((32, 32), "blue")])
         geometry = mesh([RECEIVER, RECEIVER])
-        self.assertIsNone(prepare_uv_reuse([target, donor], geometry, 1))
-        result = prepare_uv_reuse([target, donor], geometry, 1, relocate_empty_uv=True)
+        self.assertIsNone(prepare_uv_reuse([target, donor], geometry, 1, upscale_textures_for_uv_reuse=False))
+        result = prepare_uv_reuse([target, donor], geometry, 1, relocate_empty_uv=True, upscale_textures_for_uv_reuse=False)
         self.assertIsNotNone(result)
         self.assertEqual(result.transforms[1].scale, (1., 1.))
         self.assertNotEqual(result.transforms[1].offset, (0., 0.))
@@ -219,7 +220,7 @@ class RelocatedUVReuseTests(unittest.TestCase):
     def test_free_same_coordinates_remain_identity_with_relocation_enabled(self):
         target = source("receiver", [image((32, 32), "red")])
         donor = source("donor", [image((32, 32), "blue")])
-        result = prepare_uv_reuse([target, donor], mesh([RECEIVER, DONOR]), 1, relocate_empty_uv=True)
+        result = prepare_uv_reuse([target, donor], mesh([RECEIVER, DONOR]), 1, relocate_empty_uv=True, upscale_textures_for_uv_reuse=False)
         self.assertEqual(result.transforms[1].scale, (1., 1.))
         self.assertEqual(result.transforms[1].offset, (0., 0.))
 
@@ -227,7 +228,8 @@ class RelocatedUVReuseTests(unittest.TestCase):
         target = source("receiver", [image((32, 16), "red")], rim=[image((16, 8), "white")])
         donor = source("donor", [image((16, 16), "blue")], rim=[image((8, 4), "white")])
         reasons = []
-        self.assertIsNone(prepare_uv_reuse([target, donor], mesh([RECEIVER, RECEIVER]), 1, diagnostics=reasons, relocate_empty_uv=True))
+        self.assertIsNone(prepare_uv_reuse([target, donor], mesh([RECEIVER, RECEIVER]), 1, diagnostics=reasons,
+                                          relocate_empty_uv=True, upscale_textures_for_uv_reuse=False))
         self.assertTrue(any("ratios" in reason for reason in reasons))
         target = source("receiver", [image((32, 32), "red")])
         donor = source("donor", [image((16, 16), "blue")])
@@ -235,14 +237,14 @@ class RelocatedUVReuseTests(unittest.TestCase):
         full["m_SubMeshes"] = [dict(firstByte=0, indexCount=6, baseVertex=0, topology=0),
                                dict(firstByte=12, indexCount=3, baseVertex=0, topology=0)]
         reasons = []
-        self.assertIsNone(prepare_uv_reuse([target, donor], full, 1, diagnostics=reasons, relocate_empty_uv=True))
+        self.assertIsNone(prepare_uv_reuse([target, donor], full, 1, diagnostics=reasons, relocate_empty_uv=True, upscale_textures_for_uv_reuse=False))
         self.assertTrue(any("no common free" in reason for reason in reasons))
 
     def test_multiple_donors_claim_different_free_areas_and_leave_receiver_untouched(self):
         target = source("receiver", [image((32, 32), "red")])
         first = source("first", [image((16, 16), "blue")])
         second = source("second", [image((16, 16), "green")])
-        result = prepare_uv_reuse([target, first, second], mesh([RECEIVER, RECEIVER, RECEIVER]), 1, relocate_empty_uv=True)
+        result = prepare_uv_reuse([target, first, second], mesh([RECEIVER, RECEIVER, RECEIVER]), 1, relocate_empty_uv=True, upscale_textures_for_uv_reuse=False)
         self.assertIsNotNone(result)
         self.assertNotEqual(result.transforms[1].offset, result.transforms[2].offset)
         output = levels(result.textures["_MainTex"])[0]

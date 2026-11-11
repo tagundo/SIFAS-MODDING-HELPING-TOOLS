@@ -133,6 +133,14 @@ _TRANSLATIONS = {
         "Reuse empty UV areas (otherwise build a texture atlas)":
             "빈 UV 영역 재사용 (겹치면 텍스처 아틀라스로 합침)",
         "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
+        "Match smaller textures to larger ones": "작은 이미지를 큰 이미지에 맞추기",
+        "Texture and UV placement": "텍스처·UV 배치 방식",
+        "Reuse original UV positions": "원래 UV 위치 재사용",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Move into empty UV areas": "빈 UV 영역으로 이동",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택 영역의 텍스처와 UV를 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Build a new texture atlas": "새 아틀라스로 합치기",
+        "Combine textures into a new atlas and remap UVs. No padding is added.": "텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 패딩은 추가하지 않습니다.",
         "World-space the body mesh (so swinging parts render correctly)":
             "바디 메시를 월드 공간으로 (흔들리는 부위가 올바르게 렌더링되도록)",
         "Re-anchor NodeScaling to keep the wearer's body shape":
@@ -170,6 +178,14 @@ _TRANSLATIONS = {
         "Reuse empty UV areas (otherwise build a texture atlas)":
             "空きUV領域を再利用（重なる場合はテクスチャアトラスに結合）",
         "Move to another empty UV area": "別の空きUV領域へ移動",
+        "Match smaller textures to larger ones": "小さい画像を大きい画像に合わせる",
+        "Texture and UV placement": "テクスチャ・UVの配置方法",
+        "Reuse original UV positions": "元のUV位置を再利用",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。パディングは追加しません。",
+        "Move into empty UV areas": "空きUV領域へ移動",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択領域のテクスチャとUVを一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。パディングは追加しません。",
+        "Build a new texture atlas": "新しいテクスチャアトラスを作成",
+        "Combine textures into a new atlas and remap UVs. No padding is added.": "テクスチャを新しいアトラスに結合し、UVを再配置します。パディングは追加しません。",
         "World-space the body mesh (so swinging parts render correctly)":
             "ボディメッシュをワールド空間に（揺れるパーツが正しく描画されるよう）",
         "Re-anchor NodeScaling to keep the wearer's body shape":
@@ -1963,7 +1979,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
                     fix_nodescaling=True, mask_handling="auto", scale_swing_physics=True,
                     dry_run=False, verbose=True, triangle_indices=None,
                     donor_renderer=None, target_renderer=None, physics_provenance=None,
-                    log_callback=None, reuse_empty_uv=True, relocate_empty_uv=False):
+                    log_callback=None, reuse_empty_uv=True, relocate_empty_uv=False,
+                    upscale_textures_for_uv_reuse=True, uv_placement=None):
     """Move one costume part (the bones under `part_root`, or an explicit
     `part_bones` list, or the biggest auto-detected group) from donor to target."""
     def log(*a):
@@ -1971,6 +1988,12 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
             log_callback(" ".join(map(str, a)))
         elif verbose:
             print(*a)
+    if any(type(value) is not bool for value in
+           (reuse_empty_uv, relocate_empty_uv, upscale_textures_for_uv_reuse)):
+        raise ValueError("Empty UV options must be true or false.")
+    if uv_placement is not None and (not isinstance(uv_placement, str) or
+                                     uv_placement not in ("same_position", "move_to_empty", "atlas")):
+        raise ValueError("Choose same_position, move_to_empty or atlas for UV placement.")
     UP = _require_unitypy()
     donor = UP.load(donor_path)
     target = UP.load(target_path)
@@ -2105,12 +2128,14 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     own_material = (part_submesh is not None and part_submesh < len(d_mats)
                     and len(d_mats) > 1)
     game_atlas = new_submesh == "atlas"
-    if reuse_empty_uv and not game_atlas:
+    if uv_placement is not None and not game_atlas:
+        raise ValueError("UV placement strategies require the game-compatible atlas export mode.")
+    if uv_placement is None and reuse_empty_uv and not game_atlas:
         if relocate_empty_uv:
             raise ValueError("Empty UV relocation requires the game-compatible atlas export mode.")
         # Explicit standalone export modes retain their existing behavior.
         reuse_empty_uv = False
-    if relocate_empty_uv and not reuse_empty_uv:
+    if uv_placement is None and relocate_empty_uv and not reuse_empty_uv:
         raise ValueError("Enable empty UV reuse before moving to another empty UV area.")
     if game_atlas:
         # Keep source material groups separate only while building the mesh.
@@ -2135,7 +2160,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         log(f"  triangles added  : {len(ptris)}")
         log(f"  new sub-mesh     : {use_new_submesh and not game_atlas}")
         if game_atlas:
-            log(f"  game texture mode: {'try empty UV reuse, then atlas' if reuse_empty_uv else 'texture atlas'}")
+            log(f"  game texture mode: {uv_placement or ('try empty UV reuse, then atlas' if reuse_empty_uv else 'texture atlas')}")
         log(f"  preserve physics : {preserve_physics}")
         bbox = _uv_bbox(d_mesh_tt, used)
         if bbox is not None:
@@ -2217,7 +2242,9 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         bake_renderer_for_game(target, t_smr, t_mesh,
             mesh_tree=t_mesh_tt, renderer_tree=t_smr_tt,
             additional_sources=[(donor, d_mats[index]) for index, _ in selected_groups],
-            reuse_empty_uv=reuse_empty_uv, relocate_empty_uv=relocate_empty_uv, log=log)
+            reuse_empty_uv=reuse_empty_uv, relocate_empty_uv=relocate_empty_uv,
+            upscale_textures_for_uv_reuse=upscale_textures_for_uv_reuse,
+            uv_placement=uv_placement, log=log)
         # The helper updates these detached trees too. Re-reading ObjectReader
         # here can return the pre-save reader bytes until the bundle reopens.
     elif use_new_submesh:
@@ -2628,12 +2655,19 @@ def build_parser():
                     help="atlas: game-compatible combined body (default); other modes are standalone Unity exports")
     pt.add_argument("--patch-texture", action="store_true",
                     help="copy the part's UV region onto the target body atlas (needs Pillow)")
+    pt.add_argument("--uv-placement", choices=("same_position", "move_to_empty", "atlas"),
+                    help="UV strategy: retain original positions, move into empty space, or build an atlas; overrides legacy UV flags")
     pt.add_argument("--reuse-empty-uv", action="store_true", default=True,
                     help="reuse unoccupied wearer UV positions before building a larger atlas (default on)")
     pt.add_argument("--no-reuse-empty-uv", action="store_false", dest="reuse_empty_uv",
                     help="always use the ordinary texture atlas path")
     pt.add_argument("--relocate-empty-uv", action="store_true",
                     help="also try moving the selected texture and UVs to another free area (default off)")
+    pt.add_argument("--upscale-textures-for-uv-reuse", action="store_true", default=True,
+                    help="enlarge smaller corresponding UV textures before trying UV reuse (default on)")
+    pt.add_argument("--no-upscale-textures-for-uv-reuse", action="store_false",
+                    dest="upscale_textures_for_uv_reuse",
+                    help="keep original texture dimensions when trying UV reuse")
     pt.add_argument("--no-worldspace", action="store_true")
     pt.add_argument("--no-nodescaling", action="store_true")
     pt.add_argument("--mask-handling", choices=("auto", "on", "off"), default="auto",
@@ -2667,6 +2701,8 @@ def run_cli(args):
             new_submesh=new_submesh, patch_texture=args.patch_texture,
             reuse_empty_uv=args.reuse_empty_uv,
             relocate_empty_uv=args.relocate_empty_uv,
+            upscale_textures_for_uv_reuse=args.upscale_textures_for_uv_reuse,
+            uv_placement=args.uv_placement,
             worldspace=not args.no_worldspace, fix_nodescaling=not args.no_nodescaling,
             mask_handling=args.mask_handling, scale_swing_physics=not args.no_swing_scale,
             dry_run=args.dry_run)
@@ -2711,6 +2747,7 @@ def run_gui():
     # --- live language switching: register translatable widgets, re-apply on change.
     #     (Same pattern as costume_transplant.py's GUI.) ---
     _i18n = []   # list of (widget, english_key, kind)
+    _i18n_refresh = []
 
     def _apply_one(widget, key, kind):
         try:
@@ -2729,6 +2766,8 @@ def run_gui():
     def _apply_i18n():
         for widget, key, kind in _i18n:
             _apply_one(widget, key, kind)
+        for callback in _i18n_refresh:
+            callback()
 
     _reg(root, "SIFAS Costume Part Transplant", "title")
 
@@ -2814,8 +2853,7 @@ def run_gui():
     phys_v = tk.BooleanVar(value=True)
     coll_v = tk.BooleanVar(value=True)
     patch_v = tk.BooleanVar(value=False)
-    reuse_v = tk.BooleanVar(value=True)
-    relocate_v = tk.BooleanVar(value=False)
+    uv_placement_v = tk.StringVar(value="same_position")
     ws_v = tk.BooleanVar(value=True)
     ns_v = tk.BooleanVar(value=True)
     dry_v = tk.BooleanVar(value=False)
@@ -2823,30 +2861,48 @@ def run_gui():
         (phys_v, "Preserve the part's jiggle physics (SwingBone)"),
         (coll_v, "Restore body collision for the part's bones"),
         (patch_v, "Patch the part's texture region onto the target body atlas"),
-        (reuse_v, "Reuse empty UV areas (otherwise build a texture atlas)"),
-        (relocate_v, "Move to another empty UV area"),
+
         (ws_v, "World-space the body mesh (so swinging parts render correctly)"),
         (ns_v, "Re-anchor NodeScaling to keep the wearer's body shape"),
         (dry_v, "Preview only (dry-run) — report what would change, write nothing"),
     ):
         checkbox = _reg(ttk.Checkbutton(opt, text="", variable=var), label)
         checkbox.pack(anchor="w")
-        if var is reuse_v:
-            reuse_checkbox = checkbox
-        elif var is relocate_v:
-            relocate_checkbox = checkbox
 
-    def sync_uv_options(*_):
-        atlas_mode = submesh_v.get() == "atlas"
-        reuse_checkbox.state(["!disabled"] if atlas_mode else ["disabled"])
-        enabled = atlas_mode and reuse_v.get()
-        if not enabled:
-            relocate_v.set(False)
-        relocate_checkbox.state(["!disabled"] if enabled else ["disabled"])
+    placement_row = ttk.Frame(opt)
+    placement_row.pack(fill="x", pady=(6, 0))
+    _reg(ttk.Label(placement_row, text=""), "Texture and UV placement").pack(side="left")
+    placement_labels = tk.StringVar()
+    placement_combo = ttk.Combobox(placement_row, textvariable=placement_labels, state="readonly", width=32)
+    placement_combo.pack(side="left", padx=(8, 0), fill="x", expand=True)
+    placement_help = ttk.Label(opt, text="", wraplength=730)
+    placement_help.pack(anchor="w", fill="x", pady=(4, 0))
+    placement_choices = (
+        ('same_position', 'Reuse original UV positions', 'Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.'),
+        ('move_to_empty', 'Move into empty UV areas', 'Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.'),
+        ('atlas', 'Build a new texture atlas', 'Combine textures into a new atlas and remap UVs. No padding is added.'),
+    )
 
-    reuse_v.trace_add("write", sync_uv_options)
-    submesh_v.trace_add("write", sync_uv_options)
-    sync_uv_options()
+    def refresh_uv_placement(*_):
+        placement_combo["values"] = [_tr(title) for _, title, _ in placement_choices]
+        for value, title, help_text in placement_choices:
+            if value == uv_placement_v.get():
+                placement_labels.set(_tr(title))
+                placement_help.config(text=_tr(help_text))
+                break
+        placement_combo.config(state="readonly" if submesh_v.get() == "atlas" else "disabled")
+
+    def choose_uv_placement(*_):
+        for value, title, _ in placement_choices:
+            if placement_labels.get() == _tr(title):
+                uv_placement_v.set(value)
+                break
+
+    placement_combo.bind("<<ComboboxSelected>>", choose_uv_placement)
+    uv_placement_v.trace_add("write", refresh_uv_placement)
+    submesh_v.trace_add("write", refresh_uv_placement)
+    _i18n_refresh.append(refresh_uv_placement)
+    refresh_uv_placement()
 
     out_txt = tk.Text(frm, height=12, wrap="word")
     out_txt.pack(fill="both", expand=True, pady=6)
@@ -2889,8 +2945,7 @@ def run_gui():
                 preserve_physics=phys_v.get(), restore_collision=coll_v.get(),
                 new_submesh=submesh_choice,
                 patch_texture=patch_v.get(),
-                reuse_empty_uv=reuse_v.get(),
-                relocate_empty_uv=relocate_v.get(),
+                uv_placement=uv_placement_v.get() if submesh_v.get() == "atlas" else None,
                 worldspace=ws_v.get(), fix_nodescaling=ns_v.get(),
                 dry_run=dry_v.get())
             if out and not dry_v.get():

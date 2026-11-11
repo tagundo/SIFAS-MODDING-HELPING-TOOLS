@@ -106,16 +106,33 @@ class ViewerTransplantTests(unittest.TestCase):
 
     def test_part_uv_options_defaults_and_values_are_forwarded_unchanged(self):
         import costume_part_transplant as part
-        for options, reuse, relocate in (({}, True, False), ({"reuseEmptyUV": False}, False, False),
-                                         ({"relocateEmptyUV": True}, True, True)):
+        for options, reuse, relocate, upscale in (({}, True, False, True), ({"reuseEmptyUV": False}, False, False, True),
+                                                  ({"relocateEmptyUV": True}, True, True, True),
+                                                  ({"upscaleTexturesForUVReuse": False}, True, False, False)):
             with self.subTest(options=options), patch.object(part, "transplant_part", wraps=part.transplant_part) as transplant:
                 request = self.request(operation="part", partRoot="BreastSize", **options)
                 validated = viewer_transplants.validate_request(request)
                 self.assertIs(validated["reuseEmptyUV"], reuse)
                 self.assertIs(validated["relocateEmptyUV"], relocate)
+                self.assertIs(validated["upscaleTexturesForUVReuse"], upscale)
                 self.run_graft(request)
                 self.assertIs(transplant.call_args.kwargs["reuse_empty_uv"], reuse)
                 self.assertIs(transplant.call_args.kwargs["relocate_empty_uv"], relocate)
+                self.assertIs(transplant.call_args.kwargs["upscale_textures_for_uv_reuse"], upscale)
+
+    def test_explicit_uv_placement_is_strict_and_overrides_old_flag_combinations(self):
+        import costume_part_transplant as part
+        for invalid in ('', 'unknown', None, False, 0, 1, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'UV placement'):
+                viewer_transplants.validate_request(self.request(operation='part', uvPlacement=invalid))
+        for placement in ('same_position', 'move_to_empty', 'atlas'):
+            with self.subTest(placement=placement), patch.object(part, 'transplant_part', wraps=part.transplant_part) as transplant:
+                request = self.request(operation='part', partRoot='BreastSize', uvPlacement=placement,
+                                       reuseEmptyUV=False, relocateEmptyUV=True)
+                validated = viewer_transplants.validate_request(request)
+                self.assertEqual(validated['uvPlacement'], placement)
+                self.run_graft(request)
+                self.assertEqual(transplant.call_args.kwargs['uv_placement'], placement)
 
     def test_real_lower_body_swap_replaces_only_the_selected_vertical_band(self):
         output = self.run_graft(self.request(operation="lower", cutLow=.5, cutHigh=.96))
@@ -402,12 +419,15 @@ class ViewerTransplantTests(unittest.TestCase):
         self.assertTrue(defaults["skinOnly"])
         self.assertTrue(defaults["reuseEmptyUV"])
         self.assertFalse(defaults["relocateEmptyUV"])
+        self.assertTrue(defaults["upscaleTexturesForUVReuse"])
+        self.assertIsNone(defaults["uvPlacement"])
         for changes in ({"matchSkin": "false"}, {"skinOnly": 1}, {"selectionScope": "all"},
                         {"donorRenderer": "not-a-renderer"}, {"excludeAccessories": None},
                         {"reuseEmptyUV": "false"}, {"reuseEmptyUV": 0}, {"reuseEmptyUV": 1},
                         {"reuseEmptyUV": None}, {"reuseEmptyUV": []}, {"relocateEmptyUV": "false"},
                         {"relocateEmptyUV": 0}, {"relocateEmptyUV": 1}, {"relocateEmptyUV": None},
-                        {"relocateEmptyUV": []}, {"reuseEmptyUV": False, "relocateEmptyUV": True}):
+                        {"relocateEmptyUV": []}, {"reuseEmptyUV": False, "relocateEmptyUV": True},
+                        *({"upscaleTexturesForUVReuse": value} for value in ("false", 0, 1, None, [], {}))):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 viewer_transplants.validate_request(self.request(**changes))
 

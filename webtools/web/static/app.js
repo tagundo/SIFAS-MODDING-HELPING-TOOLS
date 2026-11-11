@@ -410,18 +410,7 @@ function renderForm() {
   }
   wireDynamicSelects(tool);
   wireBoneTargets(tool);
-  if (tool.id === "costume_part_transplant") {
-    const reuse = form.querySelector('[data-name="reuse_empty_uv"]');
-    const relocate = form.querySelector('[data-name="relocate_empty_uv"]');
-    if (reuse && relocate) {
-      const updateUVOptions = () => {
-        relocate.disabled = !reuse.checked;
-        if (!reuse.checked) relocate.checked = false;
-      };
-      reuse.addEventListener("change", updateUVOptions);
-      updateUVOptions();
-    }
-  }
+
 }
 
 function meshReferencePath() {
@@ -797,6 +786,16 @@ function renderField(field) {
       sel.addEventListener("change", () => { try { localStorage.setItem("sifas_costume_thumbnail_mode", sel.value); } catch (_) {} });
     }
     wrap.appendChild(sel);
+    if ((field.options || []).some(option => option && typeof option === "object" && option.help)) {
+      const hint = el("div", { class: "help", id: id + "-help" });
+      const updateHint = () => {
+        const option = field.options.find(option => option && typeof option === "object" && String(option.value) === sel.value);
+        hint.textContent = option && option.help || "";
+      };
+      sel.setAttribute("aria-describedby", hint.id);
+      sel.addEventListener("change", updateHint);
+      updateHint(); wrap.appendChild(hint);
+    }
   } else if (field.type === "dynamic_select") {
     // A select whose options are fetched from the server based on a dependency
     // field (e.g. the donor path) — press Load, or it auto-loads when the

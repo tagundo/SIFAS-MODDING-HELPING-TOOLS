@@ -1,9 +1,10 @@
 """Optional same-coordinate texture graft into geometry-unused receiver UVs.
 
-Vacancy is measured from native texture texels touched by triangles and their
-original point/linear sampler, never from color or alpha. No border pixels,
-padding, UV inset, or texture resizing are generated. Unsupported combinations
-return None so the caller can use the ordinary atlas path.
+Vacancy is measured from texture texels touched by triangles and their original
+point/linear sampler, never from color or alpha. Optional detached enlargement
+matches corresponding source maps before retrying. No border pixels, padding
+or UV inset are generated. Unsupported combinations return None so the caller
+can use the ordinary atlas path.
 """
 import copy
 import math
@@ -424,16 +425,82 @@ def _prepare_relocated_uv(sources, mesh_tree, original_group_count, *, image_dec
 
 def prepare_uv_reuse(sources, mesh_tree, original_group_count, *, image_decoder=None,
                      diagnostics=None, max_pixels=16777216, max_total_bytes=268435456,
-                     max_raster_tests=100000000, relocate_empty_uv=False):
-    """Prefer original donor UVs; optionally relocate a native-pixel patch."""
+                     max_raster_tests=100000000, relocate_empty_uv=False,
+                     upscale_textures_for_uv_reuse=True, uv_placement=None):
+    """Use the selected UV placement strategy, or compatible legacy flags.
+
+    ``same_position`` matches map sizes and keeps UV coordinates unchanged.
+    ``move_to_empty`` retains Main resolution, adapts auxiliary map ratios and
+    directly searches a free destination. ``atlas`` requests the caller's atlas
+    path. None retains the older independent reuse/enlargement/relocation flags.
+    """
+    if type(upscale_textures_for_uv_reuse) is not bool:
+        raise ValueError("Texture enlargement for UV reuse must be true or false.")
+    if uv_placement is not None and (type(uv_placement) is not str or uv_placement not in
+                                    ("same_position", "move_to_empty", "atlas")):
+        raise ValueError("Choose original UV positions, empty UV areas, or a new texture atlas.")
     sources = list(sources)
     reasons = []
     options = dict(image_decoder=image_decoder, max_pixels=max_pixels,
                    max_total_bytes=max_total_bytes, max_raster_tests=max_raster_tests)
+    if uv_placement == "atlas":
+        if diagnostics is not None:
+            diagnostics.append("A new texture atlas was explicitly selected.")
+        return None
+    if uv_placement == "same_position":
+        relocate_empty_uv, upscale_textures_for_uv_reuse = False, True
+    elif uv_placement == "move_to_empty":
+        from graft_uv_upscale import prepare_upscaled_sources, finish_upscaled_reuse
+        moving_sources, messages, target_views = sources, [], {}
+        moving_options = options
+        valid_limits = all(type(value) is int and value > 0 for value in
+                           (max_pixels, max_total_bytes, max_raster_tests))
+        if not valid_limits:
+            reasons.append("Empty UV relocation unavailable: invalid texture or raster limits; using the texture atlas.")
+        else:
+            try:
+                enlarged = None
+                if original_group_count == 1 and 2 <= len(sources) <= 64:
+                    enlarged = prepare_upscaled_sources(sources, image_decoder=image_decoder,
+                        max_pixels=max_pixels, max_total_bytes=max_total_bytes, preserve_main=True)
+                if enlarged is not None:
+                    moving_sources, messages, reserved_bytes, target_views = enlarged
+                    moving_options = dict(options, max_total_bytes=max_total_bytes - reserved_bytes)
+                result = _prepare_relocated_uv(moving_sources, mesh_tree, original_group_count,
+                                                diagnostics=reasons, **moving_options)
+                if result is not None:
+                    messages.insert(0, "Main texture resolutions retained; selected UVs and their UV-driven maps moved together into unused areas.")
+                    return finish_upscaled_reuse(result, messages, target_views)
+            except AtlasCompatibilityError as error:
+                reasons.append("Auxiliary texture adjustment for empty UV relocation unavailable: " + str(error) + "; using the texture atlas.")
+        if diagnostics is not None:
+            diagnostics.extend(reasons)
+        return None
     result = _prepare_same_uv(sources, mesh_tree, original_group_count, diagnostics=reasons, **options)
     if result is not None:
         return result
-    if relocate_empty_uv:
+    enlarged = None
+    if (upscale_textures_for_uv_reuse and original_group_count == 1 and 2 <= len(sources) <= 64
+            and all(type(value) is int and value > 0 for value in (max_pixels, max_total_bytes, max_raster_tests))):
+        from graft_uv_upscale import prepare_upscaled_sources, finish_upscaled_reuse
+        try:
+            enlarged = prepare_upscaled_sources(sources, image_decoder=image_decoder,
+                                               max_pixels=max_pixels, max_total_bytes=max_total_bytes)
+        except AtlasCompatibilityError as error:
+            reasons.append("Texture enlargement for UV reuse unavailable: " + str(error) + "; using the texture atlas.")
+    if enlarged is not None:
+        enlarged_sources, messages, reserved_bytes, target_views = enlarged
+        enlarged_options = dict(options, max_total_bytes=max_total_bytes - reserved_bytes)
+        enlarged_reasons = []
+        result = _prepare_same_uv(enlarged_sources, mesh_tree, original_group_count,
+                                  diagnostics=enlarged_reasons, **enlarged_options)
+        if result is None and relocate_empty_uv:
+            result = _prepare_relocated_uv(enlarged_sources, mesh_tree, original_group_count,
+                                          diagnostics=enlarged_reasons, **enlarged_options)
+        if result is not None:
+            return finish_upscaled_reuse(result, messages, target_views)
+        reasons.extend(enlarged_reasons)
+    if relocate_empty_uv and enlarged is None:
         relocated = []
         result = _prepare_relocated_uv(sources, mesh_tree, original_group_count,
                                       diagnostics=relocated, **options)

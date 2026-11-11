@@ -621,10 +621,15 @@ TOOLS = [
              "blank_label": "(auto — biggest part)",
              "help": "Pick a part from the donor bundle (press Load to read its parts). "
                      "Blank / auto = the biggest costume-specific part."},
-            {"name": "reuse_empty_uv", "label": "Reuse empty UV areas", "type": "checkbox", "default": True,
-             "help": "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added."},
-            {"name": "relocate_empty_uv", "label": "Move to another empty UV area", "type": "checkbox", "default": False,
-             "help": "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added."},
+            {"name": "uv_placement", "label": "Texture and UV placement", "type": "select",
+             "default": "same_position", "options": [
+                 {"value": "same_position", "label": "Reuse original UV positions",
+                  "help": "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added."},
+                 {"value": "move_to_empty", "label": "Move into empty UV areas",
+                  "help": "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added."},
+                 {"value": "atlas", "label": "Build a new texture atlas",
+                  "help": "Combine textures into a new atlas and remap UVs. No padding is added."},
+             ]},
             {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "worldspace", "label": "World-space the body mesh (so swinging parts render correctly)",
@@ -755,7 +760,7 @@ def _translate_field(field, lang):
     # string options are left as-is (the string IS the dispatch identifier).
     if isinstance(f.get("options"), list):
         f["options"] = [
-            {**o, "label": i18n.tr(o["label"], lang=lang)}
+            {**o, **{key: i18n.tr(o[key], lang=lang) for key in ("label", "help") if key in o}}
             if isinstance(o, dict) and "label" in o else o
             for o in f["options"]
         ]

@@ -162,11 +162,17 @@ def _match_to_target(job, params, donor, target, out_path):
 
 # ------------------------------------------------- costume part transplant
 def run_costume_part_transplant(job, params):
+    uv_placement = params.get("uv_placement")
+    if "uv_placement" in params and (not isinstance(uv_placement, str) or
+                                     uv_placement not in ("same_position", "move_to_empty", "atlas")):
+        raise ValueError("Choose same_position, move_to_empty or atlas for UV placement.")
     reuse_empty_uv = params.get("reuse_empty_uv", True)
     relocate_empty_uv = params.get("relocate_empty_uv", False)
-    if type(reuse_empty_uv) is not bool or type(relocate_empty_uv) is not bool:
+    upscale_textures_for_uv_reuse = params.get("upscale_textures_for_uv_reuse", True)
+    if any(type(value) is not bool for value in
+           (reuse_empty_uv, relocate_empty_uv, upscale_textures_for_uv_reuse)):
         raise ValueError("Empty UV options must be true or false.")
-    if relocate_empty_uv and not reuse_empty_uv:
+    if uv_placement is None and relocate_empty_uv and not reuse_empty_uv:
         raise ValueError("Enable empty UV reuse before moving to another empty UV area.")
     # decodes + re-encodes textures, so wire the ASTC CLI bridge first
     from webtools.tools.texture import ensure_astc_cli
@@ -200,6 +206,8 @@ def run_costume_part_transplant(job, params):
         new_submesh=new_submesh,
         reuse_empty_uv=reuse_empty_uv,
         relocate_empty_uv=relocate_empty_uv,
+        upscale_textures_for_uv_reuse=upscale_textures_for_uv_reuse,
+        uv_placement=uv_placement,
         patch_texture=bool(params.get("patch_texture", False)),
         worldspace=bool(params.get("worldspace", True)),
         fix_nodescaling=bool(params.get("fix_nodescaling", True)), verbose=False,

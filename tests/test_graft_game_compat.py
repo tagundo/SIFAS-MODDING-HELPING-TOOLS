@@ -289,6 +289,7 @@ class GraftGameCompatTests(unittest.TestCase):
         tree['m_SubMeshes'] = [first, second]
         tree['m_IndexBuffer'] = np.arange(6, dtype='<u2').tobytes()
         stats = bake_renderer_for_game(target, renderer, mesh, mesh_tree=tree, relocate_empty_uv=True,
+            upscale_textures_for_uv_reuse=False,
             additional_sources=[(donor, donor_material.path_id)])
         self.assertEqual(stats['texture_mode'], 'relocate_empty_uv')
         self.assertEqual(stats['atlas_dimensions'], {'_MainTex': [16, 16], '_RimlightTex': [16, 16]})

@@ -251,6 +251,16 @@ _TABLES = {
         "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
             "Donor의 원래 UV 위치를 먼저 사용합니다. 겹치면 아틀라스로 합치거나 다른 빈 UV 영역으로 옮기기를 켜세요. 패딩은 추가하지 않습니다.",
         "Move to another empty UV area": "다른 빈 UV 영역으로 옮기기",
+        "Match smaller textures to larger ones": "작은 이미지를 큰 이미지에 맞추기",
+        "Texture and UV placement": "텍스처·UV 배치 방식",
+        "Reuse original UV positions": "원래 UV 위치 재사용",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "메인·림라이트 등 대응 이미지를 각각 큰 쪽 해상도로 맞추고 원래 UV 위치를 유지합니다. 원래 위치가 사용 중이면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Move into empty UV areas": "빈 UV 영역으로 이동",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "메인 텍스처 해상도는 유지하고 보조 맵의 비율을 맞춘 뒤, 선택 영역의 텍스처와 UV를 함께 빈 공간으로 옮깁니다. 들어갈 공간이 없으면 새 아틀라스로 합칩니다. 패딩은 추가하지 않습니다.",
+        "Build a new texture atlas": "새 아틀라스로 합치기",
+        "Combine textures into a new atlas and remap UVs. No padding is added.": "텍스처를 새 아틀라스로 합치고 UV를 다시 배치합니다. 패딩은 추가하지 않습니다.",
+        "Before either UV reuse method, enlarge corresponding main, rimlight and other UV textures to the larger resolution. No padding is added.":
+            "두 UV 재사용 방식에 앞서 메인·림라이트 등 대응하는 UV 텍스처를 큰 쪽 해상도로 확대합니다. 패딩은 추가하지 않습니다.",
         "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
             "원래 UV 위치가 사용 중이면 원본 픽셀의 세부 표현을 유지한 채 다른 빈 영역을 찾습니다. 패딩은 추가하지 않습니다.",
         "Patch part texture onto target atlas": "부분 텍스처를 대상 아틀라스에 패치",
@@ -758,6 +768,16 @@ _TABLES = {
         "Try the donor's original UV position first. If occupied, use an atlas or enable moving to another empty UV area. No padding is added.":
             "ドナーの元のUV位置を優先します。重なる場合はアトラスに結合するか、別の空きUV領域への移動を有効にしてください。パディングは追加しません。",
         "Move to another empty UV area": "別の空きUV領域へ移動",
+        "Match smaller textures to larger ones": "小さい画像を大きい画像に合わせる",
+        "Texture and UV placement": "テクスチャ・UVの配置方法",
+        "Reuse original UV positions": "元のUV位置を再利用",
+        "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.": "メイン・リムライトなど対応する画像をそれぞれ大きい方の解像度に合わせ、元のUV位置を維持します。その位置が使用中なら新しいアトラスに結合します。パディングは追加しません。",
+        "Move into empty UV areas": "空きUV領域へ移動",
+        "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added.": "メインテクスチャの解像度を維持し、補助マップの比率を合わせて、選択領域のテクスチャとUVを一緒に空き領域へ移動します。収まる空間がなければ新しいアトラスに結合します。パディングは追加しません。",
+        "Build a new texture atlas": "新しいテクスチャアトラスを作成",
+        "Combine textures into a new atlas and remap UVs. No padding is added.": "テクスチャを新しいアトラスに結合し、UVを再配置します。パディングは追加しません。",
+        "Before either UV reuse method, enlarge corresponding main, rimlight and other UV textures to the larger resolution. No padding is added.":
+            "どちらのUV再利用方式でも、メイン・リムライトなど対応するUVテクスチャを大きい方の解像度に先に拡大します。パディングは追加しません。",
         "If the original UV position is occupied, find another empty area without reducing source pixel detail. No padding is added.":
             "元のUV位置が使用中なら、元画像の細部を維持して別の空き領域を探します。パディングは追加しません。",
         "Patch part texture onto target atlas": "パーツのテクスチャを対象アトラスにパッチ",
