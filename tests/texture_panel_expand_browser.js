@@ -68,7 +68,8 @@ async function expand(page, selector, fallback, label) {
   return geometry;
 }
 async function escape(page, selector) {
-  await page.keyboard.press('Escape'); await page.waitForFunction(() => !TexturePanelExpand.getState().expanded); await page.waitForTimeout(80);
+  await page.keyboard.press('Escape'); await page.waitForFunction(() => !TexturePanelExpand.getState().expanded);
+  await page.waitForFunction(selector => document.activeElement === document.querySelector(selector + ' .texture-pane-expand-button'), selector, { timeout: 2000 });
   assert.equal(await page.locator(selector + ' .texture-pane-expand-button').getAttribute('aria-expanded'), 'false');
   assert(await page.locator(selector + ' .texture-pane-expand-button').evaluate(e => document.activeElement === e), 'Escape restores the invoking button focus');
   assert.equal(await page.evaluate(() => document.body.style.overflow), '');

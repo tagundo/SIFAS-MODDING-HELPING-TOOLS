@@ -144,8 +144,9 @@ async function main() {
           window.__minimizeNative = { active: false, timeline: [] };
           window.ElichikaViewerFullscreen = { postMessage(command) {
             const native = window.__minimizeNative; native.timeline.push({ type: 'command', command, minimized: ModelViewer.getState().layout.minimized });
-            setTimeout(() => { native.active = command === 'enter'; native.timeline.push({ type: 'ack', active: native.active, minimized: ModelViewer.getState().layout.minimized });
-              dispatchEvent(new CustomEvent('elichika-native-fullscreen', { detail: { active: native.active, settled: true } })); }, command === 'exit' ? 150 : 0);
+            const acknowledge = () => { native.active = command === 'enter'; native.timeline.push({ type: 'ack', active: native.active, minimized: ModelViewer.getState().layout.minimized });
+              dispatchEvent(new CustomEvent('elichika-native-fullscreen', { detail: { active: native.active, settled: true } })); };
+          if (command === 'exit') native.acknowledgeExit = acknowledge; else setTimeout(acknowledge, 0);
           } };
         }
       }, profile);
@@ -247,6 +248,7 @@ async function main() {
         if (profile.nativeFullscreen) {
           const beforeAck = await page.evaluate(() => ({ native: __minimizeNative.active, minimized: ModelViewer.getState().layout.minimized }));
           assert(beforeAck.native && !beforeAck.minimized, 'Native minimization waits for the real protocol exit acknowledgement');
+          await page.evaluate(() => __minimizeNative.acknowledgeExit());
         }
         fullscreen = await folded(page, profile.direction); retained(full, fullscreen, 'Minimize after fullscreen exit');
         if (profile.browserFullscreen) assert.equal(await page.evaluate(() => !!document.fullscreenElement), false);

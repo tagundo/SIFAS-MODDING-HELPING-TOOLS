@@ -65,9 +65,17 @@ async function main() {
       assert(initial.roots.includes('viewer-outline-card') && initial.roots.indexOf('viewer-outline-card') < initial.roots.indexOf('viewer-body-adjustments'), 'Dynamic outline keeps its intended default position');
       assert.equal(initial.pose, false); assert.equal(initial.expression, false); assert.deepEqual(initial.weights, exact);
       await page.locator('#viewer-adjustments > summary').click();
-      const buttonRects = await page.locator('.viewer-motion-import-actions > button').evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { id: node.id, x: r.x, y: r.y, right: r.right, width: r.width, height: r.height }; }));
+      await page.locator('.viewer-motion-import-actions').scrollIntoViewIfNeeded();
+      const buttonRects = await page.locator('.viewer-motion-import-actions > button').evaluateAll(nodes => nodes.map(node => {
+        const r = node.getBoundingClientRect(), row = node.parentElement.getBoundingClientRect(), style = getComputedStyle(node), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2), range = document.createRange(); range.selectNodeContents(node);
+        const textRects = Array.from(range.getClientRects()).filter(t => t.width && t.height);
+        return { id: node.id, x: r.x, y: r.y, right: r.right, width: r.width, height: r.height, text: node.textContent.trim(), font: style.font, hit: hit === node || node.contains(hit),
+          noClip: node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1 && textRects.every(t => t.left >= r.left - 1 && t.right <= r.right + 1 && t.top >= r.top - 1 && t.bottom <= r.bottom + 1),
+          noOverflow: r.left >= row.left - 1 && r.right <= row.right + 1 && r.left >= 0 && r.right <= innerWidth && node.parentElement.scrollWidth <= node.parentElement.clientWidth + 1 };
+      }));
       assert.equal(buttonRects.length, 2); assert(Math.abs(buttonRects[0].y - buttonRects[1].y) < 1);
-      assert(buttonRects.every(rect => rect.width >= 80 && rect.height >= (profile.native ? 34 : 36)), profile.name + ': ' + JSON.stringify(buttonRects));
+      assert(buttonRects.every(rect => rect.width >= (profile.native ? 34 : 44) && rect.height >= (profile.native ? 34 : 36)), profile.name + ': usable compact targets: ' + JSON.stringify(buttonRects));
+      assert(buttonRects.every(rect => rect.text && rect.hit && rect.noClip && rect.noOverflow), profile.name + ': labels remain readable, unclipped and pointer-reachable in one row: ' + JSON.stringify(buttonRects));
       await page.screenshot({ path: path.join(evidence, profile.name + '-pose-row.png') });
       const thin = await page.locator('#viewer-expression-adjustments').evaluate(node => node.getBoundingClientRect().height);
       assert(thin <= 50, 'Collapsed panel is compact, including touch targets: ' + thin);
