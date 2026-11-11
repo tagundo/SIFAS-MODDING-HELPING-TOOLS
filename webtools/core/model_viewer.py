@@ -766,6 +766,7 @@ class _Materials:
         self.materials, self.textures = {}, {}
         self.predecoded = {}
         self.pixels = 0
+        self.source_indices, self.source_files = {}, {}
 
     def mip_textures(self, objects):
         """Decode at most two immutable mip slices concurrently; append in order.
@@ -841,7 +842,14 @@ class _Materials:
         sampler_index = len(self.glb.doc["samplers"])
         self.glb.doc["samplers"].append(sampler)
         index = len(self.glb.doc["textures"])
-        self.glb.doc["textures"].append({"source": image_index, "sampler": sampler_index})
+        descriptor = {"source": image_index, "sampler": sampler_index}
+        source = _source_path(obj)
+        source_index = self.source_indices.get(source)
+        file_index = self.source_files.get(source, {}).get(id(obj.assets_file))
+        if source_index is not None and file_index is not None:
+            descriptor["extras"] = {"viewerTexture": {
+                "source": source_index, "file": file_index, "id": str(obj.path_id)}}
+        self.glb.doc["textures"].append(descriptor)
         self.textures[key] = index
         self.scene.stats["textures"] += 1
         return index
@@ -1097,6 +1105,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     for source_object in scene.env.objects:
         files = source_files.setdefault(_source_path(source_object), {})
         files.setdefault(id(source_object.assets_file), len(files))
+    materials.source_indices = rig.source_indices if rig is not None else {}
+    materials.source_files = source_files
     for renderer, tree, game_object in scene.renderers:
         if rig is not None and _source_path(renderer) in getattr(rig, "motion_sources", set()):
             continue

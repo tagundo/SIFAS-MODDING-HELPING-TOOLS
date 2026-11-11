@@ -35,6 +35,7 @@
   var rigController = null;
   var persistenceController = null;
   var meshToolsController = null;
+  var textureToolsController = null;
   var transplantController = null;
   var accessoryController = null;
   var outlineController = null;
@@ -105,6 +106,22 @@
   }
   function meshDraftPending() { return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).dirty); }
   function meshSelectionPending() { return !!(meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()).hasUnappliedSelection); }
+  function authoringState() {
+    var state = rigController && rigController.getAuthoringState ? rigController.getAuthoringState() : null;
+    if (state && textureToolsController) {
+      var values = textureToolsController.getEdits();
+      if (values.length) state.textures = values;
+    }
+    return state;
+  }
+  function restoreTextureState(state) {
+    var rows = state && state.textures || [];
+    if (!textureToolsController) {
+      if (rows.length) return Promise.reject(new Error("The texture editor is unavailable."));
+      return Promise.resolve();
+    }
+    return Promise.resolve(textureToolsController.restoreEdits(rows));
+  }
   function workbenchChanged() {
     if (rigController) rigController.setInteractive(!loading && !lost && !workbenchBusy() &&
       !(persistenceController && persistenceController.getState().busy));
@@ -494,6 +511,7 @@
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
     if (meshToolsController) meshToolsController.refresh();
+    if (textureToolsController) textureToolsController.refresh();
     if (transplantController) transplantController.refresh();
     if (accessoryController) accessoryController.refresh();
   }
@@ -511,6 +529,7 @@
     showFaceStatus();
     if (persistenceController) persistenceController.refresh();
     if (meshToolsController) meshToolsController.refresh();
+    if (textureToolsController) textureToolsController.refresh();
     if (transplantController) transplantController.refresh();
     if (outlineController) outlineController.refresh();
     refreshMinimizeButton();
@@ -540,6 +559,7 @@
     var moving = rigController ? rigController.update(delta) : false;
     syncPartVisibility();
     if (meshToolsController && meshToolsController.beforeRender) meshToolsController.beforeRender();
+    if (textureToolsController && textureToolsController.beforeRender) textureToolsController.beforeRender();
     if (outlineController && outlineController.beforeRender) outlineController.beforeRender();
     if (materialController && materialController.update) moving = materialController.update(delta) || moving;
     var changed = controls.update();
@@ -1150,6 +1170,7 @@
     partInputs = [];
     if (outlineController && outlineController.beforeModelDispose) outlineController.beforeModelDispose();
     if (meshToolsController && meshToolsController.beforeModelDispose) meshToolsController.beforeModelDispose();
+    if (textureToolsController && textureToolsController.beforeModelDispose) textureToolsController.beforeModelDispose();
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
@@ -1406,22 +1427,35 @@
     }
   }
 
-  function cloneCheckpoint(value) { return JSON.parse(JSON.stringify(value)); }
+  function cloneCheckpoint(value) {
+    // Texture documents contain bounded typed RGBA buffers. Keep this opaque
+    // runtime snapshot outside JSON; portable recipes still contain flat PNGs.
+    var documents = value && value.textureDocuments, plain = value;
+    if (documents) { plain = Object.assign({}, value); delete plain.textureDocuments; }
+    var cloned = JSON.parse(JSON.stringify(plain));
+    if (documents) cloned.textureDocuments = documents;
+    return cloned;
+  }
 
   function captureViewerCheckpoint() {
+    if (textureToolsController && textureToolsController.hasPending()) {
+      throw new Error(t("Apply or cancel the texture preview before saving."));
+    }
     if (!model || loading || lost || !metadata || !metadata.editing || !metadata.editing.available ||
         !sameSelection(loadedPaths, loadedAutoFace, loadedVariants) || meshSelectionPending()) {
       throw new Error(t("Save mesh edits and finish loading before restoring a transplant."));
     }
     var fingerprint = metadata.editing.sourceFingerprint;
     if (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error(t("The model has no verified source identity."));
-    var authoring = rigController && rigController.getAuthoringState();
+    var authoring = authoringState();
     if (!authoring || (authoring.unsupported || []).length) throw new Error(t("Correct invalid body values before transplanting."));
     var choices = {};
     loadedPaths.forEach(function (path, index) {
       if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) choices[index] = loadedVariants[index];
     });
     return cloneCheckpoint({ version: 1, modelId: metadata.id, loadEpoch: generation,
+      textureDocuments: textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(true) : null,
+      textureRevision: textureToolsController && textureToolsController.getRevision ? textureToolsController.getRevision() : null,
       sourceFingerprint: fingerprint, paths: loadedPaths.slice(), variants: loadedVariants.slice(), archiveChoices: choices,
       autoFace: loadedAutoFace, authoring: authoring, meshState: meshToolsController && meshToolsController.getEdits ? meshToolsController.getEdits() : null,
       meshRevision: meshToolsController && meshToolsController.getEditRevision ? meshToolsController.getEditRevision() : null,
@@ -1437,7 +1471,8 @@
       value.loadEpoch === generation && value.sourceFingerprint === (metadata && metadata.editing && metadata.editing.sourceFingerprint) &&
       JSON.stringify(value.paths) === JSON.stringify(loadedPaths) && value.autoFace === loadedAutoFace &&
       JSON.stringify(value.variants) === JSON.stringify(loadedVariants) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) &&
-      (value.meshRevision === undefined || value.meshRevision === null || !meshToolsController || value.meshRevision === meshToolsController.getEditRevision());
+      (value.meshRevision === undefined || value.meshRevision === null || !meshToolsController || value.meshRevision === meshToolsController.getEditRevision()) &&
+      (value.textureRevision === undefined || value.textureRevision === null || !textureToolsController || value.textureRevision === textureToolsController.getRevision());
   }
 
   function selectCheckpointInputs(value) {
@@ -1467,6 +1502,7 @@
   async function loadViewerCheckpoint(value, expectedCurrent, options) {
     options = options || {};
     if (expectedCurrent && !checkpointIsCurrent(expectedCurrent)) return false;
+    if (textureToolsController && textureToolsController.hasPending()) throw new Error(t("Apply or cancel the texture preview before saving."));
     if (meshSelectionPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Apply selected face deletions before saving."));
     var before = expectedCurrent || captureViewerCheckpoint();
     var oldSelection = { paths: paths.slice(), choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
@@ -1475,6 +1511,7 @@
     var promise = loadSelected({ preserveMotionInputs: true, throwOnFailure: true,
       expectedSourceFingerprint: options.graft ? null : value.sourceFingerprint,
       priorCompleteFace: value.completeFace, authoring: options.graft ? null : value.authoring,
+      textureDocuments: options.graft ? null : value.textureDocuments,
       faceErrorMessage: "The original face could not be restored. The displayed model was kept.",
       pose: value.pose, inspection: value.pose, strictInspection: !options.graft, camera: value.camera });
     var requestEpoch = generation;
@@ -1582,6 +1619,23 @@
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) {
         disposeObject(gltf.scene); return;
       }
+      gltf.scene.traverse(function (mesh) {
+        (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach(function (material) {
+          if (!material) return;
+          Object.keys(material).forEach(function (name) {
+            var texture = material[name];
+            if (!texture || !texture.isTexture) return;
+            var association = gltf.parser.associations && gltf.parser.associations.get(texture);
+            var textureIndex = association && (association.textures !== undefined ? association.textures : association.type === "textures" ? association.index : undefined);
+            var definition = textureIndex !== undefined && gltf.parser.json.textures && gltf.parser.json.textures[textureIndex];
+            var identity = definition && definition.extras && definition.extras.viewerTexture;
+            if (identity) {
+              texture.userData = texture.userData || {};
+              texture.userData.viewerTexture = Object.assign({}, identity);
+            }
+          });
+        });
+      });
       var next = gltf.scene;
       pendingModel = next;
       discardPendingPreview = discard;
@@ -1641,6 +1695,11 @@
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }
         if (retain && retain.authoring) rigController.restoreAuthoringState(retain.authoring, { initializeNodeCards: false });
+        if (textureToolsController) await textureToolsController.refresh();
+        if (retain && retain.authoring) await restoreTextureState(retain.authoring);
+        else if (prepared.editing && prepared.editing.initialState) await restoreTextureState(prepared.editing.initialState);
+        if (retain && retain.textureDocuments && textureToolsController && textureToolsController.restoreDocuments) await textureToolsController.restoreDocuments(retain.textureDocuments);
+        if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
         if ((retain || keepView) && previousPose && previousPose.physics && rigController.restorePhysicsPreview) rigController.restorePhysicsPreview(previousPose.physics);
         if (retain && retain.inspection && rigController.restoreInspectionState) rigController.restoreInspectionState(retain.inspection, { strict: retain.strictInspection !== false });
       }
@@ -1950,7 +2009,10 @@
     node("viewer-rimlight").checked = rimlightPreference;
     if (window.ViewerOutlines) outlineController = window.ViewerOutlines.create({
       translate: t,
-      onChange: function () { requestRender(); if (persistenceController) persistenceController.refresh(); },
+      onChange: function () {
+        if (outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing() && textureToolsController) textureToolsController.setSceneMode("orbit");
+        requestRender(); if (persistenceController) persistenceController.refresh();
+      },
       getRuntime: function () { return { model: model, renderer: renderer, camera: camera, scene: scene,
         controls: controls, domElement: renderer && renderer.domElement, requestRender: requestRender }; },
       context: function () { return { rig: rigController, editing: metadata && metadata.editing,
@@ -1972,6 +2034,7 @@
       context: function () { return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
         accessories: accessoryController && accessoryController.getState(),
         meshTools: meshToolsController,
+        textureTools: textureToolsController,
         transplantEdits: transplantController && transplantController.getEditHistory ? transplantController.getEditHistory() : [],
         loadedPaths: loadedPaths.slice(), loadedVariants: loadedVariants.slice(), pendingMeshEdits: meshDraftPending(), pendingMeshSelection: meshSelectionPending(),
         current: !!model && !loading && !lost && !workbenchBusy() && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
@@ -1979,9 +2042,13 @@
         if (rigController) rigController.setInteractive(!busy && !loading && !lost && !workbenchBusy());
         if (transplantController) transplantController.refresh();
         if (meshToolsController) meshToolsController.refresh();
+        if (textureToolsController) textureToolsController.refresh();
         if (accessoryController) accessoryController.refresh();
         if (outlineController) outlineController.refresh();
       },
+      restoreTextureState: function (rows) { return restoreTextureState({ textures: rows }); },
+      captureTextureDocuments: function () { return textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(false) : null; },
+      restoreTextureDocuments: function (value) { return textureToolsController && textureToolsController.restoreDocuments ? textureToolsController.restoreDocuments(value) : Promise.resolve(); },
       pickFile: function (callback) {
         containViewerPicker();
         try { config.pickFile(function (path) { if (!destroyed) callback(path); }); }
@@ -1989,7 +2056,8 @@
       },
       captureInspection: function () {
         var pose = rigController && rigController.getState();
-        return { pose: pose ? { selectedClip: pose.selectedClip, time: pose.time, playing: pose.playing, evaluationMode: pose.evaluation && pose.evaluation.mode, editorGroup: pose.editorGroup, selectedNode: pose.selectedNode } : null,
+        return { textureDocuments: textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(true) : null,
+          pose: pose ? { selectedClip: pose.selectedClip, time: pose.time, playing: pose.playing, evaluationMode: pose.evaluation && pose.evaluation.mode, editorGroup: pose.editorGroup, selectedNode: pose.selectedNode } : null,
           camera: camera && controls ? { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } : null };
       },
       restoreMeshState: function (state) {
@@ -2028,15 +2096,16 @@
     });
     if (window.ViewerMeshTools) meshToolsController = window.ViewerMeshTools.create({
       translate: t,
-      isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()); },
-      onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); },
+      isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) && !(textureToolsController && textureToolsController.getState().sceneMode !== "orbit"); },
+      onSceneModeChange: function (mode) { if (mode !== "orbit") { if (outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (textureToolsController) textureToolsController.setSceneMode("orbit"); } },
       getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
-      getBodyState: function () { return rigController && rigController.getAuthoringState(); },
+      getBodyState: authoringState,
       getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
         controls: controls, rig: rigController, stage: node("viewer-stage"),
         domElement: renderer && renderer.domElement, requestRender: requestRender }; },
       isInteractive: function () { return !!model && !loading && !lost &&
         !(persistenceController && persistenceController.getState().busy) &&
+        !(textureToolsController && textureToolsController.hasPending()) &&
         !(transplantController && transplantController.getState().busy) && sameSelection(loadedPaths, loadedAutoFace, loadedVariants); },
       onChange: workbenchChanged,
       onSaved: async function (result, sourceToken) {
@@ -2046,6 +2115,37 @@
         // source session and history so Undo also works after saving a copy.
         return true;
       }
+    });
+    if (window.ViewerTextureTools) textureToolsController = window.ViewerTextureTools.create({
+      translate: t,
+      pickProject: function (callback) {
+        containViewerPicker();
+        var choose = config.pickTextureProject || config.pickFile;
+        try { choose(function (path) { if (!destroyed) callback(path); }); }
+        catch (error) { restoreViewerPicker(); throw error; }
+      },
+      pickPNG: function (callback) {
+        containViewerPicker();
+        var choose = config.pickTexture || config.pickFile;
+        try { choose(function (path) { if (!destroyed) callback(path); }); }
+        catch (error) { restoreViewerPicker(); throw error; }
+      },
+      getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
+      getBodyState: authoringState,
+      getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
+        controls: controls, rig: rigController, materialController: materialController, metadata: metadata,
+        domElement: renderer && renderer.domElement, requestRender: requestRender }; },
+      isInteractive: function () { return !loading && !lost && !(persistenceController && persistenceController.getState().busy) &&
+        !(transplantController && transplantController.getState().busy); },
+      isReadOnly: function () { return !!(persistenceController && persistenceController.getState().reviewingSaved); },
+      isSceneInteractive: function () { return !loading && !lost && !!model; },
+      onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); },
+      onChange: function () { workbenchChanged(); if (meshToolsController) meshToolsController.refresh(); requestRender(); }
+    });
+    var textureLaunch = node("texture-editor-launch");
+    if (textureLaunch) listenLayout(textureLaunch, "click", function () {
+      var tab = document.querySelector('.tab[data-tab="viewer"]'); if (tab) tab.click();
+      if (textureToolsController && textureToolsController.openPaint) textureToolsController.openPaint();
     });
     if (window.ViewerTransplants) transplantController = window.ViewerTransplants.create({
       translate: t,
@@ -2059,11 +2159,12 @@
           targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh });
         });
         return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, targetMeshes: targetMeshes,
-        authoring: rigController && rigController.getAuthoringState(), loadedPaths: loadedPaths.slice(),
+        authoring: authoringState(), loadedPaths: loadedPaths.slice(),
         loadedVariants: loadedVariants.slice(), autoFace: loadedAutoFace, loadEpoch: generation,
         persistence: persistenceController && persistenceController.getState(),
         getMeshEdits: function () { return meshToolsController && meshToolsController.getEdits ? meshToolsController.getEdits() : null; },
         meshTools: meshToolsController && (meshToolsController.getStatus ? meshToolsController.getStatus() : meshToolsController.getState()),
+        texturePending: !!(textureToolsController && textureToolsController.hasPending()),
         current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; },
       pickFile: function (callback) { containViewerPicker(); config.pickFile(callback); },
       busyChanged: workbenchChanged,
@@ -2235,6 +2336,7 @@
     refreshMotionLibrary();
     if (persistenceController) persistenceController.updateLanguage();
     if (meshToolsController) meshToolsController.updateLanguage();
+    if (textureToolsController) textureToolsController.updateLanguage();
     if (transplantController) transplantController.updateLanguage();
     if (accessoryController) accessoryController.updateLanguage();
     if (outlineController) outlineController.updateLanguage();
@@ -2304,8 +2406,10 @@
   }
 
   async function loadMotionLibrary(selected) {
+    if (textureToolsController && textureToolsController.hasPending()) throw new Error(t("Apply or cancel the texture preview before changing motions."));
     if (!sameSelection(loadedPaths, loadedAutoFace, loadedVariants)) throw new Error(t("Open the selected model before adding motion."));
-    var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: rigController.getAuthoringState(),
+    var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: authoringState(),
+      textureDocuments: textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(false) : null,
       priorCompleteFace: !!(metadata && metadata.faces && metadata.faces.enabled && ["added", "already_present"].indexOf(metadata.faces.status) >= 0),
       camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
     previous.inspection = previous.pose;
@@ -2340,6 +2444,7 @@
     destroyed = true;
     if (persistenceController) persistenceController.dispose();
     if (meshToolsController) meshToolsController.dispose();
+    if (textureToolsController) textureToolsController.dispose();
     if (transplantController) transplantController.dispose();
     if (accessoryController) accessoryController.dispose();
     if (outlineController) outlineController.dispose();
@@ -2367,16 +2472,21 @@
     mount: mount, open: open, addMotion: addMotion, setVisible: setVisible, updateLanguage: updateLanguage, dispose: dispose,
     captureCheckpoint: captureViewerCheckpoint,
     restoreCheckpoint: function (target, expectedCurrent) { return loadViewerCheckpoint(target, expectedCurrent || captureViewerCheckpoint()); },
-    getAuthoringState: function () { return rigController && rigController.getAuthoringState ? rigController.getAuthoringState() : null; },
+    getAuthoringState: authoringState,
+    getTextureTools: function () { return textureToolsController; },
+    openTextureEditor: function () { if (textureToolsController && textureToolsController.openPaint) textureToolsController.openPaint(); },
     restoreAuthoringState: function (state) {
       if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
       rigController.restoreAuthoringState(state);
+      var restored = restoreTextureState(state);
       if (persistenceController) persistenceController.refresh();
+      return restored;
     },
     getEditingMetadata: function () { return metadata && metadata.editing || null; },
     projectMeshVertex: function (identity, index) { return meshToolsController && meshToolsController.projectVertex ? meshToolsController.projectVertex(identity, index) : null; },
     projectOutlineVertex: function (identity, index) { return outlineController && outlineController.projectVertex ? outlineController.projectVertex(identity, index) : null; },
     executeMeshShortcut: function (event) {
+      if (textureToolsController && textureToolsController.handleShortcut && textureToolsController.handleShortcut(event)) return true;
       if (outlineController && outlineController.handleShortcut && outlineController.handleShortcut(event)) return true;
       return meshToolsController && meshToolsController.handleShortcut ? meshToolsController.handleShortcut(event) : false;
     },
@@ -2409,6 +2519,7 @@
         modelId: metadata ? metadata.id : null,
         persistence: persistenceController ? persistenceController.getState() : null,
         meshTools: meshToolsController ? meshToolsController.getState() : null,
+        textureTools: textureToolsController ? textureToolsController.getState() : null,
         transplants: transplantController ? transplantController.getState() : null,
         accessories: accessoryController ? accessoryController.getState() : null,
         outlines: outlineController ? outlineController.getState() : null,

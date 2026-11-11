@@ -143,7 +143,23 @@ def apply_pair_edits(context, result, state, *, pair, job):
     declarations = [_zip_declarations(item["raw"]) for item in context["containers"]]
     if pair is None and not any(declarations):
         return {"result": result, "pair": None, "summary": []}
-    return _apply(context, result, state, pair=pair, declarations=declarations, job=job)
+    texture_notes = []
+    if state.get("textures"):
+        # Texture coordinates and packed image layouts are not implied by a
+        # matching skeleton. The selected source already contains these pixels;
+        # retain the counterpart's own texture instead of guessing a projection.
+        count = len(state["textures"])
+        message = "Texture edits apply only to the selected source; counterpart texture layouts were not projected."
+        job.log(message)
+        texture_notes.append({"kind": "textures", "status": "selected_source_only", "textures": count, "note": message})
+        state = copy.deepcopy(state)
+        state.pop("textures", None)
+        if not edits.has_changes(state):
+            return {"result": result, "pair": pair, "summary": texture_notes}
+    outcome = _apply(context, result, state, pair=pair, declarations=declarations, job=job)
+    if texture_notes:
+        outcome["summary"].extend(texture_notes)
+    return outcome
 
 
 def _hierarchy(info, anchored):

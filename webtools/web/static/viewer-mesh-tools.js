@@ -346,15 +346,19 @@
       (m ? m.data.submeshes || [{ index: 0, name: 'Material 1' }] : []).forEach(function (entry) { var option = el('option', panel.submesh); option.value = entry.index; option.textContent = entry.name + ' [' + entry.index + ']'; });
     }
     function draw(panel) {
-      var m = current(panel), canvas = panel.canvas, ctx = canvas.getContext('2d'), size = canvas.width;
+      var m = current(panel), canvas = panel.canvas, rect = canvas.getBoundingClientRect();
+      var target = rect.width > 0 ? Math.max(128, Math.min(2048, Math.round(rect.width * Math.min(2, window.devicePixelRatio || 1)))) : canvas.width;
+      if (canvas.width !== target || canvas.height !== target) { canvas.width = target; canvas.height = target; panel.baseKey = ''; }
+      var ctx = canvas.getContext('2d'), size = canvas.width, density = size / Math.max(1, rect.width || size);
       ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, size, size); if (!m || !m.data.uv) return;
       var view = panel.view;
       function point(i) { var uv = m.data.uv[i]; return [uv[0] * size, (1 - uv[1]) * size]; }
       var bone = panel.bone ? +panel.bone.value : 0, submesh = activeSubmesh(panel, m), image = submesh ? (submesh.textureIndex !== null ? m.images[submesh.textureIndex] : null) : m.image;
       function path(context, face) { context.beginPath(); face.forEach(function (v, i) { var p = point(v); if (i) context.lineTo(p[0], p[1]); else context.moveTo(p[0], p[1]); }); context.closePath(); }
-      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (window.ViewerUVColor ? window.ViewerUVColor.get() : '') + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + (image && image.complete && image.naturalWidth || 0) + '/' + panel.submesh.value + '/' + [view.zoom, view.x, view.y].join('/');
+      var baseKey = key(m.data.mesh) + '/' + panel.lines.checked + '/' + (window.ViewerUVColor ? window.ViewerUVColor.get() : '') + '/' + (panel.modify ? bone + '/' + m.weightRevision : '') + '/' + m.imageRevision + '/' + (image && image.complete && image.naturalWidth || 0) + '/' + panel.submesh.value + '/' + size + '/' + [view.zoom, view.x, view.y].join('/');
       if (baseKey !== panel.baseKey) {
-        if (!panel.base) { panel.base = document.createElement('canvas'); panel.base.width = size; panel.base.height = size; }
+        if (!panel.base) panel.base = document.createElement('canvas');
+        if (panel.base.width !== size || panel.base.height !== size) { panel.base.width = size; panel.base.height = size; }
         var base = panel.base.getContext('2d'); base.setTransform(1, 0, 0, 1, 0, 0); base.clearRect(0, 0, size, size);
         base.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
         // Resample the original texture into the zoomed viewport. Enlarging a
@@ -363,14 +367,14 @@
         if (panel.lines.checked || panel.modify) m.data.triangles.forEach(function (face, index) {
           if (!visibleFace(panel, m, index)) return; path(base, face);
           if (panel.modify && m.data.skin.length) { var value = face.reduce(function (total, v) { var influences = m.weights[v] || m.data.skin[v]; return total + influences.reduce(function (sum, pair) { return sum + (pair[0] === bone ? pair[1] : 0); }, 0); }, 0) / 3; base.fillStyle = 'hsla(' + (240 - value * 240) + ',100%,50%,.35)'; base.fill(); }
-          if (panel.lines.checked) { base.strokeStyle = window.ViewerUVColor ? window.ViewerUVColor.stroke(.55) : 'rgba(235,245,255,.55)'; base.lineWidth = .7 / view.zoom; base.stroke(); }
+          if (panel.lines.checked) { base.strokeStyle = window.ViewerUVColor ? window.ViewerUVColor.stroke(.55) : 'rgba(235,245,255,.55)'; base.lineWidth = .7 * density / view.zoom; base.stroke(); }
         }); panel.baseKey = baseKey;
       }
       ctx.drawImage(panel.base, 0, 0);
       ctx.save(); ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x * size, view.y * size);
       m.deleted.forEach(function (index) { if (!visibleFace(panel, m, index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fill(); });
       m.marked.forEach(function (index) { if (!visibleFace(panel, m, index) || m.deleted.has(index)) return; path(ctx, m.data.triangles[index]); ctx.fillStyle = 'rgba(255,50,80,.65)'; ctx.fill(); });
-      if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
+      if (panel.modify) m.selected.forEach(function (v) { var p = point(v); ctx.beginPath(); ctx.arc(p[0], p[1], 3 * density / view.zoom, 0, Math.PI * 2); ctx.fillStyle = '#ffe05c'; ctx.fill(); });
       ctx.restore();
     }
     function operationState() {
@@ -562,6 +566,11 @@
       p.zoomText = el('output', zoomLabel); p.zoomText.textContent = '100%'; on(p.zoom, 'input', function () { setView(zoomView(p.view, +p.zoom.value)); });
       el('p', box, 'Scroll or pinch to zoom. Use Move texture, Alt-drag or right-drag to pan.').className = 'viewer-render-note';
       p.canvas = el('canvas', box); p.canvas.width = 640; p.canvas.height = 640; p.canvas.setAttribute('aria-label', t(modify ? 'Selected vertices' : 'Selected faces')); p.canvas.tabIndex = 0;
+      on(p.canvas, 'texturepanechange', function () { if (!disposed) draw(p); });
+      if (typeof ResizeObserver === 'function') {
+        var textureObserver = new ResizeObserver(function () { if (!disposed && p.canvas.getBoundingClientRect().width > 0) draw(p); });
+        textureObserver.observe(p.canvas); listeners.push(function () { textureObserver.disconnect(); });
+      }
       var imageLabel = el('label', box); el('span', imageLabel, 'Texture image'); var imageInput = el('input', imageLabel); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp';
       on(imageInput, 'change', function () { var m = current(p), file = imageInput.files[0]; if (!m || !file || file.size > 8 * 1024 * 1024) return; var url = URL.createObjectURL(file), img = new Image(); img.onload = function () { URL.revokeObjectURL(url); if (!disposed) { var entry = activeSubmesh(p, m), index = entry && entry.textureIndex !== null ? entry.textureIndex : m.images.length; m.images[index] = img; if (entry) entry.textureIndex = index; else m.image = img; m.imageRevision++; redraw(); } }; img.onerror = function () { URL.revokeObjectURL(url); }; img.src = url; });
       row = el('div', box); row.className = 'mesh-row'; p.undo = button(row, 'Undo', undo); p.redo = button(row, 'Redo', redo);

@@ -6,6 +6,8 @@
   <title data-i18n="SIFAS Modding Tools">SIFAS Modding Tools</title>
   <link rel="stylesheet" href="/static/style.css"/>
   <link rel="stylesheet" href="/static/viewer-transplants.css"/>
+  <link rel="stylesheet" href="/static/viewer-texture-tools.css"/>
+  <link rel="stylesheet" href="/static/texture-panel-expand.css"/>
 </head>
 <body>
   <header id="asset-tools-header">
@@ -25,7 +27,7 @@
     <!-- TOOLS TAB -->
     <section id="tab-tools" class="tab-panel active">
       <aside class="tool-navigation">
-        <div id="tools-panel-settings-toolbar" class="panel-settings-toolbar"><button id="tools-panel-settings" class="panel-settings-button" type="button">Panel settings</button></div>
+        <div id="tools-panel-settings-toolbar" class="panel-settings-toolbar"><button id="texture-editor-launch" class="panel-settings-button" type="button" data-i18n="Open texture editor">Open texture editor</button><button id="tools-panel-settings" class="panel-settings-button" type="button">Panel settings</button></div>
         <div id="tool-list" class="tool-list"></div>
       </aside>
       <div id="tool-panel" class="tool-panel">
@@ -224,6 +226,7 @@
             <div id="viewer-pose-gaze"></div>
             <p id="viewer-rig-status" class="viewer-render-note" role="status"></p>
           </details>
+          <div id="viewer-texture-tool-slot" data-panel-setting="true" data-panel-title="Texture editor" aria-label="Texture editor"></div>
           <details id="viewer-expression-adjustments" class="viewer-adjustments viewer-expression-adjustments">
             <summary><span id="viewer-expression-title" data-i18n="Facial expression">Facial expression</span></summary>
             <section id="viewer-expression-panel" class="viewer-control-section" aria-labelledby="viewer-expression-title">
@@ -488,6 +491,11 @@
   <script src="/static/viewer-mesh-tools.js"></script>
   <script src="/static/viewer-transplants.js"></script>
   <script src="/static/viewer-accessories.js"></script>
+  <script src="/static/vendor/fflate-0.8.2/fflate.min.js"></script>
+  <script src="/static/texture-png.js"></script>
+  <script src="/static/texture-color-math.js"></script>
+  <script src="/static/texture-paint-engine.js"></script>
+  <script src="/static/viewer-texture-tools.js"></script>
   <script src="/static/model-viewer.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>
@@ -495,5 +503,6 @@
   <script src="/static/viewer-motion-audio.js"></script>
   <script src="/static/viewer-game-motions.js"></script>
   <script src="/static/panel-settings.js"></script>
+  <script src="/static/texture-panel-expand.js"></script>
 </body>
 </html>

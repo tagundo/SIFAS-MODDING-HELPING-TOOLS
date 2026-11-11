@@ -18,6 +18,7 @@ VERSION = 1
 CAPABILITY = "rina-scene-routing-v1"
 SHARED_VERSION = 2
 SHARED_CAPABILITY = "rina-shared-board-v2"
+FACE_AUTHORING_CAPABILITY = "rina-face-authoring-v1"
 MANIFEST = "elichika-scene-mod.json"
 PAYLOAD = "resources.payload"
 MAGIC = b"ELICHIKA-SCENE-RESOURCES\x00\x01\n"
@@ -30,6 +31,7 @@ SUPPORTED_SCALES = frozenset(("BreastSize", "HipsSize"))
 MAX_BYTES = 96 * 1024 * 1024
 MAX_ENTRIES = 128
 MAX_JSON = 512 * 1024
+MAX_RECIPE_JSON = 20 * 1024 * 1024
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 MAX_GRAPH_NODES = 32
@@ -38,6 +40,18 @@ MAX_GRAPH_NODES = 32
 def _require(value, message):
     if not value:
         raise ValueError(message)
+
+
+def _capabilities(shared, face_authoring):
+    return ([SHARED_CAPABILITY, FACE_AUTHORING_CAPABILITY] if face_authoring else
+            [SHARED_CAPABILITY if shared else CAPABILITY])
+
+
+def shared_capabilities_valid(manifest):
+    """Cheap capability check; selecting/installing still validates all bytes."""
+    return (type(manifest) is dict and type(manifest.get("version")) is int and
+            manifest["version"] == SHARED_VERSION and
+            manifest.get("requires") == _capabilities(True, "face_authoring" in manifest))
 
 
 def sha(raw):
@@ -68,8 +82,8 @@ def _unique(pairs):
     return result
 
 
-def _json(raw):
-    _require(0 < len(raw) <= MAX_JSON, "The scene metadata exceeds its size limit.")
+def _json(raw, maximum=MAX_JSON):
+    _require(0 < len(raw) <= maximum, "The scene metadata exceeds its size limit.")
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Nonfinite scene metadata.")))
@@ -221,6 +235,25 @@ def _execution_graph(graph, platforms, files, claimed, native_validator):
         _require(visited == set(nodes), "The execution model graph contains unreachable orphan resources.")
 
 
+def _authoring_recipe(records, files, claimed, platform, native_validator):
+    _require(type(records) is dict and set(records) == {"original", "recipe"}, "The scene authoring reference is invalid.")
+    original = _ref(records["original"], files, claimed, platform=platform, extension=".unity", native_validator=native_validator)
+    recipe = _json(_ref(records["recipe"], files, claimed, extension=".json"), MAX_RECIPE_JSON)
+    _require(type(recipe) is dict and set(recipe) == {"format", "version", "sources", "originals", "state", "nodeIdentities"}
+             and recipe["format"] == "elichika-viewer-body-edit" and type(recipe["version"]) is int and recipe["version"] == 1,
+             "The scene costume has no supported canonical edit recipe.")
+    source_hash = sha(original)
+    _require(type(recipe["sources"]) is list and len(recipe["sources"]) == 1 and
+             type(recipe["sources"][0]) is dict and recipe["sources"][0].get("sha256") == source_hash and
+             type(recipe["sources"][0].get("container")) is int and recipe["sources"][0]["container"] == 0 and
+             recipe["sources"][0].get("member") is None and type(recipe["originals"]) is list and
+             len(recipe["originals"]) == 1 and type(recipe["originals"][0]) is dict and
+             recipe["originals"][0].get("sha256") == source_hash and type(recipe["state"]) is dict and
+             type(recipe["nodeIdentities"]) is list and len(recipe["nodeIdentities"]) <= 1024,
+             "The scene recipe is not bound to its canonical original model.")
+    return original, recipe
+
+
 def validate(manifest, files, *, native_validator=None):
     required = {"format", "version", "requires", "character_id", "display_name", "platforms", "canonical_goldens", "authoring",
                 "thumbnail", "dependencies", "navi_sync", "source_suit_id", "source_provenance"}
@@ -229,10 +262,12 @@ def validate(manifest, files, *, native_validator=None):
     shared = manifest["version"] == SHARED_VERSION
     if shared:
         required |= {"target_member_id", "default_variant"}
-    optional = {"source_archives"} | ({"execution_model_graph"} if shared else set())
+    face_authoring = shared and "face_authoring" in manifest
+    optional = {"source_archives"} | ({"execution_model_graph", "face_authoring"} if shared else set())
+    capabilities = _capabilities(shared, face_authoring)
     _require(required <= set(manifest) <= required | optional and manifest["format"] == FORMAT and
              manifest["version"] == (SHARED_VERSION if shared else VERSION) and
-             manifest["requires"] == [SHARED_CAPABILITY if shared else CAPABILITY] and
+             manifest["requires"] == capabilities and
              type(manifest["character_id"]) is int and manifest["character_id"] == 209,
              "This scene costume format or capability is unsupported.")
     if shared:
@@ -287,21 +322,7 @@ def validate(manifest, files, *, native_validator=None):
         authoring = manifest["authoring"][platform]
         _require(type(authoring) is dict and set(authoring) == set(VARIANTS), "The scene authoring family is incomplete.")
         for records in authoring.values():
-            _require(type(records) is dict and set(records) == {"original", "recipe"}, "The scene authoring reference is invalid.")
-            original = _ref(records["original"], files, claimed, platform=platform, extension=".unity", native_validator=native_validator)
-            recipe = _json(_ref(records["recipe"], files, claimed, extension=".json"))
-            _require(type(recipe) is dict and set(recipe) == {"format", "version", "sources", "originals", "state", "nodeIdentities"}
-                     and recipe["format"] == "elichika-viewer-body-edit" and type(recipe["version"]) is int and recipe["version"] == 1,
-                     "The scene costume has no supported canonical edit recipe.")
-            source_hash = sha(original)
-            _require(type(recipe["sources"]) is list and len(recipe["sources"]) == 1 and
-                     type(recipe["sources"][0]) is dict and recipe["sources"][0].get("sha256") == source_hash and
-                     type(recipe["sources"][0].get("container")) is int and recipe["sources"][0]["container"] == 0 and
-                     recipe["sources"][0].get("member") is None and type(recipe["originals"]) is list and
-                     len(recipe["originals"]) == 1 and type(recipe["originals"][0]) is dict and
-                     recipe["originals"][0].get("sha256") == source_hash and type(recipe["state"]) is dict and
-                     type(recipe["nodeIdentities"]) is list and len(recipe["nodeIdentities"]) <= 1024,
-                     "The scene recipe is not bound to its canonical original model.")
+            _authoring_recipe(records, files, claimed, platform, native_validator)
         dependencies = manifest["dependencies"][platform]
         _require(type(dependencies) is dict and set(dependencies) == {"facedynamic"}, "The scene dependency declaration is invalid.")
         if dependencies["facedynamic"] is not None:
@@ -312,6 +333,26 @@ def validate(manifest, files, *, native_validator=None):
             _require(type(value) is list and len(value) == 3 and all(type(v) in (int, float) and math.isfinite(v) and
                      (struct.unpack("<f", struct.pack("<f", .2))[0] <= v <= 2.5 if shared else
                       1e-8 <= abs(v) <= 1000000) for v in value), "The Navi scale endpoint is invalid.")
+    if face_authoring:
+        faces = manifest["face_authoring"]
+        _require(type(faces) is dict and faces and set(faces) <= set(platforms),
+                 "The scene face authoring platforms are invalid.")
+        for platform, records in faces.items():
+            original, recipe = _authoring_recipe(records, files, claimed, platform, native_validator)
+            state = recipe["state"]
+            _require(set(state) <= {"version", "savedSettingsEnabled", "edits", "unsupported", "compensationReference", "textures", "outlines"}
+                     and state.get("version") == 1 and state.get("savedSettingsEnabled") is True and
+                     not state.get("edits") and not state.get("unsupported") and not state.get("compensationReference") and
+                     not recipe["nodeIdentities"], "The scene face authoring supports only texture and outline edits.")
+            textures = state.get("textures", [])
+            _require(type(textures) is list and len(textures) <= 128 and all(
+                type(row) is dict and row.get("sourceSha256") == sha(original) and
+                type(row.get("texture")) is dict and type(row["texture"].get("source")) is int and row["texture"]["source"] == 0
+                for row in textures), "The scene face texture recipe is not bound to its canonical original face.")
+            outlines = state.get("outlines", [])
+            _require(type(outlines) is list and len(outlines) <= 128 and all(
+                type(row) is dict and isinstance(row.get("id"), str) and row["id"].startswith("0:")
+                for row in outlines), "The scene face outline recipe is not bound to its canonical original face.")
     if "execution_model_graph" in manifest:
         _execution_graph(manifest["execution_model_graph"], platforms, files, claimed, native_validator)
     if manifest["thumbnail"] is not None:

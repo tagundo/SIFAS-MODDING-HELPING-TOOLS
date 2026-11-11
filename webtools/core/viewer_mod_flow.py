@@ -269,6 +269,14 @@ def export_current(token, state, output_root, *, mesh_state=None, allow_empty=Fa
                 temporary.unlink(missing_ok=True)
         else:
             result = model_edits.export(token, normalized, output_root, allow_empty=allow_empty, log=log)
+        if normalized.get("textures"):
+            with model_edits._LOCK:
+                texture_session = model_edits._session(token)
+                selected_sources = {row["texture"]["source"] for row in normalized["textures"]}
+                result["texture_edits"] = [copy.deepcopy(row) for index in sorted(selected_sources)
+                    for row in texture_session.get("textureWriteSummary", {}).get(index, [])]
+            if any(row.get("encodingChanged") for row in result["texture_edits"]):
+                log("Precise texture edits use lossless RGBA32 to preserve unselected pixels and alpha.")
         remember_export_sources(context, result, repo_root=repo_root, cache_root=cache_root)
         result["derived_runtime"] = viewer_physics_runtime.inherit_export(context, result["preview_paths"],
             repo_root=repo_root, cache_root=cache_root)
@@ -442,8 +450,10 @@ def create_package(token, state, *, output_root, repo_root, cache_root, display_
         pair_state = copy.deepcopy(normalized)
         if automatic_faces and pair_state.get("outlines"):
             pair_state["outlines"] = [row for row in pair_state["outlines"] if int(row["id"].split(":", 1)[0]) not in automatic_faces]
+        if automatic_faces and pair_state.get("textures"):
+            pair_state["textures"] = [row for row in pair_state["textures"] if row["texture"]["source"] not in automatic_faces]
         paired = (viewer_mod_pair_edits.apply_pair_edits(context, result, pair_state, pair=pair, job=job)
-                  if model_edits.has_changes(normalized) else {"result": result, "pair": pair, "summary": []})
+                  if model_edits.has_changes(pair_state) else {"result": result, "pair": pair, "summary": []})
         result, pair = paired["result"], paired["pair"]
         # Counterpart mapping may rewrite the complete archive. Bind derived
         # runtime proof to those final bytes, never to the pre-pair ZIP hash.

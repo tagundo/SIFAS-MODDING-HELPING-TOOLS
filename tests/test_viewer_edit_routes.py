@@ -190,7 +190,7 @@ class ViewerEditRouteTests(unittest.TestCase):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         try:
             connection.putrequest("POST", "/api/viewer/edit/export")
-            connection.putheader("Content-Length", str(16 * 1024 * 1024 + 1))
+            connection.putheader("Content-Length", str(32 * 1024 * 1024 + 1))
             connection.endheaders()
             response = connection.getresponse()
             self.assertEqual(response.status, 400)

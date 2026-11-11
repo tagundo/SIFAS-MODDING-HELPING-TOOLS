@@ -1,19 +1,19 @@
 /* Source-bound model edits. Saving always creates copies and a portable recipe. */
 (function (global) {
   "use strict";
-  var MAX_RECIPE_BYTES = 16 * 1024 * 1024;
+  var MAX_RECIPE_BYTES = 64 * 1024 * 1024;
   function element(id) { return document.getElementById(id); }
   function basename(path) { return String(path).replace(/\\/g, "/").split("/").pop(); }
   function paths(value) { return Array.isArray(value) ? value.filter(function (path) { return typeof path === "string" && path && path.length < 4096; }) : []; }
   function samePaths(left, right) { return JSON.stringify(left || []) === JSON.stringify(right || []); }
-  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.accessoryUnclip ? 1 : 0); }
+  function editCount(state) { return (state.edits || []).length + (state.physics || []).length + (state.outlines || []).length + (state.textures || []).length + (state.accessoryUnclip ? 1 : 0); }
   function create(options) {
     var translate = options.translate, disposed = false, busy = false, installing = false, status = "idle", statusKey = "Open a model to save model edits.", error = "";
     var result = null, resultModelId = "", resultSourcePaths = [], sourceInspection = null, authoringInspection = null, reviewingSaved = false, jobId = "", eventSource = null, requestController = null;
     var outputPaths = [], previewPaths = [], originalPaths = [], recipePath = "", events = [], lastContextId = "", lastAuthoringFingerprint = "";
     var modContext = "", manualModName = false, counterpartPath = "", modCharacters = "", lastPackage = null;
     var suggestedNameKey = "", suggestedName = "";
-    var installedFingerprint = "", alreadyAdded = false;
+    var installedFingerprint = "", alreadyAdded = false, installedComparisonKey = "", installedComparisonValue = "";
     var resultBodyState = null, resultMeshState = null;
     var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
@@ -51,7 +51,10 @@
     }
     function editingState() {
       var c = context();
-      return c.rig && c.rig.getAuthoringState ? c.rig.getAuthoringState() : { version: 1, edits: [], unsupported: [] };
+      var body = c.rig && c.rig.getAuthoringState ? c.rig.getAuthoringState() : { version: 1, edits: [], unsupported: [] };
+      var textures = c.textureTools && c.textureTools.getEdits ? c.textureTools.getEdits() : [];
+      if (textures.length) body.textures = textures;
+      return body;
     }
     function editingMeshState() {
       var c = context(), tool = c.meshTools;
@@ -72,15 +75,20 @@
       if (c.rig && c.rig.setAuthoringEnabled) c.rig.setAuthoringEnabled(!reviewingSaved);
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
       var mesh = editingMeshState(), unresolvedMesh = c.pendingMeshSelection || c.pendingMeshEdits && !mesh;
-      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !unresolvedMesh;
-      var authored = editingState(), fingerprint = JSON.stringify([authored, mesh]);
+      var unresolvedTexture = !!(c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending());
+      var ready = !!(c.current && metadata.available && metadata.token && c.rig), authoring = ready && !busy && !reviewingSaved && !unresolvedMesh && !unresolvedTexture;
+      var authored = editingState(), lightweight = Object.assign({}, authored);
+      // Pixel payloads are immutable cached strings. A revision is enough for
+      // frequent UI updates; serialize PNGs only for a concrete save operation.
+      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256 }; });
+      var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint && !busy && ["done", "restored", "error"].indexOf(status) >= 0) { status = "ready"; error = ""; }
       lastAuthoringFingerprint = fingerprint;
       element("viewer-save").disabled = !authoring || (!editCount(authored) && !mesh && !(c.transplantEdits || []).length && !metadata.allowEmptySceneReset && !(metadata.modPackaging || {}).derivedOwner) || accessoryBlocked || !!(authored.unsupported && authored.unsupported.length);
       element("viewer-save").title = authored.unsupported && authored.unsupported.length ? translate(authored.unsupported[0]) : accessoryBlocked ? accessories.errorText || translate(accessories.error || "Wait for the accessory check before saving.") : "";
-      refreshModForm(c, rigState, authored, ready && !busy && !unresolvedMesh);
+      refreshModForm(c, rigState, authored, ready && !busy && !unresolvedMesh && !unresolvedTexture);
       element("viewer-recipe-open").disabled = !authoring;
       element("viewer-open-saved").hidden = !previewPaths.length;
       element("viewer-open-saved").disabled = busy || !c.current || !!unresolvedMesh;
@@ -118,7 +126,7 @@
       if (rigState.restoredCompensationReference) evaluationText += " " + translate("The recipe's saved child-compensation baseline is retained.");
       element("viewer-edit-evaluation-status").textContent = evaluationText;
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
-        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
+        var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedTexture ? "Apply or cancel the texture preview before saving." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
         statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle";
         element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
       }
@@ -187,6 +195,11 @@
         if (mesh.meshes.some(function (row) { return row.positions && row.positions.length; })) kinds.push(translate("Vertex positions"));
         if (mesh.meshes.some(function (row) { return row.weights && row.weights.length; })) kinds.push(translate("Skin weights"));
       }
+      if (authored.textures && authored.textures.length) {
+        if (authored.textures.some(function (row) { return row.kind === "costume"; })) kinds.push(translate("Costume colour"));
+        if (authored.textures.some(function (row) { return row.kind === "skin"; })) kinds.push(translate("Skin tone"));
+        if (authored.textures.some(function (row) { return row.kind === "paint"; })) kinds.push(translate("Texture painting"));
+      }
       if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
       if (authored.accessoryUnclip) kinds.push(translate("Accessory Un-clip"));
@@ -243,7 +256,11 @@
       var enabled = authoring && validName && !(authored.unsupported || []).length && !(authored.accessoryUnclip && (accessories.pending || accessories.error));
       ["viewer-save-mod", "viewer-add-to-game"].forEach(function (id) { element(id).disabled = !enabled; element(id).title = element("viewer-save").title; });
       var body = Object.assign({}, authored); delete body.unsupported;
-      alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState())]);
+      var comparisonKey = JSON.stringify([key, lastAuthoringFingerprint, modOptions()]);
+      if (comparisonKey !== installedComparisonKey || installedComparisonValue !== installedFingerprint) {
+        alreadyAdded = !!installedFingerprint && installedFingerprint === JSON.stringify([key, JSON.stringify(body), JSON.stringify(modOptions()), JSON.stringify(editingMeshState())]);
+        installedComparisonKey = comparisonKey; installedComparisonValue = installedFingerprint;
+      }
       if (alreadyAdded) {
         element("viewer-add-to-game").disabled = true;
         if (!(authored.unsupported || []).length) element("viewer-add-to-game").title = translate("Already added to game. Change the edits or mod name to add another copy.");
@@ -331,12 +348,22 @@
         return row;
       }).sort(function (a, b) { return a.id.localeCompare(b.id); });
       if (input.accessoryUnclip) canonical.accessoryUnclip = { strength: numeric(input.accessoryUnclip.strength), overlap: numeric(input.accessoryUnclip.overlap), closeGaps: input.accessoryUnclip.closeGaps };
+      if (input.textures && input.textures.length) canonical.textures = input.textures.map(function (row) {
+        return { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
+          sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
+      }).sort(function (a, b) {
+        var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;
+        if (order) return order;
+        var left = BigInt(a.texture.id), right = BigInt(b.texture.id);
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
       return JSON.stringify(canonical);
     }
     function captureSave(forPackage) {
       var c = context(), authored = editingState(), mesh = editingMeshState();
       if (!c.current || !c.editing || !c.editing.available || reviewingSaved && !forPackage) throw new Error("Open the original model before saving model edits.");
       if (c.pendingMeshSelection || c.pendingMeshEdits && !mesh) throw new Error("Apply selected face deletions before saving.");
+      if (c.textureTools && c.textureTools.hasPending && c.textureTools.hasPending()) throw new Error("Apply or cancel the texture preview before saving.");
       if (authored.unsupported && authored.unsupported.length) throw new Error(authored.unsupported[0]);
       if (authored.accessoryUnclip && c.accessories && (c.accessories.pending || c.accessories.error)) throw new Error(c.accessories.error || "Wait for the accessory check before saving.");
       if (!forPackage && !editCount(authored) && !mesh && !(c.transplantEdits || []).length && !(c.editing.modPackaging || {}).derivedOwner && !c.editing.allowEmptySceneReset) throw new Error("Change a model value before saving.");
@@ -474,12 +501,18 @@
       var modelId = c.modelId, response = await jsonRequest("/api/viewer/edit/restore", { token: c.editing.token, recipe: recipe });
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
       if (!response.state) throw new Error("The model edit recipe is invalid.");
-      var previous = c.rig.getAuthoringState();
+      var previous = editingState();
+      var previousDocuments = options.captureTextureDocuments ? options.captureTextureDocuments() : null;
       try {
         c.rig.restoreAuthoringState(response.state);
+        if (options.restoreTextureState) await options.restoreTextureState(response.state.textures || []);
         if (response.mesh_state && options.restoreMeshState) await options.restoreMeshState(response.mesh_state);
       } catch (error) {
-        if (context().modelId === modelId) c.rig.restoreAuthoringState(previous);
+        if (context().modelId === modelId) {
+          c.rig.restoreAuthoringState(previous);
+          if (previousDocuments && options.restoreTextureDocuments) await options.restoreTextureDocuments(previousDocuments);
+          else if (options.restoreTextureState) await options.restoreTextureState(previous.textures || []);
+        }
         throw error;
       }
       if (!context().current || context().modelId !== modelId) throw new Error("The model changed while its recipe was loading. Try again.");
@@ -525,6 +558,8 @@
         reviewingSaved = false;
         if (!samePaths(context().loadedPaths, originals)) throw new Error("The original model could not be opened.");
         await restoreRecipe(recipe);
+        var inspection = authoringInspection || sourceInspection;
+        if (inspection && inspection.textureDocuments && options.restoreTextureDocuments) await options.restoreTextureDocuments(inspection.textureDocuments);
       } catch (failure) { say(failure.message, "error"); }
       finally { setBusy(false); }
     }

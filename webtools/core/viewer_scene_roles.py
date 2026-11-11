@@ -112,6 +112,16 @@ def _normalize_recipe(recipe, original, name):
     if "physics" in state:
         state["physics"] = [{**row, "id": "0:" + row["id"].split(":", 1)[1]}
                             for row in state["physics"] if row["id"].split(":", 1)[0] == str(index)]
+    if "outlines" in state:
+        state["outlines"] = [{**row, "id": "0:" + row["id"].split(":", 1)[1]}
+                             for row in state["outlines"] if row["id"].split(":", 1)[0] == str(index)]
+    if "textures" in state:
+        state["textures"] = [{**row, "texture": {**row["texture"], "source": 0}}
+                             for row in state["textures"] if row["texture"]["source"] == index]
+        _require(all(row["sourceSha256"] == fmt.sha(original) for row in state["textures"]),
+                 "A scene texture recipe is not bound to its canonical original model.")
+        if not state["textures"]:
+            state.pop("textures")
     for row in identities:
         row["sourceIndex"] = 0
     return {"format": "elichika-viewer-body-edit", "version": 1,
@@ -128,17 +138,72 @@ def _empty_recipe(original, name):
             "nodeIdentities": []}
 
 
+def _source_bytes(context, index):
+    source = context["sources"][index]
+    raw = context["containers"][source["container"]]["raw"]
+    if source["member"] is not None:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            raw = archive.read(source["member"])
+    _require(fmt.sha(raw) == source["sha256"], "The canonical face source no longer matches its captured original.")
+    return raw
+
+
+def _face_originals_and_recipes(context, result, platforms, runtime_faces):
+    """Keep face authoring authority separate from private execution bytes."""
+    originals, declared = {}, set()
+    def remember(platform, raw):
+        _require(platform not in originals or originals[platform] == raw,
+                 "The scene costume has conflicting original face companions.")
+        originals[platform] = raw
+    for container in context["containers"]:
+        if zipfile.is_zipfile(io.BytesIO(container["raw"])):
+            for platform, raw in _literal_faces(container["raw"]).items():
+                remember(platform, raw)
+                declared.add(platform)
+    for index in context.get("outline_only_sources", []):
+        raw = _source_bytes(context, index)
+        platform = next((key for key, value in fmt.PLATFORMS.items() if value == fmt._native_platform(raw)), None)
+        _require(platform is not None, "The original face has an unsupported native platform.")
+        remember(platform, raw)
+    records = {}
+    for platform, original in originals.items():
+        if platform not in platforms:
+            continue
+        matches = [index for index, source in enumerate(result["recipe"]["sources"])
+                   if source["sha256"] == fmt.sha(original)]
+        _require(len(matches) <= 1, "The original scene face has an ambiguous source binding.")
+        recipe = (_normalize_recipe(result["recipe"], original, platform + "_face.unity") if matches else
+                  _empty_recipe(original, platform + "_face.unity"))
+        _require(not recipe["state"].get("edits") and not recipe["state"].get("physics"),
+                 "Scene face authoring supports texture and outline edits; reset facial Node or physics changes before exporting.")
+        recipe["nodeIdentities"] = []
+        recipe["state"] = {"version": 1, "savedSettingsEnabled": True, "edits": [], "unsupported": [],
+                           "compensationReference": [], **{key: recipe["state"][key] for key in ("textures", "outlines")
+                                                          if recipe["state"].get(key)}}
+        runtime = runtime_faces.get(platform)
+        if (edits.has_changes(recipe["state"]) or runtime is not None and runtime != original or
+                platform in declared and runtime is None):
+            records[platform] = (original, recipe)
+    return records
+
+
 def _originals_and_recipes(context, result, pair, goldens, state):
+    # A texture edit changes one explicitly selected image layout. It does not
+    # authorize copying pixels into a board/bare or Android/iOS counterpart.
+    partner_state = {key: value for key, value in state.items() if key != "textures"}
+    partner_body_changed = edits.has_changes(partner_state)
     originals = {}
     for container in context["containers"]:
         if zipfile.is_zipfile(io.BytesIO(container["raw"])):
             originals.update(_literal_models(container["raw"]))
     if not originals:
-        _require(pair is not None and len(context["sources"]) == 1, "The raw Rina scene has no verified complete pair.")
-        selected = str(Path(result["preview_paths"][0]).resolve())
+        body_sources = [row for index, row in enumerate(context["sources"])
+                        if index not in set(context.get("outline_only_sources", []))]
+        _require(pair is not None and len(body_sources) == 1, "The raw Rina scene has no verified complete pair.")
+        source = body_sources[0]
+        selected = str(Path(result["preview_paths"][source["container"]]).resolve())
         roles = [variant for variant in fmt.VARIANTS if str(Path(pair[variant]["path"]).resolve()) == selected]
         _require(len(roles) == 1, "The selected Rina source lost its pair identity.")
-        source = context["sources"][0]
         _require(source["member"] is None, "The raw Rina source must be its complete original file.")
         original = context["containers"][source["container"]]["raw"]
         platform = next(key for key, value in fmt.PLATFORMS.items() if value == fmt._native_platform(original))
@@ -151,7 +216,7 @@ def _originals_and_recipes(context, result, pair, goldens, state):
                           if fmt.sha(Path(path).read_bytes()) == summary["original_sha256"]]
             _require(len(candidates) == 1, "A paired canonical original is missing.")
             originals[platform, summary["variant"]] = candidates[0]
-        if not edits.has_changes(state):
+        if not partner_body_changed:
             for variant in fmt.VARIANTS:
                 originals.setdefault((platform, variant), Path(pair[variant]["path"]).read_bytes())
     _require(set(originals) == set(goldens), "The scene costume has no complete native original family.")
@@ -163,7 +228,7 @@ def _originals_and_recipes(context, result, pair, goldens, state):
     normalized = {}
     for key, original in originals.items():
         candidates = [recipe for recipe in recipes if any(source["sha256"] == fmt.sha(original) for source in recipe["sources"])]
-        if not edits.has_changes(state):
+        if not edits.has_changes(state) or not candidates and not partner_body_changed:
             normalized[key] = _empty_recipe(original, "_".join(key) + ".unity")
         else:
             _require(len(candidates) == 1, "The scene costume has no unique original-bound variant recipe.")
@@ -312,10 +377,13 @@ def expand_scene(path, directory, variant=None):
     if manifest["thumbnail"]:
         members["thumbnail.png"] = files[manifest["thumbnail"]["member"]]
         values["thumbnail_file"] = "thumbnail.png"
+    canonical_faces = {}
     for native, dependencies in manifest["dependencies"].items():
-        if dependencies["facedynamic"]:
+        authoring = manifest.get("face_authoring", {}).get(native)
+        reference = authoring["original"] if authoring else dependencies["facedynamic"]
+        if reference:
             name = native + "_face.unity"
-            members[name] = files[dependencies["facedynamic"]["member"]]
+            members[name] = canonical_faces[native] = files[reference["member"]]
             field = "costume_facedynamic_file" + ("_ios" if native == "ios" and "android" in manifest["platforms"] else "")
             values[field] = name
     members["modinstall.txt"] = ("\n".join(key + " = " + repr(value) for key, value in sorted(values.items())) + "\n").encode()
@@ -328,8 +396,6 @@ def expand_scene(path, directory, variant=None):
     for source in manifest.get("source_archives", []):
         raw = files[source["file"]["member"]]
         if _literal_models(raw) == originals:
-            canonical_faces = {native: files[dependencies["facedynamic"]["member"]]
-                               for native, dependencies in manifest["dependencies"].items() if dependencies["facedynamic"]}
             _require(_literal_faces(raw) == canonical_faces,
                      "The preserved source ZIP's declared face companion does not match the canonical original face. Open the original complete costume ZIP.")
             preserved = raw
@@ -343,7 +409,9 @@ def expand_scene(path, directory, variant=None):
                 info.compress_type = zipfile.ZIP_DEFLATED
                 archive.writestr(info, raw)
     recipe = _json(files[manifest["authoring"][platform][variant]["recipe"]["member"]])
-    return {"path": str(original_zip), "variant": variant, "recipe": recipe,
+    face = manifest.get("face_authoring", {}).get(platform)
+    face_recipes = [_json(files[face["recipe"]["member"]])] if face else []
+    return {"path": str(original_zip), "variant": variant, "recipe": recipe, "face_recipes": face_recipes,
             "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
                          "target_member_id": manifest.get("target_member_id", 209),
                          "default_variant": manifest.get("default_variant", "primary")}}
@@ -353,14 +421,31 @@ def register_reopened(token, scene):
     """Restore a recipe only after the exact selected raw source is recovered."""
     session = edits._session(token)
     recipe = copy.deepcopy(scene["recipe"])
-    matches = [index for index, source in enumerate(session["sources"])
-               if source["sha256"] == recipe["sources"][0]["sha256"]]
-    _require(len(matches) == 1, "The scene recipe lost its canonical original identity.")
-    index = matches[0]
+    def bind(value):
+        matches = [index for index, source in enumerate(session["sources"])
+                   if source["sha256"] == value["sources"][0]["sha256"]]
+        _require(len(matches) == 1, "The scene recipe lost its canonical original identity.")
+        index = matches[0]
+        for identity in value["nodeIdentities"]:
+            identity["sourceIndex"] = index
+        for field in ("physics", "outlines"):
+            if value["state"].get(field):
+                value["state"][field] = [{**row, "id": str(index) + ":" + row["id"].split(":", 1)[1]}
+                                        for row in value["state"][field]]
+        if value["state"].get("textures"):
+            value["state"]["textures"] = [{**row, "texture": {**row["texture"], "source": index}}
+                                          for row in value["state"]["textures"]]
+        return value
+    bind(recipe)
+    for face in copy.deepcopy(scene.get("face_recipes", [])):
+        bind(face)
+        _require(not face["nodeIdentities"] and not face["state"].get("edits") and not face["state"].get("physics"),
+                 "The face authoring recipe contains unsupported model changes.")
+        for field in ("textures", "outlines"):
+            if face["state"].get(field):
+                recipe["state"].setdefault(field, []).extend(face["state"][field])
     recipe["sources"] = edits._source_signature(session)
     recipe["originals"] = [{"name": item["name"], "sha256": item["sha256"]} for item in session["containers"]]
-    for identity in recipe["nodeIdentities"]:
-        identity["sourceIndex"] = index
     session["allowEmptySceneReset"] = True
     state = edits.restore(token, recipe)
     with _LOCK:
@@ -411,12 +496,18 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
     originals, recipes = _originals_and_recipes(context, result, pair, goldens, state)
     source_id, provenance = _provenance(context, token, repo_root, receipts)
     previous = session_metadata(token) or {}
+    runtime_faces = {platform: extras.get("costume_facedynamic_file_ios" if platform == "ios" and "android" in platforms else "costume_facedynamic_file")
+                     for platform in platforms}
+    face_authoring = _face_originals_and_recipes(context, result, platforms, runtime_faces)
     manifest = {"format": fmt.FORMAT, "version": fmt.SHARED_VERSION, "requires": [fmt.SHARED_CAPABILITY],
                 "character_id": 209, "target_member_id": previous.get("target_member_id", 209),
                 "default_variant": previous.get("default_variant", "primary"),
                 "display_name": packed["display_name"], "platforms": {}, "canonical_goldens": {},
                 "authoring": {}, "thumbnail": None, "dependencies": {}, "navi_sync": {},
                 "source_suit_id": source_id, "source_provenance": provenance}
+    if face_authoring:
+        manifest["requires"].append(fmt.FACE_AUTHORING_CAPABILITY)
+        manifest["face_authoring"] = {}
     def store(member, raw, platform=None):
         files[member] = raw
         return fmt.reference(member, raw, platform)
@@ -445,6 +536,11 @@ def package_scene(context, result, state, *, pair, packed, token, repo_root, rec
         manifest["navi_sync"][platform] = sync
         face = extras.get("costume_facedynamic_file_ios" if platform == "ios" and "android" in platforms else "costume_facedynamic_file")
         manifest["dependencies"][platform] = {"facedynamic": store(f"dependencies/{platform}_face.unity", face, platform) if face else None}
+        if platform in face_authoring:
+            original, recipe = face_authoring[platform]
+            manifest["face_authoring"][platform] = {
+                "original": store(f"originals/{platform}_face.unity", original, platform),
+                "recipe": store(f"recipes/{platform}_face.json", json.dumps(recipe, allow_nan=False).encode())}
     if extras.get("thumbnail_file"):
         manifest["thumbnail"] = store("thumbnail.png", extras["thumbnail_file"])
     manifest["source_archives"] = []

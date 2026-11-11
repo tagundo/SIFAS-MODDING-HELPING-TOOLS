@@ -2482,3 +2482,30 @@ _VIEWER_MODEL_SAVE_TRANSLATIONS = {
 for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ko"][_source] = _translated[0]
     _TABLES["ja"][_source] = _translated[1]
+
+
+# Texture authoring labels shared with the viewer save form.
+_TABLES["ko"].update({
+    "Open texture editor": "텍스쳐 편집기 열기",
+    "Choose PNG image": "PNG 이미지 선택",
+    "Choose texture project": "텍스쳐 작업 파일 선택",
+    "Texture editor": "텍스쳐 편집기",
+    "Costume colour": "의상 컬러",
+    "Skin tone": "스킨톤",
+    "Texture painting": "텍스쳐 페인팅",
+    "Apply or cancel the texture preview before saving.": "텍스쳐 미리보기를 적용하거나 취소한 뒤 저장하세요.",
+    "The texture editor is unavailable.": "텍스쳐 편집기를 사용할 수 없습니다.",
+    "Apply or cancel the texture preview before changing motions.": "텍스쳐 미리보기를 적용하거나 취소한 뒤 모션을 변경하세요.",
+})
+_TABLES["ja"].update({
+    "Open texture editor": "テクスチャエディターを開く",
+    "Choose PNG image": "PNG画像を選択",
+    "Choose texture project": "テクスチャ作業ファイルを選択",
+    "Texture editor": "テクスチャエディター",
+    "Costume colour": "衣装カラー",
+    "Skin tone": "肌の色",
+    "Texture painting": "テクスチャペイント",
+    "Apply or cancel the texture preview before saving.": "テクスチャのプレビューを適用または取り消してから保存してください。",
+    "The texture editor is unavailable.": "テクスチャエディターを使用できません。",
+    "Apply or cancel the texture preview before changing motions.": "テクスチャのプレビューを適用または取り消してからモーションを変更してください。",
+})

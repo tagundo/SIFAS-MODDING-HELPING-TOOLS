@@ -234,6 +234,8 @@ async function init() {
   if (window.ModelViewer) window.ModelViewer.mount({
     translate: T,
     pickFile: (onPick) => openPicker("path", onPick, "models"),
+    pickTexture: (onPick) => openPicker("path", onPick, "modded", undefined, { title: T("Choose PNG image"), extensions: ["png"] }),
+    pickTextureProject: (onPick) => openPicker("path", onPick, "modded", undefined, { title: T("Choose texture project"), extensions: ["json"] }),
     nativeFilePicker: !!(window.ElichikaPlatform && ElichikaPlatform.supports("openFiles")),
   });
   const initial = sectionNavigation.pending || routeFromLocation();
@@ -1109,14 +1111,18 @@ function refreshPickerSelection() {
   });
 }
 
-function openPicker(type, onPick, rootName, startPath) {
+function openPicker(type, onPick, rootName, startPath, options) {
+  options = options || {};
+  const title = options.title || T(type === "dir" ? "Choose a folder" : type === "paths" ? "Choose bundle files" : "Choose a bundle file");
   const active = document.activeElement;
   const trigger = state.picker && $("#picker").contains(active) ? state.picker.trigger : active;
   const platform = window.ElichikaPlatform, capability = type === "dir" ? "chooseDirectory" : "openFiles";
   if (platform && platform.supports(capability)) {
     const picker = { type, onPick, pending: true, native: true, trigger };
     state.picker = picker;
-    platform.request(capability, { multiple: type === "paths", title: T(type === "dir" ? "Choose a folder" : type === "paths" ? "Choose bundle files" : "Choose a bundle file") })
+    const requestOptions = { multiple: type === "paths", title };
+    if (options.extensions) requestOptions.extensions = options.extensions;
+    platform.request(capability, requestOptions)
       .then((result) => {
         if (state.picker !== picker || result && result.cancelled) return;
         const paths = type === "dir" ? platform.chosenPaths({ paths: result && result.path ? [result.path] : [] }) : platform.chosenPaths(result);
@@ -1127,7 +1133,7 @@ function openPicker(type, onPick, rootName, startPath) {
     return;
   }
   state.picker = { type, onPick, cwd: "", navigation: 0, pending: true, selected: new Set(), visibleFiles: [], trigger };
-  $("#picker-title").textContent = type === "dir" ? T("Choose a folder") : type === "paths" ? T("Choose bundle files") : T("Choose a bundle file");
+  $("#picker-title").textContent = title;
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";
   $("#picker-use-folder").disabled = true;
   $("#picker-crumb").textContent = "";

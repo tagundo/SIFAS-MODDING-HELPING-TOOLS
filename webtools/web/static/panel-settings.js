@@ -9,7 +9,8 @@
     "Move up": ["위로 이동", "上へ移動"], "Move down": ["아래로 이동", "下へ移動"],
     "Restore defaults": ["기본 설정 복원", "初期設定に戻す"], "Close": ["닫기", "閉じる"],
     "3D model": ["3D 모델", "3Dモデル"], "Tools": ["에셋 편집 도구", "アセット編集ツール"],
-    "Server content": ["서버 콘텐츠", "サーバーコンテンツ"]
+    "Server content": ["서버 콘텐츠", "サーバーコンテンツ"],
+    "Texture editor": ["텍스쳐 편집기", "テクスチャエディター"]
   };
   function language() {
     var select = document.getElementById("lang-select");
@@ -26,6 +27,7 @@
     return node;
   }
   function title(node) {
+    if (node.getAttribute("data-panel-title")) return text(node.getAttribute("data-panel-title"));
     var summary = node.querySelector(":scope > summary");
     return (summary || node).textContent.trim();
   }

@@ -2,6 +2,7 @@
 (function (global) {
   "use strict";
   var TEXT = {
+    "Apply or cancel the texture preview before saving.": ["저장하기 전에 텍스처 미리보기를 적용하거나 취소하세요.", "保存前にテクスチャのプレビューを適用またはキャンセルしてください。"],
     "Costume transplant": ["코스튬 이식", "衣装移植"],
     "Costume part transplant": ["코스튬 부분 이식", "衣装パーツ移植"],
     "Lower body replacement": ["하체 교체", "下半身の交換"],
@@ -129,7 +130,13 @@
     function identity(c) {
       return JSON.stringify([c.modelId || "", c.loadedPaths || [], c.loadedVariants || [], c.autoFace, c.loadEpoch]);
     }
-    function copy(value) { return JSON.parse(JSON.stringify(value)); }
+    function copy(value) {
+      var documents = value && value.textureDocuments, plain = value;
+      if (documents) { plain = Object.assign({}, value); delete plain.textureDocuments; }
+      var result = JSON.parse(JSON.stringify(plain));
+      if (documents) result.textureDocuments = documents;
+      return result;
+    }
     function viewerChanged() { var error = new Error("The viewer changed. The saved result was kept."); error.viewerStale = true; return error; }
     function checkpoint() {
       if (!options.captureCheckpoint || !options.restoreCheckpoint) throw new Error("This model cannot be restored safely.");
@@ -137,7 +144,16 @@
       if (!value) throw new Error("This model cannot be restored safely.");
       return copy(value);
     }
-    function pushHistory(stack, item) { stack.push(item); if (stack.length > MAX_HISTORY) stack.shift(); }
+    function pushHistory(stack, item) {
+      stack.push(item);
+      if (stack.length > MAX_HISTORY) stack.shift();
+      function retainedBytes() { return undoHistory.concat(redoHistory).reduce(function (sum, step) { return sum + (step.checkpoint.textureDocuments && step.checkpoint.textureDocuments.bytes || 0); }, 0); }
+      while (undoHistory.length + redoHistory.length > 1 && retainedBytes() > 256 * 1024 * 1024) {
+        var other = stack === undoHistory ? redoHistory : undoHistory;
+        if (other.length && (stack.length <= 1 || other.length > stack.length)) other.shift();
+        else stack.shift();
+      }
+    }
     function synchronizeHistory(c) {
       if (historySwitch) return;
       var current = identity(c);
@@ -234,7 +250,7 @@
       synchronizeHistory(c);
       var ready = c.current && c.editing && c.editing.available && body && !(body.unsupported || []).length;
       var meshDirty = !!(c.meshTools && c.meshTools.dirty && (!c.getMeshEdits || c.meshTools.hasUnappliedSelection));
-      ready = ready && !meshDirty;
+      ready = ready && !meshDirty && !c.texturePending;
       entries.forEach(function (entry) {
         var targets = c.targetMeshes || [], targetKey = JSON.stringify(targets);
         if (entry.targetMesh && entry.targetMeshKey !== targetKey) {
@@ -320,14 +336,17 @@
       function uvPoint(point) { var width = entry.textureCanvas.width; return [(view.x + point[0] * view.zoom) * width, (view.y + point[1] * view.zoom) * width]; }
       function drawTexture() {
         if (entry.operation !== "part") return;
-        var canvas = entry.textureCanvas, ctx = canvas.getContext("2d"), binding = textureBinding(), width = canvas.width;
+        var canvas = entry.textureCanvas, rect = canvas.getBoundingClientRect();
+        var target = rect.width > 0 ? Math.max(128, Math.min(2048, Math.round(rect.width * Math.min(global.devicePixelRatio || 1, 2)))) : canvas.width;
+        if (canvas.width !== target || canvas.height !== target) canvas.width = canvas.height = target;
+        var ctx = canvas.getContext("2d"), binding = textureBinding(), width = canvas.width, density = width / Math.max(1, rect.width || width);
         ctx.clearRect(0, 0, width, width); entry.textureZoom.value = String(view.zoom); entry.textureZoomText.textContent = Math.round(view.zoom * 100) + "%";
         if (!binding || !binding.mesh.geometry.attributes.uv) { entry.textureStatus.textContent = t("No UV texture is available for this material."); return; }
         entry.textureStatus.textContent = "";
         var image = binding.texture && binding.texture.image;
         if (image) { try { ctx.imageSmoothingEnabled = view.zoom < 2; ctx.drawImage(image, view.x * width, view.y * width, view.zoom * width, view.zoom * width); } catch (_) {} }
         var index = binding.mesh.geometry.index, faces = entry.highlightedFaces;
-        ctx.lineWidth = .65; ctx.strokeStyle = global.ViewerUVColor ? global.ViewerUVColor.stroke(.55) : "rgba(235,242,255,.25)";
+        ctx.lineWidth = .65 * density; ctx.strokeStyle = global.ViewerUVColor ? global.ViewerUVColor.stroke(.55) : "rgba(235,242,255,.25)";
         for (var offset = 0; offset < index.count; offset += 3) {
           var points = [0, 1, 2].map(function (slot) { return uvPoint(textureUV(binding, index.getX(offset + slot))); });
           if (points.every(function (p) { return p[0] < 0; }) || points.every(function (p) { return p[0] > width; }) || points.every(function (p) { return p[1] < 0; }) || points.every(function (p) { return p[1] > width; })) continue;
@@ -518,6 +537,7 @@
         entry.textureCanvas.addEventListener("pointerleave", function () { if (cursor) cursor.hidden = true; }); entry.textureCanvas.addEventListener("contextmenu", function (event) { event.preventDefault(); });
       }
       controls.addEventListener("change", function () { invalidateProjection(); draw(); }); var observer = new ResizeObserver(draw); observer.observe(entry.stage); entry.panel.addEventListener("toggle", draw);
+      if (entry.operation === "part") { observer.observe(entry.textureCanvas); entry.textureCanvas.addEventListener("texturepanechange", drawTexture); }
       entry.preview = {
         draw: draw, cuts: cuts, rebind: rebind, drawTexture: drawTexture, selectionModeChanged: selectionModeChanged,
         getTextureView: function () { return { zoom: view.zoom, x: view.x, y: view.y, submesh: textureBinding() && textureBinding().map.submesh }; },
@@ -528,7 +548,7 @@
           var centre = bounds.getCenter(new THREE.Vector3()), distance = Math.max(size.x, size.y, size.z, .1) / (2 * Math.tan(camera.fov * Math.PI / 360)) * 1.18;
           controls.target.copy(centre); camera.position.copy(centre).add(new THREE.Vector3(distance * .2, distance * .05, distance)); camera.lookAt(centre); controls.update(); rebind();
         },
-        dispose: function () { observer.disconnect(); entry.panel.removeEventListener("toggle", draw); controls.dispose(); disposeObject(model); planes.forEach(disposeObject); disposeObject(band); disposeObject(selection); if (cursor) cursor.remove(); renderer.dispose(); renderer.forceContextLoss(); }
+        dispose: function () { observer.disconnect(); entry.panel.removeEventListener("toggle", draw); if (entry.operation === "part") entry.textureCanvas.removeEventListener("texturepanechange", drawTexture); controls.dispose(); disposeObject(model); planes.forEach(disposeObject); disposeObject(band); disposeObject(selection); if (cursor) cursor.remove(); renderer.dispose(); renderer.forceContextLoss(); }
       }; return entry.preview;
     }
     async function chooseDonor(entry, paths, variants) {
@@ -579,6 +599,7 @@
       if (entry.run.disabled || busy) return;
       var c = context(), authored = authoring(c);
       if (!c.current || !c.editing || !authored) return;
+      if (c.texturePending) { status(entry, "Apply or cancel the texture preview before saving.", true); return; }
       if (c.meshTools && (c.meshTools.busy || c.meshTools.dirty && (!c.getMeshEdits || c.meshTools.hasUnappliedSelection))) { status(entry, "Save mesh edits before transplanting.", true); return; }
       if (authored.unsupported && authored.unsupported.length) { status(entry, authored.unsupported[0], true); return; }
       var low = Number(entry.low.value), high = Number(entry.high.value);
@@ -641,7 +662,7 @@
         var committed = options.openFiles ? await options.openFiles(entry.resultPaths, variants, before) : false;
         var after = context();
         if (committed === false || !after.current || JSON.stringify(after.loadedPaths || []) !== JSON.stringify(entry.resultPaths)) throw viewerChanged();
-        pushHistory(undoHistory, { checkpoint: before, title: entry.title }); redoHistory = [];
+        redoHistory = []; pushHistory(undoHistory, { checkpoint: before, title: entry.title });
         historyIdentity = identity(after);
       } catch (error) {
         if (!error.viewerStale && context().modelId === c.modelId && JSON.stringify(context().loadedPaths || []) === JSON.stringify(c.loadedPaths || [])) historyIdentity = identity(context());

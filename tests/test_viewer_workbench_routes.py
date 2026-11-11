@@ -155,7 +155,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         validate.assert_called_once_with(payload)
         self.assertEqual(run.call_count, 1)
         validate.reset_mock()
-        self.assertEqual(self.headers_only('/api/viewer/transplant/run', [('Content-Length', str(16 * 1024 * 1024 + 1))])[0], 400)
+        self.assertEqual(self.headers_only('/api/viewer/transplant/run', [('Content-Length', str(32 * 1024 * 1024 + 1))])[0], 400)
         validate.assert_not_called()
 
     def test_all_feature_posts_reject_extra_paths_and_cross_origin_calls(self):
@@ -164,6 +164,14 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
             ('/api/viewer/mesh/inspect', {'token': self.token}),
             ('/api/viewer/mesh/data', {'token': self.token, 'mesh': self.mesh}),
             ('/api/viewer/mesh/export', {'token': self.token, 'state': self.mesh_state, 'bodyState': self.body}),
+            ('/api/viewer/texture/inspect', {'token': self.token}),
+            ('/api/viewer/texture/data', {'token': self.token, 'texture': self.mesh}),
+            ('/api/viewer/texture/decode', {'token': self.token, 'texture': self.mesh, 'png': 'invalid'}),
+            ('/api/texture/editor/decode', {'png': 'invalid'}),
+            ('/api/texture/editor/open', {'path': str(self.library / 'input.png')}),
+            ('/api/texture/editor/save', {'png': 'invalid', 'name': 'texture.png'}),
+            ('/api/texture/editor/project/open', {'path': str(self.library / 'work.elichika-texture.json')}),
+            ('/api/texture/editor/project/save', {'project': {}, 'name': 'work'}),
             ('/api/viewer/transplant/inspect', {'donor': self.transplant['donor'], 'variant': 'primary'}),
             ('/api/viewer/transplant/run', self.transplant),
         ]
@@ -181,13 +189,27 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         for route in ('/api/viewer/game/motions/import', '/api/viewer/mesh/export', '/api/viewer/transplant/run'):
             for headers in (
                 [('Content-Length', '0')], [('Content-Length', '-1')], [('Content-Length', 'invalid')],
-                [('Content-Length', str((16 * 1024 * 1024 if route.endswith('/transplant/run') else viewer_mesh_tools.MAX_REQUEST_BYTES) + 1))],
+                [('Content-Length', str((32 * 1024 * 1024 if route.endswith(('/transplant/run', '/mesh/export')) else viewer_mesh_tools.MAX_REQUEST_BYTES) + 1))],
                 [('Content-Length', '12'), ('Transfer-Encoding', 'chunked')],
                 [('Content-Length', '12'), ('Origin', self.url), ('Origin', self.url)],
             ):
                 with self.subTest(route=route, headers=headers):
                     expected = 403 if sum(name == 'Origin' for name, _ in headers) > 1 else 400
                     self.assertEqual(self.headers_only(route, headers)[0], expected)
+
+    def test_texture_requests_have_small_catalogue_and_bounded_png_limits(self):
+        for route, limit in (
+            ('/api/viewer/texture/inspect', 64 * 1024),
+            ('/api/viewer/texture/data', 64 * 1024),
+            ('/api/viewer/texture/decode', 12 * 1024 * 1024),
+            ('/api/texture/editor/decode', 12 * 1024 * 1024),
+            ('/api/texture/editor/open', 64 * 1024),
+            ('/api/texture/editor/save', 12 * 1024 * 1024),
+            ('/api/texture/editor/project/open', 64 * 1024),
+            ('/api/texture/editor/project/save', 32 * 1024 * 1024 + 64 * 1024),
+        ):
+            with self.subTest(route=route):
+                self.assertEqual(self.headers_only(route, [('Content-Length', str(limit + 1))])[0], 400)
 
     def test_invalid_tokens_do_not_reach_backends(self):
         inspect = self.backend_patch(viewer_mesh_tools, 'inspect', return_value={})
@@ -270,6 +292,51 @@ class ViewerWorkbenchRealMeshHTTPTests(WorkbenchHTTPBase):
                 self.assertEqual(status, 400, response)
         self.assertEqual(self.source.read_bytes(), self.original)
         self.assertFalse(list((self.library / 'modded/viewer').glob('mesh-edit-*')))
+
+
+class TextureProjectHTTPTests(WorkbenchHTTPBase):
+    def project(self):
+        import base64
+        import io
+        from PIL import Image
+        stream = io.BytesIO()
+        image = Image.new('RGBA', (3, 2), (42, 123, 190, 128))
+        image.putpixel((0, 0), (9, 8, 7, 0))
+        image.save(stream, 'PNG')
+        png = 'data:image/png;base64,' + base64.b64encode(stream.getvalue()).decode('ascii')
+        return {'format': 'elichika-texture-project', 'version': 1, 'width': 3, 'height': 2,
+                'activeLayer': 'detail', 'layers': [
+                    {'id': 'base', 'name': '원본', 'visible': True, 'opacity': 1, 'png': png},
+                    {'id': 'detail', 'name': '숨긴 수정', 'visible': False, 'opacity': .35, 'png': png}]}
+
+    def test_real_project_save_download_and_open_keep_hidden_layer_pixels_and_metadata(self):
+        project = self.project()
+        status, saved = self.request('/api/texture/editor/project/save', {'project': project, 'name': '작업'})
+        self.assertEqual(status, 200, saved)
+        target = Path(saved['path'])
+        self.assertTrue(target.is_relative_to(self.library / 'modded/textures/projects'))
+        self.assertEqual(json.loads(target.read_text()), project)
+        with self.opener.open(self.url + saved['url']) as response:
+            self.assertEqual(json.loads(response.read()), project)
+            self.assertIn('attachment;', response.headers['Content-Disposition'])
+        status, opened = self.request('/api/texture/editor/project/open', {'path': saved['path']})
+        self.assertEqual(status, 200, opened)
+        self.assertEqual(opened['project'], project)
+        status, second = self.request('/api/texture/editor/project/save', {'project': project, 'name': '작업'})
+        self.assertEqual(status, 200, second)
+        self.assertNotEqual(second['path'], saved['path'])
+        self.assertEqual(json.loads(target.read_text()), project)
+
+    def test_invalid_project_foreign_origin_and_escaping_path_publish_nothing(self):
+        project = self.project()
+        status, _ = self.request('/api/texture/editor/project/save', {'project': project, 'name': 'work'},
+                                 headers={'Origin': 'https://foreign.invalid'})
+        self.assertEqual(status, 403)
+        project['layers'][0]['opacity'] = True
+        self.assertEqual(self.request('/api/texture/editor/project/save', {'project': project, 'name': 'work'})[0], 400)
+        with patch('webtools.filebrowser.is_within_allowed', return_value=False):
+            self.assertEqual(self.request('/api/texture/editor/project/open', {'path': '/outside/work.elichika-texture.json'})[0], 403)
+        self.assertFalse((self.library / 'modded/textures/projects').exists())
 
 
 if __name__ == '__main__':

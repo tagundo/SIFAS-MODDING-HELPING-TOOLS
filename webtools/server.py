@@ -122,6 +122,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_motion_import()
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
                 return self._api_viewer_mesh(path.rsplit("/", 1)[1])
+            if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode"):
+                return self._api_viewer_texture(path.rsplit("/", 1)[1])
+            if path == "/api/texture/editor/decode":
+                return self._api_viewer_texture("image")
+            if path in ("/api/texture/editor/open", "/api/texture/editor/save"):
+                return self._api_texture_image_file(path.rsplit("/", 1)[1])
+            if path in ("/api/texture/editor/project/open", "/api/texture/editor/project/save"):
+                return self._api_texture_project(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/transplant/inspect", "/api/viewer/transplant/run"):
                 return self._api_viewer_transplant(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/thumbnail/plan", "/api/viewer/thumbnail/model", "/api/viewer/thumbnail/render"):
@@ -561,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             fields = {"inspect": {"token"}, "data": {"token", "mesh"},
                       "export": {"token", "state", "bodyState"}}[operation]
-            params = self._viewer_feature_request(fields, max_bytes=viewer_mesh_tools.MAX_REQUEST_BYTES)
+            params = self._viewer_feature_request(fields, max_bytes=(32 * 1024 * 1024 if operation == "export" else 64 * 1024))
             if operation == "inspect":
                 result = viewer_mesh_tools.inspect(params["token"])
             elif operation == "data":
@@ -582,6 +590,76 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, KeyError, OSError) as exc:
             return self._send_json({"error": str(exc)}, status=400)
 
+    def _api_texture_project(self, operation):
+        from webtools.core import texture_project_io
+        try:
+            fields = {"path"} if operation == "open" else {"project", "name"}
+            params = self._viewer_feature_request(fields, token=False,
+                max_bytes=64 * 1024 if operation == "open" else texture_project_io.MAX_BYTES + 64 * 1024)
+            if operation == "open":
+                source = params["path"]
+                if not isinstance(source, str) or not 0 < len(source) <= 4096:
+                    raise ValueError("Choose a texture project file.")
+                source = os.path.realpath(os.path.expanduser(source))
+                if not filebrowser.is_within_allowed(source):
+                    raise PermissionError("The texture project is outside the allowed folders.")
+                result = {"project": texture_project_io.open_project(source)}
+            else:
+                result = texture_project_io.save_project(params["project"], params["name"],
+                    self._viewer_feature_output("modded/textures/projects"))
+                result["url"] = "/api/download?path=" + quote(result["path"], safe="")
+            return self._send_json(result)
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_texture_image_file(self, operation):
+        from webtools.core import texture_image_io
+        try:
+            fields = {"path"} if operation == "open" else {"png", "name"}
+            params = self._viewer_feature_request(fields, token=False,
+                max_bytes=64 * 1024 if operation == "open" else 12 * 1024 * 1024)
+            if operation == "open":
+                source = params["path"]
+                if not isinstance(source, str) or not 0 < len(source) <= 4096:
+                    raise ValueError("Choose a PNG image file.")
+                source = os.path.realpath(os.path.expanduser(source))
+                if not filebrowser.is_within_allowed(source):
+                    raise PermissionError("The PNG image is outside the allowed folders.")
+                result = texture_image_io.open_png(source)
+            else:
+                result = texture_image_io.save_png(params["png"], params["name"],
+                    self._viewer_feature_output("modded/textures"))
+                result["url"] = "/api/download?path=" + quote(result["path"], safe="")
+            return self._send_json(result)
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
+    def _api_viewer_texture(self, operation):
+        from webtools.core import viewer_texture_tools
+        try:
+            fields = {"inspect": {"token"}, "data": {"token", "texture"},
+                      "decode": {"token", "texture", "png"}, "image": {"png"}}[operation]
+            params = self._viewer_feature_request(fields, max_bytes=(12 * 1024 * 1024 if operation in ("decode", "image") else 64 * 1024), token=operation != "image")
+            if operation == "inspect":
+                result = viewer_texture_tools.inspect(params["token"])
+            elif operation == "data":
+                result = viewer_texture_tools.data(params["token"], params["texture"])
+            elif operation == "decode":
+                result = viewer_texture_tools.decode(params["token"], params["texture"], params["png"])
+            else:
+                result = viewer_texture_tools.decode_image(params["png"])
+            return self._send_json(result)
+        except PermissionError as exc:
+            return self._send_json({"error": str(exc)}, status=403)
+        except TimeoutError as exc:
+            return self._send_json({"error": str(exc)}, status=503)
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            return self._send_json({"error": str(exc)}, status=400)
+
     def _api_viewer_transplant(self, operation):
         from webtools.core import viewer_transplants
         try:
@@ -591,7 +669,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "renderer" in params: arguments["renderer"] = params["renderer"]
                 return self._send_json(viewer_transplants.inspect_donor(params["donor"], params["variant"], **arguments))
             params = self._viewer_feature_request({"token", "state", "donor", "variant", "operation", "partRoot", "cutLow", "cutHigh", "region"},
-                optional_fields=viewer_transplants.OPTIONAL_FIELDS, max_bytes=16 * 1024 * 1024)
+                optional_fields=viewer_transplants.OPTIONAL_FIELDS, max_bytes=32 * 1024 * 1024)
             request = viewer_transplants.validate_request(params)
             output = self._viewer_feature_output("modded/viewer")
             cache = self._viewer_feature_output(".viewer-cache")
@@ -649,7 +727,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_viewer_edit_export(self):
         try:
-            params = self._viewer_edit_request({"token", "state"}, optional_fields={"mesh_state"}, max_bytes=16 * 1024 * 1024)
+            params = self._viewer_edit_request({"token", "state"}, optional_fields={"mesh_state"}, max_bytes=32 * 1024 * 1024)
             if not isinstance(params["state"], dict):
                 raise ValueError("Invalid model editing values.")
             from webtools.core import model_edits
@@ -774,7 +852,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from webtools.core import model_edits, viewer_mod_flow
             from webtools.core.sukusta import default_sukusta_dir
-            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits"}, max_bytes=16 * 1024 * 1024)
+            params = self._viewer_mod_request({"token", "state", "display_name", "character_id", "counterpart_path", "selected_variant"}, optional_fields={"thumbnail_token", "mesh_state", "include_face_edits"}, max_bytes=32 * 1024 * 1024)
             include_face_edits = params.get("include_face_edits")
             if "include_face_edits" in params and type(include_face_edits) is not bool:
                 raise ValueError("Choose whether to include face and mouth edits for this costume.")
@@ -877,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_viewer_edit_restore(self):
         try:
-            params = self._viewer_edit_request({"token", "recipe"}, max_bytes=16 * 1024 * 1024)
+            params = self._viewer_edit_request({"token", "recipe"}, max_bytes=64 * 1024 * 1024)
             if not isinstance(params["recipe"], dict):
                 raise ValueError("Choose an editing recipe for this original model.")
             from webtools.core import model_edits, viewer_mod_flow

@@ -1,0 +1,26 @@
+.texture-pane-controls { display: inline-flex; align-items: center; justify-content: flex-end; gap: .3rem; margin-left: auto; }
+.texture-pane-expand-button { min-height: 32px; margin: 0; padding: .2rem .45rem; font-size: .78rem; line-height: 1.2; }
+.viewer-mesh-tools > summary .texture-pane-controls { float: right; margin: -.15rem 0 -.15rem .4rem; }
+.viewer-transplant-texture-panel > .texture-pane-controls { display: flex; margin: .3rem 0; }
+#gallery-grid .gcard { position: relative; }
+#gallery-grid .gcard > .texture-pane-controls { position: absolute; top: .25rem; right: .25rem; z-index: 1; }
+.texture-pane-backdrop { position: fixed; inset: 0; z-index: 1140; background: #0008; touch-action: none; }
+.texture-pane-backdrop[hidden] { display: none; }
+.texture-pane-overlay-path { z-index: 2147483000 !important; pointer-events: none !important; overflow: visible !important; contain: none !important; transform: none !important; perspective: none !important; filter: none !important; backdrop-filter: none !important; clip-path: none !important; }
+.texture-pane-expanded { position: fixed !important; inset: auto !important; left: var(--texture-pane-left, 16px) !important; top: var(--texture-pane-top, 16px) !important; width: var(--texture-pane-width, calc(100vw - 32px)); height: var(--texture-pane-height, calc(100vh - 32px)); min-width: 0 !important; min-height: 0; max-width: none !important; max-height: none !important; z-index: 2147483100; box-sizing: border-box; overflow: auto !important; overscroll-behavior: contain; padding: .6rem !important; margin: 0 !important; border: 1px solid var(--border, #657084); border-radius: .5rem; background: var(--panel, #202630); color: var(--text, #e8ecf3); box-shadow: 0 .8rem 3rem #0008; pointer-events: auto !important; }
+.texture-pane-expanded * { pointer-events: auto; }
+.texture-pane-expanded .viewer-transplant-brush-cursor, .texture-pane-expanded #viewer-mesh-uv-cursor { pointer-events: none !important; }
+.texture-pane-expanded > summary { position: sticky; top: -.6rem; z-index: 3; box-sizing: border-box; min-height: 36px !important; padding: .45rem .2rem; background: var(--panel, #202630); border-bottom: 1px solid var(--border, #657084); }
+.texture-pane-expanded > .texture-pane-controls { position: sticky !important; top: -.6rem !important; right: auto !important; z-index: 3 !important; display: flex; padding: .25rem 0; margin: 0 0 .3rem; background: var(--panel, #202630); }
+.texture-pane-expanded.viewer-mesh-tools canvas, .texture-pane-expanded.viewer-transplant-texture-panel canvas { width: min(100%, calc(var(--texture-pane-height, 90vh) - 7rem)); max-width: none; height: auto; aspect-ratio: 1; margin: .3rem auto; }
+.texture-pane-expanded.gcard { display: flex; flex-direction: column; gap: .4rem; }
+#gallery-grid .texture-pane-expanded.gcard > .texture-pane-controls { position: sticky; }
+#gallery-grid .texture-pane-expanded.gcard img { display: block; width: 100%; height: auto; min-height: 0; flex: 1 1 auto; max-height: calc(var(--texture-pane-height, 90vh) - 9rem); object-fit: contain; }
+#gallery-grid .texture-pane-expanded.gcard .cap { flex: 0 0 auto; overflow-wrap: anywhere; }
+#gallery-grid .texture-pane-expanded.gcard .gallery-view-model { flex: 0 0 auto; }
+.viewer-transplant-brush-cursor { z-index: 12010; }
+@media (pointer: coarse), (max-width: 600px) {
+  .texture-pane-expand-button { min-height: 44px; padding: .35rem .5rem; }
+  .texture-pane-expanded { padding: .4rem !important; }
+  .texture-pane-expanded > summary, .texture-pane-expanded > .texture-pane-controls { top: -.4rem !important; }
+}

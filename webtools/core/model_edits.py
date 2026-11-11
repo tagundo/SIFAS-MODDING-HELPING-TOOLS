@@ -387,6 +387,9 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
         if len(physics_records) > viewer_physics.MAX_COMPONENTS:
             _fail("The selected models have too many physics components.")
     outlines = model_outlines.catalogue_sources(inspected_sources)
+    from . import viewer_texture_tools
+    textures = viewer_texture_tools.catalogue_sources(inspected_sources, sources,
+        automatic=set(range(selected_count, len(paths))))
     # The outline diagnostic identifies the bytes already captured for this
     # preview. Reuse their hashes; copying diagnostics never rereads a file or
     # exposes a user's local directory.
@@ -397,7 +400,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
     captured_bytes = total + sum(len(source["raw"]) for source in sources if source["member"] is not None)
     if captured_bytes > MAX_SOURCE_BYTES:
         _fail("The selected originals expand beyond the body editing memory limit.")
-    if not editable_rig or not targets:
+    if (not editable_rig or not targets) and not any(row["available"] for row in textures["textures"]):
         return {"available": False,
                 "reason": ("This model has no editable rig." if not editable_rig else
                            "No original writable body nodes were found."),
@@ -406,7 +409,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": captured_bytes,
                "containers": containers, "sources": sources, "targets": targets,
                "outlineOnlySources": set(range(selected_count, len(paths))),
-               "physics": physics, "outlines": outlines,
+               "physics": physics, "outlines": outlines, "textures": textures,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
                "busy": threading.Lock()}
@@ -424,7 +427,8 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             "scope": "Observed MV tracks guide recommendations; other songs may differ.",
             "physics": copy.deepcopy(physics),
             "outlines": copy.deepcopy(outlines),
-            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics", "outline_mask"]}
+            "textures": copy.deepcopy(textures),
+            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics", "outline_mask", "texture_pixels"]}
 
 
 def mod_source_context(token):
@@ -445,6 +449,7 @@ def mod_source_context(token):
             "variants": dict(session["variants"]),
             "physics": copy.deepcopy(session.get("physics", {})),
             "outlines": copy.deepcopy(session.get("outlines", {})),
+            "textures": copy.deepcopy(session.get("textures", {})),
             "outline_only_sources": sorted(session.get("outlineOnlySources", set())),
             "nodes": [{key: copy.deepcopy(target[key]) for key in
                        ("node", "name", "sourceIndex", "transformId", "serializedFile", "baseline", "authored", "methods")}
@@ -460,13 +465,17 @@ def _node(session, value):
 
 def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
-    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines"}:
+    if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines", "textures"}:
         _fail("The body edit state contains unsupported settings.")
     try:
         encoded = json.dumps(state, allow_nan=False).encode()
     except (ValueError, TypeError):
         _fail("The body edit state contains invalid values.")
-    if len(encoded) > MAX_STATE_BYTES:
+    from . import viewer_texture_tools
+    plain_state = {key: value for key, value in state.items() if key != "textures"}
+    plain_bytes = json.dumps(plain_state, allow_nan=False).encode()
+    if (len(encoded) > (viewer_texture_tools.MAX_STATE_BYTES if state.get("textures") else MAX_STATE_BYTES)
+            or len(plain_bytes) > MAX_STATE_BYTES):
         _fail("The body edit request is too large.")
     if type(state.get("version")) is not int or state["version"] != VERSION:
         _fail("The body edit recipe version is unsupported.")
@@ -488,9 +497,10 @@ def validate_state(token, state, *, allow_empty=False):
         physics = viewer_physics.validate_edits(session.get("physics", {}), state.get("physics", []))
         from . import model_outlines
         outlines = model_outlines.validate(session.get("outlines", {}), state.get("outlines", []))
+        textures = viewer_texture_tools.validate(session, state.get("textures", []))
     except ValueError as error:
         _fail(str(error))
-    if not isinstance(edits, list) or not (0 if allow_empty or physics or outlines or accessory is not None or session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
+    if not isinstance(edits, list) or not (0 if allow_empty or physics or outlines or textures or accessory is not None or session.get("allowEmptySceneReset") else 1) <= len(edits) <= MAX_EDITS:
         _fail("Change at least one body property before saving.")
     out, seen = [], set()
     for edit in edits:
@@ -559,12 +569,14 @@ def validate_state(token, state, *, allow_empty=False):
         result["accessoryUnclip"] = accessory
     if outlines:
         result["outlines"] = outlines
+    if textures:
+        result["textures"] = textures
     return result
 
 
 def has_changes(state):
     """Node, physics, outline and accessory-only recipes carry saved changes."""
-    return bool(state.get("edits") or state.get("physics") or state.get("outlines")) or "accessoryUnclip" in state
+    return bool(state.get("edits") or state.get("physics") or state.get("outlines") or state.get("textures")) or "accessoryUnclip" in state
 
 
 def _worlds(local, parents):
@@ -1082,6 +1094,10 @@ def edit_source_state(session, index, state):
     if state.get("outlines"):
         from . import model_outlines
         blob = model_outlines.apply_edits(blob, index, state["outlines"], session["outlines"], original_raw=source["raw"])
+    if state.get("textures"):
+        from . import viewer_texture_tools
+        blob, texture_changes = viewer_texture_tools.apply_edits(blob, index, state["textures"], session["textures"])
+        session.setdefault("textureWriteSummary", {})[index] = texture_changes
     return blob, meshes
 
 
@@ -1110,12 +1126,14 @@ def export(token, state, output_dir, *, log=lambda message: None, allow_empty=Fa
             selected = [edit for edit in state["edits"] if session["targets"][edit["node"]]["sourceIndex"] == index]
             physics = [row for row in state.get("physics", []) if row["id"].split(":", 1)[0] == str(index)]
             outlines = [row for row in state.get("outlines", []) if row["id"].split(":", 1)[0] == str(index)]
-            if not selected and not physics and not outlines and "accessoryUnclip" not in state:
+            textures = [row for row in state.get("textures", []) if row["texture"]["source"] == index]
+            if not selected and not physics and not outlines and not textures and "accessoryUnclip" not in state:
                 continue
             log("Saving body edits: " + source["name"])
             blob, meshes = edit_source_state(session, index, state)
             replacements[(source["container"], source["member"])] = blob
-            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics), "outlines": len(outlines)})
+            summaries.append({"source": index, "nodes": len(selected), "meshes": meshes, "physics": len(physics), "outlines": len(outlines),
+                              "textures": len(textures), "textureEdits": copy.deepcopy(session.get("textureWriteSummary", {}).get(index, []))})
         recipe = _recipe(session, state)
         root = _safe_root(output_dir)
         temporary = Path(tempfile.mkdtemp(prefix=".viewer-edit-", dir=root))

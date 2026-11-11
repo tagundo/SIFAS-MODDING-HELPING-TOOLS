@@ -218,9 +218,42 @@
     var limitations = new Set();
     var pending = [];
     var parser = options.parser;
+    var textureBindings = [], textureOverrides = new Map();
     var animated = false;
     var state = { recognizedMaterials: 0, meshes: 0, outlines: 0, gpuInvalidations: 0, pipeline: "gamma",
       source: "AS/Member", implementation: "reconstructed", gamePixelParityVerified: false };
+
+    function textureIdentityKey(identity) {
+      if (!identity || !Number.isInteger(identity.source) || !Number.isInteger(identity.file) || typeof identity.id !== "string") return "";
+      return identity.source + ":" + identity.file + ":" + identity.id;
+    }
+    function textureIdentity(info, original) {
+      var definition = parser && parser.json && parser.json.textures && info && parser.json.textures[info.index];
+      return definition && definition.extras && definition.extras.viewerTexture ||
+        original && original.userData && original.userData.viewerTexture || null;
+    }
+    function applyTextureBinding(binding) {
+      var override = textureOverrides.get(binding.key);
+      if (override && binding.baseline) {
+        // Shader pixels use the game's Gamma convention, independently of the
+        // generic glTF map's sRGB flag. New mip levels come from edited pixels.
+        var target = override.texture, original = binding.baseline;
+        target.encoding = T.LinearEncoding;
+        target.flipY = original.flipY; target.wrapS = original.wrapS; target.wrapT = original.wrapT;
+        target.magFilter = original.magFilter; target.minFilter = original.minFilter;
+        target.mipmaps = []; target.generateMipmaps = !!(original.mipmaps && original.mipmaps.length) || original.generateMipmaps;
+        target.needsUpdate = true;
+      }
+      if (binding.baseline) binding.uniform.value = override ? override.texture : binding.baseline;
+    }
+    function clearTextureOverride(key) {
+      var previous = textureOverrides.get(key);
+      if (!previous) return;
+      textureOverrides.delete(key);
+      textureBindings.forEach(function (binding) { if (binding.key === key) applyTextureBinding(binding); });
+      ownedTextures.delete(previous.texture);
+      previous.texture.dispose();
+    }
 
     function releaseTexture(texture) {
       if (texture && !releasedTextures.has(texture)) {
@@ -415,8 +448,11 @@
       if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
       if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
       names.forEach(function (name) {
+        var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
+          uniform: uniforms["u" + name.slice(1)], baseline: null };
+        textureBindings.push(binding);
         pending.push(loadTexture(textures[name], name === "_EmissiveTex" ? [0, 0, 0, 1] : [1, 1, 1, 1], name === "_MainTex" ? original.map : null)
-          .then(function (texture) { if (!disposed && texture) uniforms["u" + name.slice(1)].value = texture; }));
+          .then(function (texture) { if (!disposed && texture) { binding.baseline = texture; applyTextureBinding(binding); } }));
       });
       return pair;
     }
@@ -534,6 +570,34 @@
         });
         if (options.onChange) options.onChange();
       },
+      getOriginalMaterials: function (mesh) {
+        return originalMaterials.has(mesh) ? originalMaterials.get(mesh) : mesh.material;
+      },
+      setTextureOverride: function (identity, replacement) {
+        if (disposed) return;
+        var key = textureIdentityKey(identity);
+        if (!key) throw new Error("The edited texture has no source identity.");
+        if (replacement && !replacement.isTexture) throw new Error("Choose a valid texture preview.");
+        var previous = textureOverrides.get(key);
+        if (replacement && previous && previous.source === replacement) {
+          previous.texture.image = replacement.image;
+          textureBindings.forEach(function (binding) { if (binding.key === key) applyTextureBinding(binding); });
+          if (options.onChange) options.onChange();
+          return;
+        }
+        clearTextureOverride(key);
+        if (replacement) {
+          var texture = replacement.clone();
+          texture.mipmaps = []; texture.encoding = T.LinearEncoding;
+          textureOverrides.set(key, { texture: texture, source: replacement }); ownedTextures.add(texture);
+          textureBindings.forEach(function (binding) { if (binding.key === key) applyTextureBinding(binding); });
+        }
+        if (options.onChange) options.onChange();
+      },
+      clearTextureOverrides: function () {
+        Array.from(textureOverrides.keys()).forEach(clearTextureOverride);
+        if (options.onChange) options.onChange();
+      },
       setRimlight: function (value) {
         if (disposed || rimlightEnabled === !!value) return;
         rimlightEnabled = !!value;
@@ -565,6 +629,7 @@
       },
       getState: function () {
         return Object.assign({}, state, { enabled: enabled, loading: loading, disposed: disposed,
+          textureOverrides: textureOverrides.size,
           rimlightEnabled: rimlightEnabled,
           animated: enabled && animated, ownedMaterials: ownedMaterials.size,
           ownedTextures: ownedTextures.size, limitations: Array.from(limitations) });
@@ -613,6 +678,7 @@
         entries.length = 0;
         originalMaterials.clear();
         materialCache.clear(); textureCache.clear();
+        textureOverrides.clear(); textureBindings.length = 0;
       }
     };
     return controller;
