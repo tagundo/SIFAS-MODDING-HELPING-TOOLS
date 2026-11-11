@@ -219,6 +219,7 @@
     function updatePartUI(entry) {
       if (entry.operation !== "part") return;
       var faces = entry.selectionMode.value === "triangles";
+      if (entry.placeSelectionHistory) entry.placeSelectionHistory(faces);
       entry.boneControls.hidden = faces; entry.faceControls.hidden = !faces; entry.texturePanel.hidden = !faces || entry.inspecting;
       entry.partHint.dataset.transplantLabel = faces ? "Paint on the donor model or its UV texture. Green faces are transplanted together. Alt or right-drag rotates the model." : "Select multiple bones; selecting a parent also selects its descendants. Click the model to add a bone.";
       entry.partHint.textContent = t(entry.partHint.dataset.transplantLabel);
@@ -726,7 +727,28 @@
       move(entry.textureFit, view); move(entry.textureZoomText, view); move(entry.selectionStatus, view); move(entry.textureStatus, main);
       var donorTools = element('div', { className: 'uv-donor-model-tools', role: 'toolbar', 'aria-label': t('Donor editing') }); entry.modelTools = donorTools; entry.panel.insertBefore(donorTools, entry.stage);
       [['bones', 'Bones'], ['orbit', 'Rotate'], ['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked']].forEach(function (row) { quickButton(donorTools, row[0], row[1], true); });
+      var historyControls = element('div', { id: entry.panel.id + '-selection-history-controls', className: 'uv-edit-toolbar uv-selection-history', role: 'group', 'aria-label': t('Selection') });
+      historyControls.style.gap = '4px'; historyControls.style.alignItems = 'center'; historyControls.style.flexWrap = 'wrap';
+      historyControls.append(entry.selectionUndo, entry.selectionRedo); tools.insertBefore(historyControls, menu);
+      entry.placeSelectionHistory = function (faces) {
+        // These are the original history controls, not mirrors. Bone selection
+        // must retain its Undo/Redo/Clear even while the UV panel is hidden.
+        var destination = faces ? tools : donorTools;
+        if (historyControls.parentElement !== destination) {
+          if (faces) destination.insertBefore(historyControls, menu); else destination.appendChild(historyControls);
+        }
+        var clearHost = faces ? items : historyControls;
+        if (entry.selectionClear.parentElement !== clearHost) clearHost.appendChild(entry.selectionClear);
+        var display = faces ? 'contents' : 'flex', basis = faces ? '' : '100%', wrapping = faces ? '' : 'wrap';
+        if (historyControls.style.display !== display) historyControls.style.display = display;
+        if (historyControls.style.flexBasis !== basis) historyControls.style.flexBasis = basis;
+        if (donorTools.style.flexWrap !== wrapping) donorTools.style.flexWrap = wrapping;
+        [entry.selectionUndo, entry.selectionRedo, entry.selectionClear].forEach(function (button) {
+          var caption = button.textContent.trim(); if (button.getAttribute('aria-label') !== caption) button.setAttribute('aria-label', caption);
+        });
+      };
       entry.syncCanvasTools = function () {
+        entry.placeSelectionHistory(entry.selectionMode.value === 'triangles');
         var locked = entry.sceneAction.disabled, sceneMode = entry.selectionMode.value === 'bones' ? 'bones' : entry.sceneAction.value;
         quick.forEach(function (item) { var selected = item.scene ? sceneMode : entry.texturePan.checked ? 'pan' : sceneMode;
           var value = String(item.mode === selected); if (item.button.getAttribute('aria-pressed') !== value) item.button.setAttribute('aria-pressed', value); if (item.button.disabled !== locked) item.button.disabled = locked;

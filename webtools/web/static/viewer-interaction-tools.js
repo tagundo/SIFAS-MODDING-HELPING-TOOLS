@@ -121,16 +121,28 @@
         var box = element.getBoundingClientRect(); if (!box.width || !box.height || getComputedStyle(element).visibility === "hidden") return;
         obstacles.push({ left: box.left - rect.left - 5, right: box.right - rect.left + 5, top: box.top - rect.top - 5, bottom: box.bottom - rect.top + 5 });
       });
-      var best = null;
-      for (var line = 0; line < 3 && !best; line++) {
-        var y = Math.max(4, stage.clientHeight - height - 8 - line * (height + 8));
-        var intervals = obstacles.filter(function (box) { return box.bottom > y && box.top < y + height; }).sort(function (a, b) { return a.left - b.left; });
-        var x = 6, gaps = [];
-        intervals.forEach(function (box) { if (box.left > x) gaps.push([x, Math.min(stage.clientWidth - 6, box.left)]); x = Math.max(x, box.right); });
-        if (x < stage.clientWidth - 6) gaps.push([x, stage.clientWidth - 6]);
-        gaps.forEach(function (gap) { if (gap[1] - gap[0] < width) return; var left = Math.max(gap[0], Math.min((stage.clientWidth - width) / 2, gap[1] - width)); var score = Math.abs(left + width / 2 - stage.clientWidth / 2); if (!best || score < best.score) best = { left: left, top: y, score: score }; });
+      function freePosition(lines) {
+        var position = null;
+        for (var line = 0; line < lines && !position; line++) {
+          var y = Math.max(4, stage.clientHeight - height - 8 - line * (height + 8));
+          var intervals = obstacles.filter(function (box) { return box.bottom > y && box.top < y + height; }).sort(function (a, b) { return a.left - b.left; });
+          var x = 6, gaps = [];
+          intervals.forEach(function (box) { if (box.left > x) gaps.push([x, Math.min(stage.clientWidth - 6, box.left)]); x = Math.max(x, box.right); });
+          if (x < stage.clientWidth - 6) gaps.push([x, stage.clientWidth - 6]);
+          gaps.forEach(function (gap) { if (gap[1] - gap[0] < width) return; var left = Math.max(gap[0], Math.min((stage.clientWidth - width) / 2, gap[1] - width)); var score = Math.abs(left + width / 2 - stage.clientWidth / 2); if (!position || score < position.score) position = { left: left, top: y, score: score }; });
+        }
+        return position;
       }
-      if (!best) best = { left: Math.max(6, (stage.clientWidth - width) / 2), top: Math.max(4, stage.clientHeight - height * 2 - 16) };
+      var best = freePosition(3);
+      // Labels can fit the whole stage while still covering its existing
+      // camera controls. Compact against the actual free gaps, not width alone.
+      if (!best) {
+        host.classList.add("viewer-interaction-icons-only");
+        width = row.getBoundingClientRect().width; height = row.getBoundingClientRect().height;
+        best = freePosition(Math.max(3, Math.ceil(stage.clientHeight / (height + 8))));
+      }
+      if (!best) { if (host.style.visibility !== "hidden") host.style.visibility = "hidden"; return; }
+      if (host.style.visibility) host.style.visibility = "";
       var left = Math.round(best.left) + "px", top = Math.round(best.top) + "px";
       if (host.style.left !== left) host.style.left = left; if (host.style.top !== top) host.style.top = top;
       var menuHeight = Math.max(72, Math.min(260, best.top - 12)) + "px";

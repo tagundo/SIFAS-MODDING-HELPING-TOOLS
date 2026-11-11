@@ -61,7 +61,7 @@
     if (!stage) return;
     var canvas = stage.querySelector('canvas'), inspector = workspace.querySelector('.uv-edit-inspector'), settings = workspace.querySelector('[data-uv-settings]'), handle = workspace.querySelector('.uv-canvas-resizer');
     if (!canvas || !inspector || !settings || !handle) return;
-    var preference = 'elichika.uv-view-height.v1.' + record.node.id, height = 0, scheduled = 0, drag = null, shortLayout = false, moved = [], rail = null;
+    var preference = 'elichika.uv-view-height.v1.' + record.node.id, height = 0, scheduled = 0, drag = null, shortLayout = false, moved = [], rail = null, menuPlacers = [];
     try { height = +localStorage.getItem(preference) || 0; } catch (_) {}
     if (!Number.isFinite(height) || height < 180 || height > 900) height = 0;
     var heading = document.createElement('div'), caption = document.createElement('strong'), close = document.createElement('button');
@@ -114,6 +114,7 @@
       if (canvas.style.height !== side + 'px') canvas.style.height = side + 'px';
       var values = { 'aria-valuemin': '180', 'aria-valuemax': String(maximum()), 'aria-valuenow': String(Math.round(stage.clientHeight)) };
       Object.keys(values).forEach(function (key) { if (handle.getAttribute(key) !== values[key]) handle.setAttribute(key, values[key]); });
+      menuPlacers.forEach(function (place) { place(); });
     }
     function schedule() { if (!scheduled) scheduled = global.requestAnimationFrame(fit); }
     function setHeight(value) {
@@ -141,16 +142,21 @@
     workspace.querySelectorAll('.uv-selection-menu').forEach(function (menu) {
       var content = menu.querySelector('div');
       function placeMenu() {
-        if (!menu.open || !rail) return;
+        if (!menu.open) return;
         var rect = menu.querySelector('summary').getBoundingClientRect(), bounds = content.getBoundingClientRect(), view = viewport();
-        var left = Math.max(view.x + 8, Math.min(rect.left, view.x + view.width - bounds.width - 8));
+        var fixed = global.getComputedStyle(content).position === 'fixed';
+        var left = Math.max(view.x + 8, Math.min(fixed ? rect.left : rect.right - bounds.width, view.x + view.width - bounds.width - 8));
         var top = Math.max(view.y + 8, Math.min(rect.bottom + 4, view.y + view.height - bounds.height - 8));
-        content.style.setProperty('--uv-menu-left', left + 'px'); content.style.setProperty('--uv-menu-top', top + 'px');
+        // Ordinary toolbars use an absolute popup relative to their summary;
+        // the short-screen rail uses fixed positioning to escape its scroller.
+        var positions = { left: (fixed ? left : left - rect.left) + 'px', top: (fixed ? top : top - rect.top) + 'px', right: 'auto' };
+        Object.keys(positions).forEach(function (key) { if (content.style[key] !== positions[key]) content.style[key] = positions[key]; });
       }
+      menuPlacers.push(placeMenu);
       listen(menu, 'click', function (event) { if (event.target.closest('button')) menu.open = false; });
       listen(workspace, 'pointerdown', function (event) { if (menu.open && !menu.contains(event.target)) menu.open = false; });
       listen(menu, 'keydown', function (event) { if (event.key === 'Escape' && menu.open) { event.preventDefault(); event.stopPropagation(); menu.open = false; menu.querySelector('summary').focus(); } });
-      listen(menu, 'toggle', placeMenu); listen(workspace, 'scroll', placeMenu, true);
+      listen(menu, 'toggle', placeMenu); listen(global, 'scroll', placeMenu, true); listen(global, 'resize', placeMenu);
     });
     workspace.querySelectorAll('.uv-edit-viewbar > button').forEach(function (button, index) { if (index < 3) { button.classList.add(['uv-zoom-out-button', 'uv-zoom-in-button', 'uv-fit-button'][index]); button.title = button.textContent; } });
     listen(handle, 'pointerdown', function (event) { if (event.button !== 0 || active === record) return; event.preventDefault(); drag = { id: event.pointerId, y: event.clientY, height: stage.clientHeight }; handle.setPointerCapture(event.pointerId); });
