@@ -1,17 +1,18 @@
 """Adapter for sifas-assetbundle-renamer-by-texture.py.
 
-The filename has hyphens (not a valid module name) AND it imports tkinter at top
-level, so we install the headless tk stub and load it by path via importlib.
+The filename has hyphens (not usable in an import statement) AND it imports
+tkinter at top level, so we install the headless tk stub and import it by name.
+The runtime importer can load packaged bytecode without a physical .py file.
 Its two pure functions (extract_texture_name / generate_new_filename) are reused;
 the rename loop is done here, writing renamed *copies* into out_dir (safe -
 never touches the originals in place).
 """
-import importlib.util
+import importlib
 import os
 import shutil
 from pathlib import Path
 
-from webtools.core.repo import ensure_repo_on_path, repo_root
+from webtools.core.repo import ensure_repo_on_path
 from webtools.core.sukusta import find_bundles
 from webtools.core.tkstub import ensure_tk_stub
 from webtools.tools.common import as_float_or_none
@@ -25,10 +26,7 @@ def _module():
         return _MODULE
     ensure_tk_stub()
     ensure_repo_on_path()
-    path = repo_root() / "sifas-assetbundle-renamer-by-texture.py"
-    spec = importlib.util.spec_from_file_location("sifas_renamer_by_texture", str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("sifas-assetbundle-renamer-by-texture")
     _MODULE = mod
     return mod
 

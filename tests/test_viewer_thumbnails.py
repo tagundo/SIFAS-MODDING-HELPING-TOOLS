@@ -61,8 +61,18 @@ class ViewerThumbnailTests(unittest.TestCase):
         self.assertEqual(receipt["sources"], [{"name": self.source.name, "sha256": hashlib.sha256(self.raw).hexdigest()}])
         self.assertEqual(receipt["characterId"], 6)
         self.assertEqual(receipt["quality"]["renderer"], "SifasMaterial")
+        self.assertIs(receipt["quality"]["rimlight"], False)
         with self.assertRaisesRegex(ValueError, "another costume/member"):
             provider(str(self.source), 256, 201)
+
+    def test_rimlight_free_profile_has_a_new_render_cache_binding(self):
+        current = self.plan()
+        self.assertIs(current["quality"]["rimlight"], False)
+        # Earlier thumbnails inherited the material renderer's enabled default.
+        previous_quality = {key: value for key, value in thumbs.QUALITY.items() if key != "rimlight"}
+        with patch.object(thumbs, "QUALITY", previous_quality):
+            previous = self.plan()
+        self.assertNotEqual(current["items"][0]["cacheKey"], previous["items"][0]["cacheKey"])
 
     def test_source_change_after_render_is_rejected(self):
         plan = self.plan(); self.upload(plan)

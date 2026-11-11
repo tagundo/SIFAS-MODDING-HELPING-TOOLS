@@ -28,7 +28,8 @@ TTL = 1800
 MAX_ITEMS = 128
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_PLAN_BYTES = 32 * 1024 * 1024
-QUALITY = {"renderer": "SifasMaterial", "highQuality": True, "animation": False, "supersample": 2}
+QUALITY = {"renderer": "SifasMaterial", "highQuality": True, "animation": False, "supersample": 2,
+           "rimlight": False}
 
 
 def _require(value, message):

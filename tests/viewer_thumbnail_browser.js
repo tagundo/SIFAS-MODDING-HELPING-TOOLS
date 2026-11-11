@@ -15,7 +15,12 @@ async function start() { const s = net.createServer(); await new Promise(r => s.
 async function show(page, selector) { const loc = page.locator(selector); await loc.evaluate(e => { for (let p = e.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true; }); await loc.scrollIntoViewIfNeeded(); return loc; }
 function inspectZip(filename, pngOut) { return JSON.parse(execFileSync(python, ['-c', `import ast,hashlib,io,json,sys,zipfile;from PIL import Image;z=zipfile.ZipFile(sys.argv[1]);m=next(n for n in z.namelist() if n.rsplit('/',1)[-1]=='modinstall.txt');d={n.targets[0].id:ast.literal_eval(n.value) for n in ast.parse(z.read(m).decode()).body};b=z.read(d['thumbnail_file']);open(sys.argv[2],'wb').write(b);im=Image.open(io.BytesIO(b)).convert('RGBA');print(json.dumps({'sha256':hashlib.sha256(b).hexdigest(),'size':im.size,'member':d['chara_id'],'thumbnail':d['thumbnail_file'],'alpha':im.getpixel((0,0))[3],'modelSha':hashlib.sha256(z.read(d['costume_file'])).hexdigest(),'iosSha':hashlib.sha256(z.read(d['costume_file_ios'])).hexdigest() if d.get('costume_file_ios') else None,'backgroundPixel':im.getpixel((im.width//8,im.height//8))}))`, filename, pngOut], { cwd: product, encoding: 'utf8' })); }
 async function untouched(page) { return page.evaluate(() => { const s = ModelViewer.getState(); return { paths: s.loadedPaths, motions: s.motionLibraryPaths, camera: s.camera, authoring: ModelViewer.getAuthoringState(),
-  pose: s.rig && { clip: s.rig.selectedClip, time: s.rig.time, playing: s.rig.playing, body: s.rig.body, physics: s.rig.physics }, meshNames: s.meshNames, source: s.sourceTriangles }; }); }
+  pose: s.rig && { clip: s.rig.selectedClip, time: s.rig.time, playing: s.rig.playing, body: s.rig.body, physics: s.rig.physics }, meshNames: s.meshNames, source: s.sourceTriangles,
+  rimlight: s.materials && s.materials.rimlightEnabled, rimlightPreference: localStorage.getItem('elichika.viewer.rimlight.v1') }; }); }
+function noRimlight(state) {
+  assert.strictEqual(state.last.render.material.rimlightEnabled, false, 'thumbnail shader disables rimlight');
+  assert(state.receipts.every(receipt => receipt.quality.rimlight === false), 'every receipt binds the rimlight-free material profile');
+}
 function savedMatchesMain(render, rig, exactOperations) {
   const actual = render.savedNodes;
   assert(actual && actual.operations.length, 'thumbnail applies verified saved settings');
@@ -55,11 +60,22 @@ async function main() { const report = { status: 'RUNNING', evidence, cases: [] 
     const job = await submitTool(page);
     await page.waitForFunction(() => /done|error/.test(document.getElementById('console-title').textContent));
     assert((await page.locator('#console-title').textContent()).includes('done'), await page.locator('#log').textContent());
-    const toolState = await page.evaluate(() => ViewerThumbnails.getState()); assert.equal(toolState.last.characterId, 6); assert(toolState.last.render.subjectPixels > 0 && toolState.last.render.quality.enabled && toolState.last.render.quality.ready);
+    const toolState = await page.evaluate(() => ViewerThumbnails.getState()); assert.equal(toolState.last.characterId, 6); assert(toolState.last.render.subjectPixels > 0 && toolState.last.render.quality.enabled && toolState.last.render.quality.ready); noRimlight(toolState);
     const zip = fs.readdirSync(output).find(n => n.endsWith('.zip')); assert(zip);
     const packaged = inspectZip(path.join(output, zip), path.join(evidence, 'tool-thumbnail.png')); assert.equal(packaged.sha256, toolState.last.receipt.sha256); assert.equal(packaged.modelSha, original); assert.deepStrictEqual(packaged.size, [256, 256]);
     assert.equal(packaged.member, 6); assert.equal(sha(fs.readFileSync(source)), original); assert.equal((await page.evaluate(() => ModelViewer.getState())).loaded, false, 'hidden render never loads the main viewer');
     report.cases.push({ name: 'real Tools option→automatic high-quality render→installer ZIP', state: toolState, packaged });
+    const existing = path.join(output, zip), secondExisting = path.join(output, 'second-existing.zip'); fs.copyFileSync(existing, secondExisting);
+    for (const mode of ['single', 'multi']) {
+      const update = await page.evaluate(async ({ mode, paths, output }) => {
+        await ViewerThumbnails.prepareUpdater({ mode, in_path: paths[0], in_paths: paths.join('\n'), out_dir: output, thumbnail_size: '256', variant: 'auto' });
+        return ViewerThumbnails.getState();
+      }, { mode, paths: [existing, secondExisting], output: path.join(output, 'updated') });
+      noRimlight(update); assert.equal(update.receipts.length, mode === 'single' ? 1 : 2);
+      report.cases.push({ name: 'existing Mod thumbnail ' + mode + ' uses the shared rimlight-free high-quality renderer', state: update });
+    }
+    assert.equal(sha(fs.readFileSync(existing)), sha(fs.readFileSync(secondExisting)), 'thumbnail replacement preparation preserves original ZIP bytes');
+    fs.unlinkSync(secondExisting);
     const alternate = await page.evaluate(async source => { const params = { mode: 'single', in_path: source, out_dir: '', auto_chara_id: false, manual_chara_id: '201', thumbnail_size: '256', combine_pairs: true, thumbnail_mode: '3d' };
       const result = await ViewerThumbnails.preparePacker(params); return { result, state: ViewerThumbnails.getState() }; }, source);
     assert.notEqual(alternate.state.last.receipt.sha256, toolState.last.receipt.sha256); assert.notEqual(alternate.state.last.receipt.cacheKey, toolState.last.receipt.cacheKey); assert.equal(alternate.state.last.characterId, 201);
@@ -75,7 +91,7 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
     await page.locator('#f_auto_chara_id').uncheck(); await page.locator('#f_manual_chara_id').fill('6'); await page.locator('#f_thumbnail_mode').selectOption('3d'); await page.locator('#f_combine_pairs').check();
     await submitTool(page);
     await page.waitForFunction(() => /done|error/.test(document.getElementById('console-title').textContent)); assert((await page.locator('#console-title').textContent()).includes('done'), await page.locator('#log').textContent());
-    const batchState = await page.evaluate(() => ViewerThumbnails.getState()), batchZips = fs.readdirSync(batchOutput).filter(n => n.endsWith('.zip')); assert.equal(batchState.receipts.length, 2, 'Android+iOS pair renders its primary only'); assert.equal(batchZips.length, 2);
+    const batchState = await page.evaluate(() => ViewerThumbnails.getState()), batchZips = fs.readdirSync(batchOutput).filter(n => n.endsWith('.zip')); assert.equal(batchState.receipts.length, 2, 'Android+iOS pair renders its primary only'); assert.equal(batchZips.length, 2); noRimlight(batchState);
     const batchPackages = batchZips.map((name, i) => inspectZip(path.join(batchOutput, name), path.join(evidence, 'batch-' + i + '.png')));
     for (const pack of batchPackages) { assert(batchState.receipts.some(r => r.sha256 === pack.sha256 && r.characterId === pack.member && r.sources.some(s => s.sha256 === pack.modelSha))); if (pack.iosSha) assert(batchState.receipts.some(r => r.sha256 === pack.sha256 && r.sources.some(s => s.sha256 === pack.iosSha))); }
     assert(batchPackages.some(p => p.iosSha === batchHashes['006set_ios.unity'])); report.cases.push({ name: 'batch Android+iOS grouping uses one primary render per ZIP and binds all source files', state: batchState, packages: batchPackages });
@@ -89,13 +105,15 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
     assert.deepStrictEqual(Object.fromEntries(fs.readdirSync(batch).map(n => [n, sha(fs.readFileSync(path.join(batch, n)))])), batchHashes); report.cases.push({ name: 'Selected files shares source-bound render receipts with actual single subruns', state: multiState });
     await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer([source]); }, source);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);
+    await (await show(page, '#viewer-rimlight')).check();
+    assert.strictEqual((await page.evaluate(() => ModelViewer.getState())).materials.rimlightEnabled, true, 'live viewer uses the selected lighting preference');
     savedMatchesMain(toolState.last.render, (await page.evaluate(() => ModelViewer.getState())).rig, true);
     await page.evaluate(() => { const m = ModelViewer.getEditingMetadata(), node = m.nodes.find(n => n.name === 'BreastSize') || m.nodes.find(n => n.methods.includes('node')); const s = ModelViewer.getAuthoringState(); s.edits = [{ node: node.node, method: 'node', scale: node.baseline.scale.map((v, i) => i === 0 ? v * 1.1 : v) }]; ModelViewer.restoreAuthoringState(s); });
     await (await show(page, '#viewer-mod-character')).selectOption('6'); await (await show(page, '#viewer-mod-thumbnail-mode')).selectOption('3d');
     const before = await untouched(page); await (await show(page, '#viewer-save-mod')).click();
     await page.waitForFunction(() => { const p = ModelViewer.getState().persistence; return !p.busy && ['done', 'error'].includes(p.status); });
     const p = (await page.evaluate(() => ModelViewer.getState())).persistence; assert.equal(p.status, 'done', p.error);
-    const live = await page.evaluate(() => ViewerThumbnails.getState()), after = await untouched(page); assert.deepStrictEqual(after, before, 'automatic thumbnail never changes camera, pose, body, physics, visibility or motion library');
+    const live = await page.evaluate(() => ViewerThumbnails.getState()), after = await untouched(page); assert.deepStrictEqual(after, before, 'automatic thumbnail never changes camera, pose, body, physics, visibility, motion library or live rimlight preference'); noRimlight(live);
     savedMatchesMain(live.last.render, (await page.evaluate(() => ModelViewer.getState())).rig, false);
     assert(p.modPackage.thumbnail && p.modPackage.thumbnail.sha256 === live.last.receipt.sha256); assert.equal(p.modPackage.thumbnail.characterId, 6);
     const saved = inspectZip(p.modPackage.packagePath, path.join(evidence, 'viewer-thumbnail.png')); assert.equal(saved.sha256, live.last.receipt.sha256); assert.equal(saved.thumbnail, p.modPackage.thumbnail.member); assert.notEqual(saved.modelSha, original, 'actual exported edits are represented by the thumbnail model');
@@ -105,7 +123,7 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
       const hashes = [body, face].map(p => sha(fs.readFileSync(p)));
       const actual = await page.evaluate(async body => { let png; const result = await ViewerThumbnails.preparePacker({ mode: 'single', in_path: body, auto_chara_id: false, manual_chara_id: '201', thumbnail_size: '256', combine_pairs: true }, { onPreview: image => { png = image; } }); return { result, state: ViewerThumbnails.getState(), png }; }, body);
       fs.writeFileSync(path.join(evidence, 'ayumu-costume.png'), Buffer.from(actual.png.split(',')[1], 'base64')); delete actual.png;
-      assert(actual.state.last.render.triangles > 1000 && actual.state.last.render.subjectPixels > 1000 && actual.state.last.render.material.recognizedMaterials > 0);
+      assert(actual.state.last.render.triangles > 1000 && actual.state.last.render.subjectPixels > 1000 && actual.state.last.render.material.recognizedMaterials > 0); noRimlight(actual.state);
       assert(actual.state.last.render.excludedNames.includes('Hair') && actual.state.last.render.excludedNames.includes('Face') && actual.state.last.render.visibleMeshes === 1, 'actual GLB primitive mappings really hide verified head meshes, retaining the costume');
       assert.deepStrictEqual([body, face].map(p => sha(fs.readFileSync(p))), hashes); report.cases.push({ name: 'original Ayumu costume, native SDK framing and SIFAS material', actual });
       await page.evaluate(paths => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer(paths); }, [body, face]);

@@ -154,7 +154,9 @@
           });
         }
       });
-      material = global.SifasMaterial.apply(model, renderer, { parser: gltf.parser, enabled: true });
+      // Costume thumbnails use a fixed material profile, independent of the
+      // live viewer's lighting preference. The raw material API defaults on.
+      material = global.SifasMaterial.apply(model, renderer, { parser: gltf.parser, enabled: true, rimlight: false });
       if (material.ready) await material.ready;
       stopped(signal);
       var p = profile.camera, camera = new T.OrthographicCamera(p.left, p.right, p.top, p.bottom, p.near, p.far);
