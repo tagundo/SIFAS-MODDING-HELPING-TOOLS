@@ -2,6 +2,10 @@
 (function (global) {
   "use strict";
   var TEXT = {
+    "Brush": ["브러시", "ブラシ"], "Erase": ["지우기", "消す"], "Linked": ["연결", "接続"], "Pan": ["이동", "移動"], "Rotate": ["회전", "回転"],
+    "Tool settings": ["도구 설정", "ツール設定"], "Selection": ["선택", "選択"],
+    "Texture interaction": ["텍스처 조작", "テクスチャ操作"],
+    "Zoom in": ["확대", "拡大"], "Zoom out": ["축소", "縮小"],
     "Apply or cancel the texture preview before saving.": ["저장하기 전에 텍스처 미리보기를 적용하거나 취소하세요.", "保存前にテクスチャのプレビューを適用またはキャンセルしてください。"],
     "Costume transplant": ["코스튬 이식", "衣装移植"],
     "Costume part transplant": ["코스튬 부분 이식", "衣装パーツ移植"],
@@ -269,6 +273,8 @@
           [entry.selectionMode, entry.parts, entry.includeChildren, entry.boneSearch, entry.sceneAction, entry.brushRadius, entry.fromBones, entry.textureMaterial, entry.textureZoom, entry.texturePan, entry.textureFit, entry.selectionClear, entry.uvPlacement].forEach(function (control) { control.disabled = selectionLocked; });
           (entry.boneRows || []).forEach(function (row) { row.input.disabled = selectionLocked; });
           entry.selectionUndo.disabled = selectionLocked || !entry.selectionHistory.length; entry.selectionRedo.disabled = selectionLocked || !entry.selectionFuture.length;
+          if (entry.syncCanvasTools) entry.syncCanvasTools();
+          if (entry.modelTools && entry.modelTools.hidden !== (entry.stage.hidden || !entry.donor)) entry.modelTools.hidden = entry.stage.hidden || !entry.donor;
         }
         var disabled = !!(locked || !ready || !entry.donor || entry.inspecting || entry.operation === "part" && !entry.selectedTriangles);
         if (entry.run.disabled !== disabled) entry.run.disabled = disabled;
@@ -688,6 +694,55 @@
       }
       finally { historySwitch = false; busy = false; if (options.busyChanged) options.busyChanged(false); refresh(); }
     }
+    function donorCanvasWorkspace(entry) {
+      var panel = entry.texturePanel, original = Array.from(panel.children);
+      panel.id = entry.panel.id + '-texture-pane';
+      var workspace = element('div', { className: 'uv-edit-workspace' }), main = element('div', { className: 'uv-edit-main' }); workspace.appendChild(main); panel.appendChild(workspace);
+      var source = element('div', { className: 'uv-edit-source' }), tools = element('div', { className: 'uv-edit-toolbar', role: 'toolbar', 'aria-label': t('Texture interaction') });
+      var stage = element('div', { className: 'uv-canvas-stage' }), resize = element('div', { className: 'uv-canvas-resizer', tabindex: '0', role: 'separator', 'aria-orientation': 'horizontal' });
+      var view = element('div', { className: 'uv-edit-viewbar' }), inspector = element('aside', { className: 'uv-edit-inspector', hidden: '' });
+      main.append(source, tools, stage, resize, view); workspace.appendChild(inspector); original.forEach(function (node) { inspector.appendChild(node); }); stage.appendChild(entry.textureCanvas);
+      function move(control, destination) { var node = control.parentElement && control.parentElement.tagName === 'LABEL' ? control.parentElement : control; destination.appendChild(node); }
+      move(entry.textureMaterial, source); move(entry.brushRadius, tools); entry.brushRadius.parentElement.classList.add('uv-compact-radius');
+      move(entry.sceneAction, inspector); move(entry.fromBones, inspector);
+      var quick = [], zoomButtons = [];
+      function choose(mode, scene) {
+        var next = scene && mode === 'bones' ? 'bones' : 'triangles';
+        if (entry.selectionMode.value !== next) { entry.selectionMode.value = next; entry.selectionMode.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (mode !== 'bones' && mode !== 'pan') entry.sceneAction.value = mode;
+        if (!scene) entry.texturePan.checked = mode === 'pan';
+        entry.sceneAction.dispatchEvent(new Event('change', { bubbles: true })); entry.texturePan.dispatchEvent(new Event('change', { bubbles: true })); entry.syncCanvasTools();
+      }
+      function quickButton(parent, mode, title, scene) {
+        var button = element('button', { type: 'button', text: title, 'data-donor-tool': mode }); button.title = t(title) + (!scene ? ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[mode]) + ')' : ''); parent.appendChild(button);
+        button.addEventListener('click', function () { choose(mode, scene); }); quick.push({ button: button, mode: mode, scene: scene }); return button;
+      }
+      [['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked'], ['pan', 'Pan']].forEach(function (row) { quickButton(tools, row[0], row[1], false); });
+      move(entry.selectionUndo, tools); move(entry.selectionRedo, tools); entry.selectionUndo.classList.add('uv-undo-button'); entry.selectionRedo.classList.add('uv-redo-button');
+      var settings = element('button', { type: 'button', text: 'Tool settings', className: 'uv-icon-button uv-settings-button', 'data-uv-settings': '', 'aria-expanded': 'false' }); tools.appendChild(settings);
+      var menu = element('details', { className: 'uv-selection-menu' }, [element('summary', { text: 'Selection' })]), items = element('div', {}); menu.appendChild(items); items.appendChild(entry.selectionClear); tools.appendChild(menu);
+      tools.insertBefore(entry.brushRadius.parentElement, entry.selectionUndo); tools.appendChild(settings);
+      [['Zoom out', -1], ['Zoom in', 1]].forEach(function (row) { var button = element('button', { type: 'button', text: row[0] }); view.appendChild(button); zoomButtons.push(button); button.addEventListener('click', function () { entry.textureZoom.value = String(Math.max(1, Math.min(16, Number(entry.textureZoom.value) * Math.pow(Math.SQRT2, row[1])))); entry.textureZoom.dispatchEvent(new Event('input', { bubbles: true })); }); });
+      move(entry.textureFit, view); move(entry.textureZoomText, view); move(entry.selectionStatus, view); move(entry.textureStatus, main);
+      var donorTools = element('div', { className: 'uv-donor-model-tools', role: 'toolbar', 'aria-label': t('Donor editing') }); entry.modelTools = donorTools; entry.panel.insertBefore(donorTools, entry.stage);
+      [['bones', 'Bones'], ['orbit', 'Rotate'], ['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked']].forEach(function (row) { quickButton(donorTools, row[0], row[1], true); });
+      entry.syncCanvasTools = function () {
+        var locked = entry.sceneAction.disabled, sceneMode = entry.selectionMode.value === 'bones' ? 'bones' : entry.sceneAction.value;
+        quick.forEach(function (item) { var selected = item.scene ? sceneMode : entry.texturePan.checked ? 'pan' : sceneMode;
+          var value = String(item.mode === selected); if (item.button.getAttribute('aria-pressed') !== value) item.button.setAttribute('aria-pressed', value); if (item.button.disabled !== locked) item.button.disabled = locked;
+        });
+        zoomButtons.forEach(function (button) { if (button.disabled !== entry.textureZoom.disabled) button.disabled = entry.textureZoom.disabled; });
+      };
+      entry.sceneAction.addEventListener('change', entry.syncCanvasTools); entry.texturePan.addEventListener('change', entry.syncCanvasTools); entry.selectionMode.addEventListener('change', entry.syncCanvasTools);
+      entry.textureCanvas.addEventListener('keydown', function (event) {
+        if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+        var key = String(event.key).toLowerCase(), mode = { b: 'paint', e: 'erase', l: 'connected', v: 'pan' }[key];
+        if (mode && !entry.sceneAction.disabled) { event.preventDefault(); event.stopPropagation(); choose(mode, false); }
+        else if ((key === '[' || key === ']') && !entry.sceneAction.disabled) { event.preventDefault(); entry.brushRadius.value = Math.max(2, Math.min(80, +entry.brushRadius.value + (key === '[' ? -2 : 2))); }
+        else if (key === 'home' && !entry.textureFit.disabled) { event.preventDefault(); entry.textureFit.click(); }
+      });
+      entry.syncCanvasTools();
+    }
     function addPanel(operation, id, title) {
       var entry = { operation: operation, title: title, generation: 0, donor: "", variant: "primary", inspecting: false, running: false, resultPaths: [],
         selectedBones: new Set(), selectedFaces: new Set(), highlightedFaces: new Set(), selectionRevision: 0, selectionHistory: [], selectionFuture: [] };
@@ -824,6 +879,7 @@
         if (preset) { entry.low.value = preset[0]; entry.high.value = preset[1]; if (entry.preview) entry.preview.cuts(); }
       });
       [entry.low, entry.high].forEach(function (input) { input.addEventListener("input", function () { entry.preset.value = "custom"; if (entry.preview) entry.preview.cuts(); }); });
+      if (operation === 'part') donorCanvasWorkspace(entry);
       entries.push(entry);
     }
     addPanel("costume", "viewer-costume-transplant", "Costume transplant");

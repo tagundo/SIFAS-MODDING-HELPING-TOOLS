@@ -47,6 +47,19 @@ function response(p, suffix) { const pending = p.waitForResponse(r => r.url().en
 async function state(p) { return p.evaluate(() => ModelViewer.getTextureTools().getState()); }
 async function idle(p) { await p.waitForFunction(() => { const tools = ModelViewer.getTextureTools(), s = tools && tools.getState(); return s && (!s.pending || s.selection && s.selection.floatingSelection) && !s.loading; }); await frames(p); }
 async function show(p, id) { const e = p.locator(id); await e.evaluate(e => { for (let a = e.parentElement; a; a = a.parentElement) if (a.tagName === 'DETAILS') a.open = true; }); await e.scrollIntoViewIfNeeded(); return e; }
+async function dismissTextureMenus(p) {
+  if (!await p.locator('#viewer-texture-tools .viewer-texture-file-menu[open], #viewer-texture-tools .viewer-texture-view-options[open], #viewer-texture-tools .viewer-texture-selection-menu[open]').count()) return;
+  await p.keyboard.press('Escape'); await p.waitForFunction(() => !document.querySelector('#viewer-texture-tools .viewer-texture-file-menu[open], #viewer-texture-tools .viewer-texture-view-options[open], #viewer-texture-tools .viewer-texture-selection-menu[open]'));
+  assert((await state(p)).expanded, 'dismissing a menu retains the expanded editor');
+}
+async function reachTextureControl(p, id) {
+  await dismissTextureMenus(p); const control = p.locator(id);
+  if (await control.evaluate(e => !!e.closest('#viewer-texture-inspector')) && !await p.locator('#viewer-texture-inspector').evaluate(e => e.open)) await p.locator('#viewer-texture-toggle-inspector').click();
+  for (const selector of ['.viewer-texture-file-menu', '.viewer-texture-view-options', '.viewer-texture-selection-menu']) {
+    if (await control.evaluate((e, selector) => !!e.closest(selector), selector) && !await p.locator(selector).evaluate(e => e.open)) await p.locator(selector + ' > summary').click();
+  }
+  await control.scrollIntoViewIfNeeded(); await frames(p); return control;
+}
 async function click(p, id) { await (await show(p, id)).click(); await idle(p); }
 async function field(p, id, value, event = 'input') {
   const control = await show(p, id), type = await control.getAttribute('type');
@@ -216,7 +229,7 @@ async function run() {
     report.cases.push({ name: 'actual saved-copy review → Re-edit original retains full editable layers instead of replacing them with flattened recipe', layerCount: returnedStack.layers.length, sourceTextureSHA });
     mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A; wv) AppleWebKit/537.36 Version/4.0 Chrome/132.0.0.0 Mobile Safari/537.36' }); const m = await mobile.newPage(); await setup(m, errors, false); assert((await state(m)).standalone); assert.equal(await m.evaluate(() => ModelViewer.getState().loaded), false);
     await m.evaluate(() => ModelViewer.getTextureTools().setExpanded(true)); const mobileHit = await openProjectPicker(m, saved.saved.path); assert(mobileHit.expanded); assert.deepStrictEqual((await state(m)).selection.layers, metadata);
-    for (const id of ['#viewer-texture-project-open', '#viewer-texture-project-save', '#viewer-texture-layer-add', '#viewer-texture-copy', '#viewer-texture-paint-tool']) { const control = await show(m, id); assert(await control.isVisible()); const rect = await control.boundingBox(); assert(rect.x >= 0 && rect.x + rect.width <= 391, 'Mobile layer control stays within viewport: ' + id); assert(await control.evaluate(e => { const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === e || e.contains(hit); }), 'Mobile layer control is reachable: ' + id); }
+    for (const id of ['#viewer-texture-project-open', '#viewer-texture-project-save', '#viewer-texture-layer-add', '#viewer-texture-copy', '#viewer-texture-paint-tool']) { const control = await reachTextureControl(m, id); assert(await control.isVisible()); const rect = await control.boundingBox(); assert(rect.x >= 0 && rect.x + rect.width <= 391, 'Mobile layer control stays within viewport: ' + id); assert(await control.evaluate(e => { const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === e || e.contains(hit); }), 'Mobile layer control is reachable: ' + id); await dismissTextureMenus(m); }
     const urlBefore = m.url(), dataNavigations = []; m.on('framenavigated', frame => { if (/^data:/.test(frame.url())) dataNavigations.push(frame.url().slice(0, 40)); }); const mobilePNGResponse = response(m, '/api/texture/editor/save'); await (await show(m, '#viewer-texture-export')).click(); const mobilePNG = await (await mobilePNGResponse).json(); assert.deepStrictEqual(decodeFile(mobilePNG.path).rgba, expected); assert.equal(m.url(), urlBefore); assert.deepStrictEqual(dataNavigations, []); assert((await state(m)).expanded && (await state(m)).standalone); assert((await m.locator('#viewer-texture-download').getAttribute('href')).startsWith('/api/download?'));
     await m.screenshot({ path: path.join(evidence, '03-mobile-project-editor.png') }); report.cases.push({ name: 'no-model Android-WebView-style mobile project reopen, reachable expanded controls, HTTP PNG without data-URL navigation', mobileHit, mobilePNG });
     assert.deepStrictEqual(errors, []); assert.equal(sha(fs.readFileSync(source)), sourceSHA, 'Every action leaves original Unity source intact'); report.sourceAfter = sourceHashes(); assert.deepStrictEqual(report.sourceAfter, report.sourceBefore, 'Product files changed during QA; rerun one final version'); report.status = 'PASS';

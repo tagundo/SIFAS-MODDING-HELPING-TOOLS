@@ -28,6 +28,8 @@ raw=env.file.save();Path(sys.argv[1]).write_bytes(raw);Path(sys.argv[2]).write_b
 assert.equal(generated.status, 0, generated.stderr);
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const before = { source: hash(source), donor: hash(donor) };
+const sourcePaths=['viewer-mesh-tools.js','viewer-transplants.js','texture-panel-expand.js','texture-panel-expand.css'].map(name=>path.join(product,'webtools/web/static',name));
+const sourceHashes=()=>Object.fromEntries(sourcePaths.map(file=>[file,hash(file)])); const sourceBefore=sourceHashes();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 let server, browser;
 const report = { status: 'RUNNING', evidence, scope: 'Production index, real HTTP/UnityFS/WebGL, desktop and mobile; native popover and legacy fallback', cases: [] };
@@ -63,12 +65,26 @@ async function expand(page, selector, fallback, label) {
   if (geometry.bitmap) {
     const expected = Math.min(2048, Math.max(128, Math.round(geometry.canvasCSS * Math.min(2, geometry.dpr))));
     assert(Math.abs(geometry.bitmap - expected) <= 1, label + ': backing bitmap follows DPR and visible size');
+    if (!(geometry.canvasCSS > originalCanvas.css + 1)) {
+      const debug=await pane.evaluate(root=>[root,...root.querySelectorAll('.uv-edit-workspace,.uv-edit-main,.uv-canvas-stage,.uv-edit-source,.uv-edit-toolbar,.uv-edit-viewbar,.uv-edit-footer,.uv-edit-inspector,canvas')].map(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {node:n.className||n.tagName,rect:r.toJSON(),display:s.display,flex:s.flex,grid:s.gridTemplateRows,height:s.height,maxHeight:s.maxHeight,width:s.width,inline:n.style.cssText};}));
+      fs.writeFileSync(path.join(evidence,'failure-layout.json'),JSON.stringify(debug,null,2)); await page.screenshot({path:path.join(evidence,'failure.png')});
+    }
     assert(geometry.canvasCSS > originalCanvas.css + 1, label + ': canvas gains usable viewport space ' + JSON.stringify({ originalCanvas, geometry }));
+  }
+  if (await pane.locator('.uv-edit-workspace').count()) {
+    geometry.workspace = await pane.evaluate(root => {
+      const c=root.querySelector('canvas').getBoundingClientRect(), t=root.querySelector('.uv-edit-toolbar').getBoundingClientRect();
+      return {canvas:{x:c.x,y:c.y,width:c.width,height:c.height,bottom:c.bottom,right:c.right}, toolbar:{x:t.x,right:t.right,y:t.y,bottom:t.bottom,height:t.height}, viewport:{width:innerWidth,height:innerHeight}};
+    });
+    assert(geometry.workspace.canvas.bottom <= geometry.workspace.viewport.height + 1, label + ': whole canvas stays visible');
+    assert(geometry.workspace.canvas.right <= geometry.workspace.viewport.width + 1, label + ': canvas fits viewport width');
+    if (geometry.workspace.viewport.height < 500) assert(geometry.workspace.canvas.height >= 160, label + ': short screen keeps a usable texture canvas');
+    assert((geometry.workspace.canvas.y >= geometry.workspace.toolbar.bottom - 1 && geometry.workspace.canvas.y-geometry.workspace.toolbar.bottom < 18) || (geometry.workspace.canvas.x >= geometry.workspace.toolbar.right-1 && geometry.workspace.canvas.x-geometry.workspace.toolbar.right < 18), label + ': tools are directly above or beside canvas');
   }
   return geometry;
 }
 async function escape(page, selector) {
-  await page.keyboard.press('Escape'); await page.waitForFunction(() => !TexturePanelExpand.getState().expanded); await page.waitForTimeout(80);
+  await page.keyboard.press('Escape'); await page.waitForFunction(() => !TexturePanelExpand.getState().expanded); await page.waitForFunction(selector => document.activeElement === document.querySelector(selector + ' .texture-pane-expand-button'), selector, { timeout: 2000 });
   assert.equal(await page.locator(selector + ' .texture-pane-expand-button').getAttribute('aria-expanded'), 'false');
   assert(await page.locator(selector + ' .texture-pane-expand-button').evaluate(e => document.activeElement === e), 'Escape restores the invoking button focus');
   assert.equal(await page.evaluate(() => document.body.style.overflow), '');
@@ -83,7 +99,7 @@ async function hitCanvas(page, selector, uv) {
   await page.mouse.move(point.x, point.y); return point;
 }
 async function runCase(name, viewport, fallback) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: viewport.width < 600 ? 2 : 1.5, isMobile: viewport.width < 600, hasTouch: viewport.width < 600 });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: (viewport.width < 600 || viewport.height < 500) ? 2 : 1.5, isMobile: (viewport.width < 600 || viewport.height < 500), hasTouch: (viewport.width < 600 || viewport.height < 500) });
   try {
     if (fallback) await context.addInitScript(() => { Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value: undefined }); Object.defineProperty(HTMLElement.prototype, 'hidePopover', { configurable: true, value: undefined }); });
     const page = await context.newPage(), errors = []; page.on('pageerror', e => errors.push(String(e.stack || e))); page.setDefaultTimeout(45000);
@@ -96,27 +112,64 @@ async function runCase(name, viewport, fallback) {
     const dataResponse = page.waitForResponse(r => r.url().endsWith('/api/viewer/mesh/data')); await page.locator(del + '-select').selectOption(value); const data = await (await dataResponse).json();
     await page.waitForFunction(() => !ModelViewer.getState().meshTools.busy && ModelViewer.getState().meshTools.runtime.boundPrimitives > 0);
     const face = data.triangles[0], uv = [0, 1].map(axis => face.reduce((n, v) => n + data.uv[v][axis], 0) / 3);
+    const resizeHandle=page.locator(del+' .uv-canvas-resizer');
+    await page.waitForFunction(selector=>document.querySelector(selector).hasAttribute('aria-valuenow'), del+' .uv-canvas-resizer');
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const initialStage=await page.locator(del+' .uv-canvas-stage').evaluate(e=>e.getBoundingClientRect().height); await resizeHandle.press(initialStage <= 212 ? 'ArrowDown' : 'ArrowUp');
+    await page.waitForFunction(value=>Math.abs(document.querySelector(value.selector).getBoundingClientRect().height-value.before)>20, { selector: del+' .uv-canvas-stage', before: initialStage }, { timeout: 3000 });
+    const shortenedStage=await page.locator(del+' .uv-canvas-stage').evaluate(e=>e.getBoundingClientRect().height);
+    assert(Math.abs(shortenedStage-initialStage)>20, 'Keyboard resize changes the actual texture viewport: '+JSON.stringify({initialStage,shortenedStage,control:await resizeHandle.evaluate(e=>({active:document.activeElement.id,html:e.outerHTML,stage:e.previousElementSibling.style.cssText,expanded:TexturePanelExpand.getState().expanded}))}));
+    await resizeHandle.press('Home'); await wait(80);
     const deletionGeometry = await expand(page, del, fallback, name + ' mesh delete');
     const point = await hitCanvas(page, del, uv); const cursor = page.locator('#viewer-mesh-uv-cursor');
     assert(await cursor.isVisible()); const radius = +await page.locator(del + '-radius').inputValue();
     assert.equal(Math.round((await cursor.boundingBox()).width), radius * 2, 'Brush diameter remains CSS pixels after DPR resize');
     assert(await cursor.evaluate(e => !!e.closest('.texture-pane-expanded')), 'Brush cursor belongs to the top layer');
     await page.mouse.down(); await page.mouse.up(); let selected = await meshState(page); assert(selected.selectedFaces.length > 0, 'Enlarged UV pointer coordinates select real faces');
+    await page.locator(del+'-canvas').focus(); await page.keyboard.press('v');
+    assert.equal((await meshState(page)).textureViews.find(v=>v.panel==='viewer-mesh-deleter').mode,'pan','Canvas shortcut switches to Pan');
+    await page.keyboard.press('b'); const oldRadius=Number(await page.locator(del+'-radius').inputValue());
+    await page.keyboard.press(']'); assert.equal(Number(await page.locator(del+'-radius').inputValue()),oldRadius+2); await page.keyboard.press('[');
+    const beforeModes=await meshState(page); await page.locator(del+'-tool-pan').click();
+    assert.equal((await meshState(page)).textureViews.find(v=>v.panel==='viewer-mesh-deleter').mode,'pan');
+    await page.locator(del+'-tool-connected').click();
+    assert.equal((await meshState(page)).textureViews.find(v=>v.panel==='viewer-mesh-deleter').mode,'connected');
+    await page.locator(del+'-tool-paint').click();
+    assert.deepStrictEqual((await meshState(page)).selectedFaces,beforeModes.selectedFaces,'Mode switching keeps exact selection');
+    await page.locator(del+'-tool-erase').click(); await hitCanvas(page,del,uv); await page.mouse.down(); await page.mouse.up();
+    const erased=(await meshState(page)).selectedFaces; assert(erased.length < beforeModes.selectedFaces.length,'Local Erase removes marked faces');
+    await page.locator(del+'-undo').click(); assert.deepStrictEqual((await meshState(page)).selectedFaces,beforeModes.selectedFaces,'Local Undo restores exact selection');
+    await page.locator(del+'-redo').click(); assert.deepStrictEqual((await meshState(page)).selectedFaces,erased,'Local Redo restores erased selection');
+    await page.locator(del+'-undo').click(); await page.locator(del+'-tool-paint').click();
+    await page.locator(del+' .uv-selection-menu > summary').click();
+    const clearButton=page.locator(del).getByRole('button',{name:'Clear selection',exact:true});
+    assert(await clearButton.evaluate(e=>{const r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return (h===e||e.contains(h))&&r.y>=0&&r.bottom<=innerHeight;}),'Local Selection popup remains hittable in the viewport');
+    await clearButton.click(); assert.equal((await meshState(page)).selectedFaces.length,0); await page.locator(del+'-undo').click();
+    assert.deepStrictEqual((await meshState(page)).selectedFaces,beforeModes.selectedFaces,'Local Selection menu preserves Undo');
+
+
     await page.locator(del + '-zoom-in').click(); assert((await meshState(page)).textureViews.find(v => v.panel === 'viewer-mesh-deleter').zoom > 1, 'Existing UV zoom still works');
     const marked = (await meshState(page)).selectedFaces; await page.screenshot({ path: path.join(evidence, name + '-mesh-delete.png') });
     await escape(page, del); assert.deepStrictEqual((await meshState(page)).selectedFaces, marked, 'Collapsing retains exact selection and undo state');
-    await page.locator(del + '-fit-texture').click(); await page.locator(del).getByRole('button', { name: 'Clear selection', exact: true }).click();
+    await page.locator(del + '-fit-texture').click(); await page.locator(del + ' .uv-selection-menu > summary').click(); await page.locator(del).getByRole('button', { name: 'Clear selection', exact: true }).click();
     const modify = '#viewer-mesh-modify'; await page.locator(modify).evaluate(e => { e.open = true; }); await page.locator(modify + '-select').selectOption(value);
     const modificationGeometry = await expand(page, modify, fallback, name + ' mesh modify'); await hitCanvas(page, modify, data.uv[face[0]]); await page.mouse.down(); await page.mouse.up();
     assert((await meshState(page)).selectedVertices.length > 0, 'Enlarged mesh modify selects actual original vertices');
     const vertices = (await meshState(page)).selectedVertices; await escape(page, modify); assert.deepStrictEqual((await meshState(page)).selectedVertices, vertices);
-    await page.locator(modify).getByRole('button', { name: 'Clear selection', exact: true }).click();
+    await page.locator(modify + ' .uv-selection-menu > summary').click(); await page.locator(modify).getByRole('button', { name: 'Clear selection', exact: true }).click();
     const part = page.locator('#viewer-part-transplant'); await part.evaluate(e => { e.open = true; });
     const donorResponse = page.waitForResponse(r => r.url().endsWith('/api/viewer/transplant/inspect'));
     await part.getByRole('button', { name: 'Choose donor costume', exact: true }).click(); await page.locator('#picker-entries li').filter({ hasText: 'donor.unity' }).click();
     const inspected = await (await donorResponse).json(); await part.locator('.viewer-transplant-stage canvas').waitFor({ state: 'visible' });
     await page.locator('#viewer-part-transplant-selection-mode').selectOption('triangles'); await part.locator('.viewer-transplant-texture-panel').waitFor({ state: 'visible' });
     const donorPane = '.viewer-transplant-texture-panel'; const donorGeometry = await expand(page, donorPane, fallback, name + ' donor texture');
+    await page.locator('#viewer-part-transplant-texture').focus(); await page.keyboard.press('v');
+    assert(await page.locator('#viewer-part-transplant-texture-pan').isChecked(),'Donor canvas shortcut switches to Pan'); await page.keyboard.press('b');
+    await page.locator(donorPane+' [data-donor-tool=pan]').click();
+    assert(await page.locator('#viewer-part-transplant-texture-pan').isChecked(),'Local donor Pan tool changes actual interaction mode');
+    await page.locator(donorPane+' [data-donor-tool=paint]').click();
+    assert(!await page.locator('#viewer-part-transplant-texture-pan').isChecked());
+
     assert(inspected.geometry.triangles.length > 0, 'The donor inspector returned real geometry');
     // Both immutable fixture files contain the same source UVs; the donor's
     // independently prepared GLTF must map this exact texture coordinate too.
@@ -124,8 +177,10 @@ async function runCase(name, viewport, fallback) {
     const donorPoint = await hitCanvas(page, donorPane, donorUV); await page.mouse.down(); await page.mouse.up();
     const donorState = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(e => e.operation === 'part'));
     assert(donorState.selectedTriangles > 0, 'Donor texture enlarged pointer selects actual donor faces');
+    await page.locator('#viewer-part-transplant-texture-pane [data-uv-settings]').click();
     await page.locator('#viewer-part-transplant-texture-zoom').fill('2'); await page.locator('#viewer-part-transplant-texture-zoom').dispatchEvent('input');
     assert.equal((await page.evaluate(() => ModelViewer.getState().transplants.donors.find(e => e.operation === 'part'))).textureView.zoom, 2);
+    await page.locator('#viewer-part-transplant-texture-pane .uv-inspector-heading > button').click();
     await page.screenshot({ path: path.join(evidence, name + '-donor.png') }); await page.keyboard.press('Escape'); await page.waitForFunction(() => !TexturePanelExpand.getState().expanded);
     assert.deepStrictEqual((await page.evaluate(() => ModelViewer.getState().transplants.donors.find(e => e.operation === 'part'))).selectedFaces, donorState.selectedFaces);
     await page.evaluate(folder => { switchTab('tools'); selectTool('texture_previews'); document.getElementById('gallery-path').value = folder; }, models);
@@ -147,9 +202,9 @@ async function runCase(name, viewport, fallback) {
 async function run() {
   try {
     server = await start(); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-    for (const [name, viewport, fallback] of [['desktop-popover', { width: 1280, height: 1000 }, false], ['mobile-popover', { width: 385, height: 800 }, false], ['desktop-fallback', { width: 1280, height: 1000 }, true], ['mobile-fallback', { width: 385, height: 800 }, true]]) await runCase(name, viewport, fallback);
-    assert.equal(hash(source), before.source); assert.equal(hash(donor), before.donor); report.sourceSha256 = before; report.status = 'PASS';
+    for (const [name, viewport, fallback] of [['desktop-popover', { width: 1280, height: 1000 }, false], ['mobile-popover', { width: 385, height: 800 }, false], ['desktop-fallback', { width: 1280, height: 1000 }, true], ['mobile-fallback', { width: 385, height: 800 }, true], ['landscape-popover', { width: 800, height: 385 }, false], ['landscape-fallback', { width: 800, height: 385 }, true]]) await runCase(name, viewport, fallback);
+    assert.equal(hash(source), before.source); assert.equal(hash(donor), before.donor); report.sourceSha256 = before; assert.deepStrictEqual(sourceHashes(),sourceBefore,'Owned UI source stays frozen during the run'); report.productSourceSha256=sourceBefore; report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
-  finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)); }
+  finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({status:report.status,cases:report.cases.length,error:report.error,evidence:report.evidence})); }
 }
 if (require.main === module) run().catch(() => { process.exitCode = 1; });

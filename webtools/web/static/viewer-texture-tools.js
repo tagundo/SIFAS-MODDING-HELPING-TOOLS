@@ -144,6 +144,11 @@
     "Lossless pixels; saved texture data can use more memory.": ["픽셀을 손실 없이 저장하므로 텍스쳐 데이터 용량이 늘어날 수 있습니다.", "ピクセルを可逆保存するためテクスチャ容量が増える場合があります。"],
     "Selected pixels": ["선택 픽셀", "選択ピクセル"], "Estimated source": ["추정 원본", "推定元"], "Saved changes": ["편집 텍스쳐", "編集テクスチャ"],
     "Expand editor": ["편집창 확대", "編集画面を拡大"], "Collapse editor": ["편집창 축소", "編集画面を縮小"],
+    "UV island": ["UV 섬 선택", "UVアイランド選択"], "UV face": ["UV 면 선택", "UV面選択"],
+    "Texture tools": ["텍스쳐 조작 도구", "テクスチャ操作ツール"], "File": ["파일", "ファイル"], "View": ["보기", "表示"], "Selection": ["선택", "選択"],
+    "Color and layers": ["색상·레이어", "色・レイヤー"], "Help": ["도움말", "ヘルプ"],
+    "Resize texture canvas": ["텍스쳐 표시 크기 조절", "テクスチャ表示サイズを調整"], "Resize tool settings": ["설정 패널 너비 조절", "設定パネルの幅を調整"],
+    "Open a model texture to select UV regions.": ["UV 영역을 선택하려면 모델의 텍스쳐를 여세요.", "UV範囲を選ぶにはモデルのテクスチャを開いてください。"],
     "Opening PNG…": ["PNG를 불러오는 중…", "PNGを読み込み中…"], "Saving PNG…": ["PNG를 저장하는 중…", "PNGを保存中…"],
     "PNG saved on this device.": ["이 기기에 PNG를 저장했습니다.", "この端末にPNGを保存しました。"], "Download PNG": ["PNG 다운로드", "PNGをダウンロード"],
     "Import a PNG to start painting, or choose a model texture.": ["PNG를 불러와 그리거나 모델 텍스쳐를 선택하세요.", "PNGを読み込むか、モデルのテクスチャを選択してください。"],
@@ -196,7 +201,7 @@
       performance.encodes++; return Promise.resolve(global.TexturePNG.encodeRGBA(image));
     }
     function decodePatch(entry, png) { return api("/api/viewer/texture/decode", { token: currentToken, texture: entry.record.texture, png: png }).then(exact); }
-    var section = node("details", holder, null, "viewer-control-section viewer-texture-tools"); section.id = "viewer-texture-tools";
+    var section = node("details", holder, null, "viewer-control-section viewer-adjustments viewer-texture-tools"); section.id = "viewer-texture-tools";
     node("summary", section, "Texture and color tools");
     var content = node("div", section, null, "viewer-texture-content"), tabs = node("div", content, null, "viewer-texture-tabs"); tabs.setAttribute("role", "tablist");
     var expanded = false, expandAnchor = null, pickerStackCleanup = null, expandButton = button(content, "Expand editor", function () { setExpanded(!expanded); }, "viewer-texture-expand");
@@ -226,7 +231,8 @@
       return { field: field, range: range, value: function () { return Number(field.value); }, set: function (v) { field.value = range.value = String(v); } };
     }
     var sceneSelect = select(sceneRow, "Model selection", [["orbit", "Orbit"], ["brush", "3D selection brush"], ["face", "Face"], ["connected", "Connected faces"], ["skin", "Skin sample"], ["exclude", "Exclude sample"]], "viewer-texture-scene-mode");
-    var selectTool = select(sceneRow, "Selection tool", [["select-brush", "Selection brush"], ["select-rectangle", "Rectangle selection"], ["select-lasso", "Lasso selection"], ["select-wand", "Magic wand"], ["pan", "Pan"]], "viewer-texture-selection-tool");
+    var selectTool = select(sceneRow, "Selection tool", [["select-uv-island", "UV island"], ["select-uv-face", "UV face"], ["select-brush", "Selection brush"], ["select-rectangle", "Rectangle selection"], ["select-lasso", "Lasso selection"], ["select-wand", "Magic wand"], ["pan", "Pan"]], "viewer-texture-selection-tool");
+    selectTool.value = "select-brush";
     var selectionMode = select(sceneRow, "Mode", [["replace", "Replace"], ["add", "Add"], ["subtract", "Subtract"], ["intersect", "Intersect"]], "viewer-texture-selection-mode");
     var selectionActions = node("div", content, null, "viewer-texture-actions");
     button(selectionActions, "Select all", function () { if (active && active.engine && canEdit(active)) { cancelPreview(); active.engine.selectAll(); } }, "viewer-texture-select-all");
@@ -251,7 +257,7 @@
     var toneEstimate = node("output", skinPanel, null, "viewer-texture-hint"); toneEstimate.id = "viewer-texture-tone-estimate";
     var paintPanel = node("div", content, null, "viewer-texture-panel"); paintPanel.id = "viewer-texture-paint-panel"; paintPanel.hidden = true;
     var paintRow = node("div", paintPanel, null, "viewer-texture-row");
-    var paintTool = select(paintRow, "Paint", [["brush", "Brush"], ["eraser", "Eraser"], ["fill", "Fill"], ["select-rectangle", "Rectangle selection"], ["select-lasso", "Lasso selection"], ["select-brush", "Selection brush"], ["move", "Move selected pixels"], ["line", "Line"], ["rectangle", "Draw rectangle"], ["ellipse", "Ellipse"], ["picker", "Eyedropper"], ["pan", "Pan"]], "viewer-texture-paint-tool");
+    var paintTool = select(paintRow, "Paint", [["brush", "Brush"], ["eraser", "Eraser"], ["fill", "Fill"], ["select-uv-island", "UV island"], ["select-uv-face", "UV face"], ["select-rectangle", "Rectangle selection"], ["select-lasso", "Lasso selection"], ["select-wand", "Magic wand"], ["select-brush", "Selection brush"], ["move", "Move selected pixels"], ["line", "Line"], ["rectangle", "Draw rectangle"], ["ellipse", "Ellipse"], ["picker", "Eyedropper"], ["pan", "Pan"]], "viewer-texture-paint-tool");
     var colorLabel = node("label", paintRow, "Color", "viewer-texture-field"), paintColor = node("input", colorLabel); paintColor.type = "color"; paintColor.value = "#e84e76"; paintColor.id = "viewer-texture-paint-color";
     var paintAlpha = number(paintRow, "Color alpha", 100, 0, 100, 1, "viewer-texture-paint-alpha");
     var brushSize = slider(content, "Brush size", 24, 1, 512, 1, "viewer-texture-brush-size", syncBrush), opacity = slider(content, "Opacity", 100, 0, 100, 1, "viewer-texture-opacity", syncBrush), softness = slider(paintPanel, "Softness", 20, 0, 100, 1, "viewer-texture-softness", syncBrush);
@@ -302,6 +308,109 @@
     node("p", content, "Shared UV pixels also change every face using those pixels.", "viewer-texture-hint");
     node("p", content, "Lossless pixels; saved texture data can use more memory.", "viewer-texture-hint");
     var modelCursor = node("div", document.body, null, "viewer-texture-model-brush-cursor"); modelCursor.id = "viewer-texture-model-brush-cursor"; modelCursor.hidden = true; modelCursor.setAttribute("aria-hidden", "true");
+    // Keep the same stateful controls and canvas, but give the image its own
+    // workspace. Tool choice never requires scrolling through the inspector.
+    var workspace = {}, toolButtons = [], workspacePreferences = {};
+    try { workspacePreferences = JSON.parse(global.localStorage.getItem("elichika.texture.workspace.v2") || "{}"); } catch (_) {}
+    buildWorkspace();
+    function move(parent, items) { items.forEach(function (item) { if (item) parent.appendChild(item); }); }
+    function compact(button, symbol) { button.classList.add("viewer-texture-icon-button"); button.dataset.symbol = symbol; button.title = button.textContent; return button; }
+    function buildWorkspace() {
+      var header = node("div", content, null, "viewer-texture-header"), fileMenu = node("details", header, null, "viewer-texture-file-menu");
+      node("summary", fileMenu, "File"); var fileMenuBody = node("div", fileMenu, null, "viewer-texture-menu-body"); move(fileMenuBody, [imageActions, projectActions]);
+      move(header, [textureLabel, tabs, expandButton]); compact(expandButton, "↗︎");
+      var settingsButton = button(header, "Color and layers", function () { workspace.inspector.open = !workspace.inspector.open; }, "viewer-texture-toggle-inspector"); compact(settingsButton, ""); settingsButton.setAttribute("aria-expanded", "true"); settingsButton.setAttribute("aria-label", t("Color and layers"));
+      var workbench = node("div", content, null, "viewer-texture-workbench"); workbench.id = "viewer-texture-workbench";
+      var stage = node("div", workbench, null, "viewer-texture-stage-column"), tools = node("div", stage, null, "viewer-texture-context-bar"); tools.id = "viewer-texture-toolstrip";
+      move(tools, [selectTool.parentNode, paintTool.parentNode, selectionMode.parentNode]);
+      var more = node("details", tools, null, "viewer-texture-selection-menu"); node("summary", more, "Selection"); var selectionBody = node("div", more, null, "viewer-texture-menu-body"); move(selectionBody, [selectionActions, clipboardActions]);
+      var viewBar = node("div", stage, null, "viewer-texture-view-bar"); move(viewBar, [views]);
+      var viewOptions = node("details", views, null, "viewer-texture-view-options"); node("summary", viewOptions, "View");
+      var viewMenuBody = node("div", viewOptions, null, "viewer-texture-menu-body");
+      Array.from(views.children).forEach(function (item) { if (item !== viewOptions && item.tagName !== "BUTTON") viewMenuBody.appendChild(item); });
+      compact(undoButton, "↶"); compact(redoButton, "↷");
+      var quick = node("div", stage, null, "viewer-texture-quick-options");
+      move(quick, [brushSize.field.parentNode, opacity.field.parentNode, colorLabel]);
+      var frame = node("div", stage, null, "viewer-texture-canvas-frame"), rail = node("div", frame, null, "viewer-texture-tool-rail"); rail.setAttribute("role", "toolbar"); rail.setAttribute("aria-label", t("Texture tools"));
+      var icons = { "select-uv-island": "M3 4h7l2 4 7 1 2 8-6 4-5-4-7 1z M10 4v13 M3 10l16-1 M10 17l9-8", "select-uv-face": "M4 20 11 3l10 17z M4 20l11-9", "select-rectangle": "M3 8V3h5 M16 3h5v5 M21 16v5h-5 M8 21H3v-5", "select-lasso": "M7 18c-8-3-5-13 4-14 10-1 15 9 7 13-4 2-11 3-11 0 0-4 8-3 7 1-1 4-4 4-5 3", "select-wand": "m4 20 12-12 M12 4l1 3 M17 3l-1 3 M21 7l-3 1 M20 12l-3-1 M7 4v4 M5 6h4", "select-brush": "M5 9V5h4 M15 5h4v4 M19 15v4h-4 M9 19H5v-4 M9 12h6 M12 9v6", "brush": "m9 14 9-11 3 3-11 9 M10 15c2 6-4 7-7 6 3-1 0-6 4-6z", "eraser": "m3 15 10-11 8 7-10 10H8z M8 10l8 7 M11 21h10", "fill": "m4 12 8-8 8 8-8 8z M9 2l7 7 M3 22h18 M21 16c-3 4-3 5 0 5s3-1 0-5", "move": "M12 3v18 M3 12h18 M8 7l4-4 4 4 M8 17l4 4 4-4 M7 8l-4 4 4 4 M17 8l4 4-4 4", "picker": "m4 16 11-11 4 4L8 20H4z M13 3l8 8 M17 3l4 4", "pan": "M5 13V9c0-2 3-2 3 0V5c0-2 3-2 3 0v5-7c0-2 3-2 3 0v7-5c0-2 3-2 3 0v8l2-3c2-2 4 0 2 3l-4 7H9l-6-7c-1-2 1-3 2 0z", "line": "M4 20 20 4", "rectangle": "M4 4h16v16H4z", "ellipse": "M21 12a9 7 0 1 1-18 0 9 7 0 1 1 18 0" };
+      var names = { "select-uv-island": "UV island", "select-uv-face": "UV face", "select-rectangle": "Rectangle selection", "select-lasso": "Lasso selection", "select-wand": "Magic wand", "select-brush": "Selection brush", "brush": "Brush", "eraser": "Eraser", "fill": "Fill", "move": "Move selected pixels", "picker": "Eyedropper", "pan": "Pan", "line": "Line", "rectangle": "Draw rectangle", "ellipse": "Ellipse" };
+      ["pan", "select-uv-island", "select-uv-face", "select-rectangle", "select-lasso", "select-wand", "select-brush", "brush", "eraser", "fill", "move", "picker", "line", "rectangle", "ellipse"].forEach(function (tool) {
+        var b = button(rail, "", function () { setCanvasTool(tool); }); b.className = "viewer-texture-icon-button viewer-texture-svg-button"; b.title = t(names[tool]);
+        var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path"); svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true"); svg.classList.add("viewer-texture-tool-icon"); path.setAttribute("d", icons[tool]); svg.appendChild(path); b.appendChild(svg); node("span", b, names[tool], "viewer-texture-tool-label");
+        b.dataset.textureTool = tool; b.setAttribute("aria-label", t(names[tool])); b.setAttribute("aria-pressed", "false"); toolButtons.push({ node: b, tool: tool, name: names[tool], paintOnly: ["brush", "eraser", "fill", "move", "line", "rectangle", "ellipse"].indexOf(tool) >= 0 });
+        if (tool === "pan") { b.id = "viewer-texture-pan"; views.insertBefore(b, viewOptions); }
+      });
+      move(frame, [canvasHost]);
+      var floatingBar = node("div", stage, null, "viewer-texture-floating-actions"); floatingBar.hidden = true; move(floatingBar, [clipboardButtons.commit, clipboardButtons.cancel, floatingHint]);
+      var sizeHandle = node("div", stage, null, "viewer-texture-canvas-resizer"); sizeHandle.id = "viewer-texture-canvas-resizer"; sizeHandle.tabIndex = 0; sizeHandle.setAttribute("role", "separator"); sizeHandle.setAttribute("aria-orientation", "horizontal"); sizeHandle.setAttribute("aria-label", t("Resize texture canvas"));
+      var dockHandle = node("div", workbench, null, "viewer-texture-inspector-resizer"); dockHandle.id = "viewer-texture-inspector-resizer"; dockHandle.tabIndex = 0; dockHandle.setAttribute("role", "separator"); dockHandle.setAttribute("aria-orientation", "vertical"); dockHandle.setAttribute("aria-label", t("Resize tool settings"));
+      var inspector = node("details", workbench, null, "viewer-texture-inspector"); inspector.id = "viewer-texture-inspector"; inspector.open = true; node("summary", inspector, "Color and layers");
+      var properties = node("div", inspector, null, "viewer-texture-properties"); move(properties, [colorPanel, skinPanel, paintPanel, adjustmentActions]);
+      paintPanel.insertBefore(layerPanel, paintPanel.firstChild);
+      [["add", "+"], ["duplicate", "⧉"], ["remove", "−"], ["up", "↑"], ["down", "↓"], ["merge", "⇩"]].forEach(function (row) { compact(layerButtons[row[0]], row[1]); });
+      var modelOptions = node("details", properties, null, "viewer-texture-model-options"); node("summary", modelOptions, "Model selection"); move(modelOptions, [sceneSelect.parentNode]);
+      var help = node("details", properties, null, "viewer-texture-help"); node("summary", help, "Help");
+      Array.from(paintPanel.querySelectorAll("p.viewer-texture-hint")).forEach(function (item) { help.appendChild(item); });
+      Array.from(content.children).forEach(function (item) { if (item.classList.contains("viewer-texture-hint") && item !== savedFile && item !== savedProjectFile && item !== faceNote && item !== readonlyNote) help.appendChild(item); });
+      var colorActions = node("div", stage, null, "viewer-texture-color-actions"); move(colorActions, [applyButton, cancelButton, compare.parentNode]);
+      var statusBar = node("div", content, null, "viewer-texture-status-bar"); move(statusBar, [information, status]);
+      move(content, [header, workbench, statusBar, readonlyNote, faceNote, savedFile, savedProjectFile]);
+      sceneRow.remove();
+      workspace = { header: header, workbench: workbench, stage: stage, frame: frame, rail: rail, inspector: inspector, properties: properties, quick: quick, colorActions: colorActions, resizer: sizeHandle, dockResizer: dockHandle, settingsButton: settingsButton, floatingBar: floatingBar };
+      section.classList.add("viewer-texture-inspector-open");
+      applyWorkspaceSize();
+      listen(inspector, "toggle", function () { section.classList.toggle("viewer-texture-inspector-open", inspector.open); settingsButton.setAttribute("aria-expanded", String(inspector.open)); });
+      bindWorkspaceResize(sizeHandle, "height"); bindWorkspaceResize(dockHandle, "width");
+      [fileMenu, viewOptions, more].forEach(function (menu) {
+        listen(menu, "toggle", function () { if (menu.open) [fileMenu, viewOptions, more].forEach(function (other) { if (other !== menu && other.open) other.open = false; }); });
+        listen(menu, "click", function (event) { var action = event.target.closest && event.target.closest("button"); if (action && !action.disabled) { menu.open = false; if (menu !== fileMenu && active && active.canvas) active.canvas.focus({ preventScroll: true }); } });
+        listen(menu, "keydown", function (event) { if (event.key === "Escape" && menu.open) { menu.open = false; menu.querySelector("summary").focus({ preventScroll: true }); event.preventDefault(); event.stopPropagation(); } });
+      });
+      listen(section, "pointerdown", function (event) { [fileMenu, viewOptions, more].forEach(function (menu) { if (menu.open && !menu.contains(event.target)) menu.open = false; }); });
+      listen(section, "keydown", function (event) {
+        if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+        var shortcuts = { b: "brush", e: "eraser", f: "fill", m: "select-rectangle", l: "select-lasso", w: "select-wand", u: event.shiftKey ? "select-uv-face" : "select-uv-island", v: "move", h: "pan", i: "picker" }, tool = shortcuts[String(event.key || "").toLowerCase()];
+        if (tool && setCanvasTool(tool)) { event.preventDefault(); event.stopPropagation(); }
+      });
+    }
+    function applyWorkspaceSize() {
+      var height = clamp(+workspacePreferences.canvasHeight || 360, 220, 1200), width = clamp(+workspacePreferences.inspectorWidth || 268, 190, 420);
+      section.style.setProperty("--texture-canvas-height", height + "px"); section.style.setProperty("--texture-inspector-width", width + "px");
+      if (workspacePreferences.expandedHeight) section.style.setProperty("--texture-editor-height", clamp(+workspacePreferences.expandedHeight, 360, Math.max(360, global.innerHeight - 24)) + "px");
+      if (workspace.resizer) workspace.resizer.setAttribute("aria-valuenow", String(Math.round(height)));
+      if (workspace.dockResizer) workspace.dockResizer.setAttribute("aria-valuenow", String(Math.round(width)));
+    }
+    function saveWorkspaceSize() { try { global.localStorage.setItem("elichika.texture.workspace.v2", JSON.stringify(workspacePreferences)); } catch (_) {} }
+    function bindWorkspaceResize(handle, direction) {
+      var drag = null;
+      function resize(value) { if (direction === "height") { if (expanded) workspacePreferences.expandedHeight = clamp(value + (drag ? drag.chrome : section.getBoundingClientRect().height - workspace.frame.getBoundingClientRect().height), 360, Math.max(360, global.innerHeight - 24)); else workspacePreferences.canvasHeight = clamp(value, 220, 1200); } else workspacePreferences.inspectorWidth = clamp(value, 190, 420); applyWorkspaceSize(); }
+      listen(handle, "pointerdown", function (event) { event.preventDefault(); event.stopPropagation(); handle.focus({ preventScroll: true }); drag = { id: event.pointerId, start: direction === "height" ? event.clientY : event.clientX, value: direction === "height" ? workspace.frame.getBoundingClientRect().height : workspace.inspector.getBoundingClientRect().width, chrome: section.getBoundingClientRect().height - workspace.frame.getBoundingClientRect().height }; handle.setPointerCapture(event.pointerId); });
+      listen(handle, "pointermove", function (event) { if (drag && drag.id === event.pointerId) resize(drag.value + (direction === "height" ? event.clientY - drag.start : drag.start - event.clientX)); });
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (name) { listen(handle, name, function () { if (drag) { drag = null; saveWorkspaceSize(); } }); });
+      listen(handle, "keydown", function (event) { var delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 20 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -20 : 0; if (delta) { event.preventDefault(); resize((direction === "height" ? expanded ? workspace.frame.getBoundingClientRect().height : +workspacePreferences.canvasHeight || 360 : +workspacePreferences.inspectorWidth || 268) + delta); saveWorkspaceSize(); } });
+    }
+    function setCanvasTool(tool) {
+      var choices = activeTab === "paint" ? paintTool : selectTool;
+      if (!Array.from(choices.options).some(function (option) { return option.value === tool; })) { if (activeTab !== "paint") setTab("paint"); choices = paintTool; }
+      var option = Array.from(choices.options).filter(function (option) { return option.value === tool; })[0]; if (!option || option.disabled) return false;
+      choices.value = tool; cancelPreview(); selectCanvasTool(); syncBrush(); refreshToolstrip(); return true;
+    }
+    function refreshToolstrip() {
+      if (!workspace.inspector) return;
+      var chosen = activeTab === "paint" ? paintTool.value : selectTool.value, uvAvailable = !!(active && !active.standalone && bindings(active).length), blocked = !active || !active.engine || !canEdit(active) || !!loading || !!pendingRestore;
+      selectTool.parentNode.hidden = activeTab === "paint"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; workspace.colorActions.hidden = activeTab === "paint";
+      workspace.floatingBar.hidden = !floating(active);
+      toolButtons.forEach(function (item) { var pressed = item.tool === chosen, disabled = blocked || item.tool.indexOf("select-uv-") === 0 && !uvAvailable; item.node.hidden = item.paintOnly && activeTab !== "paint"; if (item.node.disabled !== disabled) item.node.disabled = disabled; if (item.node.getAttribute("aria-pressed") !== String(pressed)) item.node.setAttribute("aria-pressed", String(pressed)); item.node.classList.toggle("active", pressed); });
+      [selectTool, paintTool].forEach(function (select) { Array.from(select.options).forEach(function (option) { if (option.value.indexOf("select-uv-") === 0 && option.disabled !== !uvAvailable) option.disabled = !uvAvailable; }); });
+      if (workspace.lastTool !== chosen) {
+        workspace.lastTool = chosen;
+        var selected = toolButtons.filter(function (item) { return item.tool === chosen; })[0], rail = workspace.rail;
+        if (selected && !selected.node.hidden && selected.node.parentNode === rail) {
+          if (rail.scrollWidth > rail.clientWidth) { if (selected.node.offsetLeft + selected.node.offsetWidth > rail.scrollLeft + rail.clientWidth) rail.scrollLeft = selected.node.offsetLeft + selected.node.offsetWidth - rail.clientWidth; else if (selected.node.offsetLeft < rail.scrollLeft + 46) rail.scrollLeft = Math.max(0, selected.node.offsetLeft - 46); }
+          else if (selected.node.offsetTop + selected.node.offsetHeight > rail.scrollTop + rail.clientHeight) rail.scrollTop = selected.node.offsetTop + selected.node.offsetHeight - rail.clientHeight;
+        }
+      }
+    }
     function getOriginalMaterials(mesh) {
       var r = runtime(), controller = r.materialController;
       return controller && controller.getOriginalMaterials ? controller.getOriginalMaterials(mesh) : mesh.userData && mesh.userData.viewerOriginalMaterials || mesh.material;
@@ -419,6 +528,30 @@
     function faceAllowed(geometry, face, materialIndex) {
       var first = face * 3, range = geometry.drawRange || { start: 0, count: Infinity }, groups = geometry.groups || [];
       return first >= range.start && first + 2 < range.start + range.count && (!groups.length || groups.some(function (g) { return (g.materialIndex || 0) === materialIndex && first >= g.start && first + 2 < g.start + g.count; }));
+    }
+    function uvSelectionData(entry) {
+      var matches = bindings(entry), signature = matches.map(function (binding) {
+        var g = binding.mesh.geometry, texture = binding.texture; if (texture.matrixAutoUpdate && texture.updateMatrix) texture.updateMatrix();
+        return [binding.mesh.uuid, g.uuid, g.index && g.index.version, g.attributes.uv && g.attributes.uv.version, JSON.stringify(g.drawRange), JSON.stringify(g.groups), binding.materialIndex, texture.matrix && texture.matrix.elements.join(","), texture.wrapS, texture.wrapT, texture.flipY].join("|");
+      }).join(";");
+      if (entry.uvSelectionData && entry.uvSelectionSignature === signature) return entry.uvSelectionData;
+      var polygons = [];
+      matches.forEach(function (binding) {
+        var data = geometryData(binding.mesh); if (!data) return;
+        data.triangles.forEach(function (triangle, face) {
+          if (!faceAllowed(binding.mesh.geometry, face, binding.materialIndex)) return;
+          triangleCopies(binding.texture, triangle.map(function (vertex) { return data.uvs[vertex]; })).forEach(function (points) { polygons.push({ points: points, meshId: binding.mesh.uuid, group: binding.materialIndex, face: face }); });
+        });
+      });
+      entry.uvSelectionData = { polygons: polygons, index: global.TextureUVSelection.build(polygons) }; entry.uvSelectionSignature = signature;
+      return entry.uvSelectionData;
+    }
+    function selectUVAt(entry, point, tool, mode) {
+      if (entry !== active || !canEdit(entry) || loading || pendingRestore) return false;
+      if (entry.standalone || !global.TextureUVSelection || !bindings(entry).length) { say("Open a model texture to select UV regions."); return false; }
+      var image = entry.engine.getImage(false), data = uvSelectionData(entry), hits = data.index.hit(point.x / image.width, point.y / image.height, tool), mask = new Uint8Array(image.width * image.height), faces = new Set();
+      hits.forEach(function (index) { var polygon = data.polygons[index]; rasterTriangle(mask, image.width, image.height, polygon.points); faces.add(polygon.meshId + ":" + polygon.face); });
+      cancelPreview(); entry.lastUVSelection = { mode: tool, polygonCount: hits.length, faceCount: faces.size }; entry.engine.selectRegion(mask, mode); return true;
     }
     function drawUV(entry, context, view) {
       if (!showUV.checked || entry !== active || !entry.engine) return;
@@ -564,6 +697,7 @@
       entry.engine = global.TexturePaintEngine.create({ canvas: canvas, maxHistoryBytes: 64 * 1024 * 1024, maxHistoryEntries: 40,
         onChange: function () { touchEntry(entry); }, onSelectionChange: function () { selectionChanged(entry); }, onHistoryChange: refreshButtons,
         onLayerChange: function () { layerChanged(entry); }, onFloatingChange: function () { floatingChanged(entry); },
+        onSelectUV: function (point, tool, mode) { return selectUVAt(entry, point, tool, mode); },
         onPick: function (rgba, point) { if (activeTab === "skin" && (sceneMode === "skin" || sceneMode === "exclude")) seed(entry, point, sceneMode === "exclude"); else { paintColor.value = hex(rgba); paintAlpha.value = Math.round(rgba[3] / 255 * 100); syncBrush(); } },
         onViewChange: updateInformation, onError: function (err) { say("", err.message || String(err)); }, drawOverlay: function (context, view) { drawUV(entry, context, view); } });
       entry.events = [];
@@ -640,7 +774,7 @@
       active.engine.setBrush({ size: brushSize.value(), opacity: opacity.value() / 100, softness: softness.value() / 100, color: rgb, tolerance: Math.round(tolerance.value() * 255), contiguous: connected.checked, fill: filled.checked });
       active.engine.setSelectionMode(selectionMode.value);
     }
-    function selectCanvasTool() { if (active && active.engine) active.engine.setTool(activeTab === "paint" ? paintTool.value : (sceneMode === "skin" || sceneMode === "exclude") && activeTab === "skin" ? "picker" : selectTool.value); }
+    function selectCanvasTool() { if (active && active.engine) active.engine.setTool(activeTab === "paint" ? paintTool.value : (sceneMode === "skin" || sceneMode === "exclude") && activeTab === "skin" ? "picker" : selectTool.value); refreshToolstrip(); }
     function setTab(tab) {
       if (["costume", "skin", "paint"].indexOf(tab) < 0) return;
       if (floating(active) && tab !== activeTab) { say("Apply or cancel moved pixels first."); return; }
@@ -759,6 +893,7 @@
       textureSelect.disabled = !catalogue.length || !!loading || !!floating(active); section.classList.toggle("viewer-texture-busy", !!loading || !!previewJobs); updateInformation(); refreshLayers();
       entries.forEach(function (entry) { if (entry.engine && entry.engine.setReadOnly) entry.engine.setReadOnly(!canEdit(entry)); if (entry.canvas) { entry.canvas.style.pointerEvents = loading || pendingRestore ? "none" : ""; entry.canvas.setAttribute("aria-disabled", String(!!loading || !!pendingRestore)); } });
       var pending = hasPending();
+      refreshToolstrip();
       if (pending !== notifiedPending) { notifiedPending = pending; if (options.onPendingChange) options.onPendingChange(pending); else if (options.onChange) options.onChange(); }
     }
     function getEdits() {
@@ -907,13 +1042,14 @@
         savedProjectPath.textContent = saved.path; savedProjectDownload.href = saved.url; savedProjectDownload.download = saved.name; savedProjectFile.hidden = false; say("Layer project saved on this device."); autoDownload(savedProjectDownload); return saved;
       }).catch(function (err) { if (err.name !== "AbortError") say("", err.message); return false; }).finally(function () { if (born === epoch) loading = Math.max(0, loading - 1); refreshButtons(); });
     }
-    function openPaint() { section.open = true; setTab("paint"); if (active && active.engine) active.engine.fit(); else say("Import a PNG to start painting, or choose a model texture."); return true; }
+    function openPaint() { section.open = true; setTab("paint"); setExpanded(true); if (active && active.engine) active.engine.fit(); else say("Import a PNG to start painting, or choose a model texture."); return true; }
     function expandedParent() {
       var fullscreen = document.fullscreenElement || document.webkitFullscreenElement, owner = holder.closest && holder.closest("#tab-viewer");
       return fullscreen && fullscreen !== section ? fullscreen : owner && owner.classList.contains("viewer-expanded") ? owner : document.body;
     }
     function positionExpandedEditor() { if (expanded) { var target = expandedParent(); if (section.parentNode !== target) target.appendChild(section); } }
     function setExpanded(value) {
+      var entering = !!value && !expanded;
       expanded = !!value;
       // Escape the viewer sidebar's stacking context so file panels cannot cover
       // the expanded editor. The same nodes/listeners are moved and restored.
@@ -921,6 +1057,8 @@
       positionExpandedEditor();
       if (!expanded && expandAnchor) { if (expandAnchor.parentNode) expandAnchor.parentNode.insertBefore(section, expandAnchor); expandAnchor.remove(); expandAnchor = null; }
       section.classList.toggle("viewer-texture-expanded", expanded); expandButton.setAttribute("aria-pressed", String(expanded)); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor");
+      expandButton.dataset.symbol = expanded ? "↙︎" : "↗︎"; expandButton.title = expandButton.textContent;
+      if (entering) workspace.inspector.open = global.innerWidth >= 760 && global.innerHeight >= 540;
       if (expanded) section.open = true;
       var fit = function () { if (active && active.engine) active.engine.fit(); };
       if (global.requestAnimationFrame) global.requestAnimationFrame(fit); else global.setTimeout(fit, 0);
@@ -1237,7 +1375,7 @@
     }
     listen(textureSelect, "change", function () { var record = catalogue.filter(function (r) { return key(r.texture) === textureSelect.value; })[0]; if (record) selectTexture(record.texture).catch(function () {}); });
     listen(sceneSelect, "change", function () { setSceneMode(sceneSelect.value); });
-    listen(selectTool, "change", function () { cancelPreview(); if (active && active.engine) active.engine.setTool(selectTool.value); });
+    listen(selectTool, "change", function () { cancelPreview(); if (active && active.engine) active.engine.setTool(selectTool.value); refreshToolstrip(); });
     listen(selectionMode, "change", syncBrush); listen(paintTool, "change", function () { cancelPreview(); selectCanvasTool(); });
     listen(layerName, "change", function () { var name = layerName.value; layerOperation(function () { var state = active.engine.getState(); return active.engine.renameLayer(state.activeLayerId || state.activeLayer, name); }); });
     listen(layerOpacity, "input", function () { layerOpacityValue.textContent = Math.round(+layerOpacity.value) + "%"; });
@@ -1261,15 +1399,16 @@
     });
     ["fullscreenchange", "webkitfullscreenchange"].forEach(function (name) { listen(document, name, function () { if (global.requestAnimationFrame) global.requestAnimationFrame(positionExpandedEditor); else positionExpandedEditor(); }); });
     listen(document, "keyup", function (event) { if (event.code === "Space") space = false; });
+    listen(global, "blur", function () { space = false; if (pointer) { if (pointer.controls) pointer.controls.enabled = pointer.enabled; if (sceneElement && sceneElement.hasPointerCapture && sceneElement.hasPointerCapture(pointer.id)) { try { sceneElement.releasePointerCapture(pointer.id); } catch (_) {} } pointer = null; } if (brushStroke) cancelModelBrush(); modelCursor.hidden = true; });
     setTab("costume"); say("Open a model to edit textures.");
     return {
       getEdits: getEdits, restoreEdits: restoreEdits, captureDocuments: captureDocuments, restoreDocuments: restoreDocuments, hasPending: hasPending, getRevision: function () { return revision; }, refresh: refresh, reset: reset,
       beforeModelDispose: function () { reset(true, true); }, beforeRender: function () { attachScene(); if (lastEditable !== (!active || canEdit(active))) refreshButtons(); flushLiveUpdate(); overlays.forEach(function (row) { row.mesh.geometry = row.original.geometry; row.mesh.morphTargetInfluences = row.original.morphTargetInfluences; row.mesh.morphTargetDictionary = row.original.morphTargetDictionary; }); },
-      getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
-      undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
+      getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, lastUVSelection: active && active.lastUVSelection || null, workspace: { inspectorOpen: workspace.inspector.open, preferences: Object.assign({}, workspacePreferences) }, status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
+      getSceneMode: function () { return sceneMode; }, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },
       changeLayer: changeLayer, clipboardAction: clipboardAction,
-      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
+      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };
   }

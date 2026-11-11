@@ -155,9 +155,10 @@ main { padding: 14px; }
 }
 .run-btn:active { background: var(--accent); }
 
-/* Keep file setup, editing options and results visible on wide tool pages.
-   The shared console keeps its original overlay outside this desktop scope. */
-@media (min-width: 1200px) {
+/* Keep file setup and settings side by side in ordinary split Mac windows.
+   This breakpoint uses the tool form's available width; it does not change
+   model-viewer layouts or the shared console's separate desktop breakpoint. */
+@media (min-width: 1050px) {
   #tab-tools.active { align-items: start; }
   #tab-tools .tool-navigation { position: sticky; top: var(--tool-navigation-top, 80px); align-self: start; max-height: calc(100dvh - var(--tool-navigation-top, 80px) - 8px); }
   #tab-tools .tool-list { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
@@ -182,6 +183,9 @@ main { padding: 14px; }
   #tab-tools .mesh-save-bar { position: static; padding: 10px 0 0; border-top: 1px solid var(--line); box-shadow: none; }
   #tab-tools .mesh-save-bar .run-btn { max-width: none; }
   #tab-tools .tool-actions .run-btn { margin-top: 0; }
+}
+/* The console needs its own extra column, so keep its wider breakpoint. */
+@media (min-width: 1200px) {
   .tools-console-layout > main { min-width: 0; }
   .tools-console-layout:has(#tab-tools.active):has(> .console:not(.hidden)) { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 24vw, 420px); }
   .tools-console-layout:has(#tab-tools.active) > .console { position: sticky; top: 80px; right: auto; bottom: auto; left: auto; align-self: start; min-width: 0; min-height: 240px; max-height: calc(100vh - 96px); margin: 14px 14px 14px 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }

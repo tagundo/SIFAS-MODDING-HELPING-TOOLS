@@ -121,10 +121,14 @@ function staticMorphFixture() {
     await geometry('large'); const large = await fit('250001-vertex-fallback');
     assert.equal(large.framing.method,'conservative-large-geometry'); assert.equal(large.framing.snapshotVertices,0);
     assert.equal(large.framing.vertices,250001); assert.equal(large.framing.projectedBoundsKind,'posed-box');
+    assert(large.framing.projectedBounds.bottom-large.framing.projectedBounds.top>100,
+      'Bottom-center controls must not collapse large-model framing into a one-pixel-wide safe region');
     await geometry('budget'); const budget = await fit('500000-triangle-visit-fallback');
     assert.equal(budget.framing.method,'conservative-controls'); assert.equal(budget.framing.triangles,500000);
     assert(budget.framing.triangleVisits>=1000000,'Repeated near-corner collisions exercise the bounded visit fallback');
     assert(budget.framing.triangleVisits<=1000001);
+    assert(budget.framing.projectedBounds.bottom-budget.framing.projectedBounds.top>100,
+      'The bounded triangle-visit fallback keeps a useful model scale with centered viewport tools');
     await geometry('degenerate'); await fit('degenerate-triangle');
     await page.evaluate(() => __framingRoot.getObjectByName('FramingMesh').visible=false);
     const hidden = await fit('all-meshes-hidden'); assert.equal(hidden.framing.vertices,0);assert.equal(hidden.framing.snapshotVertices,0);

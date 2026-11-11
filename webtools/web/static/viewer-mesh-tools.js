@@ -12,6 +12,7 @@
     'Across UV seams': ['UV 경계도 연결', 'UV境界もつなぐ'],
     'Choose a face or vertex first.': ['먼저 면이나 정점을 선택하세요.', '先に面または頂点を選択してください。'],
     'Texture interaction': ['텍스처 조작', 'テクスチャ操作'], 'Move texture': ['텍스처 이동', 'テクスチャを移動'],
+    'Brush': ['브러시', 'ブラシ'], 'Linked': ['연결', '接続'], 'Pan': ['이동', '移動'], 'Selection': ['선택', '選択'], 'Tool settings': ['도구 설정', 'ツール設定'],
     'Texture zoom': ['텍스처 확대', 'テクスチャ拡大'], 'Zoom in': ['확대', '拡大'], 'Zoom out': ['축소', '縮小'], 'Fit texture': ['텍스처 맞춤', 'テクスチャを全体表示'],
     'Scroll or pinch to zoom. Use Move texture, Alt-drag or right-drag to pan.': ['스크롤이나 두 손가락으로 확대합니다. 텍스처 이동 모드, Alt+드래그 또는 오른쪽 드래그로 이동합니다.', 'スクロールまたはピンチで拡大します。移動モード、Altドラッグまたは右ドラッグで移動します。'],
     'Connected selection stays in the selected material. Use the model to distinguish overlapping UVs.': ['연결 선택은 선택한 머티리얼 안에서 확장합니다. UV가 겹친 부분은 모델에서 직접 선택하면 구분할 수 있습니다.', '接続選択は選択中のマテリアル内で広がります。UVが重なる部分はモデル上で直接選択して区別できます。'],
@@ -396,6 +397,7 @@
         if (p.zoom) { p.zoom.value = p.view.zoom; p.zoomText.textContent = Math.round(p.view.zoom * 100) + '%'; p.zoom.disabled = busy || !m || !m.data.uv; }
         if (p.viewButtons) p.viewButtons.forEach(function (b) { b.disabled = busy || !m || !m.data.uv; });
         if (p.textureMode) { p.textureMode.disabled = busy || !m || !m.data.uv; p.canvas.style.cursor = p.textureMode.value === 'pan' ? 'grab' : p.textureMode.value === 'connected' ? 'pointer' : 'crosshair'; }
+        if (p.syncCanvasTools) p.syncCanvasTools();
         if (p.vertex) {
           p.vertex.max = m ? m.data.positions.length - 1 : 0;
           p.weightApply.disabled = busy || !m || !m.data.skinWritable || !m.selected.size;
@@ -536,6 +538,50 @@
       } catch (error) { if (!disposed && ticket === request) status(panel, error.message, true); }
       finally { if (!disposed && ticket === request) { busy = false; redraw(); if (options.onChange) options.onChange(); } }
     }
+    function canvasWorkspace(p) {
+      var box = p.root, original = Array.from(box.children).filter(function (node) { return node.tagName !== 'SUMMARY'; });
+      var workspace = el('div', box); workspace.className = 'uv-edit-workspace';
+      var main = el('div', workspace); main.className = 'uv-edit-main';
+      var source = el('div', main); source.className = 'uv-edit-source';
+      var tools = el('div', main); tools.className = 'uv-edit-toolbar'; tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', t('Texture interaction'));
+      var stage = el('div', main); stage.className = 'uv-canvas-stage'; stage.appendChild(p.canvas);
+      var resize = el('div', main); resize.className = 'uv-canvas-resizer'; resize.tabIndex = 0; resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal');
+      var view = el('div', main); view.className = 'uv-edit-viewbar';
+      var footer = el('div', main); footer.className = 'uv-edit-footer';
+      var inspector = el('aside', workspace); inspector.className = 'uv-edit-inspector'; inspector.hidden = true;
+      var settings = button(tools, 'Tool settings', function () {}); settings.className = 'uv-icon-button uv-settings-button'; settings.dataset.uvSettings = ''; settings.setAttribute('aria-expanded', 'false');
+      original.forEach(function (node) { if (node !== p.canvas) inspector.appendChild(node); });
+      function move(control, destination) { if (!control) return; var node = control.parentElement && control.parentElement.tagName === 'LABEL' ? control.parentElement : control; destination.appendChild(node); }
+      move(p.load, source); p.load.classList.add('uv-refresh-button'); p.load.title = t('Load meshes'); move(p.mesh, source); move(p.submesh, source);
+      var quick = [];
+      [['paint', 'Brush'], ['erase', 'Erase'], ['connected', 'Linked'], ['pan', 'Pan']].forEach(function (row) {
+        var b = button(null, row[1], function () {
+          activePanel = p; p.textureMode.value = row[0] === 'erase' ? 'paint' : row[0]; p.mode.value = row[0] === 'erase' ? 'erase' : 'paint';
+          p.textureMode.dispatchEvent(new Event('change', { bubbles: true })); if (uvCursor) uvCursor.hidden = true;
+        });
+        b.id = p.root.id + '-tool-' + row[0]; b.dataset.uvTool = row[0]; b.title = t(row[0] === 'connected' ? 'Connected faces' : row[0] === 'pan' ? 'Move texture' : row[1]) + ' (' + ({ paint: 'B', erase: 'E', connected: 'L', pan: 'V' }[row[0]]) + ')'; tools.insertBefore(b, settings); quick.push(b);
+      });
+      move(p.radius, tools); p.radius.parentElement.classList.add('uv-compact-radius');
+      tools.insertBefore(p.undo, settings); tools.insertBefore(p.redo, settings); p.undo.classList.add('uv-undo-button'); p.redo.classList.add('uv-redo-button');
+      var menu = el('details', tools); menu.className = 'uv-selection-menu'; el('summary', menu, 'Selection'); var items = el('div', menu);
+      p.actions.slice(0, 3).forEach(function (b) { items.appendChild(b); }); move(p.connected, items);
+      tools.insertBefore(p.radius.parentElement, p.undo); tools.appendChild(settings);
+      move(p.zoomOut, view); move(p.zoomIn, view); move(p.fitTexture, view); view.appendChild(p.zoomText); move(p.count, view);
+      move(p.deleteFaces, footer); move(p.save, footer); move(p.status, main); move(p.result, inspector);
+      Array.from(inspector.querySelectorAll('.mesh-row')).forEach(function (row) { if (!row.children.length) row.remove(); });
+      p.syncCanvasTools = function () {
+        var selected = p.textureMode.value === 'paint' && p.mode.value === 'erase' ? 'erase' : p.textureMode.value;
+        quick.forEach(function (b) { var pressed = String(b.dataset.uvTool === selected); if (b.getAttribute('aria-pressed') !== pressed) b.setAttribute('aria-pressed', pressed); if (b.disabled !== p.textureMode.disabled) b.disabled = p.textureMode.disabled; });
+      };
+      on(p.mode, 'change', p.syncCanvasTools); on(p.textureMode, 'change', p.syncCanvasTools); p.syncCanvasTools();
+      on(p.canvas, 'keydown', function (event) {
+        if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+        var key = String(event.key).toLowerCase(), mode = { b: 'paint', e: 'erase', l: 'connected', v: 'pan' }[key];
+        if (mode) { var target = quick.find(function (b) { return b.dataset.uvTool === mode; }); if (!target.disabled) { event.preventDefault(); event.stopPropagation(); target.click(); } }
+        else if ((key === '[' || key === ']') && !p.textureMode.disabled) { event.preventDefault(); p.radius.value = Math.max(2, Math.min(200, +p.radius.value + (key === '[' ? -2 : 2))); if (uvCursor) uvCursor.hidden = true; }
+        else if (key === 'home' && !p.fitTexture.disabled) { event.preventDefault(); p.fitTexture.click(); }
+      });
+    }
     function build(modify) {
       var box = el('details', holder); box.id = modify ? 'viewer-mesh-modify' : 'viewer-mesh-deleter'; box.className = 'viewer-adjustments viewer-mesh-tools';
       el('summary', box, modify ? 'Mesh modify' : 'Mesh deleter');
@@ -603,6 +649,7 @@
       if (p.xyz) p.xyz.forEach(function (field, axis) { field.dataset.meshPositionAxis = 'XYZ'[axis]; field.step = 'any'; });
       if (p.delta) p.delta.forEach(function (field, axis) { field.dataset.meshDeltaAxis = 'XYZ'[axis]; field.step = 'any'; });
       if (p.weight) p.weight.step = 'any';
+      canvasWorkspace(p);
       panels.push(p); attachCanvas(p);
     }
     function persistentChangeCount() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.positionCount || m.weightCount) count++; }); return count; }

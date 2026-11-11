@@ -1,51 +1,156 @@
+/* Canvas-first editing workspace; uses the same controls and theme as the viewer. */
+.viewer-texture-tools { --texture-canvas-height: 360px; --texture-inspector-width: 268px; min-width: 0; }
 .viewer-texture-tools > summary { cursor: pointer; }
-.viewer-texture-content { display: grid; gap: .4rem; padding-top: .45rem; min-width: 0; }
-.viewer-texture-tabs, .viewer-texture-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; min-width: 0; }
-.viewer-texture-tabs > button { flex: 1 1 4.5rem; }
-.viewer-texture-tabs > button.active { border-color: var(--accent, #809cef); background: color-mix(in srgb, var(--accent, #809cef) 17%, transparent); }
-.viewer-texture-tools button, .viewer-texture-tools input, .viewer-texture-tools select { min-height: 1.75rem; box-sizing: border-box; font: inherit; max-width: 100%; }
-.viewer-texture-tools button { padding: .18rem .48rem; width: auto; }
-.viewer-texture-row { display: flex; flex-wrap: wrap; align-items: end; gap: .35rem; min-width: 0; }
-.viewer-texture-field { display: flex; flex: 1 1 6rem; flex-direction: column; gap: .15rem; min-width: 0; font-size: .84rem; }
-.viewer-texture-field > select { width: 100%; min-width: 0; }
-.viewer-texture-field > input[type="color"] { width: 100%; padding: .1rem; }
-.viewer-texture-field > input[type="number"] { width: 100%; }
-.viewer-texture-check { display: inline-flex; align-items: center; gap: .25rem; font-size: .8rem; line-height: 1.25; min-width: 0; }
-.viewer-texture-check > input { flex: 0 0 auto; width: auto; min-height: 0; margin: 0; }
-.viewer-texture-slider { display: grid; grid-template-columns: minmax(4rem, 1fr) minmax(3rem, 2fr) 4rem; align-items: center; gap: .3rem; min-width: 0; font-size: .82rem; }
-.viewer-texture-slider > input[type="range"] { width: 100%; min-width: 0; padding: 0; }
-.viewer-texture-slider > input[type="number"] { width: 100%; padding: .15rem .25rem; font-variant-numeric: tabular-nums; }
-.viewer-texture-panel { display: grid; gap: .35rem; min-width: 0; }
-.viewer-texture-panel[hidden], .viewer-texture-canvas-pane[hidden] { display: none !important; }
-.viewer-texture-canvas-host { min-width: 0; width: 100%; }
-.viewer-texture-canvas-pane { width: 100%; height: clamp(12rem, 29vh, 23rem); min-height: 12rem; overflow: hidden; border: 1px solid var(--border, #596171); border-radius: .35rem; }
+.viewer-texture-tools [hidden] { display: none !important; }
+.viewer-texture-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 6px; }
+.viewer-texture-tools button, .viewer-texture-tools select, .viewer-texture-tools input:not([type="checkbox"]):not([type="range"]) { box-sizing: border-box; max-width: 100%; min-height: 32px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; background: var(--panel2); color: var(--text); font: inherit; font-size: 12px; }
+.viewer-texture-tools button { width: auto; margin: 0; cursor: pointer; }
+.viewer-texture-tools button:disabled { opacity: .45; cursor: default; }
+.viewer-texture-tools button:focus-visible, .viewer-texture-tools summary:focus-visible, .viewer-texture-tools [role="separator"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.viewer-texture-header { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.viewer-texture-header > .viewer-texture-field { flex: 1 1 140px; }
+.viewer-texture-header > .viewer-texture-field > span { display: none; }
+.viewer-texture-tabs { display: flex; gap: 3px; min-width: 0; }
+.viewer-texture-tabs > button { flex: 1 1 auto; white-space: nowrap; }
+.viewer-texture-tabs > button.active, .viewer-texture-tools button[aria-pressed="true"] { border-color: var(--accent); background: var(--panel); box-shadow: inset 0 -2px var(--accent); }
+.viewer-texture-actions, .viewer-texture-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
+.viewer-texture-field { display: flex; flex: 1 1 90px; flex-direction: column; gap: 3px; min-width: 0; font-size: 11px; }
+.viewer-texture-field > select, .viewer-texture-field > input[type="number"], .viewer-texture-field > input[type="text"] { width: 100%; min-width: 0; }
+.viewer-texture-field > input[type="color"] { width: 44px; min-width: 32px; padding: 2px; }
+.viewer-texture-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1.25; }
+.viewer-texture-check input { flex: 0 0 auto; width: auto; min-height: 0; margin: 0; }
+.viewer-texture-slider { display: grid; grid-template-columns: minmax(65px, 1fr) minmax(40px, 1fr) 56px; align-items: center; gap: 5px; min-width: 0; font-size: 11px; }
+.viewer-texture-slider input[type="range"] { width: 100%; min-width: 0; padding: 0; }
+.viewer-texture-slider input[type="number"] { width: 100%; min-width: 0; padding: 3px; font-variant-numeric: tabular-nums; }
+.viewer-texture-panel { display: grid; gap: 7px; min-width: 0; }
+.viewer-texture-workbench { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0; }
+.viewer-texture-stage-column { display: flex; flex-direction: column; gap: 5px; min-width: 0; min-height: 0; }
+.viewer-texture-context-bar { display: flex; align-items: end; gap: 5px; min-width: 0; }
+.viewer-texture-context-bar > .viewer-texture-field { flex: 1 1 90px; }
+.viewer-texture-context-bar > .viewer-texture-field > span { font-size: 10px; line-height: 1.1; }
+.viewer-texture-context-bar > details { flex: 0 0 auto; }
+.viewer-texture-view-bar > .viewer-texture-actions { flex-wrap: nowrap; gap: 4px; }
+.viewer-texture-view-bar button { flex: 0 0 auto; min-width: 32px; }
+.viewer-texture-tools .viewer-texture-icon-button { width: 32px; min-width: 32px; padding: 3px; font-size: 0; display: inline-flex; justify-content: center; align-items: center; }
+.viewer-texture-icon-button::before { content: attr(data-symbol); font: 18px/1 system-ui, sans-serif; }
+.viewer-texture-svg-button::before { display: none; }
+.viewer-texture-tool-icon { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.viewer-texture-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+.viewer-texture-quick-options { display: flex; flex-wrap: wrap; gap: 5px 9px; align-items: center; min-width: 0; }
+.viewer-texture-quick-options .viewer-texture-slider { display: grid; grid-template-columns: auto 64px; gap: 4px; }
+.viewer-texture-quick-options .viewer-texture-slider > input[type="range"] { display: none; }
+.viewer-texture-quick-options .viewer-texture-field { flex: 0 0 auto; }
+.viewer-texture-quick-options .viewer-texture-field > span { display: none; }
+.viewer-texture-canvas-frame { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 4px; min-width: 0; height: var(--texture-canvas-height); min-height: 220px; }
+.viewer-texture-tool-rail { display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); scrollbar-width: thin; }
+.viewer-texture-tool-rail > button { flex: 0 0 32px; }
+.viewer-texture-canvas-host { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.viewer-texture-canvas-pane { width: 100%; height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; box-sizing: border-box; background: var(--panel2); }
 .viewer-texture-canvas-pane > canvas { display: block; width: 100%; height: 100%; touch-action: none; outline-offset: -2px; }
-.viewer-texture-hint { margin: 0; font-size: .76rem; line-height: 1.35; opacity: .8; overflow-wrap: anywhere; }
-.viewer-texture-info, .viewer-texture-status { display: block; min-width: 0; font-size: .78rem; line-height: 1.35; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.viewer-texture-status { min-height: 1.15em; }
-.viewer-texture-error { color: var(--error, #f07878); }
-.viewer-texture-tools .viewer-uv-color-control { display: inline-flex; width: auto; gap: .3rem; align-items: center; font-size: .78rem; }
-.viewer-texture-tools .viewer-uv-color-control input { width: 2.1rem; height: 1.6rem; min-height: 1.6rem; padding: .1rem; }
-.viewer-texture-tools.viewer-texture-expanded { position: fixed; inset: 3vh 3vw; z-index: 1100; box-sizing: border-box; overflow: auto; padding: .75rem; border: 1px solid var(--border, #596171); border-radius: .5rem; background: var(--panel, #202630); box-shadow: 0 .8rem 3rem #0008; resize: both; min-width: min(25rem, 94vw); max-width: 96vw; max-height: 96vh; }
-.viewer-texture-expanded .viewer-texture-canvas-pane { height: 58vh; min-height: 20rem; }
-.viewer-texture-expanded .viewer-texture-row { flex-wrap: nowrap; }
-.viewer-texture-expanded .viewer-texture-content { grid-template-columns: minmax(0, 1fr) minmax(12rem, 1fr); align-items: start; }
-.viewer-texture-expanded .viewer-texture-tabs, .viewer-texture-expanded .viewer-texture-canvas-host, .viewer-texture-expanded .viewer-texture-info, .viewer-texture-expanded .viewer-texture-status, .viewer-texture-expanded .viewer-texture-hint { grid-column: 1 / -1; }
-@media (max-width: 480px) {
-  .viewer-texture-slider { grid-template-columns: minmax(3.2rem, 1fr) minmax(2.8rem, 1.6fr) 3.7rem; }
-  .viewer-texture-actions > button { flex: 0 1 auto; }
-  .viewer-texture-expanded .viewer-texture-content { grid-template-columns: minmax(0, 1fr); }
-  .viewer-texture-expanded .viewer-texture-row { flex-wrap: wrap; }
-}
+.viewer-texture-canvas-resizer { flex: 0 0 10px; height: 10px; cursor: ns-resize; touch-action: none; position: relative; border-radius: 4px; }
+.viewer-texture-canvas-resizer::after { content: ''; position: absolute; width: 42px; height: 3px; border-radius: 2px; background: var(--line); top: 3px; left: calc(50% - 21px); }
+.viewer-texture-inspector-resizer { display: none; min-width: 8px; cursor: ew-resize; touch-action: none; }
+.viewer-texture-inspector { min-width: 0; margin: 0; border-top: 1px solid var(--line); }
+.viewer-texture-inspector > summary { cursor: pointer; min-height: 32px; padding: 7px 3px; box-sizing: border-box; font-size: 12px; }
+.viewer-texture-properties { display: grid; gap: 9px; padding: 4px; min-width: 0; max-height: 440px; overflow: auto; overscroll-behavior: contain; }
+.viewer-texture-properties > details > summary { cursor: pointer; padding: 6px 0; font-size: 11px; }
+.viewer-texture-hint { margin: 0; font-size: 11px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.viewer-texture-status-bar { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
+.viewer-texture-info, .viewer-texture-status { display: block; min-width: 0; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; max-height: 3em; overflow: auto; }
+.viewer-texture-error { color: var(--err); }
+.viewer-texture-color-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.viewer-texture-file-menu, .viewer-texture-view-options, .viewer-texture-selection-menu { position: relative; margin: 0; }
+.viewer-texture-file-menu > summary, .viewer-texture-view-options > summary, .viewer-texture-selection-menu > summary { display: flex; align-items: center; min-height: 32px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); cursor: pointer; font-size: 11px; box-sizing: border-box; white-space: nowrap; }
+.viewer-texture-file-menu > .viewer-texture-actions, .viewer-texture-selection-menu > .viewer-texture-actions { display: none; }
+.viewer-texture-file-menu[open] > .viewer-texture-actions, .viewer-texture-selection-menu[open] > .viewer-texture-actions { display: grid; position: absolute; top: 100%; left: 0; min-width: 180px; padding: 7px; z-index: 9; border: 1px solid var(--line); background: var(--panel); border-radius: 7px; box-shadow: 0 5px 15px #0002; }
+.viewer-texture-file-menu[open] > .viewer-texture-actions + .viewer-texture-actions { top: calc(100% + 82px); }
+.viewer-texture-view-options:not([open]) > :not(summary) { display: none; }
+.viewer-texture-view-options[open] { z-index: 10; }
+.viewer-texture-view-options[open] > :not(summary) { position: relative; z-index: 10; display: flex; padding: 6px; margin: 0; background: var(--panel); }
+.viewer-texture-view-options[open] { position: absolute; right: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 5px 15px #0002; }
+.viewer-texture-view-bar { position: relative; min-height: 32px; }
+.viewer-texture-tools .viewer-uv-color-control { display: inline-flex; width: auto; gap: 5px; align-items: center; font-size: 11px; }
+.viewer-texture-tools .viewer-uv-color-control input { width: 32px; min-width: 32px; height: 28px; min-height: 28px; padding: 2px; }
+.viewer-texture-tools.viewer-texture-expanded { position: fixed; inset: auto; left: 12px; top: 12px; width: calc(100vw - 24px); height: var(--texture-editor-height, calc(100vh - 24px)); max-height: calc(100vh - 24px); z-index: 1100; box-sizing: border-box; overflow: hidden; padding: 8px; margin: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 30px #0004; display: flex; flex-direction: column; resize: both; max-width: calc(100vw - 24px); min-width: min(320px, calc(100vw - 24px)); }
+.viewer-texture-expanded > summary { flex: 0 0 auto; min-height: 24px !important; padding: 2px 3px !important; font-size: 12px; }
+.viewer-texture-expanded > .viewer-texture-content { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.viewer-texture-expanded .viewer-texture-workbench { flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr) 0 0; }
+.viewer-texture-expanded.viewer-texture-inspector-open .viewer-texture-workbench { grid-template-columns: minmax(0, 1fr) 8px minmax(190px, var(--texture-inspector-width)); }
+.viewer-texture-expanded .viewer-texture-canvas-frame { flex: 1 1 auto; height: auto; min-height: 100px; }
+.viewer-texture-expanded .viewer-texture-inspector-resizer { display: block; }
+.viewer-texture-expanded:not(.viewer-texture-inspector-open) .viewer-texture-inspector-resizer, .viewer-texture-expanded:not(.viewer-texture-inspector-open) .viewer-texture-inspector { display: none; }
+.viewer-texture-expanded .viewer-texture-inspector { min-height: 0; border: 1px solid var(--line); border-radius: 7px; display: flex; flex-direction: column; overflow: hidden; }
+.viewer-texture-expanded .viewer-texture-properties { flex: 1 1 auto; min-height: 0; max-height: none; align-content: start; }
 .viewer-texture-model-brush-cursor { position: fixed; z-index: 1300; transform: translate(-50%, -50%); border: 1.5px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #202020, inset 0 0 0 1px #20202088; background: #ffc3301a; pointer-events: none; box-sizing: border-box; }
 .viewer-texture-model-brush-cursor.subtract { border-color: #ff7985; background: #ff30401a; }
-.viewer-texture-model-brush-cursor[hidden] { display: none; }
-.viewer-texture-layers { display: grid; gap: .3rem; min-width: 0; padding-top: .35rem; border-top: 1px solid var(--border, #596171); }
-.viewer-texture-layer-list { display: grid; gap: .15rem; max-height: 11rem; overflow: auto; min-width: 0; }
-.viewer-texture-layer-row { display: flex; align-items: center; gap: .3rem; padding: .15rem .25rem; border: 1px solid transparent; border-radius: .25rem; min-width: 0; }
-.viewer-texture-layer-row.active { border-color: var(--accent, #809cef); background: color-mix(in srgb, var(--accent, #809cef) 12%, transparent); }
+.viewer-texture-layers { display: grid; gap: 5px; min-width: 0; padding-top: 6px; border-top: 1px solid var(--line); }
+.viewer-texture-layer-list { display: grid; gap: 2px; max-height: 180px; overflow: auto; min-width: 0; }
+.viewer-texture-layer-row { display: flex; align-items: center; gap: 4px; padding: 2px 3px; border: 1px solid transparent; border-radius: 5px; min-width: 0; }
+.viewer-texture-layer-row.active { border-color: var(--accent); background: var(--panel2); }
 .viewer-texture-layer-row input[type="checkbox"] { flex: 0 0 auto; width: auto; min-height: 0; }
 .viewer-texture-layer-row button { flex: 1 1 auto; text-align: start; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.viewer-texture-layer-row > span { flex: 0 0 auto; font-size: .76rem; font-variant-numeric: tabular-nums; }
+.viewer-texture-layer-row > span { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; }
 .viewer-texture-layers input[type="range"] { width: 100%; min-width: 0; }
-.viewer-texture-layers output { font-size: .76rem; font-variant-numeric: tabular-nums; }
+.viewer-texture-layers output { font-size: 11px; font-variant-numeric: tabular-nums; }
+@media (pointer: coarse), (max-width: 600px) {
+  .viewer-texture-tools button, .viewer-texture-tools select, .viewer-texture-tools input:not([type="checkbox"]):not([type="range"]), .viewer-texture-tools summary { min-height: 44px; }
+  .viewer-texture-tools .viewer-texture-icon-button { width: 44px; min-width: 44px; }
+  .viewer-texture-canvas-frame { display: flex; flex-direction: column; }
+  .viewer-texture-tool-rail { flex: 0 0 46px; flex-direction: row; overflow-x: auto; overflow-y: hidden; justify-content: flex-start; }
+  .viewer-texture-tool-rail > button { flex: 0 0 44px; }
+  .viewer-texture-canvas-host { flex: 1 1 auto; }
+  .viewer-texture-canvas-resizer { flex-basis: 16px; height: 16px; }
+  .viewer-texture-canvas-resizer::after { top: 6px; }
+  .viewer-texture-view-bar { min-height: 44px; }
+}
+@media (max-width: 759px) {
+  .viewer-texture-header > .viewer-texture-field { flex-basis: calc(100% - 52px); }
+  .viewer-texture-header .viewer-texture-tabs { flex: 1 1 auto; order: 2; }
+  .viewer-texture-header > #viewer-texture-toggle-inspector { order: 3; }
+  .viewer-texture-header > #viewer-texture-expand { order: 4; }
+  .viewer-texture-expanded { left: 6px !important; top: 6px !important; width: calc(100vw - 12px) !important; max-width: calc(100vw - 12px) !important; max-height: calc(100vh - 12px) !important; height: var(--texture-editor-height, calc(100vh - 12px)) !important; padding: 5px !important; }
+  .viewer-texture-expanded .viewer-texture-workbench, .viewer-texture-expanded.viewer-texture-inspector-open .viewer-texture-workbench { display: flex; flex-direction: column; }
+  .viewer-texture-expanded .viewer-texture-stage-column { flex: 1 1 auto; }
+  .viewer-texture-expanded .viewer-texture-inspector[open] { flex: 0 0 min(35vh, 300px); margin-top: 5px; }
+  .viewer-texture-expanded .viewer-texture-inspector-resizer { display: none; }
+}
+@media (max-height: 520px) {
+  .viewer-texture-expanded > summary { display: none; }
+  .viewer-texture-expanded .viewer-texture-quick-options { display: none; }
+  .viewer-texture-expanded .viewer-texture-header > .viewer-texture-field { flex-basis: 100px; }
+  .viewer-texture-expanded .viewer-texture-context-bar > .viewer-texture-field > span { display: none; }
+}
+
+/* Explicit bounds also cover WebViews whose <details> anonymous content box is
+   not a flex item. Neither inspector contents nor labels can grow the window. */
+.viewer-texture-expanded > .viewer-texture-content { position: absolute; inset: 36px 8px 8px; padding: 0; }
+.viewer-texture-expanded .viewer-texture-workbench { grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.viewer-texture-expanded .viewer-texture-inspector { position: relative; display: block; height: 100%; }
+.viewer-texture-expanded .viewer-texture-properties { position: absolute; inset: 36px 0 0; display: block; overflow: auto; }
+.viewer-texture-properties > * + * { margin-top: 8px; }
+.viewer-texture-menu-body { display: none; }
+.viewer-texture-file-menu[open] > .viewer-texture-menu-body, .viewer-texture-view-options[open] > .viewer-texture-menu-body { display: flex; flex-direction: column; gap: 6px; position: absolute; top: calc(100% + 3px); left: 0; z-index: 12; min-width: 190px; max-width: calc(100vw - 28px); padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 5px 15px #0002; }
+.viewer-texture-menu-body .viewer-texture-actions { display: grid; }
+.viewer-texture-file-menu .viewer-texture-actions + .viewer-texture-actions { padding-top: 6px; border-top: 1px solid var(--line); }
+.viewer-texture-view-options[open] { position: relative; right: auto; border: 0; background: transparent; box-shadow: none; }
+.viewer-texture-view-options[open] > summary { padding: 5px 7px; background: var(--panel2); }
+.viewer-texture-view-options[open] > .viewer-texture-menu-body { margin: 0; }
+@media (max-width: 759px) { .viewer-texture-expanded > .viewer-texture-content { inset: 32px 5px 5px; } .viewer-texture-expanded .viewer-texture-inspector[open] { height: min(35vh, 300px); } }
+@media (max-height: 520px) { .viewer-texture-expanded > .viewer-texture-content { top: 6px; } }
+
+.viewer-texture-selection-menu[open] > .viewer-texture-menu-body { display: flex; flex-direction: column; gap: 6px; position: absolute; top: calc(100% + 3px); right: 0; z-index: 12; min-width: 190px; max-width: calc(100vw - 28px); padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 5px 15px #0002; }
+.viewer-texture-selection-menu .viewer-texture-actions + .viewer-texture-actions { border-top: 1px solid var(--line); padding-top: 6px; }
+.viewer-texture-floating-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px; background: var(--panel2); border: 1px solid var(--accent); border-radius: 6px; }
+
+.viewer-texture-tool-rail { position: relative; }
+
+.viewer-texture-header #viewer-texture-expand::before { content: ''; width: 20px; height: 20px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 3H3v6M15 3h6v6M21 15v6h-6M9 21H3v-6'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 3H3v6M15 3h6v6M21 15v6h-6M9 21H3v-6'/%3E%3C/svg%3E") center / contain no-repeat; }
+.viewer-texture-header #viewer-texture-expand[aria-pressed="true"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9h6V3M15 3v6h6M21 15h-6v6M9 21v-6H3'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9h6V3M15 3v6h6M21 15h-6v6M9 21v-6H3'/%3E%3C/svg%3E"); }
+
+.viewer-texture-header #viewer-texture-toggle-inspector::before { content: ''; width: 20px; height: 20px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 3v4m0 4v10M12 3v10m0 4v4M20 3v2m0 4v12M1 7h6M9 17h6M17 5h6'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 3v4m0 4v10M12 3v10m0 4v4M20 3v2m0 4v12M1 7h6M9 17h6M17 5h6'/%3E%3C/svg%3E") center / contain no-repeat; }
+
+/* API29 WebViews may predate dynamic viewport units. Keep a working vh base. */
+@supports (height: 100dvh) {
+  .viewer-texture-tools.viewer-texture-expanded { height: var(--texture-editor-height, calc(100dvh - 24px)); }
+  @media (max-width: 759px) { .viewer-texture-expanded { height: var(--texture-editor-height, calc(100dvh - 12px)) !important; } }
+}

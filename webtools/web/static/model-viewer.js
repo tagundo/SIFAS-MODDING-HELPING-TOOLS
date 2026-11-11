@@ -36,6 +36,7 @@
   var persistenceController = null;
   var meshToolsController = null;
   var textureToolsController = null;
+  var interactionController = null;
   var transplantController = null;
   var accessoryController = null;
   var outlineController = null;
@@ -136,8 +137,60 @@
     if (transplantController) transplantController.refresh();
     if (outlineController) outlineController.refresh();
     refreshMotionLibrary();
+    if (interactionController) interactionController.refresh();
   }
   function t(key) { return config && config.translate ? config.translate(key) : key; }
+  function interactionSources() {
+    return [
+      { id: "texture", label: t("Texture"), control: "viewer-texture-scene-mode", panel: "viewer-texture-tools" },
+      { id: "modify", label: t("Mesh modify"), control: "viewer-mesh-modify-scene-mode", panel: "viewer-mesh-modify" },
+      { id: "delete", label: t("Mesh deleter"), control: "viewer-mesh-deleter-scene-mode", panel: "viewer-mesh-deleter" },
+      { id: "outline", label: t("Character outline"), control: "viewer-outline-scene-mode", panel: "viewer-outline-card" }
+    ];
+  }
+  function interactionActions() {
+    var result = [], textureMode = textureToolsController && (textureToolsController.getSceneMode ? textureToolsController.getSceneMode() : textureToolsController.getState().sceneMode);
+    var outlineActive = outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing();
+    var saved = persistenceController && persistenceController.getState(), readOnly = !!(saved && saved.reviewingSaved);
+    interactionSources().forEach(function (source) {
+      var control = node(source.control), panel = node(source.panel); if (!control || !panel) return;
+      Array.prototype.forEach.call(control.options, function (option) {
+        if (option.value === "orbit") return;
+        var activeMode = panel.open && control.value === option.value;
+        if (source.id === "outline") activeMode = !!outlineActive && control.value === option.value;
+        else if (source.id !== "texture" && (textureMode && textureMode !== "orbit" || outlineActive)) activeMode = false;
+        result.push({ key: source.id + ":" + option.value, group: source.label, label: option.textContent,
+          control: source.control, panel: source.panel, active: !!activeMode,
+          disabled: !model || loading || lost || readOnly || control.disabled || option.disabled });
+      });
+    });
+    return result;
+  }
+  function leaveInteractionEditing() {
+    if (textureToolsController && (textureToolsController.getSceneMode ? textureToolsController.getSceneMode() : textureToolsController.getState().sceneMode) !== "orbit") textureToolsController.setSceneMode("orbit");
+    if (outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) outlineController.setSceneEditing(false);
+    ["viewer-mesh-modify-scene-mode", "viewer-mesh-deleter-scene-mode"].forEach(function (id) {
+      var select = node(id); if (select && select.value !== "orbit") { select.value = "orbit"; select.dispatchEvent(new Event("change", { bubbles: true })); }
+    });
+  }
+  function chooseInteractionEditing(key) {
+    var action = interactionActions().find(function (value) { return value.key === key; }); if (!action || action.disabled) return false;
+    leaveInteractionEditing();
+    var source = interactionSources().find(function (value) { return value.id === key.split(":")[0]; }), panel = node(source.panel), control = node(source.control);
+    panel.open = true;
+    if (source.id === "texture") textureToolsController.setSceneMode(key.slice(key.indexOf(":") + 1));
+    else if (source.id === "outline") outlineController.setSceneEditing(true);
+    else { control.value = key.slice(key.indexOf(":") + 1); control.dispatchEvent(new Event("change", { bubbles: true })); }
+    requestRender(); return true;
+  }
+  function ensureInteractionTools() {
+    if (interactionController || !window.ViewerInteractionTools) return;
+    interactionController = window.ViewerInteractionTools.create({ stage: node("viewer-stage"), translate: t,
+      context: function () { var saved = persistenceController && persistenceController.getState(); return { loaded: !!model,
+        disabled: !active || loading || lost || workbenchBusy() || !!(saved && saved.busy) }; },
+      getRuntime: function () { return { controls: controls, camera: camera, domElement: renderer && renderer.domElement, requestRender: requestRender }; },
+      getEditActions: interactionActions, leaveEditing: leaveInteractionEditing, chooseEdit: chooseInteractionEditing });
+  }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
   function variantsFor(selected) { return selected.map(function (path) { return variantChoices[path] || "primary"; }); }
   function sameSelection(selected, autoFace, variants) {
@@ -521,6 +574,7 @@
     if (textureToolsController) textureToolsController.refresh();
     if (transplantController) transplantController.refresh();
     if (accessoryController) accessoryController.refresh();
+    if (interactionController) interactionController.refresh();
   }
 
   function setLoading(value) {
@@ -541,6 +595,7 @@
     if (outlineController) outlineController.refresh();
     refreshMinimizeButton();
     refreshMotionLibrary();
+    if (interactionController) interactionController.refresh();
   }
 
   function cancelLoading() {
@@ -859,6 +914,7 @@
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
     }
+    if (interactionController) interactionController.refreshLayout();
     requestRender();
   }
 
@@ -890,6 +946,8 @@
       controls.dampingFactor = 0.12;
       controls.screenSpacePanning = true;
       controls.addEventListener("change", requestRender);
+      ensureInteractionTools();
+      if (interactionController) interactionController.refresh();
       scene.add(new window.THREE.HemisphereLight(0xffffff, 0x737b89, 0.85));
       var light = new window.THREE.DirectionalLight(0xffffff, 0.9);
       light.position.set(-2, 3, 4);
@@ -920,6 +978,7 @@
           if (discardPendingPreview) discardPendingPreview();
           setLoading(false);
         }
+        if (interactionController) interactionController.refresh();
         setStatus("3D graphics were interrupted. Wait a moment, then open the model again.", true);
         renderVariantOptions();
         showFaceStatus();
@@ -964,7 +1023,11 @@
       if (!box.width || !box.height || window.getComputedStyle(element).visibility === "hidden") return;
       var left = Math.max(0, box.left - rect.left - 4), top = Math.max(0, box.top - rect.top - 4);
       var right = Math.min(stage.clientWidth, box.right - rect.left + 4), bottom = Math.min(stage.clientHeight, box.bottom - rect.top + 4);
-      if (right > left && bottom > top) result.push({ left: left, top: top, right: right, bottom: bottom });
+      if (right > left && bottom > top) {
+        var obstacle = { left: left, top: top, right: right, bottom: bottom }, reserved = element.closest("[data-viewer-framing-edge]");
+        if (reserved) obstacle.edge = reserved.dataset.viewerFramingEdge;
+        result.push(obstacle);
+      }
     });
     return result;
   }
@@ -1093,16 +1156,19 @@
       distance *= 1.12;
     }
     if (!clear) {
-      // A bounded fallback needs only the existing posed box. Side controls
-      // reserve side space here, never a top/bottom strip. It also handles
-      // unusually large meshes without allocating an unbounded vertex copy.
+      // A bounded fallback needs only the existing posed box. Corner controls
+      // reserve side space; the compact navigation row reserves bottom space.
+      // Treating a centered row as both sides would leave only one pixel.
       method = precise ? "conservative-controls" : "conservative-large-geometry";
-      var left = insets.left, rightInset = insets.right;
+      var left = insets.left, rightInset = insets.right, topInset = insets.top, bottomInset = insets.bottom;
       obstacles.forEach(function (rect) {
-        if ((rect.left + rect.right) / 2 < width / 2) left = Math.max(left, rect.right + 4);
+        if (rect.edge === "bottom") bottomInset = Math.max(bottomInset, height - rect.top + 4);
+        else if (rect.edge === "top") topInset = Math.max(topInset, rect.bottom + 4);
+        else if ((rect.left + rect.right) / 2 < width / 2) left = Math.max(left, rect.right + 4);
         else rightInset = Math.max(rightInset, width - rect.left + 4);
       });
       var availableX = Math.max(1, width - left - rightInset) / width;
+      var availableY = Math.max(1, height - topInset - bottomInset) / height;
       var halfWidth = 0, halfHeight = 0, halfDepth = 0;
       for (var corner = 0; corner < 8; corner += 1) {
         var point = new window.THREE.Vector3(corner & 1 ? bounds.max.x : bounds.min.x,
@@ -1111,9 +1177,10 @@
         halfHeight = Math.max(halfHeight, Math.abs(point.dot(up)));
         halfDepth = Math.max(halfDepth, Math.abs(point.dot(view)));
       }
-      distance = (Math.max(halfWidth / (tanH * availableX), halfHeight / (tanV * safeY)) + halfDepth) * 1.04;
+      distance = (Math.max(halfWidth / (tanH * availableX), halfHeight / (tanV * availableY)) + halfDepth) * 1.04;
       distance = Math.max(radius * .12, distance);
       target.addScaledVector(right, -(left - rightInset) / width * distance * tanH);
+      target.addScaledVector(up, (topInset - bottomInset) / height * distance * tanV);
       if (precise) summary = projectSnapshot();
       else {
         summary = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, pointsOutside: 0 };
@@ -1717,6 +1784,7 @@
       buildParts();
       updateAppearance();
       showWarnings(prepared.warnings);
+      if (interactionController) interactionController.refresh();
       resize();
       if (!keepView) setView("front");
       if (retain && retain.camera && camera && controls) {
@@ -2018,6 +2086,7 @@
       translate: t,
       onChange: function () {
         if (outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing() && textureToolsController) textureToolsController.setSceneMode("orbit");
+        if (interactionController) interactionController.refresh();
         requestRender(); if (persistenceController) persistenceController.refresh();
       },
       getRuntime: function () { return { model: model, renderer: renderer, camera: camera, scene: scene,
@@ -2052,6 +2121,7 @@
         if (textureToolsController) textureToolsController.refresh();
         if (accessoryController) accessoryController.refresh();
         if (outlineController) outlineController.refresh();
+        if (interactionController) interactionController.refresh();
       },
       restoreTextureState: function (rows) { return restoreTextureState({ textures: rows }); },
       captureTextureDocuments: function () { return textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(false) : null; },
@@ -2103,8 +2173,8 @@
     });
     if (window.ViewerMeshTools) meshToolsController = window.ViewerMeshTools.create({
       translate: t,
-      isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) && !(textureToolsController && textureToolsController.getState().sceneMode !== "orbit"); },
-      onSceneModeChange: function (mode) { if (mode !== "orbit") { if (outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (textureToolsController) textureToolsController.setSceneMode("orbit"); } },
+      isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) && !(textureToolsController && (textureToolsController.getSceneMode ? textureToolsController.getSceneMode() : textureToolsController.getState().sceneMode) !== "orbit"); },
+      onSceneModeChange: function (mode) { if (mode !== "orbit") { if (outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (textureToolsController) textureToolsController.setSceneMode("orbit"); } if (interactionController) interactionController.refresh(); },
       getToken: function () { var editing = bodyEditingMetadata(); return editing && editing.available ? editing.token : null; },
       getBodyState: authoringState,
       getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
@@ -2146,7 +2216,7 @@
         !(transplantController && transplantController.getState().busy); },
       isReadOnly: function () { return !!(persistenceController && persistenceController.getState().reviewingSaved); },
       isSceneInteractive: function () { return !loading && !lost && !!model; },
-      onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); },
+      onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (interactionController) interactionController.refresh(); },
       onChange: function () { workbenchChanged(); if (meshToolsController) meshToolsController.refresh(); requestRender(); }
     });
     var textureLaunch = node("texture-editor-launch");
@@ -2179,6 +2249,7 @@
       restoreCheckpoint: function (target, current) { return loadViewerCheckpoint(target, current); },
       openFiles: openTransplantFiles
     });
+    ensureInteractionTools();
     function pickCompanion() {
       if (paths.length >= MAX_FILES) return;
       containViewerPicker();
@@ -2347,6 +2418,7 @@
     if (transplantController) transplantController.updateLanguage();
     if (accessoryController) accessoryController.updateLanguage();
     if (outlineController) outlineController.updateLanguage();
+    if (interactionController) interactionController.updateLanguage();
     syncPartVisibility();
     refreshMaterialStatus();
     refreshQualityStatus();
@@ -2356,6 +2428,7 @@
   function setVisible(value) {
     if (destroyed) return;
     active = !!value;
+    if (interactionController) interactionController.refresh();
     if (!active) finishPanelDrag(true);
     document.body.classList.toggle("viewer-active-page", active);
     if (!active) {
@@ -2449,6 +2522,7 @@
     if (expanded) setExpanded(false);
     updateShortLayout(null);
     destroyed = true;
+    if (interactionController) interactionController.dispose();
     if (persistenceController) persistenceController.dispose();
     if (meshToolsController) meshToolsController.dispose();
     if (textureToolsController) textureToolsController.dispose();
@@ -2481,6 +2555,8 @@
     restoreCheckpoint: function (target, expectedCurrent) { return loadViewerCheckpoint(target, expectedCurrent || captureViewerCheckpoint()); },
     getAuthoringState: authoringState,
     getTextureTools: function () { return textureToolsController; },
+    getInteractionTools: function () { return interactionController; },
+    setInteractionMode: function (mode) { return interactionController ? interactionController.setMode(mode) : false; },
     openTextureEditor: function () { if (textureToolsController && textureToolsController.openPaint) textureToolsController.openPaint(); },
     restoreAuthoringState: function (state) {
       if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
@@ -2532,6 +2608,7 @@
         persistence: persistenceController ? persistenceController.getState() : null,
         meshTools: meshToolsController ? meshToolsController.getState() : null,
         textureTools: textureToolsController ? textureToolsController.getState() : null,
+        interaction: interactionController ? interactionController.getState() : null,
         transplants: transplantController ? transplantController.getState() : null,
         accessories: accessoryController ? accessoryController.getState() : null,
         outlines: outlineController ? outlineController.getState() : null,

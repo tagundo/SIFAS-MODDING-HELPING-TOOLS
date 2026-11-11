@@ -35,7 +35,7 @@
 (function (global) {
   "use strict";
   var TILE = 64, MAX_PIXELS = 16777216, MAX_LAYER_PIXELS = 33554432, MAX_LAYERS = 8, clipboard = null, layerSerial = 0;
-  var TOOLS = ["brush", "eraser", "picker", "fill", "line", "rectangle", "ellipse", "select-brush", "select-rectangle", "select-ellipse", "select-lasso", "select-wand", "move", "pan"];
+  var TOOLS = ["brush", "eraser", "picker", "fill", "line", "rectangle", "ellipse", "select-brush", "select-rectangle", "select-ellipse", "select-lasso", "select-wand", "select-uv-face", "select-uv-island", "move", "pan"];
   function clamp(value, low, high) { return Math.min(high, Math.max(low, value)); }
   function finite(value, fallback) { return typeof value === "number" && Number.isFinite(value) ? value : fallback; }
   function color(value) {
@@ -611,6 +611,10 @@
         if (tool === "picker") { var picked = sample(q.x, q.y); if (picked) { brush.color = picked; if (options.onPick) options.onPick(picked.slice(), q); } return; }
         if (tool === "fill") { fillAt(q.x, q.y); return; }
         if (tool === "select-wand") { selectRegion(connectedRegion(doc, q.x, q.y, brush.tolerance, null, brush.contiguous), event.shiftKey ? "add" : event.ctrlKey || event.metaKey ? "subtract" : selectionMode); return; }
+        if (tool === "select-uv-face" || tool === "select-uv-island") {
+          if (options.onSelectUV) options.onSelectUV(q, tool, event.shiftKey ? "add" : event.ctrlKey || event.metaKey ? "subtract" : selectionMode);
+          return;
+        }
         if (tool === "brush" || tool === "eraser" || tool === "select-brush") {
           if (tool !== "select-brush") requireEditable();
           begin(tool); var selecting = tool === "select-brush", mode = event.shiftKey ? "add" : event.ctrlKey || event.metaKey ? "subtract" : selectionMode, subtract = mode === "subtract", selectionLimit = null;

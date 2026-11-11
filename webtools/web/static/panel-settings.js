@@ -34,7 +34,7 @@
   function installStyle() {
     var style = element("style");
     style.textContent = ".panel-setting-hidden{display:none!important}" +
-      ".panel-settings-toolbar{flex:0 0 auto}.panel-settings-toolbar>button{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--accent,#3b6fd4);border-radius:8px;background:var(--panel2,#eee);color:var(--text,#222);font:inherit;font-size:14px;cursor:pointer}.panel-settings-toolbar>button:focus-visible{outline:2px solid var(--accent,#3b6fd4);outline-offset:2px}" +
+      ".panel-settings-toolbar{display:flex;gap:6px;flex:0 0 auto;min-width:0}.panel-settings-toolbar>button{flex:1 1 0;width:auto;min-width:0;min-height:44px;padding:5px 8px;white-space:normal;border:1px solid var(--accent,#3b6fd4);border-radius:8px;background:var(--panel2,#eee);color:var(--text,#222);font:inherit;font-size:13px;line-height:1.25;cursor:pointer}.panel-settings-toolbar>button:focus-visible{outline:2px solid var(--accent,#3b6fd4);outline-offset:2px}" +
       ".panel-settings-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 24px));max-height:min(760px,calc(100dvh - 32px));overflow:auto;background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:14px;padding:18px}" +
       ".panel-settings-dialog::backdrop{background:rgba(0,0,0,.5)}.panel-settings-dialog h2{font-size:18px;margin:0 0 10px}.panel-settings-dialog p{font-size:14px;line-height:1.5;margin:8px 0;color:var(--muted,#666)}" +
       ".panel-settings-dialog h3{font-size:13px;margin:18px 0 6px;color:var(--muted,#666)}.panel-settings-dialog ul{list-style:none;padding:0;margin:0}" +
