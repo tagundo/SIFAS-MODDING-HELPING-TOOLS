@@ -364,11 +364,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Snapshot selected inputs and the completed preview's verified
                 # facial sources while archive members still exist. Retained
                 # motion sources never become persistent model-edit inputs.
-                if rigged and not preview_only and result.get("rig", {}).get("available"):
+                if rigged and not preview_only:
                     from webtools.core import model_edits
                     try:
                         result["editing"] = model_edits.register_session(
-                            result["id"], expanded.paths, result["rig"],
+                            result["id"], expanded.paths, result.get("rig") or {},
                             originals=getattr(expanded, "editing_originals", None) or resolved, origins=expanded.origins,
                             archive_members=getattr(expanded, "archive_members", {}),
                             variants=(expanded.editing_variants if getattr(expanded, "editing_variants", None) is not None else

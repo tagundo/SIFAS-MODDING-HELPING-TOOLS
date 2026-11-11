@@ -151,7 +151,7 @@ main { padding: 14px; }
 
 .run-btn {
   margin-top: 8px; background: var(--accent2); color: #fff; border: 0;
-  border-radius: 10px; padding: 12px 20px; font-size: 16px; cursor: pointer; width: 100%;
+  border-radius: 10px; padding: 12px 20px; font-size: 16px; cursor: pointer; width: 100%; min-height: 44px;
 }
 .run-btn:active { background: var(--accent); }
 
@@ -904,7 +904,7 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-shared-bone-editor #viewer-save-method { width: 100%; min-height: 44px; }
 
 /* Native mouse/trackpad controls can be denser without reducing touch targets. */
-@media (hover: hover) and (pointer: fine) {
+@media (min-width: 720px) and (hover: hover) and (pointer: fine) {
   .elichika-desktop .tool-list button { min-height: 34px; padding: 7px 10px; font-size: 13px; line-height: 1.4; }
   .elichika-desktop .field input[type=text], .elichika-desktop .field input[type=number],
   .elichika-desktop .field select, .elichika-desktop .field textarea,
@@ -980,3 +980,58 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-uv-color-control { display: inline-flex; align-items: center; gap: .45rem; }
 .viewer-uv-color-control input[type="color"] { width: 44px; min-width: 44px; height: 34px; padding: 3px; cursor: pointer; }
 @media (pointer: coarse) { .viewer-uv-color-control input[type="color"] { height: 44px; } }
+
+/* Action labels should size their buttons; form fields still fill the panel. */
+.viewer-outline-card > div > button,
+.viewer-profile-card .viewer-card-content > button,
+.viewer-scale-card .viewer-card-content > button,
+.viewer-body-entry > button {
+  justify-self: start; width: fit-content; max-width: 100%; white-space: normal;
+}
+.viewer-outline-card > div > div:not([id]) { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.viewer-outline-card > div > div:not([id]) > button { margin: 0; }
+.viewer-preview-actions > button { width: auto; max-width: 100%; white-space: normal; }
+
+/* Mouse and trackpad controls use one compact row, including browser-hosted
+   tools and dialogs. Coarse-pointer controls retain their 44 px touch area. */
+@media (min-width: 720px) and (hover: hover) and (pointer: fine) {
+  .tab, .lang-pick select,
+  .tool-list button, .elichika-desktop .tool-list button,
+  .mode-toggle button, .path-row button, .gallery-bar button,
+  .modal-foot button, .picker-multi-controls > button, #picker-add-selected,
+  .viewer-files button, .viewer-main button, .viewer-game-assets-dialog button {
+    min-height: 34px; padding: 6px 9px; font-size: 13px; line-height: 1.35;
+  }
+  .tool-list, .tool-navigation { gap: 6px; }
+  .tool-list button small { margin-top: 2px; }
+  .field input[type=text], .field input[type=number], .field select,
+  .gallery-bar input, .viewer-adjustments select,
+  .viewer-adjustments input[type=number], .viewer-adjustments input[type=search],
+  .viewer-save-advanced select, .viewer-mod-name-row input,
+  .viewer-mod-counterpart-row input { min-height: 34px; padding: 6px 8px; font-size: 13px; line-height: 1.35; }
+  .viewer-adjustments > summary, .viewer-node-editor > summary,
+  .viewer-expression-advanced > summary, .viewer-scale-details > summary,
+  .viewer-node-quick > summary, .viewer-saved-parts > summary { min-height: 34px; padding: 5px 0; }
+  .viewer-control-panel > details:not([open]) > summary { min-height: 34px; padding: 5px 0; }
+  .viewer-body-card > summary { min-height: 34px; padding: 5px 10px; }
+  .viewer-file-list li { min-height: 34px; }
+  .viewer-files .viewer-remove { flex-basis: 34px; min-width: 34px; padding: 4px; }
+  #tab-tools .tool-actions .run-btn {
+    width: fit-content; max-width: 100%; min-height: 34px; padding: 7px 14px;
+    font-size: 13px; line-height: 1.35; white-space: normal;
+  }
+  #viewer-workspace-menu-content button { min-width: 34px; min-height: 34px; padding: 6px 9px; }
+  #viewer-workspace-menu-content input[type=text], #viewer-workspace-menu-content input[type=number],
+  #viewer-workspace-menu-content input[type=search], #viewer-workspace-menu-content select,
+  #viewer-workspace-menu-content .viewer-option-row label, #viewer-workspace-menu-content #viewer-parts label { min-height: 34px; }
+  .viewer-adjustments input[type=range] { min-height: 28px; }
+}
+@media (min-width: 1200px) and (hover: hover) and (pointer: fine) {
+  #tab-tools .mesh-save-bar { justify-content: flex-start; }
+  #tab-tools .mesh-save-bar .run-btn, #tab-tools .mesh-save-bar .mesh-preview-btn { flex: 0 1 auto; min-height: 34px; }
+}
+@media (min-width: 1080px) and (min-height: 480px) and (hover: hover) and (pointer: fine) {
+  /* A basis intended as a horizontal width must not become a 56 px row when
+     the resizable file toolbar switches to a vertical stack. */
+  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-actions button { flex: 0 0 auto; }
+}

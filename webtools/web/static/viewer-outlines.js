@@ -4,6 +4,21 @@
   var words = {
     "Character outline": ["캐릭터 외곽선", "キャラクターの輪郭線"],
     "All editable meshes": ["편집 가능한 메시 전체", "編集可能なメッシュすべて"],
+    "Not editable": ["편집 불가", "編集不可"],
+    "Meshes: {total} · Editable: {editable}": ["전체 메시 {total}개 · 편집 가능 {editable}개", "メッシュ数：{total} · 編集可能：{editable}"],
+    "No renderer linked to this mesh was found.": ["이 메시에 연결된 렌더러가 없습니다.", "このメッシュに接続されたレンダラーがありません。"],
+    "A renderer link could not be verified.": ["렌더러와 메시의 연결을 확인할 수 없습니다.", "レンダラーとメッシュの接続を確認できません。"],
+    "The linked material could not be verified as AS/Member with an outline pass.": ["연결된 재질이 외곽선 패스를 포함한 AS/Member인지 확인할 수 없습니다.", "接続されたマテリアルが輪郭パスを含むAS/Memberであることを確認できません。"],
+    "This mesh is shared by renderers with different material support.": ["이 메시를 함께 사용하는 렌더러 중 지원하지 않는 재질이 있습니다.", "このメッシュを共有するレンダラーに未対応のマテリアルがあります。"],
+    "This mesh has no vertex color channel for outline thickness.": ["외곽선 두께를 저장하는 정점 색상 채널이 없습니다.", "輪郭幅を保存する頂点カラーチャンネルがありません。"],
+    "The outline editor currently supports RGBA UNorm8 and Float32 vertex colors.": ["현재 외곽선 편집은 RGBA UNorm8과 Float32 형식의 정점 색상을 지원합니다.", "現在、輪郭編集はRGBA UNorm8とFloat32形式の頂点カラーに対応しています。"],
+    "Float32 vertex colors must be finite values between 0 and 1.": ["Float32 정점 색상 값은 0~1 사이의 유한한 값이어야 합니다.", "Float32頂点カラーは0～1の有限値である必要があります。"],
+    "The original vertex data could not be validated.": ["원본 정점 데이터의 구조를 확인할 수 없습니다.", "元の頂点データの構造を確認できません。"],
+    "The original mesh name could not be validated.": ["원본 메시 이름을 확인할 수 없습니다.", "元のメッシュ名を確認できません。"],
+    "This mesh exceeds the outline editor's vertex limit.": ["이 메시의 정점 수가 외곽선 편집 한도를 초과합니다.", "このメッシュの頂点数が輪郭編集の上限を超えています。"],
+    "This mesh exceeds the outline editor's mesh limit.": ["메시 수가 외곽선 편집 한도를 초과합니다.", "メッシュ数が輪郭編集の上限を超えています。"],
+    "This model has no editable rig.": ["이 모델에는 편집 가능한 리그가 없습니다.", "このモデルには編集可能なリグがありません。"],
+    "No original writable body nodes were found.": ["편집 가능한 원본 본을 찾지 못했습니다.", "編集可能な元のボーンが見つかりません。"],
     "Outline mesh": ["외곽선 조절 메시", "輪郭線を調整するメッシュ"],
     "Outline thickness": ["외곽선 두께", "輪郭線の太さ"],
     "Reset outline": ["외곽선 원본값으로", "輪郭線を元の値に戻す"],
@@ -34,9 +49,9 @@
     "Select one mesh to edit an exact vertex.": ["정점 번호로 편집하려면 메시 하나를 선택하세요.", "頂点番号で編集するにはメッシュを1つ選択してください。"],
     "Edited vertices": ["편집한 정점", "編集した頂点"],
     "All vertex width to apply (0–255)": ["전체 정점에 적용할 절대 두께 (0–255)", "全頂点に適用する絶対幅（0–255）"],
-    "Original width bytes: {min}–{max} · average {mean}": ["원본 두께 값: {min}–{max} · 평균 {mean}", "元の輪郭幅: {min}～{max} · 平均 {mean}"],
+    "Original width (0–255): {min}–{max} · average {mean}": ["원본 두께 (0–255): {min}–{max} · 평균 {mean}", "元の輪郭幅（0～255）：{min}～{max} · 平均 {mean}"],
     "Apply absolute width to all vertices": ["전체 정점에 절대 두께 적용", "全頂点に絶対幅を適用"],
-    "Sets every vertex in the selected meshes to the same original UNorm8 red value. 0 hides the outline; 255 is its maximum. Replaces local widths and resets the percentage to 100%.": ["선택한 메시의 모든 정점을 같은 원본 UNorm8 빨강 값으로 설정합니다. 0은 외곽선 없음, 255는 최대 두께입니다. 세부 두께를 교체하고 전체 비율을 100%로 맞춥니다.", "選択メッシュの全頂点を同じ元のUNorm8赤値に設定します。0は輪郭なし、255は最大幅です。個別幅を置き換え、倍率を100%に戻します。"],
+    "Sets every vertex in the selected meshes to the same width on a 0–255 scale, preserving its original color format. 0 hides the outline; 255 is its maximum. Replaces local widths and resets the percentage to 100%.": ["선택한 메시의 모든 정점을 0~255 기준의 같은 두께로 설정하며 원본 색상 형식을 유지합니다. 0은 외곽선 없음, 255는 최대 두께입니다. 세부 두께를 교체하고 전체 비율을 100%로 맞춥니다.", "選択メッシュの全頂点を0～255基準の同じ幅に設定し、元のカラー形式を維持します。0は輪郭なし、255は最大幅です。個別幅を置き換え、倍率を100%に戻します。"],
     "Enter an integer outline width between 0 and 255.": ["절대 두께를 0~255 사이의 정수로 입력하세요.", "絶対幅を0～255の整数で入力してください。"],
     "The original vertex width is unavailable.": ["이 정점의 원본 외곽선 값을 확인할 수 없습니다.", "この頂点の元の輪郭幅を確認できません。"],
     "Enter a vertex width between 0 and 100.": ["정점 두께를 0~100% 사이로 입력하세요.", "頂点の太さを0～100%で入力してください。"]
@@ -80,7 +95,7 @@
     var reset = button("Reset outline", "viewer-outline-reset", resetSelected);
     var absolute = make("input"); absolute.id = "viewer-outline-absolute"; absolute.type = "number"; absolute.min = "0"; absolute.max = "255"; absolute.step = "1"; absolute.value = "128";
     var absoluteApply = button("Apply absolute width to all vertices", "viewer-outline-absolute-apply", applyAbsolute);
-    var absoluteHelp = make("p", "Sets every vertex in the selected meshes to the same original UNorm8 red value. 0 hides the outline; 255 is its maximum. Replaces local widths and resets the percentage to 100%."); absoluteHelp.className = "viewer-render-note";
+    var absoluteHelp = make("p", "Sets every vertex in the selected meshes to the same width on a 0–255 scale, preserving its original color format. 0 hides the outline; 255 is its maximum. Replaces local widths and resets the percentage to 100%."); absoluteHelp.className = "viewer-render-note";
     var detail = make("details"), detailBody = make("div"); detail.id = "viewer-outline-detail"; detail.append(make("summary", "Detailed outline editing"), detailBody);
     var sceneMode = make("select"); sceneMode.id = "viewer-outline-scene-mode";
     [["orbit", "Orbit model"], ["paint", "Paint outline on model"]].forEach(function (row) { var option = make("option", row[1]); option.value = row[0]; sceneMode.append(option); });
@@ -103,7 +118,8 @@
     var bounds = make("p", "Original maximum thickness can limit increases."); bounds.className = "viewer-render-note";
     var scope = make("p", "Verified companion face meshes include the jaw. Saving writes new model and face copies."); scope.className = "viewer-render-note";
     var sourceWidth = make("p"); sourceWidth.id = "viewer-outline-source-width"; sourceWidth.className = "viewer-render-note";
-    body.append(field("Outline mesh", select), strength, reset, sourceWidth, field("All vertex width to apply (0–255)", absolute), absoluteApply, absoluteHelp, detail, historyButtons, status, copyDiagnostics, diagnosticsStatus, diagnosticsText, bounds, scope); panel.append(summary, body);
+    var inventoryCount = make("p"); inventoryCount.id = "viewer-outline-inventory-count"; inventoryCount.className = "viewer-render-note";
+    body.append(field("Outline mesh", select), inventoryCount, strength, reset, sourceWidth, field("All vertex width to apply (0–255)", absolute), absoluteApply, absoluteHelp, detail, historyButtons, status, copyDiagnostics, diagnosticsStatus, diagnosticsText, bounds, scope); panel.append(summary, body);
     host.insertBefore(panel, document.getElementById("viewer-body-adjustments"));
     var disposed = false, refreshing = false, updating = false, currentRig = null, cacheKey = "", applied = "", controlBefore = null, cachedCatalogue = null, languageKey = "";
     var editRig = null, editRevision = null, editValues = [], editJSON = "[]", pickCache = null, paintFrame = 0, pendingPaint = [], pointPoseKey = "";
@@ -114,6 +130,15 @@
     function context() { return options.context() || {}; }
     function t(key) { return translated(key, options.translate); }
     function catalogue(c) { return c.editing && c.editing.outlines || { meshes: [] }; }
+    function inventorySize(data) { return (data.meshes || []).length + (data.excludedMeshes || []).length; }
+    function exclusionReason(reason) {
+      var keys = { no_verified_renderer_binding: "No renderer linked to this mesh was found.", invalid_renderer_binding: "A renderer link could not be verified.",
+        unsupported_material: "The linked material could not be verified as AS/Member with an outline pass.", mixed_material_references: "This mesh is shared by renderers with different material support.",
+        missing_color_channel: "This mesh has no vertex color channel for outline thickness.", unsupported_color_layout: "The outline editor currently supports RGBA UNorm8 and Float32 vertex colors.", invalid_float_color_values: "Float32 vertex colors must be finite values between 0 and 1.",
+        malformed_vertex_data: "The original vertex data could not be validated.", invalid_mesh_name: "The original mesh name could not be validated.",
+        vertex_limit: "This mesh exceeds the outline editor's vertex limit.", mesh_limit: "This mesh exceeds the outline editor's mesh limit." };
+      return t(keys[reason.code] || reason.message || "No editable original outline data is available.");
+    }
     function edits(c) {
       if (!c.rig || !c.rig.getOutlineEdits) { editRig = null; editRevision = null; editValues = []; editJSON = "[]"; return editValues; }
       var revision = c.rig.getOutlineRevision ? c.rig.getOutlineRevision() : null;
@@ -147,7 +172,9 @@
         }),
         rendering: { sifasEnabled: !!(c.materials && c.materials.getState && c.materials.getState().enabled) },
         selection: { meshId: select.value || null, meshCount: targets(c).length },
-        editedMeshCount: values.length,
+        editedMeshCount: values.length, editingAvailable: !!(c.editing && c.editing.available),
+        excludedMeshes: (data.excludedMeshes || []).map(function (mesh) { return { id: mesh.id, name: mesh.name, sourceIndex: mesh.sourceIndex, file: mesh.file, meshId: mesh.meshId,
+          reasons: (mesh.reasons || []).map(function (reason) { return { code: reason.code, message: reason.message }; }) }; }),
         meshes: (data.meshes || []).map(function (mesh) {
           var edit = byId[mesh.id], row = { id: mesh.id, name: mesh.name, sourceIndex: mesh.sourceIndex,
             semantic: mesh.semantic || null, renderRoles: roles[mesh.id] || [],
@@ -157,11 +184,12 @@
           return row;
         }) };
       var appVersion = c.appVersion || global.ElichikaDesktop && global.ElichikaDesktop.appVersion;
+      if (c.editing && c.editing.available === false && c.editing.reason) result.editingUnavailableReason = c.editing.reason;
       if (typeof appVersion === "string" && appVersion) result.appVersion = appVersion;
       return result;
     }
     async function copyOutlineDiagnostics() {
-      var c = context(); if (disposed || copyingDiagnostics || !c.current || !catalogue(c).meshes.length) return;
+      var c = context(); if (disposed || copyingDiagnostics || !c.current || !inventorySize(catalogue(c))) return;
       var sourceRig = c.rig, text = JSON.stringify(outlineDiagnostics(c), null, 2);
       copyingDiagnostics = true; copyDiagnostics.disabled = true;
       try {
@@ -186,7 +214,7 @@
       while (past.length > 32 || bytes > 8 * 1024 * 1024 && past.length > 1) bytes -= past.shift().length;
     }
     function setValues(next, before) {
-      var c = context(); if (!c.rig || !c.rig.setOutlineEdits) return;
+      var c = context(); if (!c.editing || c.editing.available !== true || !c.rig || !c.rig.setOutlineEdits) return;
       updating = true;
       try { c.rig.setOutlineEdits(next); } finally { updating = false; }
       if (before !== undefined) remember(before); refresh(); notify();
@@ -230,13 +258,14 @@
     function refresh() {
       if (disposed || refreshing || updating) return; refreshing = true;
       try {
-        var c = context(), data = catalogue(c), values = edits(c), newRig = c.rig !== currentRig;
-        var key = data === cachedCatalogue ? cacheKey : JSON.stringify(data.meshes || []); cachedCatalogue = data;
+        var c = context(), data = catalogue(c), values = edits(c), newRig = c.rig !== currentRig, language = document.documentElement.lang || "en";
+        var key = data === cachedCatalogue ? cacheKey : JSON.stringify([data.meshes || [], data.excludedMeshes || []]); cachedCatalogue = data;
         if (newRig) { currentRig = c.rig; applied = ""; past = []; future = []; controlBefore = null; number.setCustomValidity(""); range.setCustomValidity(""); pointKey = ""; diagnosticsStatus.hidden = true; diagnosticsText.hidden = true; diagnosticsText.value = ""; }
-        if (key !== cacheKey) {
+        if (key !== cacheKey || languageKey !== language) {
           cacheKey = key; var previous = select.value; select.textContent = "";
           var all = make("option"); all.value = ""; all.textContent = t("All editable meshes"); select.appendChild(all);
           (data.meshes || []).forEach(function (mesh) { var option = make("option"); option.value = mesh.id; option.textContent = mesh.name; select.appendChild(option); });
+          (data.excludedMeshes || []).forEach(function (mesh) { var option = make("option"); option.value = mesh.id; option.textContent = mesh.name + " (" + t("Not editable") + ")"; select.appendChild(option); });
           select.value = Array.prototype.some.call(select.options, function (item) { return item.value === previous; }) ? previous : "";
         }
         var eligible = targets(c), factors = eligible.map(function (mesh) { var value = values.filter(function (entry) { return entry.id === mesh.id; })[0]; return value ? value.factor : 1; });
@@ -244,23 +273,26 @@
         if (originalWidths.length) {
           var minimum = Math.min.apply(null, originalWidths.map(function (mesh) { return mesh.originalWidth.min; })), maximum = Math.max.apply(null, originalWidths.map(function (mesh) { return mesh.originalWidth.max; }));
           var weight = originalWidths.reduce(function (sum, mesh) { return sum + mesh.vertexCount; }, 0), mean = originalWidths.reduce(function (sum, mesh) { return sum + mesh.originalWidth.mean * mesh.vertexCount; }, 0) / weight;
-          sourceWidth.textContent = t("Original width bytes: {min}–{max} · average {mean}").replace("{min}", String(minimum)).replace("{max}", String(maximum)).replace("{mean}", String(Math.round(mean * 100) / 100));
+          sourceWidth.textContent = t("Original width (0–255): {min}–{max} · average {mean}").replace("{min}", String(Math.round(minimum * 100) / 100)).replace("{max}", String(Math.round(maximum * 100) / 100)).replace("{mean}", String(Math.round(mean * 100) / 100));
         }
         var uniform = factors.length && factors.every(function (value) { return Math.abs(value - factors[0]) < 1e-10; }), display = uniform ? String(Math.round(factors[0] * 10000) / 100) : "";
         if (newRig || document.activeElement !== number || number.disabled) number.value = display;
         number.placeholder = t("Different values"); range.value = uniform ? String(factors[0] * 100) : "100"; output.textContent = uniform ? display + "%" : t("Different values");
-        var enabled = !!(c.current && c.rig && c.rig.setOutlineEdits && eligible.length && !c.busy);
-        copyDiagnostics.disabled = !c.current || !data.meshes.length || copyingDiagnostics;
-        [select, range, number, reset, absolute, absoluteApply, sceneMode, radius, width, restoreBrush, showVertices].forEach(function (node) { node.disabled = !enabled; });
+        var enabled = !!(c.current && c.editing && c.editing.available === true && c.rig && c.rig.setOutlineEdits && eligible.length && !c.busy);
+        copyDiagnostics.disabled = !c.current || !inventorySize(data) || copyingDiagnostics;
+        select.disabled = !c.current || !inventorySize(data) || !!c.busy;
+        inventoryCount.hidden = !c.current || !inventorySize(data);
+        inventoryCount.textContent = t("Meshes: {total} · Editable: {editable}").replace("{total}", String(inventorySize(data))).replace("{editable}", String((data.meshes || []).length));
+        [range, number, reset, absolute, absoluteApply, sceneMode, radius, width, restoreBrush, showVertices].forEach(function (node) { node.disabled = !enabled; });
         [vertex, applyVertex, restoreVertex].forEach(function (node) { node.disabled = !enabled || !select.value; }); vertex.max = eligible.length === 1 ? String(eligible[0].vertexCount - 1) : "0";
         reset.disabled = !enabled || !number.validationMessage && !eligible.some(function (mesh) { return values.some(function (value) { return value.id === mesh.id; }); });
         undoButton.disabled = !enabled || !past.length; redoButton.disabled = !enabled || !future.length;
         var fingerprint = json();
-        if (c.materials && c.materials.setOutlineEdits && fingerprint !== applied) { applied = fingerprint; c.materials.setOutlineEdits(values); }
+        if (c.materials && c.materials.setOutlineEdits && fingerprint !== applied) { applied = fingerprint; c.materials.setOutlineEdits(values, data); }
         var materialState = c.materials && c.materials.getState();
-        status.textContent = t(!c.rig ? "Open a character model to adjust its outline." : !eligible.length ? "No editable original outline data is available." : materialState && !materialState.enabled ? "Enable SIFAS rendering to preview the outline." : "Use Save to write the outline into a new model copy.");
+        var excluded = (data.excludedMeshes || []).filter(function (mesh) { return mesh.id === select.value; })[0];
+        status.textContent = excluded ? (excluded.reasons || []).map(exclusionReason).join(" ") : t(!c.current ? "Open a character model to adjust its outline." : c.editing && c.editing.available === false && c.editing.reason ? c.editing.reason : !eligible.length ? "No editable original outline data is available." : materialState && !materialState.enabled ? "Enable SIFAS rendering to preview the outline." : "Use Save to write the outline into a new model copy.");
         count.textContent = t("Edited vertices") + ": " + vertexCount(values, c);
-        var language = document.documentElement.lang || "en";
         if (languageKey !== language) { languageKey = language; panel.querySelectorAll("[data-outline-text]").forEach(function (node) { node.textContent = t(node.dataset.outlineText); }); diagnosticsText.setAttribute("aria-label", t("Outline diagnostics")); }
         adoptRuntime();
       } finally { refreshing = false; }

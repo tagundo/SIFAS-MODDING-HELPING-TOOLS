@@ -293,8 +293,10 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
         _fail("The model preview has no valid editing identity.")
     if not isinstance(paths, (list, tuple)) or not 1 <= len(paths) <= 8:
         _fail("Choose between one and eight original model files.")
-    if not isinstance(rig, dict) or rig.get("available") is not True:
-        return {"available": False, "reason": "This model has no editable rig."}
+    # Read-only mesh inventory is useful even when the preview has no writable
+    # rig. Keep that diagnostic path separate from edit-session authorization.
+    editable_rig = isinstance(rig, dict) and rig.get("available") is True
+    rig = rig if isinstance(rig, dict) else {}
     paths = [str(Path(p).resolve()) for p in paths]
     selected_count = len(paths)
     companion_hashes = {}
@@ -346,9 +348,10 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             with zipfile.ZipFile(io.BytesIO(container["raw"])) as archive:
                 if archive.read(member) != raw:
                     _fail("The original costume archive changed while opening.")
-        candidates = [b for b in rig.get("bones", []) if b.get("sourceIndex") == index and "transformId" in b]
-        if candidates and any(b.get("sourceHash") != source_hash for b in candidates):
+        preview_bones = [b for b in rig.get("bones", []) if b.get("sourceIndex") == index and "transformId" in b]
+        if preview_bones and any(b.get("sourceHash") != source_hash for b in preview_bones):
             _fail("The original model changed while its preview was opening. Open it again before editing.")
+        candidates = preview_bones if editable_rig else []
         info = _inspect(raw)
         sources.append({"raw": raw, "sha256": source_hash, "name": Path(path).name,
                         "container": container_ids[origin], "member": member})
@@ -377,32 +380,36 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                       "reason": "observed_mv_scale_track" if name in _MV_SCALE_NAMES else "saved_node_setting" if method == "node" else "unverified_motion_coverage"}
             targets[node] = {**target, "key": key}
             public.append({k: copy.deepcopy(v) for k, v in target.items() if k not in ("serializedFile",)})
-        if index < selected_count:
+        if editable_rig and index < selected_count:
             physics_records.extend(viewer_physics.inspect_info(info, index, list(targets.values())))
             physics_managers.extend(viewer_physics.native_managers(info, index, list(targets.values())))
         inspected_sources.append((info, index))
         if len(physics_records) > viewer_physics.MAX_COMPONENTS:
             _fail("The selected models have too many physics components.")
-    if not targets:
-        return {"available": False, "reason": "No original writable body nodes were found."}
-    physics = viewer_physics.make_catalog(physics_records, physics_managers)
     outlines = model_outlines.catalogue_sources(inspected_sources)
     # The outline diagnostic identifies the bytes already captured for this
     # preview. Reuse their hashes; copying diagnostics never rereads a file or
     # exposes a user's local directory.
     outlines["sources"] = [{"sourceIndex": index, "name": source["name"], "sha256": source["sha256"]}
                            for index, source in enumerate(sources)]
-    session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": total,
+    # Include expanded archive members in the same memory budget before either
+    # returning diagnostics or retaining an authorized editing session.
+    captured_bytes = total + sum(len(source["raw"]) for source in sources if source["member"] is not None)
+    if captured_bytes > MAX_SOURCE_BYTES:
+        _fail("The selected originals expand beyond the body editing memory limit.")
+    if not editable_rig or not targets:
+        return {"available": False,
+                "reason": ("This model has no editable rig." if not editable_rig else
+                           "No original writable body nodes were found."),
+                "outlines": outlines}
+    physics = viewer_physics.make_catalog(physics_records, physics_managers)
+    session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": captured_bytes,
                "containers": containers, "sources": sources, "targets": targets,
                "outlineOnlySources": set(range(selected_count, len(paths))),
                "physics": physics, "outlines": outlines,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
                "busy": threading.Lock()}
-    # Count expanded model copies too when archives retain compressed originals.
-    session["bytes"] += sum(len(s["raw"]) for s in sources if s["member"] is not None)
-    if session["bytes"] > MAX_SOURCE_BYTES:
-        _fail("The selected originals expand beyond the body editing memory limit.")
     with _LOCK:
         _SESSIONS[model_id] = session
         _prune(time.monotonic())

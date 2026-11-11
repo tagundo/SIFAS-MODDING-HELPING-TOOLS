@@ -28,7 +28,7 @@ async function main() {
       const rig = { getOutlineEdits: () => JSON.parse(JSON.stringify(edits)), getOutlineRevision: () => revision,
         setOutlineEdits: next => { edits = ViewerOutlines.checked(next, catalogue); revision++; } };
       const runtime = { model, scene, camera, renderer, domElement: renderer.domElement };
-      const controller = ViewerOutlines.create({ getRuntime: () => runtime, context: () => ({ rig, editing: { outlines: catalogue }, current: true,
+      const controller = ViewerOutlines.create({ getRuntime: () => runtime, context: () => ({ rig, editing: { available: true, outlines: catalogue }, current: true,
         materials: { setOutlineEdits() {}, getState: () => ({ enabled: true }) } }), onChange() {} });
       window.test = { T, model, mesh, back, scene, camera, renderer, rig, controller, runtime, catalogue, baseIndex: geometry.index.array.slice() };
       document.getElementById('viewer-outline-card').open = true; document.getElementById('viewer-outline-detail').open = true;

@@ -133,6 +133,7 @@
     "uniform float uResolutionRatio;",
     "uniform float uOutlineScale;",
     "uniform float uOutlineEdited;",
+    "uniform float uOutlineQuantized;",
     "attribute float _sifas_outline_width;",
     "varying vec4 vSifasOutlineColor;",
     "void main() {",
@@ -150,7 +151,11 @@
     "  distanceFactor /= max(abs(projectionMatrix[1][1]) * 0.267949194, 0.000001);",
     "  distanceFactor = distanceFactor < 0.9 ? distanceFactor * 1.11111116 : distanceFactor * 0.555555582 + 0.5;",
     "  distanceFactor *= projectionMatrix[3][3] == 0.0 ? 1.0 : 0.0;",
-    "  float outlineWidth = uOutlineEdited > 0.5 ? floor(clamp(_sifas_color.r * uOutlineScale, 0.0, 1.0) * 255.0 + 0.5) / 255.0 : _sifas_color.r;",
+    "  float outlineWidth = _sifas_color.r;",
+    "  if (uOutlineEdited > 0.5) {",
+    "    outlineWidth = clamp(outlineWidth * uOutlineScale, 0.0, 1.0);",
+    "    if (uOutlineQuantized > 0.5) outlineWidth = floor(outlineWidth * 255.0 + 0.5) / 255.0;",
+    "  }",
     "  if (_sifas_outline_width >= 0.0) outlineWidth = _sifas_outline_width;",
     "  vec2 shift = vec2(projectionMatrix[0][0], projectionMatrix[1][1]) * outlineNormal.xy * outlineWidth;",
     "  gl_Position.xy += shift * distanceFactor * 0.001;",
@@ -358,6 +363,7 @@
         uResolutionRatio: { value: finite(options.resolutionRatio, 1) },
         uOutlineScale: { value: 1 },
         uOutlineEdited: { value: 0 },
+        uOutlineQuantized: { value: 1 },
         uBeat: { value: 0 }
       };
       var defaults = { _RimglightIntensity: 1, _RimglightPower: 3, _MainTexMipmapBias: 0,
@@ -449,6 +455,7 @@
         if (material && material.uniforms && material.uniforms.uOutlineScale) {
           material.uniforms.uOutlineScale.value = entry.outlineFactor === undefined ? 1 : entry.outlineFactor;
           material.uniforms.uOutlineEdited.value = entry.outlineEdited ? 1 : 0;
+          material.uniforms.uOutlineQuantized.value = entry.outlineFloat ? 0 : 1;
           material.uniformsNeedUpdate = true;
         }
       };
@@ -479,6 +486,7 @@
           var key = mesh && String(mesh.source) + ":" + String(mesh.file) + ":" + String(mesh.id);
           entry.outlineEdited = !!(key && Object.prototype.hasOwnProperty.call(outlineFactors, key));
           var edit = entry.outlineEdited ? outlineFactors[key] : null;
+          entry.outlineFloat = !!(edit && edit.floatWidth);
           entry.outlineFactor = edit ? edit.factor : 1;
           var vertices = edit && edit.vertices || [], absolute = edit ? edit.absolute : undefined;
           var hasWidth = vertices.length || absolute !== undefined, signature = hasWidth ? edit.signature : "";
@@ -487,7 +495,7 @@
             entry.widthGeometry = entry.mesh.geometry; entry.widthSignature = signature;
             if (hasWidth && mapping && mapping.vertexOrder === "identity") {
               var count = entry.mesh.geometry.attributes.position.count;
-              var base = absolute === undefined ? -1 : Math.min(255, Math.max(0, Math.floor(absolute * edit.factor + .5))) / 255;
+              var base = absolute === undefined ? -1 : Math.min(1, Math.max(0, entry.outlineFloat ? absolute * edit.factor / 255 : Math.floor(absolute * edit.factor + .5) / 255));
               var attribute = entry.widthAttribute, full = changedGeometry || !attribute || attribute.count !== count || entry.widthBase !== base;
               if (!attribute || changedGeometry || attribute.count !== count) {
                 attribute = new T.BufferAttribute(new Float32Array(count), 1);
@@ -497,7 +505,7 @@
               var values = attribute.array, low = count, high = -1;
               if (full) { values.fill(base); low = 0; high = count - 1; }
               else (entry.widthVertices || []).forEach(function (row) { if (row.vertex < count) { values[row.vertex] = base; low = Math.min(low, row.vertex); high = Math.max(high, row.vertex); } });
-              vertices.forEach(function (row) { if (row.vertex >= 0 && row.vertex < count) { values[row.vertex] = Math.min(255, Math.max(0, Math.floor(row.value * 255 * edit.factor + .5))) / 255; low = Math.min(low, row.vertex); high = Math.max(high, row.vertex); } });
+              vertices.forEach(function (row) { if (row.vertex >= 0 && row.vertex < count) { values[row.vertex] = Math.min(1, Math.max(0, entry.outlineFloat ? row.value * edit.factor : Math.floor(row.value * 255 * edit.factor + .5) / 255)); low = Math.min(low, row.vertex); high = Math.max(high, row.vertex); } });
               // Several pointer samples can arrive before the next GPU upload.
               // Upload the retained buffer together so a later sparse sample
               // cannot hide an earlier whole-mesh change.
@@ -510,9 +518,10 @@
           }
         });
       },
-      setOutlineEdits: function (values) {
+      setOutlineEdits: function (values, catalogue) {
         outlineFactors = {};
-        (values || []).forEach(function (value) { var edit = { factor: value.factor, vertices: (value.vertices || []).map(function (row) { return { vertex: row.vertex, value: row.value }; }) }; if (value.absolute !== undefined) edit.absolute = value.absolute; edit.signature = JSON.stringify([edit.factor, edit.absolute, edit.vertices]); outlineFactors[value.id] = edit; });
+        var formats = Object.create(null); (catalogue && catalogue.meshes || []).forEach(function (mesh) { formats[mesh.id] = mesh.format; });
+        (values || []).forEach(function (value) { var edit = { factor: value.factor, floatWidth: formats[value.id] === "Float32", vertices: (value.vertices || []).map(function (row) { return { vertex: row.vertex, value: row.value }; }) }; if (value.absolute !== undefined) edit.absolute = value.absolute; edit.signature = JSON.stringify([edit.factor, edit.absolute, edit.vertices, edit.floatWidth]); outlineFactors[value.id] = edit; });
         controller.syncGeometry();
         if (options.onChange) options.onChange();
       },

@@ -6,9 +6,11 @@ import math
 import os
 from pathlib import Path
 import secrets
+import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import numpy as np
 import UnityPy
@@ -21,7 +23,7 @@ from sifas_mesh_baker import stream_layout
 FIXTURE = Path(__file__).parent / "fixtures/viewer_persistence.unity"
 
 
-def colored_fixture(*, mixed=False, format_override=None, separate_color_stream=False):
+def colored_fixture(*, mixed=False, format_override=None, separate_color_stream=False, float_colors=False):
     env = UnityPy.load(FIXTURE.read_bytes())
     mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
     tree = mesh.read_typetree()
@@ -31,12 +33,15 @@ def colored_fixture(*, mixed=False, format_override=None, separate_color_stream=
     for index in range(count):
         offset = starts[channel["stream"]] + index * strides[channel["stream"]] + channel["offset"]
         data[offset:offset + 4] = bytes(([0, 51, 128, 191, 255, 37][index % 6], 70 + index, 130 + index, 220 + index))
-    if separate_color_stream:
+    if separate_color_stream or float_colors:
         # Six valid vertices with a distinct, tightly packed final color
         # stream. Unity does not require the last stream's trailing alignment.
         assert strides == {0: 56} and channel["offset"] == 52
         body = b"".join(data[index * 56:index * 56 + 52] for index in range(count))
         rgba = b"".join(data[index * 56 + 52:index * 56 + 56] for index in range(count))
+        if float_colors:
+            rgba = (np.frombuffer(rgba, dtype=np.uint8).astype("<f4") / 255).astype("<f4").tobytes()
+            channel["format"] = 0
         data = body + bytes((-len(body)) % 16) + rgba
         channel["stream"], channel["offset"] = 1, 0
     tree["m_VertexData"]["m_DataSize"] = bytes(data)
@@ -178,6 +183,179 @@ class OutlineTests(unittest.TestCase):
     def test_mixed_or_unsupported_color_shader_is_not_writable(self):
         self.assertFalse(outlines.catalogue(edits._inspect(colored_fixture(mixed=True)), 0)["available"])
         self.assertFalse(outlines.catalogue(edits._inspect(colored_fixture(format_override=6)), 0)["available"])
+
+    def test_arbitrary_mesh_gameobject_material_names_preserve_outline_eligibility(self):
+        raw = colored_fixture()
+        original = outlines.catalogue(edits._inspect(raw), 0)["meshes"][0]
+        env = UnityPy.load(raw)
+        for obj in env.objects:
+            if obj.type.name in ("Mesh", "GameObject", "Material"):
+                tree = obj.read_typetree()
+                tree["m_Name"] = "사용자 의상." + obj.type.name + ".001"
+                obj.save_typetree(tree)
+        renamed = env.file.save()
+        path, _, metadata = self.register(renamed)
+        catalog = metadata["outlines"]
+        self.assertEqual(len(catalog["meshes"]), 1)
+        self.assertEqual(catalog["excludedMeshes"], [])
+        record = catalog["meshes"][0]
+        self.assertEqual(record["id"], original["id"])
+        self.assertEqual(record["name"], "사용자 의상.Mesh.001")
+        self.assertEqual(record["originalWidth"], original["originalWidth"])
+        self.assertEqual(path.read_bytes(), renamed)
+
+    def test_preview_visible_unsupported_meshes_have_reasons_and_are_not_writable(self):
+        shader_env = UnityPy.load(colored_fixture())
+        shader = next(obj for obj in shader_env.objects if obj.type.name == "Shader")
+        tree = shader.read_typetree()
+        tree["m_Name"] = "OriginalASMember_Renamed"
+        if "m_ParsedForm" in tree:
+            tree["m_ParsedForm"]["m_Name"] = tree["m_Name"]
+        shader.save_typetree(tree)
+        for raw, expected in ((colored_fixture(format_override=6), {"unsupported_color_layout"}),
+                              (shader_env.file.save(), {"unsupported_material"}),
+                              (colored_fixture(mixed=True), {"unsupported_material", "mixed_material_references"})):
+            with self.subTest(reasons=expected):
+                path, token, metadata = self.register(raw)
+                catalog = metadata["outlines"]
+                self.assertFalse(catalog["available"])
+                self.assertEqual(catalog["meshes"], [])
+                self.assertEqual(len(catalog["excludedMeshes"]), 1)
+                record = catalog["excludedMeshes"][0]
+                self.assertEqual({row["code"] for row in record["reasons"]}, expected)
+                self.assertEqual(record["id"], f"0:{record['file']}:{record['meshId']}")
+                self.assertEqual(catalog["sources"][0]["sha256"], hashlib.sha256(raw).hexdigest())
+                self.assertNotIn(str(self.root), json.dumps(catalog))
+                self.assertNotIn("OriginalASMember_Renamed", json.dumps(record))
+                self.assertTrue(all(row["message"] for row in record["reasons"]))
+                with self.assertRaises(ValueError):
+                    edits.validate_state(token, self.state(record["id"], .5))
+                self.assertEqual(path.read_bytes(), raw)
+
+    def test_standalone_preview_mesh_and_invalid_renderer_binding_are_distinguished(self):
+        env = UnityPy.load(colored_fixture())
+        for obj in list(env.objects):
+            if obj.type.name in ("SkinnedMeshRenderer", "MeshRenderer"):
+                del obj.assets_file.objects[obj.path_id]
+        raw = env.file.save()
+        path = self.root / "standalone.unity"
+        path.write_bytes(raw)
+        preview = model_viewer.prepare([str(path)], rigged=True, face_context={"enabled": False, "allow_download": False})
+        self.assertEqual(preview["stats"]["meshes"], 1)
+        catalog = outlines.catalogue(edits._inspect(raw), 0)
+        self.assertEqual(catalog["meshes"], [])
+        self.assertEqual([row["code"] for row in catalog["excludedMeshes"][0]["reasons"]], ["no_verified_renderer_binding"])
+
+        env = UnityPy.load(colored_fixture())
+        renderer = next(obj for obj in env.objects if obj.type.name == "SkinnedMeshRenderer")
+        tree = renderer.read_typetree()
+        tree["m_GameObject"] = {"m_FileID": 0, "m_PathID": 987654321}
+        renderer.save_typetree(tree)
+        catalog = outlines.catalogue(edits._inspect(env.file.save()), 0)
+        self.assertEqual([row["code"] for row in catalog["excludedMeshes"][0]["reasons"]], ["invalid_renderer_binding"])
+
+    def test_inventory_distinguishes_layout_name_and_limit_failures_without_omission(self):
+        def mesh_variant(change):
+            env = UnityPy.load(colored_fixture())
+            mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
+            tree = mesh.read_typetree()
+            change(tree)
+            mesh.save_typetree(tree)
+            return env.file.save()
+        variants = [
+            (lambda t: t["m_VertexData"]["m_Channels"][3].update(dimension=0), "missing_color_channel"),
+            (lambda t: t["m_VertexData"].update(m_DataSize=t["m_VertexData"]["m_DataSize"][:-1]), "malformed_vertex_data"),
+            (lambda t: t.update(m_Name="x" * 1025), "invalid_mesh_name"),
+            (lambda t: t["m_VertexData"].update(m_VertexCount=outlines.MAX_VERTICES + 1), "vertex_limit"),
+        ]
+        for change, expected in variants:
+            with self.subTest(reason=expected):
+                catalog = outlines.catalogue(edits._inspect(mesh_variant(change)), 7)
+                self.assertEqual(catalog["meshes"], [])
+                self.assertEqual(len(catalog["excludedMeshes"]), 1)
+                record = catalog["excludedMeshes"][0]
+                self.assertEqual(record["sourceIndex"], 7)
+                self.assertEqual([row["code"] for row in record["reasons"]], [expected])
+                self.assertLessEqual(len(record["name"].encode()), 1024)
+        info = edits._inspect(colored_fixture())
+        with mock.patch.object(outlines, "MAX_MESHES", 1):
+            catalog = outlines.catalogue_sources([(info, 0), (info, 1)])
+        self.assertEqual(catalog["meshes"], [])
+        self.assertEqual({row["sourceIndex"] for row in catalog["excludedMeshes"]}, {0, 1})
+        self.assertTrue(all([reason["code"] for reason in row["reasons"]] == ["mesh_limit"] for row in catalog["excludedMeshes"]))
+        with mock.patch.object(outlines, "MAX_INVENTORY_MESHES", 1), self.assertRaisesRegex(ValueError, "outline inventory limit"):
+            outlines.catalogue_sources([(info, 0), (info, 1)])
+        self.assertEqual(outlines.catalogue_sources([]), {"version": 1, "available": False, "meshes": [], "excludedMeshes": []})
+
+    def test_float32_outlines_preserve_precision_format_and_every_non_red_byte(self):
+        env = UnityPy.load(colored_fixture(float_colors=True))
+        mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
+        tree = mesh.read_typetree()
+        count, start, stride = outlines._layout(tree)
+        source_data = bytearray(tree["m_VertexData"]["m_DataSize"])
+        for vertex, red in enumerate((0, .123456789, .6, 1, .995, .231234567)):
+            struct.pack_into("<4f", source_data, start + vertex * stride, red, .23456789, .45678912, .87654321)
+        tree["m_VertexData"]["m_DataSize"] = bytes(source_data)
+        mesh.save_typetree(tree)
+        raw = env.file.save()
+        path, token, metadata = self.register(raw)
+        catalog = metadata["outlines"]
+        record = catalog["meshes"][0]
+        self.assertEqual(record["format"], "Float32")
+        self.assertEqual(catalog["excludedMeshes"], [])
+        red_values = [struct.unpack_from("<f", source_data, start + vertex * stride)[0] for vertex in range(count)]
+        self.assertEqual(record["originalWidth"], {"min": min(red_values) * 255, "max": max(red_values) * 255,
+                                                  "mean": sum(red * 255 for red in red_values) / count})
+        self.assertNotEqual(red_values[1] * 255, round(red_values[1] * 255))
+        before = edits._inspect(raw)
+        key = record["file"], int(record["meshId"])
+        for settings in ({"factor": 0}, {"factor": .5}, {"factor": 2}, {"factor": 1, "absolute": 128},
+                         {"factor": 1.5, "absolute": 64, "vertices": [{"vertex": 0, "value": .333333333}, {"vertex": 2, "value": 0}]}):
+            with self.subTest(settings=settings):
+                row = {"id": record["id"], **settings}
+                saved = outlines.apply_edits(raw, 0, [row], catalog)
+                after = edits._inspect(saved)
+                expected = bytearray(source_data)
+                overrides = {entry["vertex"]: entry["value"] for entry in row.get("vertices", [])}
+                for vertex in range(count):
+                    value = overrides.get(vertex, settings.get("absolute", red_values[vertex] * 255) / 255)
+                    struct.pack_into("<f", expected, start + vertex * stride, min(1, max(0, value * settings["factor"])))
+                target_tree = after["objects"][key].read_typetree()
+                self.assertEqual(target_tree["m_VertexData"]["m_DataSize"], bytes(expected))
+                source_tree = before["objects"][key].read_typetree()
+                source_tree["m_VertexData"]["m_DataSize"] = bytes(expected)
+                self.assertEqual(source_tree, target_tree)
+                self.assertEqual(set(before["objects"]), set(after["objects"]))
+                for other in set(before["objects"]) - {key}:
+                    self.assertEqual(before["objects"][other].get_raw_data(), after["objects"][other].get_raw_data())
+                self.assertEqual(outlines.catalogue(after, 0)["meshes"][0]["vertexOrderSignature"], record["vertexOrderSignature"])
+                self.assertEqual(outlines.apply_edits(saved, 0, [row], catalog, original_raw=raw), saved)
+        state = edits.validate_state(token, {"version": 1, "edits": [], "outlines": [{"id": record["id"], "factor": .5}]})
+        output = edits.export(token, state, self.root / "float-export")
+        restored = edits.restore(token, json.loads(Path(output["recipe_path"]).read_text()))
+        again = edits.export(token, restored, self.root / "float-again")
+        self.assertEqual(Path(again["preview_paths"][0]).read_bytes(), Path(output["preview_paths"][0]).read_bytes())
+        reset = edits.export(token, {"version": 1, "edits": []}, self.root / "float-reset", allow_empty=True)
+        self.assertEqual(Path(reset["preview_paths"][0]).read_bytes(), raw)
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_float32_nonfinite_and_out_of_range_masks_remain_excluded(self):
+        for component, value in ((0, math.nan), (0, math.inf), (0, -.001), (0, 1.001), (1, math.nan), (2, 1.001)):
+            with self.subTest(component=component, value=value):
+                env = UnityPy.load(colored_fixture(float_colors=True))
+                mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
+                tree = mesh.read_typetree()
+                _, start, _ = outlines._layout(tree)
+                data = bytearray(tree["m_VertexData"]["m_DataSize"])
+                struct.pack_into("<f", data, start + component * 4, value)
+                tree["m_VertexData"]["m_DataSize"] = bytes(data)
+                mesh.save_typetree(tree)
+                raw = env.file.save()
+                catalog = outlines.catalogue(edits._inspect(raw), 0)
+                self.assertEqual(catalog["meshes"], [])
+                self.assertEqual([row["code"] for row in catalog["excludedMeshes"][0]["reasons"]], ["invalid_float_color_values"])
+                with self.assertRaises(ValueError):
+                    outlines.apply_edits(raw, 0, [{"id": catalog["excludedMeshes"][0]["id"], "factor": .5}], catalog)
 
     def test_outline_only_export_recipe_restore_and_repeat_do_not_accumulate(self):
         raw = colored_fixture()
