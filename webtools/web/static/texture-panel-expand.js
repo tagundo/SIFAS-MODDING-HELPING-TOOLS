@@ -46,10 +46,11 @@
   function updateButton(record) {
     var label = text(active === record ? "Restore size" : "Enlarge texture");
     if (record.button.textContent !== label) record.button.textContent = label;
-    record.button.setAttribute("aria-label", label);
-    record.button.setAttribute("title", label);
-    record.button.setAttribute("aria-expanded", String(active === record));
-    record.button.disabled = !!(record.definition.image && !record.node.querySelector(record.definition.image));
+    if (record.button.getAttribute("aria-label") !== label) record.button.setAttribute("aria-label", label);
+    if (record.button.getAttribute("title") !== label) record.button.setAttribute("title", label);
+    var expanded = String(active === record), disabled = !!(record.definition.image && !record.node.querySelector(record.definition.image));
+    if (record.button.getAttribute("aria-expanded") !== expanded) record.button.setAttribute("aria-expanded", expanded);
+    if (record.button.disabled !== disabled) record.button.disabled = disabled;
   }
   function viewport() {
     var v = global.visualViewport;
