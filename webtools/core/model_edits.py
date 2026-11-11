@@ -405,10 +405,14 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
                 "reason": ("This model has no editable rig." if not editable_rig else
                            "No original writable body nodes were found."),
                 "outlines": outlines}
+    body_editing_available = editable_rig and bool(targets)
+    body_editing_reason = ("" if body_editing_available else "This model has no editable rig." if not editable_rig else
+                           "No original writable body nodes were found.")
     physics = viewer_physics.make_catalog(physics_records, physics_managers)
     session = {"expires": time.monotonic() + SESSION_SECONDS, "bytes": captured_bytes,
                "containers": containers, "sources": sources, "targets": targets,
                "outlineOnlySources": set(range(selected_count, len(paths))),
+               "bodyEditingAvailable": body_editing_available,
                "physics": physics, "outlines": outlines, "textures": textures,
                "variants": {str(container_ids[path]): choice for path, choice in variants.items()},
                "readOnlySkinJoints": {node for node in rig.get("readOnlySkinJoints", []) if node in targets},
@@ -419,6 +423,7 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
         if model_id not in _SESSIONS:
             _fail("The body editor cache is busy. Finish saving another model first.")
     return {"available": True, "token": model_id, "version": VERSION, "nodes": public,
+            "bodyEditingAvailable": body_editing_available, "bodyEditingReason": body_editing_reason,
             "sourceFingerprint": _sha(json.dumps({
                 "containers": [item["sha256"] for item in containers],
                 "sources": [[item["container"], item["member"], item["sha256"]] for item in sources],
@@ -428,7 +433,8 @@ def register_session(model_id, paths, rig, *, originals=None, origins=None,
             "physics": copy.deepcopy(physics),
             "outlines": copy.deepcopy(outlines),
             "textures": copy.deepcopy(textures),
-            "originalsPreserved": True, "supported": ["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics", "outline_mask", "texture_pixels"]}
+            "originalsPreserved": True, "supported": (["scale", "position", "rotation", "child_compensation", "blend_shape_geometry", "swing_physics", "outline_mask", "texture_pixels"]
+                                                       if body_editing_available else ["texture_pixels"])}
 
 
 def mod_source_context(token):
@@ -463,6 +469,18 @@ def _node(session, value):
     return session["targets"][value]
 
 
+def _require_body_editing(session):
+    if not session.get("bodyEditingAvailable", True):
+        _fail("This model supports texture pixel edits only. Body, physics and outline edits require an editable rig.")
+
+
+def require_body_editing(token):
+    """Authorize non-texture writers using the server's captured rig scope."""
+    session = _session(token)
+    _require_body_editing(session)
+    return session
+
+
 def validate_state(token, state, *, allow_empty=False):
     session = _session(token)
     if not isinstance(state, dict) or set(state) - {"version", "edits", "savedSettingsEnabled", "unsupported", "compensationReference", "physics", "accessoryUnclip", "outlines", "textures"}:
@@ -484,6 +502,10 @@ def validate_state(token, state, *, allow_empty=False):
     unsupported = state.get("unsupported", [])
     if not isinstance(unsupported, list) or unsupported:
         _fail("Reset unsupported preview-only changes before exporting body edits.")
+    if not session.get("bodyEditingAvailable", True) and (
+            any(state.get(field) for field in ("edits", "physics", "outlines", "compensationReference")) or
+            "accessoryUnclip" in state):
+        _require_body_editing(session)
     accessory = None
     if "accessoryUnclip" in state:
         from .model_accessory_unclip import options, AccessoryUnclipError

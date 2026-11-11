@@ -335,6 +335,7 @@ def validate_request(params):
             raise ValueError("Cut heights must be finite numbers between -10 and 10.")
     if params["cutLow"] >= params["cutHigh"]:
         raise ValueError("The lower cut must be below the upper cut.")
+    model_edits.require_body_editing(params["token"])
     from .viewer_mod_flow import normalize_mesh_state
     mesh_state = normalize_mesh_state(params.get("mesh_state"))
     state = model_edits.validate_state(params["token"], params["state"], allow_empty=True)
@@ -378,6 +379,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
     ``export_fn`` may replace the pre-exporter. It receives ``mesh_state`` when
     mesh edits are present; its return shape matches model_edits.export.
     """
+    model_edits.require_body_editing(request["token"])
     root = model_edits._safe_root(output_root)
     cache = model_edits._safe_root(cache_root)
     context = request["context"]

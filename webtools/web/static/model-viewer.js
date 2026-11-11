@@ -122,6 +122,13 @@
     }
     return Promise.resolve(textureToolsController.restoreEdits(rows));
   }
+  function bodyEditingMetadata() {
+    var value = metadata && metadata.editing;
+    if (value && value.bodyEditingAvailable === false) return Object.assign({}, value, {
+      available: false, reason: value.bodyEditingReason || "This model has no editable rig."
+    });
+    return value;
+  }
   function workbenchChanged() {
     if (rigController) rigController.setInteractive(!loading && !lost && !workbenchBusy() &&
       !(persistenceController && persistenceController.getState().busy));
@@ -2015,7 +2022,7 @@
       },
       getRuntime: function () { return { model: model, renderer: renderer, camera: camera, scene: scene,
         controls: controls, domElement: renderer && renderer.domElement, requestRender: requestRender }; },
-      context: function () { return { rig: rigController, editing: metadata && metadata.editing,
+      context: function () { return { rig: rigController, editing: bodyEditingMetadata(),
         materials: materialController, busy: workbenchBusy() || !!(persistenceController && persistenceController.getState().busy),
         current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) }; }
     });
@@ -2023,7 +2030,7 @@
       translate: t,
       context: function () {
         var saved = persistenceController && persistenceController.getState();
-        return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, rig: rigController,
+        return { modelId: metadata && metadata.id, editing: bodyEditingMetadata(), rig: rigController,
           busy: !!(saved && saved.busy), reviewingSaved: !!(saved && saved.reviewingSaved),
           current: !!model && !loading && !lost && sameSelection(loadedPaths, loadedAutoFace, loadedVariants) };
       },
@@ -2098,7 +2105,7 @@
       translate: t,
       isSceneInteractive: function () { return !(outlineController && outlineController.isSceneEditing && outlineController.isSceneEditing()) && !(textureToolsController && textureToolsController.getState().sceneMode !== "orbit"); },
       onSceneModeChange: function (mode) { if (mode !== "orbit") { if (outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (textureToolsController) textureToolsController.setSceneMode("orbit"); } },
-      getToken: function () { return metadata && metadata.editing && metadata.editing.available ? metadata.editing.token : null; },
+      getToken: function () { var editing = bodyEditingMetadata(); return editing && editing.available ? editing.token : null; },
       getBodyState: authoringState,
       getRuntime: function () { return { model: model, scene: scene, renderer: renderer, camera: camera,
         controls: controls, rig: rigController, stage: node("viewer-stage"),
@@ -2158,7 +2165,7 @@
           rendererIds[String(mapping.renderer)] = true;
           targetMeshes.push({ value: String(mapping.renderer), label: mesh.name, mesh: mapping.mesh });
         });
-        return { modelId: metadata && metadata.id, editing: metadata && metadata.editing, targetMeshes: targetMeshes,
+        return { modelId: metadata && metadata.id, editing: bodyEditingMetadata(), targetMeshes: targetMeshes,
         authoring: authoringState(), loadedPaths: loadedPaths.slice(),
         loadedVariants: loadedVariants.slice(), autoFace: loadedAutoFace, loadEpoch: generation,
         persistence: persistenceController && persistenceController.getState(),
@@ -2478,7 +2485,12 @@
     restoreAuthoringState: function (state) {
       if (!rigController || !rigController.restoreAuthoringState) throw new Error("Open the original model before loading its recipe.");
       rigController.restoreAuthoringState(state);
-      var restored = restoreTextureState(state);
+      var restored = restoreTextureState(state).catch(function (error) {
+        // Legacy callers restore body state synchronously and may issue a newer
+        // restore without awaiting texture work. Supersession is a normal no-op.
+        if (error && error.name === "AbortError") return false;
+        throw error;
+      });
       if (persistenceController) persistenceController.refresh();
       return restored;
     },

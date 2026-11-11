@@ -381,6 +381,7 @@ def _write_mesh(obj, tree, bones, operation):
 
 
 def _check_archive_scope(session):
+    model_edits._require_body_editing(session)
     from .viewer_archive import _model_header
     import ast
     model_keys = {'costume_file', 'costume_file_ios', 'rina_unmask_costume_file', 'rina_unmask_costume_file_ios'}
@@ -413,7 +414,7 @@ def _check_archive_scope(session):
 
 
 def export(token, state, output_dir, *, body_state=None):
-    session = _session(token)
+    session = model_edits.require_body_editing(token)
     if not isinstance(state, dict) or set(state) != {'version', 'meshes'} or type(state.get('version')) is not int or state['version'] != 1:
         _fail('Invalid mesh edit state.')
     try:

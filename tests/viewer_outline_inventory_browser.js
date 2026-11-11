@@ -140,7 +140,7 @@ async function run() {
     const unknownShader = await copy(); assert(unknownShader.editingAvailable); assert.equal(unknownShader.meshes.length, 0); assert.deepStrictEqual(unknownShader.excludedMeshes, shader.outlines.excludedMeshes);
     report.cases.push({ name: 'Unsupported shader with zero editable outlines still exposes mesh, reason and source-bound clipboard diagnostic', diagnostics: unknownShader });
 
-    const orphan = await open(page, [sources[3]]); assert.equal(orphan.available, false); assert.equal(orphan.outlines.meshes.length, 0); assert.equal(orphan.outlines.excludedMeshes.length, 1);
+    const orphan = await open(page, [sources[3]]); assert.equal(orphan.available, true, 'Original textures remain editable without a rig'); assert.equal(orphan.bodyEditingAvailable, false, 'Texture editing must not authorize outline or body writes'); assert.equal(typeof orphan.token, 'string'); assert.equal(orphan.outlines.meshes.length, 0); assert.equal(orphan.outlines.excludedMeshes.length, 1);
     assert(orphan.outlines.excludedMeshes[0].reasons.some(reason => reason.code === 'no_verified_renderer_binding'));
     await page.locator('#viewer-outline-mesh').selectOption(orphan.outlines.excludedMeshes[0].id); await blockedControls();
     const orphanStatus = await page.locator('#viewer-outline-status').innerText(); assert(/renderer|bound|binding/i.test(orphanStatus));
