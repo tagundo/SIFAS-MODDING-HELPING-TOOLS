@@ -237,7 +237,7 @@ def render_inputs(path, cache_root, expected_sha=None, *, variant="auto"):
 
 def _legacy_bytes(source, png):
     values, nodes, text = _literal(source["files"][source["manifest"]])
-    relative = "rendered-thumbnail-" + secrets.token_hex(8) + ".png"
+    relative = "renderedthumbnail" + secrets.token_hex(8) + ".png"
     member = str(PurePosixPath(source["manifest"].replace("\\", "/")).parent / relative)
     _require(member.casefold() not in {name.casefold() for name in source["files"]}, "The new thumbnail asset name collides with an existing asset.")
     raw = text.encode("utf-8")
