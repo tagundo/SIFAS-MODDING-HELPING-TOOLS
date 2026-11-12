@@ -49,7 +49,9 @@
   }
   function updateButton(record) {
     var label = text(active === record ? "Restore size" : "Enlarge texture");
-    if (record.button.textContent !== label) record.button.textContent = label;
+    if (record.label.textContent !== label) record.label.textContent = label;
+    var path = active === record ? "M1 6h5V1M15 10h-5v5M6 6 1 1m9 9 5 5" : "M1 6V1h5M15 10v5h-5M1 1l5 5m4 4 5 5";
+    if (record.icon.getAttribute("d") !== path) record.icon.setAttribute("d", path);
     if (record.button.getAttribute("aria-label") !== label) record.button.setAttribute("aria-label", label);
     if (record.button.getAttribute("title") !== label) record.button.setAttribute("title", label);
     var expanded = String(active === record), disabled = !!(record.definition.image && !record.node.querySelector(record.definition.image));
@@ -63,12 +65,12 @@
     if (!canvas || !inspector || !settings || !handle) return;
     var preference = 'elichika.uv-view-height.v1.' + record.node.id, height = 0, scheduled = 0, drag = null, shortLayout = false, moved = [], rail = null, menuPlacers = [];
     try { height = +localStorage.getItem(preference) || 0; } catch (_) {}
-    if (!Number.isFinite(height) || height < 180 || height > 900) height = 0;
+    if (!Number.isFinite(height) || height < 180 || height > 4096) height = 0;
     var heading = document.createElement('div'), caption = document.createElement('strong'), close = document.createElement('button');
     heading.className = 'uv-inspector-heading'; close.type = 'button'; close.textContent = '×'; heading.append(caption, close); inspector.insertBefore(heading, inspector.firstChild);
     inspector.id = record.node.id + '-settings'; caption.id = record.node.id + '-settings-label'; inspector.setAttribute('aria-labelledby', caption.id); settings.setAttribute('aria-controls', inspector.id);
     function listen(target, type, fn, options) { target.addEventListener(type, fn, options); record.removers.push(function () { target.removeEventListener(type, fn, options); }); }
-    function maximum() { return Math.max(220, Math.min(900, Math.floor(global.innerHeight * .85))); }
+    function maximum() { return Math.max(220, Math.min(4096, Math.max(stage.clientWidth, Math.floor(global.innerHeight * .85)))); }
     function restorePositions() { moved.forEach(function (item) { if (item.marker.parentNode) item.marker.replaceWith(item.node); }); moved = []; if (rail) rail.remove(); rail = null; stage.parentElement.classList.remove('uv-short-columns'); }
     function compactLayout(value) {
       if (shortLayout === value) return;
@@ -283,12 +285,16 @@
   function register(node, definition) {
     if (records.has(node)) return;
     if (!node.id) node.id = "legacy-texture-pane-" + (++serial);
-    var toolbar = document.createElement("span"), button = document.createElement("button");
+    var toolbar = document.createElement("span"), button = document.createElement("button"), label = document.createElement("span");
     toolbar.className = "texture-pane-controls"; button.type = "button"; button.className = "texture-pane-expand-button";
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"), icon = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false"); svg.appendChild(icon);
+    label.className = "texture-pane-button-label"; button.append(svg, label);
     button.setAttribute("aria-controls", node.id); toolbar.appendChild(button);
-    var summary = node.tagName === "DETAILS" ? node.querySelector("summary") : null;
-    if (summary) summary.appendChild(toolbar); else node.insertBefore(toolbar, node.firstChild);
-    var record = { node: node, definition: definition, toolbar: toolbar, button: button, removers: [], pointers: new Map() };
+    var viewbar = node.querySelector('.uv-edit-viewbar');
+    if (viewbar) viewbar.insertBefore(toolbar, viewbar.querySelector('.viewer-render-note'));
+    else node.insertBefore(toolbar, node.firstChild);
+    var record = { node: node, definition: definition, toolbar: toolbar, button: button, label: label, icon: icon, removers: [], pointers: new Map() };
     records.set(node, record); updateButton(record); attachWorkspace(record);
     function listen(target, type, handler, options) {
       target.addEventListener(type, handler, options);

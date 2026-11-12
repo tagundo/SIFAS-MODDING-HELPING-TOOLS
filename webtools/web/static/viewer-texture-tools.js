@@ -691,12 +691,24 @@
       if (!entry || entry.loading || suppressed) return;
       cancelPreview(); entry.userSelected = true; entry.stats = null; entry.featherCache = null; updateOverlay(); updateInformation(); updateTone(); refreshButtons();
     }
+    function canClearSelection() {
+      return !!(active && active.engine && !loading && !pointer && !brushStroke && canEdit(active) &&
+        (active.hasSelection || active.hasFloatingSelection));
+    }
+    function clearSelection() {
+      if (!canClearSelection()) return false;
+      cancelPreview();
+      if (active.hasFloatingSelection && active.engine.cancelFloating) active.engine.cancelFloating();
+      active.seeds = []; active.exclusions = []; active.lastModelSelection = null; active.lastUVSelection = null;
+      active.engine.clearSelection();
+      updateOverlay(); refreshButtons(); return true;
+    }
     function makeEngine(entry, image) {
       var pane = node("div", canvasHost, null, "viewer-texture-canvas-pane"), canvas = node("canvas", pane); canvas.tabIndex = 0; canvas.setAttribute("aria-label", t("Texture"));
       entry.pane = pane; entry.canvas = canvas;
       entry.engine = global.TexturePaintEngine.create({ canvas: canvas, maxHistoryBytes: 64 * 1024 * 1024, maxHistoryEntries: 40,
-        onChange: function () { touchEntry(entry); }, onSelectionChange: function () { selectionChanged(entry); }, onHistoryChange: refreshButtons,
-        onLayerChange: function () { layerChanged(entry); }, onFloatingChange: function () { floatingChanged(entry); },
+        onChange: function () { touchEntry(entry); }, onSelectionChange: function (event) { entry.hasSelection = !!(event.state.selectionActive && event.state.selectedPixels); selectionChanged(entry); }, onHistoryChange: refreshButtons,
+        onLayerChange: function () { layerChanged(entry); }, onFloatingChange: function (event) { entry.hasFloatingSelection = !!event.state.floatingSelection; floatingChanged(entry); },
         onSelectUV: function (point, tool, mode) { return selectUVAt(entry, point, tool, mode); },
         onPick: function (rgba, point) { if (activeTab === "skin" && (sceneMode === "skin" || sceneMode === "exclude")) seed(entry, point, sceneMode === "exclude"); else { paintColor.value = hex(rgba); paintAlpha.value = Math.round(rgba[3] / 255 * 100); syncBrush(); } },
         onViewChange: updateInformation, onError: function (err) { say("", err.message || String(err)); }, drawOverlay: function (context, view) { drawUV(entry, context, view); } });
@@ -711,6 +723,7 @@
         entry.needsLiveUpdate = true; requestRender();
       }
       ["pointerdown", "pointermove", "pointerup", "pointercancel"].forEach(function (name) { canvas.addEventListener(name, liveStroke); entry.events.push(function () { canvas.removeEventListener(name, liveStroke); }); });
+      entry.hasSelection = false; entry.hasFloatingSelection = false;
       entry.engine.setImage(image); entry.engine.selectNone();
       entry.initialLayerSignature = entry.engine.getLayers ? JSON.stringify(entry.engine.getLayers()) : "";
       if (entry.engine.setSelectionVisible) entry.engine.setSelectionVisible(showSelection.checked); entry.pane.hidden = entry !== active; return entry.engine;
@@ -895,6 +908,7 @@
       var pending = hasPending();
       refreshToolstrip();
       if (pending !== notifiedPending) { notifiedPending = pending; if (options.onPendingChange) options.onPendingChange(pending); else if (options.onChange) options.onChange(); }
+      if (options.onSelectionChange) options.onSelectionChange(canClearSelection());
     }
     function getEdits() {
       if (pendingRestore) return pendingRestore.map(function (row) { return Object.assign({}, row, { texture: Object.assign({}, row.texture) }); });
@@ -1100,7 +1114,7 @@
       var r = runtime(); if (!T || !r.model || !r.camera || !r.domElement || options.isInteractive && !options.isInteractive()) return null;
       var rect = r.domElement.getBoundingClientRect(); if (!rect.width || !rect.height) return null;
       var ray = new T.Raycaster(); ray.setFromCamera(new T.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2), r.camera);
-      var hits = ray.intersectObject(r.model, true).filter(function (hit) { for (var p = hit.object; p; p = p.parent) { if (!p.visible || p.userData && p.userData.viewerHelper) return false; if (p === r.model) break; } return !!hit.uv; });
+      var hits = ray.intersectObject(r.model, true).filter(function (hit) { for (var p = hit.object; p; p = p.parent) { if (!p.visible || p.userData && p.userData.viewerHelper) return false; if (p === r.model) break; } return !!hit.uv && (!global.ViewerNearClip || global.ViewerNearClip.visiblePoint(r.camera, hit.point)); });
       if (!hits.length) return null;
       var hit = hits[0], binding = faceMaterial(hit.object, hit), identity = binding.texture && binding.texture.userData && binding.texture.userData.viewerTexture;
       if (!identity || !catalogue.some(function (row) { return same(row.texture, identity) && row.available !== false; })) return { invalid: true };
@@ -1405,7 +1419,7 @@
       getEdits: getEdits, restoreEdits: restoreEdits, captureDocuments: captureDocuments, restoreDocuments: restoreDocuments, hasPending: hasPending, getRevision: function () { return revision; }, refresh: refresh, reset: reset,
       beforeModelDispose: function () { reset(true, true); }, beforeRender: function () { attachScene(); if (lastEditable !== (!active || canEdit(active))) refreshButtons(); flushLiveUpdate(); overlays.forEach(function (row) { row.mesh.geometry = row.original.geometry; row.mesh.morphTargetInfluences = row.original.morphTargetInfluences; row.mesh.morphTargetDictionary = row.original.morphTargetDictionary; }); },
       getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, lastUVSelection: active && active.lastUVSelection || null, workspace: { inspectorOpen: workspace.inspector.open, preferences: Object.assign({}, workspacePreferences) }, status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
-      getSceneMode: function () { return sceneMode; }, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
+      getSceneMode: function () { return sceneMode; }, canClearSelection: canClearSelection, clearSelection: clearSelection, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },
       changeLayer: changeLayer, clipboardAction: clipboardAction,
       updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },

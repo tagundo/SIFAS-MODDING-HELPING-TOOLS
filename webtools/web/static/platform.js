@@ -12,7 +12,7 @@
     ["127.0.0.1", "localhost"].indexOf(global.location.hostname) >= 0);
   var capabilities = native && Array.isArray(description.capabilities) ? description.capabilities.slice(0, 12) : [];
   var actions = { openFiles: "openFiles", chooseDirectory: "chooseDirectory", reveal: "reveal", setFullscreen: "fullscreen", setLanguage: "setLanguage", setViewerPanelWidth: "setViewerPanelWidth", setViewerFilesWidth: "setViewerFilesWidth", setPanelSettings: "setPanelSettings", setEditorSurface: "editorNavigation", setSection: "setSection" };
-  function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 640); }
+  function validPanelWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 240 && width <= 16384); }
   function validFilesWidth(width) { return typeof width === "number" && isFinite(width) && Math.floor(width) === width && (width === 0 || width >= 160 && width <= 360); }
   function validPanelSettings(value) {
     return !!value && !Array.isArray(value) && Object.keys(value).sort().join(",") === "hidden,order" &&

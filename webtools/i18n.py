@@ -2455,6 +2455,9 @@ for _source, _translated in _VIEWER_ACCESSORY_TRANSLATIONS.items():
 
 _VIEWER_MODEL_SAVE_TRANSLATIONS = {
     "Rimlight": ["림라이트", "リムライト"],
+    "Clip nearby surfaces": ["가까운 표면 잘라내기", "近くの表面をクリップ"],
+    "Near clip distance (model units)": ["절단 거리 (모델 단위)", "クリップ距離（モデル単位）"],
+    "Hide surfaces closer than this distance to see and select the mesh behind them. Preview only.": ["카메라에서 이 거리보다 가까운 표면을 숨겨 뒤쪽 메시를 보고 선택합니다. 미리보기에만 적용됩니다.", "カメラからこの距離より近い表面を隠し、奥のメッシュを表示・選択します。プレビューのみに適用されます。"],
     "Preview lighting only; saved model materials stay unchanged.": ["미리보기의 조명 설정입니다. 저장하는 모델의 원본 재질 값은 유지됩니다.", "プレビューの照明設定です。保存するモデルの元のマテリアル値は維持されます。"],
     "Choose a real donor file, not a symbolic link.": ["바로가기나 심볼릭 링크 대신 원본 도너 파일을 선택하세요.", "ショートカットやシンボリックリンクではなく、実体のあるドナーファイルを選んでください。"],
     "The donor costume is outside the allowed folders.": ["도너 의상이 앱에서 접근할 수 있는 폴더 밖에 있습니다.", "ドナー衣装がアプリからアクセスできるフォルダの外にあります。"],

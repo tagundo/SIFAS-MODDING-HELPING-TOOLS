@@ -43,6 +43,10 @@
     'Changes are temporary until saved. Original files are preserved.': ['저장 전까지 변경은 임시 상태이며 원본 파일은 보존됩니다.', '保存するまで変更は一時的です。元ファイルは保持されます。'],
     '3D editing': ['3D 편집', '3D編集'], 'Orbit model': ['모델 회전', 'モデルを回転'], 'Paint on model': ['모델에 칠하기', 'モデルに塗る'],
     'Pick vertices': ['정점 선택', '頂点を選択'], 'Move vertices in 3D': ['3D에서 정점 이동', '3Dで頂点を移動'],
+    'Move selected vertices': ['선택 정점 이동', '選択頂点を移動'], 'Pick': ['선택', '選択'], 'Move': ['이동', '移動'], 'Step': ['간격', '移動量'], 'Move axis': ['이동 축', '移動軸'], 'Screen plane': ['화면 평면', '画面の平面'],
+    'Move step': ['이동 간격', '移動量'], 'Centre (local XYZ)': ['중심 (로컬 XYZ)', '中心（ローカルXYZ）'],
+    'Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.': ['축 화살표를 드래그하거나 간격 버튼으로 이동합니다. 축 값은 원본 메시 좌표를 사용합니다.', '軸の矢印をドラッグするか、移動量ボタンで動かします。軸は元メッシュの座標です。'],
+    'Enter a positive move distance.': ['0보다 큰 이동 간격을 입력하세요.', '0より大きい移動量を入力してください。'],
     'Show selection on model': ['모델에 선택 영역 표시', 'モデルに選択範囲を表示'], 'Show vertex targets': ['정점 선택점 표시', '頂点の選択点を表示'],
     'Delete selected faces': ['선택한 면 삭제', '選択面を削除'], 'Save mesh copy': ['메시 사본 저장', 'メッシュコピーを保存'],
     'Saved copies keep their version. Undo restores the live mesh; save again to create a restored copy.': ['저장한 사본은 해당 버전을 유지합니다. 실행 취소로 화면의 메시를 복구한 후 다시 저장하면 복구한 사본이 만들어집니다.', '保存コピーはそのバージョンを保持します。元に戻すと表示中のメッシュが復元され、再保存で復元コピーを作成できます。'],
@@ -163,7 +167,7 @@
     options = options || {};
     var holder = document.getElementById('viewer-control-panel'); if (!holder) return null;
     var token = null, records = [], cache = {}, panels = [], disposed = false, busy = false, request = 0, lastSaved = null, editRevision = 0;
-    var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, savedToken = null, savedFingerprint = null, uvCursor = null;
+    var listeners = [], labels = [], history = [], future = [], historyBytes = 0, activePanel = null, runtimeEngine = null, runtimeGesture = null, savedToken = null, savedFingerprint = null, uvCursor = null;
     function t(key) { return translated(key, options.translate); }
     function interactive() { return !options.isInteractive || options.isInteractive(); }
     function el(tag, parent, key) { var e = document.createElement(tag); if (key) { e.textContent = t(key); labels.push([e, key]); } if (parent) parent.appendChild(e); return e; }
@@ -172,6 +176,9 @@
     function select(parent, key, values) { var label = el('label', parent), span = el('span', label, key), s = el('select', label); span.style.display = 'block'; (values || []).forEach(function (entry) { var o = el('option', s, entry[1]); o.value = entry[0]; }); return s; }
     function numeric(parent, key, initial, min, max, step) { var label = el('label', parent); el('span', label, key); var input = el('input', label); input.type = 'number'; input.value = initial; input.min = min; input.max = max; input.step = step; return input; }
     var style = el('style', document.head); style.textContent = '.viewer-mesh-tools .mesh-row{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;margin:.6rem 0}.viewer-mesh-tools label{display:flex;gap:.35rem;align-items:center;flex-wrap:wrap}.viewer-mesh-tools .mesh-row>label{min-width:0;max-width:100%}.viewer-mesh-tools select{max-width:100%;min-width:0}.viewer-mesh-tools canvas{display:block;width:100%;height:auto;max-width:640px;aspect-ratio:1;touch-action:none;background:repeating-conic-gradient(#28313f 0% 25%,#323e50 0% 50%) 50%/20px 20px;border:1px solid #667085;border-radius:.35rem;cursor:crosshair}.viewer-mesh-tools input[type=number]{max-width:7rem}.viewer-mesh-tools .mesh-weights{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));max-height:8rem;overflow:auto}.viewer-mesh-tools .mesh-weights label{font-size:.82rem}.viewer-mesh-tools .mesh-value-table{white-space:pre-wrap;font-size:.85rem;overflow-wrap:anywhere}.viewer-mesh-tools .mesh-save{width:100%;margin-top:.6rem}.viewer-mesh-tools summary{min-height:44px}.viewer-mesh-tools .mesh-error{color:#f49595}.viewer-mesh-tools fieldset{min-width:0;border:1px solid #667085;border-radius:.35rem;margin:.6rem 0;padding:.5rem}';
+    style.textContent += '.viewer-mesh-tools .mesh-transform-tools{min-width:0;border:1px solid var(--line,#667085);border-radius:6px;padding:5px;display:flex;flex-direction:column;gap:4px}.viewer-mesh-tools .mesh-transform-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}.viewer-mesh-tools .mesh-transform-tools button{margin:0;min-width:32px;min-height:32px;padding:4px 7px;white-space:nowrap;font-size:12px;line-height:1.2}.viewer-mesh-tools .mesh-transform-tools button[aria-pressed=true]{border-color:var(--accent,#315fbc);box-shadow:inset 0 0 0 1px var(--accent,#315fbc)}.viewer-mesh-tools .mesh-transform-tools label{min-width:0;display:inline-flex;flex-wrap:nowrap;font-size:12px;gap:4px}.viewer-mesh-tools .mesh-transform-tools select{max-width:124px;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-tools input{width:82px;min-width:0;min-height:32px;margin:0;padding:4px}.viewer-mesh-tools .mesh-transform-note{font-size:11px;line-height:1.3;margin:0;overflow-wrap:anywhere}.viewer-mesh-tools .mesh-transform-row[hidden]{display:none}.viewer-mesh-tools .mesh-transform-axis-x{color:#c53247}.viewer-mesh-tools .mesh-transform-axis-y{color:#147b4d}.viewer-mesh-tools .mesh-transform-axis-z{color:#255fc7}@media(pointer:coarse){.viewer-mesh-tools .mesh-transform-tools button,.viewer-mesh-tools .mesh-transform-tools select,.viewer-mesh-tools .mesh-transform-tools input{min-height:44px}.viewer-mesh-tools .mesh-transform-tools button{min-width:44px}}';
+    style.textContent += '.viewer-mesh-tools.texture-pane-expanded .mesh-transform-tools,.viewer-mesh-tools .mesh-transform-tools [hidden]{display:none!important}.viewer-mesh-tools .mesh-transform-axis-label>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}';
+    style.textContent += '.viewer-mesh-tools .mesh-transform-tools select{width:104px;max-width:104px;font-size:12px}.viewer-mesh-tools .mesh-transform-tools input{width:64px;font-size:12px}';
     async function api(route, payload) {
       var response = await fetch('/api/viewer/mesh/' + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       var result = await response.json(); if (!response.ok || result.error) throw new Error(result.error || t('Mesh editing failed.')); return result;
@@ -179,11 +186,11 @@
     function key(mesh) { return JSON.stringify({ source: mesh.source, file: mesh.file, id: mesh.id }); }
     function current(panel) { return cache[panel.mesh.value] || null; }
     function snapshot() { var out = {}; Object.keys(cache).forEach(function (k) { var m = cache[k]; out[k] = { deleted: Array.from(m.deleted), marked: Array.from(m.marked || []), selected: Array.from(m.selected), positions: clone(m.positions), weights: clone(m.weights) }; }); return out; }
-    function remember() { var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
+    function remember(value) { value = typeof value === 'string' ? value : JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; while (history.length > 24 || historyBytes > 8 * 1024 * 1024) historyBytes -= history.shift().length; future = []; }
     function geometryChanged(m) { m.geometryRevision = (m.geometryRevision || 0) + 1; }
-    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); changed(); }
-    function undo() { if (busy || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
-    function redo() { if (busy || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
+    function restore(value) { var state = JSON.parse(value); Object.keys(cache).forEach(function (k) { var row = state[k] || { deleted: [], marked: [], selected: [], positions: {}, weights: {} }, m = cache[k]; m.deleted = new Set(row.deleted); m.marked = new Set(row.marked || []); m.selected = new Set(row.selected); m.positions = row.positions; m.weights = row.weights; m.weightRevision = (m.weightRevision || 0) + 1; geometryChanged(m); }); panels.forEach(function (p) { p.positionDraft = false; }); changed(); }
+    function undo() { if (busy || runtimeGesture || !interactive() || !history.length) return; future.push(JSON.stringify(snapshot())); var value = history.pop(); historyBytes -= value.length; restore(value); }
+    function redo() { if (busy || runtimeGesture || !interactive() || !future.length) return; var value = JSON.stringify(snapshot()); history.push(value); historyBytes += value.length; restore(future.pop()); }
     function status(panel, text, error) { panel.status.textContent = text; panel.status.classList.toggle('mesh-error', !!error); }
     function changed() { editRevision++; Object.keys(cache).forEach(function (id) { var m = cache[id]; m.positionCount = Object.keys(m.positions).length; m.weightCount = Object.keys(m.weights).length; }); redraw(); if (options.onChange) options.onChange(); }
     function fillMeshes() {
@@ -388,7 +395,7 @@
       var changes = quickStatus().dirtyCount;
       panels.forEach(function (p) {
         var m = current(p); p.load.disabled = !token || busy || !interactive(); p.mesh.disabled = !token || busy || !interactive(); p.save.disabled = !token || busy || !canSaveCopy() || !interactive();
-        p.undo.disabled = busy || !history.length; p.redo.disabled = busy || !future.length;
+        p.undo.disabled = busy || !!runtimeGesture || !history.length; p.redo.disabled = busy || !!runtimeGesture || !future.length;
         if (p.deleteFaces) p.deleteFaces.disabled = busy || !m || !m.marked.size || !interactive();
         p.canvas.style.opacity = busy ? '.5' : '1';
         p.count.textContent = p.modify ? t('Selected vertices') + ': ' + (m ? m.selected.size : 0) + ' · ' + t('Position and weight edits') + ': ' + (m ? Object.keys(m.positions).length + Object.keys(m.weights).length : 0) : t('Selected faces') + ': ' + (m ? m.marked.size : 0) + ' · ' + t('Deleted faces') + ': ' + (m ? m.deleted.size : 0);
@@ -405,12 +412,97 @@
           p.translate.disabled = busy || !m || !m.data.positionWritable || !m.selected.size;
           var selected = m && Array.from(m.selected), first = selected && selected.length ? selected[0] : null;
           p.values.textContent = first === null ? '' : '#' + first + ' · XYZ: ' + (m.positions[first] || m.data.positions[first]).map(function (v) { return (+v.toFixed(6)); }).join(' / ') + '\n' + (m.weights[first] || m.data.skin[first] || []).map(function (v) { return (m.data.bones[v[0]] || v[0]) + ': ' + (v[1] * 100).toFixed(2) + '%'; }).join(' · ');
+          var selectionKey = first === null ? '' : p.mesh.value + ':' + first;
+          if (p.positionSelectionKey !== selectionKey) { p.positionSelectionKey = selectionKey; p.positionDraft = false; }
+          if (first !== null && !p.positionDraft) p.xyz.forEach(function (field, axis) {
+            var value = String((m.positions[first] || m.data.positions[first])[axis]); if (field.value !== value) field.value = value;
+          });
+          syncMovementTools(p, m);
         }
         draw(p);
       });
       if (skipRuntime !== true) syncRuntime();
     }
     function selection(panel, mode) { var m = current(panel); if (!m || busy) return; remember(); var set = panel.modify ? m.selected : m.marked, count = panel.modify ? m.data.positions.length : m.data.triangles.length, visible = panel.modify ? visibleVertices(panel, m) : null; for (var i = 0; i < count; i++) { if (visible ? !visible.has(i) : !visibleFace(panel, m, i)) continue; if (mode === 'clear') set.delete(i); else if (mode === 'all' || !set.has(i)) set.add(i); else set.delete(i); } changed(); }
+    function canClearSelection() {
+      if (disposed || busy || runtimeGesture || !interactive() || !activePanel) return false;
+      var m = current(activePanel), selected = m && (activePanel.modify ? m.selected : m.marked); return !!(selected && selected.size);
+    }
+    function clearSelection() {
+      if (!canClearSelection()) return false;
+      var m = current(activePanel); remember(); (activePanel.modify ? m.selected : m.marked).clear(); changed(); return true;
+    }
+    function beginRuntimeGesture() {
+      if (runtimeGesture) return;
+      var before = JSON.stringify(snapshot());
+      runtimeGesture = { before: before, history: history.slice(), future: future.slice(), bytes: historyBytes };
+      remember(before);
+    }
+    function endRuntimeGesture(cancel) {
+      var gesture = runtimeGesture; runtimeGesture = null;
+      if (!gesture) return;
+      if (!cancel) {
+        var prior = JSON.parse(gesture.before);
+        Object.keys(cache).forEach(function (key) {
+          var mesh = cache[key], previous = prior[key] && prior[key].positions || {}, altered = false;
+          Object.keys(mesh.positions).forEach(function (vertex) {
+            var stored = Object.prototype.hasOwnProperty.call(previous, vertex), original = stored ? previous[vertex] : mesh.data.positions[vertex], value = mesh.positions[vertex];
+            if (!original || !value.every(function (part, axis) { return Math.abs(part - original[axis]) <= Math.max(1, Math.abs(original[axis])) * 1e-12; })) return;
+            if (!stored) { delete mesh.positions[vertex]; altered = true; }
+            else if (value.some(function (part, axis) { return part !== original[axis]; })) { mesh.positions[vertex] = original.slice(); altered = true; }
+          });
+          if (altered) geometryChanged(mesh);
+        });
+      }
+      if (gesture && (cancel || JSON.stringify(snapshot()) === gesture.before)) {
+        history = gesture.history; future = gesture.future; historyBytes = gesture.bytes;
+        if (cancel) restore(gesture.before); else changed();
+      } else {
+        panels.forEach(function (p) { p.positionDraft = false; }); changed();
+      }
+    }
+    function setMovementMode(panel, mode) {
+      if (busy || runtimeGesture || !interactive() || panel.sceneMode.disabled) return;
+      if (window.TexturePanelExpand && window.TexturePanelExpand.getState().expanded === panel.root.id) window.TexturePanelExpand.collapse({ restoreFocus: false });
+      activePanel = panel; panel.sceneMode.value = mode; panel.sceneMode.dispatchEvent(new Event('change', { bubbles: true }));
+      var runtime = options.getRuntime && options.getRuntime(); if (runtime && runtime.domElement) runtime.domElement.focus({ preventScroll: true });
+    }
+    function nudgeSelection(panel, axis, sign) {
+      var m = current(panel), amount = +panel.moveStep.value;
+      if (!m || !m.data.positionWritable || !m.selected.size || busy || runtimeGesture || !interactive()) return;
+      if (!panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(amount) || amount <= 0) return status(panel, t('Enter a positive move distance.'), true);
+      var updates = {}, valid = true;
+      m.selected.forEach(function (vertex) {
+        var value = (m.positions[vertex] || m.data.positions[vertex]).slice(); value[axis] += amount * sign;
+        if (value.some(function (part) { return !Number.isFinite(part) || Math.abs(part) > 1000000; })) valid = false;
+        updates[vertex] = value;
+      });
+      if (!valid) return;
+      activePanel = panel; panel.positionDraft = false; remember();
+      Object.keys(updates).forEach(function (vertex) { m.positions[vertex] = updates[vertex]; }); geometryChanged(m); changed();
+    }
+    function syncMovementTools(panel, m) {
+      if (!panel.moveTools) return;
+      var locked = busy || !!runtimeGesture || !interactive(), count = m ? m.selected.size : 0;
+      panel.moveModeButtons.forEach(function (button) {
+        var disabled = locked || !m || panel.sceneMode.disabled, pressed = String(panel.sceneMode.value === button.dataset.meshSceneMode);
+        if (button.disabled !== disabled) button.disabled = disabled; if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
+      });
+      if (panel.moveAxis.disabled !== locked) panel.moveAxis.disabled = locked;
+      if (panel.moveStep.disabled !== locked) panel.moveStep.disabled = locked;
+      var moving = panel.sceneMode.value === 'drag';
+      if (panel.moveAxis.parentElement.hidden !== !moving) panel.moveAxis.parentElement.hidden = !moving;
+      if (panel.moveNudges.hidden !== !(moving && count)) panel.moveNudges.hidden = !(moving && count);
+      var invalidStep = !panel.moveStep.value.trim() || !panel.moveStep.checkValidity() || !Number.isFinite(+panel.moveStep.value) || +panel.moveStep.value <= 0;
+      var axis = 'xyz'.indexOf(panel.moveAxis.value), name = axis < 0 ? '' : 'XYZ'[axis];
+      panel.moveNudgeButtons.forEach(function (button) {
+        var disabled = locked || !m || !m.data.positionWritable || !count || invalidStep || axis < 0, sign = button.dataset.meshNudgeSign === '-1' ? '−' : '+';
+        if (button.disabled !== disabled) button.disabled = disabled;
+        var label = name + sign; if (button.textContent !== label) button.textContent = label;
+        var caption = t('Move selected vertices') + ' ' + label; if (button.getAttribute('aria-label') !== caption) button.setAttribute('aria-label', caption);
+        var className = axis < 0 ? '' : 'mesh-transform-axis-' + name.toLowerCase(); if (button.className !== className) button.className = className;
+      });
+    }
     function selectConnected(panel, seeds, erase, toggle, saveHistory) {
       var m = current(panel); if (!m || busy || !interactive()) return;
       var graphKey = panel.seams.checked ? 'seams' : 'indices';
@@ -505,7 +597,7 @@
       if (absolute && m.selected.size !== 1) return status(panel, t('Choose one vertex for an absolute position.'), true);
       var fields = absolute ? panel.xyz : panel.delta, value = fields.map(function (i) { return +i.value; });
       if (fields.some(function (i) { return !i.checkValidity() || !i.value.trim(); }) || value.some(function (v) { return !Number.isFinite(v); })) return;
-      remember(); m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
+      remember(); panel.positionDraft = false; m.selected.forEach(function (v) { var old = m.positions[v] || m.data.positions[v]; m.positions[v] = absolute ? value.slice() : old.map(function (n, axis) { return n + value[axis]; }); }); geometryChanged(m); changed();
     }
     function applyWeights(panel) {
       var m = current(panel); if (!m || !m.data.skinWritable || !m.selected.size) return;
@@ -543,6 +635,25 @@
       var workspace = el('div', box); workspace.className = 'uv-edit-workspace';
       var main = el('div', workspace); main.className = 'uv-edit-main';
       var source = el('div', main); source.className = 'uv-edit-source';
+      if (p.modify) {
+        p.moveTools = el('div', main); p.moveTools.className = 'mesh-transform-tools'; p.moveTools.setAttribute('role', 'group'); p.moveTools.setAttribute('aria-label', t('Move selected vertices'));
+        var moveRow = el('div', p.moveTools); moveRow.className = 'mesh-transform-row'; p.moveModeButtons = [];
+        [['pick', 'Pick'], ['drag', 'Move']].forEach(function (entry) {
+          var quick = button(moveRow, entry[1], function () { setMovementMode(p, entry[0]); }); quick.dataset.meshSceneMode = entry[0]; quick.id = p.root.id + '-quick-' + entry[0]; quick.setAttribute('aria-pressed', 'false'); quick.setAttribute('aria-label', t(entry[0] === 'pick' ? 'Pick vertices' : 'Move vertices in 3D')); p.moveModeButtons.push(quick);
+        });
+        p.moveAxis = select(moveRow, 'Move axis', [['screen', 'Screen plane'], ['x', 'X'], ['y', 'Y'], ['z', 'Z']]); p.moveAxis.id = p.root.id + '-move-axis';
+        p.moveAxis.parentElement.classList.add('mesh-transform-axis-label'); p.moveAxis.parentElement.hidden = true; p.moveAxis.setAttribute('aria-label', t('Move axis'));
+        on(p.moveAxis, 'change', function () { activePanel = p; if (options.onChange) options.onChange(); syncRuntime(); });
+        p.moveNudges = el('div', p.moveTools); p.moveNudges.className = 'mesh-transform-row'; p.moveNudges.hidden = true;
+        p.moveStep = numeric(p.moveNudges, 'Step', .01, .000001, 1000000, 'any'); p.moveStep.id = p.root.id + '-move-step'; p.moveStep.setAttribute('aria-label', t('Move step'));
+        on(p.moveStep, 'input', function () { syncMovementTools(p, current(p)); });
+        p.moveNudgeButtons = [];
+        [-1, 1].forEach(function (sign) {
+          var quick = button(p.moveNudges, sign < 0 ? '−' : '+', function () { var axis = 'xyz'.indexOf(p.moveAxis.value); if (axis >= 0) nudgeSelection(p, axis, sign); });
+          quick.id = p.root.id + '-nudge-' + (sign < 0 ? 'minus' : 'plus'); quick.dataset.meshNudgeSign = String(sign); p.moveNudgeButtons.push(quick);
+        });
+        p.moveTools.title = t('Drag an axis arrow, or use the step buttons. Axis values use the source mesh coordinates.');
+      }
       var tools = el('div', main); tools.className = 'uv-edit-toolbar'; tools.setAttribute('role', 'toolbar'); tools.setAttribute('aria-label', t('Texture interaction'));
       var stage = el('div', main); stage.className = 'uv-canvas-stage'; stage.appendChild(p.canvas);
       var resize = el('div', main); resize.className = 'uv-canvas-resizer'; resize.tabIndex = 0; resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal');
@@ -647,17 +758,19 @@
         if (p[name]) p[name].id = prefix + '-' + ({ mesh: 'select', sceneMode: 'scene-mode', show3d: 'show-selection', showVertices: 'show-vertices', deleteFaces: 'delete', weight: 'weight-value', weightMode: 'weight-mode', bone: 'weight-bone', positionSet: 'position-set', weightApply: 'weight-apply', textureMode: 'texture-mode', zoomIn: 'zoom-in', zoomOut: 'zoom-out', fitTexture: 'fit-texture' }[name] || name);
       });
       if (p.xyz) p.xyz.forEach(function (field, axis) { field.dataset.meshPositionAxis = 'XYZ'[axis]; field.step = 'any'; });
+      if (p.xyz) p.xyz.forEach(function (field) { on(field, 'input', function () { p.positionDraft = true; }); on(field, 'change', function () { p.positionDraft = true; }); });
       if (p.delta) p.delta.forEach(function (field, axis) { field.dataset.meshDeltaAxis = 'XYZ'[axis]; field.step = 'any'; });
       if (p.weight) p.weight.step = 'any';
       canvasWorkspace(p);
       panels.push(p); attachCanvas(p);
     }
     function persistentChangeCount() { var count = 0; Object.keys(cache).forEach(function (id) { var m = cache[id]; if (m.deleted.size || m.positionCount || m.weightCount) count++; }); return count; }
-    function canSaveCopy() { return persistentChangeCount() > 0 || savedToken === token && !!savedFingerprint; }
+    function canSaveCopy() { return !runtimeGesture && (persistentChangeCount() > 0 || savedToken === token && !!savedFingerprint); }
     function deleteMarked(panel) { var m = current(panel); if (!m || !m.marked.size || busy) return; activePanel = panel; remember(); m.marked.forEach(function (face) { m.deleted.add(face); }); m.marked.clear(); geometryChanged(m); changed(); }
     function runtimeContext() {
       var p = activePanel, m = p && current(p); if (!p || !m || p.root.hidden) return null;
       return { mesh: m, modify: p.modify, mode: p.sceneMode.value, submesh: +p.submesh.value || 0,
+        dragAxis: p.moveAxis ? p.moveAxis.value : 'screen',
         radius: +p.radius.value || 20, erase: p.mode.value === 'erase', showSelection: p.show3d.checked,
         showVertices: p.modify && p.showVertices.checked, interactive: interactive() && !busy && (!options.isSceneInteractive || options.isSceneInteractive()) };
     }
@@ -667,6 +780,7 @@
       var state = runtimeEngine.getState(); panels.forEach(function (p) { var m = current(p), mapped = m && state.bindings.some(function (binding) { return key(binding.mesh) === key(m.data.mesh); });
         p.sceneMode.disabled = !mapped || busy || !interactive();
         p.liveStatus.textContent = m && !mapped ? t('3D mapping unavailable for this mesh. UV editing remains available.') : '';
+        if (p.modify) syncMovementTools(p, m);
       });
     }
     function chooseVertex(vertex, additive, dragging) {
@@ -679,12 +793,12 @@
     function initializeRuntime() {
       if (!window.ViewerMeshRuntime || !options.getRuntime) return;
       runtimeEngine = window.ViewerMeshRuntime.create({ getRuntime: options.getRuntime, getContext: runtimeContext,
-        onBegin: remember,
+        onBegin: beginRuntimeGesture,
         onPaint: function (indices, erase, modify) { var m = activePanel && current(activePanel); if (!m) return; var set = modify ? m.selected : m.marked, altered = false; indices.forEach(function (index) { if (erase) { if (set.delete(index)) altered = true; } else if ((modify || !m.deleted.has(index)) && !set.has(index)) { set.add(index); altered = true; } }); if (altered) redraw(); },
         onSelect: chooseVertex,
         onConnected: function (face, erase, toggle) { if (activePanel) selectConnected(activePanel, [face], erase, toggle, false); },
         onDrag: function (values) { var m = activePanel && current(activePanel); if (!m) return; Object.keys(values).forEach(function (vertex) { m.positions[vertex] = values[vertex]; }); geometryChanged(m); changed(); },
-        onEnd: function () { changed(); }
+        onEnd: endRuntimeGesture
       });
     }
     function handleShortcut(event) {
@@ -708,16 +822,16 @@
     }
     function refresh() {
       var next = options.getToken ? options.getToken() : null;
-      if (next !== token) { token = next; request++; editRevision++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
+      if (next !== token) { token = next; request++; editRevision++; busy = false; records = []; cache = {}; history = []; future = []; historyBytes = 0; runtimeGesture = null; savedToken = null; savedFingerprint = null; if (runtimeEngine) runtimeEngine.reset();
         panels.forEach(function (p) { p.baseKey = ''; p.view = { zoom: 1, x: 0, y: 0 }; p.mesh.textContent = ''; var o = el('option', p.mesh, 'Choose a mesh'); o.value = ''; fillBones(p); fillSubmeshes(p); status(p, t(token ? 'Changes are temporary until saved. Original files are preserved.' : 'Open a model first.')); }); }
       redraw();
     }
     build(false); build(true);
     initializeRuntime(); initializeShortcuts(); refresh();
-    return { refresh: refresh, getStatus: quickStatus, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
+    return { refresh: refresh, getStatus: quickStatus, canClearSelection: canClearSelection, clearSelection: clearSelection, beforeRender: function () { if (runtimeEngine) runtimeEngine.beforeRender(); }, beforeModelDispose: function () { if (runtimeEngine) runtimeEngine.reset(); }, handleShortcut: handleShortcut, undo: undo, redo: redo, save: function () { return save(activePanel || panels[0]); }, projectVertex: function (mesh, index) { return runtimeEngine && runtimeEngine.projectVertex(mesh, index); }, updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.updateLanguage(); }); redraw(); },
       getEdits: function () { return clone(operationState()); }, getEditRevision: function () { return editRevision; }, restoreEdits: restoreEdits,
       getState: function () { var state = operationState(), summary = quickStatus(); return { token: token, busy: busy, dirty: summary.dirty, dirtyCount: summary.dirtyCount, hasUnappliedSelection: summary.hasUnappliedSelection, canSave: summary.canSave, edits: state, history: history.length, future: future.length, selectedFaces: activePanel && current(activePanel) ? Array.from(current(activePanel).marked) : [], selectedVertices: activePanel && current(activePanel) ? Array.from(current(activePanel).selected) : [], textureViews: panels.map(function (p) { return { panel: p.root.id, zoom: p.view.zoom, x: p.view.x, y: p.view.y, mode: p.textureMode.value }; }), runtime: runtimeEngine && runtimeEngine.getState(), lastSaved: lastSaved }; },
-      dispose: function () { disposed = true; request++; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
+      dispose: function () { disposed = true; request++; runtimeGesture = null; if (runtimeEngine) runtimeEngine.dispose(); if (uvCursor) uvCursor.remove(); listeners.forEach(function (remove) { remove(); }); panels.forEach(function (p) { if (p.uvColor) p.uvColor.dispose(); p.root.remove(); }); style.remove(); cache = {}; } };
   }
   window.ViewerMeshTools = { create: create, normalizeInfluences: normalize, redistributeInfluence: redistributeInfluence, circleIntersectsTriangle: intersects,
     buildFaceConnectivity: buildFaceConnectivity, connectedFaces: connectedFaces, uvToView: uvToView, viewToUv: viewToUv, zoomView: zoomView };

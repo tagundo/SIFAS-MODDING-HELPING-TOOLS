@@ -389,7 +389,7 @@ main { padding: 14px; }
 .viewer-options > summary { cursor: pointer; font-size: 13px; color: var(--muted); min-height: 28px; }
 .viewer-option-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 8px 0; }
 .viewer-option-row label, #viewer-parts label { display: flex; align-items: center; gap: 6px; font-size: 13px; min-height: 36px; }
-@media (pointer: coarse) { .viewer-option-row .viewer-rimlight-option { min-height: 44px; } }
+@media (pointer: coarse) { .viewer-option-row .viewer-rimlight-option, .viewer-option-row .viewer-near-clip-option { min-height: 44px; } }
 .viewer-option-row input[type=checkbox], #viewer-parts input { width: 18px; height: 18px; }
 .viewer-fov { flex: 1 1 240px; }
 .viewer-fov input { flex: 1; min-width: 70px; max-width: 250px; accent-color: var(--accent); }

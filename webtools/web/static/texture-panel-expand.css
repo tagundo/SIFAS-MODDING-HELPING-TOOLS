@@ -1,7 +1,9 @@
-.texture-pane-controls { display: inline-flex; align-items: center; justify-content: flex-end; gap: .3rem; margin-left: auto; }
-.texture-pane-expand-button { min-height: 32px; margin: 0; padding: .2rem .45rem; font-size: .78rem; line-height: 1.2; }
-.viewer-mesh-tools > summary .texture-pane-controls { float: right; margin: -.15rem 0 -.15rem .4rem; }
-.viewer-transplant-texture-panel > .texture-pane-controls { display: flex; margin: .3rem 0; }
+.texture-pane-controls { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 0; min-width: 0; margin: 0; }
+.texture-pane-expand-button { position: relative; display: inline-flex; flex: 0 0 32px; align-items: center; justify-content: center; width: 32px; min-width: 32px; height: 32px; min-height: 32px; margin: 0; padding: 6px; line-height: 1; }
+.texture-pane-expand-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.texture-pane-button-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.viewer-mesh-tools, .viewer-transplant-texture-panel { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.viewer-mesh-tools > summary { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
 #gallery-grid .gcard { position: relative; }
 #gallery-grid .gcard > .texture-pane-controls { position: absolute; top: .25rem; right: .25rem; z-index: 1; }
 .texture-pane-backdrop { position: fixed; inset: 0; z-index: 1140; background: #0008; touch-action: none; }
@@ -20,7 +22,7 @@
 #gallery-grid .texture-pane-expanded.gcard .gallery-view-model { flex: 0 0 auto; }
 .viewer-transplant-brush-cursor { z-index: 12010; }
 @media (pointer: coarse), (max-width: 600px) {
-  .texture-pane-expand-button { min-height: 44px; padding: .35rem .5rem; }
+  .texture-pane-expand-button { width: 44px; min-width: 44px; flex-basis: 44px; height: 44px; min-height: 44px; padding: 10px; }
   .texture-pane-expanded { padding: .4rem !important; }
   .texture-pane-expanded > summary, .texture-pane-expanded > .texture-pane-controls { top: -.4rem !important; }
 }
@@ -88,6 +90,7 @@
 .uv-short-rail .uv-selection-menu > summary::after { content: '▧'; font-size: 19px; margin: 0; }
 .uv-short-rail .uv-selection-menu > div { position: fixed; top: var(--uv-menu-top, 60px); left: var(--uv-menu-left, 20px); right: auto; max-height: calc(100vh - 16px); overflow: auto; }
 .uv-short-rail .uv-edit-viewbar > button { width: 100%; min-width: 0; font-size: 0; }
+.uv-short-rail .uv-edit-viewbar > .texture-pane-controls, .uv-short-rail .texture-pane-expand-button { width: 100%; }
 .uv-short-rail .uv-zoom-out-button::before { content: '−'; font-size: 20px; }
 .uv-short-rail .uv-zoom-in-button::before { content: '+'; font-size: 20px; }
 .uv-short-rail .uv-fit-button::before { content: '⤢'; font-size: 20px; }

@@ -90,6 +90,7 @@
       var faceIndex = list ? list[ordinal] : ordinal, offset = faceIndex * 3; if (options.faceFilter && !options.faceFilter(faceIndex)) continue;
       var a = index ? index.getX(offset) : offset, b = index ? index.getX(offset + 1) : offset + 1, c = index ? index.getX(offset + 2) : offset + 2;
       if (!ray.intersectTriangle(point(a), point(b), point(c), false, hit)) continue;
+      if (options.hitFilter && !options.hitFilter(hit, faceIndex, mesh)) continue;
       var distance = ray.origin.distanceToSquared(hit);
       if (!nearest || distance < nearest.distanceSquared) nearest = { object: mesh, point: hit.clone(), faceIndex: faceIndex,
         face: { a: a, b: b, c: c }, distanceSquared: distance,
@@ -105,6 +106,7 @@
     var stroke = null, disposed = false, sceneListeners = [], brushCursor = null, lastPointer = null;
     var overlayRefs = [], projected = [], projectionCache = null, worldVertices = {}, updateVersion = 0, lastBindingsVersion = -1, syncedData = [];
     var poseSignature = '', projectionValidated = false, currentSurfaces = [], helperSelectionKey = '', attributeIds = new WeakMap(), attributeGeneration = 0;
+    var gizmoRoot = null, gizmoAxes = [], gizmoState = { visible: false, handles: [] }, gizmoSignature = '';
     var performanceState = { worldInvalidations: 0, worldVertices: 0, projectionBuilds: 0, projectionHits: 0, geometryApplications: 0, overlayUpdates: 0 };
     var raycaster = new T.Raycaster(), scratch = new T.Vector3(), v4 = new T.Vector4();
     function sourceContext() { return options.getContext ? options.getContext() : null; }
@@ -129,8 +131,9 @@
       bindings.forEach(function (binding) { if (binding.mesh.geometry === binding.geometry) binding.mesh.geometry = binding.original; binding.geometry.dispose(); });
       bindings = []; boundKeys = {}; worldVertices = {}; projected = []; overlayRefs = []; pointVertices = [];
       poseSignature = ''; projectionCache = null; projectionValidated = false; currentSurfaces = []; helperSelectionKey = '';
-      if (overlayRoot) { overlayRoot.parent.remove(overlayRoot); overlayRoot.traverse(function (child) { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); }); }
+      if (overlayRoot) { overlayRoot.parent.remove(overlayRoot); overlayRoot.traverse(function (child) { if (child.geometry) child.geometry.dispose(); if (child.material) { if (child.material.map) child.material.map.dispose(); child.material.dispose(); } }); }
       overlayRoot = null; overlayGeometry = null; overlay = null; pointGeometry = null; points = null; selectedPoints = null; pointSelectionGeometry = null;
+      gizmoRoot = null; gizmoAxes = []; gizmoState = { visible: false, handles: [] }; gizmoSignature = '';
       updateVersion++; lastBindingsVersion = -1;
     }
     function unlisten() { sceneListeners.forEach(function (remove) { remove(); }); sceneListeners = []; if (brushCursor) brushCursor.remove(); brushCursor = null; }
@@ -263,6 +266,7 @@
       if (overlay) overlay.visible = context.showSelection && overlayRefs.length > 0;
       if (points) points.visible = context.showVertices && pointVertices.length > 0;
       if (selectedPoints) selectedPoints.visible = context.showVertices && context.mesh.selected.size > 0;
+      updateGizmo(context, list);
       // Both pose and selection must be unchanged before reusing helper buffers.
       if (!changedPose && lastBindingsVersion === updateVersion && helperSelectionKey === selectionKey) return;
       if (overlayGeometry) { var pos = overlayGeometry.attributes.position; overlayRefs.forEach(function (entry, i) { var v = world(entry.binding, entry.vertex); pos.setXYZ(i, v.x, v.y, v.z); }); pos.needsUpdate = true; overlay.visible = context.showSelection && overlayRefs.length > 0; }
@@ -273,6 +277,94 @@
       performanceState.overlayUpdates++;
     }
     function activeBindings(context) { return (boundKeys[identityKey(context.mesh.data.mesh)] || []).filter(function (binding) { return visible(binding.mesh) && (context.submesh === undefined || binding.map.submesh === context.submesh); }); }
+    function sourceLinear(binding, vertex) {
+      return new T.Matrix3().setFromMatrix4(new T.Matrix4().copy(binding.mesh.matrixWorld).multiply(skinMatrix(binding.mesh, vertex)).multiply(binding.positionMatrix));
+    }
+    function selectedFrame(context, binding) {
+      var centre = new T.Vector3(), vectors = [new T.Vector3(), new T.Vector3(), new T.Vector3()], count = 0;
+      context.mesh.selected.forEach(function (vertex) {
+        if (!Number.isInteger(vertex) || vertex < 0 || vertex >= binding.geometry.attributes.position.count) return;
+        centre.add(world(binding, vertex)); count++;
+        var linear = sourceLinear(binding, vertex);
+        vectors.forEach(function (sum, axis) { var basis = new T.Vector3(); basis.setComponent(axis, 1); sum.add(basis.applyMatrix3(linear)); });
+      });
+      if (!count) return null;
+      centre.divideScalar(count); vectors.forEach(function (v) { v.divideScalar(count); });
+      return { centre: centre, vectors: vectors, count: count, binding: binding };
+    }
+    function screenPoint(point, rect) {
+      var p = point.clone().project(runtime.camera);
+      return { x: rect.left + (p.x + 1) * rect.width / 2, y: rect.top + (1 - p.y) * rect.height / 2, z: p.z };
+    }
+    function ensureGizmo() {
+      if (gizmoRoot || !overlayRoot) return;
+      gizmoRoot = helper(new T.Group()); gizmoRoot.name = 'Selected vertex move axes'; overlayRoot.add(gizmoRoot);
+      ['x', 'y', 'z'].forEach(function (axis, index) {
+        var color = [0xff5268, 0x5bd37f, 0x58a5ff][index], arrow = new T.ArrowHelper(new T.Vector3(1, 0, 0), new T.Vector3(), 1, color, .2, .1), label = null;
+        arrow.traverse(function (child) { helper(child); child.renderOrder = 903; if (child.material) { child.material.depthTest = false; child.material.depthWrite = false; } });
+        gizmoRoot.add(arrow);
+        try {
+          var canvas = document.createElement('canvas'); canvas.width = canvas.height = 48;
+          var ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.font = 'bold 32px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 5; ctx.strokeStyle = '#17212f'; ctx.strokeText(axis.toUpperCase(), 24, 25); ctx.fillStyle = '#' + color.toString(16).padStart(6, '0'); ctx.fillText(axis.toUpperCase(), 24, 25);
+            label = helper(new T.Sprite(new T.SpriteMaterial({ map: new T.CanvasTexture(canvas), transparent: true, depthTest: false, depthWrite: false })));
+            label.renderOrder = 904; gizmoRoot.add(label);
+          }
+        } catch (_) { /* Geometry handles remain usable without canvas text. */ }
+        gizmoAxes.push({ axis: axis, index: index, arrow: arrow, label: label });
+      });
+    }
+    function hideGizmo() {
+      if (gizmoRoot) gizmoRoot.visible = false;
+      gizmoState = { visible: false, handles: [] }; gizmoSignature = '';
+    }
+    function updateGizmo(context, list) {
+      if (!context.modify || context.mode !== 'drag' || context.interactive === false || !context.mesh.data.positionWritable || !context.mesh.selected.size || !list.length) { hideGizmo(); return; }
+      var canvas = runtime.domElement || runtime.renderer.domElement, rect = canvas.getBoundingClientRect();
+      var signature = [poseSignature, updateVersion, Array.from(context.mesh.selected).join(','), context.submesh, context.mode,
+        runtime.camera.matrixWorld.elements.join(','), runtime.camera.projectionMatrix.elements.join(','), rect.left, rect.top, rect.width, rect.height, nearClipEnabled() ? 1 : 0].join(':');
+      if (signature === gizmoSignature) return;
+      gizmoSignature = signature;
+      var active = activeBindings(context), frame = active.length && selectedFrame(context, active[0]); if (!frame || !rect.height) { hideGizmo(); return; }
+      var depth = -frame.centre.clone().applyMatrix4(runtime.camera.matrixWorldInverse).z;
+      if (depth <= 0 || global.ViewerNearClip && !global.ViewerNearClip.visiblePoint(runtime.camera, frame.centre)) { hideGizmo(); return; }
+      var origin = screenPoint(frame.centre, rect);
+      if (origin.z < -1 || origin.z > 1) { hideGizmo(); return; }
+      ensureGizmo(); if (!gizmoRoot) return;
+      var worldPixel = 2 * (runtime.camera.isOrthographicCamera ? 1 : depth) / Math.max(1e-12, rect.height * Math.abs(runtime.camera.projectionMatrix.elements[5]));
+      gizmoRoot.visible = true;
+      var handles = [];
+      gizmoAxes.forEach(function (axis) {
+        var direction = frame.vectors[axis.index].clone(), magnitude = direction.length(), length = worldPixel * 66;
+        if (magnitude < 1e-10) { axis.arrow.visible = false; if (axis.label) axis.label.visible = false; return; }
+        direction.divideScalar(magnitude);
+        var end = screenPoint(frame.centre.clone().addScaledVector(direction, length), rect), pixels = Math.hypot(end.x - origin.x, end.y - origin.y);
+        // An axis pointing straight through the camera has no unambiguous
+        // screen handle. The explicit axis selector still supports depth drag.
+        if (pixels < 12) { axis.arrow.visible = false; if (axis.label) axis.label.visible = false; return; }
+        length *= Math.max(.5, Math.min(4, 66 / pixels));
+        axis.arrow.visible = true; axis.arrow.position.copy(frame.centre); axis.arrow.setDirection(direction); axis.arrow.setLength(length, Math.min(length * .3, worldPixel * 12), worldPixel * 7);
+        end = screenPoint(frame.centre.clone().addScaledVector(direction, length), rect);
+        if (!Number.isFinite(end.x) || !Number.isFinite(end.y) || end.z < -1 || end.z > 1) { axis.arrow.visible = false; if (axis.label) axis.label.visible = false; return; }
+        var start = screenPoint(frame.centre.clone().addScaledVector(direction, length * .25), rect), hit = screenPoint(frame.centre.clone().addScaledVector(direction, length * .76), rect);
+        if (axis.label) { axis.label.visible = true; axis.label.position.copy(frame.centre).addScaledVector(direction, length + worldPixel * 10); axis.label.scale.setScalar(worldPixel * 20); }
+        handles.push({ axis: axis.axis, x: hit.x, y: hit.y, start: { x: start.x, y: start.y }, end: { x: end.x, y: end.y }, world: frame.centre.clone().addScaledVector(direction, length * .76).toArray() });
+      });
+      gizmoState = { visible: handles.length > 0, centre: { x: origin.x, y: origin.y, world: frame.centre.toArray() }, handles: handles, frame: frame };
+      gizmoRoot.visible = gizmoState.visible;
+    }
+    function pickGizmo(event, context) {
+      if (context.mode !== 'drag' || !context.modify) return null;
+      beforeRender(); if (!gizmoState.visible) return null;
+      var nearest = null, radius = event.pointerType === 'touch' ? 15 : 9;
+      gizmoState.handles.forEach(function (handle) {
+        var dx = handle.end.x - handle.start.x, dy = handle.end.y - handle.start.y, length = dx * dx + dy * dy;
+        var amount = length ? Math.max(0, Math.min(1, ((event.clientX - handle.start.x) * dx + (event.clientY - handle.start.y) * dy) / length)) : 0;
+        var distance = Math.hypot(event.clientX - handle.start.x - dx * amount, event.clientY - handle.start.y - dy * amount);
+        if (distance <= radius && (!nearest || distance < nearest.distance)) nearest = { gizmo: true, axis: handle.axis, binding: gizmoState.frame.binding, point: gizmoState.frame.centre.clone(), distance: distance };
+      }); return nearest;
+    }
     function pointerRay(event) {
       var canvas = runtime.domElement || runtime.renderer.domElement, rect = canvas.getBoundingClientRect();
       raycaster.setFromCamera(new T.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2), runtime.camera); return { ray: raycaster.ray, rect: rect };
@@ -291,19 +383,27 @@
       if (projectionCache && projectionValidated) { performanceState.projectionHits++; return projectionCache; }
       runtime.camera.updateMatrixWorld(true);
       var rect = (runtime.domElement || runtime.renderer.domElement).getBoundingClientRect(), cols = Math.max(1, Math.ceil(rect.width / 32));
-      var viewKey = runtime.camera.matrixWorld.elements.join(',') + ':' + runtime.camera.projectionMatrix.elements.join(',') + ':' + [rect.left, rect.top, rect.width, rect.height].join(',');
+      var viewKey = runtime.camera.matrixWorld.elements.join(',') + ':' + runtime.camera.projectionMatrix.elements.join(',') + ':' + [rect.left, rect.top, rect.width, rect.height, nearClipEnabled() ? 1 : 0].join(',');
       projectionValidated = true;
       if (projectionCache && projectionCache.viewKey === viewKey) { performanceState.projectionHits++; return projectionCache; }
       var result = { rect: rect, cols: cols, bindings: {}, surfaces: currentSurfaces, viewKey: viewKey };
       performanceState.projectionBuilds++;
       result.surfaces.forEach(function (binding) {
         if (!visible(binding.mesh)) return;
-        var entry = { points: {}, bins: {}, binding: binding };
+        var entry = { points: {}, bins: {}, wide: [], binding: binding };
         function point(vertex) { return entry.points[vertex] || (entry.points[vertex] = projectedVertex(binding, vertex, rect)); }
         var indices = binding.geometry.index, indexCount = indices ? indices.count : binding.geometry.attributes.position.count;
         for (var offset = 0; offset < indexCount; offset += 3) {
           var tri = [point(indices ? indices.getX(offset) : offset), point(indices ? indices.getX(offset + 1) : offset + 1), point(indices ? indices.getX(offset + 2) : offset + 2)];
-          if (tri.some(function (p) { return p.z < -1 || p.z > 1; })) continue;
+          if (tri.some(function (p) { return p.z < -1 || p.z > 1; })) {
+            if (!nearClipEnabled()) continue;
+            var depths = tri.map(function (p) { return viewDepth(p.world); });
+            if (depths.every(function (depth) { return depth < runtime.camera.near; }) || depths.every(function (depth) { return depth > runtime.camera.far; })) continue;
+            // A triangle crossing the near plane can cover visible interior
+            // pixels even with a clipped corner. Its exact filtered ray hit,
+            // rather than an unstable projected bounding box, decides picks.
+            entry.wide.push(offset / 3); continue;
+          }
           var minX = Math.max(0, Math.floor((Math.min(tri[0].x, tri[1].x, tri[2].x) - rect.left) / 32)), maxX = Math.min(cols - 1, Math.floor((Math.max(tri[0].x, tri[1].x, tri[2].x) - rect.left) / 32));
           var minY = Math.max(0, Math.floor((Math.min(tri[0].y, tri[1].y, tri[2].y) - rect.top) / 32)), maxY = Math.min(Math.ceil(rect.height / 32) - 1, Math.floor((Math.max(tri[0].y, tri[1].y, tri[2].y) - rect.top) / 32));
           for (var x = minX; x <= maxX; x++) for (var y = minY; y <= maxY; y++) { var key = x + y * cols; if (!entry.bins[key]) entry.bins[key] = []; entry.bins[key].push(offset / 3); }
@@ -313,16 +413,17 @@
     }
     function candidatesAt(context, binding, x, y, radius) {
       var cache = projection(context), entry = cache.bindings[binding.mesh.uuid], set = new Set(); if (!entry) return [];
+      (entry.wide || []).forEach(function (face) { set.add(face); });
       for (var gx = Math.max(0, Math.floor((x - radius - cache.rect.left) / 32)); gx <= Math.min(cache.cols - 1, Math.floor((x + radius - cache.rect.left) / 32)); gx++)
         for (var gy = Math.max(0, Math.floor((y - radius - cache.rect.top) / 32)); gy <= Math.min(Math.ceil(cache.rect.height / 32) - 1, Math.floor((y + radius - cache.rect.top) / 32)); gy++)
           (entry.bins[gx + gy * cache.cols] || []).forEach(function (face) { set.add(face); });
       return Array.from(set);
     }
     function raycastAt(event, context, ray) {
-      var nearest = null;
+      var nearest = null, hitFilter = global.ViewerNearClip && global.ViewerNearClip.filterForCamera(runtime.camera);
       projection(context).surfaces.forEach(function (binding) {
         if (!visible(binding.mesh)) return;
-        var hit = raycastMesh(ray, binding.mesh, { vertices: worldVertices[binding.mesh.uuid] || [], faceIndices: candidatesAt(context, binding, event.clientX, event.clientY, 0) });
+        var hit = raycastMesh(ray, binding.mesh, { vertices: worldVertices[binding.mesh.uuid] || [], faceIndices: candidatesAt(context, binding, event.clientX, event.clientY, 0), hitFilter: hitFilter });
         if (hit && (!nearest || hit.distanceSquared < nearest.distanceSquared - 1e-10 || Math.abs(hit.distanceSquared - nearest.distanceSquared) <= 1e-10 && binding.data === context.mesh && binding.map && binding.map.submesh === context.submesh)) { nearest = hit; nearest.binding = binding; nearest.sourceFace = binding.faceMap[hit.faceIndex]; }
       }); return nearest;
     }
@@ -335,6 +436,21 @@
     function projectedVertex(binding, vertex, rect) {
       var p = world(binding, vertex), q = p.clone().project(runtime.camera);
       return { x: rect.left + (q.x + 1) * rect.width / 2, y: rect.top + (1 - q.y) * rect.height / 2, z: q.z, world: p };
+    }
+    function nearClipEnabled() { return !!(global.ViewerNearClip && runtime.camera.userData && runtime.camera.userData.viewerNearClipEnabled); }
+    function viewDepth(point) { var e = runtime.camera.matrixWorldInverse.elements; return -(point.x * e[2] + point.y * e[6] + point.z * e[10] + e[14]); }
+    function clippedScreenPolygon(screen, rect) {
+      var polygon = screen.map(function (p) { return p.world; });
+      [{ depth: runtime.camera.near, minimum: true }, { depth: runtime.camera.far, minimum: false }].forEach(function (plane) {
+        var output = []; if (!polygon.length) return;
+        polygon.forEach(function (current, index) {
+          var previous = polygon[(index + polygon.length - 1) % polygon.length], a = viewDepth(previous), b = viewDepth(current);
+          var insideA = plane.minimum ? a >= plane.depth : a <= plane.depth, insideB = plane.minimum ? b >= plane.depth : b <= plane.depth;
+          if (insideA !== insideB) output.push(previous.clone().lerp(current, (plane.depth - a) / (b - a)));
+          if (insideB) output.push(current);
+        }); polygon = output;
+      });
+      return polygon.map(function (point) { var p = screenPoint(point, rect); p.world = point; return p; });
     }
     function pickVertex(event, context) {
       beforeRender(); var pointer = pointerRay(event), rect = pointer.rect, nearest = null, seen = new Set(), radius = 12;
@@ -361,17 +477,18 @@
         for (var ci = 0; ci < faceCandidates.length; ci++) { var offset = faceCandidates[ci] * 3;
           var ids = [binding.geometry.index.getX(offset), binding.geometry.index.getX(offset + 1), binding.geometry.index.getX(offset + 2)];
           var screen = ids.map(function (v) { return projectedVertex(binding, v, rect); });
-          if (screen.some(function (p) { return p.z < -1 || p.z > 1; })) continue;
-          if (!triangleCircle(event.clientX, event.clientY, radius, [screen[0].x, screen[0].y], [screen[1].x, screen[1].y], [screen[2].x, screen[2].y])) continue;
-          var cx = screen.reduce(function (sum, p) { return sum + p.x; }, 0) / 3, cy = screen.reduce(function (sum, p) { return sum + p.y; }, 0) / 3;
+          var polygon = screen;
+          if (screen.some(function (p) { return p.z < -1 || p.z > 1; })) { if (!nearClipEnabled()) continue; polygon = clippedScreenPolygon(screen, rect); }
+          if (polygon.length < 3 || !polygon.slice(2).some(function (p, index) { return triangleCircle(event.clientX, event.clientY, radius, [polygon[0].x, polygon[0].y], [polygon[index + 1].x, polygon[index + 1].y], [p.x, p.y]); })) continue;
+          var cx = polygon.reduce(function (sum, p) { return sum + p.x; }, 0) / polygon.length, cy = polygon.reduce(function (sum, p) { return sum + p.y; }, 0) / polygon.length;
           var probe = { clientX: cx, clientY: cy }, ray = pointerRay(probe).ray.clone(), nearest = null;
           nearest = raycastAt(probe, context, ray);
           if (!nearest || nearest.binding !== binding || nearest.faceIndex !== offset / 3) continue;
           var face = binding.faceMap[offset / 3]; candidates.push(face);
-          ids.forEach(function (v, slot) { if (Math.hypot(screen[slot].x - event.clientX, screen[slot].y - event.clientY) <= radius) vertices.add(v); });
+          ids.forEach(function (v, slot) { if (screen[slot].z >= -1 && screen[slot].z <= 1 && Math.hypot(screen[slot].x - event.clientX, screen[slot].y - event.clientY) <= radius) vertices.add(v); });
         }
       });
-      if (context.modify && !vertices.size && centreHit) { var face = centreHit.face, ids = [face.a, face.b, face.c]; ids.sort(function (a, b) { var pa = projectedVertex(centreHit.binding, a, rect), pb = projectedVertex(centreHit.binding, b, rect); return Math.hypot(pa.x - event.clientX, pa.y - event.clientY) - Math.hypot(pb.x - event.clientX, pb.y - event.clientY); }); vertices.add(ids[0]); }
+      if (context.modify && !vertices.size && centreHit) { var face = centreHit.face, ids = [face.a, face.b, face.c].filter(function (vertex) { var p = projectedVertex(centreHit.binding, vertex, rect); return !nearClipEnabled() || p.z >= -1 && p.z <= 1; }); ids.sort(function (a, b) { var pa = projectedVertex(centreHit.binding, a, rect), pb = projectedVertex(centreHit.binding, b, rect); return Math.hypot(pa.x - event.clientX, pa.y - event.clientY) - Math.hypot(pb.x - event.clientX, pb.y - event.clientY); }); if (ids.length) vertices.add(ids[0]); }
       if (options.onPaint) options.onPaint(context.modify ? Array.from(vertices) : candidates, !!context.erase, !!context.modify);
     }
     function updateCursor(event) {
@@ -382,16 +499,33 @@
       if (show) { var radius = Math.max(2, Math.min(200, context.radius || 20)); brushCursor.style.width = radius * 2 + 'px'; brushCursor.style.height = radius * 2 + 'px'; brushCursor.style.left = event.clientX - radius + 'px'; brushCursor.style.top = event.clientY - radius + 'px'; }
     }
     function startDrag(event, context, pick) {
+      var axis = pick.axis || context.dragAxis;
+      if (['x', 'y', 'z'].indexOf(axis) >= 0) {
+        var frame = selectedFrame(context, pick.binding), axisIndex = ['x', 'y', 'z'].indexOf(axis); if (!frame) return;
+        var vector = frame.vectors[axisIndex], magnitude = vector.length(); if (magnitude < 1e-12) return;
+        var source = {}; context.mesh.selected.forEach(function (vertex) { source[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice(); });
+        var origin = pointerRay(event), depth = Math.max(runtime.camera.near, viewDepth(frame.centre)), worldPixel = 2 * (runtime.camera.isOrthographicCamera ? 1 : depth) / Math.max(1e-12, origin.rect.height * Math.abs(runtime.camera.projectionMatrix.elements[5]));
+        var from = screenPoint(frame.centre, origin.rect), to = screenPoint(frame.centre.clone().addScaledVector(vector, worldPixel * 60 / magnitude), origin.rect);
+        var screenX = to.x - from.x, screenY = to.y - from.y, screenLength = Math.hypot(screenX, screenY);
+        var drag = { axis: axisIndex, origin: frame.centre.clone(), vector: vector.clone(), positions: source, startX: event.clientX, startY: event.clientY,
+          screenDirection: screenLength >= 8 ? [screenX / screenLength, screenY / screenLength] : [0, -1],
+          pixelsPerUnit: screenLength >= 8 ? screenLength * magnitude / (worldPixel * 60) : magnitude / worldPixel };
+        drag.anchor = axisRayAmount(origin.ray, drag); stroke.drag = drag; return;
+      }
       var ray = pointerRay(event).ray, normal = runtime.camera.getWorldDirection(new T.Vector3()), plane = new T.Plane().setFromNormalAndCoplanarPoint(normal, pick.point), anchor = ray.intersectPlane(plane, new T.Vector3());
       if (!anchor) return;
       var sourcePositions = {}, inverse = {}, list = activeBindings(context), binding = pick.binding;
       context.mesh.selected.forEach(function (vertex) {
         sourcePositions[vertex] = (context.mesh.positions[vertex] || context.mesh.data.positions[vertex]).slice();
-        var forward = new T.Matrix4().copy(binding.mesh.matrixWorld).multiply(skinMatrix(binding.mesh, vertex)).multiply(binding.positionMatrix);
-        var linear = new T.Matrix3().setFromMatrix4(forward); if (Math.abs(linear.determinant()) < 1e-12) return;
+        var linear = sourceLinear(binding, vertex); if (Math.abs(linear.determinant()) < 1e-12) return;
         inverse[vertex] = linear.invert();
       });
       stroke.drag = { plane: plane, anchor: anchor, positions: sourcePositions, inverse: inverse };
+    }
+    function axisRayAmount(ray, drag) {
+      var a = drag.vector.lengthSq(), b = drag.vector.dot(ray.direction), relative = drag.origin.clone().sub(ray.origin), denominator = a - b * b;
+      if (denominator < a * 1e-5) return null;
+      return (b * ray.direction.dot(relative) - drag.vector.dot(relative)) / denominator;
     }
     function endStroke(cancel) {
       if (!stroke) return;
@@ -406,7 +540,7 @@
       listen(canvas, 'pointerdown', function (event) {
         var context = sourceContext(); if (!context || !context.mesh || context.mode === 'orbit' || context.interactive === false || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey) return;
         if (!activeBindings(context).length) return;
-        var pick = context.mode === 'pick' || context.mode === 'drag' ? pickVertex(event, context) : hitSurface(event, context);
+        var pick = context.mode === 'drag' && pickGizmo(event, context) || (context.mode === 'pick' || context.mode === 'drag' ? pickVertex(event, context) : hitSurface(event, context));
         if (!pick) return;
         event.preventDefault(); event.stopImmediatePropagation();
         if (!canvas.hasAttribute('tabindex')) canvas.tabIndex = 0; canvas.focus({ preventScroll: true });
@@ -415,15 +549,23 @@
         if (runtime.controls) runtime.controls.enabled = false; canvas.setPointerCapture(event.pointerId);
         if (context.mode === 'paint') paint(event, context);
         else if (context.mode === 'connected') { if (options.onConnected) options.onConnected(pick.sourceFace, !!context.erase, !!event.shiftKey); }
-        else { if (options.onSelect) options.onSelect(pick.vertex, !!event.shiftKey, context.mode === 'drag'); if (context.mode === 'drag') startDrag(event, sourceContext(), pick); }
+        else { if (!pick.gizmo && options.onSelect) options.onSelect(pick.vertex, !!event.shiftKey, context.mode === 'drag'); if (context.mode === 'drag') startDrag(event, sourceContext(), pick); }
         notify(); request();
       }, true);
       listen(canvas, 'pointermove', function (event) {
         updateCursor(event); if (!stroke || stroke.pointerId !== event.pointerId) return;
         event.preventDefault(); event.stopImmediatePropagation(); var context = sourceContext(); if (!context || context.interactive === false || context.mode === 'orbit') { endStroke(true); return; }
         if (stroke.drag) {
-          var point = pointerRay(event).ray.intersectPlane(stroke.drag.plane, new T.Vector3());
-          if (point) { var delta = point.sub(stroke.drag.anchor), values = {}; Object.keys(stroke.drag.inverse).forEach(function (vertex) { var local = delta.clone().applyMatrix3(stroke.drag.inverse[vertex]); values[vertex] = stroke.drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); if (options.onDrag) options.onDrag(values); }
+          var values = {}, drag = stroke.drag;
+          if (drag.axis !== undefined) {
+            var amount = axisRayAmount(pointerRay(event).ray, drag), delta = amount !== null && drag.anchor !== null ? amount - drag.anchor :
+              ((event.clientX - drag.startX) * drag.screenDirection[0] + (event.clientY - drag.startY) * drag.screenDirection[1]) / drag.pixelsPerUnit;
+            if (Number.isFinite(delta) && (drag.moved || Math.abs(delta) > 1e-12)) { drag.moved = true; Object.keys(drag.positions).forEach(function (vertex) { var position = drag.positions[vertex].slice(); position[drag.axis] += delta; values[vertex] = position; }); }
+          } else {
+            var point = pointerRay(event).ray.intersectPlane(drag.plane, new T.Vector3());
+            if (point) { var deltaWorld = point.sub(drag.anchor); Object.keys(drag.inverse).forEach(function (vertex) { var local = deltaWorld.clone().applyMatrix3(drag.inverse[vertex]); values[vertex] = drag.positions[vertex].map(function (value, axis) { return value + local.getComponent(axis); }); }); }
+          }
+          if (Object.keys(values).length && options.onDrag) options.onDrag(values);
         } else if (context.mode === 'paint') {
           var previous = stroke.previous, distance = Math.hypot(event.clientX - previous.clientX, event.clientY - previous.clientY), steps = Math.min(24, Math.max(1, Math.ceil(distance / Math.max(2, context.radius / 2))));
           for (var i = 1; i <= steps; i++) paint({ clientX: previous.clientX + (event.clientX - previous.clientX) * i / steps, clientY: previous.clientY + (event.clientY - previous.clientY) * i / steps }, context);
@@ -438,6 +580,7 @@
       var context = sourceContext(); return { boundPrimitives: bindings.length, mode: context && context.mode || 'orbit',
         highlightedFaces: overlayRefs.length / 3, vertexDots: pointVertices.length, selectedVertices: context && context.mesh ? context.mesh.selected.size : 0,
         activeStroke: !!stroke, cursorVisible: !!brushCursor && !brushCursor.hidden, performance: Object.assign({}, performanceState),
+        gizmo: { visible: gizmoState.visible, centre: gizmoState.centre, handles: gizmoState.handles.map(function (handle) { return { axis: handle.axis, x: handle.x, y: handle.y, start: handle.start, end: handle.end, world: handle.world }; }) },
         bindings: bindings.map(function (b) { return { mesh: b.map.mesh, submesh: b.map.submesh, triangles: b.faceMap.length,
           vertexCount: b.geometry.attributes.position.count, selectedFaces: b.data.marked ? Array.from(b.data.marked) : [],
           samplePositions: Array.from(b.geometry.attributes.position.array.slice(0, 24)), sampleWeights: b.geometry.attributes.skinWeight ? Array.from(b.geometry.attributes.skinWeight.array.slice(0, 24)) : [] }; }) };

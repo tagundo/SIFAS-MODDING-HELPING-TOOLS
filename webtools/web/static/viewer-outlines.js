@@ -395,6 +395,7 @@
     }
     function nearest(ray, indexed, x, y) {
       var result = null, column = Math.floor((x - indexed.rect.left) / indexed.cell), row = Math.floor((y - indexed.rect.top) / indexed.cell), cellKey = row * indexed.columns + column;
+      var hitFilter = global.ViewerNearClip && global.ViewerNearClip.filterForCamera(runtime.camera);
       var outside = column < 0 || column >= indexed.columns || row < 0 || row >= indexed.rows;
       performanceState.rayQueries++;
       indexed.records.forEach(function (record) {
@@ -402,7 +403,7 @@
         // its viewport. Preserve their original off-screen occlusion checks.
         if (outside) {
           performanceState.triangleTests += (record.mesh.geometry.index ? record.mesh.geometry.index.count : record.mesh.geometry.attributes.position.count) / 3;
-          var full = global.ViewerMeshRuntime.raycastMesh(ray, record.mesh, { vertices: record.world });
+          var full = global.ViewerMeshRuntime.raycastMesh(ray, record.mesh, { vertices: record.world, hitFilter: hitFilter });
           if (full && (!result || full.distanceSquared < result.distanceSquared)) result = full;
           return;
         }
@@ -410,7 +411,7 @@
         if (record.wide.length) faces = faces.concat(record.wide);
         if (!faces.length) return;
         performanceState.triangleTests += faces.length;
-        var hit = global.ViewerMeshRuntime.raycastMesh(ray, record.mesh, { vertices: record.world, faceIndices: faces });
+        var hit = global.ViewerMeshRuntime.raycastMesh(ray, record.mesh, { vertices: record.world, faceIndices: faces, hitFilter: hitFilter });
         if (hit && (!result || hit.distanceSquared < result.distanceSquared)) result = hit;
       }); return result;
     }

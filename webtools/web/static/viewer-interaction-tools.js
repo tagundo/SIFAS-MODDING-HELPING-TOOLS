@@ -4,6 +4,7 @@
   var words = {
     "3D interaction": ["3D 조작", "3D操作"], "Rotate": ["회전", "回転"],
     "Pan": ["이동", "移動"], "Zoom": ["확대", "ズーム"], "Edit": ["편집", "編集"],
+    "Clear selection": ["선택 해제", "選択解除"],
     "Choose an editing tool": ["편집 도구 선택", "編集ツールを選択"],
     "Space: rotate · Shift+Space: pan · Right drag: pan · Wheel/pinch: zoom": ["Space: 회전 · Shift+Space: 이동 · 우클릭 드래그: 이동 · 휠/두 손가락: 확대", "Space: 回転 · Shift+Space: 移動 · 右ドラッグ: 移動 · ホイール/ピンチ: ズーム"],
     "Click again to change the editing tool.": ["다시 누르면 편집 도구를 바꿀 수 있습니다.", "もう一度押すと編集ツールを変更できます。"],
@@ -11,8 +12,8 @@
   };
   function create(options) {
     var stage = options.stage, host = document.createElement("div"), row = document.createElement("div"), menu = document.createElement("div");
-    host.id = "viewer-interaction-tools"; host.className = "viewer-interaction-tools"; host.hidden = true; host.dataset.viewerFramingEdge = "bottom";
-    row.className = "viewer-interaction-row"; row.setAttribute("role", "toolbar");
+    host.id = "viewer-interaction-tools"; host.className = "viewer-interaction-tools"; host.hidden = true; host.dataset.viewerFramingEdge = "left";
+    row.className = "viewer-interaction-row"; row.setAttribute("role", "toolbar"); row.setAttribute("aria-orientation", "vertical");
     menu.id = "viewer-interaction-edit-menu"; menu.className = "viewer-interaction-menu"; menu.hidden = true; menu.setAttribute("role", "menu");
     host.append(row, menu); stage.appendChild(host);
     var mode = "orbit", navigation = "orbit", lastEdit = "", temporary = null, changing = false, disposed = false;
@@ -28,7 +29,7 @@
     function icon(kind) {
       var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false");
-      path.setAttribute("d", { orbit: "M13 6A5.5 5.5 0 1 0 13 11M13 2v4H9", pan: "M8 1v14M1 8h14M5 4l3-3 3 3M5 12l3 3 3-3M4 5L1 8l3 3M12 5l3 3-3 3", zoom: "M10.2 10.2L15 15M11 6.5a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0M4 6.5h5M6.5 4v5", edit: "M3 1v12l3.5-3 2 5 2-1-2-4L13 9Z" }[kind]);
+      path.setAttribute("d", { orbit: "M13 6A5.5 5.5 0 1 0 13 11M13 2v4H9", pan: "M8 1v14M1 8h14M5 4l3-3 3 3M5 12l3 3 3-3M4 5L1 8l3 3M12 5l3 3-3 3", zoom: "M10.2 10.2L15 15M11 6.5a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0M4 6.5h5M6.5 4v5", edit: "M3 1v12l3.5-3 2 5 2-1-2-4L13 9Z", clear: "M2 5V2h3M7 2h2M11 2h3v3M14 7v2M5 14H2v-3M2 7v2M8 8l6 6M14 8l-6 6" }[kind]);
       path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.3"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round"); svg.appendChild(path); return svg;
     }
     function listen(target, name, fn, opts, list) { target.addEventListener(name, fn, opts); (list || removers).push(function () { target.removeEventListener(name, fn, opts); }); }
@@ -92,11 +93,12 @@
       var help = document.createElement("p"); help.className = "viewer-interaction-help"; help.textContent = t("Space: rotate · Shift+Space: pan · Right drag: pan · Wheel/pinch: zoom"); menu.appendChild(help);
       layout();
     }
-    [["orbit", "Rotate", "R"], ["pan", "Pan", "H/G"], ["zoom", "Zoom", "Z"], ["edit", "Edit", "E"]].forEach(function (definition) {
+    [["orbit", "Rotate", "R"], ["pan", "Pan", "H/G"], ["zoom", "Zoom", "Z"], ["edit", "Edit", "E"], ["clear", "Clear selection", ""]].forEach(function (definition) {
       var button = document.createElement("button"); button.type = "button"; button.id = "viewer-interaction-" + definition[0];
       var label = document.createElement("span"); label.className = "viewer-interaction-label"; button.append(icon(definition[0]), label); button._label = label;
-      button.dataset.viewerInteraction = definition[0]; button.setAttribute("data-viewer-hud-control", ""); button.setAttribute("aria-pressed", "false");
+      button.dataset.viewerInteraction = definition[0]; button.setAttribute("data-viewer-hud-control", ""); if (definition[0] !== "clear") button.setAttribute("aria-pressed", "false");
       button.addEventListener("click", function () {
+        if (definition[0] === "clear") { if (!button.disabled && options.clearSelection) options.clearSelection(); refresh(); return; }
         if (definition[0] !== "edit") { chooseNavigation(definition[0]); return; }
         if (mode !== "edit" && lastEdit && chooseEdit(lastEdit)) return;
         if (!menu.hidden) closeMenu(); else { menuItems(); menu.hidden = false; attr(button, "aria-expanded", true); layout(); }
@@ -108,12 +110,14 @@
       if (host.hidden || !stage.clientWidth || disposed) return;
       var compact = host.classList.contains("viewer-interaction-icons-only");
       if (compact) host.classList.remove("viewer-interaction-icons-only");
-      var naturalWidth = 0;
+      var naturalWidth = 0, railLimit = Math.min(120, Math.max(44, stage.clientWidth * .27));
       Object.keys(buttons).forEach(function (key) { var button = buttons[key], style = getComputedStyle(button), label = button._label;
         var needed = label.scrollWidth + 15 + (parseFloat(style.columnGap) || 0) + (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0) + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0);
-        naturalWidth += Math.max(parseFloat(style.minWidth) || 0, needed);
+        naturalWidth = Math.max(naturalWidth, parseFloat(style.minWidth) || 0, needed);
       });
-      if (naturalWidth > stage.clientWidth - 12) host.classList.add("viewer-interaction-icons-only");
+      if (naturalWidth > railLimit) host.classList.add("viewer-interaction-icons-only");
+      var maxHeight = Math.max(44, stage.clientHeight - 12) + "px";
+      if (row.style.maxHeight !== maxHeight) row.style.maxHeight = maxHeight;
       var rect = stage.getBoundingClientRect(), width = row.getBoundingClientRect().width, height = row.getBoundingClientRect().height;
       var obstacles = [];
       stage.querySelectorAll("[data-viewer-hud-control]").forEach(function (element) {
@@ -121,41 +125,49 @@
         var box = element.getBoundingClientRect(); if (!box.width || !box.height || getComputedStyle(element).visibility === "hidden") return;
         obstacles.push({ left: box.left - rect.left - 5, right: box.right - rect.left + 5, top: box.top - rect.top - 5, bottom: box.bottom - rect.top + 5 });
       });
-      // In a short viewport the top-center gap leaves the lower model area
-      // available for dragging, rather than putting a row across its feet.
-      var fromTop = stage.clientHeight <= 240;
-      function freePosition(lines) {
+      // Keep the rail in the leftmost free column. The existing pose controls
+      // retain their top-left space, and a short rail scrolls within the stage.
+      function freePosition() {
         var position = null;
-        for (var line = 0; line < lines && !position; line++) {
-          var y = fromTop ? Math.min(stage.clientHeight - height - 4, 8 + line * (height + 8)) : Math.max(4, stage.clientHeight - height - 8 - line * (height + 8));
-          var intervals = obstacles.filter(function (box) { return box.bottom > y && box.top < y + height; }).sort(function (a, b) { return a.left - b.left; });
-          var x = 6, gaps = [];
-          intervals.forEach(function (box) { if (box.left > x) gaps.push([x, Math.min(stage.clientWidth - 6, box.left)]); x = Math.max(x, box.right); });
-          if (x < stage.clientWidth - 6) gaps.push([x, stage.clientWidth - 6]);
-          gaps.forEach(function (gap) { if (gap[1] - gap[0] < width) return; var left = Math.max(gap[0], Math.min((stage.clientWidth - width) / 2, gap[1] - width)); var score = Math.abs(left + width / 2 - stage.clientWidth / 2); if (!position || score < position.score) position = { left: left, top: y, score: score }; });
+        var minimumHeight = Math.min(height, buttons.orbit.getBoundingClientRect().height * 2 + 2);
+        var columns = [6].concat(obstacles.map(function (box) { return Math.max(6, Math.ceil(box.right)); })).sort(function (a, b) { return a - b; });
+        for (var column = 0; column < columns.length && !position; column++) {
+          var x = columns[column]; if (x + width > stage.clientWidth / 2) continue;
+          var intervals = obstacles.filter(function (box) { return box.right > x && box.left < x + width; }).sort(function (a, b) { return a.top - b.top; });
+          var y = 6, gaps = [];
+          intervals.forEach(function (box) { if (box.top > y) gaps.push([y, Math.min(stage.clientHeight - 6, box.top)]); y = Math.max(y, box.bottom); });
+          if (y < stage.clientHeight - 6) gaps.push([y, stage.clientHeight - 6]);
+          gaps.forEach(function (gap) {
+            var visibleHeight = Math.min(height, Math.floor(gap[1] - gap[0]));
+            if (visibleHeight < minimumHeight) return;
+            var top = Math.max(gap[0], Math.min((stage.clientHeight - visibleHeight) / 2, gap[1] - visibleHeight));
+            var score = Math.abs(top + visibleHeight / 2 - stage.clientHeight / 2);
+            if (!position || visibleHeight > position.height || visibleHeight === position.height && score < position.score) position = { left: x, top: top, height: visibleHeight, score: score };
+          });
         }
         return position;
       }
-      var best = freePosition(3);
+      var best = freePosition();
       // Labels can fit the whole stage while still covering its existing
       // camera controls. Compact against the actual free gaps, not width alone.
       if (!best) {
         host.classList.add("viewer-interaction-icons-only");
         width = row.getBoundingClientRect().width; height = row.getBoundingClientRect().height;
-        best = freePosition(Math.max(3, Math.ceil(stage.clientHeight / (height + 8))));
+        best = freePosition();
       }
       if (!best) { if (host.style.visibility !== "hidden") host.style.visibility = "hidden"; return; }
       if (host.style.visibility) host.style.visibility = "";
-      attr(host, "data-viewer-framing-edge", fromTop ? "top" : "bottom");
+      var visibleHeight = best.height + "px";
+      if (row.style.maxHeight !== visibleHeight) row.style.maxHeight = visibleHeight;
+      height = row.getBoundingClientRect().height;
       var left = Math.round(best.left) + "px", top = Math.round(best.top) + "px";
       if (host.style.left !== left) host.style.left = left; if (host.style.top !== top) host.style.top = top;
-      var menuTop = fromTop ? "calc(100% + 6px)" : "auto", menuBottom = fromTop ? "auto" : "calc(100% + 6px)";
-      if (menu.style.top !== menuTop) menu.style.top = menuTop; if (menu.style.bottom !== menuBottom) menu.style.bottom = menuBottom;
-      var menuHeight = Math.max(72, Math.min(260, fromTop ? stage.clientHeight - best.top - height - 12 : best.top - 12)) + "px";
+      var menuLimit = Math.max(44, Math.min(260, stage.clientHeight - 12)), menuHeight = menuLimit + "px";
       if (host.style.getPropertyValue("--viewer-interaction-menu-height") !== menuHeight) host.style.setProperty("--viewer-interaction-menu-height", menuHeight);
-      var menuWidth = Math.max(120, Math.min(250, stage.clientWidth - 12)) + "px"; if (menu.style.width !== menuWidth) menu.style.width = menuWidth;
-      var halfMenu = parseFloat(menuWidth) / 2, menuCenter = Math.max(halfMenu + 6, Math.min(stage.clientWidth - halfMenu - 6, best.left + width / 2));
-      var menuLeft = Math.round(menuCenter - best.left) + "px"; if (menu.style.left !== menuLeft) menu.style.left = menuLeft;
+      var menuWidth = Math.max(80, Math.min(250, stage.clientWidth - best.left - width - 12)) + "px"; if (menu.style.width !== menuWidth) menu.style.width = menuWidth;
+      var edit = buttons.edit.getBoundingClientRect(), menuY = Math.max(6, Math.min(stage.clientHeight - menuLimit - 6, edit.top - rect.top));
+      var menuTop = Math.round(menuY - best.top) + "px", menuLeft = Math.round(width + 6) + "px";
+      if (menu.style.top !== menuTop) menu.style.top = menuTop; if (menu.style.left !== menuLeft) menu.style.left = menuLeft;
     }
     function finishTouchZoom() { if (touchZoom && touchZoom.controls) touchZoom.controls.enabled = touchZoom.enabled; touchZoom = null; }
     function attachCanvas() {
@@ -228,10 +240,11 @@
       var hidden = !c.loaded; if (host.hidden !== hidden) host.hidden = hidden;
       var disabled = !!c.disabled || !!pointers.size;
       Object.keys(buttons).forEach(function (key) {
-        var button = buttons[key], label = t(button.dataset.label), title = label + " (" + button.dataset.shortcut + ")";
+        var button = buttons[key], label = t(button.dataset.label), title = label + (button.dataset.shortcut ? " (" + button.dataset.shortcut + ")" : "");
         if (key === "edit" && edit) title += " · " + edit.group + ": " + edit.label + ". " + t("Click again to change the editing tool.");
-        content(button._label, label); attr(button, "title", title); attr(button, "aria-label", title); attr(button, "aria-pressed", key === mode);
-        if (button.disabled !== disabled) button.disabled = disabled;
+        content(button._label, label); attr(button, "title", title); attr(button, "aria-label", title); if (key !== "clear") attr(button, "aria-pressed", key === mode);
+        var unavailable = disabled || key === "clear" && (!options.canClearSelection || !options.canClearSelection());
+        if (button.disabled !== unavailable) button.disabled = unavailable;
       });
       attr(row, "aria-label", t("3D interaction")); controlsForNavigation();
       var signature = [hidden, disabled, mode, document.documentElement.lang].join(":"); if (signature !== lastSignature) { lastSignature = signature; layout(); }

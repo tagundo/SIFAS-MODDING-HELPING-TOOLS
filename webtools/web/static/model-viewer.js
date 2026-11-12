@@ -47,6 +47,8 @@
   var materialPreference = "sifas";
   var RIMLIGHT_KEY = "elichika.viewer.rimlight.v1";
   var rimlightPreference = false;
+  var NEAR_CLIP_KEY = "elichika.viewer.near-clip.v1";
+  var nearClipPreference = { enabled: false, distance: 0.03 };
   var frame = 0;
   var resizeObserver = null;
   var stageObserver = null;
@@ -189,7 +191,15 @@
       context: function () { var saved = persistenceController && persistenceController.getState(); return { loaded: !!model,
         disabled: !active || loading || lost || workbenchBusy() || !!(saved && saved.busy) }; },
       getRuntime: function () { return { controls: controls, camera: camera, domElement: renderer && renderer.domElement, requestRender: requestRender }; },
-      getEditActions: interactionActions, leaveEditing: leaveInteractionEditing, chooseEdit: chooseInteractionEditing });
+      getEditActions: interactionActions, leaveEditing: leaveInteractionEditing, chooseEdit: chooseInteractionEditing,
+      canClearSelection: function () { var owner = selectionController(); return !!(owner && owner.canClearSelection && owner.canClearSelection()); },
+      clearSelection: function () { var owner = selectionController(); return !!(owner && owner.clearSelection && owner.clearSelection()); } });
+  }
+  function selectionController() {
+    var editing = interactionActions().find(function (action) { return action.active; });
+    var last = interactionController && interactionController.getState().edit;
+    var source = (editing ? editing.key : last || "").split(":")[0];
+    return source === "texture" ? textureToolsController : source === "modify" || source === "delete" ? meshToolsController : null;
   }
   function basename(path) { return String(path).replace(/\/+$/, "").split("/").pop(); }
   function variantsFor(selected) { return selected.map(function (path) { return variantChoices[path] || "primary"; }); }
@@ -659,6 +669,11 @@
     if (!camera || !controls || !model) return;
     var radius = cameraClipRadius;
     var distance = camera.position.distanceTo(controls.target);
+    if (window.ViewerNearClip) {
+      window.ViewerNearClip.apply(camera, { radius: radius, orbitDistance: distance,
+        enabled: nearClipPreference.enabled, distance: nearClipPreference.distance });
+      return;
+    }
     var floor = Math.max(0.001, radius / 1000);
     var near = isFinite(distance) && distance > 0
       ? Math.max(floor, Math.min(radius / 100, distance / 120)) : floor;
@@ -675,11 +690,19 @@
     refreshQualityStatus();
   }
 
+  function refreshNearClipControls(save) {
+    var toggle = node("viewer-near-clip"), distance = node("viewer-near-clip-distance");
+    toggle.checked = nearClipPreference.enabled; distance.value = String(nearClipPreference.distance);
+    distance.disabled = !nearClipPreference.enabled;
+    if (save) { try { window.localStorage.setItem(NEAR_CLIP_KEY, JSON.stringify(nearClipPreference)); } catch (_) {} }
+    updateCameraClipNear(); requestRender();
+  }
+
   function panelGap() { return 12; }
 
   function panelWidthLimits() {
     var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
-    return { min: 240, max: Math.min(640, Math.floor(inspect.clientWidth - 320 - panelGap())) };
+    return { min: 240, max: Math.min(16384, Math.floor(inspect.clientWidth - 320 - panelGap())) };
   }
 
   function clampPanelWidth(value) {
@@ -781,14 +804,14 @@
   function bindPanelResize() {
     try {
       var stored = window.localStorage.getItem(PANEL_WIDTH_KEY);
-      if (typeof stored === "string" && /^\d{3}$/.test(stored) && Number(stored) >= 240 && Number(stored) <= 640) panelWidthPreference = Number(stored);
+      if (typeof stored === "string" && /^\d{3,5}$/.test(stored) && Number(stored) >= 240 && Number(stored) <= 16384) panelWidthPreference = Number(stored);
       var storedFiles = window.localStorage.getItem(FILES_WIDTH_KEY);
       if (typeof storedFiles === "string" && /^\d{3}$/.test(storedFiles) && Number(storedFiles) >= 160 && Number(storedFiles) <= 360) filesWidthPreference = Number(storedFiles);
     } catch (_) {}
     var platform = window.ElichikaPlatform;
     if (platform && platform.supports("setViewerPanelWidth")) {
       var nativeWidth = platform.info().viewerPanelWidth;
-      panelWidthPreference = nativeWidth >= 240 && nativeWidth <= 640 ? nativeWidth : null;
+      panelWidthPreference = Number.isInteger(nativeWidth) && nativeWidth >= 240 && nativeWidth <= 16384 ? nativeWidth : null;
     }
     if (platform && platform.supports("setViewerFilesWidth")) {
       var nativeFilesWidth = platform.info().viewerFilesWidth;
@@ -1017,8 +1040,10 @@
   }
 
   function framingObstacles(stage) {
-    var rect = stage.getBoundingClientRect(), result = [];
+    var rect = stage.getBoundingClientRect(), result = [], railAdded = false;
     stage.querySelectorAll("[data-viewer-hud-control]").forEach(function (element) {
+      var rail = element.closest("#viewer-interaction-tools");
+      if (rail) { if (railAdded) return; railAdded = true; element = rail; }
       var box = element.getBoundingClientRect();
       if (!box.width || !box.height || window.getComputedStyle(element).visibility === "hidden") return;
       var left = Math.max(0, box.left - rect.left - 4), top = Math.max(0, box.top - rect.top - 4);
@@ -1067,8 +1092,10 @@
     // A centered edge toolbar needs an asymmetric fit region. Keeping the
     // target at canvas center would shrink the whole model repeatedly merely
     // to lift its feet above that row, particularly in short windows.
-    var fitTop = insets.top, fitBottom = insets.bottom;
+    var fitTop = insets.top, fitBottom = insets.bottom, fitLeft = insets.left, fitRight = insets.right;
     obstacles.forEach(function (rect) {
+      if (rect.edge === "left") { fitLeft = Math.max(fitLeft, rect.right + 4); return; }
+      if (rect.edge === "right") { fitRight = Math.max(fitRight, width - rect.left + 4); return; }
       if (rect.left > width / 2 || rect.right < width / 2) return;
       if (rect.edge === "bottom") fitBottom = Math.max(fitBottom, height - rect.top + 4);
       else if (rect.edge === "top") fitTop = Math.max(fitTop, rect.bottom + 4);
@@ -1104,17 +1131,19 @@
     var sphere = bounds.getBoundingSphere(new window.THREE.Sphere()), radius = Math.max(sphere.radius, 0.01);
     cameraClipRadius = radius;
     var centre = sphere.center, target = centre.clone(), centreR = centre.dot(right), centreU = centre.dot(up), centreV = centre.dot(view);
-    var safeX = Math.max(1, width - insets.left - insets.right) / width;
+    var safeX = Math.max(1, width - fitLeft - fitRight) / width;
     var safeY = Math.max(1, height - fitTop - fitBottom) / height;
     var upperY = 1 - 2 * fitTop / height, lowerY = 1 - 2 * fitBottom / height;
+    var leftX = 1 - 2 * fitLeft / width, rightX = 1 - 2 * fitRight / width;
     var distance = 0, visits = 0, passes = 0, summary = null;
     if (precise) records.forEach(function (record) {
       var points = record.points;
       for (var at = 0; at < points.length; at += 3) {
         // Each deformed vertex supplies its own depth. Combining the highest
         // head point with an unrelated mesh's deepest point leaves headroom.
-        var depth = points[at + 2] - centreV, vertical = points[at + 1] - centreU;
-        distance = Math.max(distance, depth + Math.abs(points[at] - centreR) / (tanH * safeX),
+        var depth = points[at + 2] - centreV, vertical = points[at + 1] - centreU, horizontal = points[at] - centreR;
+        distance = Math.max(distance, (horizontal + rightX * depth * tanH) / (tanH * safeX),
+          (-horizontal + leftX * depth * tanH) / (tanH * safeX),
           (vertical + upperY * depth * tanV) / (tanV * safeY),
           (-vertical + lowerY * depth * tanV) / (tanV * safeY));
       }
@@ -1162,6 +1191,7 @@
     var method = "posed-triangles", clear = false;
     if (precise) for (passes = 1; passes <= 8; passes += 1) {
       target.copy(centre).addScaledVector(up, (fitTop - fitBottom) / height * distance * tanV);
+      target.addScaledVector(right, (fitRight - fitLeft) / width * distance * tanH);
       summary = projectSnapshot();
       var collision = intersectsControls();
       if (collision === false && !summary.pointsOutside) { clear = true; break; }
@@ -1177,6 +1207,8 @@
       obstacles.forEach(function (rect) {
         if (rect.edge === "bottom") bottomInset = Math.max(bottomInset, height - rect.top + 4);
         else if (rect.edge === "top") topInset = Math.max(topInset, rect.bottom + 4);
+        else if (rect.edge === "left") left = Math.max(left, rect.right + 4);
+        else if (rect.edge === "right") rightInset = Math.max(rightInset, width - rect.left + 4);
         else if ((rect.left + rect.right) / 2 < width / 2) left = Math.max(left, rect.right + 4);
         else rightInset = Math.max(rightInset, width - rect.left + 4);
       });
@@ -1224,6 +1256,7 @@
     controls.minDistance = radius * 0.12;
     controls.maxDistance = Math.max(radius * 30, distance * 2);
     controls.update();
+    updateCameraClipNear();
     requestRender();
   }
 
@@ -2096,6 +2129,12 @@
     mounted = true;
     try { rimlightPreference = window.localStorage.getItem(RIMLIGHT_KEY) === "true"; } catch (_) {}
     node("viewer-rimlight").checked = rimlightPreference;
+    try {
+      var savedClip = JSON.parse(window.localStorage.getItem(NEAR_CLIP_KEY) || "null");
+      if (savedClip && typeof savedClip.enabled === "boolean" && Number.isFinite(savedClip.distance) && savedClip.distance >= 0.001 && savedClip.distance <= 10)
+        nearClipPreference = { enabled: savedClip.enabled, distance: savedClip.distance };
+    } catch (_) {}
+    refreshNearClipControls(false);
     if (window.ViewerOutlines) outlineController = window.ViewerOutlines.create({
       translate: t,
       onChange: function () {
@@ -2230,6 +2269,7 @@
         !(transplantController && transplantController.getState().busy); },
       isReadOnly: function () { return !!(persistenceController && persistenceController.getState().reviewingSaved); },
       isSceneInteractive: function () { return !loading && !lost && !!model; },
+      onSelectionChange: function () { if (interactionController) interactionController.refresh(); },
       onSceneModeChange: function (mode) { if (mode !== "orbit" && outlineController && outlineController.setSceneEditing) outlineController.setSceneEditing(false); if (interactionController) interactionController.refresh(); },
       onChange: function () { workbenchChanged(); if (meshToolsController) meshToolsController.refresh(); requestRender(); }
     });
@@ -2332,6 +2372,12 @@
       updateAppearance();
     });
     node("viewer-background").addEventListener("change", setBackground);
+    node("viewer-near-clip").addEventListener("change", function () { nearClipPreference.enabled = this.checked; refreshNearClipControls(true); });
+    node("viewer-near-clip-distance").addEventListener("change", function () {
+      var value = Number(this.value);
+      if (Number.isFinite(value) && value >= 0.001 && value <= 10) nearClipPreference.distance = value;
+      refreshNearClipControls(true);
+    });
     node("viewer-fov").addEventListener("input", function () {
       node("viewer-fov-value").textContent = this.value + "°";
       if (camera) { camera.fov = Number(this.value); camera.updateProjectionMatrix(); requestRender(); }
@@ -2623,6 +2669,7 @@
         meshTools: meshToolsController ? meshToolsController.getState() : null,
         textureTools: textureToolsController ? textureToolsController.getState() : null,
         interaction: interactionController ? interactionController.getState() : null,
+        nearClip: { enabled: nearClipPreference.enabled, distance: nearClipPreference.distance, near: camera ? camera.near : null, far: camera ? camera.far : null },
         transplants: transplantController ? transplantController.getState() : null,
         accessories: accessoryController ? accessoryController.getState() : null,
         outlines: outlineController ? outlineController.getState() : null,

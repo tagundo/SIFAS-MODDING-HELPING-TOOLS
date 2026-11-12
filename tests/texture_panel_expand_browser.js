@@ -44,6 +44,79 @@ async function start() {
   throw Error('Product server did not start');
 }
 async function meshState(page) { return page.evaluate(() => ModelViewer.getState().meshTools); }
+async function cardLayoutRegression(page, viewport) {
+  const result = { cards: [], width: null };
+  for (const selector of ['#viewer-mesh-deleter', '#viewer-mesh-modify']) {
+    const pane = page.locator(selector);
+    await pane.evaluate(node => { node.open = false; });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const closed = await pane.evaluate(node => {
+      const summary = node.querySelector('summary'), root = node.getBoundingClientRect(), row = summary.getBoundingClientRect();
+      return { height: root.height, summaryHeight: row.height, bottom: root.bottom, summaryBottom: row.bottom,
+        summaryButtons: summary.querySelectorAll('button').length, overflow: node.scrollWidth - node.clientWidth };
+    });
+    assert.equal(closed.summaryButtons, 0, 'Closed UV cards keep only their compact title in the summary');
+    assert(closed.summaryBottom <= closed.bottom + 1 && closed.height <= closed.summaryHeight + 3,
+      'Closed UV card title stays inside its own row without a floating enlarge button: ' + JSON.stringify(closed));
+    assert(closed.overflow <= 1, 'Closed UV cards do not create intrinsic horizontal overflow');
+    await pane.evaluate(node => { node.open = true; });
+    const button = pane.locator('.texture-pane-expand-button'); await button.scrollIntoViewIfNeeded();
+    const open = await pane.evaluate(node => {
+      const button = node.querySelector('.texture-pane-expand-button'), rect = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return { inViewbar: !!button.closest('.uv-edit-viewbar'), hasIcon: !!button.querySelector('svg'),
+        width: rect.width, height: rect.height, hit: hit === button || button.contains(hit),
+        overflow: node.scrollWidth - node.clientWidth, label: button.getAttribute('aria-label') };
+    });
+    assert(open.inViewbar && open.hasIcon && open.hit && open.width <= 46 && open.height <= 46,
+      'Enlarge is a compact accessible icon beside the actual texture view controls: ' + JSON.stringify(open));
+    assert(open.overflow <= 1, 'Open UV cards do not force the inspector wider than its selected width');
+    result.cards.push({ selector, closed, open });
+  }
+  await page.locator('#lang-select').selectOption('ko');
+  await page.waitForFunction(() => document.querySelector('#viewer-mesh-modify .texture-pane-expand-button').getAttribute('aria-label') === '텍스처 크게 보기');
+  result.koreanLabel = await page.locator('#viewer-mesh-modify .texture-pane-expand-button').getAttribute('aria-label');
+  await page.locator('#lang-select').selectOption('en');
+  await page.waitForFunction(() => document.querySelector('#viewer-mesh-modify .texture-pane-expand-button').getAttribute('aria-label') === 'Enlarge texture');
+  await page.locator('#viewer-mesh-modify').evaluate(node => { node.open = false; });
+  if (viewport.width >= 1000 && viewport.height >= 700) {
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    const splitter = page.locator('#viewer-panel-resizer'); await splitter.waitFor({ state: 'visible' }); await splitter.press('Home');
+    await page.waitForFunction(() => Number(document.getElementById('viewer-panel-resizer').getAttribute('aria-valuemax')) > 800);
+    const before = await page.locator('#viewer-mesh-deleter canvas').evaluate(canvas => {
+      window.__uvWidthCanvas = canvas;
+      return { canvas: canvas.getBoundingClientRect().width, authoring: ModelViewer.getAuthoringState(), selected: ModelViewer.getState().meshTools.selectedFaces };
+    });
+    const handle = await splitter.boundingBox(), point = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 };
+    assert(await splitter.evaluate((node, p) => { const hit = document.elementFromPoint(p.x, p.y); return hit === node || node.contains(hit); }, point),
+      'Actual inspector divider is reachable beside open UV editing cards');
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x - 500, point.y, { steps: 12 }); await page.mouse.up();
+    await page.waitForFunction(() => document.getElementById('viewer-control-panel').getBoundingClientRect().width > 700);
+    await splitter.press('Shift+ArrowLeft');
+    await page.waitForFunction(() => document.querySelector('#viewer-mesh-deleter canvas').getBoundingClientRect().width > 700);
+    await page.waitForFunction(() => {
+      const node = document.getElementById('viewer-mesh-deleter'), canvas = node.querySelector('canvas'), stage = node.querySelector('.uv-canvas-stage');
+      return Math.abs(canvas.getBoundingClientRect().width - stage.getBoundingClientRect().width) <= 2;
+    }, null, { timeout: 3000 });
+    const widened = await page.locator('#viewer-mesh-deleter').evaluate(node => {
+      const canvas = node.querySelector('canvas'), stage = node.querySelector('.uv-canvas-stage'), panel = document.getElementById('viewer-control-panel');
+      return { panelWidth: panel.getBoundingClientRect().width, modelWidth: document.getElementById('viewer-stage').getBoundingClientRect().width,
+        stageWidth: stage.getBoundingClientRect().width, canvasWidth: canvas.getBoundingClientRect().width,
+        sameCanvas: canvas === window.__uvWidthCanvas, overflow: panel.scrollWidth - panel.clientWidth,
+        authoring: ModelViewer.getAuthoringState(), selected: ModelViewer.getState().meshTools.selectedFaces };
+    });
+    assert(widened.panelWidth > 640 && widened.modelWidth >= 319 && widened.canvasWidth > before.canvas + 100,
+      'Dragging the actual right-pane divider gives its added width to the texture, while preserving the model: ' + JSON.stringify(widened));
+    assert(Math.abs(widened.canvasWidth - widened.stageWidth) <= 2 && widened.sameCanvas && widened.overflow <= 1,
+      'Automatic square texture view follows the widened pane rather than a fixed canvas cap: ' + JSON.stringify(widened));
+    assert.deepStrictEqual(widened.authoring, before.authoring); assert.deepStrictEqual(widened.selected, before.selected);
+    result.width = { before, widened };
+    await splitter.press('Home'); await page.setViewportSize(viewport);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  }
+  return result;
+}
 async function expand(page, selector, fallback, label) {
   const pane = page.locator(selector), button = pane.locator('.texture-pane-expand-button');
   await button.scrollIntoViewIfNeeded(); await button.focus();
@@ -111,6 +184,7 @@ async function runCase(name, viewport, fallback) {
     const listing = await (await listingResponse).json(), chosen = listing.meshes.find(m => m.available && m.name === 'Body') || listing.meshes.find(m => m.available), value = JSON.stringify(chosen.mesh);
     const dataResponse = page.waitForResponse(r => r.url().endsWith('/api/viewer/mesh/data')); await page.locator(del + '-select').selectOption(value); const data = await (await dataResponse).json();
     await page.waitForFunction(() => !ModelViewer.getState().meshTools.busy && ModelViewer.getState().meshTools.runtime.boundPrimitives > 0);
+    const normalLayout = await cardLayoutRegression(page, viewport);
     const face = data.triangles[0], uv = [0, 1].map(axis => face.reduce((n, v) => n + data.uv[v][axis], 0) / 3);
     const resizeHandle=page.locator(del+' .uv-canvas-resizer');
     await page.waitForFunction(selector=>document.querySelector(selector).hasAttribute('aria-valuenow'), del+' .uv-canvas-resizer');
@@ -196,7 +270,7 @@ async function runCase(name, viewport, fallback) {
     await page.waitForFunction(() => !TexturePanelExpand.getState().expanded && ModelViewer.getState().loaded && !ModelViewer.getState().loading);
     assert.equal(await page.evaluate(() => document.body.style.overflow), '', 'View in 3D dismisses gallery overlay');
     assert.equal(await page.locator('.texture-pane-overlay-path').count(), 0); assert.deepStrictEqual(errors, [], 'No browser exceptions');
-    report.cases.push({ name, fallback, viewport, deletionGeometry, modificationGeometry, donorGeometry, galleryGeometry, meshSelectedFaces: selected.selectedFaces, donorSelectedFaces: donorState.selectedFaces, point, donorPoint });
+    report.cases.push({ name, fallback, viewport, normalLayout, deletionGeometry, modificationGeometry, donorGeometry, galleryGeometry, meshSelectedFaces: selected.selectedFaces, donorSelectedFaces: donorState.selectedFaces, point, donorPoint });
   } finally { await context.close(); }
 }
 async function run() {
