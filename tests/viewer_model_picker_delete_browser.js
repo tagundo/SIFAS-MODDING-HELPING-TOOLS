@@ -150,11 +150,21 @@ async function macLayout(browser, url, profile, report) {
     assert(prefs.hidden.includes('viewer-display-options') && prefs.hidden.includes('viewer-save-panel'));
     assert(await page.evaluate(() => __macCalls.some(m => m.action === 'setPanelSettings' && m.panelSettings.hidden.includes('viewer-save-panel'))));
     for (const id of ['viewer-display-options', 'viewer-save-panel']) await row(id).locator('input').check();
+    await page.locator('#viewer-panel-settings-dialog').evaluate(dialog => {
+      window.__pickerSettingsCloseSeen = false;
+      dialog.addEventListener('close', () => { window.__pickerSettingsCloseSeen = true; }, {once: true});
+    });
     await page.locator('#viewer-panel-settings-dialog button').filter({hasText: /^Close$/}).click();
-    await page.waitForFunction(() => !document.getElementById('viewer-panel-settings-dialog').open);
+    await page.waitForFunction(() => window.__pickerSettingsCloseSeen && !document.getElementById('viewer-panel-settings-dialog').open && document.activeElement === document.getElementById('viewer-panel-settings'));
     assert(await page.locator('#viewer-display-options').evaluate(e => e.open) && await page.locator('#viewer-save-panel').evaluate(e => e.open), 'Preference hide/show retains disclosure state');
-    await page.locator('#viewer-files-resizer').focus(); await page.keyboard.press('ArrowLeft');
+    const resizeCallStart = await page.evaluate(() => __macCalls.length);
+    await page.locator('#viewer-files-resizer').focus();
+    assert(await page.locator('#viewer-files-resizer').evaluate(e => document.activeElement === e), 'The resize separator owns focus before its single ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForFunction(start => __macCalls.slice(start).some(m => m.action === 'setViewerFilesWidth' && m.width >= 160 && m.width <= 360), resizeCallStart);
     assert(await page.evaluate(() => __macCalls.some(m => m.action === 'setViewerFilesWidth' && m.width >= 160 && m.width <= 360)), 'Native sidebar-width bridge still receives bounded resize preferences');
+    const resizeInteraction = await page.evaluate(start => ({closeSeen: window.__pickerSettingsCloseSeen, arrowLeftPresses: 1, calls: __macCalls.slice(start).filter(m => m.action === 'setViewerFilesWidth')}), resizeCallStart);
+    assert.equal(resizeInteraction.calls.length, 1, 'One ArrowLeft emits exactly one bounded native width preference');
     if (profile.width === 360 && profile.text === 1) {
       await load(page); // Resolve the deliberately changed file selection before saving.
       await (await show(page.locator('#viewer-editor-node-tab'))).click(); await (await show(page.locator('#viewer-node-filter'))).selectOption('all');
@@ -168,7 +178,7 @@ async function macLayout(browser, url, profile, report) {
     }
     await page.locator('#viewer-stage').scrollIntoViewIfNeeded(); await page.waitForFunction(() => ModelViewer.getState().layout.stageVisible);
     const probe = await page.evaluate(() => ModelViewer.renderProbe(33)); assert(probe.ready && probe.glError === 0 && probe.nonBackgroundSamples > 0, 'The neutral model remains rendered in the unchanged canvas: ' + JSON.stringify(probe));
-    assert.deepStrictEqual(errors, []); report.push({name: 'Mac native bridge layout ' + profile.width + 'px / ' + profile.text * 100 + '% text', positions, overflow, remove, prefs, probe});
+    assert.deepStrictEqual(errors, []); report.push({name: 'Mac native bridge layout ' + profile.width + 'px / ' + profile.text * 100 + '% text', positions, overflow, remove, prefs, probe, resizeInteraction});
   } finally {await context.close();}
 }
 async function main() {
