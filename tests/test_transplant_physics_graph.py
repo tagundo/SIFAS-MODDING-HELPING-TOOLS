@@ -151,7 +151,7 @@ class TransplantPhysicsGraphTests(unittest.TestCase):
         self.assertEqual(native["m_GameObject"]["m_PathID"], 200)
         self.assertEqual(native["child"]["m_PathID"], 211)
         self.assertEqual(native["sibling"]["m_PathID"], 0)
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="native-swing-sync-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="native-swing-sync-") as temporary:
             root = Path(temporary)
             donor_path, target_path, output = (root / name for name in ("donor.unity", "target.unity", "output.unity"))
             donor_path.write_bytes(donor_raw)
@@ -190,7 +190,7 @@ class TransplantPhysicsGraphTests(unittest.TestCase):
                 self.assertEqual(current[pid], data, pid)
             calls.append(set(injected))
             return result
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="full-native-swing-sync-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="full-native-swing-sync-") as temporary:
             root = Path(temporary)
             donor_path, target_path, output = (root / name for name in ("donor.unity", "target.unity", "output.unity"))
             donor_path.write_bytes(donor_raw)

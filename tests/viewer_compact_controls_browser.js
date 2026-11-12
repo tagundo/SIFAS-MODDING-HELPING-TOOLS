@@ -57,10 +57,21 @@ async function main() {
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
       const initial = await page.evaluate(() => {
         const roots = [...document.querySelectorAll('#viewer-control-panel > details[id]')].map(node => node.id);
-        return { roots, pose: document.getElementById('viewer-adjustments').open, expression: document.getElementById('viewer-expression-adjustments').open,
+        const relocatedParents = ['viewer-display-options', 'viewer-save-panel'].map(id => document.getElementById(id).parentElement.id);
+        const sidebarOrder = [...document.getElementById('viewer-files-panel').children]
+          .filter(node => ['viewer-macos-display-slot', 'viewer-macos-save-slot'].includes(node.id) || node.matches('.viewer-file-actions'))
+          .map(node => node.id || 'viewer-file-actions');
+        return { roots, relocatedParents, sidebarOrder, pose: document.getElementById('viewer-adjustments').open, expression: document.getElementById('viewer-expression-adjustments').open,
           modelId: ModelViewer.getState().modelId, weights: ModelViewer.getState().rig.expressions.map(item => item.weight) };
       });
-      assert.equal(initial.roots[0], 'viewer-display-options');
+      if (profile.native) {
+        assert.equal(initial.roots[0], 'viewer-adjustments');
+        assert.deepEqual(initial.relocatedParents, ['viewer-macos-display-slot', 'viewer-macos-save-slot']);
+        assert.deepEqual(initial.sidebarOrder, ['viewer-macos-display-slot', 'viewer-file-actions', 'viewer-macos-save-slot'], 'Mac sidebar keeps View, import, then Save');
+      } else {
+        assert.equal(initial.roots[0], 'viewer-display-options');
+        assert.deepEqual(initial.relocatedParents, ['viewer-control-panel', 'viewer-control-panel'], 'Phone and fold keep the existing inspector cards');
+      }
       assert.equal(initial.roots[initial.roots.indexOf('viewer-adjustments') + 1], 'viewer-expression-adjustments');
       assert(initial.roots.includes('viewer-outline-card') && initial.roots.indexOf('viewer-outline-card') < initial.roots.indexOf('viewer-body-adjustments'), 'Dynamic outline keeps its intended default position');
       assert.equal(initial.pose, false); assert.equal(initial.expression, false); assert.deepEqual(initial.weights, exact);

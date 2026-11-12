@@ -314,7 +314,7 @@ class GraftSharedAssetsTests(unittest.TestCase):
         target, ids = shared_fixture()
         donor, donor_renderer, _, _ = fixture((255, 0, 0, 255))
         before = raw_objects(target)
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="shared-part-test-") as directory:
+        with tempfile.TemporaryDirectory(prefix="shared-part-test-") as directory:
             root = Path(directory)
             target_path, donor_path, output = (root / name for name in ("target.unity", "donor.unity", "output.unity"))
             target_bytes, donor_bytes = target.file.save(packer="original"), donor.file.save(packer="original")
@@ -345,7 +345,7 @@ class GraftSharedAssetsTests(unittest.TestCase):
         target, ids = shared_fixture()
         donor, _, _, _ = fixture((255, 0, 0, 255))
         before = raw_objects(target)
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="shared-lower-test-") as directory:
+        with tempfile.TemporaryDirectory(prefix="shared-lower-test-") as directory:
             root = Path(directory)
             target_path, donor_path, output = (root / name for name in ("target.unity", "donor.unity", "output.unity"))
             target_bytes, donor_bytes = target.file.save(packer="original"), donor.file.save(packer="original")
@@ -397,7 +397,7 @@ class GraftSharedAssetsTests(unittest.TestCase):
                                    translation, atol=1e-6)
         before = raw_objects(target)
         donor, donor_renderer, _, _ = fixture((255, 0, 0, 255))
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="worldspace-shared-part-") as directory:
+        with tempfile.TemporaryDirectory(prefix="worldspace-shared-part-") as directory:
             root = Path(directory)
             target_path, donor_path, output = (root / name for name in ("target.unity", "donor.unity", "output.unity"))
             target_bytes, donor_bytes = target.file.save(packer="original"), donor.file.save(packer="original")
@@ -486,7 +486,7 @@ class LowerBodyRendererSelectionTests(unittest.TestCase):
         explicit = lower_body_swap.BodyMesh(target, "ambiguous.unity", ids["renderer"])
         self.assertEqual(explicit.smr_obj.path_id, ids["renderer"])
         before = raw_objects(target)
-        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="explicit-part-test-") as directory:
+        with tempfile.TemporaryDirectory(prefix="explicit-part-test-") as directory:
             root = Path(directory)
             target_path, donor_path, output = (root / name for name in ("target.unity", "donor.unity", "output.unity"))
             source_bytes = target.file.save(packer="original")
