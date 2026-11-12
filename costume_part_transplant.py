@@ -919,14 +919,8 @@ def build_bone_name_map(env):
 
 
 def _body_smr(objs):
-    """The body SkinnedMeshRenderer: the skinned renderer with the most bones."""
-    best, best_n = None, -1
-    for o in objs:
-        if o.type.name == "SkinnedMeshRenderer":
-            n = len(_safe_tt(o).get("m_Bones", []))
-            if n > best_n:
-                best_n, best = n, o
-    return best
+    from graft_game_compat import canonical_body_smr
+    return canonical_body_smr(objs)
 
 
 def _smr_bone_names(id2, smr_tt):
@@ -986,11 +980,11 @@ def _bone_influence(donor_smr_tt, donor_mesh_tt):
     return infl, cnt
 
 
-def detect_parts(donor_objs, donor_id2, target_bone_names=None):
+def detect_parts(donor_objs, donor_id2, target_bone_names=None, *, renderer=None):
     """Group the donor body bones that are *costume-specific* (carry geometry and
     are not part of the shared base rig) into candidate parts, each a connected
     subtree. Returns [{root, root_idx, bones[names], bone_ids, verts, tris}]."""
-    smr = _body_smr(donor_objs)
+    smr = renderer if renderer is not None else _body_smr(donor_objs)
     if smr is None:
         return [], None
     smr_tt = _safe_tt(smr)
@@ -1090,10 +1084,10 @@ _PART_HINTS = ("wing", "tsubasa", "tail", "shippo", "cape", "manto", "ribbon",
 # (forcing its mesh root to identity) desyncs it from the untouched face/expression
 # meshes and HANGS the in-game load. transplant_part must therefore skip the
 # world-space bake on such a target. Ported from costume_transplant.py.
-def detect_board_face_model(objs, id2):
+def detect_board_face_model(objs, id2, *, renderer=None):
     """Return None for a standard model, else a dict describing the masked/board model:
     {"kind", "face_parts": int, "anchor_bones": set[str], "markers": list[str]}."""
-    body = _body_smr(objs)
+    body = renderer if renderer is not None else _body_smr(objs)
     if body is None:
         return None
     skeleton, body_bones = set(), set()
@@ -1289,6 +1283,7 @@ def inject_bone_chain(donor, target, inject_names, name2tf_target,
     optional, so a static part (no SwingBone) still transplants."""
     do, did = _index(donor)
     to, tid = _index(target)
+
     _, t_sf = _serialized_file(target)
 
     d_scripts = _scriptname_map(do)
@@ -1576,7 +1571,7 @@ def _mat_bp(M, dst):
     mat_to(M, dst)
 
 
-def worldspace_normalize(path, verbose=True, body_only=True):
+def worldspace_normalize(path, verbose=True, body_only=True, *, renderer=None):
     """Bake the body renderer's mesh-root transform into its vertices and fold the
     inverse into the bind poses (mesh root -> identity). Body-only by default so
     only the (now grafted) body mesh is touched."""
@@ -1587,12 +1582,10 @@ def worldspace_normalize(path, verbose=True, body_only=True):
     uid = {o.path_id: o for o in env.objects}
     body_pid = None
     if body_only:
-        best = -1
-        for o in env.objects:
-            if o.type.name == "SkinnedMeshRenderer":
-                nb = len(_safe_tt(o).get("m_Bones", []))
-                if nb > best:
-                    best, body_pid = nb, o.path_id
+        body = uid.get(int(renderer)) if renderer is not None else _body_smr(list(env.objects))
+        if body is None or body.type.name != "SkinnedMeshRenderer":
+            raise ValueError("Choose the grafted Body renderer before normalizing its mesh.")
+        body_pid = body.path_id
     tf = {}
     for o in env.objects:
         if o.type.name == "Transform":
@@ -2000,11 +1993,18 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     do, did = _index(donor)
     to, tid = _index(target)
 
+    d_smr = did.get(int(donor_renderer)) if donor_renderer is not None else _body_smr(do)
+    t_smr = tid.get(int(target_renderer)) if target_renderer is not None else _body_smr(to)
+    if any(o is not None and o.type.name != "SkinnedMeshRenderer" for o in (d_smr, t_smr)):
+        raise ValueError("Choose a skinned donor and target mesh.")
+    if d_smr is None or t_smr is None:
+        raise RuntimeError("donor or target has no skinned body renderer")
+
     # ---- masked / board-face target (e.g. Rina-chan board): world-spacing its body
     #      desyncs it from the untouched face/expression meshes and hangs the in-game
     #      load, so the world-space bake below is skipped for such a target.
     #      mask_handling: "auto" detect, "on" force, "off" disable. ----
-    board = detect_board_face_model(to, tid) if mask_handling != "off" else None
+    board = detect_board_face_model(to, tid, renderer=t_smr) if mask_handling != "off" else None
     if mask_handling == "on" and board is None:
         board = {"kind": "board-face(forced)", "face_parts": 0,
                  "anchor_bones": {"Head"}, "markers": ["forced"]}
@@ -2013,16 +2013,6 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
             f"part(s); markers: {', '.join(board['markers'])}. Skipping the world-space "
             f"bake so the board's own offset space is preserved (baking it hangs the load).")
 
-    d_smr = _body_smr(do)
-    t_smr = _body_smr(to)
-    if donor_renderer is not None:
-        d_smr = did.get(int(donor_renderer))
-    if target_renderer is not None:
-        t_smr = tid.get(int(target_renderer))
-    if any(o is not None and o.type.name != "SkinnedMeshRenderer" for o in (d_smr, t_smr)):
-        raise ValueError("Choose a skinned donor and target mesh.")
-    if d_smr is None or t_smr is None:
-        raise RuntimeError("donor or target has no skinned body renderer")
     d_smr_tt = _safe_tt(d_smr)
     t_smr_tt = _safe_tt(t_smr)
     d_mesh = did.get(d_smr_tt["m_Mesh"]["m_PathID"])
@@ -2035,7 +2025,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     d_parent = _bone_parent_array(did, d_smr_tt)
 
     # ---- decide which donor bones make up the part ----
-    parts, _meta = detect_parts(do, did, target_bone_names=t_names)
+    parts, _meta = detect_parts(do, did, target_bone_names=t_names, renderer=d_smr)
     chosen = None
     if triangle_indices is not None:
         chosen = {"root": "selected geometry", "bone_ids": list(range(len(d_names))), "bones": d_names}
@@ -2202,7 +2192,10 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
             t_mesh_tt["m_SubMeshes"].append(sub)
             data.extend(remapped.tobytes())
         t_mesh_tt["m_IndexBuffer"] = bytes(data)
-    t_mesh.save_typetree(t_mesh_tt)
+    if not game_atlas:
+        # Atlas publication may need to detach a shared Body mesh. Keep the
+        # shared original intact until that transaction has passed preflight.
+        t_mesh.save_typetree(t_mesh_tt)
     log(f"[ok] spliced part: body mesh now {stats['new_vc']} verts "
         f"(+{stats['added_verts']}), +{stats['added_tris']} tris")
 
@@ -2232,7 +2225,8 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
         for di in injected_ids:
             bnh.append(_bone_name_hash(_path_of_bone(tid, d_names[di], parents)))
         t_mesh_tt["m_BoneNameHashes"] = bnh
-        t_mesh.save_typetree(t_mesh_tt)
+        if not game_atlas:
+            t_mesh.save_typetree(t_mesh_tt)
 
     # add the part material to the SMR if a new sub-mesh was created
     if game_atlas:
@@ -2279,7 +2273,7 @@ def transplant_part(donor_path, target_path, out_path, part_root=None,
     log(f"[ok] wrote {out_path}")
 
     if worldspace and not board:
-        worldspace_normalize(out_path, verbose=verbose, body_only=True)
+        worldspace_normalize(out_path, verbose=verbose, body_only=True, renderer=t_smr.path_id)
     elif worldspace and board:
         log("[mask] board-face target: skipped the world-space bake — the board is "
             "authored in its own offset space; forcing the body to world space "

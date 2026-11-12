@@ -1,6 +1,7 @@
 """Translations for the game-motion picker and accompanying audio."""
 STRINGS = {
-    "The selected performer needs too many motion bundles for the viewer.": ["선택한 원본 모션의 파일 수가 모션 라이브러리의 최대 32개를 초과합니다.", "選択した元モーションのファイル数がモーションライブラリの上限 32 個を超えています。"],
+    "The selected performer needs too many motion bundles for the viewer.": ["선택한 원본 모션에 필요한 번들 수가 출연자 한 명당 최대 32개를 초과합니다.", "選択した元モーションに必要なバンドル数が出演者1人あたりの上限 32 個を超えています。"],
+    "The motion library allows at most {limit} source files. Selected: {count}.": ["모션 라이브러리에는 소스 파일을 최대 {limit}개까지 추가할 수 있습니다. 선택한 파일: {count}개.", "モーションライブラリに追加できるソースファイルは最大 {limit} 個です。選択数: {count} 個。"],
     "Game motion import failed during {stage}: {reason}": ["게임 모션 처리 중 오류가 발생했습니다. {stage}: {reason}", "ゲームモーションの処理に失敗しました。{stage}: {reason}"],
     "The motion server returned an unreadable response (HTTP {status}).": ["모션 서버의 응답을 읽을 수 없습니다(HTTP {status}).", "モーションサーバーの応答を読み取れません（HTTP {status}）。"],
     "The motion server returned HTTP {status}: {reason}": ["모션 서버 응답 HTTP {status}: {reason}", "モーションサーバーの応答 HTTP {status}: {reason}"],

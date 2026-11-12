@@ -257,6 +257,44 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual(glb.doc["accessors"], [])
         self.assertEqual(glb.doc["bufferViews"], [])
 
+    def test_hundreds_of_small_poses_use_shared_sample_and_channel_budgets(self):
+        trees = [clip([binding(1, 1)], constant=[index / 1000, 0, 0],
+                      duration=0, name=f"Original pose {index}") for index in range(400)]
+        originals = copy.deepcopy(trees)
+        glb = builder()
+        result = animation.append_animations(scene(trees), glb, {1: 1})
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(len(result["clips"]), 400)
+        self.assertEqual(len(glb.doc["animations"]), 400)
+        for index in (0, 96, 399):
+            output = glb.doc["animations"][index]["samplers"][0]["output"]
+            self.assertAlmostEqual(values(glb, output)[0][0], -index / 1000, places=6)
+        self.assertEqual(trees, originals, "sampling a large bank never rewrites source curves")
+
+    def test_shared_channel_budget_keeps_complete_prior_clips_and_reports_omissions(self):
+        trees = [clip([binding(1, 1)], constant=[index, 0, 0], duration=0,
+                      name=f"Original pose {index}") for index in range(3)]
+        expected = builder()
+        animation.append_animations(scene(trees[:1]), expected, {1: [1, 2]})
+        glb = builder()
+        with patch.object(animation, "MAX_CHANNELS", 3):
+            result = animation.append_animations(scene(trees), glb, {1: [1, 2]})
+        self.assertEqual([item["name"] for item in result["clips"]], ["Original pose 0"])
+        self.assertEqual(glb.doc, expected.doc)
+        self.assertEqual(glb.data, expected.data)
+        self.assertEqual([item["name"] for item in result["warnings"]], ["Original pose 1", "Original pose 2"])
+        self.assertTrue(all("channel limit" in item["message"] for item in result["warnings"]))
+
+    def test_clip_metadata_limit_reports_the_exact_number_omitted(self):
+        trees = [clip([binding(1, 1)], constant=[index, 0, 0], duration=0,
+                      name=f"Original pose {index}") for index in range(4)]
+        with patch.object(animation, "MAX_CLIPS", 2):
+            result = animation.append_animations(scene(trees), builder(), {1: 1})
+        self.assertEqual(len(result["clips"]), 2)
+        self.assertEqual(result["warnings"][0]["code"], "animation_limit")
+        self.assertIn("first 2", result["warnings"][0]["message"])
+        self.assertIn("2 clips were omitted", result["warnings"][0]["message"])
+
     def test_malformed_counts_and_nonfinite_stream_values_are_rejected(self):
         for stream in ({"curveCount": 1, "data": words([(0, [(2, (0, 0, 0, 1))])])},
                        {"curveCount": 1, "data": words([(0, [(0, (0, 0, math.nan, 1))])])},

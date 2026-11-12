@@ -263,7 +263,7 @@ main { padding: 14px; }
 .viewer-file-actions button { padding: 6px 8px; font-size: 12px; line-height: 1.3; }
 .viewer-file-list { min-width: 0; list-style: none; margin: 0; padding: 0; }
 .viewer-file-list:empty { display: none; }
-.viewer-file-list li { display: flex; align-items: center; min-width: 0; gap: 5px; min-height: 44px; font-size: 12px; }
+.viewer-file-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-width: 0; gap: 5px; min-height: 44px; font-size: 12px; }
 .viewer-file-list li > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-files .viewer-remove { flex: 0 0 44px; padding: 4px; min-width: 44px; font-size: 20px; }
 .viewer-model-files { position: relative; flex: 1 1 180px; min-width: 0; }
@@ -272,7 +272,7 @@ main { padding: 14px; }
 #viewer-model-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-file-count { flex: 0 0 auto; display: inline-block; padding: 1px 6px; border-radius: 999px; background: var(--panel); color: var(--text); font-size: 11px; line-height: 1.5; }
 .viewer-model-file-popup { position: absolute; top: calc(100% + 6px); left: 0; z-index: 11; width: 360px; max-width: calc(100vw - 32px); max-height: min(60vh, 400px); overflow: auto; overscroll-behavior: contain; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 8px 28px rgba(20,30,50,.16); }
-.viewer-model-file-popup .viewer-file-list li > span, .viewer-motion-files .viewer-file-list li > span { white-space: normal; overflow-wrap: anywhere; }
+.viewer-motion-files .viewer-file-list li > span { white-space: normal; overflow-wrap: anywhere; }
 .viewer-model-files-embedded > summary { display: none; }
 .viewer-model-files-embedded > .viewer-model-file-popup { position: static; width: auto; max-width: none; max-height: none; padding: 0; border: 0; box-shadow: none; }
 .viewer-model-options-count { position: absolute; top: 1px; right: 1px; min-width: 16px; padding: 0 3px; border-radius: 8px; background: var(--accent2); color: white; font-size: 10px; line-height: 16px; }
@@ -680,13 +680,15 @@ main { padding: 14px; }
 }
 
 /* multi-select (Selected files mode): the chosen-bundle list */
-.multi-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.multi-list { min-width: 0; list-style: none; margin: 6px 0 0; padding: 0; }
 .multi-list li { display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; padding: 4px 8px; border: 1px solid var(--border, #444);
+  min-width: 0; gap: 8px; padding: 4px 8px; border: 1px solid var(--border, #444);
   border-radius: 6px; margin-top: 4px; font-size: 0.9em; }
+.multi-list li > span { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .multi-list li.muted { opacity: 0.6; border-style: dashed; justify-content: center; }
-.multi-rm { border: none; background: transparent; cursor: pointer;
+.multi-rm { flex: 0 0 auto; min-width: 34px; min-height: 34px; border: none; background: transparent; color: var(--text); cursor: pointer;
   font-size: 1em; line-height: 1; padding: 2px 6px; }
+.multi-rm:focus-visible, .viewer-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Keep the same compact navigation on Tools, 3D model and Texture previews.
    The viewer's corner controls retain their real 32–34px targets. */
@@ -798,7 +800,9 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-actions { flex-direction: column; max-width: none; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list { margin-top: 10px; max-height: 352px; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list:empty { margin: 0; }
-  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-list li > span { white-space: normal; overflow-wrap: anywhere; }
+  /* The sidebar scroll container clips popups at its content edge. Size the
+     model list to the chooser so filenames cannot push Remove out of view. */
+  #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-model-file-popup { max-width: 100%; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-options { display: block; margin-top: 10px; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-file-options-panel { position: static; width: auto; max-width: none; margin-top: 6px; box-shadow: none; }
   #tab-viewer.viewer-files-resizable:not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) .viewer-inspect-layout {
@@ -873,6 +877,23 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-mod-name-row, .viewer-mod-counterpart-row { display: flex; flex-wrap: wrap; gap: .4rem; min-width: 0; }
 .viewer-mod-name-row input, .viewer-mod-counterpart-row input { flex: 1 1 140px; min-width: 0; max-width: 100%; min-height: 44px; }
 .viewer-mod-name-row button, .viewer-mod-counterpart-row button { min-height: 44px; white-space: normal; }
+
+/* Native Mac file sidebar: display, import, then save. The same live cards
+   remain part of panel preferences, with their disclosure states preserved. */
+.elichika-macos #viewer-macos-display-slot, .elichika-macos #viewer-macos-save-slot { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+.elichika-macos #viewer-macos-display-slot > details, .elichika-macos #viewer-macos-save-slot > details { min-width: 0; margin: 0; padding: 8px 0; }
+.elichika-macos #viewer-macos-display-slot > details { border-top: 0; border-bottom: 1px solid var(--line); }
+.elichika-macos #viewer-macos-save-slot > details { border-top: 1px solid var(--line); }
+.elichika-macos #viewer-macos-display-slot > details > summary, .elichika-macos #viewer-macos-save-slot > details > summary { min-height: 34px; padding: 6px 0; cursor: pointer; overflow-wrap: anywhere; }
+.elichika-macos #viewer-files-panel .viewer-option-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.elichika-macos #viewer-files-panel .viewer-option-row label, .elichika-macos #viewer-files-panel #viewer-parts label { min-width: 0; max-width: 100%; flex-wrap: wrap; overflow-wrap: anywhere; }
+.elichika-macos #viewer-files-panel input[type=checkbox] { flex: 0 0 auto; }
+.elichika-macos #viewer-files-panel select, .elichika-macos #viewer-files-panel input:not([type=checkbox]), .elichika-macos #viewer-files-panel fieldset { min-width: 0; max-width: 100%; }
+.elichika-macos #viewer-files-panel .viewer-fov { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.elichika-macos #viewer-files-panel .viewer-fov > span { grid-column: 1 / -1; }
+.elichika-macos #viewer-files-panel .viewer-fov input { width: 100%; }
+.elichika-macos #viewer-files-panel .viewer-save-actions > button, .elichika-macos #viewer-files-panel .viewer-mod-name-row > button, .elichika-macos #viewer-files-panel .viewer-mod-counterpart-row > button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.elichika-macos #viewer-files-panel .viewer-render-note, .elichika-macos #viewer-files-panel .viewer-mod-form > label { overflow-wrap: anywhere; }
 
 /* Hide only the retained model viewport; the existing editor stays usable. */
 .viewer-model-restore { display: none; }

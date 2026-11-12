@@ -3,7 +3,7 @@
   "use strict";
 
   var MAX_FILES = 8;
-  var MAX_MOTION_FILES = 32;
+  var MAX_MOTION_FILES = 256;
   var MAX_GLB_BYTES = 64 * 1024 * 1024;
   var config = null;
   var mounted = false;
@@ -529,10 +529,16 @@
       remove.setAttribute("aria-label", t("Remove") + " " + basename(path));
       remove.disabled = loading;
       remove.addEventListener("click", function () {
+        var restoreFocus = document.activeElement === remove;
         paths.splice(index, 1);
         delete variantChoices[path]; delete variantOptions[path];
         renderFiles();
         filesChanged();
+        if (restoreFocus) {
+          var buttons = list.querySelectorAll(".viewer-remove");
+          var next = buttons[Math.min(index, buttons.length - 1)] || node("viewer-add");
+          focusElement(next);
+        }
       });
       item.appendChild(name);
       item.appendChild(remove);
@@ -1684,6 +1690,10 @@
     var requestController = controller;
     var selected = paths.slice();
     var selectedMotions = motionLibraryPaths.slice();
+    var loadContext = { operation: t("3D model"), stage: t("Preparing model…"),
+      filename: selected.map(function (path) { return String(path).replace(/\\/g, "/").split("/").pop(); }).join(", ") };
+    var loadEndpoint = "/api/viewer/prepare", loadMethod = "POST", loadStatus = 0;
+    var requests = window.ElichikaPlatform;
     var selectedAutoFace = node("viewer-auto-face").checked;
     var selectedVariants = variantsFor(selected);
     var archiveVariants = {};
@@ -1706,12 +1716,19 @@
     setLoading(true);
     setStatus(selectedAutoFace ? "Checking model and face…" : "Preparing model…");
     try {
-      var response = await window.fetch("/api/viewer/prepare", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload), signal: requestController.signal
-      });
-      var prepared = await response.json();
-      if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
+      var prepared;
+      if (requests && requests.requestJSON) {
+        prepared = await requests.requestJSON(loadEndpoint, payload, Object.assign({ signal: requestController.signal, maxRequestBytes: 256 * 1024 }, loadContext));
+      } else {
+        var response = await window.fetch(loadEndpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload), signal: requestController.signal
+        });
+        loadStatus = response.status;
+        prepared = await response.json();
+        if (!response.ok || prepared.error) throw new Error(prepared.error || "The costume file could not be opened.");
+      }
+      if (!prepared || typeof prepared !== "object") throw new Error(t("The model preparation response is empty or invalid."));
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
       if (retain && retain.expectedSourceFingerprint && (!prepared.editing || prepared.editing.sourceFingerprint !== retain.expectedSourceFingerprint)) {
         throw new Error(t("The original model files changed. The displayed model was kept."));
@@ -1727,13 +1744,21 @@
         throw new Error(t("The model could not be displayed. Try another costume file."));
       }
       setStatus("Loading 3D model…");
-      var modelResponse = await window.fetch(prepared.url, { signal: requestController.signal });
-      if (!modelResponse.ok) throw new Error(t("The preview expired. Open the model again."));
-      var length = Number(modelResponse.headers.get("Content-Length"));
-      if (length > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
-      var data = await modelResponse.arrayBuffer();
-      if (data.byteLength > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
+      loadContext.stage = t("Loading 3D model…"); loadEndpoint = prepared.url; loadMethod = "GET"; loadStatus = 0;
+      var data;
+      if (requests && requests.requestBytes) {
+        data = await requests.requestBytes(prepared.url, Object.assign({ signal: requestController.signal, maxBytes: MAX_GLB_BYTES }, loadContext));
+      } else {
+        var modelResponse = await window.fetch(prepared.url, { signal: requestController.signal });
+        loadStatus = modelResponse.status;
+        if (!modelResponse.ok) throw new Error(t("The preview expired. Open the model again."));
+        var length = Number(modelResponse.headers.get("Content-Length"));
+        if (length > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
+        data = await modelResponse.arrayBuffer();
+        if (data.byteLength > MAX_GLB_BYTES) throw new Error(t("This model is too large to preview on this device."));
+      }
       if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      loadContext.stage = t("Decode model preview"); loadStatus = 200;
       var gltf = await new Promise(function (resolve, reject) {
         new window.THREE.GLTFLoader().parse(data, "", resolve, reject);
       });
@@ -1770,6 +1795,7 @@
         throw new Error(t("No visible model was found in these files."));
       }
       if (window.SifasMaterial && window.SifasMaterial.apply) {
+        loadContext.stage = t("Prepare model materials");
         pendingMaterials = window.SifasMaterial.apply(next, renderer, {
           parser: gltf.parser, enabled: node("viewer-shader").value === "sifas", onChange: requestRender,
           rimlight: rimlightPreference,
@@ -1781,6 +1807,7 @@
       var keepView = !!retain || !!model && JSON.stringify(selected) === JSON.stringify(loadedPaths) &&
         selectedAutoFace === loadedAutoFace && JSON.stringify(resolvedVariants) !== JSON.stringify(loadedVariants);
       var previousPose = retain ? retain.pose : keepView && rigController ? rigController.getState() : null;
+      loadContext.stage = t("Restore model editing state");
       disposePreviewControllers();
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
@@ -1846,6 +1873,9 @@
       return true;
     } catch (error) {
       if (current !== generation) return;
+      if (requests && requests.requestError && error && error.name !== "AbortError") {
+        error = requests.requestError(error, loadContext, { method: loadMethod, url: loadEndpoint, status: loadStatus, code: "model_load_error" });
+      }
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
       if (retain && retain.throwOnFailure) { error.viewerLoadEpoch = current; throw error; }
@@ -2127,6 +2157,15 @@
     config = options;
     if (mounted) { updateLanguage(); return; }
     mounted = true;
+    var platform = window.ElichikaPlatform, host = platform && platform.info();
+    if (host && host.native && host.platform === "macos") {
+      // Move the live cards, retaining their fields, disclosure state and
+      // listeners. Other hosts keep the original right-hand editor layout.
+      [["viewer-display-options", "viewer-macos-display-slot"], ["viewer-save-panel", "viewer-macos-save-slot"]].forEach(function (pair) {
+        var slot = node(pair[1]);
+        if (slot) { moveLayoutElement(node(pair[0]), slot); slot.hidden = false; }
+      });
+    }
     try { rimlightPreference = window.localStorage.getItem(RIMLIGHT_KEY) === "true"; } catch (_) {}
     node("viewer-rimlight").checked = rimlightPreference;
     try {
@@ -2539,7 +2578,12 @@
       return typeof path === "string" && path.trim() && basePaths.indexOf(path) < 0 && loadedPaths.indexOf(path) < 0;
     });
     var selected = basePaths.concat(additions.filter(function (path, index, all) { return all.indexOf(path) === index; }));
-    if (selected.length > MAX_MOTION_FILES) throw new Error(t("The motion library is full. Clear imported motions before adding more."));
+    if (selected.length > MAX_MOTION_FILES) {
+      var limitError = new Error(t("The motion library allows at most {limit} source files. Selected: {count}.")
+        .replace("{limit}", String(MAX_MOTION_FILES)).replace("{count}", String(selected.length)));
+      limitError.code = "motion_source_limit"; limitError.limit = MAX_MOTION_FILES; limitError.selectedFiles = selected.length;
+      throw limitError;
+    }
     if (JSON.stringify(selected) === JSON.stringify(loadedMotionPaths)) return;
     await loadMotionLibrary(selected);
     if (replaceGame) importedGameMotionPaths = importedGameMotionPaths.concat(additions).filter(function (path, index, all) { return all.indexOf(path) === index; });

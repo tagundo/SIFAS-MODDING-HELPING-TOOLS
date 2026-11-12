@@ -15,7 +15,14 @@ import time
 import zlib
 
 
-MAX_CLIPS = 96
+# Clip count bounds metadata/action choices, while the shared channel, sample
+# and GLB byte limits bound actual animation memory. A bank of tiny facial or
+# body poses should not consume the same budget as full-length dances.
+MAX_CLIPS = 2048
+MAX_CHANNELS = 32_768
+# Automatic costume/face companion discovery keeps its original small-bank
+# bound; a larger library is only read when it was explicitly supplied.
+MAX_COMPANION_CLIPS = 96
 MAX_CURVES = 2048
 MAX_STREAM_WORDS = 8_000_000
 MAX_STREAM_KEYS = 1_500_000
@@ -102,7 +109,7 @@ def discover_animation_paths(paths, context, owner, deadline):
         attempted.add(path)
         inspected += 1
         owners, count = _animation_source(path, deadline)
-        if 0 < count <= MAX_CLIPS and (explicit or (owner is not None and owners == {int(owner)})):
+        if 0 < count <= MAX_COMPANION_CLIPS and (explicit or (owner is not None and owners == {int(owner)})):
             found.append(path)
 
     try:
@@ -569,7 +576,7 @@ def animation_candidate(glb, deadline=None):
 
 def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadline=None, visibility_bindings=None):
     """Append supplied clips; bindings refer only to already exported rig nodes."""
-    warnings, metadata, used_frames, used_values = [], [], 0, 0
+    warnings, metadata, used_frames, used_values, used_channels = [], [], 0, 0, 0
     morph_bindings = morph_bindings or {}
     visibility_bindings = visibility_bindings or {}
     used_names = {item.get("name", "") for item in glb.doc.get("animations", [])}
@@ -583,7 +590,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
 
     clips = [obj for obj in scene.env.objects if obj.type.name == "AnimationClip"]
     if len(clips) > MAX_CLIPS:
-        warn("animation_limit", "", "Only the first 96 supplied animation clips are available in this preview.")
+        warn("animation_limit", "", f"Only the first {MAX_CLIPS} supplied animation clips are available in this preview; {len(clips) - MAX_CLIPS} clips were omitted.")
     for obj in clips[:MAX_CLIPS]:
         _check(deadline)
         name = scene.name(obj)
@@ -676,6 +683,9 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             outputs = [(node, kind, rows) for (node, kind), rows in unique.items()]
             outputs.extend((node, "weights", rows) for node, rows in morph_outputs.items())
             visibility_tracks = _merge_visibility(visibility_tracks, deadline)
+            channels = len(outputs) + len(visibility_tracks)
+            if used_channels + channels > MAX_CHANNELS:
+                raise AnimationError("The supplied animations exceed the preview channel limit.")
             frames = len(times) * len(outputs) + sum(len(row["times"]) for row in visibility_tracks)
             values = sum(len(row) for _, _, rows in outputs for row in rows) + sum(len(row["values"]) for row in visibility_tracks)
             if used_frames + frames > MAX_KEYFRAMES or used_values + values > MAX_VALUES:
@@ -717,6 +727,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})
             used_frames += frames
             used_values += values
+            used_channels += channels
             if clip["unsupported"] or unbound:
                 animator = sum(row["count"] for row in clip["unsupportedKinds"] if row["typeID"] == 95)
                 details = []

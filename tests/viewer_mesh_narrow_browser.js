@@ -62,13 +62,18 @@ async function main() {
       await page.locator('#viewer-mesh-deleter').evaluate(e => { e.open = true; }); await page.locator('#viewer-mesh-deleter-select').selectOption(mesh);
       await page.locator('#viewer-mesh-modify-zoom').evaluate(e => { e.value = '4'; e.dispatchEvent(new Event('input', { bubbles: true })); });
       await page.locator('#viewer-mesh-deleter-zoom').evaluate(e => { e.value = '2'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+      await page.locator('#viewer-mesh-modify [data-uv-settings]').click();
       await page.locator('#viewer-mesh-modify-select-vertex').click(); const selected = await state(page); assert.deepStrictEqual(selected.selectedVertices, [0]);
+      await page.locator('#viewer-mesh-modify').getByRole('button', { name: 'Close settings', exact: true }).click();
+      await page.locator('#viewer-mesh-modify .uv-selection-menu > summary').click();
       await page.locator('#viewer-mesh-modify-connected').click(); assert.deepStrictEqual((await state(page)).selectedVertices.slice().sort(), [0, 1, 2, 3, 4, 5]);
+      await page.locator('#viewer-mesh-modify .uv-selection-menu > summary').click();
       await page.locator('#viewer-mesh-modify-undo').click(); const before = await state(page); assert.deepStrictEqual(before.selectedVertices, [0]);
       // This browser-only legacy rule reproduces the old automatic flex minimum
       // without changing a filename, source file, device width or success API.
-      const legacy = await page.addStyleTag({ content: '.viewer-mesh-tools .mesh-row>label{min-width:auto!important;max-width:none!important}' });
+      const legacy = await page.addStyleTag({ content: '.viewer-mesh-tools .mesh-row>label,.viewer-mesh-tools .uv-edit-source>label{min-width:auto!important;max-width:none!important}.viewer-mesh-tools .uv-edit-source>label{flex:initial!important}.viewer-mesh-tools .uv-edit-source>label>select{width:auto!important}' });
       await page.waitForTimeout(50); const broken = await rectangles(page, 'modify');
+      report.inProgress = { source, broken };
       const brokenSelect = broken.controls.find(c => c.id === 'viewer-mesh-modify-select'); assert(brokenSelect.right > broken.viewportLeft + broken.width + 1, 'the pre-fix label minimum really overflows the same360px viewport');
       await legacy.evaluate(e => e.remove()); await page.waitForTimeout(50);
       const recovered = await rectangles(page, 'modify'); fits(recovered);
@@ -87,7 +92,7 @@ async function main() {
       report.cases.push({ name: path.basename(source), broken, recovered, variants, originalSelection: before.selectedVertices, redoneSelection: value.selectedVertices, sourceGeometryPreserved: true });
       assert.equal(sha(fs.readFileSync(source)), sha(raw), 'original Unity source is immutable');
     }
-    assert.deepStrictEqual(errors, []); report.status = 'PASS';
+    assert.deepStrictEqual(errors, []); delete report.inProgress; report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
   finally { if (context) await context.close(); if (browser) await browser.close(); if (server) { server.child.kill(); server.stream.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence, error: report.error })); }
 }

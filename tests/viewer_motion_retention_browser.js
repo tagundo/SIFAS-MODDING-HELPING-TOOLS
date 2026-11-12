@@ -125,7 +125,7 @@ async function main() {
     await select(page, 'Library A'); report.cases.push({ name: 'clear, missing/forbidden/malformed-bank rollback, explicit cancel and concurrent model-open abort', cancelled, raced });
     for (const payload of [
       { paths: [fixtures.body_b], motion_paths: [fixtures.motion_a], auto_face: false, rigged: false },
-      { paths: [fixtures.body_b], motion_paths: Array(33).fill(fixtures.motion_a), auto_face: false, rigged: true },
+      { paths: [fixtures.body_b], motion_paths: Array(257).fill(fixtures.motion_a), auto_face: false, rigged: true },
       { paths: Array(9).fill(fixtures.body_b), motion_paths: [fixtures.motion_a], auto_face: false, rigged: true }
     ]) { const response = await page.request.post(server.url + '/api/viewer/prepare', { data: payload }); assert.equal(response.status(), 400); }
     const outside = await page.request.post(server.url + '/api/viewer/prepare', { data: { paths: [fixtures.body_b], motion_paths: ['/etc/hosts'], auto_face: false, rigged: true } }); assert.equal(outside.status(), 403);
@@ -134,7 +134,7 @@ async function main() {
     const probe = await page.evaluate(() => ModelViewer.renderProbe(33)); report.finalProbe = probe;
     const final = await state(page); report.finalView = { camera: final.camera, framing: final.framing, stats: final.stats, quality: final.quality, layout: final.layout };
     await page.locator('#viewer-stage canvas').screenshot({ path: path.join(evidence, 'final-rebound-body-b.png') });
-    assert(probe.ready && probe.glError === 0 && probe.chromaticSamples > 0); report.cases.push({ name: 'real HTTP independent8/32 bounds and forbidden paths; actual final WebGL', probe });
+    assert(probe.ready && probe.glError === 0 && probe.chromaticSamples > 0); report.cases.push({ name: 'real HTTP independent8/256 bounds and forbidden paths; actual final WebGL', probe });
     assert.deepStrictEqual(errors, []); for (const [file, hash] of Object.entries(hashes)) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), hash, 'source immutable: ' + file);
     report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }

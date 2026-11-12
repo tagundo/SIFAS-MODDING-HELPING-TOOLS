@@ -901,15 +901,22 @@ function renderField(field) {
       if (!cur.length) {
         listEl.appendChild(el("li", { class: "muted", text: T("No files selected.") }));
       }
-      for (const p of cur) {
+      for (const [index, p] of cur.entries()) {
         const rm = el("button", {
           type: "button", class: "multi-rm", text: "✕",
+          "aria-label": T("Remove") + " " + baseName(p), title: p,
           onclick: () => {
+            const restoreFocus = document.activeElement === rm;
             hidden.value = items().filter((q) => q !== p).join("\n"); rerender();
+            if (restoreFocus && hidden.isConnected) {
+              const buttons = listEl.querySelectorAll(".multi-rm");
+              const next = buttons[Math.min(index, buttons.length - 1)] || add;
+              try { next.focus({ preventScroll: true }); } catch (_) { next.focus(); }
+            }
             hidden.dispatchEvent(new Event("change", { bubbles: true }));
           },
         });
-        listEl.appendChild(el("li", {}, [el("span", { text: baseName(p) }), rm]));
+        listEl.appendChild(el("li", {}, [el("span", { text: baseName(p), title: p }), rm]));
       }
     };
     hidden.addEventListener("restore", rerender);

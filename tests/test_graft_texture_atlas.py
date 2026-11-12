@@ -155,6 +155,51 @@ class GameAtlasTests(unittest.TestCase):
         with self.assertRaisesRegex(AtlasCompatibilityError, "Normal-driven _MatcapTex"):
             bake_game_atlas(wearer, [donor])
 
+    def test_cull_mismatch_keeps_guard_and_names_values_and_matching_target(self):
+        wearer = source("Body", [image((4, 4), "red")], floats={"_CullMode": 0})
+        donor = source("Head accessory", [image((4, 4), "blue")], floats={"_CullMode": 2})
+        before = copy.deepcopy(wearer.tree), copy.deepcopy(donor.tree)
+        with self.assertRaisesRegex(AtlasCompatibilityError, r"Head accessory: _CullMode is 2, while Body uses 0.*Hair"):
+            bake_game_atlas(wearer, [donor])
+        self.assertEqual((wearer.tree, donor.tree), before)
+
+    def test_registered_stock_character_outline_stencil_uses_wearer_state_only(self):
+        wearer = source("wearer Hair", [image((4, 4), "red")], floats={"_OutlineStencilComp": 3})
+        donor = source("donor head accessory", [image((4, 4), "blue")], floats={"_OutlineStencilComp": 8})
+        for material in (wearer, donor):
+            sf = SimpleNamespace(externals=[SimpleNamespace(path="archive:/CAB-9382ea964987eceddd567506a3b21312")])
+            material.tree["m_Shader"] = {"m_FileID": 1, "m_PathID": 8291131735116688333}
+            material.material_object = Asset(9, "Material", material.tree, assets_file=sf)
+            material.objects[8] = Asset(8, "MonoScript", {"m_ClassName": "LiveCoreMemberRimlight",
+                "m_Namespace": "LLAS.Scene.Live.Components", "m_AssemblyName": "Assembly-CSharp.dll"}, assets_file=sf)
+            material.objects[7] = Asset(7, "MonoBehaviour", {"m_Script": {"m_FileID": 0, "m_PathID": 8},
+                "materials": [{"m_FileID": 0, "m_PathID": 9}]}, assets_file=sf)
+        before = copy.deepcopy(wearer.tree), copy.deepcopy(donor.tree)
+        baked = bake_game_atlas(wearer, [donor])
+        self.assertTrue(any("8 -> 3" in message and "wearer Hair" in message for message in baked.diagnostics))
+        self.assertEqual((wearer.tree, donor.tree), before)
+        # Neither numeric similarity nor a similarly named unrelated component
+        # establishes the original game's character stencil protocol.
+        for edit in ("unregistered", "wrong namespace", "local shader", "other stencil", "cull"):
+            with self.subTest(edit=edit):
+                changed = source("unrelated", [image((4, 4), "blue")], floats={"_OutlineStencilComp": 8})
+                changed.tree = copy.deepcopy(donor.tree)
+                changed.objects = dict(donor.objects)
+                changed.material_object = donor.material_object
+                if edit == "unregistered":
+                    changed.objects.pop(7)
+                elif edit == "wrong namespace":
+                    changed.objects[8] = Asset(8, "MonoScript", {"m_ClassName": "LiveCoreMemberRimlight",
+                        "m_Namespace": "Unrelated", "m_AssemblyName": "Assembly-CSharp.dll"}, assets_file=donor.material_object.assets_file)
+                elif edit == "other stencil":
+                    changed.tree["m_SavedProperties"]["m_Floats"] = [("_OutlineStencilComp", 5)]
+                elif edit == "local shader":
+                    changed.tree["m_Shader"] = {"m_FileID": 0, "m_PathID": 1}
+                else:
+                    changed.tree["m_SavedProperties"]["m_Floats"].append(("_CullMode", 0))
+                with self.assertRaisesRegex(AtlasCompatibilityError, "_OutlineStencilComp|_CullMode"):
+                    bake_game_atlas(wearer, [changed])
+
     def test_repeat_and_mirror_domains_copy_whole_periods_without_borders(self):
         pattern = Image.fromarray(np.array([[[1, 2, 3, 255], [4, 5, 6, 255]]], dtype="uint8"))
         for wrap, expected in ((0, [1, 4, 1, 4, 1, 4]), (2, [4, 1, 1, 4, 4, 1])):

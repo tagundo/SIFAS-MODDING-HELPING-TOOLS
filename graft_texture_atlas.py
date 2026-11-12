@@ -122,6 +122,32 @@ def _equal(a, b):
     return math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-7)
 
 
+def _runtime_outline_stencil(source):
+    """The original character's rimlight controller owns its 3/8 stencil state."""
+    if _pointer_identity(source, source.tree.get("m_Shader", {})) != _MEMBER_EXTERNAL:
+        return False
+    material = source.material_object
+    if material is None:
+        return False
+    for obj in source.objects.values():
+        if obj.type.name != "MonoBehaviour" or obj.assets_file is not material.assets_file:
+            continue
+        tree = obj.read_typetree()
+        pointer = tree.get("m_Script", {})
+        script = source.objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
+        if script is None or script.type.name != "MonoScript" or script.assets_file is not obj.assets_file:
+            continue
+        metadata = script.read_typetree()
+        if (metadata.get("m_ClassName") != "LiveCoreMemberRimlight"
+                or metadata.get("m_Namespace") != "LLAS.Scene.Live.Components"
+                or str(metadata.get("m_AssemblyName", "")).removesuffix(".dll") != "Assembly-CSharp"):
+            continue
+        if any(isinstance(p, dict) and p.get("m_FileID", 0) == 0 and p.get("m_PathID") == material.path_id
+               for p in tree.get("materials", [])):
+            return True
+    return False
+
+
 def _check_profiles(sources, diagnostics):
     profiles = [_profile(source) for source in sources]
     tf, tc, tk = profiles[0]
@@ -145,6 +171,21 @@ def _check_profiles(sources, diagnostics):
                 raise AtlasCompatibilityError(f"{source.name}: animated emissive scrolling cannot stay inside atlas cells with the original shader; use a static emissive material.")
         for name in wanted_floats:
             if not _equal(floats[name], tf[name]):
+                if (name == "_OutlineStencilComp" and floats[name] in (3, 8) and tf[name] in (3, 8)
+                        and _runtime_outline_stencil(sources[0]) and _runtime_outline_stencil(source)):
+                    # Original LiveCoreMemberRimlight.ApplyEnable writes 3 when
+                    # enabled and 8 when disabled to every registered material.
+                    # Keep the receiver's current character state. Detached
+                    # materials must also remain registered with that controller.
+                    diagnostics.append(
+                        f"{source.name}: outline stencil {floats[name]:g} -> {tf[name]:g} from wearer material "
+                        f"{sources[0].name}; its registered original character rimlight controller owns the 3/8 stencil state.")
+                    continue
+                if name == "_CullMode":
+                    raise AtlasCompatibilityError(
+                        f"{source.name}: _CullMode is {floats[name]:g}, while {sources[0].name} uses {tf[name]:g}. "
+                        "One game material needs matching culling settings. Choose a matching target mesh "
+                        "(for a head accessory, choose Hair).")
                 raise AtlasCompatibilityError(f"{source.name}: active {name} differs from the wearer; match this material setting before combining Body materials.")
         for name in wanted_colors:
             # RGB values of a zero-strength tint/ambient operation are dormant.

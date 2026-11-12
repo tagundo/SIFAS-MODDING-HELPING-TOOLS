@@ -843,15 +843,8 @@ def apply_bone_edits(donor_id2, target_id2, bone_names, child_adds=None,
 
 
 def _body_smr(objs):
-    """The body SkinnedMeshRenderer: the skinned renderer with the most bones."""
-    best = None
-    best_n = -1
-    for o in objs:
-        if o.type.name == "SkinnedMeshRenderer":
-            n = len(o.read_typetree().get("m_Bones", []))
-            if n > best_n:
-                best_n, best = n, o
-    return best
+    from graft_game_compat import canonical_body_smr
+    return canonical_body_smr(objs)
 
 
 def _mesh_by_pid(id2, pid):
@@ -1574,12 +1567,17 @@ def _is_body_identity_bone(name):
 
 
 def sync_costume_swing_physics(donor, target, costume_bone_names,
-                               restore_collision=True, log=lambda *a: None):
+                               restore_collision=True, log=lambda *a: None,
+                               *, target_objects=None):
     """Overwrite the wearer's SwingBone tuning + body-collision with the donor's on
     every costume dynamic bone the wearer also has (same name; typically the skirt).
     Structural pointers stay the wearer's. Returns the number of SwingBones updated."""
     do, did = _index(donor)
-    to, tid = _index(target)
+    if target_objects is None:
+        to, tid = _index(target)
+    else:
+        to = list(target_objects)
+        tid = {obj.path_id: obj for obj in to}
     d_scripts = _scriptname_map(do)
     t_scripts = _scriptname_map(to)
 
@@ -2036,12 +2034,11 @@ def transplant(donor_path, target_path, out_path, verbose=True,
     d_smr_tt = d_smr.read_typetree()
     d_bone_names = [_transform_goname(did, b["m_PathID"]) for b in d_smr_tt["m_Bones"]]
     d_mesh_obj, d_mesh_tt = _mesh_by_pid(did, d_smr_tt["m_Mesh"]["m_PathID"])
-    d_mesh_name = d_mesh_tt.get("m_Name")
 
     # ---- target body renderer / mesh ----
     t_smr = _body_smr(to)
     t_smr_tt = t_smr.read_typetree()
-    t_mesh_obj = _mesh_name_pid(to, d_mesh_name) or _mesh_by_pid(tid, t_smr_tt["m_Mesh"]["m_PathID"])[0]
+    t_mesh_obj = _mesh_by_pid(tid, t_smr_tt["m_Mesh"]["m_PathID"])[0]
 
     name2tf = _name2transform(tid)
     native_target_bones = set(name2tf)   # before any appendage injection
@@ -2192,7 +2189,11 @@ def transplant(donor_path, target_path, out_path, verbose=True,
         costume_dyn = [n for n in dict.fromkeys(d_bone_names)
                        if n is not None and not _is_body_identity_bone(n)]
         sync_costume_swing_physics(donor, target, costume_dyn,
-                                   restore_collision=restore_collision, log=log)
+                                   restore_collision=restore_collision, log=log,
+                                   # New ObjectReaders still read their template
+                                   # bytes until reopen. Sync only the native
+                                   # shared swings captured before injection.
+                                   target_objects=to)
 
     # ---- write ----
     bf, _ = _serialized_file(target)

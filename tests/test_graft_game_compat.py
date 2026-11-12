@@ -177,17 +177,51 @@ class GraftGameCompatTests(unittest.TestCase):
                         additional_sources=[(target, material.path_id)])
                 self.assertEqual(raw_objects(target), before)
 
-    def test_shared_target_material_is_rejected_before_atlas_construction(self):
-        target, renderer, mesh, material = fixture()
+    def test_shared_target_assets_detach_and_preserve_other_surfaces_after_reopen(self):
+        target, renderer, mesh, material = fixture((0, 0, 255, 255))
+        donor, _, _, donor_material = fixture((255, 0, 0, 255))
         cpt._make_object(renderer.assets_file, renderer, 987654321, renderer.read_typetree())
+        target = UnityPy.load(target.file.save(packer='original'))
+        objects = {obj.path_id: obj for obj in target.objects}
+        renderer, mesh, material = (objects[obj.path_id] for obj in (renderer, mesh, material))
         before = raw_objects(target)
         tree = append_group(mesh.read_typetree())
-        with patch('graft_texture_atlas.bake_game_atlas') as bake:
-            with self.assertRaisesRegex(ValueError, 'also used by another renderer'):
-                bake_renderer_for_game(target, renderer, mesh, mesh_tree=tree,
-                    additional_sources=[(target, material.path_id)])
-        bake.assert_not_called()
-        self.assertEqual(raw_objects(target), before)
+        stats = bake_renderer_for_game(target, renderer, mesh, mesh_tree=tree,
+            additional_sources=[(donor, donor_material.path_id)], reuse_empty_uv=False)
+        self.assertTrue(stats['detached_material'])
+        self.assertTrue(stats['detached_mesh'])
+        after = raw_objects(target)
+        for pid, raw in before.items():
+            if pid != renderer.path_id:
+                self.assertEqual(after[pid], raw, pid)
+        saved = UnityPy.load(target.file.save(packer='original'))
+        objects = {obj.path_id: obj for obj in saved.objects}
+        new_renderer = objects[renderer.path_id].read_typetree()
+        old_renderer = objects[987654321].read_typetree()
+        self.assertEqual(old_renderer['m_Materials'], [{'m_FileID': 0, 'm_PathID': material.path_id}])
+        self.assertEqual(old_renderer['m_Mesh']['m_PathID'], mesh.path_id)
+        self.assertEqual(len(new_renderer['m_Materials']), 1)
+        new_material = objects[new_renderer['m_Materials'][0]['m_PathID']]
+        new_mesh = objects[new_renderer['m_Mesh']['m_PathID']]
+        self.assertNotEqual(new_material.path_id, material.path_id)
+        self.assertNotEqual(new_mesh.path_id, mesh.path_id)
+        self.assertEqual(len(new_mesh.read_typetree()['m_SubMeshes']), 1)
+        self.assertEqual(new_mesh.read_typetree()['m_SubMeshes'][0]['indexCount'],
+                         2 * mesh.read_typetree()['m_SubMeshes'][0]['indexCount'])
+        pointer = dict(new_material.read_typetree()['m_SavedProperties']['m_TexEnvs'])['_MainTex']['m_Texture']
+        image = objects[pointer['m_PathID']].read().image.convert('RGBA')
+        self.assertEqual(image.width * image.height, 8)
+        pixels = [tuple(pixel) for pixel in np.asarray(image).reshape(-1, 4)]
+        self.assertEqual(sorted(pixels), sorted([(0, 0, 255, 255)] * 4 + [(255, 0, 0, 255)] * 4))
+        # A second graft uses the detached Body assets and remains isolated.
+        repeat_before = raw_objects(saved)
+        repeat = append_group(new_mesh.read_typetree())
+        repeated = bake_renderer_for_game(saved, objects[renderer.path_id], new_mesh, mesh_tree=repeat,
+            additional_sources=[(donor, donor_material.path_id)], reuse_empty_uv=False)
+        self.assertFalse(repeated['detached_material'])
+        self.assertFalse(repeated['detached_mesh'])
+        for pid in (mesh.path_id, material.path_id, 987654321):
+            self.assertEqual(raw_objects(saved)[pid], repeat_before[pid], pid)
 
     def test_geometry_failure_after_atlas_preflight_is_atomic(self):
         target, renderer, mesh, material = fixture((0, 0, 255, 255))

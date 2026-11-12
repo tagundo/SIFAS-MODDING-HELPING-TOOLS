@@ -76,6 +76,51 @@ def make_motion_library_fixture(directory):
     return result
 
 
+def make_many_motion_library_fixture(directory, counts=(10, 100, 400)):
+    """Original-format clip banks with distinct visible poses, never game data."""
+    import UnityPy
+    directory = Path(directory)
+    result = make_motion_library_fixture(directory)
+    original = Path(result['motion_a']).read_bytes()
+    for count in counts:
+        env = UnityPy.load(original)
+        source = next(obj for obj in env.objects if obj.type.name == 'AnimationClip')
+        asset, tree = source.assets_file, source.read_typetree()
+        asset.objects.clear()
+        for index in range(count):
+            obj = copy.copy(source); obj.path_id = 10000 + index
+            value = copy.deepcopy(tree); value['m_Name'] = 'Stress motion %04d' % index
+            angle = (index + .5) / count * .6 - .3
+            value['m_RotationCurves'][0]['curve']['m_Curve'][1]['value'].update(z=angle, w=math.sqrt(1 - angle * angle))
+            asset.objects[obj.path_id] = obj; obj.save_typetree(value)
+        path = directory / ('stress-%d.unity' % count)
+        path.write_bytes(env.file.save(packer='original'))
+        result['bank_' + str(count)] = str(path.resolve())
+    return result
+
+
+def make_many_motion_source_fixture(directory, count=257):
+    """One original-format pose per source, including long native-style paths."""
+    import UnityPy
+    directory = Path(directory)
+    result = make_motion_library_fixture(directory)
+    original = Path(result['motion_a']).read_bytes()
+    source_directory = directory / ('Motion Imports ' + 'long-native-library-' * 5) / 'キャラクター 모션'
+    source_directory.mkdir(parents=True, exist_ok=True)
+    result['sources'] = []
+    for index in range(count):
+        env = UnityPy.load(original)
+        obj = next(obj for obj in env.objects if obj.type.name == 'AnimationClip')
+        tree = obj.read_typetree(); tree['m_Name'] = 'Source pose %04d' % index
+        angle = (index + .5) / count * .6 - .3
+        tree['m_RotationCurves'][0]['curve']['m_Curve'][1]['value'].update(z=angle, w=math.sqrt(1 - angle * angle))
+        obj.save_typetree(tree)
+        path = source_directory / ('pose-%04d.unity' % index)
+        path.write_bytes(env.file.save(packer='original'))
+        result['sources'].append(str(path.resolve()))
+    return result
+
+
 class MotionLibraryFixtureBase(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
@@ -129,13 +174,31 @@ class RetainedMotionLibraryTests(MotionLibraryFixtureBase):
         body, motion = self.paths['body_a'], self.paths['motion_a']
         prepared = model_viewer.prepare([body] * 8, rigged=True, motion_paths=[motion] * 32, face_context=self.context)
         self.assertTrue(prepared['rig']['available']); self.assertIn('Library A', [clip['name'] for clip in prepared['rig']['clips']])
+        for count in (33, 256):
+            prepared = model_viewer.prepare([body], rigged=True, motion_paths=[motion] * count, face_context=self.context)
+            self.assertIn('Library A', [clip['name'] for clip in prepared['rig']['clips']])
         with patch.object(model_viewer, '_build') as build:
-            for options in ({'motion_paths': [motion] * 33, 'rigged': True}, {'motion_paths': [motion], 'rigged': False}, {'motion_paths': 'bad', 'rigged': True}, {'motion_paths': [None], 'rigged': True}):
+            for options in ({'motion_paths': [motion] * 257, 'rigged': True}, {'motion_paths': [motion], 'rigged': False}, {'motion_paths': 'bad', 'rigged': True}, {'motion_paths': [None], 'rigged': True}):
                 with self.subTest(options=options), self.assertRaises(model_viewer.ModelViewerError):
                     model_viewer.prepare([body], face_context=self.context, **options)
             with self.assertRaises(model_viewer.ModelViewerError):
                 model_viewer.prepare([body] * 9, rigged=True, motion_paths=[motion], face_context=self.context)
+            with self.assertRaisesRegex(model_viewer.ModelViewerError, 'at most 256 source files. Selected: 257'):
+                model_viewer.prepare([body], rigged=True, motion_paths=[motion] * 257, face_context=self.context)
             build.assert_not_called()
+
+    def test_expanded_source_slots_keep_the_combined_192_mib_budget(self):
+        # Each source and each separate selection fit; their combined size does
+        # not. Increasing source slots must never split this shared byte budget.
+        with patch.object(model_viewer.os.path, 'getsize', return_value=50 * 1024 * 1024), \
+                patch.object(model_viewer, '_build') as build:
+            with self.assertRaisesRegex(model_viewer.ModelViewerError, 'selected model files are too large'):
+                model_viewer.prepare([self.paths['body_a']], rigged=True,
+                    motion_paths=[self.paths['motion_a'], self.paths['motion_b'], self.paths['body_b']], face_context=self.context)
+            build.assert_not_called()
+        self.assertEqual(model_viewer.MAX_TOTAL_SOURCE_BYTES, 192 * 1024 * 1024)
+        self.assertEqual(model_viewer.MAX_UNPACKED_BYTES, 192 * 1024 * 1024)
+        self.assertEqual(model_viewer.MAX_GLB_BYTES, 64 * 1024 * 1024)
 
     def test_trusted_game_descriptor_is_retained_and_changed_bank_loses_trust(self):
         descriptor = {'version': 2, 'id': 'trusted-library-fixture', 'category': 'mv', 'label': 'Verified fixture action',
@@ -177,12 +240,24 @@ class MotionLibraryHTTPGuardTests(MotionLibraryFixtureBase):
         for field in ('paths', 'motion_paths'):
             payload = dict(base, **{field: [str(outside)]}); status, result = self.request(payload)
             self.assertEqual(status, 403, result)
-        for extra in ({'motion_paths': [self.paths['motion_a']] * 33}, {'motion_paths': 'bad'}, {'motion_paths': [None]}, {'rigged': False}, {'paths': [self.paths['body_a']] * 9}, {'repo_root': str(self.root)}):
+        for extra in ({'motion_paths': [self.paths['motion_a']] * 257}, {'motion_paths': 'bad'}, {'motion_paths': [None]}, {'rigged': False}, {'paths': [self.paths['body_a']] * 9}, {'repo_root': str(self.root)}):
             status, result = self.request(dict(base, **extra)); self.assertEqual(status, 400, result)
         status, result = self.request(base); self.assertEqual(status, 200, result)
         token = result['editing']['token']; self.addCleanup(lambda: model_edits._SESSIONS.pop(token, None))
         self.assertEqual([row['name'] for row in model_edits.mod_source_context(token)['sources']], ['body-a.unity'])
         self.assertIn('Library A', [clip['name'] for clip in result['rig']['clips']])
+
+    def test_http_257_source_limit_has_precise_details_before_loading_assets(self):
+        with patch.object(model_viewer, 'prepare') as prepare:
+            status, result = self.request({'paths': [self.paths['body_a']], 'motion_paths': [self.paths['motion_a']] * 257,
+                                           'rigged': True, 'auto_face': False})
+            self.assertEqual(status, 400, result)
+            self.assertEqual(result['error_code'], 'motion_source_limit')
+            self.assertEqual(result['max_motion_files'], 256)
+            self.assertEqual(result['motion_files'], 257)
+            self.assertIn('at most 256', result['error'])
+            self.assertIn('Selected: 257', result['error'])
+            prepare.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -20,13 +20,15 @@
   // Decide which clips are useful choices by their actual displayed targets.
   // The complete animation array remains available to the timeline compositor.
   function describeMotionClips(root, animations, info) {
-    var THREE = window.THREE, metadata = {}, facialNodes = new Set(), affected = new Set(), nodeByIndex = {};
+    var THREE = window.THREE, metadata = Object.create(null), facialNodes = new Set(), affected = new Set(), nodeByIndex = {};
+    var trackTargets = new Map(), facialTargets = new Map();
     var references = motionReferences(info && info.motionTimelines);
     (info && info.clips || []).forEach(function (entry) { metadata[entry.name] = entry; });
     (info && info.expressionCatalog && info.expressionCatalog.rawChannels || []).forEach(function (entry) {
       if (entry.group === "eyes" || entry.group === "mouth") facialNodes.add(String(entry.node));
     });
     function facial(node) {
+      if (facialTargets.has(node)) return facialTargets.get(node);
       if (facialNodes.has(String(node.userData && node.userData.elichika_node))) return true;
       for (var current = node; current && current !== root; current = current.parent) {
         var name = current.userData && current.userData.originalName || current.name.replace(/__\d+$/, "");
@@ -42,9 +44,12 @@
       if (node.skeleton) node.skeleton.bones.forEach(include);
     });
     var seen = new Set();
-    var candidates = (animations || []).slice();
+    var candidates = (animations || []).slice(), candidateNames = new Set();
+    candidates.forEach(function (clip) { candidateNames.add(clip.name); });
     (info && info.clips || []).forEach(function (entry) {
-      if (entry.visibility && entry.visibility.length && !candidates.some(function (clip) { return clip.name === entry.name; })) candidates.push({ name: entry.name, tracks: [] });
+      if (entry.visibility && entry.visibility.length && !candidateNames.has(entry.name)) {
+        candidates.push({ name: entry.name, tracks: [] }); candidateNames.add(entry.name);
+      }
     });
     return candidates.map(function (clip) {
       var entry = metadata[clip.name] || {}, key = motionSourceKey(entry);
@@ -56,11 +61,20 @@
       var body = false, face = false;
       clip.tracks.forEach(function (track) {
         try {
-          var parsed = THREE.PropertyBinding.parseTrackName(track.name), target = THREE.PropertyBinding.findNode(root, parsed.nodeName);
-          if (target && parsed.objectName === "bones" && target.skeleton) target = target.skeleton.getBoneByName(parsed.objectIndex);
-          if (!target || isHelper(target) || !affected.has(target)) return;
-          if (["position", "quaternion", "rotation", "scale", "morphTargetInfluences", "visible"].indexOf(parsed.propertyName) < 0) return;
-          if (facial(target)) face = true; else body = true;
+          // Imported banks repeat the same skeleton track paths. Resolve each
+          // path once for this model, rather than searching its tree per clip.
+          if (!trackTargets.has(track.name)) {
+            var parsed = THREE.PropertyBinding.parseTrackName(track.name), target = THREE.PropertyBinding.findNode(root, parsed.nodeName), kind = "";
+            if (target && parsed.objectName === "bones" && target.skeleton) target = target.skeleton.getBoneByName(parsed.objectIndex);
+            if (target && !isHelper(target) && affected.has(target) &&
+                ["position", "quaternion", "rotation", "scale", "morphTargetInfluences", "visible"].indexOf(parsed.propertyName) >= 0) {
+              if (!facialTargets.has(target)) facialTargets.set(target, facial(target));
+              kind = facialTargets.get(target) ? "face" : "body";
+            }
+            trackTargets.set(track.name, kind);
+          }
+          if (trackTargets.get(track.name) === "face") face = true;
+          else if (trackTargets.get(track.name) === "body") body = true;
         } catch (_) { /* An unresolved helper cannot become a character choice. */ }
       });
       (entry.visibility || []).forEach(function (track) {
@@ -102,7 +116,11 @@
     var disposed = false;
     var events = [];
     var clips = animations || [];
-    var clipEntries = [];
+    var clipEntries = [], clipByName = new Map(), visibleClipEntries = [], clipMetadata = new Map(), expressionClipLabels = new Map();
+    (info && info.clips || []).forEach(function (entry) { if (!clipMetadata.has(entry.name)) clipMetadata.set(entry.name, entry); });
+    (info && info.expressionCatalog && info.expressionCatalog.clips || []).forEach(function (entry) {
+      if (!expressionClipLabels.has(entry.name)) expressionClipLabels.set(entry.name, entry);
+    });
     var timelineDescriptors = (info && info.motionTimelines || []).slice(), timelineWarnings = [];
     var currentClip = null;
     var playhead = 0;
@@ -173,22 +191,28 @@
       return verified;
     }
     clips.forEach(function (clip) {
-      var entry = (info && info.clips || []).filter(function (item) { return item.name === clip.name; })[0] || {};
-      clipEntries.push({ name: clip.name, animation: clip, duration: clip.duration, loop: entry.loop !== false, partial: entry.bindingComplete === false, visibility: visibilityTracks(entry.visibility) });
+      var entry = clipMetadata.get(clip.name) || {};
+      var record = { name: clip.name, animation: clip, duration: clip.duration, loop: entry.loop !== false, partial: entry.bindingComplete === false, visibility: visibilityTracks(entry.visibility) };
+      clipEntries.push(record); if (!clipByName.has(clip.name)) clipByName.set(clip.name, record);
     });
     (info && info.clips || []).forEach(function (entry) {
-      if (clipEntries.some(function (clip) { return clip.name === entry.name; })) return;
+      if (clipByName.has(entry.name)) return;
       var tracks = visibilityTracks(entry.visibility);
-      if (tracks.length) clipEntries.push({ name: entry.name, animation: null, duration: Math.max(0, finite(entry.duration, 0)), loop: entry.loop === true, partial: entry.bindingComplete === false, visibility: tracks });
+      if (tracks.length) {
+        var record = { name: entry.name, animation: null, duration: Math.max(0, finite(entry.duration, 0)), loop: entry.loop === true, partial: entry.bindingComplete === false, visibility: tracks };
+        clipEntries.push(record); clipByName.set(entry.name, record);
+      }
     });
-    function visibleClips() { return clipEntries.filter(function (entry) { return !entry.internal; }); }
+    var describedClips = new Map();
+    describeMotionClips(root, clips, Object.assign({}, info, { motionTimelines: [] })).forEach(function (entry) { describedClips.set(entry.name, entry); });
+    function visibleClips() { return visibleClipEntries; }
     function refreshClipPresentation() {
-      var described = {}, references = motionReferences(timelineDescriptors);
-      describeMotionClips(root, clips, Object.assign({}, info, { motionTimelines: timelineDescriptors })).forEach(function (entry) { described[entry.name] = entry; });
+      var references = motionReferences(timelineDescriptors);
+      visibleClipEntries = [];
       clipEntries.forEach(function (entry) {
-        if (entry.timeline) { entry.internal = false; return; }
-        var source = (info && info.clips || []).filter(function (value) { return value.name === entry.name; })[0] || {};
-        entry.internal = entry.name !== defaultClip && (references.has(motionSourceKey(source)) || !!(described[entry.name] && !described[entry.name].visible));
+        var source = clipMetadata.get(entry.name) || {}, described = describedClips.get(entry.name);
+        entry.internal = !entry.timeline && entry.name !== defaultClip && (references.has(motionSourceKey(source)) || !!(described && !described.visible));
+        if (!entry.internal) visibleClipEntries.push(entry);
       });
     }
     refreshClipPresentation();
@@ -199,7 +223,7 @@
       previewMotion.kind === "sifas_suit_preview" && typeof previewMotion.name === "string" ?
       clipEntries.filter(function (clip) { return clip.name === previewMotion.name && !clip.partial && clip.animation && isFinite(clip.duration) && clip.duration > 0; }) : [];
     var defaultClip = rigEditable && previewMatches.length === 1 ? previewMatches[0].name : "";
-    if (defaultClip) previewMatches[0].internal = false;
+    if (defaultClip) refreshClipPresentation();
     (rigEditable && info.bones || []).forEach(function (bone) {
       var object = nodes[String(bone.node)];
       if (object) bones.push({ id: String(bone.node), name: bone.path || bone.name || object.name, object: object });
@@ -1126,8 +1150,16 @@
       playing = false;
       all.forEach(function (record) { restore(record.object, record.base); });
       if (mixer) mixer.stopAllAction();
+      // Only the selected clip needs live Three actions/interpolants. Keeping
+      // every visited action retains a second copy of each bank's track state.
+      if (currentClip && currentClip.animation) {
+        if (mixer) mixer.uncacheAction(currentClip.animation, root);
+        (currentClip.replayTracks || []).forEach(function (track) { track.binding.unbind(); });
+        currentClip.replayTracks = null;
+      }
       all.forEach(function (record) { restore(record.object, record.authored); capture(record.object, record.base); });
-      currentClip = visibleClips().filter(function (item) { return item.name === name; })[0] || null;
+      currentClip = clipByName.get(name) || null;
+      if (currentClip && currentClip.internal) currentClip = null;
       selectedClip = currentClip ? name : "";
       playhead = 0;
       action = currentClip && currentClip.animation && mixer ? mixer.clipAction(currentClip.animation).reset().play() : null;
@@ -1141,10 +1173,10 @@
       element("viewer-time").max = String(duration());
       refreshAvailability(); refreshMotionStatus(); updateTime(); refreshExpression(); refreshNode(); changed();
     }
-    function registerMotionTimeline(descriptor) {
+    function registerMotionTimeline(descriptor, deferPresentation) {
       if (!window.ViewerMotionTimeline || !descriptor || descriptor.version !== 2) throw new Error("The game motion timeline is unavailable.");
       var name = "game-timeline:" + String(descriptor.category) + ":" + String(descriptor.motion) + ":" + String(descriptor.performerPosition || 1);
-      var existing = clipEntries.filter(function (entry) { return entry.name === name; })[0];
+      var existing = clipByName.get(name);
       if (!existing) {
         all.forEach(function (record) { restore(record.object, record.authored); });
         var timeline = window.ViewerMotionTimeline.create(root, clips, info, descriptor, { getGazeContext: options.getGazeContext });
@@ -1164,9 +1196,10 @@
           motionPhysics: motionPhysics, animation: null, timeline: timeline,
           duration: timeline.duration, loop: descriptor.category !== "voice", partial: timeline.warnings.length > 0, visibility: [] };
         clipEntries.push(existing);
+        clipByName.set(name, existing);
         if (!timelineDescriptors.some(function (value) { return value.category === descriptor.category && value.motion === descriptor.motion && value.performerPosition === descriptor.performerPosition; })) timelineDescriptors.push(descriptor);
       }
-      refreshClipPresentation();
+      if (!deferPresentation) refreshClipPresentation();
       return existing;
     }
     function reset() {
@@ -1207,7 +1240,7 @@
       var motion = element("viewer-motion"); motion.textContent = "";
       appendOption(motion, "", translate("Saved pose"));
       visibleClips().forEach(function (clip) {
-        var label = (info && info.expressionCatalog && info.expressionCatalog.clips || []).filter(function (value) { return value.name === clip.name; })[0];
+        var label = expressionClipLabels.get(clip.name);
         appendOption(motion, clip.name, (clip.name === defaultClip ? translate("SIFAS costume preview") : clip.label || (label ? translate(label.label) : clip.name)) + (clip.partial ? " · " + translate("Partially supported motion") : ""));
       }); motion.value = selectedClip;
       if (nodeEditor) nodeEditor.updateLanguage();
@@ -1378,9 +1411,10 @@
       onChange: function () { evaluate(0, "physics-values"); changed(); }
     });
     timelineDescriptors.slice().forEach(function (descriptor) {
-      try { registerMotionTimeline(descriptor); }
+      try { registerMotionTimeline(descriptor, true); }
       catch (error) { timelineWarnings.push(error.message); }
     });
+    refreshClipPresentation();
     clearHipDrafts(); updateLanguage(); setClip(defaultClip); refreshNode(); refreshExpression();
     if (options.initializeNodeCards !== false) initializeNodeCards();
 

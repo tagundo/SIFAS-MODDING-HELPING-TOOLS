@@ -2,7 +2,8 @@
 
 The game combines only submesh zero and reads the singular sharedMaterial.
 Donor geometry may temporarily have separate triangle groups, but saved bundles
-must carry one group using the original target material and a baked atlas.
+must carry one group using the target material settings and a baked atlas.
+Shared assets are detached for the Body so other surfaces retain their look.
 """
 from __future__ import annotations
 
@@ -74,18 +75,159 @@ def _uv_bounds(mesh_tree):
     return result
 
 
-def _check_shared(objects, renderer, mesh, first_material):
-    for other in objects.values():
-        if other is renderer or other.type.name not in ("SkinnedMeshRenderer", "MeshRenderer", "MeshFilter"):
+_MATERIAL_CONTROLLERS = {"LiveCoreMemberAmbient", "LiveCoreMemberRimlight"}
+
+
+def _pointers(value):
+    if isinstance(value, dict):
+        if "m_FileID" in value and "m_PathID" in value:
+            yield value
+        else:
+            for child in value.values():
+                yield from _pointers(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _pointers(child)
+
+
+def _refers_to(owner, pointer, target):
+    if not isinstance(pointer, dict) or pointer.get("m_PathID") != target.path_id:
+        return False
+    if pointer.get("m_FileID", 0) == 0:
+        return owner.assets_file is target.assets_file
+    # A loaded second SerializedFile can also reference the Body asset. FileID
+    # is relative to the referring file, so matching just PathID is unsafe.
+    from UnityPy.classes import PPtr
+    try:
+        return PPtr(m_FileID=pointer["m_FileID"], m_PathID=target.path_id,
+                    assetsfile=owner.assets_file).deref() is target
+    except (ValueError, KeyError, FileNotFoundError, IndexError):
+        return False
+
+
+def canonical_body_smr(objects):
+    """Resolve an attached Body renderer independently of serialized ordering."""
+    objects = list(objects)
+    index = {(id(obj.assets_file), obj.path_id): obj for obj in objects}
+    candidates = []
+    for renderer in objects:
+        if renderer.type.name != "SkinnedMeshRenderer":
             continue
-        tree = other.read_typetree()
-        same_file = other.assets_file is renderer.assets_file
-        if same_file and any(pointer.get("m_FileID", 0) == 0 and pointer.get("m_PathID") == first_material.path_id
-                             for pointer in tree.get("m_Materials", [])):
-            raise ValueError("The Body material is also used by another renderer. Give the Body its own material before grafting so the other surface stays unchanged.")
+        tree = renderer.read_typetree()
         pointer = tree.get("m_Mesh", {})
-        if same_file and pointer.get("m_FileID", 0) == 0 and pointer.get("m_PathID") == mesh.path_id:
-            raise ValueError("The Body mesh is also used by another renderer. Give the Body its own mesh before grafting.")
+        mesh = index.get((id(renderer.assets_file), pointer.get("m_PathID"))) if pointer.get("m_FileID", 0) == 0 else None
+        if mesh is None or mesh.type.name != "Mesh":
+            continue
+        pointer = tree.get("m_GameObject", {})
+        go = index.get((id(renderer.assets_file), pointer.get("m_PathID"))) if pointer.get("m_FileID", 0) == 0 else None
+        name = go.read_typetree().get("m_Name", "") if go is not None and go.type.name == "GameObject" else ""
+        mesh_tree = mesh.read_typetree()
+        candidates.append((renderer, tree, mesh_tree, str(name).casefold() == "body"))
+    if not candidates:
+        return None
+    named = [row for row in candidates if row[3]]
+    if named:
+        candidates = named
+    else:
+        named = [row for row in candidates if str(row[2].get("m_Name", "")).casefold() == "body"]
+        if named:
+            candidates = named
+        ranks = [(len(row[1].get("m_Bones", [])), int(row[2].get("m_VertexData", {}).get("m_VertexCount", 0)))
+                 for row in candidates]
+        best = max(ranks)
+        candidates = [row for row, rank in zip(candidates, ranks) if rank == best]
+    if len(candidates) != 1:
+        raise ValueError("Several renderers could be the Body. Choose the target skinned mesh explicitly.")
+    return candidates[0][0]
+
+
+def _reference_trees(objects):
+    # AssetBundle preload/container pointers describe dependencies, not another
+    # rendered surface. Texture and shader payloads cannot reference a Material
+    # or Mesh and can be expensive to decode.
+    ignored = {"AssetBundle", "Texture2D", "Texture2DArray", "Texture3D", "Cubemap", "Shader"}
+    return [(obj, obj.read_typetree()) for obj in objects.values() if obj.type.name not in ignored]
+
+
+def _script_class(objects, owner, tree):
+    pointer = tree.get("m_Script", {})
+    script = objects.get(pointer.get("m_PathID"))
+    if script is not None and script.type.name == "MonoScript" and _refers_to(owner, pointer, script):
+        metadata = script.read_typetree()
+        if (metadata.get("m_Namespace") == "LLAS.Scene.Live.Components"
+                and str(metadata.get("m_AssemblyName", "")).removesuffix(".dll") == "Assembly-CSharp"):
+            return metadata.get("m_ClassName")
+    return None
+
+
+def _shared_assets(objects, renderer, mesh, material=None):
+    shared_mesh = shared_material = False
+    reference_trees = _reference_trees(objects)
+    for other, tree in reference_trees:
+        if other is renderer:
+            continue
+        # These two verified game components apply common lighting uniforms to
+        # every listed material. They do not assign a surface's material.
+        if other.type.name == "MonoBehaviour" and _script_class(objects, other, tree) in _MATERIAL_CONTROLLERS:
+            tree = {key: value for key, value in tree.items() if key != "materials"}
+        for pointer in _pointers(tree):
+            shared_mesh |= _refers_to(other, pointer, mesh)
+            if material is not None:
+                shared_material |= _refers_to(other, pointer, material)
+    return shared_mesh, shared_material, reference_trees
+
+
+def _lighting_bindings(objects, reference_trees, material, new_pid):
+    updates = []
+    for owner, tree in reference_trees:
+        if owner.type.name != "MonoBehaviour" or _script_class(objects, owner, tree) not in _MATERIAL_CONTROLLERS:
+            continue
+        materials = tree.get("materials")
+        if not isinstance(materials, list):
+            continue
+        source = next((p for p in materials if _refers_to(owner, p, material)), None)
+        if source is not None:
+            updated = deepcopy(tree)
+            pointer = deepcopy(source)
+            pointer["m_PathID"] = new_pid
+            updated["materials"].append(pointer)
+            updates.append((owner, updated))
+    return updates
+
+
+def save_isolated_mesh(environment, renderer, mesh, mesh_tree):
+    """Save a pre-atlas cut without changing any other surface's shared mesh.
+
+    Lower-body grafts reopen this intermediate bundle before the atlas pass.
+    Detach before that first write, while the shared original is still intact.
+    """
+    from costume_part_transplant import _make_object, _rand_pids
+    if (renderer.type.name != "SkinnedMeshRenderer" or mesh.type.name != "Mesh"
+            or renderer.assets_file is not mesh.assets_file
+            or not _refers_to(renderer, renderer.read_typetree().get("m_Mesh"), mesh)):
+        raise ValueError("The selected Body renderer needs its own referenced local mesh before cutting.")
+    shared, _, _ = _shared_assets(_index(environment), renderer, mesh)
+    if not shared:
+        original = mesh.data
+        try:
+            mesh.save_typetree(mesh_tree)
+        except Exception:
+            mesh.data = original
+            raise
+        return mesh
+    sf = mesh.assets_file
+    pid = _rand_pids(1, set(sf.objects))[0]
+    tree = deepcopy(renderer.read_typetree())
+    tree["m_Mesh"] = {"m_FileID": 0, "m_PathID": pid}
+    original = renderer.data
+    try:
+        detached = _make_object(sf, mesh, pid, mesh_tree)
+        renderer.save_typetree(tree)
+    except Exception:
+        sf.objects.pop(pid, None)
+        renderer.data = original
+        raise
+    return detached
 
 
 def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tree=None,
@@ -131,6 +273,8 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
         mesh_object = _resolve(objects, renderer.get("m_Mesh"), "Mesh", "The Body renderer")
     if mesh_object.type.name != "Mesh" or mesh_object.assets_file is not smr_object.assets_file:
         raise ValueError("The Body mesh and renderer must belong to the same costume file.")
+    if not _refers_to(smr_object, renderer.get("m_Mesh"), mesh_object):
+        raise ValueError("The selected Body renderer does not reference its supplied mesh.")
     original_mesh = mesh_tree if mesh_tree is not None else mesh_object.read_typetree()
     working_mesh = deepcopy(original_mesh)
     bone_count = len(renderer.get("m_Bones", []))
@@ -146,7 +290,7 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     first_material = _resolve(objects, materials[0], "Material", "The Body's original material")
     if first_material.assets_file is not smr_object.assets_file:
         raise ValueError("The Body material must be stored beside its mesh before grafting.")
-    _check_shared(objects, smr_object, mesh_object, first_material)
+    shared_mesh, shared_material, reference_trees = _shared_assets(objects, smr_object, mesh_object, first_material)
     bounds = _uv_bounds(working_mesh)
     sources = []
     for ordinal, pointer in enumerate(materials):
@@ -189,9 +333,15 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     material_tree = deepcopy(first_material.read_typetree())
     slots = _texture_slots(material_tree)
     sf = first_material.assets_file
-    pids = _rand_pids(len(baked.textures), set(sf.objects))
+    # Allocate all new IDs together, including detached Body assets. Original
+    # meshes/materials and every unrelated consumer retain their identities.
+    detach_material = shared_material and bool(baked.textures)
+    pids = iter(_rand_pids(len(baked.textures) + int(shared_mesh) + int(detach_material), set(sf.objects)))
+    mesh_pid = next(pids) if shared_mesh else mesh_object.path_id
+    material_pid = next(pids) if detach_material else first_material.path_id
     prepared = []
-    for pid, (slot, texture) in zip(pids, baked.textures.items()):
+    for slot, texture in baked.textures.items():
+        pid = next(pids)
         if slot not in slots:
             known_slots = {"_MainTex", "_RimlightTex", "_MatcapMaskTex", "_EmissiveTex", "_EmissiveScrollTex"}
             if slot not in known_slots:
@@ -209,22 +359,37 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
             raise ValueError(f"The graft atlas exceeds {max_dimension} pixels; select a smaller part.")
         prepared.append((pid, texture.template, tree))
         slots[slot]["m_Texture"] = {"m_FileID": 0, "m_PathID": pid}
-    renderer["m_Materials"] = [deepcopy(materials[0])]
+    renderer["m_Materials"] = [{"m_FileID": 0, "m_PathID": material_pid}]
+    renderer["m_Mesh"] = {"m_FileID": 0, "m_PathID": mesh_pid}
     if working_mesh.get("m_LocalAABB"):
         renderer["m_AABB"] = deepcopy(working_mesh["m_LocalAABB"])
 
     # Every potentially expensive/unsupported conversion above is complete.
     # Keep a rollback for an unexpected Unity serializer failure while committing.
+    bindings = _lighting_bindings(objects, reference_trees, first_material, material_pid) if detach_material else []
     originals = [(obj, obj.data) for obj in (mesh_object, first_material, smr_object)]
+    originals.extend((obj, obj.data) for obj, _ in bindings)
+    created = [pid for pid, _, _ in prepared]
+    if shared_mesh:
+        created.append(mesh_pid)
+    if detach_material:
+        created.append(material_pid)
     try:
         for pid, template, tree in prepared:
             _make_object(sf, template, pid, tree)
-        mesh_object.save_typetree(working_mesh)
-        if prepared:
+        if shared_mesh:
+            _make_object(sf, mesh_object, mesh_pid, working_mesh)
+        else:
+            mesh_object.save_typetree(working_mesh)
+        if detach_material:
+            _make_object(sf, first_material, material_pid, material_tree)
+        elif prepared:
             first_material.save_typetree(material_tree)
+        for obj, tree in bindings:
+            obj.save_typetree(tree)
         smr_object.save_typetree(renderer)
     except Exception:
-        for pid, _, _ in prepared:
+        for pid in created:
             sf.objects.pop(pid, None)
         for obj, data in originals:
             obj.data = data
@@ -234,13 +399,18 @@ def bake_renderer_for_game(environment, smr_object, mesh_object=None, *, mesh_tr
     if renderer_tree is not None:
         renderer_tree.clear(); renderer_tree.update(renderer)
     diagnostics = fallback_diagnostics + list(baked.diagnostics)
+    if shared_mesh or detach_material:
+        diagnostics.append("Detached shared Body " + " and ".join(
+            name for name, detached in (("mesh", shared_mesh), ("material", detach_material)) if detached)
+            + "; other surfaces keep their original assets.")
     for diagnostic in diagnostics:
         log(str(diagnostic))
     mode_label = {"reuse_empty_uv": "reuse empty UV areas", "relocate_empty_uv": "relocate into empty UV areas",
                   "atlas": "texture atlas", "identity": "original textures"}[texture_mode]
-    log(f"Body textures: {mode_label}; {group_count} groups combined into the original material.")
+    log(f"Body textures: {mode_label}; {group_count} groups combined into one Body material.")
     return {**geometry, "source_materials": len(sources), "materials": 1,
             "atlas_textures": len(prepared), "atlas_identity": baked.identity,
             "atlas_sources": baked.unique_sources, "texture_mode": texture_mode,
             "requested_uv_placement": uv_placement, "diagnostics": diagnostics,
+            "detached_mesh": shared_mesh, "detached_material": detach_material,
             "atlas_dimensions": {slot: [texture.width, texture.height] for slot, texture in baked.textures.items()}}

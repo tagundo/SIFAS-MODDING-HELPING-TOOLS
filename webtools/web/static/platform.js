@@ -1,4 +1,4 @@
-/* OS integration only. Model preparation, editing and saving stay in the shared UI. */
+/* Native OS integration and request diagnostics for the shared editing UI. */
 (function (global) {
   "use strict";
   var pending = Object.create(null), sequence = 0, bindings = null, queued = [];
@@ -127,8 +127,114 @@
       viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0,
       viewerFilesWidth: native && validFilesWidth(description.viewerFilesWidth) ? description.viewerFilesWidth : 0 };
   }
+  var REQUEST_TEXT = {
+    "No HTTP response was received": ["HTTP 응답을 받지 못했습니다", "HTTP応答を受信できませんでした"],
+    "The response body could not be read": ["응답 데이터를 읽지 못했습니다", "応答データを読み取れませんでした"],
+    "The response was not valid JSON": ["서버 응답이 올바른 JSON이 아닙니다", "サーバー応答が正しいJSONではありません"],
+    "The request could not be encoded": ["요청 데이터를 만들지 못했습니다", "リクエストデータを作成できませんでした"],
+    "The request exceeds the data limit": ["요청 데이터가 허용 크기를 초과했습니다", "リクエストデータが上限を超えています"],
+    "The request failed": ["요청이 실패했습니다", "リクエストに失敗しました"],
+    "The preview exceeds the data limit": ["미리보기 데이터가 허용 크기를 초과했습니다", "プレビューデータが上限を超えています"]
+  };
+  function requestText(key) {
+    var language = global.document && document.documentElement && document.documentElement.lang || "en";
+    var index = language.split("-")[0] === "ko" ? 0 : language.split("-")[0] === "ja" ? 1 : -1;
+    return index >= 0 && REQUEST_TEXT[key] ? REQUEST_TEXT[key][index] : key;
+  }
+  function endpoint(url) {
+    try { return new global.URL(url, global.location.href).pathname; }
+    catch (_) { return String(url || "").split(/[?#]/)[0].replace(/^https?:\/\/[^/]+/, "").slice(0, 512); }
+  }
+  function requestError(error, options, details) {
+    if (error && (error.name === "AbortError" || error.viewerStale || error.requestContext)) return error;
+    options = options || {}; details = details || {};
+    var reason = details.reason || error && error.message || String(error || requestText("The request failed"));
+    var context = { operation: options.operation || "", stage: options.stage || "", filename: options.filename || "",
+      method: details.method || "GET", url: endpoint(details.url), status: details.status || 0, code: details.code || "request_failed" };
+    var prefix = [context.operation, context.stage, context.filename].filter(Boolean).join(" · ");
+    var location = [context.status ? "HTTP " + context.status : "", context.method + " " + context.url].filter(Boolean).join(" · ");
+    var wrapped = new Error((prefix ? prefix + ": " : "") + reason + (location ? " [" + location + "]" : ""));
+    wrapped.requestContext = context;
+    if (error) wrapped.cause = error;
+    return wrapped;
+  }
+  function cancelled(error, options) { return error && error.name === "AbortError" || options.signal && options.signal.aborted; }
+  function responseReason(data, text, response) {
+    var value = data && data.error;
+    if (value && typeof value === "object") value = value.message || value.detail;
+    return typeof value === "string" && value ? value : text && text.trim() ? text.trim().slice(0, 2000) : response.statusText || requestText("The request failed");
+  }
+  async function requestResponse(url, init, options) {
+    try { return await global.fetch(url, init); }
+    catch (error) {
+      if (cancelled(error, options)) throw error;
+      throw requestError(error, options, { method: init.method || "GET", url: url, code: "network_error",
+        reason: requestText("No HTTP response was received") + (error && error.message ? " (" + error.message + ")" : "") });
+    }
+  }
+  async function responseText(response, url, method, options) {
+    try { return await response.text(); }
+    catch (error) {
+      if (cancelled(error, options)) throw error;
+      throw requestError(error, options, { method: method, url: url, status: response.status, code: "response_read_error",
+        reason: requestText("The response body could not be read") + (error && error.message ? " (" + error.message + ")" : "") });
+    }
+  }
+  async function requestJSON(url, payload, options) {
+    options = options || {};
+    var method = options.method || (payload === undefined ? "GET" : "POST"), init = { method: method, signal: options.signal };
+    if (payload !== undefined) {
+      init.headers = { "Content-Type": "application/json" };
+      try { init.body = JSON.stringify(payload); }
+      catch (error) { throw requestError(error, options, { method: method, url: url, code: "request_encoding_error",
+        reason: requestText("The request could not be encoded") + ": " + error.message }); }
+      if (options.maxRequestBytes > 0) {
+        var size = typeof global.TextEncoder === "function" ? new global.TextEncoder().encode(init.body).byteLength : unescape(encodeURIComponent(init.body)).length;
+        if (size > options.maxRequestBytes) throw requestError(null, options, { method: method, url: url, code: "request_size",
+          reason: requestText("The request exceeds the data limit") + ": " + size + " > " + options.maxRequestBytes + " bytes" });
+      }
+    }
+    var response = await requestResponse(url, init, options), text = await responseText(response, url, method, options), data;
+    try { data = JSON.parse(text); }
+    catch (error) {
+      throw requestError(error, options, { method: method, url: url, status: response.status,
+        code: response.ok ? "invalid_json" : "http_error",
+        reason: response.ok ? requestText("The response was not valid JSON") + (text.trim() ? ": " + text.trim().slice(0, 500) : "") : responseReason(null, text, response) });
+    }
+    if (!response.ok || data && data.error) throw requestError(null, options, { method: method, url: url, status: response.status,
+      code: data && data.error_code || "http_error", reason: responseReason(data, text, response) });
+    return data;
+  }
+  async function requestBytes(url, options) {
+    options = options || {};
+    var limit = options.maxBytes > 0 ? options.maxBytes : 64 * 1024 * 1024;
+    var response = await requestResponse(url, { signal: options.signal, method: "GET" }, options);
+    if (!response.ok) {
+      var text = await responseText(response, url, "GET", options), data;
+      try { data = JSON.parse(text); } catch (_) {}
+      throw requestError(null, options, { method: "GET", url: url, status: response.status, code: data && data.error_code || "http_error",
+        reason: responseReason(data, text, response) });
+    }
+    var length = Number(response.headers.get("Content-Length"));
+    if (length > limit) {
+      if (response.body && response.body.cancel) response.body.cancel().catch(function () {});
+      throw requestError(null, options, { method: "GET", url: url, status: response.status, code: "data_limit",
+        reason: requestText("The preview exceeds the data limit") + ": " + length + " > " + limit + " bytes" });
+    }
+    var bytes;
+    try { bytes = await response.arrayBuffer(); }
+    catch (error) {
+      if (cancelled(error, options)) throw error;
+      throw requestError(error, options, { method: "GET", url: url, status: response.status, code: "response_read_error",
+        reason: requestText("The response body could not be read") + ": " + error.message });
+    }
+    if (bytes.byteLength > limit) throw requestError(null, options, { method: "GET", url: url, status: response.status, code: "data_limit",
+      reason: requestText("The preview exceeds the data limit") + ": " + bytes.byteLength + " > " + limit + " bytes" });
+    return bytes;
+  }
   global.ElichikaPlatform = Object.freeze({ supports: supports, request: request, receive: receive,
-    perform: perform, bind: bind, info: info, chosenPaths: chosenPaths });
+    perform: perform, bind: bind, info: info, chosenPaths: chosenPaths,
+    requestJSON: requestJSON, requestBytes: requestBytes, requestError: requestError });
   if (native) document.documentElement.classList.add("elichika-desktop", "elichika-macos");
   if (supports("editorNavigation")) document.documentElement.classList.add("elichika-native-editor-navigation");
 

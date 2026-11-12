@@ -42,6 +42,21 @@
     "Save mesh edits before transplanting.": ["메시 편집을 저장한 뒤 이식해 주세요.", "メッシュの編集を保存してから移植してください。"]
   };
   Object.assign(TEXT, {
+    "Donor inspection": ["Donor 검사", "ドナーの検査"], "Donor preview preparation": ["Donor 미리보기 준비", "ドナープレビューの準備"],
+    "Donor preview download": ["Donor 미리보기 다운로드", "ドナープレビューの取得"], "Donor preview parsing": ["Donor 미리보기 해석", "ドナープレビューの解析"],
+    "Donor preview display": ["Donor 미리보기 표시", "ドナープレビューの表示"], "Start transplant job": ["이식 작업 시작", "移植ジョブの開始"], "Cancel transplant job": ["이식 작업 취소", "移植ジョブのキャンセル"],
+    "Transplant progress stream": ["이식 진행 연결", "移植の進行状況接続"], "Open transplant result": ["이식 결과 열기", "移植結果を開く"],
+    "Restore transplant history": ["이식 기록 복원", "移植履歴の復元"], "Capture current model": ["현재 모델 상태 보관", "現在のモデル状態の保存"],
+    "Validate wearer": ["현재 모델 검증", "移植先の検証"], "Prepare output folders": ["출력 폴더 준비", "出力フォルダーの準備"],
+    "Save current edits": ["현재 편집 저장", "現在の編集を保存"], "Locate edited wearer": ["편집한 현재 모델 찾기", "編集済みモデルの確認"],
+    "Prepare transplant files": ["이식 파일 준비", "移植ファイルの準備"], "Expand donor archive": ["Donor 압축 풀기", "ドナーアーカイブの展開"],
+    "Select donor model": ["Donor 모델 확인", "ドナーモデルの確認"], "Extract wearer model": ["현재 모델 추출", "移植先モデルの抽出"],
+    "Check Unity platforms": ["Unity 플랫폼 확인", "Unityプラットフォームの確認"], "Graft model": ["모델 이식 실행", "モデル移植の実行"],
+    "Validate output model": ["출력 모델 검증", "出力モデルの検証"], "Package output model": ["출력 모델 묶기", "出力モデルの梱包"],
+    "Preserve face companions": ["얼굴 파일 보존", "顔ファイルの保持"], "Record runtime receipt": ["실행 정보 기록", "実行情報の記録"],
+    "Publish output model": ["출력 모델 등록", "出力モデルの公開"]
+  });
+  Object.assign(TEXT, {
     "Match skin colour": ["피부색 자동 맞춤", "肌色を自動調整"],
     "Skin only (preserve outfit colours)": ["피부만 보정 (의상 색상 유지)", "肌だけ補正（衣装の色を維持）"],
     "Exclude separate accessories": ["분리된 작은 액세서리 제외", "分離した小さいアクセサリーを除外"],
@@ -294,10 +309,50 @@
         if (!meshDirty && !entry.donor && !entry.running && !entry.status.classList.contains("viewer-warning")) status(entry, ready ? "No donor selected." : "Open a wearer model first.");
       });
     }
-    async function json(url, payload, signal) {
-      var response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: signal });
-      var data = await response.json();
-      if (!response.ok || data.error) throw new Error(data.error || response.statusText); return data;
+    var STAGES = { validate_wearer: "Validate wearer", prepare_output_folders: "Prepare output folders", save_current_edits: "Save current edits", locate_edited_wearer: "Locate edited wearer", prepare_transplant_files: "Prepare transplant files", expand_donor: "Expand donor archive", select_donor_model: "Select donor model", extract_wearer: "Extract wearer model", check_platforms: "Check Unity platforms", graft_model: "Graft model", validate_output: "Validate output model", package_output: "Package output model", preserve_face_companions: "Preserve face companions", record_runtime_receipt: "Record runtime receipt", publish_output: "Publish output model" };
+    function filename(value) { return String(value || "").replace(/\\/g, "/").split("/").pop(); }
+    function requestContext(entry, stage, file) { return { operation: t(entry.title), stage: t(STAGES[stage] || stage), filename: filename(file || entry.donor) }; }
+    function diagnostic(error, entry, stage, file, prefix) {
+      if (error && (error.name === "AbortError" || error.viewerStale)) return error;
+      var detail = requestContext(entry, stage, file);
+      if (error && error.requestContext) {
+        if (error.requestContext.operation === detail.operation) return error;
+        var wrapped = new Error(error.message); wrapped.cause = error; error = wrapped;
+      }
+      if (!(error instanceof Error)) error = new Error(String(error && error.message || error));
+      var reason = error.message || error.name || "Unknown error";
+      error.message = [detail.operation, detail.stage, detail.filename].filter(Boolean).join(" · ") + ": " + (prefix ? prefix + ": " : "") + reason;
+      error.requestContext = detail; return error;
+    }
+    async function json(url, payload, signal, entry, stage) {
+      var detail = requestContext(entry, stage), platform = global.ElichikaPlatform;
+      if (platform && platform.requestJSON) return platform.requestJSON(url, payload, Object.assign({ signal: signal,
+        maxRequestBytes: url === "/api/viewer/transplant/run" ? 32 * 1024 * 1024 : url === "/api/viewer/prepare" ? 256 * 1024 : 512 * 1024 }, detail));
+      var response;
+      try { response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: signal }); }
+      catch (error) { throw diagnostic(error, entry, stage, null, "No HTTP response"); }
+      var raw, data, http = "HTTP " + response.status + (response.statusText ? " " + response.statusText : "");
+      try { raw = await response.text(); }
+      catch (error) { throw diagnostic(error, entry, stage, null, http + " response body"); }
+      try { data = JSON.parse(raw); }
+      catch (error) { throw diagnostic(new Error((response.ok ? "Invalid JSON response: " + error.message : http) + (raw ? "\n" + raw : "")), entry, stage); }
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw diagnostic(new Error(http + ": Expected a JSON object.\n" + raw), entry, stage);
+      if (!response.ok || data.error) throw diagnostic(new Error(http + ": " + (typeof data.error === "string" ? data.error : data.error ? JSON.stringify(data.error) : raw || response.statusText)), entry, stage);
+      return data;
+    }
+    async function previewBytes(url, signal, entry) {
+      var stage = "Donor preview download", limit = 64 * 1024 * 1024, platform = global.ElichikaPlatform;
+      if (platform && platform.requestBytes) return platform.requestBytes(url, Object.assign({ signal: signal, maxBytes: limit }, requestContext(entry, stage)));
+      var response;
+      try { response = await fetch(url, { signal: signal }); }
+      catch (error) { throw diagnostic(error, entry, stage, null, "No HTTP response"); }
+      var http = "HTTP " + response.status + (response.statusText ? " " + response.statusText : "");
+      if (!response.ok) { var reason; try { reason = await response.text(); } catch (error) { throw diagnostic(error, entry, stage, null, http + " response body"); } throw diagnostic(new Error(http + (reason ? ": " + reason : "")), entry, stage); }
+      if (Number(response.headers.get("Content-Length")) > limit) throw diagnostic(new Error("The donor preview exceeds 64 MiB (" + response.headers.get("Content-Length") + " bytes)."), entry, stage);
+      var bytes;
+      try { bytes = await response.arrayBuffer(); } catch (error) { throw diagnostic(error, entry, stage, null, http + " response body"); }
+      if (bytes.byteLength > limit) throw diagnostic(new Error("The donor preview exceeds 64 MiB (" + bytes.byteLength + " bytes)."), entry, stage);
+      return bytes;
     }
     function disposeObject(object) {
       if (!object) return;
@@ -566,8 +621,9 @@
       entry.donor = paths[0]; entry.variant = variants && variants[0] || variants && variants["0"] || "primary";
       entry.file.value = String(paths[0]).replace(/\\/g, "/").split("/").pop();
       entry.inspecting = true; entry.stage.hidden = true; if (entry.operation === "part") entry.texturePanel.hidden = true; status(entry, "Preparing donor…"); refresh();
+      var stage = "Donor inspection";
       try {
-        var inspected = await json("/api/viewer/transplant/inspect", { donor: entry.donor, variant: entry.variant }, controller.signal);
+        var inspected = await json("/api/viewer/transplant/inspect", { donor: entry.donor, variant: entry.variant }, controller.signal, entry, stage);
         if (token !== entry.generation || disposed) return;
         entry.geometry = inspected.geometry; fillPartChoices(entry, inspected);
         entry.donorMesh.replaceChildren();
@@ -575,12 +631,12 @@
         entry.donorMesh.value = inspected.geometry.renderer;
         var payload = { paths: [entry.donor], rigged: true, auto_face: true, preview_only: true };
         if (entry.variant === "unmasked") payload.archive_variants = { 0: entry.variant };
-        var prepared = await json("/api/viewer/prepare", payload, controller.signal);
-        if (!/^\/api\/viewer\/model\/[a-f0-9]{32}\.glb$/.test(prepared.url || "")) throw new Error("The donor preview could not be displayed.");
-        var response = await fetch(prepared.url, { signal: controller.signal });
-        if (!response.ok || Number(response.headers.get("Content-Length")) > 64 * 1024 * 1024) throw new Error("The donor preview could not be displayed.");
-        var bytes = await response.arrayBuffer();
-        if (bytes.byteLength > 64 * 1024 * 1024) throw new Error("The donor preview could not be displayed.");
+        stage = "Donor preview preparation";
+        var prepared = await json("/api/viewer/prepare", payload, controller.signal, entry, stage);
+        if (!/^\/api\/viewer\/model\/[a-f0-9]{32}\.glb$/.test(prepared.url || "")) throw new Error("The donor preview response did not contain a valid local GLB URL: " + JSON.stringify(prepared.url || null));
+        stage = "Donor preview download";
+        var bytes = await previewBytes(prepared.url, controller.signal, entry);
+        stage = "Donor preview parsing";
         var gltf = await new Promise(function (resolve, reject) { new global.THREE.GLTFLoader().parse(bytes, "", resolve, reject); });
         if (disposed || token !== entry.generation) { disposeObject(gltf.scene); return; }
         var nodes = {}; gltf.scene.traverse(function (object) { if (object.userData.elichika_node !== undefined) nodes[String(object.userData.elichika_node)] = object; });
@@ -593,9 +649,10 @@
             }
           });
         });
+        stage = "Donor preview display";
         preview(entry).set(gltf.scene); entry.stage.hidden = false; status(entry, "");
       } catch (error) {
-        if (token === entry.generation && error.name !== "AbortError") { entry.donor = ""; status(entry, error.message, true); }
+        if (token === entry.generation && error.name !== "AbortError") { status(entry, diagnostic(error, entry, stage).message, true); entry.donor = ""; }
       } finally { if (token === entry.generation) { entry.inspecting = false; entry.request = null; if (entry.operation === "part") updatePartUI(entry); refresh(); } }
     }
     function finish(entry) {
@@ -627,23 +684,26 @@
         payload.donorSha256 = entry.donorSha256; payload.donorMesh = entry.geometry.mesh; payload.donorSelectionFingerprint = entry.donorSelectionFingerprint;
       }
       var fingerprint = JSON.stringify(authored), modelId = c.modelId, sourceIdentity = identity(c), before;
-      try { before = checkpoint(); } catch (error) { status(entry, error.message, true); return; }
+      try { before = checkpoint(); } catch (error) { status(entry, diagnostic(error, entry, "Capture current model", c.loadedPaths && c.loadedPaths[0]).message, true); return; }
       busy = true; entry.running = true; entry.log.textContent = ""; entry.log.hidden = false; entry.progress.hidden = false; entry.progress.removeAttribute("value"); entry.result.hidden = true;
       if (options.busyChanged) options.busyChanged(true); status(entry, "Transplanting…"); refresh();
       try {
-        var data = await json("/api/viewer/transplant/run", payload);
+        entry.lastStage = "Start transplant job"; entry.stageFilename = entry.donor;
+        var data = await json("/api/viewer/transplant/run", payload, null, entry, entry.lastStage);
         if (!/^[a-f0-9]{12}$/.test(data.job_id || "")) throw new Error("The costume operation could not be started.");
         jobId = data.job_id; events = new EventSource("/api/jobs/" + jobId + "/events");
         events.onmessage = async function (message) {
           if (disposed || !entry.running) return;
           try {
+            if (entry.streamInterrupted) { entry.streamInterrupted = false; status(entry, "Transplanting…"); }
             var item = JSON.parse(message.data);
+            if (item.type === "transplant-stage") { entry.lastStage = item.stage || "Transplant progress stream"; entry.stageFilename = item.filename || entry.donor; }
             if (item.type === "log") entry.log.textContent = (entry.log.textContent + String(item.line || "") + "\n").slice(-20000);
             if (item.type === "progress" && item.total > 0) { entry.progress.max = item.total; entry.progress.value = item.done; }
             if (item.type === "transplant") entry.resultVariant = item.variant || "primary";
             if (item.type !== "done") return;
             if (events) events.close(); events = null; jobId = "";
-            if (item.status !== "done") { finish(entry); status(entry, item.summary || "Cancelled", item.status === "error"); return; }
+            if (item.status !== "done") { finish(entry); status(entry, item.status === "error" ? diagnostic(new Error(item.summary || "The transplant job failed without a reason."), entry, entry.lastStage || "Transplant progress stream", entry.stageFilename).message : item.summary || "Cancelled", item.status === "error"); return; }
             var paths = item.output_paths;
             if (!Array.isArray(paths) || paths.length !== 1 || typeof paths[0] !== "string") throw new Error("The costume operation did not publish a model.");
             entry.resultPaths = paths; entry.result.hidden = false;
@@ -652,10 +712,16 @@
                 (!c.getMeshEdits || JSON.stringify(now.getMeshEdits && now.getMeshEdits()) === JSON.stringify(meshState))) {
               await openResult(entry, before, sourceIdentity); status(entry, "Transplanted. The result is now displayed.");
             } else { finish(entry); status(entry, "The result was saved. Open it to inspect the transplant."); }
-          } catch (error) { finish(entry); status(entry, error.message, true); }
+          } catch (error) { finish(entry); status(entry, diagnostic(error, entry, "Transplant progress stream", entry.stageFilename).message, true); }
         };
-        events.onerror = function () { if (events && events.readyState === EventSource.CLOSED) { finish(entry); status(entry, "The costume operation connection closed. Check the server log.", true); } };
-      } catch (error) { finish(entry); status(entry, error.message, true); }
+        events.onerror = function () {
+          if (!events || disposed || !entry.running) return;
+          var closed = events.readyState === EventSource.CLOSED;
+          var error = diagnostic(new Error((closed ? "The progress connection closed" : "The progress connection was interrupted; reconnecting") + " (job " + jobId + "). The browser did not expose an HTTP response status. Last stage: " + t(STAGES[entry.lastStage] || entry.lastStage || "Start transplant job") + "."), entry, "Transplant progress stream", entry.stageFilename);
+          if (closed) finish(entry); else entry.streamInterrupted = true;
+          status(entry, error.message, true);
+        };
+      } catch (error) { finish(entry); status(entry, diagnostic(error, entry, "Start transplant job").message, true); }
     }
     async function openResult(entry, before, expectedIdentity) {
       if (historySwitch || busy && !entry.running) return;
@@ -673,14 +739,14 @@
         historyIdentity = identity(after);
       } catch (error) {
         if (!error.viewerStale && context().modelId === c.modelId && JSON.stringify(context().loadedPaths || []) === JSON.stringify(c.loadedPaths || [])) historyIdentity = identity(context());
-        throw error;
+        throw diagnostic(error, entry, "Open transplant result", entry.resultPaths[0]);
       } finally { historySwitch = false; finish(entry); }
     }
     async function restoreHistory(entry, redo) {
       var source = redo ? redoHistory : undoHistory, destination = redo ? undoHistory : redoHistory;
       if (busy || !source.length || (redo ? entry.redo : entry.undo).disabled) return;
       var current;
-      try { current = checkpoint(); } catch (error) { status(entry, error.message, true); return; }
+      try { current = checkpoint(); } catch (error) { var visible = context(); status(entry, diagnostic(error, entry, "Capture current model", visible.loadedPaths && visible.loadedPaths[0]).message, true); return; }
       var step = source[source.length - 1], origin = context(), expected = identity(origin);
       busy = true; historySwitch = true; if (options.busyChanged) options.busyChanged(true); status(entry, "Restoring model…"); refresh();
       try {
@@ -691,7 +757,7 @@
         status(entry, redo ? "Transplant redone." : "Transplant undone.");
       } catch (error) {
         if (!error.viewerStale && context().modelId === origin.modelId && JSON.stringify(context().loadedPaths || []) === JSON.stringify(origin.loadedPaths || [])) historyIdentity = identity(context());
-        status(entry, error.message, true);
+        status(entry, diagnostic(error, entry, "Restore transplant history", step.checkpoint.paths && step.checkpoint.paths[0]).message, true);
       }
       finally { historySwitch = false; busy = false; if (options.busyChanged) options.busyChanged(false); refresh(); }
     }
@@ -887,15 +953,15 @@
         entry.inspecting = true; refresh();
         try {
           var donor = entry.donor, mesh = entry.donorMesh.value;
-          var result = await json("/api/viewer/transplant/inspect", { donor: donor, variant: entry.variant, renderer: mesh }, controller.signal);
+          var result = await json("/api/viewer/transplant/inspect", { donor: donor, variant: entry.variant, renderer: mesh }, controller.signal, entry, "Donor inspection");
           if (!disposed && generation === entry.generation && donor === entry.donor && mesh === entry.donorMesh.value) { entry.geometry = result.geometry; fillPartChoices(entry, result); if (entry.preview) entry.preview.rebind(); }
-        } catch (error) { if (!disposed && generation === entry.generation && error.name !== "AbortError") status(entry, error.message, true); }
+        } catch (error) { if (!disposed && generation === entry.generation && error.name !== "AbortError") status(entry, diagnostic(error, entry, "Donor inspection").message, true); }
         finally { if (!disposed && generation === entry.generation) { if (entry.request === controller) entry.request = null; entry.inspecting = false; refresh(); } }
       });
       entry.result.addEventListener("click", function () { openResult(entry).catch(function (error) { status(entry, error.message, true); }); });
       entry.undo.addEventListener("click", function () { restoreHistory(entry, false); });
       entry.redo.addEventListener("click", function () { restoreHistory(entry, true); });
-      entry.cancel.addEventListener("click", function () { if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); });
+      entry.cancel.addEventListener("click", function () { if (jobId) json("/api/jobs/" + jobId + "/cancel", {}, null, entry, "Cancel transplant job").catch(function (error) { if (!disposed && entry.running) status(entry, diagnostic(error, entry, "Cancel transplant job").message, true); }); });
       entry.preset.addEventListener("change", function () {
         var preset = { hip_fix: [.5, .92], calf: [.3, .96], ankle: [.11, .96], whole: [-.05, 1.06] }[entry.preset.value];
         if (preset) { entry.low.value = preset[0]; entry.high.value = preset[1]; if (entry.preview) entry.preview.cuts(); }
@@ -916,7 +982,7 @@
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
         if (entry.operation === "part") Object.assign(result, { uvPlacement: entry.uvPlacement.value, selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
-      dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
+      dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }).catch(function () {}); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }
   global.ViewerTransplants = { create: create, selectedBoneManifest: selectedBoneManifest, setBoneSelection: setBoneSelection };

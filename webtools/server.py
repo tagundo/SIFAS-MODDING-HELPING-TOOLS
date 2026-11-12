@@ -268,8 +268,14 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self._send_json({"error": "Invalid request size."}, status=400)
-        if length <= 0 or length > 16384:
-            return self._send_json({"error": "Model request is too large or empty."}, status=400)
+        # Model and motion contents retain their independent byte budgets.
+        # Long native macOS paths can legitimately exceed the former 16 KiB
+        # limit even though the assets themselves remain independently bounded.
+        max_request_bytes = 256 * 1024
+        if length <= 0 or length > max_request_bytes:
+            return self._send_json({"error": f"Model request size is {length} bytes; allowed range is 1–{max_request_bytes} bytes.",
+                                    "error_code": "request_size", "request_bytes": length,
+                                    "max_request_bytes": max_request_bytes}, status=400)
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
@@ -288,14 +294,31 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(reimport, bool):
             return self._send_json({"error": "Reimport must be on or off."}, status=400)
         paths = params.get("paths")
-        if (not isinstance(paths, list) or not 1 <= len(paths) <= 8
-                or any(not isinstance(path, str) or not path.strip() for path in paths)):
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 8:
             return self._send_json({"error": "Choose between one and eight model files."}, status=400)
+        for index, path in enumerate(paths):
+            if not isinstance(path, str) or not path.strip():
+                return self._send_json({"error": f"Model source {index + 1} has no file path.", "error_code": "model_path"}, status=400)
+            if len(path) > 4096:
+                return self._send_json({"error": f"Model source {index + 1} path has {len(path)} characters; the limit is 4096.",
+                                        "error_code": "model_path_size"}, status=400)
         motion_paths = params.get("motion_paths", [])
-        if (not isinstance(motion_paths, list) or len(motion_paths) > 32
-                or any(not isinstance(path, str) or not path.strip() for path in motion_paths)
-                or motion_paths and not rigged):
-            return self._send_json({"error": "Choose at most thirty-two motion source files."}, status=400)
+        from webtools.core import model_viewer, viewer_archive
+        if not isinstance(motion_paths, list):
+            return self._send_json({"error": "The motion source list must be a list of file paths.", "error_code": "motion_paths"}, status=400)
+        if len(motion_paths) > model_viewer.MAX_MOTION_FILES:
+            return self._send_json({"error": f"The motion library allows at most {model_viewer.MAX_MOTION_FILES} source files. Selected: {len(motion_paths)}.",
+                                    "error_code": "motion_source_limit", "motion_files": len(motion_paths),
+                                    "max_motion_files": model_viewer.MAX_MOTION_FILES}, status=400)
+        if motion_paths and not rigged:
+            return self._send_json({"error": "Enable interactive model loading before attaching motion source files.",
+                                    "error_code": "motion_requires_rig"}, status=400)
+        for index, path in enumerate(motion_paths):
+            if not isinstance(path, str) or not path.strip():
+                return self._send_json({"error": f"Motion source {index + 1} has no file path.", "error_code": "motion_path"}, status=400)
+            if len(path) > 4096:
+                return self._send_json({"error": f"Motion source {index + 1} path has {len(path)} characters; the limit is 4096.",
+                                        "error_code": "motion_path_size"}, status=400)
         choices = params.get("archive_variants", {})
         indices = {str(index): index for index in range(len(paths))}
         if (not isinstance(choices, dict) or len(choices) > len(paths)
@@ -330,7 +353,6 @@ class Handler(BaseHTTPRequestHandler):
             if original in variant_choices and variant_choices[original] != choice:
                 return self._send_json({"error": "Conflicting costume variant choices refer to the same file."}, status=400)
             variant_choices[original] = choice
-        from webtools.core import model_viewer, viewer_archive
         from webtools.core.sukusta import default_sukusta_dir
         # The UI may select inputs and enable the feature; filesystem and CDN
         # context always come from this application, never from request JSON.
@@ -351,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                     motion_inputs = opened.enter_context(viewer_archive.expand_inputs([source], cache_dir))
                     expanded_motions.extend(path for path in motion_inputs.paths if path not in expanded_motions)
                 if len(expanded_motions) > model_viewer.MAX_MOTION_FILES:
-                    raise ValueError("The expanded motion library has too many source files.")
+                    raise ValueError(f"The expanded motion library allows at most {model_viewer.MAX_MOTION_FILES} source files. Selected: {len(expanded_motions)}.")
                 context.update(manifest_paths=expanded.manifest_paths, origins=expanded.origins)
                 options = {"face_context": context}
                 if reimport:

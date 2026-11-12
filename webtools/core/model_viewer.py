@@ -23,7 +23,7 @@ from . import decode
 
 
 MAX_FILES = 8
-MAX_MOTION_FILES = 32
+MAX_MOTION_FILES = 256
 # Public selections and trusted dependencies have separate bounded slots.
 # The retained motion library has separate slots from model selections and
 # trusted facial/preview dependencies; existing byte/geometry limits still apply.
@@ -1489,9 +1489,10 @@ def prepare(paths, *, face_context=None, rigged=False, motion_paths=None, reimpo
     if not isinstance(reimport, bool):
         raise ModelViewerError("Reimport must be on or off.")
     paths = _paths(paths)
-    if motion_paths is not None and (not rigged or not isinstance(motion_paths, (list, tuple))
-                                     or len(motion_paths) > MAX_MOTION_FILES):
+    if motion_paths is not None and (not rigged or not isinstance(motion_paths, (list, tuple))):
         raise ModelViewerError("The retained motion library is too large or invalid.")
+    if motion_paths is not None and len(motion_paths) > MAX_MOTION_FILES:
+        raise ModelViewerError(f"The motion library allows at most {MAX_MOTION_FILES} source files. Selected: {len(motion_paths)}.")
     library_paths = _paths(motion_paths, internal=True) if motion_paths else []
     library_paths = [path for path in library_paths if path not in paths]
     combined_paths = _paths(paths + library_paths, internal=True)

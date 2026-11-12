@@ -68,6 +68,11 @@
     var saved = { hidden: [], order: [] }, defaults = new Map(), nextDefault = 0, refreshing = false;
     var items = [], groups = [], dialog = null, opener = null, observer, saveFailed = false;
     var raw = null;
+    function observe() {
+      [options.root].concat(options.extraRoots || []).forEach(function (root) {
+        observer.observe(root, { childList: true, subtree: true });
+      });
+    }
     try { raw = JSON.parse(localStorage.getItem(options.key)); } catch (_) { /* Native bootstrap can still restore preferences. */ }
     if (!validSettings(raw) && native) raw = (native.description.panelSettings || {})[scope];
     if (validSettings(raw)) saved = { hidden: raw.hidden.slice(), order: raw.order.slice() };
@@ -140,7 +145,7 @@
       options.button.textContent = text("Panel settings");
       options.button.setAttribute("aria-label", text("Panel settings") + " · " + text(options.label));
       if (dialog && dialog.open) render();
-      if (observer) observer.observe(options.root, { childList: true, subtree: true });
+      if (observer) observe();
       refreshing = false;
     }
     function render(focusId, moveDirection) {
@@ -216,14 +221,14 @@
       // Motion timers and changing numeric readouts are not panel additions.
       // Keep preference work out of the animation frame path.
       var changed = records.some(function (record) {
-        if (record.target === options.root) return true;
+        if (record.target === options.root || (options.extraRoots || []).indexOf(record.target) >= 0) return true;
         return Array.prototype.some.call(record.addedNodes, isPanelTree) ||
           Array.prototype.some.call(record.removedNodes, isPanelTree);
       });
       if (pending || !changed) return;
       pending = true; queueMicrotask(function () { pending = false; refresh(); });
     });
-    observer.observe(options.root, { childList: true, subtree: true });
+    observe();
     function isPanelTree(node) {
       return node.nodeType === 1 && (node.matches("details[id],[data-panel-setting][id],button[data-id]") ||
         !!node.querySelector(".viewer-body-card[id],#viewer-shared-bone-editor,[data-panel-setting][id]"));
@@ -236,11 +241,14 @@
   function init() {
     installStyle();
     var viewer = document.getElementById("viewer-control-panel"), viewerButton = document.getElementById("viewer-panel-settings");
+    var sidebarSlots = ["viewer-macos-display-slot", "viewer-macos-save-slot"].map(function (id) { return document.getElementById(id); }).filter(Boolean);
     if (viewer && viewerButton) attach({
-      key: "elichika.panels.viewer.v1", label: "3D model", root: viewer, button: viewerButton,
+      key: "elichika.panels.viewer.v1", label: "3D model", root: viewer, extraRoots: sidebarSlots, button: viewerButton,
       dialogId: "viewer-panel-settings-dialog", dialogHome: document.getElementById("tab-viewer"),
       items: function () {
-        return Array.prototype.map.call(viewer.querySelectorAll(":scope > details[id],.viewer-body-card[id],#viewer-shared-bone-editor > details[id],[data-panel-setting][id]"), function (node) {
+        var nodes = Array.prototype.slice.call(viewer.querySelectorAll(":scope > details[id],.viewer-body-card[id],#viewer-shared-bone-editor > details[id],[data-panel-setting][id]"));
+        sidebarSlots.forEach(function (slot) { nodes = nodes.concat(Array.prototype.slice.call(slot.querySelectorAll(":scope > details[id]"))); });
+        return nodes.map(function (node) {
           var section = node.closest("[role='tabpanel']"), label = section && document.getElementById(section.getAttribute("aria-labelledby"));
           var parentPanel = node.parentNode.closest("details"), group = label && label.querySelector("span");
           return { id: node.id, node: node, label: title(node), group: group ? group.textContent : parentPanel ? title(parentPanel) : text("3D model") };

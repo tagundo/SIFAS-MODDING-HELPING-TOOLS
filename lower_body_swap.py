@@ -325,38 +325,25 @@ class BodyMesh:
     def __init__(self, env, path, renderer=None):
         self.env = env; self.path = path
         objs = list(env.objects); self.by_pid = {o.path_id: o for o in objs}
-        self.mesh_obj = None; self.tt = None
-        # body mesh = the one named "Body"; fall back to largest skinned mesh
-        best = None
-        for o in objs:
-            if o.type.name == "Mesh":
-                t = o.read_typetree()
-                if t.get("m_Name") == "Body":
-                    self.mesh_obj = o; self.tt = t
-                vc = t.get("m_VertexData", {}).get("m_VertexCount", 0)
-                if best is None or vc > best[0]:
-                    best = (vc, o, t)
-        if self.tt is None and best:
-            _, self.mesh_obj, self.tt = best
+        self.mesh_obj = self.tt = self.smr_obj = self.smr = None
         if renderer is not None:
             selected = self.by_pid.get(int(renderer))
             if selected is None or selected.type.name != "SkinnedMeshRenderer":
                 raise ValueError("Choose a valid skinned mesh.")
-            self.mesh_obj = self.by_pid.get(selected.read_typetree()["m_Mesh"]["m_PathID"])
-            if self.mesh_obj is None: raise ValueError("The selected renderer has no local mesh.")
-            self.tt = self.mesh_obj.read_typetree()
-        if self.tt is None:
+        else:
+            from graft_game_compat import canonical_body_smr
+            selected = canonical_body_smr(objs)
+        if selected is None:
             raise ValueError(_tr("no body mesh found in %s") % os.path.basename(path))
-        # renderer that uses this mesh
-        self.smr_obj = self.smr = None
-        for o in objs:
-            if o.type.name == "SkinnedMeshRenderer":
-                if renderer is not None and o.path_id != int(renderer): continue
-                d = o.read_typetree()
-                if d.get("m_Mesh", {}).get("m_PathID") == self.mesh_obj.path_id:
-                    self.smr_obj = o; self.smr = d; break
-        if self.smr is None:
-            raise ValueError(_tr("no body mesh found in %s") % os.path.basename(path))
+        # Detached originals may retain the name Body and a different renderer
+        # can still use a shared original. Follow the actual Body GameObject,
+        # rather than selecting whichever Mesh happened to serialize last.
+        self.smr_obj, self.smr = selected, selected.read_typetree()
+        pointer = self.smr.get("m_Mesh", {})
+        self.mesh_obj = self.by_pid.get(pointer.get("m_PathID")) if pointer.get("m_FileID", 0) == 0 else None
+        if self.mesh_obj is None or self.mesh_obj.type.name != "Mesh" or self.mesh_obj.assets_file is not selected.assets_file:
+            raise ValueError("The selected renderer has no local mesh.")
+        self.tt = self.mesh_obj.read_typetree()
         # bone index -> name
         tmap = {o.path_id: o.read_typetree() for o in objs if o.type.name == "Transform"}
         gname = {o.path_id: o.read_typetree().get("m_Name")
@@ -699,7 +686,8 @@ def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, regio
                    firstVertex=0, vertexCount=target.n)
         data.extend(kept.astype("<u2" if width == 2 else "<u4").tobytes())
     target.tt["m_IndexBuffer"] = bytes(data)
-    target.mesh_obj.save_typetree(target.tt)
+    from graft_game_compat import save_isolated_mesh
+    target.mesh_obj = save_isolated_mesh(target.env, target.smr_obj, target.mesh_obj, target.tt)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     from transplant_bundle_io import write_working_bundle, finish_working_bundle, original_packer
     output_packer = original_packer(target.env.file)

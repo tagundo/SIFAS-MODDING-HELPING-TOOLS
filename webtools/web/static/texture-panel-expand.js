@@ -80,7 +80,7 @@
       function move(node, parent) { if (!node) return; var marker = document.createComment('UV workspace position'); node.parentNode.insertBefore(marker, node); moved.push({ node: node, marker: marker }); parent.appendChild(node); }
       move(workspace.querySelector('.uv-edit-source'), inspector);
       workspace.querySelectorAll('.uv-edit-footer > button').forEach(function (button) {
-        button.classList.add(button.classList.contains('mesh-save') ? 'uv-save-button' : 'uv-delete-button'); button.title = button.textContent;
+        if (!button.classList.contains('mesh-reset')) { button.classList.add(button.classList.contains('mesh-save') ? 'uv-save-button' : 'uv-delete-button'); button.title = button.textContent; }
         move(button, workspace.querySelector('.uv-edit-toolbar'));
       });
       if (viewport().width >= 600) {

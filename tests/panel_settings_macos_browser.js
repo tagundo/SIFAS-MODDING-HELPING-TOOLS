@@ -69,7 +69,7 @@ async function nativeContext(browser) {
 }
 const row = (page, id) => page.locator('.panel-settings-dialog[open] [data-panel-id=' + JSON.stringify(id) + ']');
 const tools = page => page.locator('#tool-list > button[data-id]').evaluateAll(nodes => nodes.map(node => node.dataset.id));
-const roots = page => page.locator('#viewer-control-panel > details[id]').evaluateAll(nodes => nodes.map(node => node.id));
+const roots = page => page.locator('#viewer-control-panel > details[id],#viewer-control-panel > [data-panel-setting][id]').evaluateAll(nodes => nodes.map(node => node.id));
 async function close(page) { await page.keyboard.press('Escape'); await page.locator('.panel-settings-dialog[open]').waitFor({ state: 'hidden' }); }
 async function ready(page, url) {
   await page.goto(url); await page.waitForFunction(() => document.querySelector('#tools-panel-settings') && document.querySelectorAll('#tool-list > button[data-id]').length > 2);
@@ -79,7 +79,11 @@ async function verifyWeb(page, expected) {
   assert.equal(await page.evaluate(() => ElichikaPlatform.supports('setPanelSettings')), true);
   await page.locator('[data-tab=viewer]').click();
   for (const id of expected.viewer.hidden) assert(!await page.locator('#' + id).isVisible(), 'Native viewer preference hides ' + id);
-  assert.deepStrictEqual((await roots(page)).slice(0, 2), expected.viewer.order.slice(0, 2));
+  const actualRoots = await roots(page), expectedRight = expected.viewer.order.filter(id => actualRoots.includes(id));
+  assert.deepStrictEqual(actualRoots.slice(0, expectedRight.length), expectedRight, 'Saved order still applies within the right tool column');
+  assert.deepStrictEqual(await page.evaluate(() => ['viewer-display-options', 'viewer-save-panel'].map(id => document.getElementById(id).parentElement.id)),
+    ['viewer-macos-display-slot', 'viewer-macos-save-slot'], 'Mac display/save cards keep their separate left-sidebar groups');
+  assert(await page.evaluate(() => {const panel = document.getElementById('viewer-files-panel'), display = document.getElementById('viewer-macos-display-slot'), save = document.getElementById('viewer-macos-save-slot'), importer = panel.querySelector('.viewer-file-actions'); return !!(display.compareDocumentPosition(importer) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(importer.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING);}), 'Mac default left order is display, import/load, save');
   await page.locator('[data-tab=tools]').click();
   for (const id of expected.tools.hidden) assert(!await page.locator('#tool-list button[data-id=' + JSON.stringify(id) + ']').isVisible(), 'Native asset preference hides ' + id);
   assert.deepStrictEqual((await tools(page)).slice(0, 2), expected.tools.order.slice(0, 2));
@@ -107,9 +111,13 @@ async function run() {
     await ready(page, webA.url); await verifyWeb(page, initial);
     await page.locator('[data-tab=viewer]').click();
     await page.locator('#viewer-panel-settings').click();
+    const rightBefore = await roots(page);
     await row(page, 'viewer-body-adjustments').locator('input[type=checkbox]').uncheck();
+    await row(page, 'viewer-display-options').locator('input[type=checkbox]').uncheck();
+    await row(page, 'viewer-save-panel').locator('input[type=checkbox]').uncheck();
     await row(page, 'viewer-adjustments').locator('[data-move=down]').click(); await close(page);
-    await until(() => nativeSettings.viewer.hidden.includes('viewer-body-adjustments') && nativeSettings.viewer.order[0] === 'viewer-save-panel', 'viewer native save ack');
+    assert.notDeepStrictEqual(await roots(page), rightBefore, 'Move still reorders actual right-column cards');
+    await until(() => ['viewer-body-adjustments', 'viewer-display-options', 'viewer-save-panel'].every(id => nativeSettings.viewer.hidden.includes(id)) && nativeSettings.viewer.order.indexOf('viewer-adjustments') > 0, 'viewer native save ack includes relocated hidden cards and right-column order');
     await page.locator('[data-tab=tools]').click(); await page.locator('#tools-panel-settings').click();
     await row(page, 'character_info').locator('input[type=checkbox]').uncheck();
     await row(page, 'breast_size').locator('[data-move=down]').click(); await close(page);

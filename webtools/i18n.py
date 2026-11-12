@@ -2334,6 +2334,10 @@ _VIEWER_TRANSLATIONS.update({
 from webtools.core.viewer_motion_i18n import STRINGS as _MOTION_TRANSLATIONS
 _VIEWER_TRANSLATIONS.update(_MOTION_TRANSLATIONS)
 _VIEWER_TRANSLATIONS.update({
+    "Decode model preview": ["모델 미리보기 해석", "モデルプレビューの解析"],
+    "Prepare model materials": ["모델 재질 준비", "モデルマテリアルの準備"],
+    "Restore model editing state": ["모델 편집 상태 복원", "モデル編集状態の復元"],
+    "The model preparation response is empty or invalid.": ["모델 준비 응답이 비어 있거나 올바르지 않습니다.", "モデルの準備応答が空か無効です。"],
     "Open a model before adding motion.": ["모션을 추가하기 전에 모델을 여세요.", "モーションを追加する前にモデルを開いてください。"],
     "Wait for model saving to finish.": ["모델 저장이 끝날 때까지 기다려 주세요.", "モデルの保存が終わるまでお待ちください。"],
     "Save mesh edits before adding motion.": ["메시 편집을 저장한 뒤 모션을 추가하세요.", "メッシュ編集を保存してからモーションを追加してください。"],

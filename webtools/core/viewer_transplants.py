@@ -379,7 +379,31 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
     ``export_fn`` may replace the pre-exporter. It receives ``mesh_state`` when
     mesh edits are present; its return shape matches model_edits.export.
     """
+    # Keep the last concrete phase alongside the original exception. In
+    # particular, do not wrap failures: callers still receive the same error
+    # object, class and message from validation, Unity readers or the graft.
+    diagnostic_context = request.get("context", {})
+    diagnostic_sources = diagnostic_context.get("sources", [])
+    source_index = request.get("sourceIndex")
+    diagnostic_source = (diagnostic_sources[source_index]
+                         if type(source_index) is int and 0 <= source_index < len(diagnostic_sources) else {})
+
+    def stage(name, filename=None):
+        filename = Path(str(filename if filename is not None else diagnostic_source.get("name", ""))).name
+        operation = request.get("operation", "")
+        emit = getattr(job, "emit", None)
+        if callable(emit):
+            emit({"type": "transplant-stage", "operation": operation, "stage": name,
+                  "filename": filename, "donor": Path(str(request.get("donorName", ""))).name,
+                  "source_index": source_index, "container_index": diagnostic_source.get("container"),
+                  "member": diagnostic_source.get("member")})
+        log = getattr(job, "log", None)
+        if callable(log):
+            log(f"[{operation} · {name} · {filename}]")
+
+    stage("validate_wearer")
     model_edits.require_body_editing(request["token"])
+    stage("prepare_output_folders")
     root = model_edits._safe_root(output_root)
     cache = model_edits._safe_root(cache_root)
     context = request["context"]
@@ -400,8 +424,11 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                 cache_root=physics_cache_root if physics_cache_root is not None else cache)
     else:
         exporter = export_fn or model_edits.export
+    stage("save_current_edits")
     saved = exporter(request["token"], request["state"], str(root), **export_options)
+    stage("locate_edited_wearer")
     saved_path = Path(saved["preview_paths"][source["container"]])
+    stage("prepare_transplant_files", saved_path)
     pending = Path(tempfile.mkdtemp(prefix=".viewer-transplant-", dir=root))
     try:
         inputs = pending / "inputs"
@@ -410,16 +437,20 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
         donor = inputs / request["donorName"]
         donor.write_bytes(request["donorRaw"])
         choices = {str(donor): request["variant"]} if zipfile.is_zipfile(donor) and request["variant"] == "unmasked" else None
+        stage("expand_donor", donor)
         with viewer_archive.expand_inputs([str(donor)], cache, choices) as expanded:
             donor_environments = {}
+            stage("select_donor_model", donor)
             donor_model = _donor_model(expanded, environments=donor_environments)
             donor_member = expanded.archive_members.get(donor_model)
             wearer = inputs / "wearer.unity"
+            stage("extract_wearer", saved_path)
             if source["member"] is None:
                 shutil.copyfile(saved_path, wearer)
             else:
                 with zipfile.ZipFile(saved_path) as archive:
                     wearer.write_bytes(archive.read(source["member"]))
+            stage("check_platforms", saved_path)
             if _platform(wearer) != _platform(donor_model, environment=donor_environments[donor_model]):
                 raise ValueError("The donor and wearer need matching Unity platforms (Android or iOS).")
             if job.should_stop():
@@ -433,6 +464,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                       "match_skin": request["matchSkin"], "skin_only": request["skinOnly"],
                       "skin_colour_guard": request["skinOnly"], "match_thigh": False,
                       "_physics_provenance": physics_provenance}
+            stage("graft_model", saved_path)
             if operation == "costume":
                 costume.run_costume_transplant(job, params)
             elif operation == "part":
@@ -450,6 +482,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     "exclude_accessories": request["excludeAccessories"], "selection_scope": request["selectionScope"],
                     "donor_renderer": request["donorRenderer"] or None, "target_renderer": request["targetRenderer"] or None})
         changed = models / "wearer_transplant.unity"
+        stage("validate_output", changed)
         if not changed.is_file() or not changed.stat().st_size:
             raise ValueError("The costume operation did not create a model.")
         # Actual Unity deserialization verifies the resulting bundle before it
@@ -459,6 +492,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
         if not validate_model(str(changed), verbose=False):
             raise ValueError("The transplanted model has unresolved mesh or bone references. No result was published.")
         result = models / saved_path.name
+        stage("package_output", result)
         if source["member"] is None:
             if result != changed:
                 changed.rename(result)
@@ -468,16 +502,19 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                 for entry in incoming.infolist():
                     outgoing.writestr(copy.copy(entry), changed.read_bytes() if entry.filename == source["member"] else incoming.read(entry))
             changed.unlink()
+        stage("preserve_face_companions", result)
         companions = _preserve_face_companions(context, saved, models, result, output_platform)
         shutil.rmtree(inputs)
         if job.should_stop():
             return "Cancelled"
         final = root / ("transplant-" + secrets.token_hex(8))
+        stage("publish_output", result)
         pending.rename(final); pending = None
         output = str(final / "models" / result.name)
         if repo_root is not None:
             from webtools.core import viewer_physics_runtime
             try:
+                stage("record_runtime_receipt", output)
                 viewer_physics_runtime.record_transplant(output, wearer_context=context,
                     wearer_source=request["sourceIndex"], donor_path=request["donor"], donor_member=donor_member,
                     donor_sha256=request["donorSha256"], operation=operation,
@@ -488,6 +525,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                 # completed. Never leave a selectable half-published graft.
                 shutil.rmtree(final, ignore_errors=True)
                 raise
+        stage("publish_output", output)
         job.add_output(output)
         job.progress(3, 3)
         job.emit({"type": "transplant", "path": output,

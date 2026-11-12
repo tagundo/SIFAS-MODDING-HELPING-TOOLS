@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import UnityPy
 import costume_transplant as full
 import costume_part_transplant as part
@@ -60,7 +61,176 @@ def donor_chain():
     return env.file.save(packer="original")
 
 
+def shared_skirt_and_tail():
+    """A shared native skirt plus two weighted donor-only SwingBone links."""
+    def ptr(n): return {"m_FileID": 0, "m_PathID": n}
+    target = UnityPy.load(fixture_bytes(native=True))
+    target_index = {obj.path_id: obj for obj in target.objects}
+    for pid, name in ((200, "SkirtA1_Dyna"), (210, "SkirtA_End")):
+        tree = target_index[pid].read_typetree()
+        tree["m_Name"] = name
+        target_index[pid].save_typetree(tree)
+    donor = UnityPy.load(donor_chain())
+    donor_index = {obj.path_id: obj for obj in donor.objects}
+    asset = donor_index[221].assets_file
+    for source_pid, new_pid in ((200, 270), (201, 271), (221, 272), (210, 280), (211, 281)):
+        template = donor_index[source_pid]
+        tree = template.read_typetree()
+        if new_pid == 270:
+            tree.update(m_Name="SkirtA1_Dyna", m_Component=[{"component": ptr(271)}, {"component": ptr(272)}])
+        elif new_pid == 271:
+            tree.update(m_GameObject=ptr(270), m_Father=ptr(9), m_Children=[ptr(281)])
+        elif new_pid == 272:
+            tree.update(m_GameObject=ptr(270), child=ptr(281), sibling=ptr(0),
+                        parentIndex=-1, childIndex=-1, siblingIndex=-1,
+                        enableLod=False, stiffnessForce=.73)
+        elif new_pid == 280:
+            tree.update(m_Name="SkirtA_End", m_Component=[{"component": ptr(281)}])
+        else:
+            tree.update(m_GameObject=ptr(280), m_Father=ptr(271), m_Children=[])
+        full._make_object(asset, template, new_pid, tree)
+    tree = donor_index[9].read_typetree()
+    tree["m_Children"].append(ptr(271))
+    donor_index[9].save_typetree(tree)
+    tree = donor_index[228].read_typetree()
+    tree["bones"] = [ptr(272)]
+    donor_index[228].save_typetree(tree)
+    # Full transplant discovers missing physics from the donor skin's bone
+    # list. Weight both tail links and the shared skirt in actual mesh data.
+    renderer = donor_index[12].read_typetree()
+    renderer["m_Bones"].extend([ptr(271), ptr(201), ptr(251)])
+    donor_index[12].save_typetree(renderer)
+    mesh = donor_index[1].read_typetree()
+    root_local = donor_index[201].read_typetree()
+    second_local = donor_index[251].read_typetree()
+    def local_translation(tree):
+        matrix = np.eye(4)
+        matrix[:3, 3] = [tree["m_LocalPosition"][axis] for axis in "xyz"]
+        return matrix
+    first_pose = np.linalg.inv(local_translation(root_local)) @ part.mat_from(mesh["m_BindPose"][2])
+    second_pose = np.linalg.inv(local_translation(second_local)) @ first_pose
+    mesh["m_BindPose"].extend([part._mat_dict(first_pose), part._mat_dict(first_pose), part._mat_dict(second_pose)])
+    count, channels, strides, starts, _ = part.stream_layout(mesh)
+    data = bytearray(mesh["m_VertexData"]["m_DataSize"])
+    weights = np.tile([1., 0., 0., 0.], (count, 1))
+    bone_ids = np.zeros((count, 4), dtype=int)
+    bone_ids[:3, 0], bone_ids[3:, 0] = 4, 5
+    weights[0], bone_ids[0] = [.5, .5, 0., 0.], [3, 4, 0, 0]
+    part.write_attr(np.frombuffer(data, np.uint8), weights, part.ATTR_BLENDWEIGHT, channels, strides, starts, count)
+    part.write_attr(np.frombuffer(data, np.uint8), bone_ids, part.ATTR_BLENDINDICES, channels, strides, starts, count)
+    mesh["m_VertexData"]["m_DataSize"] = bytes(data)
+    donor_index[1].save_typetree(mesh)
+    return as_bundle(target.file.save(packer="original")), as_bundle(donor.file.save(packer="original"))
+
+
 class TransplantPhysicsGraphTests(unittest.TestCase):
+    def test_shared_native_physics_sync_keeps_pending_injected_chain_bytes_and_siblings(self):
+        target_raw, donor_raw = shared_skirt_and_tail()
+        donor, target = UnityPy.load(donor_raw), UnityPy.load(target_raw)
+        native_objects, target_index = part._index(target)
+        native_ids = set(target_index)
+        names, children = full.inject_appendage_bones(donor, target, ["TailA1_Dyna"],
+            part._name2transform(target_index), restore_collision=False)
+        part.wire_child_adds(target_index, children)
+        injected = {obj.path_id: obj.data for obj in target.objects
+                    if obj.path_id not in native_ids and obj.type.name == "MonoBehaviour"}
+        self.assertEqual(len(injected), 2)
+        self.assertTrue(all(data is not None for data in injected.values()))
+        count = full.sync_costume_swing_physics(donor, target, ["SkirtA1_Dyna", "TailA1_Dyna", "TailA2_Dyna"],
+            restore_collision=False, target_objects=native_objects)
+        self.assertEqual(count, 1)
+        pending = {obj.path_id: obj.data for obj in target.objects}
+        for pid, data in injected.items():
+            self.assertEqual(pending[pid], data, pid)
+        saved = UnityPy.load(target.file.save(packer="original"))
+        _, saved_index = part._index(saved)
+        for pid, data in injected.items():
+            self.assertEqual(saved_index[pid].get_raw_data(), data, pid)
+        native = saved_index[221].read_typetree()
+        self.assertAlmostEqual(native["stiffnessForce"], .73, places=6)
+        self.assertEqual(native["m_GameObject"]["m_PathID"], 200)
+        self.assertEqual(native["child"]["m_PathID"], 211)
+        self.assertEqual(native["sibling"]["m_PathID"], 0)
+        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="native-swing-sync-") as temporary:
+            root = Path(temporary)
+            donor_path, target_path, output = (root / name for name in ("donor.unity", "target.unity", "output.unity"))
+            donor_path.write_bytes(donor_raw)
+            target_path.write_bytes(target_raw)
+            output.write_bytes(saved.file.save(packer="original"))
+            full.repair_transplant_physics(str(output), str(donor_path), str(target_path), names,
+                restore_collision=False, verbose=False)
+            self.assertTrue(full.validate(str(output), verbose=False))
+            repaired = UnityPy.load(str(output))
+            repaired_objects, repaired_index = part._index(repaired)
+            scripts = part._scriptname_map(repaired_objects)
+            swings = {part._go_name(repaired_index, obj.read_typetree()["m_GameObject"]["m_PathID"]): obj
+                      for obj in repaired_objects if obj.type.name == "MonoBehaviour"
+                      and scripts.get(obj.read_typetree()["m_Script"]["m_PathID"]) == "SwingBone"}
+            first, second = swings["TailA1_Dyna"], swings["TailA2_Dyna"]
+            self.assertEqual(first.read_typetree()["sibling"]["m_PathID"], second.path_id)
+            self.assertEqual(repaired_index[first.read_typetree()["sibling"]["m_PathID"]].type.name, "MonoBehaviour")
+            self.assertEqual(donor_path.read_bytes(), donor_raw)
+            self.assertEqual(target_path.read_bytes(), target_raw)
+
+    def test_full_transplant_syncs_native_skirt_without_overwriting_weighted_new_tail(self):
+        target_raw, donor_raw = shared_skirt_and_tail()
+        sync = full.sync_costume_swing_physics
+        calls = []
+        def capture(donor, target, names, *args, **kwargs):
+            snapshot = kwargs.get("target_objects")
+            self.assertIsNotNone(snapshot, "Full transplant must keep its pre-injection native snapshot")
+            native_ids = {obj.path_id for obj in snapshot}
+            injected = {obj.path_id: obj.data for obj in target.objects
+                        if obj.path_id not in native_ids and obj.type.name == "MonoBehaviour"}
+            self.assertEqual(len(injected), 2)
+            result = sync(donor, target, names, *args, **kwargs)
+            self.assertEqual(result, 1)
+            current = {obj.path_id: obj.data for obj in target.objects}
+            for pid, data in injected.items():
+                self.assertEqual(current[pid], data, pid)
+            calls.append(set(injected))
+            return result
+        with tempfile.TemporaryDirectory(dir="/dev/shm", prefix="full-native-swing-sync-") as temporary:
+            root = Path(temporary)
+            donor_path, target_path, output = (root / name for name in ("donor.unity", "target.unity", "output.unity"))
+            donor_path.write_bytes(donor_raw)
+            target_path.write_bytes(target_raw)
+            with patch.object(full, "sync_costume_swing_physics", side_effect=capture):
+                full.transplant(str(donor_path), str(target_path), str(output), verbose=False,
+                    preserve_physics=True, restore_collision=False)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(full.validate(str(output), verbose=False))
+            self.assertTrue(part.validate(str(output), verbose=False))
+            saved = UnityPy.load(str(output))
+            saved_objects, index = part._index(saved)
+            scripts = part._scriptname_map(saved_objects)
+            swings = {part._go_name(index, obj.read_typetree()["m_GameObject"]["m_PathID"]): obj
+                      for obj in saved_objects if obj.type.name == "MonoBehaviour"
+                      and scripts.get(obj.read_typetree()["m_Script"]["m_PathID"]) == "SwingBone"}
+            self.assertTrue({"SkirtA1_Dyna", "TailA1_Dyna", "TailA2_Dyna"} <= set(swings))
+            self.assertAlmostEqual(swings["SkirtA1_Dyna"].read_typetree()["stiffnessForce"], .73, places=6)
+            first, second = swings["TailA1_Dyna"], swings["TailA2_Dyna"]
+            self.assertEqual({first.path_id, second.path_id}, calls[0])
+            self.assertEqual(first.read_typetree()["sibling"]["m_PathID"], second.path_id)
+            donor_index = part._index(UnityPy.load(donor_raw))[1]
+            for field in ("childIndex", "siblingIndex"):
+                self.assertEqual(first.read_typetree()[field], donor_index[221].read_typetree()[field])
+            self.assertEqual(second.read_typetree()["parentIndex"], donor_index[252].read_typetree()["parentIndex"])
+            manager = full._find_swingbone_manager(saved_objects, scripts).read_typetree()
+            self.assertEqual([row["m_PathID"] for row in manager["bones"]], [swings["SkirtA1_Dyna"].path_id])
+            self.assertEqual([row["m_PathID"] for row in manager["lodBones"]], [first.path_id, second.path_id])
+            renderer = part._body_smr(saved_objects).read_typetree()
+            mesh = index[renderer["m_Mesh"]["m_PathID"]].read_typetree()
+            self.assertEqual(len(renderer["m_Bones"]), 6)
+            self.assertEqual(len(mesh["m_BindPose"]), 6)
+            count, channels, strides, starts, _ = part.stream_layout(mesh)
+            weights, bone_ids = part.get_skin(np.frombuffer(bytes(mesh["m_VertexData"]["m_DataSize"]), np.uint8),
+                mesh, channels, strides, starts, count)
+            weighted = set(bone_ids[weights > 0])
+            self.assertTrue({3, 4, 5} <= weighted)
+            self.assertEqual(donor_path.read_bytes(), donor_raw)
+            self.assertEqual(target_path.read_bytes(), target_raw)
+
     def test_shared_donor_keeps_saved_physics_and_provenance_without_reopening_source(self):
         target_raw, donor_raw = as_bundle(fixture_bytes(native=True)), as_bundle(donor_chain())
         with tempfile.TemporaryDirectory() as temporary:
