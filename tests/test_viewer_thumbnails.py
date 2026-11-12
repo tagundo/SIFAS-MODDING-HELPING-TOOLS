@@ -6,6 +6,7 @@ checks deliberately exercise rejection of stale sources/options/template data.
 import base64
 import hashlib
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -73,6 +74,62 @@ class ViewerThumbnailTests(unittest.TestCase):
         with patch.object(thumbs, "QUALITY", previous_quality):
             previous = self.plan()
         self.assertNotEqual(current["items"][0]["cacheKey"], previous["items"][0]["cacheKey"])
+
+    def test_full_character_profile_invalidates_headless_cached_thumbnails(self):
+        current = self.plan()
+        self.assertEqual(current["quality"]["subject"], "head-and-upper-body-v1")
+        with patch.object(thumbs, "QUALITY", {key: value for key, value in thumbs.QUALITY.items() if key != "subject"}):
+            headless = self.plan()
+        self.assertNotEqual(current["items"][0]["cacheKey"], headless["items"][0]["cacheKey"])
+
+    def test_whole_character_is_opt_in_and_cannot_reuse_default_crop_receipts(self):
+        upper = self.plan(); full_params = dict(self.params, thumbnail_fit_full=True)
+        full = self.plan(full_params)
+        self.assertEqual(upper["quality"]["subject"], "head-and-upper-body-v1")
+        self.assertEqual(full["quality"]["subject"], "full-character-v1")
+        self.assertNotEqual(upper["items"][0]["cacheKey"], full["items"][0]["cacheKey"])
+        self.upload(full)
+        with self.assertRaisesRegex(ValueError, "settings changed"):
+            thumbs.packer_provider(dict(self.params, thumbnail_plan=full["token"]))
+        self.assertEqual(thumbs.packer_provider(dict(full_params, thumbnail_plan=full["token"]))(str(self.source),256,6), self.png)
+        for value in ("true", 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "full character"):
+                self.plan(dict(self.params, thumbnail_fit_full=value))
+
+    def test_existing_zip_automatically_renders_original_eyes_and_binds_the_face_bytes(self):
+        from webtools.core import model_viewer
+        from test_model_faces import glb_names
+        source = self.root / "incoming.zip"
+        source.write_bytes((Path(__file__).parent / "fixtures/viewer_auto_face_costume.zip").read_bytes())
+        donor = self.root / "ch0207_facedynamic.unity"
+        donor.write_bytes((Path(__file__).parent / "fixtures/viewer_auto_face_donor.unity").read_bytes())
+        before = {path: path.read_bytes() for path in (source, donor)}
+        options = {"mode": "single", "in_path": str(source), "out_dir": str(self.root / "out"), "thumbnail_size": 256}
+        with patch("webtools.filebrowser.allowed_roots", return_value={"library": str(self.root)}), \
+                patch("webtools.core.sukusta.default_sukusta_dir", side_effect=lambda suffix="": str(self.root / suffix)):
+            plan = thumbs.plan({"kind": "updater", "params": options})
+            item = plan["items"][0]
+            result = thumbs.model({"token": plan["token"], "item_id": item["id"]})
+        self.assertIs(result["faces"]["enabled"], True)
+        self.assertEqual(result["faces"]["status"], "added")
+        self.assertEqual(result["plannedCacheKey"], item["cacheKey"])
+        self.assertNotEqual(result["cacheKey"], item["cacheKey"], "auto-added face bytes participate in the actual render binding")
+        expected_faces = [{"name": donor.name, "sha256": hashlib.sha256(before[donor]).hexdigest()}]
+        self.assertEqual(result["faceSources"], expected_faces)
+        expected_key = {"plan": item["cacheKey"], "faces": [[row["name"], row["sha256"]] for row in expected_faces]}
+        encoded_key = json.dumps(expected_key, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(result["cacheKey"], hashlib.sha256(encoded_key).hexdigest())
+        self.assertEqual(result["excludedMeshes"], [])
+        self.assertEqual(set(glb_names({"id": result["url"].rsplit("/", 1)[1][:-4]})), {"Body", "Face_shell", "Eyes"})
+        with thumbs._LOCK:
+            stored = thumbs._PLANS[plan["token"]]["items"][0]
+            self.assertIn([str(donor), hashlib.sha256(before[donor]).hexdigest()], stored["face_source_hashes"])
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+        receipt = self.upload(plan, cache_key=result["cacheKey"])
+        self.assertEqual(receipt["faceSources"], expected_faces)
+        donor.write_bytes(before[donor] + b"changed")
+        with self.assertRaisesRegex(ValueError, "changed after preparing"):
+            self.upload(plan, cache_key=result["cacheKey"])
 
     def test_source_change_after_render_is_rejected(self):
         plan = self.plan(); self.upload(plan)

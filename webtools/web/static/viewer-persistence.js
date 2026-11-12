@@ -19,6 +19,7 @@
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
     function thumbnailMode() { var select = element("viewer-mod-thumbnail-mode"); return select && select.value === "3d" ? "3d" : "texture"; }
+    function thumbnailFitFull() { var choice = element("viewer-mod-thumbnail-fit-full"); return !!(choice && choice.checked); }
     function clearThumbnail() {
       var preview = element("viewer-mod-thumbnail-preview"), label = element("viewer-mod-thumbnail-status");
       if (preview) { preview.hidden = true; preview.removeAttribute("src"); preview.removeAttribute("data-sha256"); }
@@ -28,7 +29,7 @@
       return { available: !!((context().editing || {}).available), busy: busy, installing: installing, alreadyAdded: alreadyAdded, status: status, error: error,
         outputs: outputPaths.slice(), outputPaths: outputPaths.slice(), previewPaths: previewPaths.slice(), originalPaths: originalPaths.slice(),
         recipePath: recipePath, resultModelId: resultModelId, reviewingSaved: reviewingSaved, jobId: jobId,
-        modName: element("viewer-mod-name").value, modNameManual: manualModName, thumbnailMode: thumbnailMode(),
+        modName: element("viewer-mod-name").value, modNameManual: manualModName, thumbnailMode: thumbnailMode(), thumbnailFitFull: thumbnailFitFull(),
         modPackage: lastPackage ? { packagePath: lastPackage.package_path, characterId: lastPackage.character_id,
           variants: lastPackage.variants || [], thumbnail: lastPackage.thumbnail || null } : null };
     }
@@ -240,6 +241,8 @@
       var validName = !!name.value.trim() && name.value.trim().length <= 120;
       name.disabled = !authoring; element("viewer-mod-name-auto").disabled = !authoring || !manualModName;
       if (element("viewer-mod-thumbnail-mode")) element("viewer-mod-thumbnail-mode").disabled = !authoring;
+      var fullThumbnail = element("viewer-mod-thumbnail-fit-full");
+      if (fullThumbnail) { fullThumbnail.disabled = !authoring || thumbnailMode() !== "3d"; if (fullThumbnail.parentElement) fullThumbnail.parentElement.hidden = thumbnailMode() !== "3d"; }
       var faceOption = element("viewer-mod-include-face"), faceHelp = element("viewer-mod-face-help");
       if (faceOption) { faceOption.disabled = !authoring || !metadata.hasFaceCompanions; if (!metadata.hasFaceCompanions) faceOption.checked = false; }
       if (faceHelp) faceHelp.textContent = translate(!metadata.hasFaceCompanions ? "Open the original face with this costume to include face and mouth edits." : faceOption && !faceOption.checked ? "Face and mouth edits will not be applied in game. This costume uses the game's original face." : "Only this costume uses the included face. Other costumes and the character's shared face stay unchanged.");
@@ -386,7 +389,7 @@
       var suggested = ((context().editing || {}).modPackaging || {}).characterId;
       return { display_name: element("viewer-mod-name").value.trim(), character_id: character ? Number(character) : suggested ? Number(suggested) : null,
         counterpart_path: counterpartPath || null, selected_variant: element("viewer-mod-variant").value || null,
-        thumbnail_mode: thumbnailMode(), include_face_edits: !!(element("viewer-mod-include-face") && element("viewer-mod-include-face").checked) };
+        thumbnail_mode: thumbnailMode(), thumbnail_fit_full: thumbnailFitFull(), include_face_edits: !!(element("viewer-mod-include-face") && element("viewer-mod-include-face").checked) };
     }
     function modChanged() {
       lastPackage = null; clearThumbnail();
@@ -442,6 +445,7 @@
       var body = Object.assign({ token: snapshot.token, state: snapshot.body }, parameters);
       if (snapshot.meshState) body.mesh_state = snapshot.meshState;
       delete body.thumbnail_mode;
+      delete body.thumbnail_fit_full;
       requestController = new global.AbortController(); var signal = requestController.signal;
       lastPackage = null; setBusy(true); say("Saving an installer-ready mod ZIP…", "saving");
       try {
@@ -584,6 +588,14 @@
       try { if (global.localStorage.getItem("sifas_costume_thumbnail_mode") === "3d") thumbnailChoice.value = "3d"; } catch (_) {}
       listen("viewer-mod-thumbnail-mode", "change", function () {
         try { global.localStorage.setItem("sifas_costume_thumbnail_mode", this.value); } catch (_) {}
+        modChanged();
+      });
+    }
+    var fullThumbnailChoice = element("viewer-mod-thumbnail-fit-full");
+    if (fullThumbnailChoice) {
+      try { fullThumbnailChoice.checked = global.localStorage.getItem("elichika.thumbnail.fit-full.v1") === "true"; } catch (_) {}
+      listen("viewer-mod-thumbnail-fit-full", "change", function () {
+        try { global.localStorage.setItem("elichika.thumbnail.fit-full.v1", String(this.checked)); } catch (_) {}
         modChanged();
       });
     }

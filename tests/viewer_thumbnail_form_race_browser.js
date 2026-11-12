@@ -26,7 +26,7 @@ async function fill(page, source, out) { await page.locator('#f_in_path').fill(s
       const page = await context.newPage(); page.setDefaultTimeout(30000); const out = path.join(library, mode); fs.mkdirSync(out);
       let release, held; const gate = new Promise(r => { release = r; }), requestHeld = new Promise(r => { held = r; });
       await page.route('**/static/thumbnail-sdk/pattern.png', async route => { held(); await gate; await route.continue(); });
-      await page.goto(server.url); await page.waitForFunction(() => typeof selectTool === 'function' && window.ViewerThumbnails);
+      await page.goto(server.url); await page.waitForFunction(() => typeof selectTool === 'function' && window.ViewerThumbnails && state.tools.some(tool => tool.id === 'costume_packer'));
       await page.evaluate(() => selectTool('costume_packer')); await fill(page, sources[0], out);
       const submission = page.waitForRequest(r => r.url().endsWith('/api/run/costume_packer') && r.method() === 'POST');
       await page.locator('#tool-form .run-btn').click(); let timer;

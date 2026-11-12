@@ -324,6 +324,7 @@
         listen(input, "change", function () { refresh(true); });
         listen(input, "blur", function () { refresh(true); });
         fields[kind].push(input); label.appendChild(input); row.appendChild(label);
+        if (window.ViewerSignedInputs) window.ViewerSignedInputs.attach(input, { signButton: false });
       }); holder.appendChild(row);
     });
     listen(list, "change", function () { if (this.value) select(this.value, true); });

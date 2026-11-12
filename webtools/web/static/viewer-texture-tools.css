@@ -59,6 +59,7 @@
 .viewer-texture-info, .viewer-texture-status { display: block; min-width: 0; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; max-height: 3em; overflow: auto; }
 .viewer-texture-error { color: var(--err); }
 .viewer-texture-color-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.viewer-texture-color-actions > .viewer-texture-selection-toggle { flex: 0 0 auto; min-height: 32px; }
 .viewer-texture-file-menu, .viewer-texture-view-options, .viewer-texture-selection-menu { position: relative; margin: 0; }
 .viewer-texture-file-menu > summary, .viewer-texture-view-options > summary, .viewer-texture-selection-menu > summary { display: flex; align-items: center; min-height: 32px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); cursor: pointer; font-size: 11px; box-sizing: border-box; white-space: nowrap; }
 .viewer-texture-file-menu > .viewer-texture-actions, .viewer-texture-selection-menu > .viewer-texture-actions { display: none; }
@@ -102,6 +103,7 @@
   .viewer-texture-canvas-resizer { flex-basis: 16px; height: 16px; }
   .viewer-texture-canvas-resizer::after { top: 6px; }
   .viewer-texture-view-bar { min-height: 44px; }
+  .viewer-texture-color-actions > .viewer-texture-selection-toggle { min-height: 44px; }
 }
 @media (max-width: 759px) {
   .viewer-texture-header > .viewer-texture-field { flex-basis: calc(100% - 52px); }

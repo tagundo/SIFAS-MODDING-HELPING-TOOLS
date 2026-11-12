@@ -17,9 +17,14 @@ function inspectZip(filename, pngOut) { return JSON.parse(execFileSync(python, [
 async function untouched(page) { return page.evaluate(() => { const s = ModelViewer.getState(); return { paths: s.loadedPaths, motions: s.motionLibraryPaths, camera: s.camera, authoring: ModelViewer.getAuthoringState(),
   pose: s.rig && { clip: s.rig.selectedClip, time: s.rig.time, playing: s.rig.playing, body: s.rig.body, physics: s.rig.physics }, meshNames: s.meshNames, source: s.sourceTriangles,
   rimlight: s.materials && s.materials.rimlightEnabled, rimlightPreference: localStorage.getItem('elichika.viewer.rimlight.v1') }; }); }
-function noRimlight(state) {
+function noRimlight(state, fitFull = false) {
   assert.strictEqual(state.last.render.material.rimlightEnabled, false, 'thumbnail shader disables rimlight');
   assert(state.receipts.every(receipt => receipt.quality.rimlight === false), 'every receipt binds the rimlight-free material profile');
+  assert(state.receipts.every(receipt => receipt.quality.subject === (fitFull?'full-character-v1':'head-and-upper-body-v1')), 'framing choice participates in every thumbnail binding');
+  const render=state.last.render,b=render.subjectBounds;
+  assert.equal(render.framing.mode,fitFull?'full-character':'head-and-upper-body');
+  assert.equal(render.framing.fitFullCharacter,fitFull);
+  assert(b.left>0&&b.top>0&&b.right<state.last.size-1&&b.bottom<state.last.size&&(!fitFull||b.bottom<state.last.size-1),'head and sides retain image padding; full mode also includes the feet');
 }
 function savedMatchesMain(render, rig, exactOperations) {
   const actual = render.savedNodes;
@@ -36,9 +41,9 @@ function savedMatchesMain(render, rig, exactOperations) {
     node[field].forEach((v, i) => assert(Math.abs(v - live[field][i]) < 1e-6, 'main and thumbnail ' + op.node + '.' + field));
   }
 }
-async function submitTool(page) {
+async function submitTool(page, toolId = 'costume_packer') {
   let answer = null, failure = null;
-  page.waitForResponse(r => r.url().endsWith('/api/run/costume_packer'), { timeout: 60000 }).then(r => r.json()).then(r => { answer = r; }, e => { failure = e; });
+  page.waitForResponse(r => r.url().endsWith('/api/run/'+toolId), { timeout: 60000 }).then(r => r.json()).then(r => { answer = r; }, e => { failure = e; });
   await page.locator('#tool-form .run-btn').click();
   for (let i = 0; i < 1200; i++) {
     if (answer) { assert(answer.job_id, JSON.stringify(answer)); return answer; }
@@ -65,6 +70,15 @@ async function main() { const report = { status: 'RUNNING', evidence, cases: [] 
     const packaged = inspectZip(path.join(output, zip), path.join(evidence, 'tool-thumbnail.png')); assert.equal(packaged.sha256, toolState.last.receipt.sha256); assert.equal(packaged.modelSha, original); assert.deepStrictEqual(packaged.size, [256, 256]);
     assert.equal(packaged.member, 6); assert.equal(sha(fs.readFileSync(source)), original); assert.equal((await page.evaluate(() => ModelViewer.getState())).loaded, false, 'hidden render never loads the main viewer');
     report.cases.push({ name: 'real Tools option→automatic high-quality render→installer ZIP', state: toolState, packaged });
+    assert.equal(await page.locator('#f_thumbnail_fit_full').isChecked(),false,'whole-character framing starts off');
+    const fullPackerOutput=path.join(output,'full-packer');fs.mkdirSync(fullPackerOutput);
+    await page.locator('#f_out_dir').fill(fullPackerOutput);await page.locator('#f_thumbnail_fit_full').check();await submitTool(page);
+    await page.waitForFunction(()=>/done|error/.test(document.getElementById('console-title').textContent));assert((await page.locator('#console-title').textContent()).includes('done'),await page.locator('#log').textContent());
+    const fullPacker=await page.evaluate(()=>ViewerThumbnails.getState());noRimlight(fullPacker,true);assert.notEqual(fullPacker.last.receipt.cacheKey,toolState.last.receipt.cacheKey);
+    const fullPacked=inspectZip(path.join(fullPackerOutput,fs.readdirSync(fullPackerOutput).find(n=>n.endsWith('.zip'))),path.join(evidence,'tool-full-thumbnail.png'));
+    assert.equal(fullPacked.sha256,fullPacker.last.receipt.sha256);assert.equal(fullPacked.modelSha,original);
+    report.cases.push({name:'actual Packer whole-character checkbox opt-in and separate source-bound installer PNG',state:fullPacker,packaged:fullPacked});
+    await page.locator('#f_thumbnail_fit_full').uncheck();await page.locator('#f_out_dir').fill(output);
     const existing = path.join(output, zip), secondExisting = path.join(output, 'second-existing.zip'); fs.copyFileSync(existing, secondExisting);
     for (const mode of ['single', 'multi']) {
       const update = await page.evaluate(async ({ mode, paths, output }) => {
@@ -103,12 +117,37 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
     const multiState = await page.evaluate(() => ViewerThumbnails.getState()), multiZips = fs.readdirSync(selectedOutput).filter(n => n.endsWith('.zip')); assert.equal(multiState.receipts.length, 2); assert.equal(multiZips.length, 2);
     multiZips.forEach((name, i) => { const zip = inspectZip(path.join(selectedOutput, name), path.join(evidence, 'selected-' + i + '.png')); assert(multiState.receipts.some(r => r.sha256 === zip.sha256 && r.sources.some(s => s.sha256 === zip.modelSha))); });
     assert.deepStrictEqual(Object.fromEntries(fs.readdirSync(batch).map(n => [n, sha(fs.readFileSync(path.join(batch, n)))])), batchHashes); report.cases.push({ name: 'Selected files shares source-bound render receipts with actual single subruns', state: multiState });
+    const fullUpdaterOutput=path.join(output,'full-updater');fs.mkdirSync(fullUpdaterOutput);const existingHash=sha(fs.readFileSync(existing));
+    await page.evaluate(()=>selectTool('costume_thumbnail_replace'));await page.locator('#f_in_path').fill(existing);await page.locator('#f_out_dir').fill(fullUpdaterOutput);
+    assert.equal(await page.locator('#f_thumbnail_fit_full').isChecked(),false,'updater whole-character framing also starts off');
+    await page.locator('#f_thumbnail_fit_full').check();await submitTool(page,'costume_thumbnail_replace');
+    await page.waitForFunction(()=>/done|error/.test(document.getElementById('console-title').textContent));assert((await page.locator('#console-title').textContent()).includes('done'),await page.locator('#log').textContent());
+    const fullUpdater=await page.evaluate(()=>ViewerThumbnails.getState());noRimlight(fullUpdater,true);
+    const fullUpdated=inspectZip(path.join(fullUpdaterOutput,fs.readdirSync(fullUpdaterOutput).find(n=>n.endsWith('.zip'))),path.join(evidence,'updater-full-thumbnail.png'));
+    assert.equal(fullUpdated.sha256,fullUpdater.last.receipt.sha256);assert.equal(fullUpdated.modelSha,original);assert.equal(sha(fs.readFileSync(existing)),existingHash);
+    report.cases.push({name:'actual existing-Mod updater whole-character checkbox creates new full-framed copy',state:fullUpdater,packaged:fullUpdated});
     await page.evaluate(source => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer([source]); }, source);
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);
     await (await show(page, '#viewer-rimlight')).check();
     assert.strictEqual((await page.evaluate(() => ModelViewer.getState())).materials.rimlightEnabled, true, 'live viewer uses the selected lighting preference');
     savedMatchesMain(toolState.last.render, (await page.evaluate(() => ModelViewer.getState())).rig, true);
     await page.evaluate(() => { const m = ModelViewer.getEditingMetadata(), node = m.nodes.find(n => n.name === 'BreastSize') || m.nodes.find(n => n.methods.includes('node')); const s = ModelViewer.getAuthoringState(); s.edits = [{ node: node.node, method: 'node', scale: node.baseline.scale.map((v, i) => i === 0 ? v * 1.1 : v) }]; ModelViewer.restoreAuthoringState(s); });
+    const fitApi = await page.evaluate(async () => {
+      const state = ModelViewer.getAuthoringState(); delete state.unsupported;
+      const request = { kind: 'viewer', token: ModelViewer.getEditingMetadata().token, state, character_id: 6, counterpart_path: '', selected_variant: 'apk', include_face_edits: false }, results = [];
+      for (const fit of [false, true, 'true', 1, null]) {
+        const response = await fetch('/api/viewer/thumbnail/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, request, { thumbnail_fit_full: fit })) });
+        results.push({ fit, status: response.status, data: await response.json() });
+      }
+      const response = await fetch('/api/viewer/thumbnail/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, request, { thumbnail_fit_full: false, unexpected: true })) });
+      results.push({ unknown: true, status: response.status, data: await response.json() }); return results;
+    });
+    assert.equal(fitApi[0].status,200,JSON.stringify(fitApi[0]));assert.equal(fitApi[1].status,200,JSON.stringify(fitApi[1]));
+    assert.equal(fitApi[0].data.quality.subject,'head-and-upper-body-v1');assert.equal(fitApi[1].data.quality.subject,'full-character-v1');
+    assert.notEqual(fitApi[0].data.items[0].cacheKey,fitApi[1].data.items[0].cacheKey);
+    for(const result of fitApi.slice(2,5)){assert.equal(result.status,400);assert.match(result.data.error,/full character/);}
+    assert.equal(fitApi[5].status,400);assert.equal(fitApi[5].data.error,'Unsupported editing request.');
+    report.cases.push({name:'actual viewer framing API accepts only true/false and rejects unknown request fields',results:fitApi});
     await (await show(page, '#viewer-mod-character')).selectOption('6'); await (await show(page, '#viewer-mod-thumbnail-mode')).selectOption('3d');
     const before = await untouched(page); await (await show(page, '#viewer-save-mod')).click();
     await page.waitForFunction(() => { const p = ModelViewer.getState().persistence; return !p.busy && ['done', 'error'].includes(p.status); });
@@ -118,14 +157,28 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
     assert(p.modPackage.thumbnail && p.modPackage.thumbnail.sha256 === live.last.receipt.sha256); assert.equal(p.modPackage.thumbnail.characterId, 6);
     const saved = inspectZip(p.modPackage.packagePath, path.join(evidence, 'viewer-thumbnail.png')); assert.equal(saved.sha256, live.last.receipt.sha256); assert.equal(saved.thumbnail, p.modPackage.thumbnail.member); assert.notEqual(saved.modelSha, original, 'actual exported edits are represented by the thumbnail model');
     await page.screenshot({ path: path.join(evidence, 'viewer-option-and-preview.png') }); report.cases.push({ name: 'actual edited viewer→3D thumbnail→saved ModZIP, isolated inspection state', thumbnail: live, saved, package: p.modPackage });
+    assert.equal(await page.locator('#viewer-mod-thumbnail-fit-full').isChecked(),false,'viewer whole-character framing starts off');
+    await (await show(page,'#viewer-mod-thumbnail-fit-full')).check();const beforeFullViewer=await untouched(page);
+    await (await show(page,'#viewer-save-mod')).click();await page.waitForFunction(()=>{const p=ModelViewer.getState().persistence;return !p.busy&&['done','error'].includes(p.status);});
+    const fullViewerPersistence=await page.evaluate(()=>ModelViewer.getState().persistence);assert.equal(fullViewerPersistence.status,'done',fullViewerPersistence.error);
+    const fullViewer=await page.evaluate(()=>ViewerThumbnails.getState());noRimlight(fullViewer,true);assert.notEqual(fullViewer.last.receipt.cacheKey,live.last.receipt.cacheKey);
+    assert.deepStrictEqual(await untouched(page),beforeFullViewer);assert.equal(fullViewerPersistence.modPackage.thumbnail.sha256,fullViewer.last.receipt.sha256);
+    await (await show(page,'#viewer-mod-thumbnail-fit-full')).uncheck();
+    report.cases.push({name:'actual viewer whole-character checkbox saves full-framed installer while keeping live scene and face-export option independent',state:fullViewer,package:fullViewerPersistence.modPackage});
     if (fs.existsSync('/workspace/scratch/game-motion-real/ayumu-body.unity')) {
       const body = path.join(input, 'ayumu-body.unity'), face = path.join(input, 'ayumu-face.unity'); fs.copyFileSync('/workspace/scratch/game-motion-real/ayumu-body.unity', body); fs.copyFileSync('/workspace/scratch/game-motion-real/ayumu-face.unity', face);
       const hashes = [body, face].map(p => sha(fs.readFileSync(p)));
       const actual = await page.evaluate(async body => { let png; const result = await ViewerThumbnails.preparePacker({ mode: 'single', in_path: body, auto_chara_id: false, manual_chara_id: '201', thumbnail_size: '256', combine_pairs: true }, { onPreview: image => { png = image; } }); return { result, state: ViewerThumbnails.getState(), png }; }, body);
       fs.writeFileSync(path.join(evidence, 'ayumu-costume.png'), Buffer.from(actual.png.split(',')[1], 'base64')); delete actual.png;
       assert(actual.state.last.render.triangles > 1000 && actual.state.last.render.subjectPixels > 1000 && actual.state.last.render.material.recognizedMaterials > 0); noRimlight(actual.state);
-      assert(actual.state.last.render.excludedNames.includes('Hair') && actual.state.last.render.excludedNames.includes('Face') && actual.state.last.render.visibleMeshes === 1, 'actual GLB primitive mappings really hide verified head meshes, retaining the costume');
+      assert(actual.state.last.render.visibleNames.includes('Hair') && actual.state.last.render.visibleNames.includes('Face') && actual.state.last.render.visibleMeshes >= 3, 'original hair and face are rendered with the costume');
+      assert(!actual.state.last.render.excludedNames.includes('Hair')&&!actual.state.last.render.excludedNames.includes('Face'),'head roles are never removed from the full-character thumbnail');
       assert.deepStrictEqual([body, face].map(p => sha(fs.readFileSync(p))), hashes); report.cases.push({ name: 'original Ayumu costume, native SDK framing and SIFAS material', actual });
+      const fullActual=await page.evaluate(async body=>{let png;await ViewerThumbnails.preparePacker({mode:'single',in_path:body,auto_chara_id:false,manual_chara_id:'201',thumbnail_size:'256',combine_pairs:true,thumbnail_fit_full:true},{onPreview:image=>{png=image;}});return{state:ViewerThumbnails.getState(),png};},body);
+      noRimlight(fullActual.state,true);assert(fullActual.state.last.render.camera.top>actual.state.last.render.camera.top,'head-and-upper-costume default is closer than the full-body option');
+      assert.notEqual(fullActual.state.last.receipt.cacheKey,actual.state.last.receipt.cacheKey);assert.notEqual(fullActual.state.last.receipt.sha256,actual.state.last.receipt.sha256);
+      fs.writeFileSync(path.join(evidence,'ayumu-full-character-option.png'),Buffer.from(fullActual.png.split(',')[1],'base64'));delete fullActual.png;
+      report.cases.push({name:'original character head-and-upper default versus opt-in full figure retain head textures and distinct image/cache',fullActual});
       await page.evaluate(paths => { document.getElementById('viewer-auto-face').checked = false; return openModelViewer(paths); }, [body, face]);
       await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading && ModelViewer.getEditingMetadata().available);
       const ordinary = await page.evaluate(() => ({ authoring: ModelViewer.getAuthoringState(), rig: ModelViewer.getState().rig }));
@@ -147,12 +200,13 @@ for name,platform in [('006set_apk.unity',13),('006set_ios.unity',9),('006other_
         const state = ModelViewer.getAuthoringState(); delete state.unsupported;
         const snapshot = { token: metadata.token, body: state }; let png;
         await ViewerThumbnails.prepareViewer(snapshot, { character_id: 201, counterpart_path: null, selected_variant: null }, { onPreview: image => { png = image; } }); return { ...ViewerThumbnails.getState(), png, liveAuthoring: ModelViewer.getAuthoringState() }; });
-      fs.writeFileSync(path.join(evidence, 'ayumu-body-face-headless.png'), Buffer.from(facial.png.split(',')[1], 'base64')); delete facial.png;
-      assert(facial.last.render.excludedMeshes.some(r => (r.proofs || []).some(p => p.class === 'MemberFace')) && facial.last.render.excludedNames.includes('Mouth'), 'original face and jaw are excluded by typed source renderer identity');
-      assert(facial.last.render.visibleMeshes === 1 && facial.last.render.excludedNames.length >= 7 && facial.last.render.triangles > 1000 && facial.last.render.subjectPixels > 1000, 'only costume geometry survives actual head and eye exclusion');
+      fs.writeFileSync(path.join(evidence, 'ayumu-body-face-complete.png'), Buffer.from(facial.png.split(',')[1], 'base64')); delete facial.png;
+      assert(facial.last.render.visibleNames.includes('Mouth')&&facial.last.render.visibleNames.includes('Hair')&&facial.last.render.visibleNames.includes('Face'),'explicit original face, mouth and hair remain rendered');
+      assert(facial.last.render.visibleMeshes >= 8 && facial.last.render.excludedNames.length === 0 && facial.last.render.triangles > 1000 && facial.last.render.subjectPixels > 1000, 'complete character and costume survive the actual render');
+      noRimlight(facial);
       savedMatchesMain(facial.last.render, (await page.evaluate(() => ModelViewer.getState())).rig, false);
       assert.deepStrictEqual(await untouched(page), realBefore); assert.deepStrictEqual([body, face].map(p => sha(fs.readFileSync(p))), hashes);
-      report.cases.push({ name: 'original Body+Face real UI body save, verified saved-shape headless render and untouched live scene', facial, rawSaved });
+      report.cases.push({ name: 'original Body+Face real UI body save, verified saved-shape complete-character render and untouched live scene', facial, rawSaved });
     }
     const abortContext = await browser.newContext({ viewport: { width: 900, height: 700 } }); const abortPage = await abortContext.newPage(); let releaseImage, imageHeld;
     const held = new Promise(resolve => { imageHeld = resolve; }), imageGate = new Promise(resolve => { releaseImage = resolve; });

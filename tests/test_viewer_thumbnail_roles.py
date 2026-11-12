@@ -5,10 +5,11 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import UnityPy
 
-from webtools.core import model_viewer, viewer_thumbnail_roles
+from webtools.core import model_viewer, viewer_thumbnail_roles, viewer_thumbnails
 
 
 FIXTURE = Path(__file__).parent / "fixtures/viewer_persistence.unity"
@@ -78,6 +79,22 @@ def hierarchy():
 
 
 class ThumbnailRoleTests(unittest.TestCase):
+    def test_thumbnail_keeps_typed_head_dependency_but_hides_unrelated_dependency_body(self):
+        env, body, component, _ = hierarchy()
+        body.externals = [SimpleNamespace(path="archive:/CAB-head/CAB-head")]
+        dependency = env.file("CAB-head", "/original/head.unity")
+        head = env.game(dependency, 10, "native head")
+        env.renderer(dependency, head, 250, 350, "arbitrary face surface")
+        unrelated = env.game(dependency, 40, "separate donor body")
+        env.renderer(dependency, unrelated, 251, 351, "unrelated costume")
+        component.value["headAll"] = pointer(10, 1)
+        scene = env.scene()
+        with patch.object(model_viewer, "_environment", return_value=scene.env), patch.object(model_viewer, "_Scene", return_value=scene):
+            result = viewer_thumbnails._excluded_meshes([body.preview_source_path, dependency.preview_source_path], [body.preview_source_path])
+        self.assertEqual([row["mesh"]["id"] for row in result], ["351"])
+        self.assertEqual(result[0]["role"], "dependency")
+        self.assertEqual(viewer_thumbnails._excluded_meshes([body.preview_source_path]), [])
+
     def test_real_neutral_costume_mesh_names_never_authorize_head_removal(self):
         raw = FIXTURE.read_bytes()
         with tempfile.TemporaryDirectory() as directory:

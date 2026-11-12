@@ -2454,6 +2454,8 @@ for _source, _translated in _VIEWER_ACCESSORY_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 _VIEWER_MODEL_SAVE_TRANSLATIONS = {
+    "Fit full character": ["전신에 맞춤", "全身を表示"],
+    "Include the whole character. Off keeps the face and upper costume larger.": ["전신을 화면에 맞춥니다. 끄면 얼굴과 의상 상반신을 더 크게 표시합니다.", "全身を画面内に収めます。オフでは顔と衣装の上半身を大きく表示します。"],
     "Rimlight": ["림라이트", "リムライト"],
     "Clip nearby surfaces": ["가까운 표면 잘라내기", "近くの表面をクリップ"],
     "Near clip distance (model units)": ["절단 거리 (모델 단위)", "クリップ距離（モデル単位）"],

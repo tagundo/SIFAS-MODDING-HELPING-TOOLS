@@ -120,6 +120,71 @@
         var object = nodes[id]; return { node: id, name: object.name, position: object.position.toArray(), quaternion: object.quaternion.toArray(), scale: object.scale.toArray() };
       }) };
   }
+  function frameCharacter(model, camera, source, fitFull) {
+    var T = global.THREE, direction = new T.Vector3().fromArray(source.direction).normalize();
+    var right = new T.Vector3().crossVectors(direction, camera.up).normalize();
+    var up = new T.Vector3().crossVectors(right, direction).normalize();
+    var low = [Infinity, Infinity, Infinity], high = [-Infinity, -Infinity, -Infinity], vertices = 0;
+    model.updateMatrixWorld(true);
+    model.traverse(function (mesh) { if (mesh.isSkinnedMesh && mesh.skeleton) mesh.skeleton.update(); });
+    var original = new T.Vector3(), point = new T.Vector3(), delta = new T.Vector3();
+    var skinIndices = new T.Vector4(), skinWeights = new T.Vector4(), transformed = new T.Vector3(), weighted = new T.Vector3(), boneMatrix = new T.Matrix4();
+    model.traverseVisible(function (mesh) {
+      if (!mesh.isMesh || mesh.userData && mesh.userData.viewerHelper || !mesh.geometry || !mesh.geometry.attributes.position) return;
+      var geometry = mesh.geometry, positions = geometry.attributes.position, morphs = geometry.morphAttributes.position || [];
+      var count = geometry.index ? geometry.index.count : positions.count, range = geometry.drawRange || { start: 0, count: Infinity };
+      var start = Math.max(0, range.start), end = Math.min(count, start + range.count), seen = new Set();
+      for (var at = start; at < end; at++) {
+        var i = geometry.index ? geometry.index.getX(at) : at; if (seen.has(i)) continue; seen.add(i);
+        original.fromBufferAttribute(positions, i); point.copy(original);
+        morphs.forEach(function (morph, index) {
+          var influence = mesh.morphTargetInfluences && mesh.morphTargetInfluences[index] || 0;
+          if (!influence) return;
+          delta.fromBufferAttribute(morph, i); if (!geometry.morphTargetsRelative) delta.sub(original);
+          point.addScaledVector(delta, influence);
+        });
+        if (mesh.isSkinnedMesh) {
+          // r128's boneTransform reloads the bind position and discards morph
+          // deltas. Apply the shader's skin matrices to the morphed point.
+          skinIndices.fromBufferAttribute(geometry.attributes.skinIndex, i);
+          skinWeights.fromBufferAttribute(geometry.attributes.skinWeight, i);
+          point.applyMatrix4(mesh.bindMatrix); weighted.set(0, 0, 0);
+          for (var slot = 0; slot < 4; slot++) {
+            var weight = skinWeights.getComponent(slot); if (!weight) continue;
+            var bone = skinIndices.getComponent(slot);
+            boneMatrix.multiplyMatrices(mesh.skeleton.bones[bone].matrixWorld, mesh.skeleton.boneInverses[bone]);
+            weighted.addScaledVector(transformed.copy(point).applyMatrix4(boneMatrix), weight);
+          }
+          point.copy(weighted).applyMatrix4(mesh.bindMatrixInverse);
+        }
+        point.applyMatrix4(mesh.matrixWorld);
+        var values = [point.dot(right), point.dot(up), point.dot(direction)];
+        if (!values.every(isFinite)) fail('The character has invalid thumbnail positions.');
+        values.forEach(function (value, axis) { low[axis] = Math.min(low[axis], value); high[axis] = Math.max(high[axis], value); });
+        vertices++;
+      }
+    });
+    if (!vertices) fail('No character geometry is available for its thumbnail.');
+    var wholeLow = low.slice(), wholeHigh = high.slice();
+    // The default is a larger face/upper-costume view. Preserve the complete
+    // horizontal extent so hands and outfit details are not cut at the sides.
+    // Full-character fitting is a separate opt-in framing policy.
+    if (!fitFull) low[1] = Math.max(low[1], high[1] - Math.max(source.top - source.bottom, (high[1] - low[1]) * .65));
+    var half = Math.max((source.right - source.left) / 2, (source.top - source.bottom) / 2,
+      (high[0] - low[0]) / 2 * 1.12, (high[1] - low[1]) / 2 * 1.12, .001);
+    camera.left = camera.bottom = -half; camera.right = camera.top = half;
+    camera.position.fromArray(source.position);
+    camera.position.addScaledVector(right, (low[0] + high[0]) / 2 - camera.position.dot(right));
+    camera.position.addScaledVector(up, (low[1] + high[1]) / 2 - camera.position.dot(up));
+    var front = low[2] - camera.position.dot(direction), margin = Math.max(.01, source.near * .1);
+    if (front < source.near + margin) camera.position.addScaledVector(direction, front - source.near - margin);
+    camera.far = Math.max(source.far, high[2] - camera.position.dot(direction) + margin);
+    camera.lookAt(camera.position.clone().add(direction)); camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
+    return { mode: fitFull ? 'full-character' : 'head-and-upper-body', fitFullCharacter: !!fitFull,
+      vertices: vertices, minimum: low, maximum: high, wholeMinimum: wholeLow, wholeMaximum: wholeHigh, upperFraction: .65, padding: .12,
+      sourceCamera: JSON.parse(JSON.stringify(source)), camera: { position: camera.position.toArray(), direction: direction.toArray(),
+        up: camera.up.toArray(), left: camera.left, right: camera.right, top: camera.top, bottom: camera.bottom, near: camera.near, far: camera.far } };
+  }
   async function renderSubject(prepared, profile, size, signal) {
     var T = global.THREE, renderer, quality, material, model;
     if (!T || !T.GLTFLoader || !global.ViewerQuality || !global.SifasMaterial) fail('The high-quality 3D thumbnail renderer is unavailable.');
@@ -141,12 +206,12 @@
       scene.add(new T.HemisphereLight(0xffffff, 0x737b89, .85));
       var key = new T.DirectionalLight(0xffffff, .9); key.position.set(-2, 3, 4); scene.add(key);
       var fill = new T.DirectionalLight(0xffffff, .35); fill.position.set(3, 1, -3); scene.add(fill);
-      var visibleMeshes = 0, excludedNames = [];
+      var visibleMeshes = 0, excludedNames = [], visibleNames = [];
       model.traverse(function (mesh) {
         if (!mesh.isMesh) return;
         if (hidden(mesh, prepared.excludedMeshes)) { mesh.visible = false; excludedNames.push(mesh.name); }
         else {
-          visibleMeshes++;
+          visibleMeshes++; visibleNames.push(mesh.name);
           (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach(function (original) {
             var data = original && original.userData && original.userData.sifas;
             if (data && (data.limitations || []).some(function (text) { return /texture unavailable: _MainTex/.test(text); }))
@@ -163,20 +228,26 @@
       camera.position.fromArray(p.position); camera.up.fromArray(p.up);
       camera.lookAt(new T.Vector3().fromArray(p.position).add(new T.Vector3().fromArray(p.direction)));
       camera.updateProjectionMatrix(); model.updateMatrixWorld(true);
+      var framing = frameCharacter(model, camera, p, prepared.subject === 'full-character-v1');
       quality.render(scene, camera); var info = quality.render(scene, camera);
       var gl = renderer.getContext(); if (gl.isContextLost()) fail('The 3D thumbnail graphics context was lost.');
       if (quality.readGLError() !== gl.NO_ERROR) fail('The high-quality 3D thumbnail could not be rendered.');
       var output = canvas(size), ctx = output.getContext('2d', { willReadFrequently: true });
       ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(renderer.domElement, 0, 0, size, size);
       var pixels = ctx.getImageData(0, 0, size, size).data, subjectPixels = 0;
-      for (var i = 3; i < pixels.length; i += 4) if (pixels[i] > 8) subjectPixels++;
+      var subjectBounds = { left: size, top: size, right: -1, bottom: -1 };
+      for (var i = 3; i < pixels.length; i += 4) if (pixels[i] > 8) {
+        subjectPixels++; var pixel = (i - 3) / 4, x = pixel % size, y = Math.floor(pixel / size);
+        subjectBounds.left = Math.min(subjectBounds.left, x); subjectBounds.right = Math.max(subjectBounds.right, x);
+        subjectBounds.top = Math.min(subjectBounds.top, y); subjectBounds.bottom = Math.max(subjectBounds.bottom, y);
+      }
       // ViewerQuality returns scene statistics before its final copy triangle.
       var state = quality.getState(), triangles = info.triangles;
       if (!subjectPixels || !triangles || !state.enabled || !state.ready) fail('No costume is visible in the SDK thumbnail camera.');
-      return { canvas: output, report: { quality: state, subjectPixels: subjectPixels, triangles: triangles,
-        material: material.getState ? material.getState() : null, camera: JSON.parse(JSON.stringify(p)),
-        pose: 'source-rest', animation: false, sourceStats: prepared.stats, savedNodes: savedNodes,
-        excludedMeshes: prepared.excludedMeshes || [], excludedNames: excludedNames, visibleMeshes: visibleMeshes,
+      return { canvas: output, report: { quality: state, subjectPixels: subjectPixels, subjectBounds: subjectBounds, triangles: triangles,
+        material: material.getState ? material.getState() : null, camera: framing.camera, framing: framing,
+        pose: 'source-rest', animation: false, sourceStats: prepared.stats, savedNodes: savedNodes, faces: prepared.faces || {}, faceSources: prepared.faceSources || [],
+        excludedMeshes: prepared.excludedMeshes || [], excludedNames: excludedNames, visibleNames: visibleNames, visibleMeshes: visibleMeshes,
         lighting: { hemisphere: [0xffffff, 0x737b89, .85], key: { color: 0xffffff, intensity: .9, position: [-2, 3, 4] }, fill: { color: 0xffffff, intensity: .35, position: [3, 1, -3] } } } };
     } finally {
       if (material) material.dispose();
@@ -198,10 +269,10 @@
         stopped(signal); var item = plan.items[i];
         if (options.onProgress) options.onProgress(i, plan.items.length, item.name);
         var prepared = await api('model', { token: plan.token, item_id: item.id }, signal);
-        if (prepared.cacheKey !== item.cacheKey || prepared.profileDigest !== plan.profileDigest) fail('The thumbnail model or template changed.');
+        if (prepared.plannedCacheKey !== item.cacheKey || !/^[a-f0-9]{64}$/.test(prepared.cacheKey) || prepared.profileDigest !== plan.profileDigest) fail('The thumbnail model or template changed.');
         var subject = await renderSubject(prepared, profile, plan.size, signal);
         var combined = await compose(profile, item.characterId, subject.canvas, plan.size, signal), png = combined.toDataURL('image/png');
-        var receipt = await api('render', { token: plan.token, item_id: item.id, cache_key: item.cacheKey,
+        var receipt = await api('render', { token: plan.token, item_id: item.id, cache_key: prepared.cacheKey,
           profile_digest: plan.profileDigest, png: png, render: subject.report }, signal);
         results.push({ receipt: receipt, render: subject.report }); lastReceipts.push(receipt);
         last = { token: plan.token, size: plan.size, characterId: item.characterId, receipt: receipt,
@@ -221,6 +292,7 @@
       character_id: parameters.character_id, counterpart_path: parameters.counterpart_path,
       selected_variant: parameters.selected_variant };
     if (typeof parameters.include_face_edits === 'boolean') request.include_face_edits = parameters.include_face_edits;
+    request.thumbnail_fit_full = parameters.thumbnail_fit_full === true;
     if (snapshot.meshState && snapshot.meshState.meshes && snapshot.meshState.meshes.length) request.mesh_state = snapshot.meshState;
     var plan = await api('plan', request, options && options.signal);
     return renderPlan(plan, options);
@@ -231,6 +303,6 @@
   }
   global.ViewerThumbnails = { preparePacker: preparePacker, prepareViewer: prepareViewer,
     prepareUpdater: prepareUpdater,
-    renderPlan: renderPlan, compose: compose, applySavedSettings: applySavedSettings, getState: function () { return { busy: active,
+    renderPlan: renderPlan, compose: compose, applySavedSettings: applySavedSettings, frameCharacter: frameCharacter, getState: function () { return { busy: active,
       last: last ? JSON.parse(JSON.stringify(last)) : null, receipts: JSON.parse(JSON.stringify(lastReceipts)) }; } };
 }(window));

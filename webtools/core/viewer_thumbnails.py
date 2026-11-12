@@ -29,7 +29,7 @@ MAX_ITEMS = 128
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_PLAN_BYTES = 32 * 1024 * 1024
 QUALITY = {"renderer": "SifasMaterial", "highQuality": True, "animation": False, "supersample": 2,
-           "rimlight": False}
+           "rimlight": False, "subject": "head-and-upper-body-v1"}
 
 
 def _require(value, message):
@@ -96,7 +96,7 @@ def _plan(token):
 def _tool_options(params):
     return {key: params.get(key, default) for key, default in (
         ("mode", "single"), ("in_path", ""), ("in_dir", ""), ("in_paths", ""), ("auto_chara_id", True),
-        ("manual_chara_id", 0), ("thumbnail_size", 256), ("combine_pairs", True))}
+        ("manual_chara_id", 0), ("thumbnail_size", 256), ("combine_pairs", True), ("thumbnail_fit_full", False))}
 
 
 def _viewer_binding(token, state, character_id, counterpart_path, selected_variant, mesh_state=None, include_face_edits=None):
@@ -131,6 +131,12 @@ def plan(params):
     _require(isinstance(params, dict), "Invalid automatic thumbnail request.")
     kind = params.get("kind")
     _require(kind in ("packer", "viewer", "updater"), "Choose a supported thumbnail source.")
+    supplied = params if kind == "viewer" else params.get("params", {})
+    fit_full = supplied.get("thumbnail_fit_full", False) if isinstance(supplied, dict) else False
+    _require(type(fit_full) is bool, "Choose whether to fit the full character in its thumbnail.")
+    quality = dict(QUALITY)
+    if fit_full:
+        quality["subject"] = "full-character-v1"
     profile, profile_digest = _profile()
     temporary = None
     try:
@@ -201,7 +207,7 @@ def plan(params):
                 _unchanged(item)
         else:
             fields = {"kind", "token", "state", "character_id", "counterpart_path", "selected_variant"}
-            _require(fields <= set(params) <= fields | {"mesh_state", "include_face_edits"}, "Invalid viewer thumbnail options.")
+            _require(fields <= set(params) <= fields | {"mesh_state", "include_face_edits", "thumbnail_fit_full"}, "Invalid viewer thumbnail options.")
             binding, context, normalized = _viewer_binding(params["token"], params["state"], params["character_id"], params["counterpart_path"], params["selected_variant"], params.get("mesh_state"), params.get("include_face_edits"))
             owner = _viewer_owner(context, params["character_id"])
             from . import viewer_mod_flow, viewer_scene_roles
@@ -225,7 +231,8 @@ def plan(params):
             item["id"] = secrets.token_hex(16)
             item["png"] = None
             item["cacheKey"] = _hash(_json({"kind": kind, "binding": binding, "source": item["source_hashes"],
-                "targetMember": item["characterId"], "profile": profile_digest, "size": size, "quality": QUALITY}))
+                "targetMember": item["characterId"], "profile": profile_digest, "size": size, "quality": quality}))
+            item["plannedCacheKey"] = item["cacheKey"]
         token = secrets.token_hex(16)
         with _LOCK:
             _prune()
@@ -234,10 +241,11 @@ def plan(params):
                 if old.get("temporary"):
                     shutil.rmtree(old["temporary"], ignore_errors=True)
             _PLANS[token] = {"kind": kind, "binding": binding, "items": items, "size": size,
-                "profile": profile_digest, "expires": time.monotonic() + TTL, "temporary": temporary}
+                "profile": profile_digest, "quality": quality, "fit_full": fit_full,
+                "expires": time.monotonic() + TTL, "temporary": temporary}
         temporary = None
         return {"token": token, "size": size, "profileDigest": profile_digest,
-                "profileUrl": "/static/thumbnail-sdk/profile.json", "quality": QUALITY,
+                "profileUrl": "/static/thumbnail-sdk/profile.json", "quality": quality,
                 "items": [{"id": item["id"], "name": Path(item["paths"][0]).name,
                     "characterId": item["characterId"], "color": color_table[str(item["characterId"])],
                     "cacheKey": item["cacheKey"], "sources": [{"name": Path(path).name, "sha256": digest} for path, digest in item["source_hashes"]]} for item in items]}
@@ -251,21 +259,24 @@ def _item(value, item_id):
 
 
 def _unchanged(item):
-    for path, digest in item["source_hashes"]:
+    for path, digest in item["source_hashes"] + item.get("face_source_hashes", []):
         _require(Path(path).is_file() and _sha(path) == digest, "The costume changed after preparing its thumbnail. Render it again.")
 
 
 
 def _excluded_meshes(paths, render_sources=None):
-    """Drop head renderers only with original LLAS component/PPtr proof."""
+    """Keep the character's head; hide only unrelated execution dependencies."""
+    if render_sources is None:
+        return []
     from . import model_viewer
     from .viewer_thumbnail_roles import excluded_renderers
     deadline = time.monotonic() + 60
     environment = model_viewer._environment(paths, deadline)
     scene = model_viewer._Scene(environment, deadline)
-    excluded = excluded_renderers(scene, paths)
-    if render_sources is None:
-        return excluded
+    heads = excluded_renderers(scene, paths)
+    head_renderers = {tuple(row["rendererIdentity"][key] for key in ("source", "file", "id"))
+                      for row in heads if row.get("rendererIdentity")}
+    excluded = []
     allowed = {str(Path(path).resolve()) for path in render_sources}
     indices = {str(Path(path).resolve()): index for index, path in enumerate(paths)}
     files = {}
@@ -289,6 +300,8 @@ def _excluded_meshes(paths, render_sources=None):
         mesh_id, renderer_id = identity(mesh) if mesh is not None else None, identity(renderer)
         if mesh_id is None or renderer_id is None:
             continue
+        if tuple(renderer_id[key] for key in ("source", "file", "id")) in head_renderers:
+            continue
         excluded.append({"mesh": mesh_id, "renderer": str(renderer.path_id), "rendererIdentity": renderer_id,
                          "role": "dependency", "name": scene.name(mesh),
                          "proofs": [{"scope": "scene-graph-dependency", "renderer": renderer_id}]})
@@ -304,6 +317,7 @@ def model(params):
         _unchanged(item)
         paths = item["paths"][:]
     from . import model_viewer, viewer_archive
+    from webtools import filebrowser
     from .sukusta import default_sukusta_dir
     cache = Path(default_sukusta_dir("")) / ".viewer-cache"
     with ExitStack() as stack:
@@ -317,11 +331,38 @@ def model(params):
             expanded = stack.enter_context(viewer_archive.expand_inputs(paths, cache))
             render_sources = None
         excluded = _excluded_meshes(expanded.paths, render_sources)
-        prepared = model_viewer.prepare(expanded.paths, rigged=True,
-            face_context={"enabled": False, "allow_download": False, "origins": getattr(expanded, "origins", {})}, motion_paths=[])
+        prepared = model_viewer.prepare(expanded.paths, rigged=True, face_context={
+            "enabled": True, "allow_download": True, "repo_root": str(Path.cwd()),
+            "library_roots": list(dict.fromkeys(str(Path(root).resolve()) for root in filebrowser.allowed_roots().values())),
+            "cache_dir": str(cache), "origins": getattr(expanded, "origins", {}),
+            "manifest_paths": getattr(expanded, "manifest_paths", []),
+        }, motion_paths=[])
+        # The original face is resolved by the same trusted owner/CAB checks as
+        # the main viewer. Bind its actual bytes too, so a cached thumbnail can
+        # never silently survive a face replacement between render and save.
+        companions = model_viewer.get_editing_companions(prepared["id"])
+        face_hashes = []
+        for row in companions:
+            path, digest = row.get("path"), row.get("sha256")
+            _require(isinstance(path, str) and Path(path).is_file() and _sha(path) == digest,
+                     "The original face changed while rendering its thumbnail. Render it again.")
+            if [path, digest] not in face_hashes:
+                face_hashes.append([path, digest])
+        with _LOCK:
+            _require(_item(_plan(params["token"]), params["item_id"]) is item,
+                     "Prepare the automatic 3D thumbnail again.")
+            render_key = (_hash(_json({"plan": item["plannedCacheKey"], "faces": sorted([Path(path).name, digest] for path, digest in face_hashes)}))
+                          if face_hashes else item["plannedCacheKey"])
+            if render_key != item["cacheKey"]:
+                item["png"] = None
+                item.pop("render", None)
+            item["cacheKey"] = render_key
+            item["face_source_hashes"] = face_hashes
     _require(prepared.get("stats", {}).get("triangles", 0) > 0, "The costume contains no visible triangles.")
     return {"url": prepared["url"], "rig": prepared.get("rig", {}), "stats": prepared["stats"],
-            "cacheKey": item["cacheKey"], "profileDigest": value["profile"], "excludedMeshes": excluded}
+            "cacheKey": item["cacheKey"], "profileDigest": value["profile"], "excludedMeshes": excluded,
+            "plannedCacheKey": item["plannedCacheKey"], "faces": prepared.get("faces", {}), "subject": value["quality"]["subject"],
+            "faceSources": [{"name": Path(path).name, "sha256": digest} for path, digest in face_hashes]}
 
 
 def store(params):
@@ -356,7 +397,8 @@ def store(params):
         item["render"] = copy.deepcopy(render)
         return {"token": params["token"], "itemId": item["id"], "sha256": _hash(png), "bytes": len(png),
             "size": value["size"], "characterId": item["characterId"], "cacheKey": item["cacheKey"],
-            "profileDigest": value["profile"], "quality": QUALITY, "sources": [{"name": Path(path).name, "sha256": digest} for path, digest in item["source_hashes"]]}
+            "profileDigest": value["profile"], "quality": value["quality"], "sources": [{"name": Path(path).name, "sha256": digest} for path, digest in item["source_hashes"]],
+            "faceSources": [{"name": Path(path).name, "sha256": digest} for path, digest in item.get("face_source_hashes", [])]}
 
 
 def packer_provider(params):
@@ -399,7 +441,7 @@ def updater_provider(params):
         source_sha = next((digest for source, digest in item["source_hashes"] if source == selected), None)
         _require(source_sha is not None, "The rendered thumbnail is not bound to this costume ZIP.")
         return {"png": item["png"], "sha256": _hash(item["png"]), "character_id": item["characterId"],
-                "profile_digest": value["profile"], "cache_key": item["cacheKey"], "quality": copy.deepcopy(QUALITY),
+                "profile_digest": value["profile"], "cache_key": item["cacheKey"], "quality": copy.deepcopy(value["quality"]),
                 "source_path": selected, "source_sha256": source_sha, "size": value["size"], "variant": item["variant"]}
     return provide
 
@@ -415,4 +457,4 @@ def for_viewer_package(thumbnail_token, source_token, state, character_id, count
         _require(item["png"] is not None and item["characterId"] == _viewer_owner(context, character_id), "The automatic 3D thumbnail is missing or belongs to another target member.")
         _unchanged(item)
         return {"png": item["png"], "character_id": item["characterId"], "sha256": _hash(item["png"]),
-                "profile_digest": value["profile"], "cache_key": item["cacheKey"], "quality": copy.deepcopy(QUALITY)}
+                "profile_digest": value["profile"], "cache_key": item["cacheKey"], "quality": copy.deepcopy(value["quality"])}

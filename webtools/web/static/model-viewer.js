@@ -1050,7 +1050,7 @@
       var right = Math.min(stage.clientWidth, box.right - rect.left + 4), bottom = Math.min(stage.clientHeight, box.bottom - rect.top + 4);
       if (right > left && bottom > top) {
         var obstacle = { left: left, top: top, right: right, bottom: bottom }, reserved = element.closest("[data-viewer-framing-edge]");
-        if (reserved) obstacle.edge = reserved.dataset.viewerFramingEdge;
+        if (reserved && reserved.dataset.viewerFramingLocal !== "true") obstacle.edge = reserved.dataset.viewerFramingEdge;
         result.push(obstacle);
       }
     });

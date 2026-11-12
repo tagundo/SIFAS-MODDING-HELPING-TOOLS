@@ -1,0 +1,130 @@
+/* Actual numeric controls, native validity, physics state and source export. */
+'use strict';
+const assert = require('assert'), fs = require('fs'), os = require('os'), path = require('path'), net = require('net'), crypto = require('crypto');
+const {spawn, execFileSync} = require('child_process'), {chromium} = require('playwright');
+const product = path.resolve(__dirname, '..'), repo = path.dirname(product);
+const python = process.env.VIEWER_PYTHON || '/workspace/.venv-elichika/bin/python';
+const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-signed-inputs-'));
+const library = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-signed-library-')), source = path.join(library, 'extracted/3d_model/signed-physics.unity');
+fs.mkdirSync(evidence, {recursive:true}); fs.mkdirSync(path.dirname(source), {recursive:true});
+execFileSync(python, ['-c', 'import runpy,sys;from pathlib import Path;m=runpy.run_path(sys.argv[1]);Path(sys.argv[2]).write_bytes(m["fixture_bytes"](native=True))', path.join(__dirname, 'generate_viewer_physics_fixture.py'), source], {cwd:repo});
+const original = fs.readFileSync(source), wait = ms => new Promise(r => setTimeout(r, ms));
+const ownSources=['webtools/web/static/viewer-signed-inputs.js','webtools/web/static/viewer-signed-inputs.css','webtools/web/static/viewer-physics.js','webtools/web/static/viewer-editing.js','webtools/web/static/viewer-mesh-tools.js','tests/viewer_signed_inputs_browser.js'];
+const hashes=()=>Object.fromEntries(ownSources.map(name=>[name,crypto.createHash('sha256').update(fs.readFileSync(path.join(product,name))).digest('hex')]));
+const frames = page => page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+async function show(locator) { await locator.evaluate(input => {for(let p=input.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;}); await locator.scrollIntoViewIfNeeded(); return locator; }
+async function unit(browser, touch, result) {
+  const context = await browser.newContext({viewport:{width:360,height:780},hasTouch:touch}), page=await context.newPage();
+  await page.setContent('<html lang="ko"><body><div id="tab-viewer" style="width:280px"><label><span>X</span><input id="signed" type="number" min="-10" max="10" step="0.125" required value="0.125"></label><label><input id="positive" type="number" min="0" max="10" value="1"></label></div></body></html>');
+  await page.addStyleTag({path:path.join(product,'webtools/web/static/viewer-signed-inputs.css')});
+  await page.addScriptTag({path:path.join(product,'webtools/web/static/viewer-signed-inputs.js')});
+  await page.evaluate(() => {
+    window.events={input:0,change:0};const input=document.getElementById('signed');
+    input.addEventListener('input',()=>events.input++); input.addEventListener('change',()=>events.change++);
+    ViewerSignedInputs.attach(input);ViewerSignedInputs.attach(input);ViewerSignedInputs.attach(document.getElementById('positive'));
+  });
+  const input=page.locator('#signed'), button=page.locator('.viewer-number-sign');
+  const click=async()=>touch?button.tap():button.click();
+  assert.equal(await button.count(),1,'Enhancement is idempotent and unsigned values get no sign control');
+  assert.equal(await input.getAttribute('inputmode'),'text'); assert.equal(await input.getAttribute('type'),'number');
+  const box=await page.locator('.viewer-signed-number-entry').boundingBox();
+  await click();assert.equal(await input.inputValue(),'-0.125');assert.deepEqual(await page.evaluate(()=>events),{input:1,change:1});
+  assert(await input.evaluate(e=>e.checkValidity()));assert.equal(await input.evaluate(e=>document.activeElement===e),true,'Sign action retains field focus');
+  assert.deepEqual(await page.locator('.viewer-signed-number-entry').boundingBox(),box,'Sign action causes no field layout jump');
+  if(touch){const hit=await button.evaluate(e=>{const r=e.getBoundingClientRect();return{width:r.width,height:r.height,hit:e===document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)}});assert(hit.width>=44&&hit.height>=44&&hit.hit);}
+  result.cases.push((touch?'Touch':'Mouse')+': native number type/full-keyboard hint, one sign gesture/one event pair, stable accessible layout');
+  await input.fill('0');await page.evaluate(()=>events={input:0,change:0});
+  await click();assert.equal(await input.inputValue(),'-0');await click();assert.equal(await input.inputValue(),'0');assert.deepEqual(await page.evaluate(()=>events),{input:0,change:0},'Zero sign prefixes do not create authoring events');
+  await click();await input.pressSequentially('5');assert.equal(await input.evaluate(e=>e.valueAsNumber),-5,'Typing after the negative zero prefix needs no minus key');
+  await input.fill('');await page.evaluate(()=>events={input:0,change:0});await click();assert.equal(await input.inputValue(),'-0');assert(await input.evaluate(e=>e.checkValidity()));
+  assert.deepEqual(await page.evaluate(()=>events),{input:1,change:1},'Blank signed entry can start a valid negative prefix');
+  result.cases.push((touch?'Touch':'Mouse')+': zero prefixes are no-op edits; blank entry can start negative');
+  await input.fill('11');await page.evaluate(()=>events={input:0,change:0});await click();assert.equal(await input.inputValue(),'11');assert(!await input.evaluate(e=>e.checkValidity()));assert.deepEqual(await page.evaluate(()=>events),{input:0,change:0});
+  await input.fill('0.1');await page.evaluate(()=>events={input:0,change:0});await click();assert.equal(await input.inputValue(),'0.1');assert(await input.evaluate(e=>e.validity.stepMismatch));assert.deepEqual(await page.evaluate(()=>events),{input:0,change:0});
+  await input.evaluate(e=>{e.min='-2';e.max='10';e.step='any';e.value='3';});await click();assert.equal(await input.inputValue(),'3','Opposite out-of-range value is never applied');
+  result.cases.push((touch?'Touch':'Mouse')+': range/step/asymmetric native bounds remain enforced without authoring events');
+  await input.evaluate(e=>{e.min='-10';e.value='1';e.readOnly=true;});await frames(page);assert(await button.isDisabled());
+  await button.evaluate(e=>e.dispatchEvent(new MouseEvent('click',{bubbles:true})));assert.equal(await input.inputValue(),'1');
+  await input.evaluate(e=>{e.readOnly=false;e.disabled=true;});await frames(page);assert(await button.isDisabled());
+  await input.evaluate(e=>e.disabled=false);await frames(page);assert(await button.isEnabled());
+  await page.evaluate(()=>document.documentElement.lang='ja');await frames(page);assert((await button.getAttribute('aria-label')).includes('符号'));
+  result.cases.push((touch?'Touch':'Mouse')+': read-only/disabled edits are blocked and labels follow language');
+  await context.close();
+}
+async function integration(browser,url,touch,result) {
+  const context=await browser.newContext({viewport:touch?{width:412,height:915}:{width:1440,height:1100},hasTouch:touch}),page=await context.newPage(),errors=[];
+  page.on('pageerror',e=>errors.push(String(e)));page.setDefaultTimeout(30000);
+  await page.addInitScript(()=>localStorage.setItem('sifas_lang','ko'));
+  await page.goto(url);await page.waitForFunction(()=>typeof openModelViewer==='function'&&!!window.ViewerSignedInputs);
+  await page.evaluate(source=>{document.getElementById('viewer-auto-face').checked=false;return openModelViewer([source]);},source);
+  await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading&&ModelViewer.getState().rig.physics.available);
+  const input=await show(page.locator('[data-physics-field="offset"][data-physics-axis="0"]').first());
+  const component=await input.getAttribute('data-physics-component'),button=input.locator('..').locator('.viewer-number-sign');
+  assert.equal(await input.getAttribute('inputmode'),'text');assert.equal(await input.getAttribute('type'),'number');
+  assert.equal(await page.locator('[data-physics-field="radius"]').first().locator('..').locator('.viewer-number-sign').count(),0,'Unsigned radius keeps its original compact input');
+  assert.equal(await page.locator('#viewer-node-fields input[data-viewer-signed-number][inputmode="text"]').count(),9,'Advanced signed vectors retain full input width');
+  assert.equal(await page.locator('#viewer-node-fields .viewer-number-sign').count(),0);
+  assert.equal(await page.locator('#viewer-mesh-modify input[data-viewer-signed-number][inputmode="text"]').count(),6,'Mesh position and delta fields share signed entry');
+  await input.fill('0.125');const camera=await page.evaluate(()=>ModelViewer.getState().camera);
+  if(touch)await button.tap();else await button.click();
+  assert.equal(await input.inputValue(),'-0.125');
+  const values=()=>page.evaluate(id=>ModelViewer.getAuthoringState().physics.find(e=>e.id===id)?.values,component);
+  assert.equal((await values()).offset[0],-.125,'Real collider edit uses the existing authoring path');
+  assert.deepEqual(await page.evaluate(()=>ModelViewer.getState().camera),camera);
+  await input.fill('');await input.pressSequentially('-0.25');
+  assert.equal(await input.inputValue(),'-0.25','Intermediate negative typing is not normalized away');
+  assert.equal((await values()).offset[0],-.25);
+  const beforeInvalid=await page.evaluate(()=>ModelViewer.getAuthoringState());
+  await input.fill('11');if(touch)await button.tap();else await button.click();
+  assert.equal(await input.inputValue(),'11');
+  const afterInvalid=await page.evaluate(()=>ModelViewer.getAuthoringState());
+  assert.deepEqual(afterInvalid.physics,beforeInvalid.physics,'Invalid input/sign never changes the authored collider');
+  assert.deepEqual(afterInvalid.edits,beforeInvalid.edits);
+  assert(afterInvalid.unsupported.some(message=>message.includes('physics')),'The original invalid-draft save guard remains active');
+  assert(await page.locator('#viewer-save').isDisabled());
+  await input.fill('-.125');await (await show(page.locator('#viewer-save'))).click();
+  await page.waitForFunction(()=>!document.getElementById('viewer-open-saved').hidden);
+  const dir=fs.readdirSync(path.join(library,'modded/viewer')).filter(n=>n.startsWith('body-edit-')).sort().pop();
+  const saved=path.join(library,'modded/viewer',dir,'models',path.basename(source));
+  const reopened=JSON.parse(execFileSync(python,['-c','import json,sys;from pathlib import Path;from webtools.core import model_edits,viewer_physics;print(json.dumps(viewer_physics.inspect_info(model_edits._inspect(Path(sys.argv[1]).read_bytes()),0,[])))',saved],{cwd:product,env:{...process.env,PYTHONPATH:[product,process.env.PYTHONPATH||''].join(path.delimiter)},encoding:'utf8'}));
+  assert(reopened.some(row=>row.kind==='collider'&&Math.abs(row.values.offset[0]+.125)<1e-7),'The signed collider offset is serialized and reopens');
+  assert.deepEqual(fs.readFileSync(source),original);assert.deepEqual(errors,[]);
+  await page.locator('#viewer-mesh-modify').evaluate(e=>e.open=true);
+  const listingResponse=page.waitForResponse(r=>r.url().endsWith('/api/viewer/mesh/inspect'));
+  await page.locator('#viewer-mesh-modify-load').click();
+  const listing=await(await listingResponse).json(),chosen=listing.meshes.find(row=>row.available);
+  await page.locator('#viewer-mesh-modify-select').selectOption(JSON.stringify(chosen.mesh));
+  await page.waitForFunction(()=>!ModelViewer.getState().meshTools.busy&&ModelViewer.getState().meshTools.runtime.boundPrimitives>0);
+  const settings=page.locator('#viewer-mesh-modify [data-uv-settings]');
+  if(await settings.getAttribute('aria-expanded')!=='true')await settings.click();
+  await (await show(page.locator('#viewer-mesh-modify-select-vertex'))).click();
+  const meshBefore=await page.evaluate(()=>ModelViewer.getState().meshTools);
+  const meshX=await show(page.locator('#viewer-mesh-modify input[data-viewer-signed-number]').first());
+  await meshX.fill('0.123456789');const meshSign=meshX.locator('..').locator('.viewer-number-sign');
+  if(touch)await meshSign.tap();else await meshSign.click();
+  assert.equal(await meshX.inputValue(),'-0.123456789','Signed mesh entry preserves arbitrary source coordinate precision');
+  assert.equal(await meshX.getAttribute('step'),'any','Original mesh coordinate precision is unchanged');
+  assert.equal((await page.evaluate(()=>ModelViewer.getState().meshTools)).history,meshBefore.history,'Draft/sign typing creates no mesh history');
+  await page.locator('#viewer-mesh-modify').getByRole('button',{name:'정점 위치 설정',exact:true}).click();
+  const meshAfter=await page.evaluate(()=>ModelViewer.getState().meshTools);
+  assert.equal(meshAfter.history,meshBefore.history+1,'Explicit apply creates one Undo entry');
+  assert.equal(meshAfter.edits.meshes[0].positions.find(row=>row.vertex===0).position[0],-.123456789);
+  await page.locator('#viewer-mesh-modify-undo').click();
+  assert.deepEqual((await page.evaluate(()=>ModelViewer.getState().meshTools)).edits,meshBefore.edits,'Undo restores the pre-apply mesh');
+  result.cases.push((touch?'Touch':'Mouse')+': signed mesh drafts preserve float precision and apply through exactly one Undo');
+  await show(input);await input.locator('..').locator('..').screenshot({path:path.join(evidence,touch?'signed-field-touch.png':'signed-field-desktop.png')});
+  await page.screenshot({path:path.join(evidence,touch?'signed-physics-touch.png':'signed-physics-desktop.png'),fullPage:true});
+  result.cases.push((touch?'Touch':'Mouse')+': actual physics negative entry, invalid-state preservation, camera/source preservation and Unity export/reopen');
+  result.profiles.push({touch,component,negativeOffset:-.125,sourcePreserved:true,keyboardScope:'DOM inputmode=text and trusted sign button; actual Android IME glyph layout is not claimed'});
+  await context.close();
+}
+(async()=>{
+  const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));
+  const logs=fs.createWriteStream(path.join(evidence,'server.log')),server=spawn(python,['-m','webtools','--no-browser','--host','127.0.0.1','--port',String(port)],{cwd:repo,env:{...process.env,PYTHONPATH:[product,repo,process.env.PYTHONPATH||''].join(path.delimiter),SUKUSTA_DIR:library},stdio:['ignore','pipe','pipe']});server.stdout.pipe(logs);server.stderr.pipe(logs);
+  let browser;const report={status:'RUNNING',cases:[],profiles:[],sourcesBefore:hashes(),scope:'Actual Chromium DOM/native number validity and real Unity/HTTP/WebGL authoring. No native IME layout claim.'};
+  try{
+    const url='http://127.0.0.1:'+port;for(let n=0;n<150;n++){try{if((await fetch(url+'/api/tools')).ok)break}catch(_){}await wait(100)}
+    browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE||'/usr/bin/chromium',args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+    await unit(browser,false,report);await unit(browser,true,report);await integration(browser,url,false,report);await integration(browser,url,true,report);report.sourcesAfter=hashes();assert.deepEqual(report.sourcesAfter,report.sourcesBefore,'All signed input sources stay frozen through the actual browser run');report.status='PASS';
+  }catch(error){report.status='FAIL';report.error=String(error.stack||error);throw error;}finally{if(browser)await browser.close();server.kill();logs.end();fs.writeFileSync(path.join(evidence,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({status:report.status,cases:report.cases.length,evidence,error:report.error}));}
+})().catch(e=>{console.error(e);process.exitCode=1});

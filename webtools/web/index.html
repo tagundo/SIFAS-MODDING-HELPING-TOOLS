@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/viewer-texture-tools.css"/>
   <link rel="stylesheet" href="/static/texture-panel-expand.css"/>
   <link rel="stylesheet" href="/static/viewer-interaction-tools.css"/>
+  <link rel="stylesheet" href="/static/viewer-signed-inputs.css"/>
 </head>
 <body>
   <header id="asset-tools-header">
@@ -172,6 +173,7 @@
               </div>
               <p id="viewer-mod-name-help" class="viewer-render-note" data-i18n="The same name is used for the mod ZIP and the game costume. You can edit the suggested name.">The same name is used for the mod ZIP and the game costume. You can edit the suggested name.</p>
               <label class="viewer-thumbnail-mode"><span data-i18n="Costume thumbnail">Costume thumbnail</span><select id="viewer-mod-thumbnail-mode"><option value="texture" data-i18n="Texture thumbnail">Texture thumbnail</option><option value="3d" data-i18n="Automatic high-quality 3D">Automatic high-quality 3D</option></select></label>
+              <label id="viewer-mod-thumbnail-fit-full-option" hidden><input id="viewer-mod-thumbnail-fit-full" type="checkbox" disabled><span data-i18n="Fit full character">Fit full character</span></label>
               <img id="viewer-mod-thumbnail-preview" width="128" height="128" alt="Costume thumbnail" hidden>
               <p id="viewer-mod-thumbnail-status" class="viewer-render-note" role="status"></p>
               <label><input id="viewer-mod-include-face" type="checkbox" disabled><span data-i18n="Include face and mouth edits for this costume">Include face and mouth edits for this costume</span></label>
@@ -474,6 +476,7 @@
   </div>
 
   <script src="/static/platform.js"></script>
+  <script src="/static/viewer-signed-inputs.js"></script>
   <script src="/static/vendor/three-r128/three.min.js"></script>
   <script src="/static/vendor/three-r128/OrbitControls.js"></script>
   <script src="/static/vendor/three-r128/GLTFLoader.js"></script>

@@ -13,6 +13,7 @@ const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const report = { status: 'RUNNING', scope: 'Actual product host Chromium/HTTP/serialized Unity; no native Android/Mac or original SIFAS playback claim', cases: [], evidence };
 const sourceFiles = ['webtools/server.py', 'webtools/web/index.html', 'webtools/web/static/app.js', 'webtools/core/texture_image_io.py', 'webtools/core/viewer_texture_tools.py', 'webtools/core/model_edits.py', 'webtools/core/model_viewer.py', 'webtools/web/static/model-viewer.js', 'webtools/web/static/viewer-persistence.js', 'webtools/web/static/viewer-rig.js', 'webtools/web/static/viewer-texture-tools.js', 'webtools/web/static/viewer-texture-tools.css', 'webtools/web/static/texture-paint-engine.js', 'webtools/web/static/texture-color-math.js', 'webtools/web/static/texture-color-worker.js', 'webtools/web/static/texture-png.js', 'webtools/web/static/sifas-material.js'];
+sourceFiles.push('webtools/web/static/viewer-signed-inputs.js', 'webtools/web/static/viewer-signed-inputs.css');
 function sourceHashes() { return Object.fromEntries(sourceFiles.filter(n => fs.existsSync(path.join(product,n))).map(n => [n,sha(fs.readFileSync(path.join(product,n)))])); }
 report.sourceBefore = sourceHashes();
 function py(code, args = []) { return JSON.parse(execFileSync(python, ['-B', '-c', code, ...args], { cwd: product, env: {...process.env,PYTHONPATH: product + path.delimiter + repo}, encoding:'utf8', maxBuffer: 8*1024*1024 })); }
@@ -89,6 +90,37 @@ async function shaderState(page) {
     const result=[];__textureObserved.scene.traverse(mesh=>{if(!mesh.isMesh||mesh.userData&&mesh.userData.viewerHelper)return;const materials=Array.isArray(mesh.material)?mesh.material:[mesh.material];for(const material of materials){if(material.uniforms&&material.uniforms.uMainTex){const texture=material.uniforms.uMainTex.value;result.push({mesh:mesh.name,shader:true,dataTexture:!!texture.isDataTexture,width:texture.image&&texture.image.width,height:texture.image&&texture.image.height,rgba:texture.image&&texture.image.data?Array.from(texture.image.data):null});}}});return{materials:ModelViewer.getState().materials,shaders:result};
   });
 }
+function changedInterior(before, after) {
+  const changed = i => after[i*4+3]===255 && [0,1,2].some(c=>after[i*4+c]!==before[i*4+c]);
+  for(let y=1;y<15;y++)for(let x=1;x<15;x++){
+    if([-17,-16,-15,-1,0,1,15,16,17].every(delta=>changed(y*16+x+delta)))return{point:[x+.5,y+.5],offset:(y*16+x)*4};
+  }
+  throw new Error('The fixture must expose a changed, opaque interior pixel independently of selection overlays');
+}
+async function selectionDisplay(page, pixel) {
+  await frames(page);
+  return page.evaluate(pixel => {
+    const tools = ModelViewer.getTextureTools(), state = tools.getState(), checkbox = document.getElementById('viewer-texture-show-selection');
+    const label = checkbox.parentElement, box = label.getBoundingClientRect(), hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    let overlays = 0; __textureObserved.scene.traverse(mesh => { if (mesh.userData && mesh.userData.viewerTextureSelection) overlays++; });
+    const canvas = [...document.querySelectorAll('#viewer-texture-canvas-host canvas')].find(c => c.getClientRects().length), view = state.selection.view;
+    const ratio = Math.min(2, devicePixelRatio || 1), point = pixel || [4.5, 7.5];
+    const rgba = Array.from(canvas.getContext('2d').getImageData(Math.floor((view.x + point[0] * view.zoom) * ratio), Math.floor((view.y + point[1] * view.zoom) * ratio), 1, 1).data);
+    return { checked: checkbox.checked, engineVisible: state.selection.selectionVisible, selectedPixels: state.selection.selectedPixels,
+      selectionRevision: state.selection.selectionRevision, undoCount: state.selection.undoCount, revision: state.selection.revision, overlays, rgba,
+      directlyBesideCanvas: !!label.closest('.viewer-texture-color-actions') && !label.closest('.viewer-texture-menu-body') && Math.max(0, box.top - canvas.getBoundingClientRect().bottom) <= 120,
+      label: { width: box.width, height: box.height, hit: hit === label || label.contains(hit) }, information: document.getElementById('viewer-texture-info').textContent };
+  }, pixel);
+}
+async function modelFrame(page) {
+  return page.evaluate(() => {
+    ModelViewer.renderProbe();
+    const gl = __textureObserved.renderer.getContext(), width = gl.drawingBufferWidth, height = gl.drawingBufferHeight, pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    let hash = 2166136261; for (const value of pixels) hash = Math.imul(hash ^ value, 16777619) >>> 0;
+    return { hash, width, height, glError: gl.getError() };
+  });
+}
 async function facePoint(page,face=0) {
   await page.locator('#viewer-stage').scrollIntoViewIfNeeded();await frames(page);
   return page.evaluate(face=>{
@@ -157,7 +189,7 @@ async function main(){let server,browser,context,androidContext,page;const error
   server=await startServer();browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||'/usr/bin/chromium',headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
   context=await browser.newContext({viewport:{width:1480,height:1100},hasTouch:true});await context.addInitScript(()=>localStorage.setItem('sifas_lang','en'));
   page=await context.newPage();page.setDefaultTimeout(45000);page.on('pageerror',e=>errors.push(String(e.stack||e)));
-  await page.route('**/static/viewer-quality.js',async route=>{const response=await route.fetch(),body=await response.text();await route.fulfill({response,body:body+'\n(()=>{const create=ViewerQuality.create;ViewerQuality.create=function(){const c=create.apply(this,arguments),render=c.render;c.render=function(scene,camera){window.__textureObserved={scene,camera};return render.apply(this,arguments);};return c;};})();'});});
+  await page.route('**/static/viewer-quality.js',async route=>{const response=await route.fetch(),body=await response.text();await route.fulfill({response,body:body+'\n(()=>{const create=ViewerQuality.create;ViewerQuality.create=function(){const renderer=arguments[0],c=create.apply(this,arguments),render=c.render;c.render=function(scene,camera){window.__textureObserved={scene,camera,renderer};return render.apply(this,arguments);};return c;};})();'});});
   await page.goto(server.url);await page.waitForFunction(()=>window.ModelViewer&&ModelViewer.getTextureTools&&ModelViewer.getTextureTools());
   await page.evaluate(source=>{document.getElementById('viewer-auto-face').checked=false;return openModelViewer([source]);},source);
   await page.waitForFunction(()=>ModelViewer.getState().loaded&&!ModelViewer.getState().loading&&ModelViewer.getEditingMetadata().available&&window.__textureObserved);
@@ -181,11 +213,30 @@ async function main(){let server,browser,context,androidContext,page;const error
   await (await show(page,'#viewer-texture-show-selection')).uncheck();await frames(page);const hiddenSelection=await page.evaluate(()=>{let overlays=0;__textureObserved.scene.traverse(o=>{if(o.userData&&o.userData.viewerTextureSelection)overlays++;});return{overlays,state:ModelViewer.getTextureTools().getState().selection};});assert.equal(hiddenSelection.overlays,0);assert.equal(hiddenSelection.state.selectionVisible,false);assert.equal(hiddenSelection.state.selectedPixels,connected.selection.selectedPixels);assert.equal(hiddenSelection.state.undoCount,connected.selection.undoCount);await page.locator('#viewer-texture-show-selection').check();await frames(page);
   report.cases.push({name:'real 3D pointer face and connected-edge selection with 3D/texture mask',single,connected,observed});
   await page.screenshot({path:path.join(evidence,'connected-3d-selection.png')});
+  const signedFields=await page.evaluate(()=>['viewer-texture-lightness','viewer-texture-hue','viewer-texture-skin-lightness','viewer-texture-skin-hue'].map(id=>{const e=document.getElementById(id);return{id,type:e.type,inputmode:e.inputMode,min:Number(e.min),max:Number(e.max),step:e.step,compact:e.parentElement.classList.contains('viewer-texture-slider')};}));
+  assert(signedFields.every(f=>f.type==='number'&&f.inputmode==='text'&&f.min<0&&f.compact),'signed color fields request a full keyboard while preserving native number constraints and compact layout');
+  const signedField=await show(page,'#viewer-texture-lightness'),numericBefore=(await toolsState(page)).selection;
+  await signedField.fill('');await signedField.pressSequentially('-');
+  const partial=await signedField.evaluate(e=>({value:e.value,badInput:e.validity.badInput}));assert.equal(partial.value,'');assert(partial.badInput,'a real typed minus remains a native incomplete draft instead of being coerced to zero');
+  assert.equal(await page.evaluate(()=>ModelViewer.getTextureTools().preparePreview()),false);assert.equal(await page.evaluate(()=>ModelViewer.getTextureTools().applyPreview()),false,'an incomplete signed draft cannot silently commit a different color');assert.equal((await toolsState(page)).selection.undoCount,numericBefore.undoCount);assert.equal((await toolsState(page)).selection.revision,numericBefore.revision);
+  await signedField.pressSequentially('15');await page.waitForFunction(()=>ModelViewer.getTextureTools().getState().preview&&!document.getElementById('viewer-texture-apply').disabled);assert.equal(await signedField.inputValue(),'-15');await (await show(page,'#viewer-texture-cancel')).click();await idle(page);
+  await signedField.fill('');await signedField.pressSequentially('-0.5');await page.waitForFunction(()=>ModelViewer.getTextureTools().getState().preview&&!document.getElementById('viewer-texture-apply').disabled);assert.equal(await signedField.inputValue(),'-0.5','intermediate negative zero is preserved while typing a negative fraction');await (await show(page,'#viewer-texture-cancel')).click();await idle(page);
+  await signedField.fill('');await signedField.pressSequentially('-');await signedField.press('Tab');await page.waitForFunction(()=>document.getElementById('viewer-texture-lightness').value==='-0.5');await page.waitForFunction(()=>ModelViewer.getTextureTools().getState().preview&&!document.getElementById('viewer-texture-apply').disabled);await (await show(page,'#viewer-texture-cancel')).click();await idle(page);assert.deepStrictEqual(await pixels(page),fixture.rgba,'negative drafts, canceled previews and blur restoration never alter committed pixels');
+  report.cases.push({name:'real signed color typing preserves minus and negative fractions, refuses incomplete Apply and retains last valid value on blur',signedFields,partial});
   await setField(page,'#viewer-texture-lightness',5);await setField(page,'#viewer-texture-chroma',120);await setField(page,'#viewer-texture-hue',75);
   await page.waitForFunction(()=>ModelViewer.getTextureTools().getState().preview&&!document.getElementById('viewer-texture-apply').disabled);await frames(page);
   const preview=await shaderState(page);assert(preview.materials.enabled&&preview.materials.textureOverrides===1);const shader=preview.shaders.find(s=>s.rgba);
   assert(shader&&shader.shader&&shader.dataTexture,'the actual high-quality SIFAS uMainTex receives a DataTexture override');
   assert.notDeepStrictEqual(shader.rgba,fixture.rgba);for(let i=3;i<shader.rgba.length;i+=4)assert.equal(shader.rgba[i],fixture.rgba[i],'OKLCH preview preserves original alpha');
+  await (await show(page,'#viewer-texture-show-uv')).uncheck();await frames(page);
+  const coloredPixel=changedInterior(fixture.rgba,shader.rgba),cleanPreview=await selectionDisplay(page,coloredPixel.point);
+  assert(!cleanPreview.checked&&!cleanPreview.engineVisible&&cleanPreview.overlays===0,'color sliders automatically remove both 2D cyan and 3D amber tint');
+  assert.equal(cleanPreview.selectedPixels,connected.selection.selectedPixels,'hiding color tint keeps the exact source mask');
+  assert.equal(cleanPreview.selectionRevision,connected.selection.selectionRevision);assert.equal(cleanPreview.undoCount,connected.selection.undoCount,'automatic visibility does not add a mask or color history entry');
+  assert.deepStrictEqual(cleanPreview.rgba,shader.rgba.slice(coloredPixel.offset,coloredPixel.offset+4),'the actual texture canvas shows the exact preview color without selection tint');
+  assert(cleanPreview.directlyBesideCanvas&&cleanPreview.label.height>=44&&cleanPreview.label.hit,'the same selection checkbox is adjacent to the canvas with a reachable 44px touch label');
+  assert(/Selection kept/.test(cleanPreview.information),'nearby status explains that only the tint is hidden');
+  report.cases.push({name:'unmixed costume preview hides only the 2D/3D selection tint while keeping source mask/history and exact canvas pixels',cleanPreview});
   assert.equal((await page.evaluate(()=>ModelViewer.getTextureTools().getEdits())).length,0,'unapplied previews are not saved recipes');
   assert(await page.locator('#viewer-save').isDisabled(),'pending color preview blocks persistent model export');
   const historyBefore=(await toolsState(page)).selection.undoCount;
@@ -195,8 +246,21 @@ async function main(){let server,browser,context,androidContext,page;const error
   assert(!(await page.locator('#viewer-save').isDisabled()),'texture-only changes activate model saving');
   await (await show(page,'#viewer-texture-undo')).click();await idle(page);assert.deepStrictEqual(await pixels(page),fixture.rgba);
   await (await show(page,'#viewer-texture-redo')).click();await idle(page);assert.deepStrictEqual(await pixels(page),colored);
+  const appliedClean=await selectionDisplay(page,coloredPixel.point);assert(!appliedClean.checked&&!appliedClean.engineVisible&&appliedClean.overlays===0,'Apply and color Undo/Redo keep the changed color unobscured');
   await (await show(page,'#viewer-texture-compare')).check();await frames(page);const originalComparison=await shaderState(page);assert.equal(originalComparison.materials.textureOverrides,0,'Compare original removes generated texture overrides');assert(originalComparison.shaders.every(row=>!row.dataTexture),'Compare original uses authored original texture objects and mip levels');assert.deepStrictEqual(await pixels(page),colored,'comparison does not change the committed PNG recipe');await page.locator('#viewer-texture-compare').uncheck();await frames(page);const editedComparison=await shaderState(page);assert.equal(editedComparison.materials.textureOverrides,1);assert.deepStrictEqual(editedComparison.shaders.find(s=>s.rgba).rgba,colored);assert.deepStrictEqual(await pixels(page),colored);
   report.cases.push({name:'OKLCH preview reaches actual SIFAS uniform, commits losslessly once, undo/redo and texture-only save enabled',preview,historyBefore});
+  await (await show(page,'#viewer-texture-select-none')).click();hit=await facePoint(page);await page.mouse.click(hit.x,hit.y);await idle(page);
+  const autoRestored=await selectionDisplay(page,coloredPixel.point);assert(autoRestored.checked&&autoRestored.engineVisible&&autoRestored.overlays>0,'a new real region selection restores a tint that was hidden automatically');assert.equal(autoRestored.selectedPixels,connected.selection.selectedPixels);
+  await setField(page,'#viewer-texture-lightness',9);await page.waitForFunction(()=>ModelViewer.getTextureTools().getState().preview&&!document.getElementById('viewer-texture-apply').disabled);await (await show(page,'#viewer-texture-cancel')).click();await idle(page);
+  const cancelledPreview=await selectionDisplay(page,coloredPixel.point);assert(!cancelledPreview.checked&&!cancelledPreview.engineVisible&&cancelledPreview.overlays===0,'Cancel preview also leaves the committed color unobscured');assert.equal(cancelledPreview.selectedPixels,autoRestored.selectedPixels);assert.equal(cancelledPreview.undoCount,autoRestored.undoCount);assert.deepStrictEqual(await pixels(page),colored,'canceling never changes the committed PNG or source mask');
+  const beforeVisibility=(await toolsState(page)).selection;
+  await (await show(page,'#viewer-texture-show-selection')).uncheck();await frames(page);const unfilteredFrame=await modelFrame(page),cleanPixels=await selectionDisplay(page,coloredPixel.point);
+  await page.locator('#viewer-texture-show-selection').check();await frames(page);const tintedFrame=await modelFrame(page),tintedPixels=await selectionDisplay(page,coloredPixel.point);
+  assert.notEqual(tintedFrame.hash,unfilteredFrame.hash,'selection visibility changes actual rendered model pixels, not just inspector state');assert.notDeepStrictEqual(tintedPixels.rgba,cleanPixels.rgba,'the visible texture tint is distinguishable from the exact color');
+  await page.locator('#viewer-texture-show-selection').uncheck();await frames(page);const restoredFrame=await modelFrame(page);assert.deepStrictEqual(restoredFrame,unfilteredFrame,'turning the tint back off restores the exact clean model framebuffer');
+  const afterVisibility=(await toolsState(page)).selection;assert.equal(afterVisibility.undoCount,beforeVisibility.undoCount);assert.equal(afterVisibility.revision,beforeVisibility.revision);assert.equal(afterVisibility.selectionRevision,beforeVisibility.selectionRevision);assert.deepStrictEqual(await pixels(page),colored);
+  await (await show(page,'#viewer-texture-select-none')).click();hit=await facePoint(page);await page.mouse.click(hit.x,hit.y);await idle(page);const manualHidden=await selectionDisplay(page,coloredPixel.point);assert(!manualHidden.checked&&!manualHidden.engineVisible&&manualHidden.overlays===0,'new selections honor a manually disabled tint');assert.equal(manualHidden.selectedPixels,connected.selection.selectedPixels);
+  report.cases.push({name:'adjacent tint toggle preserves authored pixels, masks and Undo; new selection restores automatic hiding while manual OFF remains honored',appliedClean,autoRestored,cancelledPreview,unfilteredFrame,tintedFrame,restoredFrame,manualHidden});
   const selectedBounds=await page.evaluate(()=>{const mesh=__textureTarget,uv=mesh.geometry.attributes.uv;let texture;const old=SifasMaterial;__textureObserved.scene.traverse(o=>{if(o===mesh){const ms=Array.isArray(o.material)?o.material:[o.material];for(const m of ms)if(m.uniforms&&m.uniforms.uMainTex)texture=m.uniforms.uMainTex.value;}});if(!texture)throw Error('No texture');const points=[0,1,2,3].map(i=>texture.transformUv(new THREE.Vector2(uv.getX(i),uv.getY(i))));return{x0:Math.min(...points.map(v=>v.x))*16,x1:Math.max(...points.map(v=>v.x))*16,y0:Math.min(...points.map(v=>v.y))*16,y1:Math.max(...points.map(v=>v.y))*16};});
   let untouched=0;for(let y=0;y<16;y++)for(let x=0;x<16;x++){if(x+.5<selectedBounds.x0||x+.5>selectedBounds.x1||y+.5<selectedBounds.y0||y+.5>selectedBounds.y1){const i=(y*16+x)*4;assert.deepStrictEqual(colored.slice(i,i+4),fixture.rgba.slice(i,i+4),'unselected pixels remain byte-exact');untouched++;}}
   assert(untouched>=96,'independent UV rectangle reference includes a substantial unselected region');
@@ -220,6 +284,7 @@ async function main(){let server,browser,context,androidContext,page;const error
   assert.equal((await toolsState(page)).selection.selectedPixels,128,'explicit texture rectangle confirms exactly the skin half');
   await (await show(page,'#viewer-texture-source-tone')).selectOption('default');await (await show(page,'#viewer-texture-target-tone')).selectOption('bright');
   await page.evaluate(()=>ModelViewer.getTextureTools().preparePreview());await frames(page);const skinPreview=(await shaderState(page)).shaders.find(s=>s.rgba).rgba;
+  const skinPixel=changedInterior(fixture.rgba,skinPreview),cleanSkin=await selectionDisplay(page,skinPixel.point);assert(!cleanSkin.checked&&!cleanSkin.engineVisible&&cleanSkin.overlays===0);assert.equal(cleanSkin.selectedPixels,128,'skin preview also preserves its exact confirmed mask');assert.deepStrictEqual(cleanSkin.rgba,skinPreview.slice(skinPixel.offset,skinPixel.offset+4),'skin preview canvas also shows the actual untinted color');
   let skinChanged=0;for(let y=0;y<16;y++)for(let x=0;x<16;x++){const i=(y*16+x)*4;assert.equal(skinPreview[i+3],fixture.rgba[i+3]);if(x>=8)assert.deepStrictEqual(skinPreview.slice(i,i+4),fixture.rgba.slice(i,i+4),'cloth pixels are untouched by confirmed skin adjustment');else if(skinPreview.slice(i,i+3).some((v,k)=>v!==fixture.rgba[i+k]))skinChanged++;}
   assert(skinChanged>100);assert.notDeepStrictEqual(skinPreview.slice(0,3),skinPreview.slice(16*15*4,16*15*4+3),'skin shading remains a gradient');
   await (await show(page,'#viewer-texture-apply')).click();await idle(page);assert.deepStrictEqual(await pixels(page),skinPreview);await (await show(page,'#viewer-texture-undo')).click();await idle(page);assert.deepStrictEqual(await pixels(page),fixture.rgba);await (await show(page,'#viewer-texture-redo')).click();await idle(page);assert.deepStrictEqual(await pixels(page),skinPreview);

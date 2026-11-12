@@ -1081,6 +1081,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if any(isinstance(row, (list, tuple)) and row and isinstance(row[0], str)
                and native_face_prefab.search(row[0].replace("\\", "/")) for row in containers[:64]):
             facial_sources.add(_source_path(source_object))
+    faces.bind_selected_materials(scene, facial_sources)
     if rig is not None and auto_only:
         for path in faces.auto_paths:
             if path not in rig.source_indices:

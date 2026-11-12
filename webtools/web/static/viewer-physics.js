@@ -631,6 +631,7 @@
       input.min = axis === undefined ? "0" : String(-bound); input.max = axis === undefined ? name === "dragForce" ? "1" : "10" : String(bound);
       input.dataset.physicsComponent = record.id; input.dataset.physicsField = name; if (axis !== undefined) input.dataset.physicsAxis = String(axis);
       input.setAttribute("aria-label", record.name + " " + text.textContent);
+      if (window.ViewerSignedInputs) window.ViewerSignedInputs.attach(input);
       controls.push({ input: input, record: record, name: name, axis: axis, write: true });
       input.addEventListener("input", function () {
         if (autoBreastLimits && record.group === "breast" && record.kind === "bone" && (name === "lowRotationLimit" || name === "highRotationLimit")) disableBreastAuto(false);

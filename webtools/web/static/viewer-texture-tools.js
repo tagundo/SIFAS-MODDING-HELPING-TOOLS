@@ -124,6 +124,9 @@
     "Replace": ["새로 선택", "置換"], "Add": ["추가", "追加"], "Subtract": ["제외", "除外"], "Intersect": ["교집합", "共通範囲"],
     "Select all": ["모두 선택", "すべて選択"], "Select none": ["선택 없음", "選択なし"], "Clear selection": ["선택 제한 해제", "選択制限を解除"], "Invert selection": ["선택 반전", "選択反転"],
     "Undo": ["되돌리기", "元に戻す"], "Redo": ["다시 실행", "やり直す"], "Fit": ["화면에 맞춤", "全体を表示"], "Zoom": ["확대", "ズーム"], "Show UV": ["UV 표시", "UV表示"], "Show selection": ["선택 영역 표시", "選択範囲を表示"],
+    "Selection kept; tint hidden.": ["선택 유지 · 색상 확인 중", "選択保持・色を確認中"],
+    "Color adjustments hide selection tint without clearing the selection.": ["색을 조절하면 선택 영역을 유지한 채 표시 색만 숨깁니다.", "色の調整時は選択範囲を保持したまま表示色だけを隠します。"],
+    "Complete the number before applying color.": ["숫자 입력을 마친 뒤 색상을 적용하세요.", "数値の入力を完了してから色を適用してください。"],
     "Relative OKLCH": ["OKLCH 상대 조절", "OKLCH相対調整"], "Target color, keep shading": ["목표색 · 명암 보존", "指定色・陰影を保持"], "Mode": ["방식", "方式"], "Target color": ["목표색", "指定色"],
     "Lightness": ["명도", "明度"], "Chroma": ["채도", "彩度"], "Hue": ["색상각", "色相"], "Strength": ["강도", "強度"], "Apply color": ["색상 적용", "色を適用"],
     "Cancel preview": ["미리보기 취소", "プレビューを取り消す"], "Compare original": ["원본 비교", "元画像を比較"], "Reset texture": ["이 텍스쳐 원본으로", "このテクスチャを元に戻す"],
@@ -163,7 +166,7 @@
     var T = global.THREE, math = global.TextureColorMath, processor = math.createProcessor ? math.createProcessor({ workerUrl: "/static/texture-color-worker.js" }) : null;
     var disposed = false, currentToken = null, epoch = 0, revision = 0, sequence = 0, previewTimer = null, previewJobs = 0, loading = 0;
     var catalogue = [], entries = new Map(), active = null, activeTab = "costume", sceneMode = "orbit", labels = [], units = [], listeners = [], overlays = [], genericMaps = new Map();
-    var overlayState = null, brushStroke = null, hoverAt = 0, lastEditable = null;
+    var overlayState = null, brushStroke = null, hoverAt = 0, lastEditable = null, selectionAutoHidden = false;
     var requestControllers = new Set(), sceneElement = null, pointer = null, space = false, geometryCache = new WeakMap(), lastModel = null, pendingRestore = null, cataloguePromise = null, restoringDocuments = 0, suppressed = 0, notifiedPending = false;
     var statusText = "", error = "", performance = { previewsStarted: 0, previewsDiscarded: 0, textureUploads: 0, maskOverlays: 0, encodes: 0 };
     function t(text) {
@@ -226,9 +229,21 @@
       var unit = label === "Lightness" ? " Δ (%p)" : ["Chroma", "Strength", "Opacity", "Softness"].indexOf(label) >= 0 ? " (%)" : label === "Hue" ? " (°)" : ["Brush size", "Feather inward"].indexOf(label) >= 0 ? " (px)" : "";
       if (unit) { units.push([title, unit]); title.textContent += unit; }
       title.className = "viewer-texture-slider-title"; range.type = "range"; field.type = "number"; range.min = field.min = min; range.max = field.max = max; range.step = field.step = step; range.value = field.value = value; field.id = id; range.setAttribute("aria-label", t(label));
-      function change(from, to) { var v = clamp(Number(from.value) || 0, min, max); to.value = from.value = String(Math.round(v * 1000) / 1000); if (callback) callback(); }
+      if (min < 0 && global.ViewerSignedInputs) global.ViewerSignedInputs.attach(field, { signButton: false });
+      function incomplete() { return !field.value.trim() || field.validity && field.validity.badInput || !isFinite(Number(field.value)); }
+      function change(from, to) {
+        if (from === field && incomplete()) {
+          // Keep the browser's '-' / '-.' draft and last valid preview intact.
+          if (callback === schedulePreview) { sequence++; if (previewTimer) global.clearTimeout(previewTimer); previewTimer = null; refreshButtons(); }
+          return;
+        }
+        var raw = Number(from.value), value = Math.round(clamp(raw, min, max) * 1000) / 1000;
+        to.value = String(value); if (from === range || raw !== value) from.value = String(value);
+        if (callback) callback();
+      }
       listen(range, "input", function () { change(range, field); }); listen(field, "input", function () { change(field, range); });
-      return { field: field, range: range, value: function () { return Number(field.value); }, set: function (v) { field.value = range.value = String(v); } };
+      listen(field, "change", function () { if (incomplete()) { field.value = range.value; if (callback) callback(); } });
+      return { field: field, range: range, value: function () { return Number(incomplete() ? range.value : field.value); }, set: function (v) { field.value = range.value = String(v); } };
     }
     var sceneSelect = select(sceneRow, "Model selection", [["orbit", "Orbit"], ["brush", "3D selection brush"], ["face", "Face"], ["connected", "Connected faces"], ["skin", "Skin sample"], ["exclude", "Exclude sample"]], "viewer-texture-scene-mode");
     var selectTool = select(sceneRow, "Selection tool", [["select-uv-island", "UV island"], ["select-uv-face", "UV face"], ["select-brush", "Selection brush"], ["select-rectangle", "Rectangle selection"], ["select-lasso", "Lasso selection"], ["select-wand", "Magic wand"], ["pan", "Pan"]], "viewer-texture-selection-tool");
@@ -328,6 +343,9 @@
       var viewOptions = node("details", views, null, "viewer-texture-view-options"); node("summary", viewOptions, "View");
       var viewMenuBody = node("div", viewOptions, null, "viewer-texture-menu-body");
       Array.from(views.children).forEach(function (item) { if (item !== viewOptions && item.tagName !== "BUTTON") viewMenuBody.appendChild(item); });
+      showSelection.parentNode.classList.add("viewer-texture-selection-toggle");
+      showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection.");
+      showSelection.setAttribute("aria-describedby", "viewer-texture-info");
       compact(undoButton, "↶"); compact(redoButton, "↷");
       var quick = node("div", stage, null, "viewer-texture-quick-options");
       move(quick, [brushSize.field.parentNode, opacity.field.parentNode, colorLabel]);
@@ -352,7 +370,7 @@
       var help = node("details", properties, null, "viewer-texture-help"); node("summary", help, "Help");
       Array.from(paintPanel.querySelectorAll("p.viewer-texture-hint")).forEach(function (item) { help.appendChild(item); });
       Array.from(content.children).forEach(function (item) { if (item.classList.contains("viewer-texture-hint") && item !== savedFile && item !== savedProjectFile && item !== faceNote && item !== readonlyNote) help.appendChild(item); });
-      var colorActions = node("div", stage, null, "viewer-texture-color-actions"); move(colorActions, [applyButton, cancelButton, compare.parentNode]);
+      var colorActions = node("div", stage, null, "viewer-texture-color-actions"); move(colorActions, [showSelection.parentNode, applyButton, cancelButton, compare.parentNode]);
       var statusBar = node("div", content, null, "viewer-texture-status-bar"); move(statusBar, [information, status]);
       move(content, [header, workbench, statusBar, readonlyNote, faceNote, savedFile, savedProjectFile]);
       sceneRow.remove();
@@ -398,7 +416,7 @@
     function refreshToolstrip() {
       if (!workspace.inspector) return;
       var chosen = activeTab === "paint" ? paintTool.value : selectTool.value, uvAvailable = !!(active && !active.standalone && bindings(active).length), blocked = !active || !active.engine || !canEdit(active) || !!loading || !!pendingRestore;
-      selectTool.parentNode.hidden = activeTab === "paint"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; workspace.colorActions.hidden = activeTab === "paint";
+      selectTool.parentNode.hidden = activeTab === "paint"; paintTool.parentNode.hidden = activeTab !== "paint"; colorLabel.hidden = activeTab !== "paint"; compare.parentNode.hidden = activeTab === "paint";
       workspace.floatingBar.hidden = !floating(active);
       toolButtons.forEach(function (item) { var pressed = item.tool === chosen, disabled = blocked || item.tool.indexOf("select-uv-") === 0 && !uvAvailable; item.node.hidden = item.paintOnly && activeTab !== "paint"; if (item.node.disabled !== disabled) item.node.disabled = disabled; if (item.node.getAttribute("aria-pressed") !== String(pressed)) item.node.setAttribute("aria-pressed", String(pressed)); item.node.classList.toggle("active", pressed); });
       [selectTool, paintTool].forEach(function (select) { Array.from(select.options).forEach(function (option) { if (option.value.indexOf("select-uv-") === 0 && option.disabled !== !uvAvailable) option.disabled = !uvAvailable; }); });
@@ -472,6 +490,18 @@
     function removeOverlays() {
       overlays.forEach(function (row) { if (row.mesh.parent) row.mesh.parent.remove(row.mesh); row.materials.forEach(function (material) { material.dispose(); }); row.textures.forEach(function (texture) { texture.dispose(); }); });
       overlays = []; overlayState = null;
+    }
+    function syncSelectionDisplay() {
+      entries.forEach(function (entry) { if (entry.engine && entry.engine.setSelectionVisible) entry.engine.setSelectionVisible(showSelection.checked); });
+      updateOverlay(); updateInformation(); requestRender();
+    }
+    function hideSelectionForColor() {
+      if (!showSelection.checked) return;
+      selectionAutoHidden = true; showSelection.checked = false; syncSelectionDisplay();
+    }
+    function restoreAutomaticSelectionDisplay() {
+      if (!selectionAutoHidden) return false;
+      selectionAutoHidden = false; showSelection.checked = true; syncSelectionDisplay(); return true;
     }
     function updateOverlay(maskOverride, dirty) {
       if (!active || !active.engine || !T || active.standalone || !section.open || !showSelection.checked) { removeOverlays(); return; }
@@ -689,7 +719,7 @@
     }
     function selectionChanged(entry) {
       if (!entry || entry.loading || suppressed) return;
-      cancelPreview(); entry.userSelected = true; entry.stats = null; entry.featherCache = null; updateOverlay(); updateInformation(); updateTone(); refreshButtons();
+      cancelPreview(); entry.userSelected = true; entry.stats = null; entry.featherCache = null; if (!restoreAutomaticSelectionDisplay()) updateOverlay(); updateInformation(); updateTone(); refreshButtons();
     }
     function canClearSelection() {
       return !!(active && active.engine && !loading && !pointer && !brushStroke && canEdit(active) &&
@@ -713,7 +743,10 @@
         onPick: function (rgba, point) { if (activeTab === "skin" && (sceneMode === "skin" || sceneMode === "exclude")) seed(entry, point, sceneMode === "exclude"); else { paintColor.value = hex(rgba); paintAlpha.value = Math.round(rgba[3] / 255 * 100); syncBrush(); } },
         onViewChange: updateInformation, onError: function (err) { say("", err.message || String(err)); }, drawOverlay: function (context, view) { drawUV(entry, context, view); } });
       entry.events = [];
-      function protect() { if (entry.engine && entry.engine.setReadOnly) entry.engine.setReadOnly(!canEdit(entry)); }
+      function protect(event) {
+        if (entry.engine && entry.engine.setReadOnly) entry.engine.setReadOnly(!canEdit(entry));
+        if (event.type === "pointerdown" && canEdit(entry) && entry.engine.getState().tool.indexOf("select-") === 0) restoreAutomaticSelectionDisplay();
+      }
       ["pointerdown", "keydown"].forEach(function (name) { canvas.addEventListener(name, protect, true); entry.events.push(function () { canvas.removeEventListener(name, protect, true); }); });
       function liveStroke(event) {
         if (entry !== active || entry.standalone || activeTab !== "paint" || !entry.engine || !canEdit(entry)) return;
@@ -825,17 +858,26 @@
       return value;
     }
     function validSelection(entry) { var state = entry && entry.engine && entry.engine.getState(); return !!(state && state.selectionActive && state.selectedPixels); }
+    function incompleteAdjustment() {
+      var fields = activeTab === "skin" ? [skinL, skinC, skinH, skinStrength, feather] : activeTab === "costume" ? [colorL, colorC, colorH, colorStrength] : [];
+      for (var i = 0; i < fields.length; i++) { var field = fields[i].field; if (!field.value.trim() || field.validity && field.validity.badInput || !isFinite(Number(field.value))) return field; }
+      return null;
+    }
     function schedulePreview() {
       if (!canEdit(active)) return;
       if (previewTimer) global.clearTimeout(previewTimer); sequence++;
       if (activeTab === "paint") return;
-      previewTimer = global.setTimeout(function () { previewTimer = null; preparePreview(); }, 100); refreshButtons();
+      if (incompleteAdjustment()) { previewTimer = null; refreshButtons(); return; }
+      if (validSelection(active)) hideSelectionForColor();
+      previewTimer = global.setTimeout(function () { previewTimer = null; preparePreview(true); }, 100); refreshButtons();
     }
-    function preparePreview() {
+    function preparePreview(keepSelectionDisplay) {
       if (!canEdit(active)) return Promise.resolve(false);
       if (previewTimer) global.clearTimeout(previewTimer); previewTimer = null;
       if (loading || pendingRestore || floating(active)) return Promise.resolve(false);
+      if (incompleteAdjustment()) return Promise.resolve(false);
       var entry = active; if (!entry || !entry.engine || !validSelection(entry)) { say(activeTab === "skin" ? "Skin changes require an explicit selection." : "Choose faces or a texture region before applying color."); refreshButtons(); return Promise.resolve(false); }
+      if (!keepSelectionDisplay) hideSelectionForColor();
       var born = epoch, serial = ++sequence, tab = activeTab, stamp = layerStamp(entry), image = colorImage(entry), mask = entry.engine.getMask(), optionsValue = adjustment(entry);
       if (tab === "skin" && feather.value()) {
         var signature = entry.engine.getState().selectionRevision + ":" + feather.value();
@@ -858,6 +900,8 @@
     }
     function applyPreview() {
       if (!active || !active.engine || !canEdit(active) || floating(active)) return Promise.resolve(false);
+      var incomplete = incompleteAdjustment();
+      if (incomplete) { say("Complete the number before applying color."); incomplete.focus(); if (incomplete.reportValidity) incomplete.reportValidity(); return Promise.resolve(false); }
       var entry = active;
       if (previewTimer || previewJobs) { if (previewTimer) global.clearTimeout(previewTimer); previewTimer = null; entry.preview = null; entry.engine.setPreviewImage(null); return preparePreview().then(function (ready) { return ready && applyPreview(); }); }
       if (!entry.preview) return preparePreview().then(function (ready) { return ready && applyPreview(); });
@@ -892,13 +936,13 @@
       var faceToggle = document.getElementById("viewer-mod-include-face");
       faceNote.hidden = !(active && active.record.automaticFace && faceToggle && !faceToggle.checked);
       if (!active || !active.engine) { information.textContent = ""; return; }
-      var state = active.engine.getState(); information.textContent = state.width + " × " + state.height + " · " + t("Selected pixels") + ": " + (state.selectionActive ? state.selectedPixels.toLocaleString() : state.width * state.height) + " · " + t("Zoom") + ": " + (Math.round(state.view.zoom * 1000) / 10) + "% · " + t("Saved changes") + ": " + getEdits().length;
+      var state = active.engine.getState(); information.textContent = state.width + " × " + state.height + " · " + t("Selected pixels") + ": " + (state.selectionActive ? state.selectedPixels.toLocaleString() : state.width * state.height) + " · " + t("Zoom") + ": " + (Math.round(state.view.zoom * 1000) / 10) + "% · " + t("Saved changes") + ": " + getEdits().length + (selectionAutoHidden && state.selectionActive ? " · " + t("Selection kept; tint hidden.") : "");
     }
     function hasPending() { return !!(loading || pendingRestore || restoringDocuments || previewTimer || previewJobs || brushStroke || Array.from(entries.values()).some(function (e) { return e.encoding || e.encodeError || e.preview || floating(e); })); }
     function refreshButtons() {
       if (disposed) return;
       var state = active && active.engine && active.engine.getState(); undoButton.disabled = !state || !state.undoCount || !!loading || !canEdit(active); redoButton.disabled = !state || !state.redoCount || !!loading || !canEdit(active);
-      applyButton.disabled = !state || !canEdit(active) || !validSelection(active) || !!loading || !!previewTimer || !!previewJobs || !!(active && active.encoding) || !!brushStroke || !!floating(active); cancelButton.disabled = !previewTimer && !(active && active.preview) && !previewJobs;
+      applyButton.disabled = !state || !canEdit(active) || !validSelection(active) || !!incompleteAdjustment() || !!loading || !!previewTimer || !!previewJobs || !!(active && active.encoding) || !!brushStroke || !!floating(active); cancelButton.disabled = !previewTimer && !(active && active.preview) && !previewJobs;
       labels.forEach(function (pair) { if (pair[0] === applyButton) pair[0].textContent = t(activeTab === "skin" ? "Apply skin tone" : "Apply color"); });
       var blocked = !!active && !canEdit(active); lastEditable = !blocked; readonlyNote.hidden = !(active && !active.standalone && options.isReadOnly && options.isReadOnly());
       [colorL, colorC, colorH, colorStrength, skinL, skinC, skinH, skinStrength, tolerance, feather].forEach(function (control) { control.field.disabled = control.range.disabled = blocked; });
@@ -1188,7 +1232,7 @@
     }
     function beginModelBrush(event, picked) {
       if (!picked || picked.invalid) { if (picked && picked.invalid) say("", "This face has no editable original main texture."); return; }
-      cancelModelBrush(); cancelPreview();
+      cancelModelBrush(); cancelPreview(); restoreAutomaticSelectionDisplay();
       var stroke = { born: epoch, identity: picked.identity, mode: event.altKey ? "subtract" : event.shiftKey ? "add" : selectionMode.value, radius: brushSize.value() / 2, queue: [], faces: new Set(), entry: null, done: false };
       brushStroke = stroke; stampModelBrush(stroke, picked);
       var ready = active && same(active.record.texture, picked.identity) && active.engine ? Promise.resolve(active) : selectTexture(picked.identity);
@@ -1400,7 +1444,7 @@
     [paintColor, paintAlpha, filled].forEach(function (item) { listen(item, "input", syncBrush); });
     listen(compare, "change", function () { if (active) { if (active.engine) { if (active.engine.setDisplayOverride) active.engine.setDisplayOverride(compare.checked ? active.original : null); else active.engine.setPreviewImage(compare.checked ? active.original : active.preview); } upload(active); } });
     listen(showUV, "change", function () { if (active && active.engine) active.engine.render(); });
-    listen(showSelection, "change", function () { entries.forEach(function (entry) { if (entry.engine && entry.engine.setSelectionVisible) entry.engine.setSelectionVisible(showSelection.checked); }); updateOverlay(); });
+    listen(showSelection, "change", function () { selectionAutoHidden = false; syncSelectionDisplay(); });
     var faceToggle = document.getElementById("viewer-mod-include-face"); if (faceToggle) listen(faceToggle, "change", updateInformation);
     listen(fileInput, "change", function () { var file = fileInput.files && fileInput.files[0]; fileInput.value = ""; importPNG(file).catch(function (err) { say("", err.message); }); });
     listen(projectFile, "change", function () { var file = projectFile.files && projectFile.files[0]; projectFile.value = ""; importProject(file).catch(function (err) { if (err.name !== "AbortError") say("", err.message); }); });
@@ -1422,7 +1466,7 @@
       getSceneMode: function () { return sceneMode; }, canClearSelection: canClearSelection, clearSelection: clearSelection, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },
       changeLayer: changeLayer, clipboardAction: clipboardAction,
-      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
+      updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection."); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };
   }

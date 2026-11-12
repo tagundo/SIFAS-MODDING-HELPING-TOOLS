@@ -160,6 +160,8 @@ def render_options(params):
     except (ValueError, TypeError) as error:
         raise ValueError("Choose a whole thumbnail size between 64 and 1024.") from error
     _require(64 <= size <= 1024, "Choose a thumbnail size between 64 and 1024.")
+    fit_full = params.get("thumbnail_fit_full", False)
+    _require(type(fit_full) is bool, "Choose whether to fit the full character in its thumbnail.")
     supplied = params.get("out_dir")
     _require(isinstance(supplied, str) and supplied, "Choose an output folder for the new costume ZIP copies.")
     root = Path(supplied).expanduser()
@@ -173,7 +175,7 @@ def render_options(params):
     _require(1 <= len(selected) <= MAX_ITEMS and len(set(selected)) == len(selected),
              "Choose one to 128 different costume Mod ZIPs.")
     return {"mode": mode, "in_path": single, "in_paths": multi, "out_dir": str(root),
-            "thumbnail_size": size, "variant": variant}
+            "thumbnail_size": size, "variant": variant, "thumbnail_fit_full": fit_full}
 
 
 def plan_inputs(params):

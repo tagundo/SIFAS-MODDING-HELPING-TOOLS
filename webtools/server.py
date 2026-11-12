@@ -688,7 +688,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             optional = {"kind", "params", "token", "state", "character_id", "counterpart_path",
                         "selected_variant", "item_id", "cache_key", "profile_digest", "png", "render",
-                        "mesh_state", "include_face_edits"}
+                        "mesh_state", "include_face_edits", "thumbnail_fit_full"}
             params = self._viewer_feature_request(set(), optional_fields=optional,
                 max_bytes=(16 if operation == "plan" else 4) * 1024 * 1024, token=False)
             handler = {"plan": viewer_thumbnails.plan, "model": viewer_thumbnails.model,

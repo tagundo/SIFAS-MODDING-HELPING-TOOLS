@@ -529,6 +529,7 @@ class FacePlan:
         self.status, self.needed, self.dynamic_sources = "not_needed", set(), set()
         self.required_roles, self.rendered_roles = set(), set()
         self.target_anchor, self.head_material = None, None
+        self.material_bindings = {}
         self.source_adjustments = {}
         self.database_paths = set()
         self._hint_sources = {}
@@ -1107,8 +1108,71 @@ class FacePlan:
             self.source_adjustments[source] = self.target_anchor @ np.linalg.inv(anchor) if anchor is not None else np.eye(4)
         return self.source_adjustments[source] @ world
 
+    def bind_selected_materials(self, scene, facial_sources):
+        """Apply the serialized BodyPartManager face/head-material binding.
+
+        Automatic discovery is optional; this runtime binding is not. Saved
+        previews already select their facial prefab, and private installer
+        graphs rename CAB/AssetBundle identities while retaining the prefab
+        declaration. Resolve the actual face pointer and its descendants so
+        another selected costume cannot lend its atlas to an unrelated face.
+        """
+        from .model_viewer import _key, _ref, _source_path
+        bindings = {}
+        if not facial_sources:
+            self.material_bindings = bindings
+            return
+
+        def beneath(game_object, root):
+            root_key, source, seen = _key(root), _source_path(root), set()
+            while game_object is not None and _source_path(game_object) == source:
+                key = _key(game_object)
+                if key == root_key:
+                    return True
+                if key in seen or len(seen) >= 256:
+                    return False
+                seen.add(key)
+                transform = scene.transforms.get(key)
+                parent = _ref(transform, scene.tree(transform).get("m_Father")) if transform else None
+                game_object = _ref(parent, scene.tree(parent).get("m_GameObject")) if parent else None
+            return False
+
+        for obj in scene.env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            _check(scene.deadline)
+            try:
+                tree = scene.tree(obj)
+            except Exception:
+                continue
+            if not all(key in tree for key in ("face", "head", "headMaterial")):
+                continue
+            face, head, material = (_ref(obj, tree.get(key)) for key in ("face", "head", "headMaterial"))
+            if (face is None or head is None or material is None or material.type.name != "Material"
+                    or _source_path(face) not in facial_sources):
+                continue
+            try:
+                root = face if face.type.name == "GameObject" else _ref(face, scene.tree(face).get("m_GameObject"))
+            except Exception:
+                continue
+            if root is None or root.type.name != "GameObject":
+                continue
+            for renderer, _, game_object in scene.renderers:
+                if _source_path(renderer) != _source_path(face) or not beneath(game_object, root):
+                    continue
+                key = _key(renderer)
+                if key not in bindings:
+                    bindings[key] = material
+                elif bindings[key] is not None and _key(bindings[key]) != _key(material):
+                    # An explicitly shared prefab with distinct atlases has no
+                    # single material assignment. Preserve its own material.
+                    bindings[key] = None
+        self.material_bindings = bindings
+
     def material(self, renderer, material):
-        from .model_viewer import _source_path
+        from .model_viewer import _key, _source_path
+        if _key(renderer) in self.material_bindings:
+            return self.material_bindings[_key(renderer)] or material
         # The game assigns BodyPartManager.headMaterial to its separate facial
         # prefab. Reuse that original texture, without resampling or UV edits.
         if _source_path(renderer) in self.dynamic_sources and self.head_material is not None:

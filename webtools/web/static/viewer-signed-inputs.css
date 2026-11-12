@@ -1,0 +1,5 @@
+.viewer-signed-number-entry { display: inline-flex; align-items: stretch; width: 100%; max-width: 100%; min-width: 0; gap: 3px; vertical-align: middle; }
+.viewer-signed-number-entry > input[type=number] { flex: 1 1 0; width: 0 !important; min-width: 0; max-width: none !important; margin: 0; }
+#tab-viewer .viewer-signed-number-entry > .viewer-number-sign { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; min-width: 32px; min-height: 32px; width: 32px; margin: 0; padding: 2px; font-size: 17px; line-height: 1; }
+.viewer-signed-number-entry > .viewer-number-sign:focus-visible { outline: 2px solid var(--accent, #315fbc); outline-offset: 1px; }
+@media (pointer: coarse) { #tab-viewer .viewer-signed-number-entry > .viewer-number-sign { flex-basis: 44px; min-width: 44px; min-height: 44px; width: 44px; } }

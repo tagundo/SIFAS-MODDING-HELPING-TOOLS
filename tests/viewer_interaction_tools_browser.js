@@ -17,9 +17,12 @@ async function touch(page,points){const cdp=await page.context().newCDPSession(p
 async function assertLeftRail(page) {
   const rail = await page.locator('#viewer-interaction-tools').evaluate(host => {
     const stage = document.getElementById('viewer-stage').getBoundingClientRect(), box = host.getBoundingClientRect();
+    const info = document.querySelector('#viewer-info > summary').getBoundingClientRect();
     const buttons = [...host.querySelectorAll('.viewer-interaction-row > button')];
     return { edge: host.dataset.viewerFramingEdge, orientation: host.firstElementChild.getAttribute('aria-orientation'),
       leftHalf: box.right <= stage.left + stage.width / 2,
+      bottom: box.bottom, centre: box.top + box.height / 2, stageCentre: stage.top + stage.height / 2,
+      infoTop: info.top,
       buttons: buttons.map(button => ({ id: button.id, x: button.getBoundingClientRect().x, y: button.getBoundingClientRect().y })) };
   });
   assert.equal(rail.edge, 'left'); assert.equal(rail.orientation, 'vertical'); assert(rail.leftHalf);
@@ -27,6 +30,9 @@ async function assertLeftRail(page) {
     'Model interaction buttons form one vertical column on the left');
   const edit = rail.buttons.findIndex(button => button.id === 'viewer-interaction-edit');
   assert.equal(rail.buttons[edit + 1].id, 'viewer-interaction-clear', 'Clear selection sits directly below Edit');
+  assert(rail.bottom <= rail.infoTop - 2 && rail.bottom >= rail.infoTop - 12,
+    'The left rail is anchored just above Info, leaving the central arm area free: ' + JSON.stringify(rail));
+  assert(rail.centre > rail.stageCentre, 'The ordinary rail sits in the lower half of the model viewport');
   return rail;
 }
 async function reveal(page, selector) {
@@ -206,6 +212,7 @@ async function verifyShortPhoneRail(browser, url) {
     report.shortPhoneRail = await page.locator('#viewer-interaction-tools').evaluate(host => {
       const stage = document.getElementById('viewer-stage').getBoundingClientRect(), box = host.getBoundingClientRect(), row = host.firstElementChild;
       return { leftInset: box.left - stage.left, height: box.height, scrolling: row.scrollHeight > row.clientHeight,
+        infoClearance: document.querySelector('#viewer-info > summary').getBoundingClientRect().top - box.bottom,
         existingHUD: [...document.querySelectorAll('#viewer-stage [data-viewer-hud-control]')]
           .filter(button => !host.contains(button) && !button.disabled && button.getClientRects().length)
           .map(button => { const r = button.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
@@ -213,11 +220,32 @@ async function verifyShortPhoneRail(browser, url) {
     });
     assert(report.shortPhoneRail.leftInset <= 12, 'Use the left gap below pose controls rather than moving the rail toward the model center');
     assert(report.shortPhoneRail.scrolling, 'The short phone rail scrolls in the available left-side gap');
+    assert(report.shortPhoneRail.infoClearance >= 2 && report.shortPhoneRail.infoClearance <= 12,
+      'The scrolling phone rail keeps its bottom anchor above Info');
     assert(report.shortPhoneRail.existingHUD.every(button => button.hit));
     report.shortPhoneRail.reachableButtons = await hit(page, true);
     assert(report.shortPhoneRail.reachableButtons.every(button => button.hit && button.within && button.height >= 44));
     await page.screenshot({ path: path.join(out, 'short-phone-rail.png') });
   } finally { await context.close(); }
+}
+async function verifyFoldedBottomRail(browser, url) {
+  const profiles = [{ width: 1153, height: 1280, fontPercent: 100 }, { width: 768, height: 1024, fontPercent: 200 }];
+  report.foldedBottomRails = [];
+  for (const profile of profiles) {
+    const context = await browser.newContext({ viewport: { width: profile.width, height: profile.height }, hasTouch: true });
+    await context.addInitScript(() => localStorage.setItem('sifas_lang', 'ko'));
+    try {
+      const page = await init(context, url);
+      if (profile.fontPercent !== 100) await page.addStyleTag({ content: 'html { font-size: ' + profile.fontPercent + '% !important; }' });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.locator('#viewer-stage').scrollIntoViewIfNeeded();
+      const rail = await assertLeftRail(page), targets = await hit(page, true);
+      assert(targets.every(button => button.hit && button.within && button.height >= 44),
+        'Folded/tablet bottom rail retains real usable touch targets: ' + JSON.stringify({ profile, targets }));
+      report.foldedBottomRails.push({ profile, rail, targets });
+      await page.screenshot({ path: path.join(out, 'bottom-rail-' + profile.width + '-' + profile.fontPercent + '.png') });
+    } finally { await context.close(); }
+  }
 }
 (async()=>{try{const sock=net.createServer();await new Promise(r=>sock.listen(0,'127.0.0.1',r));const port=sock.address().port;await new Promise(r=>sock.close(r));const stream=fs.createWriteStream(path.join(out,'server.log'));server=spawn(python,['-B','-m','webtools','--no-browser','--host','127.0.0.1','--port',String(port)],{cwd:root,env:{...process.env,SUKUSTA_DIR:library,PYTHONPATH:root+':'+path.dirname(root)},stdio:['ignore','pipe','pipe']});server.stdout.pipe(stream);server.stderr.pipe(stream);const url='http://127.0.0.1:'+port;for(let i=0;i<100;i++){try{if((await fetch(url+'/api/tools')).ok)break;}catch{}await wait(100);}browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE||undefined,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 const context=await browser.newContext({viewport:{width:1360,height:900}});await context.addInitScript(()=>localStorage.setItem('sifas_lang','en'));const p=await init(context,url);const original=await snapshot(p),before=await snapshot(p);await p.locator('#viewer-interaction-orbit').click();await drag(p);const rotated=await snapshot(p);assert.notDeepEqual(rotated.camera.position,before.camera.position);report.cases.push('Rotate button orbits actual camera');
@@ -230,4 +258,4 @@ await p.evaluate(()=>{const i=document.createElement('input');i.id='qa-typing';d
 const rects=await hit(p);assert(rects.every(r=>r.hit&&r.within));report.desktopHUD=rects;report.desktopRail=await assertLeftRail(p);await p.screenshot({path:path.join(out,'desktop.png')});report.cases.push('Desktop controls are inside the viewport and unobstructed');await verifyClearSelection(p);await context.close();
 const mobile=await browser.newContext({viewport:{width:360,height:800},hasTouch:true});await mobile.addInitScript(()=>localStorage.setItem('sifas_lang','ko'));const m=await init(mobile,url);await m.locator('#viewer-stage').scrollIntoViewIfNeeded();await m.locator('#viewer-interaction-pan').click();const mb=await m.locator('#viewer-canvas').boundingBox(),pt=(x,y,id=1)=>({x:mb.x+x,y:mb.y+y,id});const mp=await snapshot(m);await touch(m,[[pt(mb.width*.58,mb.height*.4)],[pt(mb.width*.58+35,mb.height*.4+20)]]);assert.notDeepEqual((await snapshot(m)).camera.target,mp.camera.target);report.cases.push('Pan uses one finger on the actual touch viewport');
 await m.locator('#viewer-interaction-zoom').click();const mz=await snapshot(m);await touch(m,[[pt(mb.width*.58,mb.height*.4)],[pt(mb.width*.58,mb.height*.4+65)]]);assert(Math.abs(dist(await snapshot(m))-dist(mz))>.005);report.cases.push('Zoom uses one-finger drag on touch');
-const pinch=await snapshot(m);await touch(m,[[pt(mb.width*.45,mb.height*.4,1),pt(mb.width*.65,mb.height*.4,2)],[pt(mb.width*.40,mb.height*.4,1),pt(mb.width*.70,mb.height*.4,2)]]);assert(Math.abs(dist(await snapshot(m))-dist(pinch))>.005);report.cases.push('Two-finger pinch remains available in Zoom mode');const mr=await hit(m);assert(mr.every(r=>r.hit&&r.within&&r.height>=44));report.mobileHUD=mr;report.mobileRail=await assertLeftRail(m);await m.screenshot({path:path.join(out,'mobile.png')});assert.deepEqual((await snapshot(m)).authoring,original.authoring);report.cases.push('Touch controls have usable targets and navigation never alters model edits');report.mediumFontProbes=await verifyMediumFontHud(m);report.cases.push('Medium font navigation preserves all existing HUD targets');report.overflowFixture=await forceOverflow(m);report.large=await m.locator('#viewer-interaction-tools').evaluate(e=>({className:e.className,font:getComputedStyle(e).fontSize,buttonFont:getComputedStyle(e.querySelector('button')).fontSize,rowWidth:e.firstElementChild.getBoundingClientRect().width,scroll:e.firstElementChild.scrollWidth,stage:document.getElementById('viewer-stage').clientWidth,labels:[...e.querySelectorAll('.viewer-interaction-label')].map(x=>({text:x.textContent,font:getComputedStyle(x).fontSize,width:x.getBoundingClientRect().width,scroll:x.scrollWidth}))}));assert(await m.locator('#viewer-interaction-tools').evaluate(e=>e.classList.contains('viewer-interaction-icons-only')));assert((await hit(m)).every(r=>r.hit&&r.within));await m.screenshot({path:path.join(out,'mobile-large-labels.png')});report.cases.push('Large text uses accessible icon targets rather than clipped labels');await mobile.close();await verifyShortViewport(browser,url);report.cases.push('Short-window left controls preserve real pan and open a usable side Edit chooser');await verifyShortPhoneRail(browser,url);report.cases.push('Short phones keep the rail in the actual left gap with all controls reachable');assert.deepEqual(report.errors,[]);report.status='PASS';console.log(JSON.stringify({status:report.status,cases:report.cases.length,evidence:out}));}catch(e){report.status='FAIL';report.error=String(e.stack||e);console.error(e);}finally{if(browser)await browser.close();if(server)server.kill();fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2)+'\n');if(report.status!=='PASS')process.exitCode=1;}})();
+const pinch=await snapshot(m);await touch(m,[[pt(mb.width*.45,mb.height*.4,1),pt(mb.width*.65,mb.height*.4,2)],[pt(mb.width*.40,mb.height*.4,1),pt(mb.width*.70,mb.height*.4,2)]]);assert(Math.abs(dist(await snapshot(m))-dist(pinch))>.005);report.cases.push('Two-finger pinch remains available in Zoom mode');const mr=await hit(m);assert(mr.every(r=>r.hit&&r.within&&r.height>=44));report.mobileHUD=mr;report.mobileRail=await assertLeftRail(m);await m.screenshot({path:path.join(out,'mobile.png')});assert.deepEqual((await snapshot(m)).authoring,original.authoring);report.cases.push('Touch controls have usable targets and navigation never alters model edits');report.mediumFontProbes=await verifyMediumFontHud(m);report.cases.push('Medium font navigation preserves all existing HUD targets');report.overflowFixture=await forceOverflow(m);report.large=await m.locator('#viewer-interaction-tools').evaluate(e=>({className:e.className,font:getComputedStyle(e).fontSize,buttonFont:getComputedStyle(e.querySelector('button')).fontSize,rowWidth:e.firstElementChild.getBoundingClientRect().width,scroll:e.firstElementChild.scrollWidth,stage:document.getElementById('viewer-stage').clientWidth,labels:[...e.querySelectorAll('.viewer-interaction-label')].map(x=>({text:x.textContent,font:getComputedStyle(x).fontSize,width:x.getBoundingClientRect().width,scroll:x.scrollWidth}))}));assert(await m.locator('#viewer-interaction-tools').evaluate(e=>e.classList.contains('viewer-interaction-icons-only')));assert((await hit(m)).every(r=>r.hit&&r.within));await m.screenshot({path:path.join(out,'mobile-large-labels.png')});report.cases.push('Large text uses accessible icon targets rather than clipped labels');await mobile.close();await verifyShortViewport(browser,url);report.cases.push('Short-window left controls preserve real pan and open a usable side Edit chooser');await verifyShortPhoneRail(browser,url);report.cases.push('Short phones keep the rail in the actual left gap with all controls reachable');await verifyFoldedBottomRail(browser,url);report.cases.push('Folded and enlarged-text tablet controls remain anchored at the lower left');assert.deepEqual(report.errors,[]);report.status='PASS';console.log(JSON.stringify({status:report.status,cases:report.cases.length,evidence:out}));}catch(e){report.status='FAIL';report.error=String(e.stack||e);console.error(e);}finally{if(browser)await browser.close();if(server)server.kill();fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2)+'\n');if(report.status!=='PASS')process.exitCode=1;}})();

@@ -12,7 +12,7 @@
   };
   function create(options) {
     var stage = options.stage, host = document.createElement("div"), row = document.createElement("div"), menu = document.createElement("div");
-    host.id = "viewer-interaction-tools"; host.className = "viewer-interaction-tools"; host.hidden = true; host.dataset.viewerFramingEdge = "left";
+    host.id = "viewer-interaction-tools"; host.className = "viewer-interaction-tools"; host.hidden = true; host.dataset.viewerFramingEdge = "left"; host.dataset.viewerFramingLocal = "true";
     row.className = "viewer-interaction-row"; row.setAttribute("role", "toolbar"); row.setAttribute("aria-orientation", "vertical");
     menu.id = "viewer-interaction-edit-menu"; menu.className = "viewer-interaction-menu"; menu.hidden = true; menu.setAttribute("role", "menu");
     host.append(row, menu); stage.appendChild(host);
@@ -125,8 +125,8 @@
         var box = element.getBoundingClientRect(); if (!box.width || !box.height || getComputedStyle(element).visibility === "hidden") return;
         obstacles.push({ left: box.left - rect.left - 5, right: box.right - rect.left + 5, top: box.top - rect.top - 5, bottom: box.bottom - rect.top + 5 });
       });
-      // Keep the rail in the leftmost free column. The existing pose controls
-      // retain their top-left space, and a short rail scrolls within the stage.
+      // Anchor low in the leftmost free column, above Info and other controls.
+      // A short rail scrolls in that gap instead of moving over the model's arms.
       function freePosition() {
         var position = null;
         var minimumHeight = Math.min(height, buttons.orbit.getBoundingClientRect().height * 2 + 2);
@@ -140,8 +140,8 @@
           gaps.forEach(function (gap) {
             var visibleHeight = Math.min(height, Math.floor(gap[1] - gap[0]));
             if (visibleHeight < minimumHeight) return;
-            var top = Math.max(gap[0], Math.min((stage.clientHeight - visibleHeight) / 2, gap[1] - visibleHeight));
-            var score = Math.abs(top + visibleHeight / 2 - stage.clientHeight / 2);
+            var top = gap[1] - visibleHeight;
+            var score = stage.clientHeight - gap[1];
             if (!position || visibleHeight > position.height || visibleHeight === position.height && score < position.score) position = { left: x, top: top, height: visibleHeight, score: score };
           });
         }
