@@ -110,7 +110,7 @@
       if (host.hidden || !stage.clientWidth || disposed) return;
       var compact = host.classList.contains("viewer-interaction-icons-only");
       if (compact) host.classList.remove("viewer-interaction-icons-only");
-      var naturalWidth = 0, railLimit = Math.min(120, Math.max(44, stage.clientWidth * .27));
+      var naturalWidth = 0, railLimit = stage.clientWidth <= 480 ? 44 : Math.min(120, Math.max(44, stage.clientWidth * .27));
       Object.keys(buttons).forEach(function (key) { var button = buttons[key], style = getComputedStyle(button), label = button._label;
         var needed = label.scrollWidth + 15 + (parseFloat(style.columnGap) || 0) + (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0) + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0);
         naturalWidth = Math.max(naturalWidth, parseFloat(style.minWidth) || 0, needed);

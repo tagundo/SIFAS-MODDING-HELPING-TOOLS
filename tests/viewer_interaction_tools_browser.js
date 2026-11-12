@@ -119,6 +119,8 @@ async function verifyMediumFontHud(page) {
 }
 async function forceOverflow(page) {
   const fixture = await page.locator('#viewer-interaction-tools').evaluate(host => {
+    // Narrow stages start as icons; expose real labels for this overflow fixture.
+    host.classList.remove('viewer-interaction-icons-only');
     const labels = [...host.querySelectorAll('.viewer-interaction-label')];
     const button = host.querySelector('button'), stage = document.getElementById('viewer-stage');
     const context = document.createElement('canvas').getContext('2d');
