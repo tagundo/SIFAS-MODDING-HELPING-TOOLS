@@ -350,6 +350,8 @@ main { padding: 14px; }
 .viewer-toolbar-segment { pointer-events: auto; border: 1px solid rgba(137,151,172,.4); border-radius: 10px; background: rgba(248,250,253,.92); color: #253148; box-shadow: 0 2px 8px rgba(37,49,72,.08); }
 .viewer-stage .viewer-toolbar-segment button { min-width: 44px; min-height: 44px; margin: 0; padding: 6px 9px; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 12px; line-height: 1.2; }
 .viewer-stage .viewer-toolbar-segment button + button { border-left: 1px solid rgba(137,151,172,.25); }
+/* Keep viewport actions clear of sticky navigation when scrolled or focused. */
+.viewer-stage [data-viewer-hud-control] { scroll-margin-top: calc(var(--viewer-sticky-top, 0px) + 8px); }
 .viewer-pose-actions { display: flex; overflow: hidden; }
 .viewer-pose-actions button { flex: 0 1 auto; }
 .viewer-stage .viewer-pose-actions button[aria-pressed=true] { background: #dbe7fa; color: #183f7a; }
