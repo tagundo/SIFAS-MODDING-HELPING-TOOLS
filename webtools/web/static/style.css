@@ -895,6 +895,12 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .elichika-macos #viewer-files-panel .viewer-save-actions > button, .elichika-macos #viewer-files-panel .viewer-mod-name-row > button, .elichika-macos #viewer-files-panel .viewer-mod-counterpart-row > button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .elichika-macos #viewer-files-panel .viewer-render-note, .elichika-macos #viewer-files-panel .viewer-mod-form > label { overflow-wrap: anywhere; }
 
+/* Native Mac without room for its file sidebar still needs a readable
+   model chooser. Keep the live cards in order and compact collapsed headings. */
+.elichika-macos #tab-viewer:not(.viewer-files-resizable):not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) > .viewer-workspace > .viewer-files { flex-wrap: wrap; }
+.elichika-macos #tab-viewer:not(.viewer-files-resizable):not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) > .viewer-workspace > .viewer-files #viewer-macos-display-slot > details:not([open]),
+.elichika-macos #tab-viewer:not(.viewer-files-resizable):not(.viewer-expanded):not(.viewer-fullscreen):not(.viewer-short-height) > .viewer-workspace > .viewer-files #viewer-macos-save-slot > details:not([open]) { padding: 0; }
+
 /* Hide only the retained model viewport; the existing editor stays usable. */
 .viewer-model-restore { display: none; }
 #tab-viewer.viewer-model-minimized .viewer-stage { display: none; }
