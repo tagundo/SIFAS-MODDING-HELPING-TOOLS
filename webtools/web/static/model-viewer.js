@@ -906,6 +906,22 @@
     var height = stage.clientHeight;
     if (!width || !height) return;
     var box = stage.getBoundingClientRect();
+    // Keep the top viewport controls inside the visible model area when the
+    // stacked page scrolls beneath pinned navigation. Scroll margins alone do
+    // not clear an already-visible control in older embedded Chromium builds.
+    var topHud = node("viewer-stage-tools-top");
+    var hudInset = parseFloat(window.getComputedStyle(topHud).top) || 0;
+    var hudHeight = Math.max.apply(null, [topHud.offsetHeight].concat(
+      Array.prototype.map.call(topHud.children, function (child) { return child.offsetHeight; })));
+    var bottomHud = node("viewer-stage-tools-bottom");
+    var bottomHudHeight = Math.max.apply(null, [bottomHud.offsetHeight].concat(
+      Array.prototype.map.call(bottomHud.children, function (child) { return child.offsetHeight; })));
+    var hudOffset = !expanded && !shortHeight && fullscreenMode === "none" && pinnedHeader ?
+      Math.max(0, headerBottom + safeInsets.top - box.top - stage.clientTop - hudInset) : 0;
+    hudOffset = Math.min(Math.max(0, height - hudInset - hudHeight - bottomHudHeight -
+      safeInsets.top - safeInsets.bottom), Math.ceil(hudOffset));
+    var hudTransform = hudOffset ? "translateY(" + hudOffset + "px)" : "";
+    if (topHud.style.transform !== hudTransform) topHud.style.transform = hudTransform;
     if (!stageObserver) stageVisible = box.bottom > viewport.top && box.top < viewport.top + viewport.height &&
       box.right > viewport.left && box.left < viewport.left + viewport.width;
     // Popovers occupy the gap between corner columns, leaving every viewport
@@ -1960,6 +1976,7 @@
         if (expanded) return;
         if (!destroyed && active) focusElement(minimized ? node("viewer-model-restore") : snapshot.focus);
         window.scrollTo(snapshot.x, snapshot.y);
+        alignMinimizedPortrait();
         if (!destroyed) scheduleResize();
       });
     }
@@ -1994,6 +2011,16 @@
     if (minimized && minimizeDirection === "height") tab.style.setProperty("--viewer-minimize-bar-height", node("viewer-model-restore").getBoundingClientRect().height + "px");
   }
 
+  function alignMinimizedPortrait() {
+    if (destroyed || !active || !minimized || minimizeDirection !== "height" || shortHeight) return;
+    // Align an explicit layout transition once, without pinning editor content
+    // or growing padding as the user later scrolls through the inspector.
+    var inspect = node("tab-viewer").querySelector(".viewer-inspect-layout");
+    var visibleTop = parseFloat(document.documentElement.style.getPropertyValue("--viewer-sticky-top")) || 0;
+    var overlap = visibleTop + 8 - inspect.getBoundingClientRect().top;
+    if (overlap > 0) window.scrollBy(0, -overlap);
+  }
+
   function clearMinimizeExit() {
     if (minimizeExitTimer) window.clearTimeout(minimizeExitTimer);
     minimizeExitTimer = 0;
@@ -2014,6 +2041,7 @@
     node("tab-viewer").classList.toggle("viewer-model-minimized", minimized);
     node("viewer-stage").setAttribute("aria-hidden", String(minimized));
     pauseRender(); refreshMinimizeButton(); resize();
+    alignMinimizedPortrait();
     focusElement(node(minimized ? "viewer-model-restore" : "viewer-minimize"));
     if (!minimized) requestRender();
   }
