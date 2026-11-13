@@ -80,6 +80,17 @@ async function reachableTextureRail(page) {
 async function toolsState(page) { return page.evaluate(()=>ModelViewer.getTextureTools().getState()); }
 async function idle(page) { await page.waitForFunction(()=>{const t=ModelViewer.getTextureTools();return t&&!t.getState().pending&&!t.getState().loading;});await frames(page); }
 async function setField(page,id,value,event='input') { await page.locator(id).evaluate((e,args)=>{e.value=String(args.value);e.dispatchEvent(new Event(args.event,{bubbles:true}));},{value,event}); }
+// Independent reference for this fixture's two-triangle UV rectangle. A
+// texel belongs when its area intersects the rectangle, including a partial
+// boundary texel; cells that only touch an aligned edge do not belong.
+function rectangleCellArea(x, y, bounds) {
+  return Math.max(0, Math.min(x + 1, bounds.x1) - Math.max(x, bounds.x0)) *
+    Math.max(0, Math.min(y + 1, bounds.y1) - Math.max(y, bounds.y0));
+}
+assert(rectangleCellArea(1, 3, {x0:1.2,x1:2.8,y0:3.2,y1:4.8}) > 0);
+assert.equal(rectangleCellArea(3, 3, {x0:1.2,x1:2.8,y0:3.2,y1:4.8}), 0);
+assert.equal(rectangleCellArea(2, 1, {x0:0,x1:2,y0:0,y1:4}), 0);
+assert.equal(rectangleCellArea(1, 4, {x0:0,x1:2,y0:0,y1:4}), 0);
 async function decodedPNG(data) { return py("import base64,io,json,sys;from PIL import Image;im=Image.open(io.BytesIO(base64.b64decode(sys.argv[1].split(',',1)[-1]))).convert('RGBA');print(json.dumps({'width':im.width,'height':im.height,'rgba':list(im.tobytes())}))",[data]); }
 async function pixels(page) {
   const rows=await page.evaluate(()=>ModelViewer.getTextureTools().getEdits());
@@ -262,8 +273,19 @@ async function main(){let server,browser,context,androidContext,page;const error
   await (await show(page,'#viewer-texture-select-none')).click();hit=await facePoint(page);await page.mouse.click(hit.x,hit.y);await idle(page);const manualHidden=await selectionDisplay(page,coloredPixel.point);assert(!manualHidden.checked&&!manualHidden.engineVisible&&manualHidden.overlays===0,'new selections honor a manually disabled tint');assert.equal(manualHidden.selectedPixels,connected.selection.selectedPixels);
   report.cases.push({name:'adjacent tint toggle preserves authored pixels, masks and Undo; new selection restores automatic hiding while manual OFF remains honored',appliedClean,autoRestored,cancelledPreview,unfilteredFrame,tintedFrame,restoredFrame,manualHidden});
   const selectedBounds=await page.evaluate(()=>{const mesh=__textureTarget,uv=mesh.geometry.attributes.uv;let texture;const old=SifasMaterial;__textureObserved.scene.traverse(o=>{if(o===mesh){const ms=Array.isArray(o.material)?o.material:[o.material];for(const m of ms)if(m.uniforms&&m.uniforms.uMainTex)texture=m.uniforms.uMainTex.value;}});if(!texture)throw Error('No texture');const points=[0,1,2,3].map(i=>texture.transformUv(new THREE.Vector2(uv.getX(i),uv.getY(i))));return{x0:Math.min(...points.map(v=>v.x))*16,x1:Math.max(...points.map(v=>v.x))*16,y0:Math.min(...points.map(v=>v.y))*16,y1:Math.max(...points.map(v=>v.y))*16};});
-  let untouched=0;for(let y=0;y<16;y++)for(let x=0;x<16;x++){if(x+.5<selectedBounds.x0||x+.5>selectedBounds.x1||y+.5<selectedBounds.y0||y+.5>selectedBounds.y1){const i=(y*16+x)*4;assert.deepStrictEqual(colored.slice(i,i+4),fixture.rgba.slice(i,i+4),'unselected pixels remain byte-exact');untouched++;}}
+  const selectedMask=await page.evaluate(()=>Array.from(ModelViewer.getTextureTools().captureDocuments(true).documents[0].mask));
+  assert.equal(selectedMask.length,256,'observe the complete actual mask, including its unselected cells');
+  let untouched=0,covered=0,partialCells=0,changedPartialCells=0;
+  for(let y=0;y<16;y++)for(let x=0;x<16;x++){
+    const area=rectangleCellArea(x,y,selectedBounds),i=(y*16+x)*4;
+    assert.equal(selectedMask[y*16+x],area>0?255:0,'actual connected UV mask matches the independent pixel-cell intersection reference');
+    if(area>0){covered++;if(area<1){partialCells++;if(colored.slice(i,i+4).some((v,c)=>v!==fixture.rgba[i+c]))changedPartialCells++;}}
+    else{assert.deepStrictEqual(colored.slice(i,i+4),fixture.rgba.slice(i,i+4),'every unselected pixel remains byte-exact');untouched++;}
+  }
+  assert.equal(covered,connected.selection.selectedPixels,'every covered texel is selected without a padding ring');
+  assert(partialCells>0&&changedPartialCells>0,'the formerly missed partial border is selected and receives the actual color edit');
   assert(untouched>=96,'independent UV rectangle reference includes a substantial unselected region');
+  report.cellCoverage={covered,partialCells,changedPartialCells,untouched,selectedBounds};
   const saved=await saveModel(page);assert(saved.previewPaths.length&&saved.recipePath);const rawTexture=bundlePixels(saved.previewPaths[0]).find(t=>t.name==='ch0001_co0001_body');assert(rawTexture);assert.deepStrictEqual(rawTexture.rgba,colored,'actual exported Unity texture matches committed PNG including hidden RGB and alpha');
   const recipe=JSON.parse(fs.readFileSync(saved.recipePath,'utf8'));assert(JSON.stringify(recipe).includes('sourceSha256'),'saved recipe includes original texture source binding');
   await clearEdits(page);assert.equal((await page.evaluate(()=>ModelViewer.getTextureTools().getEdits())).length,0);assert.equal((await shaderState(page)).materials.textureOverrides,0,'clear recipe removes original shader overrides');
