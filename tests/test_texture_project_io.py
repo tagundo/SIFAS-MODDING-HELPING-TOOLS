@@ -116,6 +116,34 @@ class TextureProjectFileTests(unittest.TestCase):
                 # source rather than mistaking that property for mutation.
                 self.assertEqual(json.dumps(value, sort_keys=True), json.dumps(snapshot, sort_keys=True))
 
+    def test_user_renamed_json_and_duplicate_download_keep_exact_project_and_png_bytes(self):
+        for name in ("내가 바꾼 이름.json", "renamed.JSON", "costume.elichika-texture (2).json"):
+            with self.subTest(name=name):
+                path = self.root / name
+                path.write_text(json.dumps(self.project, ensure_ascii=False), "utf-8")
+                before = path.read_bytes()
+                restored = projects.open_project(path)
+                self.assertEqual(restored, self.project)
+                self.assertEqual(path.read_bytes(), before)
+                for layer, (raw, pixels) in zip(restored["layers"], self.originals):
+                    encoded = base64.b64decode(layer["png"][len(PNG_PREFIX):], validate=True)
+                    self.assertEqual(encoded, raw)
+                    with Image.open(io.BytesIO(encoded)) as image:
+                        self.assertEqual(image.tobytes(), pixels)
+
+    def test_generic_json_still_rejects_unrelated_wrong_format_invalid_version_and_damaged_png(self):
+        wrong_format = copy.deepcopy(self.project); wrong_format["format"] = "unrelated-layer-document"
+        wrong_version = copy.deepcopy(self.project); wrong_version["version"] = 2
+        damaged_png = copy.deepcopy(self.project); damaged_png["layers"][1]["png"] = png_uri(b"not a PNG")
+        values = ({"language": "ko", "server": "127.0.0.1"}, wrong_format, wrong_version, damaged_png)
+        for index, value in enumerate(values):
+            with self.subTest(index=index):
+                path = self.root / ("unrelated-" + str(index) + ".json")
+                path.write_text(json.dumps(value), "utf-8")
+                before = path.read_bytes()
+                with self.assertRaises(ValueError): projects.open_project(path)
+                self.assertEqual(path.read_bytes(), before)
+
     def test_json_duplicate_keys_malformed_utf8_and_nonfinite_tokens_are_rejected(self):
         encoded = json.dumps(self.project, ensure_ascii=False)
         invalid = [None, [], b"\xff", "{", "null", encoded + " trailing",
@@ -246,7 +274,7 @@ class TextureProjectFileTests(unittest.TestCase):
         real = self.root / ("valid" + EXTENSION)
         real.write_text(json.dumps(self.project), "utf-8")
         symlink = self.root / ("symlink" + EXTENSION); symlink.symlink_to(real)
-        wrong_suffix = self.root / "wrong.json"; wrong_suffix.write_bytes(real.read_bytes())
+        wrong_suffix = self.root / "wrong.txt"; wrong_suffix.write_bytes(real.read_bytes())
         damaged = self.root / ("damaged" + EXTENSION); damaged.write_bytes(b"{invalid")
         huge = self.root / ("huge" + EXTENSION)
         with huge.open("wb") as stream: stream.truncate(32 * 1024 * 1024 + 1)

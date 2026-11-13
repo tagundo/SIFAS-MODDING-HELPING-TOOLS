@@ -67,12 +67,30 @@
       }
       return;
     }
-    var minX = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0]))), maxX = Math.min(width - 1, Math.ceil(Math.max(a[0], b[0], c[0])) - 1);
     var minY = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1]))), maxY = Math.min(height - 1, Math.ceil(Math.max(a[1], b[1], c[1])) - 1);
-    for (var y = minY; y <= maxY; y++) for (var x = minX; x <= maxX; x++) {
-      var px = x + .5, py = y + .5, u = ((b[0] - px) * (c[1] - py) - (b[1] - py) * (c[0] - px)) / area;
-      var v = ((c[0] - px) * (a[1] - py) - (c[1] - py) * (a[0] - px)) / area;
-      if (u >= -1e-7 && v >= -1e-7 && u + v <= 1 + 1e-7) mask[y * width + x] = 255;
+    // Include every texel whose area overlaps the triangle. Testing only its
+    // centre leaves a thin unselected border and loses subpixel UV details.
+    // A triangle clipped to one pixel-high strip is convex: its X projection
+    // is one span. Fill that span without adding a padding ring or examining
+    // every pixel separately. Cells that only touch an edge stay unselected.
+    for (var y = minY; y <= maxY; y++) {
+      var low = Infinity, high = -Infinity, bottom = y + 1;
+      for (var edge = 0; edge < 3; edge++) {
+        var from = p[edge], to = p[(edge + 1) % 3];
+        if (from[1] >= y && from[1] <= bottom) { low = Math.min(low, from[0]); high = Math.max(high, from[0]); }
+        if (from[1] < y && to[1] > y || to[1] < y && from[1] > y) {
+          var atTop = from[0] + (y - from[1]) * (to[0] - from[0]) / (to[1] - from[1]);
+          low = Math.min(low, atTop); high = Math.max(high, atTop);
+        }
+        if (from[1] < bottom && to[1] > bottom || to[1] < bottom && from[1] > bottom) {
+          var atBottom = from[0] + (bottom - from[1]) * (to[0] - from[0]) / (to[1] - from[1]);
+          low = Math.min(low, atBottom); high = Math.max(high, atBottom);
+        }
+      }
+      if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+      var tolerance = 1e-10 + Number.EPSILON * 16 * Math.max(width, height, Math.abs(low), Math.abs(high));
+      var left = Math.max(0, Math.floor(low + tolerance)), right = Math.min(width, Math.ceil(high - tolerance));
+      if (right > left) mask.fill(255, y * width + left, y * width + right);
     }
   }
   function rasterFaces(width, height, triangles, uvs, faces, texture) {
@@ -129,7 +147,11 @@
     "Complete the number before applying color.": ["숫자 입력을 마친 뒤 색상을 적용하세요.", "数値の入力を完了してから色を適用してください。"],
     "Relative OKLCH": ["OKLCH 상대 조절", "OKLCH相対調整"], "Target color, keep shading": ["목표색 · 명암 보존", "指定色・陰影を保持"], "Mode": ["방식", "方式"], "Target color": ["목표색", "指定色"],
     "Lightness": ["명도", "明度"], "Chroma": ["채도", "彩度"], "Hue": ["색상각", "色相"], "Strength": ["강도", "強度"], "Apply color": ["색상 적용", "色を適用"],
-    "Cancel preview": ["미리보기 취소", "プレビューを取り消す"], "Compare original": ["원본 비교", "元画像を比較"], "Reset texture": ["이 텍스쳐 원본으로", "このテクスチャを元に戻す"],
+    "Cancel preview": ["미리보기 취소", "プレビューを取り消す"], "Compare original": ["원본 비교", "元画像を比較"], "Restore original texture": ["편집 전 텍스쳐로 되돌리기", "編集前のテクスチャに戻す"],
+    "Restore the image loaded before editing? This replaces all its layers and can be undone.": ["처음 불러온 편집 전 이미지로 되돌릴까요? 이 텍스쳐의 모든 레이어를 교체하며, 되돌리기로 복구할 수 있습니다.", "読み込み時の編集前画像に戻しますか？ このテクスチャの全レイヤーを置き換えます。「元に戻す」で復元できます。"],
+    "Restore texture": ["편집 전으로 되돌리기", "編集前に戻す"], "Keep editing": ["계속 편집", "編集を続ける"],
+    "The texture changed. Review it before restoring.": ["텍스쳐가 변경되었습니다. 현재 내용을 확인한 뒤 다시 되돌리기를 선택하세요.", "テクスチャが変更されました。現在の内容を確認してから、もう一度戻す操作を選択してください。"],
+    "Original texture restored. Undo restores your edited layers.": ["편집 전 텍스쳐로 되돌렸습니다. 되돌리기를 누르면 편집한 레이어를 복구합니다.", "編集前のテクスチャに戻しました。「元に戻す」で編集したレイヤーを復元できます。"],
     "Source tone": ["원본 스킨톤", "元の肌色"], "Target tone": ["대상 스킨톤", "変換先の肌色"], "Auto from selection": ["선택 영역에서 추정", "選択範囲から推定"], "Slight (approximate)": ["slight (근사)", "slight（近似）"],
     "Apply skin tone": ["스킨톤 적용", "肌色を適用"], "Sample tolerance": ["표본 허용치", "サンプル許容差"], "Connected pixels only": ["연결된 픽셀만", "つながったピクセルのみ"],
     "Limit samples to current selection": ["표본 찾기를 현재 선택 범위로 제한", "サンプルを現在の選択範囲内に制限"], "Feather inward": ["선택 안쪽 경계 흐림", "選択範囲の内側をぼかす"],
@@ -168,6 +190,7 @@
     var catalogue = [], entries = new Map(), active = null, activeTab = "costume", sceneMode = "orbit", labels = [], units = [], listeners = [], overlays = [], genericMaps = new Map();
     var overlayState = null, brushStroke = null, hoverAt = 0, lastEditable = null, selectionAutoHidden = false;
     var requestControllers = new Set(), sceneElement = null, pointer = null, space = false, geometryCache = new WeakMap(), lastModel = null, pendingRestore = null, cataloguePromise = null, restoringDocuments = 0, suppressed = 0, notifiedPending = false;
+    var modelRebindOwner = {}, rebindingModel = false;
     var statusText = "", error = "", performance = { previewsStarted: 0, previewsDiscarded: 0, textureUploads: 0, maskOverlays: 0, encodes: 0 };
     function t(text) {
       var translated = options.translate && options.translate(text); if (translated && translated !== text) return translated;
@@ -299,7 +322,15 @@
     var adjustmentActions = node("div", content, null, "viewer-texture-actions");
     var applyButton = button(adjustmentActions, "Apply color", applyPreview, "viewer-texture-apply"), cancelButton = button(adjustmentActions, "Cancel preview", cancelPreview, "viewer-texture-cancel");
     var compare = check(adjustmentActions, "Compare original", false, "viewer-texture-compare");
-    button(adjustmentActions, "Reset texture", function () { if (active && active.engine && active.original && canEdit(active) && !floating(active)) { cancelPreview(); active.kind = activeTab; replaceImage(active, active.original, { label: "Reset texture" }); refreshButtons(); } });
+    var restoreTextureButton = button(adjustmentActions, "Restore original texture", requestTextureRestore, "viewer-texture-reset");
+    var restoreTexturePrompt = node("div", adjustmentActions, null, "viewer-texture-hint"); restoreTexturePrompt.id = "viewer-texture-restore-prompt"; restoreTexturePrompt.hidden = true;
+    restoreTexturePrompt.setAttribute("role", "alertdialog"); restoreTexturePrompt.setAttribute("aria-labelledby", "viewer-texture-restore-question");
+    var restoreTextureQuestion = node("p", restoreTexturePrompt, "Restore the image loaded before editing? This replaces all its layers and can be undone."); restoreTextureQuestion.id = "viewer-texture-restore-question";
+    var restoreTextureActions = node("div", restoreTexturePrompt, null, "viewer-texture-actions");
+    var restoreTextureConfirm = button(restoreTextureActions, "Restore texture", confirmTextureRestore, "viewer-texture-restore-confirm");
+    button(restoreTextureActions, "Keep editing", function () { closeTextureRestore(); restoreTextureButton.focus({ preventScroll: true }); }, "viewer-texture-restore-cancel");
+    var textureRestoreRequest = null;
+    restoreTextureButton.setAttribute("aria-controls", restoreTexturePrompt.id); restoreTextureButton.setAttribute("aria-expanded", "false");
     var views = node("div", content, null, "viewer-texture-actions");
     var undoButton = button(views, "Undo", undo, "viewer-texture-undo"), redoButton = button(views, "Redo", redo, "viewer-texture-redo");
     button(views, "Fit", function () { if (active && active.engine) active.engine.fit(); });
@@ -459,6 +490,7 @@
         entry.liveTexture.userData = Object.assign({}, entry.liveTexture.userData, { viewerTexture: Object.assign({}, entry.record.texture) });
         entry.liveTexture.mipmaps = []; entry.liveTexture.generateMipmaps = true;
       }
+      entry.liveTexture.userData.viewerTexture = Object.assign({}, entry.record.texture);
       entry.liveTexture.image = { data: image.data, width: image.width, height: image.height }; entry.liveTexture.needsUpdate = true;
       matches.forEach(function (binding) {
         if (!genericMaps.has(binding.material)) genericMaps.set(binding.material, binding.material.map);
@@ -467,11 +499,11 @@
       if (r.materialController && r.materialController.setTextureOverride) r.materialController.setTextureOverride(entry.record.texture, entry.liveTexture);
       performance.textureUploads++; requestRender();
     }
-    function restoreLive(entry) {
+    function restoreLive(entry, keepTexture) {
       if (!entry) return;
       genericMaps.forEach(function (original, material) { if (material.map === entry.liveTexture) { material.map = original; material.needsUpdate = true; genericMaps.delete(material); } });
       var r = runtime(); if (r.materialController && r.materialController.setTextureOverride) r.materialController.setTextureOverride(entry.record.texture, null);
-      if (entry.liveTexture) { entry.liveTexture.dispose(); entry.liveTexture = null; } requestRender();
+      if (entry.liveTexture && !keepTexture) { entry.liveTexture.dispose(); entry.liveTexture = null; } requestRender();
     }
     function floating(entry) { return entry && entry.engine && entry.engine.getState().floatingSelection || null; }
     function colorImage(entry) { return entry.engine.getActiveImage ? entry.engine.getActiveImage(false) : entry.engine.getImage(false); }
@@ -480,6 +512,32 @@
       var result = entry.engine.replaceImageData ? entry.engine.replaceImageData(image, config || {}) : entry.engine.applyImageData(image, config || {});
       if (entry === active && compare.checked && entry.engine.setDisplayOverride) entry.engine.setDisplayOverride(entry.original);
       entry.savedProject = null; if (entry.engine.getLayers) entry.initialLayerSignature = JSON.stringify(entry.engine.getLayers()); return result;
+    }
+    function canRestoreTexture() {
+      return !!(active && active.engine && active.original && canEdit(active) && !hasPending());
+    }
+    function closeTextureRestore() {
+      textureRestoreRequest = null; restoreTexturePrompt.hidden = true; restoreTextureButton.setAttribute("aria-expanded", "false");
+    }
+    function requestTextureRestore() {
+      if (!canRestoreTexture()) return;
+      textureRestoreRequest = { entry: active, epoch: epoch, stamp: layerStamp(active) };
+      restoreTexturePrompt.hidden = false; restoreTextureButton.setAttribute("aria-expanded", "true"); restoreTextureConfirm.focus({ preventScroll: true });
+    }
+    function confirmTextureRestore() {
+      var request = textureRestoreRequest;
+      if (!request) return;
+      if (request.entry !== active || request.epoch !== epoch || request.stamp !== layerStamp(request.entry)) { closeTextureRestore(); say("The texture changed. Review it before restoring."); return; }
+      if (!canRestoreTexture()) return;
+      var entry = request.entry, previousKind = entry.kind;
+      try {
+        entry.kind = activeTab;
+        // The engine keeps the complete prior stack as one undoable operation.
+        // Never pass history:false or change the loaded original image.
+        replaceImage(entry, entry.original, { label: "Restore original texture" });
+        cancelPreview(); closeTextureRestore(); say("Original texture restored. Undo restores your edited layers.");
+      } catch (err) { entry.kind = previousKind; say("", err.message); }
+      refreshButtons();
     }
     function displayed(entry) { return compare.checked && entry.original ? entry.original : entry.engine && (entry.engine.getDisplayImage ? entry.engine.getDisplayImage() : entry.preview || entry.engine.getImage(false)); }
     function upload(entry) {
@@ -941,6 +999,8 @@
     function hasPending() { return !!(loading || pendingRestore || restoringDocuments || previewTimer || previewJobs || brushStroke || Array.from(entries.values()).some(function (e) { return e.encoding || e.encodeError || e.preview || floating(e); })); }
     function refreshButtons() {
       if (disposed) return;
+      restoreTextureButton.disabled = restoreTextureConfirm.disabled = !canRestoreTexture();
+      if (textureRestoreRequest && (textureRestoreRequest.entry !== active || textureRestoreRequest.epoch !== epoch || textureRestoreRequest.stamp !== layerStamp(textureRestoreRequest.entry))) closeTextureRestore();
       var state = active && active.engine && active.engine.getState(); undoButton.disabled = !state || !state.undoCount || !!loading || !canEdit(active); redoButton.disabled = !state || !state.redoCount || !!loading || !canEdit(active);
       applyButton.disabled = !state || !canEdit(active) || !validSelection(active) || !!incompleteAdjustment() || !!loading || !!previewTimer || !!previewJobs || !!(active && active.encoding) || !!brushStroke || !!floating(active); cancelButton.disabled = !previewTimer && !(active && active.preview) && !previewJobs;
       labels.forEach(function (pair) { if (pair[0] === applyButton) pair[0].textContent = t(activeTab === "skin" ? "Apply skin tone" : "Apply color"); });
@@ -1272,6 +1332,7 @@
       listen(element, "pointerdown", down, true); listen(element, "pointermove", move, true); listen(element, "pointerup", up, true); listen(element, "pointercancel", cancel, true); listen(element, "pointerleave", function () { if (!pointer) modelCursor.hidden = true; }, true);
     }
     function reset(keepStandalone, silent) {
+      rebindingModel = false;
       cancelModelBrush(); modelCursor.hidden = true;
       entries.forEach(function (entry) { if (entry.liveTimer) global.clearTimeout(entry.liveTimer); entry.liveTimer = null; });
       var standalone = keepStandalone !== false && entries.get("-1:0:standalone");
@@ -1290,6 +1351,7 @@
     }
     function refresh() {
       if (disposed) return Promise.resolve();
+      if (rebindingModel) { refreshButtons(); return Promise.resolve(); }
       attachScene(); var token = options.getToken && options.getToken(), r = runtime();
       if (token === currentToken && r.model === lastModel) { refreshButtons(); return cataloguePromise || Promise.resolve(); }
       reset(true, true); currentToken = token; lastModel = r.model;
@@ -1302,6 +1364,54 @@
         say("Choose faces or a texture region before applying color.");
       }).catch(function (err) { if (err.name !== "AbortError" && born === epoch) say("", err.message); }).finally(function () { if (born === epoch) { loading = Math.max(0, loading - 1); cataloguePromise = null; } refreshButtons(); });
       return cataloguePromise;
+    }
+    // A motion-only rebuild changes scene/material objects, not source pixels.
+    // Validate every open document before replacing the old model, then retain
+    // its engine so layers, exact PNGs and Undo/Redo never need reconstruction.
+    function prepareModelRebind(nextRuntime, token) {
+      if (!Array.from(entries.values()).some(function (entry) { return !entry.standalone; })) return Promise.resolve(null);
+      if (disposed || hasPending() || !nextRuntime || !nextRuntime.model || !token) return Promise.reject(new Error("Finish texture editing before changing motions."));
+      if (!nextRuntime.metadata || !nextRuntime.metadata.editing || nextRuntime.metadata.editing.available !== true || nextRuntime.metadata.editing.token !== token) return Promise.reject(new Error("The texture editor is unavailable for the prepared model. The current model was kept."));
+      var born = epoch, sourceModel = lastModel, sourceToken = currentToken;
+      var prepared = nextRuntime.metadata && nextRuntime.metadata.editing && nextRuntime.metadata.editing.textures;
+      return (prepared && Array.isArray(prepared.textures) ? Promise.resolve(prepared) : api("/api/viewer/texture/inspect", { token: token })).then(function (data) {
+        if (disposed || born !== epoch || sourceModel !== lastModel || sourceToken !== currentToken) throw abort();
+        if (!data || !Array.isArray(data.textures)) throw new Error("The texture catalogue could not be restored.");
+        var plans = [], identities = new Set();
+        entries.forEach(function (entry) {
+          if (entry.standalone) return;
+          var candidates = data.textures.filter(function (record) {
+            return record.available !== false && record.texture && record.texture.file === entry.record.texture.file && record.texture.id === entry.record.texture.id && record.sourceSha256 === entry.sourceSha256;
+          }), exactMatch = candidates.filter(function (record) { return same(record.texture, entry.record.texture); });
+          var record = exactMatch.length === 1 ? exactMatch[0] : candidates.length === 1 ? candidates[0] : null;
+          if (!record || !key(record.texture) || identities.has(key(record.texture)) || record.width !== entry.record.width || record.height !== entry.record.height || entry.modified && !entry.engine && !entry.liveTexture) throw new Error(t("The texture source changed. Reload the original model."));
+          identities.add(key(record.texture)); plans.push({ entry: entry, record: record });
+        });
+        return { owner: modelRebindOwner, epoch: born, sourceModel: sourceModel, sourceToken: sourceToken,
+          model: nextRuntime.model, token: token, catalogue: data.textures, plans: plans, used: false };
+      });
+    }
+    function detachModelForRebind(plan) {
+      if (!plan || plan.owner !== modelRebindOwner || plan.used || plan.epoch !== epoch || plan.sourceModel !== lastModel || plan.sourceToken !== currentToken || hasPending()) throw new Error("The texture documents changed while loading this motion.");
+      rebindingModel = true; removeOverlays(); modelCursor.hidden = true;
+      entries.forEach(function (entry) { if (entry.liveTimer) global.clearTimeout(entry.liveTimer); entry.liveTimer = null; if (!entry.standalone) restoreLive(entry, true); });
+      genericMaps.clear(); geometryCache = new WeakMap();
+    }
+    function commitModelRebind(plan) {
+      var r = runtime(), token = options.getToken && options.getToken();
+      if (!rebindingModel || !plan || plan.owner !== modelRebindOwner || plan.used || plan.epoch !== epoch || r.model !== plan.model || token !== plan.token) throw new Error("The texture documents could not be bound to the new model.");
+      var retained = new Map(); entries.forEach(function (entry, identity) { if (entry.standalone) retained.set(identity, entry); });
+      plan.plans.forEach(function (row) { row.entry.record = row.record; row.entry.uvSelectionData = row.entry.uvSelectionSignature = null; retained.set(key(row.record.texture), row.entry); });
+      entries = retained; catalogue = plan.catalogue.slice();
+      var standalone = entries.get("-1:0:standalone"); if (standalone) catalogue.unshift(standalone.record);
+      currentToken = plan.token; lastModel = plan.model; plan.used = true; rebindingModel = false; epoch++;
+      rebuildTextureSelect();
+      plan.plans.forEach(function (row) {
+        var entry = row.entry;
+        if (entry.engine) upload(entry);
+        else if (!compare.checked && entry.modified && entry.liveTexture) liveImage(entry, entry.liveTexture.image);
+      });
+      updateOverlay(); updateInformation(); updateTone(); changed();
     }
     // These snapshots stay in memory; the portable project/PNG channels remain
     // explicit files. copy=false is only for an immediately frozen model reload.
@@ -1460,8 +1570,8 @@
     listen(global, "blur", function () { space = false; if (pointer) { if (pointer.controls) pointer.controls.enabled = pointer.enabled; if (sceneElement && sceneElement.hasPointerCapture && sceneElement.hasPointerCapture(pointer.id)) { try { sceneElement.releasePointerCapture(pointer.id); } catch (_) {} } pointer = null; } if (brushStroke) cancelModelBrush(); modelCursor.hidden = true; });
     setTab("costume"); say("Open a model to edit textures.");
     return {
-      getEdits: getEdits, restoreEdits: restoreEdits, captureDocuments: captureDocuments, restoreDocuments: restoreDocuments, hasPending: hasPending, getRevision: function () { return revision; }, refresh: refresh, reset: reset,
-      beforeModelDispose: function () { reset(true, true); }, beforeRender: function () { attachScene(); if (lastEditable !== (!active || canEdit(active))) refreshButtons(); flushLiveUpdate(); overlays.forEach(function (row) { row.mesh.geometry = row.original.geometry; row.mesh.morphTargetInfluences = row.original.morphTargetInfluences; row.mesh.morphTargetDictionary = row.original.morphTargetDictionary; }); },
+      getEdits: getEdits, restoreEdits: restoreEdits, captureDocuments: captureDocuments, restoreDocuments: restoreDocuments, prepareModelRebind: prepareModelRebind, commitModelRebind: commitModelRebind, hasPending: hasPending, getRevision: function () { return revision; }, refresh: refresh, reset: reset,
+      beforeModelDispose: function (rebind) { if (rebind) detachModelForRebind(rebind); else reset(true, true); }, beforeRender: function () { attachScene(); if (lastEditable !== (!active || canEdit(active))) refreshButtons(); flushLiveUpdate(); overlays.forEach(function (row) { row.mesh.geometry = row.original.geometry; row.mesh.morphTargetInfluences = row.original.morphTargetInfluences; row.mesh.morphTargetDictionary = row.original.morphTargetDictionary; }); },
       getState: function () { return { available: !!currentToken || !!(active && active.standalone), token: currentToken, activeTexture: active ? Object.assign({}, active.record.texture) : null, activeTab: activeTab, sceneMode: sceneMode, standalone: !!(active && active.standalone), expanded: expanded, pending: hasPending(), loading: loading, preview: !!(active && active.preview), revision: revision, editedTextures: getEdits().map(function (row) { return { texture: row.texture, kind: row.kind }; }), textureCount: catalogue.length, sourceSha256: active && active.sourceSha256 || "", selection: active && active.engine ? active.engine.getState() : null, lastModelSelection: active && active.lastModelSelection || null, lastUVSelection: active && active.lastUVSelection || null, workspace: { inspectorOpen: workspace.inspector.open, preferences: Object.assign({}, workspacePreferences) }, status: statusText, error: error, performance: Object.assign({ loadedTextureBytes: Array.from(entries.values()).reduce(function (total, entry) { return total + entryBytes(entry); }, 0), loadedEngines: Array.from(entries.values()).filter(function (entry) { return !!entry.engine; }).length }, performance) }; },
       getSceneMode: function () { return sceneMode; }, canClearSelection: canClearSelection, clearSelection: clearSelection, setCanvasTool: setCanvasTool, undo: undo, redo: redo, handleShortcut: handleShortcut, selectTexture: selectTexture, setTab: setTab, setSceneMode: setSceneMode, selectFaces: selectFaces, preparePreview: preparePreview, applyPreview: applyPreview, cancelPreview: cancelPreview, importPNG: importPNG, importPNGPath: importPNGPath, exportPNG: exportPNG, openPaint: openPaint, openImage: openImage, setExpanded: setExpanded,
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },

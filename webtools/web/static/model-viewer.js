@@ -1293,11 +1293,11 @@
     return triangles;
   }
 
-  function disposePreviewControllers() {
+  function disposePreviewControllers(textureRebind) {
     partInputs = [];
     if (outlineController && outlineController.beforeModelDispose) outlineController.beforeModelDispose();
     if (meshToolsController && meshToolsController.beforeModelDispose) meshToolsController.beforeModelDispose();
-    if (textureToolsController && textureToolsController.beforeModelDispose) textureToolsController.beforeModelDispose();
+    if (textureToolsController && textureToolsController.beforeModelDispose) textureToolsController.beforeModelDispose(textureRebind);
     if (rigController) rigController.dispose();
     if (materialController) materialController.dispose();
     rigController = null;
@@ -1808,7 +1808,10 @@
         selectedAutoFace === loadedAutoFace && JSON.stringify(resolvedVariants) !== JSON.stringify(loadedVariants);
       var previousPose = retain ? retain.pose : keepView && rigController ? rigController.getState() : null;
       loadContext.stage = t("Restore model editing state");
-      disposePreviewControllers();
+      var textureRebind = retain && retain.preserveTextureSession && textureToolsController && textureToolsController.prepareModelRebind ?
+        await textureToolsController.prepareModelRebind({ model: next, metadata: prepared }, prepared.editing && prepared.editing.token) : null;
+      if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
+      disposePreviewControllers(textureRebind);
       if (model) { scene.remove(model); disposeObject(model); }
       model = next;
       bounds = nextBounds;
@@ -1843,10 +1846,13 @@
           rigController.restoreAuthoringState(prepared.editing.initialState, { initializeNodeCards: !keepView });
         }
         if (retain && retain.authoring) rigController.restoreAuthoringState(retain.authoring, { initializeNodeCards: false });
-        if (textureToolsController) await textureToolsController.refresh();
-        if (retain && retain.authoring) await restoreTextureState(retain.authoring);
-        else if (prepared.editing && prepared.editing.initialState) await restoreTextureState(prepared.editing.initialState);
-        if (retain && retain.textureDocuments && textureToolsController && textureToolsController.restoreDocuments) await textureToolsController.restoreDocuments(retain.textureDocuments);
+        if (textureRebind) textureToolsController.commitModelRebind(textureRebind);
+        else {
+          if (textureToolsController) await textureToolsController.refresh();
+          if (retain && retain.authoring) await restoreTextureState(retain.authoring);
+          else if (prepared.editing && prepared.editing.initialState) await restoreTextureState(prepared.editing.initialState);
+          if (retain && retain.textureDocuments && textureToolsController && textureToolsController.restoreDocuments) await textureToolsController.restoreDocuments(retain.textureDocuments);
+        }
         if (current !== generation || !sameSelection(selected, selectedAutoFace, selectedVariants)) return;
         if ((retain || keepView) && previousPose && previousPose.physics && rigController.restorePhysicsPreview) rigController.restorePhysicsPreview(previousPose.physics);
         if (retain && retain.inspection && rigController.restoreInspectionState) rigController.restoreInspectionState(retain.inspection, { strict: retain.strictInspection !== false });
@@ -1876,6 +1882,7 @@
       if (requests && requests.requestError && error && error.name !== "AbortError") {
         error = requests.requestError(error, loadContext, { method: loadMethod, url: loadEndpoint, status: loadStatus, code: "model_load_error" });
       }
+      if (retain) retain.loadError = error;
       if (error && error.name === "AbortError") setStatus("Loading cancelled.");
       else setStatus("The model could not be displayed.", true, error && error.message ? error.message : "");
       if (retain && retain.throwOnFailure) { error.viewerLoadEpoch = current; throw error; }
@@ -2592,7 +2599,7 @@
   async function loadMotionLibrary(selected) {
     if (textureToolsController && textureToolsController.hasPending()) throw new Error(t("Apply or cancel the texture preview before changing motions."));
     if (!sameSelection(loadedPaths, loadedAutoFace, loadedVariants)) throw new Error(t("Open the selected model before adding motion."));
-    var previous = { preserveMotionInputs: true, pose: rigController.getState(), authoring: authoringState(),
+    var previous = { preserveMotionInputs: true, preserveTextureSession: true, pose: rigController.getState(), authoring: authoringState(),
       textureDocuments: textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(false) : null,
       priorCompleteFace: !!(metadata && metadata.faces && metadata.faces.enabled && ["added", "already_present"].indexOf(metadata.faces.status) >= 0),
       camera: { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov } };
@@ -2609,7 +2616,7 @@
     }
     if (!completed || JSON.stringify(loadedMotionPaths) !== JSON.stringify(selected)) {
       motionLibraryPaths = oldMotions; renderFiles(); filesChanged(); refreshMotionLibrary();
-      throw new Error(statusDetail || t("The motion could not be loaded."));
+      throw previous.loadError || new Error(statusDetail || t("The motion could not be loaded."));
     }
     importedGameMotionPaths = importedGameMotionPaths.filter(function (path) { return selected.indexOf(path) >= 0; });
     refreshMotionLibrary();

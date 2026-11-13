@@ -94,18 +94,43 @@ async function sampleUVs(page) {
   });
 }
 const centroid = points => [points.reduce((sum, p) => sum + p[0], 0) / 3 * fixture.width, points.reduce((sum, p) => sum + p[1], 0) / 3 * fixture.height];
+function coveredCell(points, x, y) {
+  for (const [axis, boundary, above] of [[0,x,true],[0,x+1,false],[1,y,true],[1,y+1,false]]) {
+    const output=[]; if(!points.length)return false;
+    let previous=points[points.length-1],wasInside=above?previous[axis]>=boundary:previous[axis]<=boundary;
+    for(const point of points){const inside=above?point[axis]>=boundary:point[axis]<=boundary;
+      if(inside!==wasInside){const fraction=(boundary-previous[axis])/(point[axis]-previous[axis]);output.push([previous[0]+fraction*(point[0]-previous[0]),previous[1]+fraction*(point[1]-previous[1])]);}
+      if(inside)output.push(point);previous=point;wasInside=inside;
+    }points=output;
+  }
+  let area=0;for(let i=0;i<points.length;i++){const next=points[(i+1)%points.length];area+=points[i][0]*next[1]-points[i][1]*next[0];}
+  return Math.abs(area)>2e-8;
+}
+function islandPixelCoverage(triangles) {
+  const mask=new Uint8Array(fixture.width*fixture.height),pixels=triangles.map(triangle=>triangle.map(p=>[p[0]*fixture.width,p[1]*fixture.height]));
+  for(let y=0;y<fixture.height;y++)for(let x=0;x<fixture.width;x++)if(pixels.some(points=>coveredCell(points,x,y)))mask[y*fixture.width+x]=1;
+  return mask;
+}
 async function uvSelection(page) {
   const triangles = await sampleUVs(page), a = centroid(triangles[0]), b = centroid(triangles[2]);
   await page.locator('#viewer-texture-selection-mode').selectOption('replace'); await mode(page, 'select-uv-face'); await pixel(page, ...a); const face = await state(page); assert(face.selection.selectionActive && face.selection.selectedPixels > 0); assert.equal(face.lastUVSelection.faceCount, 1, 'actual face tool selected exactly one source triangle');
   await mode(page, 'select-uv-island'); await pixel(page, ...a); const island = await state(page); assert(island.selection.selectedPixels > face.selection.selectedPixels, 'UV island adds the connected neighboring triangle'); assert.equal(island.lastUVSelection.faceCount, 2, 'island follows the shared UV edge and excludes the separate triangle');
+  const coverage=islandPixelCoverage(triangles.slice(0,2)),coveredPixels=coverage.reduce((sum,value)=>sum+value,0);
+  assert.equal(island.selection.selectedPixels,coveredPixels,'UV island includes partially covered border texels without a padding ring');
   await page.locator('#viewer-texture-selection-mode').selectOption('add'); await pixel(page, ...b); const both = (await state(page)).selection.selectedPixels; assert(both > island.selection.selectedPixels, 'add selects the separate UV island');
   await page.locator('#viewer-texture-selection-mode').selectOption('subtract'); await pixel(page, ...b); assert.equal((await state(page)).selection.selectedPixels, island.selection.selectedPixels, 'subtract removes only the second UV island');
   await page.locator('#viewer-texture-undo').click(); await idle(page); assert.equal((await state(page)).selection.selectedPixels, both, 'UV selection remains undoable'); await page.locator('#viewer-texture-redo').click(); await idle(page); assert.equal((await state(page)).selection.selectedPixels, island.selection.selectedPixels);
   await field(page, '#viewer-texture-paint-color', '#ff0000'); await field(page, '#viewer-texture-opacity', 100); await mode(page, 'fill'); await pixel(page, ...a);
   const rgba = await exportedPixels(page); const read = p => rgba.slice((Math.floor(p[1]) * fixture.width + Math.floor(p[0])) * 4, (Math.floor(p[1]) * fixture.width + Math.floor(p[0])) * 4 + 4);
   assert.deepEqual(read(a), [255, 0, 0, 255], 'fill edits selected UV island pixels'); assert.deepEqual(read(b), [70, 120, 190, 255], 'separate UV island pixels remain unchanged');
+  let editedBoundaryPixels=0;
+  for(let index=0;index<coverage.length;index++){
+    const expected=coverage[index]?[255,0,0,255]:fixture.rgba.slice(index*4,index*4+4);
+    assert.deepEqual(rgba.slice(index*4,index*4+4),expected,'actual UV-scoped PNG pixel '+index);
+    if(coverage[index])editedBoundaryPixels++;
+  }
   await shortcut(page, 'Control+z'); assert.equal((await state(page)).editedTextures.length, 0, 'undo restores original texture bytes after UV-scoped fill');
-  report.cases.push({ name: 'actual UV face/island selection with add/subtract/undo/redo and scoped PNG pixels', facePixels: face.selection.selectedPixels, islandPixels: island.selection.selectedPixels, bothPixels: both, displayedTriangles: triangles });
+  report.cases.push({ name: 'actual UV face/island selection with add/subtract/undo/redo and scoped PNG pixels', facePixels: face.selection.selectedPixels, islandPixels: island.selection.selectedPixels, bothPixels: both, displayedTriangles: triangles, exactCoveredPixels:coveredPixels,allCoveredPNGPixelsEdited:editedBoundaryPixels,reference:'positive triangle/pixel intersection area; no padding ring' });
 }
 async function editSmoke(page) {
   const fileSummary = page.locator('.viewer-texture-file-menu > summary'); await fileSummary.click(); assert(await page.locator('.viewer-texture-file-menu').evaluate(e => e.open)); await page.keyboard.press('Escape');

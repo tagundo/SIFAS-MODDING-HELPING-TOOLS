@@ -232,7 +232,9 @@ def _safe_path(value):
 
 def open_project(path):
     source = _safe_path(path)
-    _require(source.name.lower().endswith(EXTENSION), "Choose an .elichika-texture.json project file.")
+    # Native Save As and browser duplicate downloads can rename the compound
+    # suffix. The strict document schema, not that decorative suffix, owns type.
+    _require(source.suffix.lower() == ".json", "Choose a JSON texture project file.")
     try:
         before = source.stat()
         _require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_BYTES,
