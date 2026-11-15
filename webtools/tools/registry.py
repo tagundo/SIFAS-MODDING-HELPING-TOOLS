@@ -329,11 +329,12 @@ TOOLS = [
         "id": "costume_packer",
         "label": "Costume Mod Packer",
         "description": ("Package costume bundles into installer .zip packs (with thumbnail). "
-                        "Rina (209) needs BOTH the masked and no-mask bundles in one Batch "
-                        "run: they are detected and paired automatically by content. (If "
-                        "auto-pairing can't decide, name them '209rinamasked...' / "
-                        "'209rinaunmasked...' to pair explicitly.)"),
+                        "Rina (209) needs BOTH the masked and no-mask bundles selected "
+                        "together or in one Batch folder. Costume content and verified "
+                        "source receipts identify companions on the same native platform. "
+                        "Ambiguous or missing companions are reported before packing."),
         "modes": ["single", "batch"],
+        "group_selected_inputs": True,
         "run": run_costume_packer,
         "fields": [
             _in_single(), _in_batch(),
@@ -351,7 +352,7 @@ TOOLS = [
              "help": "Include the whole character. Off keeps the face and upper costume larger."},
             {"name": "thumbnail_size", "label": "Thumbnail size", "type": "number", "default": "256"},
             {"name": "combine_pairs", "label": "Combine Android+iOS pairs", "type": "checkbox",
-             "default": True, "mode": "batch"},
+             "default": True},
         ],
     },
     {

@@ -512,11 +512,37 @@ def _verified_face_companions(export_result, records):
         _require(isinstance(record["sha256"], str) and _SHA.fullmatch(record["sha256"]) and _sha(path) == record["sha256"], "The saved automatic face changed.")
         from . import viewer_mod_sources
         facts = viewer_mod_sources._model_facts(original_raw)
-        current = viewer_mod_sources._model_facts(path.read_bytes())
+        current_raw = path.read_bytes()
+        current = viewer_mod_sources._model_facts(current_raw)
         owner = _owner(record["owner"])
-        _require(record["platform"] in ("android", "ios") and facts["platform"] == current["platform"] == record["platform"]
-                 and member_from_native(facts["owner"]) in (None, owner) and current["owner"] == facts["owner"],
-                 "The automatic face changed its original member or native platform.")
+        native_matches = (record["platform"] in ("android", "ios")
+            and facts["platform"] == current["platform"] == record["platform"]
+            and member_from_native(facts["owner"]) in (None, owner) and current["owner"] == facts["owner"])
+        if not native_matches:
+            # Preview NoTarget compatibility is not proof of a game platform.
+            # Diagnose only this rejection path; the native acceptance rule
+            # above remains unchanged and no header or payload is converted.
+            import UnityPy
+            from . import model_platforms
+            def headers(raw):
+                try:
+                    return {int(asset.target_platform) for asset in UnityPy.load(raw).assets}
+                except (TypeError, ValueError, OverflowError):
+                    return set()
+            original_codes, current_codes = headers(original_raw), headers(current_raw)
+            def describe(codes):
+                return ", ".join(model_platforms.label(code) for code in sorted(codes)) or "no native platform"
+            required = {"android": "Android (13)", "ios": "iOS (9)"}.get(
+                record["platform"] if isinstance(record["platform"], str) else None,
+                "a confirmed iOS (9) or Android (13) platform matching this costume")
+            if model_platforms.NO_TARGET in original_codes | current_codes:
+                raise ModPackageError(f"Cannot include facial file '{path.name}' in the game: original header "
+                    f"{describe(original_codes)}, current header {describe(current_codes)}; required: {required}. "
+                    "NoTarget (-2) is unassigned, so its preview does not establish a native game platform. "
+                    "Load a matching native original face before including this costume's facial edits; the preview file was not changed.")
+            raise ModPackageError(f"The automatic face changed its original member or native platform: '{path.name}' has "
+                f"original {describe(original_codes)}, current {describe(current_codes)}; required: {required}. "
+                "Load a matching native original face before including this costume's facial edits.")
         _require(record["platform"] not in seen, "Choose one verified face per native platform.")
         seen.add(record["platform"])
         result.append({"path": path, "sha256": record["sha256"], "original": original,

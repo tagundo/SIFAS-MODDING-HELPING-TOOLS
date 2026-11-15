@@ -311,7 +311,7 @@ def validate_selection(root, params, language="en"):
     raise ValueError("This motion is missing from the Android asset catalog.")
 
 
-def _cached(root, identity, signatures):
+def _cached(root, identity, signatures, record=None):
     try:
         manifest = root / (".motion-" + identity + ".json")
         if manifest.is_symlink() or manifest.stat().st_size > 8 * 1024 * 1024:
@@ -319,6 +319,13 @@ def _cached(root, identity, signatures):
         value = json.loads(manifest.read_text())
         if value.get("version") != 2 or value["sources"] != signatures or not 1 <= len(value["files"]) <= MAX_BUNDLES:
             return None
+        if record is not None:
+            motion = value.get("motion", {})
+            if any(motion.get(key) != expected for key, expected in (
+                    ("category", record["category"]), ("motion", record["motion"]),
+                    ("performer", record.get("performer")), ("performerPosition", record.get("performer_position", 1)),
+                    ("targetCharacter", record.get("target_character")))):
+                return None
         paths = []
         for item in value["files"]:
             name = item["name"]
@@ -424,7 +431,9 @@ def run_import(job, *, repo_root, output_root, record):
         signatures = _cache_source_signatures(found)
         identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
         stage = "Checking the motion cache"
-        cached = _cached(root, identity, signatures)
+        from .viewer_cache import legacy_cache_roots
+        cached = next((value for candidate_root in (root, *legacy_cache_roots(root, "motions"))
+                       if (value := _cached(candidate_root, identity, signatures, record=record))), None)
         if cached:
             stage = "Preparing linked voice or music"
             _publish(job, paths=cached["paths"], descriptor=cached["motion"], timelines=cached["timelines"],

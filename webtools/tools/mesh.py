@@ -315,9 +315,16 @@ def run_fix_export(job, params):
     out_dir = params.get("out_dir")
 
     def edit(src, out_path):
-        n = m.normalize(str(src), str(out_path), verbose=False)
+        report = {}
+        n = m.normalize(str(src), str(out_path), verbose=False, report=report)
+        for item in report.get("skipped", []):
+            job.log(f"SKIPPED {item['mesh']!r}: {item['reason']}. Original mesh bytes were kept.")
         ok = m.validate(str(src), str(out_path), verbose=False)
-        return f"meshes fixed={n}, validate={'ok' if ok else 'FAIL'}"
+        if not ok:
+            raise ValueError(f"The normalized bundle failed geometry validation: {Path(src).name}. Use the original bundle.")
+        if not report.get("changed") and report.get("skipped"):
+            return f"SKIPPED — no safe mesh changes; original copied unchanged ({len(report['skipped'])} mesh(es))"
+        return f"meshes fixed={n}, skipped={len(report.get('skipped', []))}, validate=ok"
 
     if params.get("mode") == "batch":
         return run_batch(job, params.get("in_dir"), out_dir, prefix, suffix, edit)
@@ -326,6 +333,6 @@ def run_fix_export(job, params):
     out_path = single_out_path(out_dir, in_file, prefix, suffix)
     job.progress(0, 1)
     status = edit(in_file, out_path)
-    job.log(f"OK {Path(in_file).name} -> {out_path.name} ({status})")
+    job.log(f"{'SKIPPED' if status.startswith('SKIPPED') else 'OK'} {Path(in_file).name} -> {out_path.name} ({status})")
     job.progress(1, 1)
     return f"{status} -> {out_path}"

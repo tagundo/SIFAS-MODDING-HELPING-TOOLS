@@ -11,7 +11,7 @@ from pathlib import Path
 from webtools.core.repo import ensure_repo_on_path
 from webtools.core.sukusta import find_bundles, default_sukusta_dir
 from webtools.core.tkstub import ensure_tk_stub
-from webtools.tools.common import as_float, single_out_path
+from webtools.tools.common import as_float, parse_multi_paths, single_out_path
 
 
 # ---- dynamic dropdown provider: donor -> candidate part-root bones ----------
@@ -47,28 +47,36 @@ def run_costume_packer(job, params):
     from webtools.core import viewer_thumbnails
     thumbnail_provider = viewer_thumbnails.packer_provider(params)
 
-    if params.get("mode") == "batch":
-        combine_pairs = bool(params.get("combine_pairs", True))
+    mode = params.get("mode", "single")
+    if mode == "batch":
         files = [str(p) for p in find_bundles(params.get("in_dir"))]
-        job.log(f"packing {len(files)} bundle(s)...")
-        success, fail = m.run_pack_jobs(
-            files, out_dir, auto_chara_id=auto_chara_id, manual_chara_id=manual_chara_id,
-            thumbnail_size=thumbnail_size, combine_pairs=combine_pairs,
-            ask_chara_id=None, log=job.log, thumbnail_provider=thumbnail_provider)
-        job.progress(1, 1)
-        if thumbnail_provider is not None and fail:
-            raise RuntimeError(f"Automatic 3D costume packing failed for {fail} costume(s); see the log above.")
-        return f"packed: success={success} fail={fail}"
-
-    in_file = params.get("in_path")
+    elif mode == "multi":
+        files = parse_multi_paths(params)
+        if len(files) > 128:
+            raise ValueError("Choose at most 128 costume files in one selection.")
+    elif mode == "single":
+        files = [params.get("in_path")]
+    else:
+        raise ValueError("Choose single, selected files or batch costume packing.")
+    files = list(dict.fromkeys(os.path.realpath(os.path.expanduser(str(path)))
+                               for path in files if path))
+    if not files or any(not os.path.isfile(path) for path in files):
+        raise ValueError("Choose existing costume bundle files.")
+    if len(files) > 512:
+        raise ValueError("Choose at most 512 costume files in one batch.")
+    from webtools.core.costume_pack_sources import source_bindings
+    bindings = source_bindings(files, repo_root=Path.cwd())
+    job.log(f"packing {len(files)} selected bundle(s), keeping costume companions together...")
     job.progress(0, 1)
-    zip_path = m.pack_single_bundle(
-        in_file, out_dir, auto_chara_id=auto_chara_id, manual_chara_id=manual_chara_id,
-        thumbnail_size=thumbnail_size, ask_chara_id=None, log=job.log, thumbnail_provider=thumbnail_provider)
+    success, fail = m.run_pack_jobs(
+        files, out_dir, auto_chara_id=auto_chara_id, manual_chara_id=manual_chara_id,
+        thumbnail_size=thumbnail_size, combine_pairs=bool(params.get("combine_pairs", True)),
+        ask_chara_id=None, log=job.log, thumbnail_provider=thumbnail_provider,
+        source_bindings=bindings)
     job.progress(1, 1)
-    if not zip_path:
-        raise RuntimeError("packing failed (see log above)")
-    return f"created {os.path.basename(zip_path)}"
+    if fail:
+        raise RuntimeError(f"Costume packing failed for {fail} costume(s); see the log above.")
+    return f"packed: success={success} fail={fail}"
 
 
 # -------------------------------------------------------- costume transplant

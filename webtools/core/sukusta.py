@@ -36,9 +36,25 @@ def is_unity_bundle(path) -> bool:
 
 
 def find_bundles(root):
-    """Recursively list UnityFS asset bundles under root (sorted Paths)."""
+    """List source bundles, excluding exact old viewer caches in broad scans.
+
+    A specifically selected file or root inside an old cache remains usable.
+    Only broad recursive discovery excludes those generated descendants.
+    """
     from pathlib import Path
+    from .viewer_cache import is_legacy_viewer_cache_path, prune_legacy_viewer_cache_dirs
     root = Path(os.path.expanduser(str(root)))
     if not root.exists():
         return []
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and is_unity_bundle(p)]
+    if root.is_file():
+        return [root] if is_unity_bundle(root) else []
+    explicit_legacy_root = is_legacy_viewer_cache_path(root)
+    found = []
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        if not explicit_legacy_root:
+            prune_legacy_viewer_cache_dirs(directory, dirs)
+        for name in files:
+            path = Path(directory) / name
+            if path.is_file() and is_unity_bundle(path):
+                found.append(path)
+    return sorted(found)

@@ -324,7 +324,9 @@ def prepare_audio(job, *, repo_root, output_root, record, timeline_paths):
                     signatures = [game._source(repo_root, descriptor, extractor, job, deadline)[1]
                                   if descriptor else None for descriptor in (source["acb"], source["awb"])]
                     selection_key = hashlib.sha256(json.dumps({"source": source, "cue": event["cue"]}, sort_keys=True).encode()).hexdigest()[:32]
-                    path = _decoded_cache(root, selection_key, signatures)
+                    from .viewer_cache import legacy_cache_roots
+                    path = next((value for candidate_root in (root, *legacy_cache_roots(root, "audio"))
+                                 if (value := _decoded_cache(candidate_root, selection_key, signatures))), None)
                     if path is None and pair not in sources:
                         job.log("Preparing linked sound: " + source["sheet"])
                         acb = _read_pack(repo_root, source["acb"], download=record.get("download", True), extractor=extractor, job=job, deadline=deadline)

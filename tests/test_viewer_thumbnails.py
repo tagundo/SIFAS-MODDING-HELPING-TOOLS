@@ -178,6 +178,21 @@ class ViewerThumbnailTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source or template"):
             self.upload(plan, cache_key="0" * 64)
 
+    def test_selected_rina_pair_is_one_thumbnail_bound_to_both_native_files(self):
+        from test_costume_packer_selection import rina_fixture
+        primary, helper = self.root / "renamed-primary.unity", self.root / "renamed-helper.unity"
+        primary.write_bytes(rina_fixture(9, True)); helper.write_bytes(rina_fixture(9, False))
+        original = {path: path.read_bytes() for path in (primary, helper)}
+        options = dict(self.params, mode="multi", in_path="", in_paths=str(helper) + "\n" + str(primary), auto_chara_id=True)
+        plan = self.plan(options)
+        self.assertEqual(len(plan["items"]), 1)
+        self.assertEqual(plan["items"][0]["characterId"], 209)
+        self.assertEqual({row["sha256"] for row in plan["items"][0]["sources"]},
+                         {hashlib.sha256(raw).hexdigest() for raw in original.values()})
+        self.assertEqual(original, {path: path.read_bytes() for path in original})
+        with self.assertRaisesRegex(ValueError, "Rina pair requires target member 209"):
+            self.plan(dict(options, auto_chara_id=False, manual_chara_id="6"))
+
     def test_selected_file_plan_supports_actual_single_subruns(self):
         second = self.root / "006-second.unity"; second.write_bytes(self.raw)
         params = dict(self.params, mode="multi", in_paths=str(self.source) + "\n" + str(second), in_path="")

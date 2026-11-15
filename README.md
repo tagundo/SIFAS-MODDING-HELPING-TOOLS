@@ -60,6 +60,14 @@ On Termux these live under `~/storage/downloads/sukusta/...`. Set the
 `SUKUSTA_DIR` environment variable to point elsewhere. Tools with normal file
 pickers don't need this layout.
 
+Viewer-generated models and motions go in `~/sukusta/cache/viewer/game-models`
+and `~/sukusta/cache/viewer/game-motions`. Automatic source scans skip only the
+old `extracted/game-models` and `extracted/game-motions` cache trees. Existing
+files are kept in place: a valid source/selection receipt and matching SHA256
+can be read from the old cache; otherwise import again to derive a fresh copy
+in the new cache. No automatic move or migration is performed. Explicitly
+selected old cache files remain usable.
+
 ### Tools
 
 **Body shape & physics**
@@ -202,6 +210,13 @@ Windows에서는 보통 `.py` 파일을 더블클릭하면 됩니다. 데스크�
 Termux에서는 `~/storage/downloads/sukusta/...` 아래에 있습니다. `SUKUSTA_DIR` 환경
 변수로 위치를 바꿀 수 있습니다. 일반 파일 선택창을 쓰는 도구는 이 구조가 필요
 없습니다.
+
+뷰어가 생성한 모델과 모션은 `~/sukusta/cache/viewer/game-models` 및
+`~/sukusta/cache/viewer/game-motions`에 저장됩니다. 자동 원본 검색은 이전의
+`extracted/game-models`, `extracted/game-motions` 캐시만 제외합니다. 기존 파일은
+옮기거나 삭제하지 않습니다. 현재 원본/선택 기록과 SHA256이 일치하는 캐시는
+읽을 수 있으며, 기록이 유효하지 않으면 다시 불러와 새 캐시에 생성합니다.
+이전 캐시 파일을 직접 선택하는 것도 가능합니다.
 
 ### 도구 목록
 

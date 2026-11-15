@@ -44,6 +44,18 @@ from sifas_body_profiles import (THIGH_STATES, THIGH_BONES,
 import json as _json
 
 
+def _source_walk(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import source_walk
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        import os
+        return os.walk(root)
+    return source_walk(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -1188,7 +1200,7 @@ def find_asset_bundles(root):
     """Recursively collect Unity asset bundles under root (.unity files and any
     file whose header is UnityFS)."""
     found = []
-    for dirpath, _dirs, files in os.walk(root):
+    for dirpath, _dirs, files in _source_walk(root):
         for fn in files:
             p = os.path.join(dirpath, fn)
             if fn.lower().endswith(".unity"):

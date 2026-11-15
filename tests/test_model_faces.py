@@ -109,8 +109,12 @@ class FaceTests(unittest.TestCase):
         viewer._SESSIONS.clear()
         self.temporary.cleanup()
 
-    def scene(self, name, owner=207):
+    def scene(self, name, owner=207, platform=13):
         env = self.UnityPy.load(FIXTURE.read_bytes())
+        # Fixture authoring only. Runtime code never changes a build target.
+        for asset in env.assets:
+            asset.target_platform = platform
+            asset._m_target_platform = platform
         for obj in env.objects:
             if obj.type.name in ("GameObject", "Mesh", "Material"):
                 tree = obj.read_typetree()
@@ -118,8 +122,8 @@ class FaceTests(unittest.TestCase):
                 obj.save_typetree(tree)
         return next(iter(env.files.values())).save()
 
-    def donor(self, owner=207):
-        return bundle([(name + ".assets", self.scene(name, owner)) for name in ("Body", "Hair", "Face", "Eyes")])
+    def donor(self, owner=207, platform=13):
+        return bundle([(name + ".assets", self.scene(name, owner, platform)) for name in ("Body", "Hair", "Face", "Eyes")])
 
     def board_part(self, *, owner=209, overlay=False, shell=False, head="Head_Face", active=True):
         """Neutral rig geometry below the game's verified mask transform paths."""
@@ -212,8 +216,94 @@ class FaceTests(unittest.TestCase):
                 plan = self.plan()
                 candidates = list(plan._verified_companions())
                 self.assertEqual(candidates, [str(edited)])
-                self.assertFalse(plan._accept(candidates[0]))
+                if change == 'platform':
+                    with self.assertRaisesRegex(faces.SavedFacePlatformMismatch, "edited.unity.*iOS"):
+                        plan._accept(candidates[0])
+                else:
+                    self.assertFalse(plan._accept(candidates[0]))
                 self.assertEqual(plan.auto_paths, [])
+
+    def test_compatible_saved_edited_face_keeps_priority_for_generic_or_known_body(self):
+        for body_platform, face_platform, stock_platform in [(-2, 9, 13), (9, -2, 9)]:
+            with self.subTest(body=body_platform, face=face_platform):
+                self.body.write_bytes(self.scene('Body', platform=body_platform))
+                saved = self.selected / 'saved-edited-face.unity'
+                environment = self.UnityPy.load(self.donor(platform=face_platform))
+                for obj in environment.objects:
+                    if obj.type.name == 'Texture2D':
+                        tree = obj.read_typetree(); tree['image data'] = bytes([90, 20, 210, 255]) * 4; obj.save_typetree(tree)
+                edited = environment.file.save(); saved.write_bytes(edited)
+                (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor(platform=stock_platform))
+                self.write_companion_hint(saved)
+                plan = self.plan()
+                with patch.object(plan, '_known_local') as known, patch.object(plan, '_descriptor_iter') as catalogs:
+                    paths = plan.resolve()
+                    known.assert_not_called(); catalogs.assert_not_called()
+                self.assertEqual(paths, [str(saved)])
+                self.assertEqual(saved.read_bytes(), edited)
+                self.assertEqual({int(a.target_platform) for a in self.UnityPy.load(edited).assets}, {face_platform})
+
+    def test_conflicting_bound_face_is_not_silently_replaced_with_stock(self):
+        self.body.write_bytes(self.scene('Body', platform=9))
+        saved = self.selected / 'saved-android-face.unity'; saved.write_bytes(self.donor(platform=13))
+        original = saved.read_bytes()
+        (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor(platform=9))
+        self.write_companion_hint(saved)
+        with self.assertRaisesRegex(viewer.ModelViewerError, "saved-android-face.unity.*Android"):
+            viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(saved.read_bytes(), original)
+
+    def test_ambiguous_bound_face_is_not_silently_replaced_with_stock(self):
+        self.body.write_bytes(self.scene('Body', platform=9))
+        saved = self.selected / 'saved-mixed-face.unity'
+        original = bundle([('face.assets', self.scene('Face', platform=9)),
+                           ('eyes.assets', self.scene('Eyes', platform=13))])
+        saved.write_bytes(original)
+        (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor(platform=9))
+        self.write_companion_hint(saved)
+        with self.assertRaisesRegex(viewer.ModelViewerError, "saved-mixed-face.unity.*ambiguous"):
+            viewer.prepare([str(self.body)], face_context=self.context)
+        self.assertEqual(saved.read_bytes(), original)
+
+    def test_ios_body_rejects_android_face_from_known_cache_and_database_routes(self):
+        self.body.write_bytes(self.scene('Body', platform=9))
+        correct = self.library / 'correct-ios-face.unity'; correct.write_bytes(self.donor(platform=9))
+        for route in ('known', 'cache', 'database'):
+            with self.subTest(route=route):
+                if route == 'cache':
+                    wrong = Path(self.context['cache_dir']) / 'models' / ('ch0207_' + 'a' * 24 + '.unity')
+                    faces._save(wrong, self.donor(platform=13), 207)
+                else:
+                    wrong = self.library / ('ch0207_facedynamic.unity' if route == 'known' else 'database-android-face.unity')
+                    wrong.write_bytes(self.donor(platform=13))
+                plan = self.plan()
+                if route == 'database':
+                    def resource(*args, **kwargs):
+                        plan.database_paths.add(str(wrong)); return str(wrong)
+                    with patch.object(plan, '_known_local', return_value=iter(())), \
+                            patch.object(plan, '_descriptor_iter', return_value=iter([{'test':'descriptor'}])), \
+                            patch.object(plan, '_resource', side_effect=resource), \
+                            patch.object(plan, '_local', return_value=[str(correct)]):
+                        paths = plan.resolve()
+                else:
+                    with patch.object(plan, '_descriptor_iter', return_value=iter(())), \
+                            patch.object(plan, '_local', return_value=[str(correct)]):
+                        paths = plan.resolve()
+                self.assertEqual(paths, [str(correct)])
+                self.assertNotIn(str(wrong), plan.auto_paths)
+
+    @EXTRACTOR_REQUIRED
+    def test_catalog_candidates_follow_concrete_body_platform_without_guessing_notarget(self):
+        self.databases(self.donor())
+        root = Path(self.context['repo_root']) / 'assets/db/gl'
+        (root / 'asset_i_en.db').write_bytes((root / 'asset_a_en.db').read_bytes())
+        with sqlite3.connect(root / 'asset_i_en.db') as db:
+            db.execute("UPDATE member_model SET pack_name='ios207'")
+            db.execute("UPDATE m_asset_package_mapping SET pack_name='ios207'")
+        for platform, expected in [(9, ['ios207']), (13, ['pack207']), (-2, ['pack207', 'ios207'])]:
+            with self.subTest(platform=platform):
+                self.body.write_bytes(self.scene('Body', platform=platform))
+                self.assertEqual([row['pack_name'] for row in self.plan()._descriptor_iter()], expected)
 
     def descriptor(self, data, name="pack207"):
         return {"asset_path": "face207", "pack_name": name, "head": 0, "size": len(data),
@@ -682,7 +772,9 @@ class FaceTests(unittest.TestCase):
 
     @EXTRACTOR_REQUIRED
     def test_jp_ios_downloaded_pack_wins_before_preferred_gl_network(self):
-        donor = self.donor()
+        # The source catalog and the actual serialized iOS headers must agree.
+        self.body.write_bytes(self.scene("Body", platform=9))
+        donor = self.donor(platform=9)
         self.databases(donor)
         repo = Path(self.context["repo_root"])
         jp = repo / "assets" / "db" / "jp"

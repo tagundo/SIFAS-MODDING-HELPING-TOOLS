@@ -12,6 +12,18 @@ import os as _os
 import json as _json
 
 
+def _source_files(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import iter_source_files
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        from pathlib import Path
+        return (path for path in Path(root).rglob("*") if path.is_file())
+    return iter_source_files(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -555,7 +567,7 @@ def copy_selective_from_pair(
 
 def build_target_index(target_dir: Path, exts=None, sample_limit=0):
     idx = {}
-    for p in target_dir.rglob("*"):
+    for p in _source_files(target_dir):
         if not p.is_file():
             continue
         if exts and p.suffix.lower() not in exts:
@@ -641,7 +653,7 @@ def batch_by_pid(
     total_injected = 0
     failed_global = []
 
-    for d in donor_dir.rglob("*"):
+    for d in _source_files(donor_dir):
         if not d.is_file():
             continue
         if exts and d.suffix.lower() not in exts:

@@ -38,6 +38,18 @@ import os as _os
 import json as _json
 
 
+def _source_files(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import iter_source_files
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        from pathlib import Path
+        return (path for path in Path(root).rglob("*") if path.is_file())
+    return iter_source_files(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -1239,7 +1251,7 @@ def modify_both_in_bundle(
 # 6. Batch runners (shared by GUI/CLI, callback-based)
 # ==========================================================================
 def _iter_files(in_dir):
-    return [f for f in Path(in_dir).rglob("*") if f.is_file()]
+    return [f for f in _source_files(in_dir) if f.is_file()]
 
 
 def run_dyna_batch(in_dir, out_dir, prefix, suffix, patterns,
@@ -1368,7 +1380,7 @@ def find_asset_bundles(root):
     root = Path(os.path.expanduser(str(root)))
     if not root.exists():
         return []
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and is_unity_bundle(p)]
+    return [p for p in sorted(_source_files(root)) if p.is_file() and is_unity_bundle(p)]
 
 
 def modded_output_path(src_path, src_root, modded_root, extra_suffix=""):

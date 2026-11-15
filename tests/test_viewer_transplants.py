@@ -18,13 +18,13 @@ from webtools.jobs import Job
 from viewer_scene_fixture import bundle_fixture
 
 
-def costume_fixture():
+def costume_fixture(platform=13, body_owner=None):
     """Give original neutral geometry the game's three-stream skin layout.
 
     One visible triangle at Y=.60–.70 is leg-weighted. Other independently
     weighted triangles exercise the real tool's anatomical region filtering.
     """
-    env = UnityPy.load(bundle_fixture())
+    env = UnityPy.load(bundle_fixture(platform=platform))
     mesh = next(obj for obj in env.objects if obj.type.name == "Mesh")
     tree = mesh.read_typetree(); vertex = tree["m_VertexData"]
     channels = vertex["m_Channels"]; count = vertex["m_VertexCount"]
@@ -44,7 +44,18 @@ def costume_fixture():
     channels[12].update(stream=2, offset=0)
     channels[13].update(stream=2, offset=16, format=10)
     vertex["m_DataSize"] = b"".join(streams)
+    if body_owner is not None:
+        tree["m_Name"] = "Body"
     mesh.save_typetree(tree)
+    if body_owner is not None:
+        for obj in env.objects:
+            current = obj.read_typetree()
+            if isinstance(current.get("m_Name"), str) and "ch9999" in current["m_Name"]:
+                current["m_Name"] = current["m_Name"].replace("ch9999", f"ch{body_owner:04}")
+                obj.save_typetree(current)
+        renderer = next(obj for obj in env.objects if obj.type.name == "SkinnedMeshRenderer")
+        game_object = renderer.assets_file.objects[renderer.read_typetree()["m_GameObject"]["m_PathID"]]
+        current = game_object.read_typetree(); current["m_Name"] = "Body"; game_object.save_typetree(current)
     return env.file.save()
 
 
@@ -210,6 +221,87 @@ class ViewerTransplantTests(unittest.TestCase):
                 self.assertTrue((colors(saved_mesh)[:, 0] == 19).all())
                 self.assertEqual(face.read_bytes(), original_face)
                 self.assertFalse((output.parent.parent / 'inputs').exists())
+
+    def test_saved_notarget_costumes_keep_baked_ios_face_through_reopen_and_repeated_part_graft(self):
+        from test_model_faces import FaceTests
+        from webtools.core import model_faces
+        raw = costume_fixture(platform=-2, body_owner=207)
+        self.source.write_bytes(raw); self.donor.write_bytes(raw)
+        # Author a tiny original iOS face fixture with an already-baked pixel
+        # edit. Header changes here create test inputs; production never retags.
+        helper = FaceTests(); helper.UnityPy = UnityPy
+        environment = UnityPy.load(helper.donor(owner=207))
+        for asset in environment.assets:
+            asset.target_platform = 9; asset._m_target_platform = 9
+        for obj in environment.objects:
+            if obj.type.name == 'Texture2D':
+                tree = obj.read_typetree(); tree['image data'] = bytes([210, 30, 80, 255]) * 4; obj.save_typetree(tree)
+        face_raw = environment.file.save()
+        face = self.source.with_name('baked-ios-face.unity'); face.write_bytes(face_raw)
+        # Both costume inputs really pass through the body-edit exporter first.
+        edited = []
+        for index, path in enumerate((self.source, self.donor)):
+            rig = model_viewer.prepare([str(path)], rigged=True, face_context={'enabled':False})['rig']
+            token = secrets.token_hex(16)
+            metadata = model_edits.register_session(token, [str(path)], rig)
+            node = next(row['node'] for row in metadata['nodes'] if row['name'] == 'BreastSize')
+            saved = model_edits.export(token, {'version':1, 'savedSettingsEnabled':True,
+                'edits':[{'node':node, 'method':'node', 'scale':[1.1 + index * .1, 1, 1]}]},
+                str(self.root / ('saved-' + str(index))))
+            edited.append(Path(saved['preview_paths'][0]))
+        self.source, self.donor = edited
+        original_body, original_donor = self.source.read_bytes(), self.donor.read_bytes()
+        for ordinal in range(2):
+            preview = model_viewer.prepare([str(self.source)], rigged=True,
+                face_context={'enabled': ordinal > 0, 'allow_download':False,
+                              'cache_dir':str(self.root / 'face-cache'), 'library_roots':[str(self.root)]})
+            companions = (model_viewer.get_editing_companions(preview['id']) if ordinal else
+                [{'path':str(face), 'sha256':hashlib.sha256(face_raw).hexdigest(), 'sourceIndex':1}])
+            self.assertEqual(len(companions), 1)
+            self.assertEqual(Path(companions[0]['path']).read_bytes(), face_raw)
+            self.token = secrets.token_hex(16)
+            model_edits.register_session(self.token, [str(self.source)], preview['rig'], companions=companions)
+            request = viewer_transplants.validate_request(self.request(operation='part', partRoot='BreastSize'))
+            job = Job(secrets.token_hex(6), 'viewer_transplant')
+            viewer_transplants.run_transplant(job, request, output_root=self.root / 'modded/viewer', cache_root=self.root / '.viewer-cache')
+            self.assertEqual(len(job.output_paths()), 1)
+            output = Path(job.output_paths()[0])
+            self.assertEqual(viewer_transplants._platform(output), -2)
+            hint = json.loads((output.parent / viewer_transplants.COMPANION_HINT).read_text())
+            self.assertEqual(hint['body']['sha256'], hashlib.sha256(output.read_bytes()).hexdigest())
+            copied = output.parent / hint['companions'][0]['file']
+            self.assertEqual(copied.read_bytes(), face_raw)
+            self.assertEqual(viewer_transplants._platform(copied), 9)
+            self.source = output
+        self.assertEqual(edited[0].read_bytes(), original_body)
+        self.assertEqual(self.donor.read_bytes(), original_donor)
+        self.assertEqual(face.read_bytes(), face_raw)
+
+    def test_concrete_wrong_face_rejected_before_part_graft_with_names_and_platforms(self):
+        self.source.write_bytes(costume_fixture(platform=9)); self.donor.write_bytes(costume_fixture(platform=9))
+        rig = model_viewer.prepare([str(self.source)], rigged=True, face_context={'enabled':False})['rig']
+        face = self.source.with_name('android-face.unity'); face.write_bytes(bundle_fixture(platform=13))
+        model_edits.register_session(self.token, [str(self.source)], rig,
+            companions=[{'path':str(face), 'sha256':hashlib.sha256(face.read_bytes()).hexdigest(), 'sourceIndex':1}])
+        request = viewer_transplants.validate_request(self.request(operation='part', partRoot='BreastSize'))
+        job = Job(secrets.token_hex(6), 'viewer_transplant')
+        with patch('webtools.tools.costume.run_costume_part_transplant') as graft:
+            with self.assertRaises(ValueError) as failure:
+                viewer_transplants.run_transplant(job, request, output_root=self.root / 'modded/viewer', cache_root=self.root / '.viewer-cache')
+            graft.assert_not_called()
+        self.assertIn('wearer.unity', str(failure.exception)); self.assertIn('android-face.unity', str(failure.exception))
+        self.assertIn('iOS (9)', str(failure.exception)); self.assertIn('Android (13)', str(failure.exception))
+        self.assertEqual(job.output_paths(), [])
+
+    def test_ambiguous_or_unsupported_platform_is_specific_without_retagging(self):
+        from test_model_faces import bundle
+        first = UnityPy.load(bundle_fixture(platform=9)); second = UnityPy.load(bundle_fixture(platform=13))
+        mixed = bundle([('ios.assets', first.assets[0].save()), ('android.assets', second.assets[0].save())])
+        with self.assertRaisesRegex(ValueError, "mixed.unity.*ambiguous.*iOS.*Android"):
+            viewer_transplants._platform('mixed.unity', environment=UnityPy.load(mixed))
+        raw = bundle_fixture(platform=5)
+        with self.assertRaisesRegex(ValueError, "desktop.unity.*unsupported.*5"):
+            viewer_transplants._platform('desktop.unity', environment=UnityPy.load(raw))
 
     def test_runtime_receipt_binds_the_published_output_and_original_sources(self):
         validated = viewer_transplants.validate_request(self.request())

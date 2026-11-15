@@ -50,6 +50,11 @@ class FaceUnavailable(ValueError):
     pass
 
 
+class SavedFacePlatformMismatch(FaceUnavailable):
+    """An authoritative edited face must not be silently replaced by stock."""
+
+
+
 def _check(deadline):
     if time.monotonic() >= deadline:
         raise FaceUnavailable("Finding the original face took too long.")
@@ -610,6 +615,7 @@ class FacePlan:
 
     def _inspect(self, path):
         from .model_viewer import _environment, _Scene, _source_hash
+        from . import model_platforms
         _check(self.deadline)
         cache = self.context.get("cache_dir")
         if cache and _inside(path, [os.path.join(os.path.realpath(cache), "models")]) and _cached(path) is None:
@@ -618,8 +624,7 @@ class FacePlan:
         hint = self._hint_sources.get(os.path.realpath(path))
         if hint is not None:
             hashes = {_source_hash(obj) for obj in scene.env.objects}
-            platforms = {int(asset.target_platform) for asset in scene.env.assets}
-            if hashes != {hint} or platforms != self._body_platforms:
+            if hashes != {hint}:
                 return None
         owners, dynamic = _names(scene)
         if owners and owners != {self.owner}:
@@ -628,6 +633,24 @@ class FacePlan:
         # authoritative same-character dependency chain instead.
         trusted = path in self.database_paths
         if not owners and not trusted:
+            return None
+        # Every automatic source, not only saved companion hints, must respect
+        # a known native body. NoTarget stays unclassified: a separately bound
+        # preview face does not assign or convert its body's native platform.
+        try:
+            body_platform = model_platforms.single_platform(self._body_platforms, self.paths[0])
+            face_platform = model_platforms.from_environment(scene.env, path)
+        except ValueError as error:
+            if hint is not None:
+                raise SavedFacePlatformMismatch(str(error)) from None
+            return None
+        if not model_platforms.compatible(body_platform, face_platform):
+            if hint is not None:
+                try:
+                    model_platforms.require_compatible(body_platform, face_platform,
+                        wearer_name=self.paths[0], other_name=path, role="saved facial companion")
+                except ValueError as error:
+                    raise SavedFacePlatformMismatch(str(error)) from None
             return None
         available = roles(scene)
         if self.face_mode == "normal" and "board" in available:
@@ -779,6 +802,7 @@ class FacePlan:
             return
 
     def _local(self):
+        from .viewer_cache import is_legacy_viewer_cache_path, prune_legacy_viewer_cache_dirs
         try:
             import llas_asset_extractor as extractor
             character_name = extractor.CHARACTERS.get(self.owner, "").lower()
@@ -800,10 +824,11 @@ class FacePlan:
             roots.insert(0, str(_cache_root(cache) / "models"))
         seen, found, count = set(self.paths), [], 0
         for root in dict.fromkeys(roots):
-            if not os.path.isdir(root):
+            if not os.path.isdir(root) or is_legacy_viewer_cache_path(root):
                 continue
             for directory, dirs, files in os.walk(root, followlinks=False):
                 _check(self.deadline)
+                prune_legacy_viewer_cache_dirs(directory, dirs)
                 depth = os.path.relpath(directory, root).count(os.sep)
                 dirs[:] = sorted(d for d in dirs if not d.startswith(".") and depth < 2)[:32]
                 for name in sorted(files, key=lambda name: (rank_name(name), name)):
@@ -837,9 +862,22 @@ class FacePlan:
             return
         import llas_asset_extractor as extractor
         dbs = extractor.list_asset_dbs(root)
-        dbs.sort(key=lambda path: ("asset_a" not in os.path.basename(path), "/gl/" not in path.replace("\\", "/"), "_en" not in path))
+        # A cached/edited NoTarget model has no trustworthy native preference.
+        # Concrete bodies must not fetch Android faces merely because that DB
+        # happened to be listed before the matching iOS catalog.
+        from . import model_platforms
+        desired = next(iter(self._body_platforms)) if len(self._body_platforms) == 1 else None
+        desired = desired if desired in (model_platforms.ANDROID, model_platforms.IOS) else None
+        def catalog_platform(path):
+            name = os.path.basename(path)
+            return (model_platforms.ANDROID if name.startswith("asset_a_") else
+                    model_platforms.IOS if name.startswith("asset_i_") else None)
+        dbs.sort(key=lambda path: (desired is not None and catalog_platform(path) != desired,
+            "asset_a" not in os.path.basename(path), "/gl/" not in path.replace("\\", "/"), "_en" not in path))
         seen = set()
         for catalog in dbs[:16]:
+            if desired is not None and catalog_platform(catalog) not in (None, desired):
+                continue
             _check(self.deadline)
             master = Path(catalog).parent / "masterdata.db"
             if not master.is_file():
@@ -999,6 +1037,8 @@ class FacePlan:
                 for path in self._verified_companions():
                     if self._accept(path):
                         break
+            except SavedFacePlatformMismatch:
+                raise
             except Exception:
                 pass
             # A downloaded same-owner original must not wait behind catalog
@@ -1048,6 +1088,8 @@ class FacePlan:
                     except Exception:
                         # One missing optional pack cannot hide a costume.
                         continue
+        except SavedFacePlatformMismatch:
+            raise
         except Exception:
             pass
         if self.needed:
@@ -1085,6 +1127,8 @@ class FacePlan:
             self.source_roles[path] = set(found) | auxiliaries
             self.needed.difference_update(completion_roles(found))
             return not self.needed
+        except SavedFacePlatformMismatch:
+            raise
         except Exception:
             return False
 

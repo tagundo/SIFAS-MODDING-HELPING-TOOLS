@@ -16,7 +16,7 @@ positions and folds its inverse into the bind poses. After this meshRoot == I,
 i.e. the body mesh is in world space exactly like the hair/face meshes that
 already export correctly.
 
-This does NOT change how the model renders in-game:
+Rigid mesh-root normalization preserves the posed geometry in-game:
         vertex_world = Σ boneWorld[b] · bindPose[b] · v
     new vertices  v' = meshRoot · v
     new bindPose  B'[b] = bindPose[b] · meshRoot⁻¹
@@ -25,6 +25,10 @@ This does NOT change how the model renders in-game:
 Positions are transformed by meshRoot; normals/tangents by its rotation (a pure
 translation, the common SIFAS case, leaves them untouched). Verified on Unity
 2018.4 uncompressed SIFAS model bundles (float vertex streams).
+
+Scaled/sheared roots are skipped. Although inverse bind-pose compensation can
+preserve vertex positions mathematically, the game rejects non-unit bind-pose
+columns and can hide the entire character. Skipped mesh bytes stay unchanged.
 
 Usage:
     python3 fix_sifas_bundle_export.py --in model.unity --out fixed.unity
@@ -36,6 +40,7 @@ import copy
 import argparse
 import importlib
 import subprocess
+import tempfile
 
 # --- self-contained multi-language support (English default; 한국어 / 日本語) ---
 # Translations are embedded so this single file works on its own. The chosen
@@ -311,18 +316,80 @@ def _mat_to_bindpose(M, dst):
             dst["e%d%d" % (r, c)] = float(M[r, c])
 
 
+def _approximately_one(value):
+    # Match the native game's Mathf.Approximately(value, 1) check. The game
+    # checks Vector4.sqrMagnitude, not magnitude, on serialized float32 data.
+    value = float(value)
+    return np.isfinite(value) and abs(value - 1.0) < 1e-6 * max(abs(value), 1.0)
+
+
+def _native_bindpose_issue(bindposes):
+    """Detect the game's binding rejection before changing any mesh bytes."""
+    for index, pose in enumerate(bindposes):
+        matrix = np.asarray(_bindpose_to_mat(pose), dtype=np.float32)
+        if not np.isfinite(matrix).all():
+            return f"bind pose {index} contains non-finite values"
+        for column in range(3):
+            squared = np.sum(matrix[:, column] * matrix[:, column], dtype=np.float32)
+            if not _approximately_one(squared):
+                return (f"bind pose {index}, column {column} has squared length {float(squared):.9g}; "
+                        "the game requires approximately 1")
+        if not _approximately_one(matrix[3, 3]):
+            return f"bind pose {index} has an invalid homogeneous translation value"
+        translation_squared = np.sum(matrix[:3, 3] * matrix[:3, 3], dtype=np.float32)
+        if translation_squared > 12:
+            return f"bind pose {index} has translation squared length {float(translation_squared):.9g}, above the game's limit 12"
+    return None
+
+
+def _mesh_root_issue(matrix):
+    if not np.isfinite(matrix).all() or np.max(np.abs(matrix[3] - [0, 0, 0, 1])) > 1e-6:
+        return "the mesh root is not a finite affine transform"
+    rotation = matrix[:3, :3]
+    scales = np.linalg.norm(rotation, axis=0)
+    if (not all(_approximately_one(value * value) for value in scales)
+            or np.max(np.abs(rotation.T @ rotation - np.eye(3))) > 1e-6
+            or np.linalg.det(rotation) <= 0):
+        return (f"mesh-root scale [{', '.join(f'{value:.9g}' for value in scales)}] or shear/reflection "
+                "cannot be baked while preserving the game's unit bind-pose columns")
+    return None
+
+
+def _publish_bytes(path, raw):
+    """An exception must not truncate an existing user output."""
+    output = os.path.abspath(os.fspath(path))
+    fd, temporary = tempfile.mkstemp(prefix=".sifas-normalize-", dir=os.path.dirname(output))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+        os.replace(temporary, output)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
 # --------------------------------------------------------------------------
 # core
 # --------------------------------------------------------------------------
-def normalize(in_path, out_path, verbose=True):
+def normalize(in_path, out_path, verbose=True, *, report=None):
     def log(*a):
         if verbose:
             print(*a)
 
-    env = UnityPy.load(in_path)
+    env = UnityPy.load(os.fspath(in_path))
     world, uid = _bone_worlds(env)
 
-    n_fixed = 0
+    n_fixed, unchanged, skipped = 0, 0, []
+
+    def skip(tree, reason):
+        name = str(tree.get("m_Name", "Mesh"))[:256]
+        skipped.append({"mesh": name, "reason": reason})
+        log(f"[SKIPPED] {name!r}: {reason}. Original mesh bytes were kept.")
+
     for o in env.objects:
         if o.type.name != "SkinnedMeshRenderer":
             continue
@@ -346,6 +413,10 @@ def normalize(in_path, out_path, verbose=True):
         BP = tree.get("m_BindPose")
         if not BP or len(BP) != len(bnames):
             continue
+        issue = _native_bindpose_issue(BP)
+        if issue:
+            skip(tree, "the original mesh already fails native binding validation: " + issue)
+            continue
 
         # meshRoot = boneWorld · bindPose (constant per mesh); verify a few
         cand = []
@@ -358,14 +429,28 @@ def normalize(in_path, out_path, verbose=True):
             continue
         meshRoot = cand[0]
         if max(np.abs(c - meshRoot).max() for c in cand) > 1e-3:
-            log(f"[skip] {tree.get('m_Name')!r}: mesh root not constant (unexpected rig)")
+            skip(tree, "the mesh root differs between bones; this rig cannot be normalized safely")
             continue
         if np.abs(meshRoot - np.eye(4)).max() < 1e-5:
+            unchanged += 1
             continue  # already world-space (e.g. hair/face)
+        issue = _mesh_root_issue(meshRoot)
+        if issue:
+            skip(tree, issue)
+            continue
 
         R = meshRoot[:3, :3]
         t = meshRoot[:3, 3]
         invMR = np.linalg.inv(meshRoot)
+        planned_bindposes = copy.deepcopy(BP)
+        for i, pose in enumerate(BP):
+            # Validate the exact float32 values that will be serialized.
+            planned = np.asarray(_bindpose_to_mat(pose) @ invMR, dtype=np.float32)
+            _mat_to_bindpose(planned, planned_bindposes[i])
+        issue = _native_bindpose_issue(planned_bindposes)
+        if issue:
+            skip(tree, "the planned normalized mesh would fail native binding validation: " + issue)
+            continue
 
         # --- transform vertices ---
         vc, chans, stride, start = _stream_layout(tree)
@@ -373,7 +458,7 @@ def normalize(in_path, out_path, verbose=True):
         u8 = np.frombuffer(buf, np.uint8)
         pos = _read_float_attr(u8, chans, ATTR_POSITION, stride, start, vc)
         if pos is None:
-            log(f"[skip] {tree.get('m_Name')!r}: positions not float3")
+            skip(tree, "position data is not a supported inline float vertex stream")
             continue
         pos_h = np.c_[pos, np.ones(len(pos))]
         _write_float_attr(u8, (pos_h @ meshRoot.T)[:, :3], chans, ATTR_POSITION, stride, start, vc)
@@ -389,8 +474,7 @@ def normalize(in_path, out_path, verbose=True):
         tree["m_VertexData"]["m_DataSize"] = bytes(buf)
 
         # --- fold meshRoot⁻¹ into bind poses ---
-        for i in range(len(BP)):
-            _mat_to_bindpose(_bindpose_to_mat(BP[i]) @ invMR, BP[i])
+        tree["m_BindPose"] = planned_bindposes
 
         # --- shift local bounds ---
         ab = tree.get("m_LocalAABB")
@@ -405,20 +489,27 @@ def normalize(in_path, out_path, verbose=True):
             f"{vc} verts; mesh now world-space")
 
     if n_fixed == 0:
-        log("[info] nothing to normalize (all skinned meshes already world-space)")
-    bf = list(env.files.values())[0]
-    bf.mark_changed()
-    with open(out_path, "wb") as f:
-        f.write(bf.save(packer="original"))
-    log(f"[done] wrote {out_path}")
+        log(f"[NO CHANGES] original bundle kept unchanged; {len(skipped)} mesh(es) skipped."
+            if skipped else "[info] nothing to normalize (all supported skinned meshes already world-space)")
+        with open(in_path, "rb") as stream:
+            output = stream.read()
+    else:
+        bf = list(env.files.values())[0]
+        bf.mark_changed()
+        output = bf.save(packer="original")
+    _publish_bytes(out_path, output)
+    if report is not None:
+        report.clear()
+        report.update(fixed=n_fixed, skipped=skipped, already_world_space=unchanged, changed=bool(n_fixed))
+    log(f"[done] wrote {out_path} ({n_fixed} normalized; {len(skipped)} skipped)")
     return n_fixed
 
 
 def validate(in_path, out_path, verbose=True):
     """Confirm in-game rendering is unchanged (a vertex's skinned world position
-    is identical) and every mesh root is now identity."""
+    is identical). Unchanged skipped meshes keep their original native data."""
     def world_of(path):
-        env = UnityPy.load(path)
+        env = UnityPy.load(os.fspath(path))
         world, uid = _bone_worlds(env)
         out = {}
         for o in env.objects:
@@ -442,21 +533,26 @@ def validate(in_path, out_path, verbose=True):
             pos = _read_float_attr(u8, chans, ATTR_POSITION, stride, start, vc)
             mr = world[names[0]] @ _bindpose_to_mat(BP[0])
             # rigid rest position = meshRoot · vertex (skinning collapses to this at rest)
-            rest = (np.c_[pos[:50], np.ones(50)] @ mr.T)[:, :3]
-            out[mesh.get("m_Name")] = (rest, np.abs(mr - np.eye(4)).max())
+            sample = pos[:50]
+            rest = (np.c_[sample, np.ones(len(sample))] @ mr.T)[:, :3]
+            mesh_obj = uid[smr["m_Mesh"]["m_PathID"]]
+            out[mesh_obj.path_id] = (rest, np.abs(mr - np.eye(4)).max(),
+                mesh_obj.get_raw_data(), mesh.get("m_Name"))
         return out
     a, b = world_of(in_path), world_of(out_path)
     ok = True
     for name in a:
         if name not in b:
+            ok = False
             continue
         rest_err = np.abs(a[name][0] - b[name][0]).max()
         mr_after = b[name][1]
-        good = rest_err < 1e-3 and mr_after < 1e-4
+        unchanged = a[name][2] == b[name][2]
+        good = rest_err < 1e-3 and (mr_after < 1e-4 or unchanged)
         ok = ok and good
         if verbose:
-            print(f"[validate] {name!r}: rest-position drift={rest_err:.2e}, "
-                  f"meshRoot deviation after={mr_after:.2e} {'OK' if good else 'FAIL'}")
+            print(f"[validate] {a[name][3]!r}: rest-position drift={rest_err:.2e}, "
+                  f"meshRoot deviation after={mr_after:.2e} {'UNCHANGED' if unchanged else 'OK' if good else 'FAIL'}")
     return ok
 
 
@@ -498,8 +594,13 @@ def normalize_batch(paths, out_dir, verbose=True):
         if verbose:
             print(f"\n=== {os.path.basename(p)} ===")
         try:
-            normalize(p, out, verbose=verbose)
+            report = {}
+            normalize(p, out, verbose=verbose, report=report)
             good = validate(p, out, verbose=verbose)
+            if not report["changed"] and report["skipped"]:
+                if verbose:
+                    print(f"[SKIPPED] {os.path.basename(p)}: no safe mesh changes; original bundle copied unchanged")
+                continue
             ok += 1 if good else 0
             fail += 0 if good else 1
         except Exception as ex:
@@ -621,10 +722,16 @@ def run_gui():
         log_box.delete("1.0", "end")
 
         def job():
-            normalize(s, o, verbose=True)
+            report = {}
+            normalize(s, o, verbose=True, report=report)
             ok = validate(s, o, verbose=True)
-            print(_tr("\n[success] normalized — in-game render unchanged ✓\n") if ok
-                  else _tr("\n[warn] validation reported drift — inspect before use\n"))
+            if not report["changed"] and report["skipped"]:
+                print("[SKIPPED] No safe mesh changes; the original bundle was copied unchanged.")
+            elif report["skipped"]:
+                print(f"[done] normalized {report['fixed']} mesh(es); skipped {len(report['skipped'])}. Read the specific skip reasons above.")
+            else:
+                print(_tr("\n[success] normalized — in-game render unchanged ✓\n") if ok
+                      else _tr("\n[warn] validation reported drift — inspect before use\n"))
         run_thread(job)
 
     single_btn = _reg(ttk.Button(single, text=_tr("Normalize"), command=single_go), "Normalize")
@@ -720,9 +827,14 @@ def main(argv=None):
                  if f.lower().endswith((".unity", ".unity3d"))]
         normalize_batch(files, a.out, verbose=not a.quiet)
         return
-    normalize(a.infile, a.out, verbose=not a.quiet)
+    report = {}
+    normalize(a.infile, a.out, verbose=not a.quiet, report=report)
     if not validate(a.infile, a.out, verbose=not a.quiet):
         print("[warn] validation reported drift; inspect before use", file=sys.stderr)
+    elif not report["changed"] and report["skipped"]:
+        print("[SKIPPED] No safe mesh changes; the original bundle was copied unchanged.")
+    elif report["skipped"]:
+        print(f"[done] normalized {report['fixed']} mesh(es); skipped {len(report['skipped'])}. Read the specific skip reasons above.")
     else:
         print("[success] bundle normalized; in-game render unchanged, exports world-space")
 

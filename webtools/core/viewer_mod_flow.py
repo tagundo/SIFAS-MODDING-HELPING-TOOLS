@@ -4,7 +4,7 @@ import ast
 import copy
 import hashlib
 import io
-from itertools import chain
+from itertools import chain, islice
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -60,20 +60,40 @@ def _check(job):
 
 
 def cached_receipts(context, cache_root):
-    """Read only bounded receipts in the app's fixed game-import cache."""
+    """Read bounded, selected-SHA receipts in fixed current/legacy caches."""
+    from .viewer_cache import legacy_cache_roots
     root = Path(cache_root).resolve()
     selected = {str(Path(row["path"]).resolve()): row["sha256"] for row in context["containers"]}
     result = []
-    if not root.is_dir():
+    bases = (root, *legacy_cache_roots(root, "models"))
+    roots = [candidate for base in bases for candidate in (base, base / "transplant-bodies")
+             if candidate.is_dir() and not candidate.is_symlink() and candidate.resolve() == candidate]
+    if not roots:
         return result
-    preserved = [root / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json") for path in selected]
-    for index, manifest in enumerate(chain(preserved, root.glob(".selection-*.json"))):
+    # A specifically selected old cache file should not be starved behind a
+    # full new cache. The total bound still covers all roots together.
+    roots.sort(key=lambda candidate: not any(Path(path).is_relative_to(candidate) for path in selected))
+    preserved = ((candidate, candidate / (".provenance-" + hashlib.sha256(path.encode()).hexdigest()[:32] + ".json"))
+                 for candidate in roots for path in selected)
+    def selections():
+        for candidate in roots:
+            try:
+                for manifest in islice(candidate.iterdir(), 2048):
+                    if manifest.name.startswith(".selection-") and manifest.name.endswith(".json"):
+                        yield candidate, manifest
+            except OSError:
+                continue
+    for index, (receipt_root, manifest) in enumerate(chain(preserved, selections())):
         if index >= 256:
             break
         try:
             if manifest.is_symlink() or manifest.stat().st_size > 16 * 1024:
                 continue
-            data = json.loads(manifest.read_text(encoding="utf-8"))
+            with manifest.open("rb") as handle:
+                encoded = handle.read(16 * 1024 + 1)
+            if len(encoded) > 16 * 1024:
+                continue
+            data = json.loads(encoded.decode("utf-8"))
             if manifest.name.startswith(".provenance-"):
                 model = Path(data["path"]).resolve()
                 record = data.get("record")
@@ -81,8 +101,8 @@ def cached_receipts(context, cache_root):
                 relative = PurePosixPath(data["model"])
                 if relative.is_absolute() or ".." in relative.parts or any(":" in p for p in relative.parts):
                     continue
-                model = (root / relative).resolve()
-                if not model.is_relative_to(root):
+                model = (receipt_root / relative).resolve()
+                if not model.is_relative_to(receipt_root):
                     continue
                 record = data.get("selection_record")
             if selected.get(str(model)) != data.get("sha256"):

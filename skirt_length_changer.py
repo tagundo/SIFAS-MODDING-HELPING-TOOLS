@@ -38,6 +38,18 @@ import os as _os
 import json as _json
 
 
+def _source_files(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import iter_source_files
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        from pathlib import Path
+        return (path for path in Path(root).rglob("*") if path.is_file())
+    return iter_source_files(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -674,7 +686,7 @@ def find_asset_bundles(root):
     root = Path(os.path.expanduser(str(root)))
     if not root.exists():
         return []
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and is_unity_bundle(p)]
+    return [p for p in sorted(_source_files(root)) if p.is_file() and is_unity_bundle(p)]
 
 
 def modded_output_path(src_path, src_root, modded_root, extra_suffix=""):
@@ -881,7 +893,7 @@ def menu_batch():
     if skirt_sfx and _ask_yesno(
             f"Append the skirt length to the output filename? (e.g. {skirt_sfx})", True):
         suffix = suffix + skirt_sfx
-    files = [p for p in Path(in_dir).rglob("*") if p.is_file()]
+    files = [p for p in _source_files(in_dir) if p.is_file()]
     total = len(files); ok = fail = tot_changed = 0
     print(f"\nWorking on {total} file(s)...\n")
     for i, p in enumerate(files, 1):
@@ -1111,7 +1123,7 @@ def run_gui():
             messagebox.showerror(_tr("Error"), _tr("Please set input and output folders.")); return
         setv, addv, pats = parse_set(), parse_add(), parse_patterns()
         eff_suffix = out_suffix.get() + (_skirt_suffix(setv, addv) if append_len.get() else "")
-        files = [p for p in Path(in_dir.get()).rglob("*") if p.is_file()]
+        files = [p for p in _source_files(in_dir.get()) if p.is_file()]
         ok = fail = tot_changed = 0
         for p in files:
             out_p = name_transform_for_output(p, Path(out_dir.get()), Path(in_dir.get()),

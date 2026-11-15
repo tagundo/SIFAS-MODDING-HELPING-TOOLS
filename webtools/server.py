@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from webtools import filebrowser
 from webtools import i18n
 from webtools.core import decode
+from webtools.core.viewer_cache import game_models_dir
 from webtools.jobs import MANAGER
 from webtools.tools import registry
 
@@ -410,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
                             result["editing"]["modPackaging"] = viewer_mod_flow.metadata(
                                 editing_context,
                                 repo_root=Path.cwd(),
-                                cache_root=Path(default_sukusta_dir("extracted")) / "game-models",
+                                cache_root=game_models_dir(),
                                 language=self._lang())
                             physics = result["editing"].get("physics")
                             if isinstance(physics, dict) and isinstance(physics.get("native"), dict):
@@ -418,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
                                 physics["native"]["runtime"] = viewer_physics_runtime.describe(
                                     editing_context,
                                     physics, repo_root=Path.cwd(),
-                                    cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
+                                    cache_root=game_models_dir())
                             from webtools.core import viewer_scene_roles
                             if (result["editing"]["modPackaging"].get("characterId") == 209 and
                                     viewer_scene_roles.pending_supported_nodes(editing_context)):
@@ -502,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(reimport, bool):
                 raise ValueError("Reimport must be on or off.")
             record = game_models.validate_selection(Path.cwd(), selection, self._lang())
-            output_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            output_root = game_models_dir()
             if record.get("purpose") == "transplant":
                 output_root = output_root / "transplant-bodies"
             if output_root.is_symlink() or not filebrowser.is_within_allowed(output_root):
@@ -576,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             params = self._viewer_feature_request({"region", "character", "category", "motion", "download"},
                 optional_fields={"performer", "audio", "target_character"}, max_bytes=4096, token=False)
             record = game_motions.validate_selection(Path.cwd(), params, self._lang())
-            output = self._viewer_feature_output("extracted/game-motions")
+            output = self._viewer_feature_output("cache/viewer/game-motions")
             job = MANAGER.create("viewer_game_motions")
             MANAGER.run_async(job, lambda current: game_motions.run_import(current,
                 repo_root=Path.cwd(), output_root=output, record=record))
@@ -603,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = viewer_mod_flow.export_current(params["token"], body_state,
                     self._viewer_feature_output("modded/viewer"), mesh_state=params["state"],
                     allow_empty=True, repo_root=runtime_root,
-                    cache_root=self._viewer_feature_output("extracted/game-models"))
+                    cache_root=self._viewer_feature_output("cache/viewer/game-models"))
             return self._send_json(result)
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
@@ -698,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
             job = MANAGER.create("viewer_transplant")
             MANAGER.run_async(job, lambda current: viewer_transplants.run_transplant(current,
                 request, output_root=output, cache_root=cache, repo_root=Path.cwd(),
-                physics_cache_root=self._viewer_feature_output("extracted/game-models")))
+                physics_cache_root=self._viewer_feature_output("cache/viewer/game-models")))
             return self._send_json({"job_id": job.id})
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
@@ -771,7 +772,7 @@ class Handler(BaseHTTPRequestHandler):
                 current.progress(0, 1)
                 from webtools.core import viewer_mod_pair_edits, viewer_mod_flow
                 context = model_edits.mod_source_context(params["token"])
-                source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+                source_cache = game_models_dir()
                 runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
                 mesh_state = viewer_mod_flow.normalize_mesh_state(params.get("mesh_state"))
                 result = viewer_mod_flow.export_current(params["token"], params["state"], output_dir,
@@ -795,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
                     repo_root=runtime_root, cache_root=source_cache)
                 # Re-editing opens these immutable original copies, so retain
                 # their verified game selection without relying on filenames.
-                source_cache = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+                source_cache = game_models_dir()
                 if filebrowser.is_within_allowed(source_cache):
                     try:
                         viewer_mod_flow.remember_export_sources(context, result,
@@ -893,7 +894,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not filebrowser.is_within_allowed(counterpart) or not os.path.isfile(counterpart):
                     raise PermissionError("The Rina counterpart is outside the allowed model folders.")
             output_root = Path(default_sukusta_dir("modded/viewer")).resolve()
-            cache_root = Path(default_sukusta_dir("extracted")).resolve() / "game-models"
+            cache_root = game_models_dir()
             if not filebrowser.is_within_allowed(output_root) or not filebrowser.is_within_allowed(cache_root):
                 raise PermissionError("The Mod ZIP output folder is outside the allowed folders.")
             runtime_root = Path(getattr(MANAGER, "_runtime_root", Path.cwd())).resolve()
@@ -1059,7 +1060,7 @@ class Handler(BaseHTTPRequestHandler):
 
         job = MANAGER.create(tool_id)
         run_fn = tool["run"]
-        if params.get("mode") == "multi":
+        if params.get("mode") == "multi" and not tool.get("group_selected_inputs"):
             from webtools.tools.common import run_multi
             MANAGER.run_async(job, lambda j: run_multi(run_fn, j, params))
         else:

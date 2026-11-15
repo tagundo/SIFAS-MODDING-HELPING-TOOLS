@@ -12,6 +12,18 @@ import os as _os
 import json as _json
 
 
+def _source_files(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import iter_source_files
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        from pathlib import Path
+        return (path for path in Path(root).rglob("*") if path.is_file())
+    return iter_source_files(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -590,7 +602,7 @@ def run_gui():
         omin = parse_offset_min()
         omax = parse_offset_max()
         files = 0; total_scanned = 0; total_changed = 0; failed = 0
-        for p in Path(in_dir.get()).rglob("*"):
+        for p in _source_files(in_dir.get()):
             if not p.is_file(): continue
             files += 1
             out_p = name_transform_for_output(p, Path(out_dir.get()), Path(in_dir.get()), out_prefix.get(), out_suffix.get())

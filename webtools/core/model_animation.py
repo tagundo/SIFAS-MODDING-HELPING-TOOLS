@@ -124,8 +124,12 @@ def discover_animation_paths(paths, context, owner, deadline):
         for root in roots:
             if not os.path.isdir(root):
                 continue
+            from .viewer_cache import is_legacy_viewer_cache_path, prune_legacy_viewer_cache_dirs
+            if is_legacy_viewer_cache_path(root):
+                continue
             for directory, dirs, files in os.walk(root, followlinks=False):
                 _check(deadline)
+                prune_legacy_viewer_cache_dirs(directory, dirs)
                 depth = os.path.relpath(directory, root).count(os.sep)
                 dirs[:] = sorted(name for name in dirs if not name.startswith(".") and depth < 2)[:32]
                 for name in sorted(files, key=rank):

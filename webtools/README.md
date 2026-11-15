@@ -80,6 +80,27 @@ The file browser is limited to your sukusta library and home folder:
 - `modded` — `~/sukusta/modded`
 - override the base with the `SUKUSTA_DIR` environment variable
 
+Game assets loaded for the viewer are derived files. New models are written to
+`cache/viewer/game-models` under the same library; motions and decoded motion
+audio use `cache/viewer/game-motions`. They are kept outside `extracted`, which
+contains the source bundles used by editing tools. Automatic recursive source
+scans skip only the old `extracted/game-models` and `extracted/game-motions`
+cache trees. A file you explicitly select remains usable, including a file in
+an old cache or an unrelated user folder with the same name.
+
+Existing cache files are never moved or deleted by this change. A legacy entry
+is reused only when its current source/selection receipt and file hashes pass
+validation. Otherwise load the asset again to derive a fresh cache entry; do
+not copy whole legacy cache directories into `extracted` or the new cache.
+
+For **Costume Mod Packer**, select Rina's masked and unmasked bundles together
+in **Selected files**, or put both in one **Batch folder**. They produce one
+installer with its unmasked companion. Content and validated cache receipts
+identify the costume and variant; renaming files does not establish a pair.
+Missing or ambiguous companions and different native platforms are reported
+before packing. A Unity `NoTarget` export must be exported again with its
+native Android or iOS platform preserved before it can be packaged for the game.
+
 ## Editor navigation
 
 The browser and Android use **Tools** and **3D model** tabs. **Texture previews**

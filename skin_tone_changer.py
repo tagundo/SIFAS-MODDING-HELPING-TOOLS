@@ -36,6 +36,18 @@ import argparse
 # ---------------------------------------------------------------------------
 # Language choice, shared & persisted with the other SIFAS tools.
 # ---------------------------------------------------------------------------
+def _source_walk(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import source_walk
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        import os
+        return os.walk(root)
+    return source_walk(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -239,7 +251,7 @@ def iter_images(folder, recursive=True):
         yield folder
         return
     if recursive:
-        for root, _, files in os.walk(folder):
+        for root, _, files in _source_walk(folder):
             for fn in sorted(files):
                 if fn.lower().endswith(IMG_EXTS):
                     yield os.path.join(root, fn)

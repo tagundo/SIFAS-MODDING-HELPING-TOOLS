@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 from webtools import filebrowser
-from webtools.core import model_edits, viewer_archive
+from webtools.core import model_edits, model_platforms, viewer_archive
 from webtools.core.sukusta import default_sukusta_dir
 
 MAX_DONOR_BYTES = 96 * 1024 * 1024
@@ -104,10 +104,7 @@ def _read_donor(path):
 def _platform(path, *, environment=None):
     import UnityPy
     environment = environment if environment is not None else UnityPy.load(str(path))
-    values = {int(asset.target_platform) for asset in environment.assets}
-    if len(values) != 1:
-        raise ValueError("The selected costume has an ambiguous Unity platform.")
-    return next(iter(values))
+    return model_platforms.from_environment(environment, path)
 
 
 def _donor_model(expanded, *, environments=None):
@@ -207,8 +204,29 @@ def _resolve_snapshot_selection(raw, name, params):
             return _part_selection(_donor_model(expanded), {**params, "donorSha256": hashlib.sha256(raw).hexdigest()})
 
 
-def _preserve_face_companions(context, saved, models, body, body_platform):
-    """Publish only server-verified automatic faces next to the sole body output."""
+def _face_export_raw(source, previews, containers):
+    ci, member = source["container"], source["member"]
+    if type(ci) is not int or not 0 <= ci < len(containers):
+        raise ValueError("A facial companion is outside its original export.")
+    raw = model_edits._read(Path(previews[ci]))
+    if member is not None:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entry = archive.getinfo(member)
+            if not 0 < entry.file_size <= 16 * 1024 * 1024:
+                raise ValueError("The edited facial companion exceeds the face preview limit.")
+            raw = archive.read(entry)
+    if not 0 < len(raw) <= 16 * 1024 * 1024:
+        raise ValueError("The edited facial companion exceeds the face preview limit.")
+    return raw
+
+
+def _prepare_face_companions(context, saved, body_platform, body_name):
+    """Verify exact saved faces before spending time on the costume graft.
+
+    Keep only paths/digests across the expensive graft, not four extra decoded
+    faces or raw blobs. Publication rereads and checks the same bytes without
+    deserializing the faces a second time.
+    """
     indices = context.get("outline_only_sources", [])
     if not indices:
         return []
@@ -226,38 +244,46 @@ def _preserve_face_companions(context, saved, models, body, body_platform):
     original_records = [{"name": row["name"], "sha256": row["sha256"]} for row in containers]
     if recipe.get("originals") != original_records:
         raise ValueError("The edited facial companions do not match their original files.")
-    import unicodedata
     import UnityPy
+    prepared = []
+    for index in indices:
+        source = sources[index]
+        name = str(source["name"])
+        if not name or name in (".", "..") or len(name) > 256 or any(char in name for char in ("/", "\\", "\0")):
+            raise ValueError("The facial companion has an invalid original filename.")
+        raw = _face_export_raw(source, previews, containers)
+        platform = _platform(name, environment=UnityPy.load(raw))
+        model_platforms.require_compatible(body_platform, platform,
+            wearer_name=body_name, other_name=name, role="facial companion")
+        prepared.append({"index": index, "source": dict(source), "name": name,
+            "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "platform": platform})
+    return prepared
+
+
+def _preserve_face_companions(context, saved, models, body, body_platform, *, prepared=None):
+    """Copy source-bound separate preview faces; never convert their native data."""
+    if prepared is None:
+        prepared = _prepare_face_companions(context, saved, body_platform, body.name)
+    if not prepared:
+        return []
+    import unicodedata
     def key(name):
         return unicodedata.normalize("NFC", name).casefold()
     used = {key(path.name) for path in models.iterdir()} | {key(COMPANION_HINT)}
     copied = []
-    for index in indices:
-        source = sources[index]
-        ci, member = source["container"], source["member"]
-        if type(ci) is not int or not 0 <= ci < len(containers):
-            raise ValueError("A facial companion is outside its original export.")
-        exported = Path(previews[ci])
-        raw = model_edits._read(exported)
-        if member is not None:
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                entry = archive.getinfo(member)
-                if not 0 < entry.file_size <= 16 * 1024 * 1024:
-                    raise ValueError("The edited facial companion exceeds the face preview limit.")
-                raw = archive.read(entry)
-        if not 0 < len(raw) <= 16 * 1024 * 1024:
-            raise ValueError("The edited facial companion exceeds the face preview limit.")
-        if _platform(str(exported), environment=UnityPy.load(raw)) != body_platform:
-            raise ValueError("The edited facial companion and wearer use different Unity platforms.")
-        name = str(source["name"])
-        if not name or name in (".", "..") or len(name) > 256 or any(char in name for char in ("/", "\\", "\0")):
-            raise ValueError("The facial companion has an invalid original filename.")
+    for record in prepared:
+        model_platforms.require_compatible(body_platform, record["platform"],
+            wearer_name=body.name, other_name=record["name"], role="facial companion")
+        raw = _face_export_raw(record["source"], saved["preview_paths"], context["containers"])
+        digest = hashlib.sha256(raw).hexdigest()
+        if len(raw) != record["bytes"] or digest != record["sha256"]:
+            raise ValueError(f"The verified facial companion '{record['name']}' changed during transplanting. Reopen it before retrying; no result was published.")
+        name, index = record["name"], record["index"]
         original_name, ordinal = name, 0
         while key(name) in used:
             ordinal += 1
             name = f"face-{index + 1}-{ordinal}-" + original_name
         used.add(key(name))
-        digest = hashlib.sha256(raw).hexdigest()
         destination = models / name
         with destination.open("xb") as stream:
             stream.write(raw)
@@ -451,8 +477,12 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                 with zipfile.ZipFile(saved_path) as archive:
                     wearer.write_bytes(archive.read(source["member"]))
             stage("check_platforms", saved_path)
-            if _platform(wearer) != _platform(donor_model, environment=donor_environments[donor_model]):
-                raise ValueError("The donor and wearer need matching Unity platforms (Android or iOS).")
+            wearer_platform = _platform(wearer)
+            donor_platform = _platform(donor_model, environment=donor_environments[donor_model])
+            model_platforms.require_compatible(wearer_platform, donor_platform,
+                wearer_name=source["name"], other_name=request["donorName"], role="donor")
+            # Exact face/source checks belong before the potentially long graft.
+            face_companions = _prepare_face_companions(context, saved, wearer_platform, source["name"])
             if job.should_stop():
                 return "Cancelled"
             job.progress(1, 3)
@@ -488,6 +518,10 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
         # Actual Unity deserialization verifies the resulting bundle before it
         # becomes a selectable viewer output.
         output_platform = _platform(changed)
+        if output_platform != wearer_platform:
+            raise ValueError(f"The transplant changed the Unity build target of '{source['name']}' from "
+                f"{model_platforms.label(wearer_platform)} to {model_platforms.label(output_platform)}. "
+                "No result was published; reopen the original costume before retrying.")
         from costume_transplant import validate as validate_model
         if not validate_model(str(changed), verbose=False):
             raise ValueError("The transplanted model has unresolved mesh or bone references. No result was published.")
@@ -503,7 +537,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                     outgoing.writestr(copy.copy(entry), changed.read_bytes() if entry.filename == source["member"] else incoming.read(entry))
             changed.unlink()
         stage("preserve_face_companions", result)
-        companions = _preserve_face_companions(context, saved, models, result, output_platform)
+        companions = _preserve_face_companions(context, saved, models, result, output_platform, prepared=face_companions)
         shutil.rmtree(inputs)
         if job.should_stop():
             return "Cancelled"

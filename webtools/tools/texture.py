@@ -72,7 +72,11 @@ def iter_bundle_files(input_root, recursive):
         yield input_root
         return
     if recursive:
-        for root, _, files in os.walk(input_root):
+        from webtools.core.viewer_cache import is_legacy_viewer_cache_path, prune_legacy_viewer_cache_dirs
+        explicit_legacy_root = is_legacy_viewer_cache_path(input_root)
+        for root, dirs, files in os.walk(input_root, followlinks=False):
+            if not explicit_legacy_root:
+                prune_legacy_viewer_cache_dirs(root, dirs)
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext in SUPPORTED_BUNDLE_EXTS or ext == "":

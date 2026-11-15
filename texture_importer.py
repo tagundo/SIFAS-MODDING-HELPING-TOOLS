@@ -27,6 +27,18 @@ import os as _os
 import json as _json
 
 
+def _source_walk(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import source_walk
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        import os
+        return os.walk(root)
+    return source_walk(root)
+
+
 class _LangStore:
     @staticmethod
     def _path():
@@ -408,7 +420,7 @@ def iter_bundle_files(input_root, recursive):
         yield input_root
         return
     if recursive:
-        for root, _, files in os.walk(input_root):
+        for root, _, files in _source_walk(input_root):
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext in SUPPORTED_BUNDLE_EXTS:

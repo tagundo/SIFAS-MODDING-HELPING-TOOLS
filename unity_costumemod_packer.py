@@ -14,6 +14,7 @@ import struct
 import lzma
 import argparse
 import base64
+import hashlib
 import tempfile
 import platform as _platform
 
@@ -492,18 +493,18 @@ def detect_platform_unitypy(path):
             tp = getattr(sf, 'target_platform', None)
             if tp is not None:
                 candidates.append(int(tp))
-        for val in candidates:
-            if val in UNITY_PLATFORM_NAMES:
-                return UNITY_PLATFORM_NAMES[val]
+        values = set(candidates)
+        if len(values) == 1:
+            return UNITY_PLATFORM_NAMES.get(next(iter(values)))
     except Exception:
         pass
     return None
 
 def detect_bundle_platform(path):
-    """플랫폼 감지: 순수 파서 우선, 실패하면 UnityPy 폴백."""
+    """Require a single declared platform across all serialized files."""
+    if UnityPy is not None:
+        return detect_platform_unitypy(path)
     plat = detect_unity_platform(path)
-    if plat is None:
-        plat = detect_platform_unitypy(path)
     return plat
 
 def strip_platform_tokens(name_no_ext):
@@ -1096,6 +1097,24 @@ def safe_arc_name(original_filename):
     return pack_safe_stem(stem) + ext
 
 
+def _installer_arc_names(sources, reserved=()):
+    """Keep every selected variant distinct even when source basenames collide."""
+    used, names = {"modinstall.txt", *(name.casefold() for name in reserved)}, []
+    for path, role in sources:
+        if path is None:
+            names.append(None)
+            continue
+        name = safe_arc_name(os.path.basename(path))
+        stem, extension = os.path.splitext(name)
+        number = 0
+        while name.casefold() in used:
+            number += 1
+            name = stem + pack_safe_stem(role) + (str(number) if number > 1 else "") + extension
+        used.add(name.casefold())
+        names.append(name)
+    return names
+
+
 def generate_modinstall_txt(display_name: str, costume_file_name_with_ext: str, thumbnail_name: str, chara_id: int, unmask_filename: str = None,
                             ios_costume_filename: str = None, ios_unmask_filename: str = None):
     """modinstall.txt 내용을 생성한다.
@@ -1138,21 +1157,75 @@ def generate_modinstall_txt(display_name: str, costume_file_name_with_ext: str, 
 
     return "\n".join(lines)
 
+ZIP_COPY_CHUNK_BYTES = 64 * 1024
+
+
+def _capture_source_hashes(paths):
+    result = {}
+    for path in paths:
+        if path is None:
+            continue
+        real = os.path.realpath(os.fspath(path))
+        with open(real, "rb") as handle:
+            result[real] = hashlib.file_digest(handle, "sha256").hexdigest()
+    return result
+
+
+def _verified_zip(output_zip_path, sources, thumbnail_bytes, thumbnail_name, modinstall_txt, expected_hashes=None):
+    """Verify every member while streaming; publish only a complete, CRC-valid ZIP."""
+    sources = [(path, name) for path, name in sources if path is not None]
+    if expected_hashes is None:
+        expected_hashes = _capture_source_hashes(path for path, _ in sources)
+    expected = {}
+    for path, _ in sources:
+        digest = expected_hashes.get(os.path.realpath(os.fspath(path)))
+        if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
+            raise ValueError(f"{os.path.basename(path)} has no SHA256 from its selected costume plan.")
+        expected[os.path.realpath(os.fspath(path))] = digest
+    output_zip_path = os.path.abspath(output_zip_path)
+    directory = os.path.dirname(output_zip_path)
+    os.makedirs(directory, exist_ok=True)
+    fd, pending = tempfile.mkstemp(prefix=".costume-pack-", suffix=".zip.part", dir=directory)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(pending, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path, name in sources:
+                wanted = expected[os.path.realpath(os.fspath(path))]
+                digest = hashlib.sha256()
+                try:
+                    with open(path, "rb") as source, archive.open(name, "w") as member:
+                        while True:
+                            chunk = source.read(ZIP_COPY_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            member.write(chunk)
+                except OSError as exc:
+                    raise ValueError(f"Selected source {os.path.basename(path)} is unavailable; expected SHA256 {wanted}; current SHA256 unavailable.") from exc
+                actual = digest.hexdigest()
+                if actual != wanted:
+                    raise ValueError(f"Selected source {os.path.basename(path)} changed after planning; expected SHA256 {wanted}; current SHA256 {actual}.")
+            archive.writestr(thumbnail_name, thumbnail_bytes)
+            archive.writestr("modinstall.txt", modinstall_txt.encode("utf-8"))
+        with zipfile.ZipFile(pending, "r") as completed:
+            bad = completed.testzip()
+            if bad is not None:
+                raise ValueError(f"The completed installer failed its ZIP CRC check: {bad}.")
+        with open(pending, "rb") as completed:
+            os.fsync(completed.fileno())
+        os.replace(pending, output_zip_path)
+        return True
+    finally:
+        if os.path.exists(pending):
+            os.unlink(pending)
+
+
 def create_zip_package(output_zip_path: str, masked_bundle_path: str, thumbnail_bytes: bytes, thumbnail_name: str, modinstall_txt: str, unmasked_bundle_path: str = None,
-                       masked_arcname: str = None, unmasked_arcname: str = None):
-    os.makedirs(os.path.dirname(output_zip_path), exist_ok=True)
-    with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        # masked (main) file - stored under an installer-safe name
-        zf.write(masked_bundle_path, masked_arcname or os.path.basename(masked_bundle_path))
-
-        # unmasked (paired) file if it exists
-        if unmasked_bundle_path and os.path.isfile(unmasked_bundle_path):
-            zf.write(unmasked_bundle_path, unmasked_arcname or os.path.basename(unmasked_bundle_path))
-
-        # thumbnail and modinstall
-        zf.writestr(thumbnail_name, thumbnail_bytes)
-        zf.writestr("modinstall.txt", modinstall_txt.encode("utf-8"))
-    return True
+                       masked_arcname: str = None, unmasked_arcname: str = None, expected_hashes=None):
+    return _verified_zip(output_zip_path, [
+        (masked_bundle_path, masked_arcname or os.path.basename(masked_bundle_path)),
+        (unmasked_bundle_path, unmasked_arcname or (os.path.basename(unmasked_bundle_path) if unmasked_bundle_path else None))],
+        thumbnail_bytes, thumbnail_name, modinstall_txt, expected_hashes)
 
 
 # ============================================================
@@ -1161,13 +1234,9 @@ def create_zip_package(output_zip_path: str, masked_bundle_path: str, thumbnail_
 # a `log` callback instead of touching Tk widgets.
 # ============================================================
 def normalize_rina_key(filename: str):
-    """'209rinamasked...' / '209rinaunmasked...' -> 'rina...' for pairing."""
-    s = re.sub(r"^\d+", "", filename, count=1).lower()
-    if s.startswith("rinamasked"):
-        return s.replace("rinamasked", "rina", 1)
-    if s.startswith("rinaunmasked"):
-        return s.replace("rinaunmasked", "rina", 1)
-    return s
+    """Legacy display key only; filenames never establish a Rina identity."""
+    s = re.sub(r"^\d+", "", os.path.splitext(os.path.basename(filename))[0], count=1).lower()
+    return re.sub(r"unmasked|masked", "", s)
 
 
 _CHCO_RE = re.compile(r"ch(\d{4})_co(\d{4})", re.IGNORECASE)
@@ -1205,51 +1274,53 @@ def _rina_content_scan(path, log=None):
     versions share. The prefix verdict is cross-checked with the transplant
     tool's board-face detector; on ANY disagreement or uncertainty (mixed
     characters, detector unavailable, load failure) this returns (None, None)
-    and the caller falls back to the '209rinamasked/209rinaunmasked' filename
-    convention with zero change in behaviour."""
-    prefixes, code = set(), None
-    for n in _bundle_texture_names(path):
-        m = _CHCO_RE.search(n or "")
-        if not m:
-            continue
-        prefixes.add(m.group(1))
-        code = "co" + m.group(2)
-    if prefixes == {"9999"}:
-        is_masked = True                 # the board version
-    elif prefixes == {"0209"}:
-        is_masked = False                # the plain-face version
-    else:
-        return (None, None)              # another character / a transplant mix
-    if not code:
-        return (None, None)
+    and the caller requires a validated source receipt instead of guessing
+    from a filename."""
     try:
         import costume_transplant as _ct
-        board = _ct.detect_board_face_model_path(path)
+        objects, by_id = _ct._index(UnityPy.load(path))
+        if _ct._body_smr(objects) is None:
+            return (None, None)
+        prefixes, codes = set(), set()
+        for obj in objects:
+            if obj.type.name != "Texture2D":
+                continue
+            name = obj.read_typetree().get("m_Name", "")
+            for match in _CHCO_RE.finditer(name or ""):
+                prefixes.add(match.group(1))
+                codes.add("co" + match.group(2))
+        if len(codes) != 1 or prefixes not in ({"9999"}, {"0209"}):
+            return (None, None)
+        code, is_masked = next(iter(codes)), prefixes == {"9999"}
+        board = _ct.detect_board_face_model(objects, by_id)
         if (board is not None) != is_masked:
             if log:
                 log(f"  (rina content scan: prefix and board detector disagree for "
-                    f"{os.path.basename(path)}; leaving it to the filename convention)")
+                    f"{os.path.basename(path)}; source provenance is required)")
             return (None, None)
-    except Exception as exc:  # detector unavailable -> trust the prefix alone
+    except Exception as exc:
         if log:
             log(f"  (rina board detector unavailable for {os.path.basename(path)}: {exc}; "
-                "using the texture prefix only)")
+                "the costume role was not guessed)")
+        return (None, None)
     return (code, is_masked)
 
 
 def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                        thumbnail_size=256, append_suffix=True, rina_unmasked_map=None,
-                       rina_unmasked_by_path=None, platform=None, ask_chara_id=None, log=print, thumbnail_provider=None):
+                       rina_unmasked_by_path=None, platform=None, ask_chara_id=None, log=print, thumbnail_provider=None, expected_hashes=None):
     """Package one bundle into a zip in out_dir. Returns the zip path or None."""
     rina_unmasked_map = rina_unmasked_map or {}
     rina_unmasked_by_path = rina_unmasked_by_path or {}
+    if expected_hashes is None:
+        expected_hashes = _capture_source_hashes([bundle_path, rina_unmasked_by_path.get(bundle_path)])
     bn_with_ext = os.path.basename(bundle_path)
     bn_no_ext = os.path.splitext(bn_with_ext)[0]
 
     if platform is None:
         platform = detect_bundle_platform(bundle_path)
-    if platform is None and append_suffix:
-        log(f"  ❓ Platform unknown for '{bn_with_ext}' - zip name will have no platform suffix")
+    if platform not in ("android", "ios"):
+        raise ValueError(f"{bn_with_ext}: native platform is unknown or NoTarget; keep the native Android/iOS header when exporting.")
 
     if thumbnail_provider is not None:
         names = _bundle_texture_names(bundle_path)
@@ -1267,8 +1338,9 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
             cid = ask_chara_id(bn_with_ext) if ask_chara_id else manual_chara_id
     else:
         cid = manual_chara_id
-    if bn_no_ext.lower().startswith("209rinamasked") and cid != 209:
-        log(f"  ⚠️ Overriding chara_id to 209 for Rina file '{bn_with_ext}'")
+    if bundle_path in rina_unmasked_by_path:
+        if not auto_chara_id and cid != 209:
+            raise ValueError("The selected Rina pair requires character ID 209; the manual character ID disagrees.")
         cid = 209
     log(f"  🎯 Chara ID: {cid}")
 
@@ -1281,35 +1353,26 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
 
     unmasked_bundle_path = unmasked_filename = None
     if cid == 209:
-        # content-detected pair (batch mode's auto-pairing) takes priority; the
-        # filename convention is the fallback.
         if bundle_path in rina_unmasked_by_path:
             unmasked_bundle_path = rina_unmasked_by_path[bundle_path]
             unmasked_filename = os.path.basename(unmasked_bundle_path)
             log(f"  🎭 Paired by content with '{unmasked_filename}'")
-        elif bn_no_ext.lower().startswith("209rinamasked"):
-            key = normalize_rina_key(bn_no_ext.lower())
-            if key in rina_unmasked_map:
-                unmasked_bundle_path = rina_unmasked_map[key]
-                unmasked_filename = os.path.basename(unmasked_bundle_path)
-                log(f"  🎭 Paired with '{unmasked_filename}'")
 
     if cid == 209 and not unmasked_bundle_path:
         log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model - "
             "none was found.")
-        log("     Batch mode pairs the masked + unmasked bundles automatically when "
-            "both are in the folder; or name them '209rinamasked.../209rinaunmasked...'. "
-            "Skipping (the installer would crash otherwise).")
+        log("     Select both native variants of the same costume together, or put "
+            "both in one batch folder. Ambiguous identities require a valid source receipt.")
         return None
 
-    safe_costume = safe_arc_name(bn_with_ext)
-    safe_unmask = safe_arc_name(unmasked_filename) if unmasked_filename else None
+    safe_costume, safe_unmask = _installer_arc_names([
+        (bundle_path, "costume"), (unmasked_bundle_path, "unmasked")], reserved=(thumb_name,))
     modinstall = generate_modinstall_txt(bn_no_ext, safe_costume, thumb_name, cid, safe_unmask)
     zip_base = compute_zip_basename(bn_no_ext, platform, append_suffix)
     out_zip = os.path.join(out_dir, f"{zip_base}.zip")
     if create_zip_package(out_zip, bundle_path, thumb_bytes, thumb_name, modinstall,
                           unmasked_bundle_path, masked_arcname=safe_costume,
-                          unmasked_arcname=safe_unmask):
+                          unmasked_arcname=safe_unmask, expected_hashes=expected_hashes):
         log(f"  💾 Created: {os.path.basename(out_zip)}")
         return out_zip
     return None
@@ -1317,10 +1380,13 @@ def pack_single_bundle(bundle_path, out_dir, *, auto_chara_id=True, manual_chara
 
 def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_id=True,
                       manual_chara_id=0, thumbnail_size=256, rina_unmasked_map=None,
-                      rina_unmasked_by_path=None, ask_chara_id=None, log=print, thumbnail_provider=None):
+                      rina_unmasked_by_path=None, ask_chara_id=None, log=print, thumbnail_provider=None, expected_hashes=None):
     """Package an Android+iOS pair into one combined zip. Returns True/False."""
     rina_unmasked_map = rina_unmasked_map or {}
     rina_unmasked_by_path = rina_unmasked_by_path or {}
+    if expected_hashes is None:
+        expected_hashes = _capture_source_hashes([android_path, ios_path,
+            rina_unmasked_by_path.get(android_path), rina_unmasked_by_path.get(ios_path)])
     and_name = os.path.basename(android_path)
     ios_name = os.path.basename(ios_path)
     and_no_ext = os.path.splitext(and_name)[0]
@@ -1342,8 +1408,9 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
             cid = ask_chara_id(and_name) if ask_chara_id else manual_chara_id
     else:
         cid = manual_chara_id
-    if (and_no_ext.lower().startswith("209rinamasked")
-            or os.path.splitext(ios_name)[0].lower().startswith("209rinamasked")) and cid != 209:
+    if android_path in rina_unmasked_by_path or ios_path in rina_unmasked_by_path:
+        if not auto_chara_id and cid != 209:
+            raise ValueError("The selected Rina pair requires character ID 209; the manual character ID disagrees.")
         cid = 209
     log(f"  🎯 Chara ID: {cid}")
 
@@ -1357,118 +1424,142 @@ def pack_pair_bundles(pair_key, android_path, ios_path, out_dir, *, auto_chara_i
     unmask_and_path = unmask_and_name = None
     unmask_ios_path = unmask_ios_name = None
     if cid == 209:
-        key_and = normalize_rina_key(and_no_ext.lower())
-        key_ios = normalize_rina_key(os.path.splitext(ios_name)[0].lower())
-        # content-detected pairs take priority; the filename convention is the fallback
         if android_path in rina_unmasked_by_path:
             unmask_and_path = rina_unmasked_by_path[android_path]; unmask_and_name = os.path.basename(unmask_and_path)
             log(f"  🎭 Paired android by content with '{unmask_and_name}'")
-        elif key_and in rina_unmasked_map:
-            unmask_and_path = rina_unmasked_map[key_and]; unmask_and_name = os.path.basename(unmask_and_path)
-            log(f"  🎭 Paired android with '{unmask_and_name}'")
         if ios_path in rina_unmasked_by_path:
             unmask_ios_path = rina_unmasked_by_path[ios_path]; unmask_ios_name = os.path.basename(unmask_ios_path)
             log(f"  🎭 Paired ios by content with '{unmask_ios_name}'")
-        elif key_ios in rina_unmasked_map:
-            unmask_ios_path = rina_unmasked_map[key_ios]; unmask_ios_name = os.path.basename(unmask_ios_path)
-            log(f"  🎭 Paired ios with '{unmask_ios_name}'")
 
-    if cid == 209 and not unmask_and_path:
-        log("  ❌ chara_id is 209 (Rina), which REQUIRES an unmasked model "
-            "('209rinaunmasked...') - none was found.")
-        log("     Add the unmasked file, or set the correct character ID. "
-            "Skipping (the installer would crash otherwise).")
+    if cid == 209 and (not unmask_and_path or not unmask_ios_path):
+        log("  ❌ A combined Rina installer requires both Android and iOS unmasked companions. Select all four native costume variants together.")
         return False
 
-    safe_and = safe_arc_name(and_name)
-    safe_ios = safe_arc_name(ios_name)
-    safe_unmask_and = safe_arc_name(unmask_and_name) if unmask_and_name else None
-    safe_unmask_ios = safe_arc_name(unmask_ios_name) if unmask_ios_name else None
+    safe_and, safe_ios, safe_unmask_and, safe_unmask_ios = _installer_arc_names([
+        (android_path, "android"), (ios_path, "ios"),
+        (unmask_and_path, "unmaskedandroid"), (unmask_ios_path, "unmaskedios")], reserved=(thumb_name,))
     modinstall = generate_modinstall_txt(pair_key, safe_and, thumb_name, cid, safe_unmask_and,
                                          ios_costume_filename=safe_ios, ios_unmask_filename=safe_unmask_ios)
     combined = os.path.join(out_dir, f"{pair_key}_apk_ios.zip")
-    os.makedirs(os.path.dirname(combined), exist_ok=True)
-    with zipfile.ZipFile(combined, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        zf.write(android_path, safe_and)
-        zf.write(ios_path, safe_ios)
-        if unmask_and_path and os.path.isfile(unmask_and_path):
-            zf.write(unmask_and_path, safe_unmask_and)
-        if unmask_ios_path and os.path.isfile(unmask_ios_path):
-            zf.write(unmask_ios_path, safe_unmask_ios)
-        zf.writestr(thumb_name, thumb_bytes)
-        zf.writestr("modinstall.txt", modinstall.encode("utf-8"))
+    _verified_zip(combined, [(android_path, safe_and), (ios_path, safe_ios),
+        (unmask_and_path, safe_unmask_and), (unmask_ios_path, safe_unmask_ios)],
+        thumb_bytes, thumb_name, modinstall, expected_hashes)
     log(f"  💾 Created combined: {os.path.basename(combined)} (android={and_name}, ios={ios_name})")
     return True
 
 
-def prepare_pack_jobs(files, *, combine_pairs=True, log=print):
+def prepare_pack_jobs(files, *, combine_pairs=True, log=print, source_bindings=None, expected_hashes=None):
     """Use exactly the packer's platform/Rina grouping for automatic previews."""
-    rina_map = {}
-    masked = []
-    for p in files:
-        bn = os.path.splitext(os.path.basename(p))[0].lower()
-        if bn.startswith("209rinaunmasked"):
-            rina_map[normalize_rina_key(bn)] = p
+    files = list(dict.fromkeys(os.path.realpath(os.fspath(path)) for path in files))
+    if not files:
+        raise ValueError("No costume bundles selected.")
+    captured = _capture_source_hashes(files)
+    if expected_hashes is not None:
+        expected_hashes.clear()
+        expected_hashes.update(captured)
+    if source_bindings is None:
+        try:
+            from webtools.core.costume_pack_sources import source_bindings as read_bindings
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("webtools", "webtools.core", "webtools.core.costume_pack_sources"):
+                raise
+            source_bindings = {}
         else:
-            masked.append(p)
-    if rina_map:
-        log(f"✅ Found {len(rina_map)} '209rinaunmasked' helper file(s).")
-
+            source_bindings = read_bindings(files)
     log("🔎 Detecting bundle platforms (Android / iOS)...")
-    platforms = {}
-    for p in masked:
+    platforms, facts = {}, {}
+    for p in files:
         plat = detect_bundle_platform(p)
+        # A known header is mandatory for an installer. NoTarget is useful for
+        # source-bound previewing, but does not declare a native game platform.
+        if plat not in ("android", "ios"):
+            raise ValueError(f"{os.path.basename(p)}: native Android/iOS platform is unknown or NoTarget; choose a native bundle or export with its native platform preserved. A filename is not platform evidence.")
         platforms[p] = plat
         icon = {'android': '🤖', 'ios': '🍎'}.get(plat, '❓')
         log(f"  {icon} {os.path.basename(p)}: {plat or 'unknown'}")
-
-    # Content-based Rina auto-pairing: no special filenames needed. Among the
-    # remaining files, find ch0209 bundles by their texture names, tell masked from
-    # unmasked with the transplant board-face detector, and pair the two bundles
-    # that share the same costume code + platform. Only an unambiguous group
-    # (exactly one masked + one unmasked) is paired; everything else falls back to
-    # the '209rinamasked/209rinaunmasked' filename convention, which always wins
-    # (files already claimed by it are never re-classified).
-    rina_by_path = {}
-    candidates = {}
-    for p in masked:
-        bn = os.path.splitext(os.path.basename(p))[0].lower()
-        if bn.startswith("209rinamasked"):
-            continue                       # filename convention handles this one
         code, is_masked = _rina_content_scan(p, log=log)
-        if code is not None:
-            candidates[p] = (code, is_masked)
-    if candidates:
-        groups = {}
-        for p, (code, is_masked) in candidates.items():
-            g = groups.setdefault((code, platforms.get(p)), {"m": [], "u": []})
-            g["m" if is_masked else "u"].append(p)
-        for (code, plat), g in sorted(groups.items()):
-            if len(g["m"]) == 1 and len(g["u"]) == 1:
-                mp, up = g["m"][0], g["u"][0]
-                rina_by_path[mp] = up
-                masked.remove(up)          # the helper is packed inside the pair
-                platforms.pop(up, None)
-                log(f"🎭 Rina auto-pair by content ({code}, {plat or 'unknown'}): "
-                    f"{os.path.basename(mp)} + {os.path.basename(up)}")
-            else:
-                log(f"🟡 Rina bundles for {code} ({plat or 'unknown'}) not auto-paired "
-                    f"(need exactly 1 masked + 1 unmasked; found {len(g['m'])}+{len(g['u'])}). "
-                    "Use the '209rinamasked/209rinaunmasked' names to pair explicitly.")
+        binding = source_bindings.get(p)
+        family = None
+        if binding is not None:
+            with open(p, "rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            if binding.get("sha256") != digest:
+                raise ValueError(f"{os.path.basename(p)} changed after its source receipt was validated.")
+            if binding.get("platform") in ("android", "ios") and binding["platform"] != plat:
+                raise ValueError(f"{os.path.basename(p)}: native platform disagrees with its source receipt.")
+            if binding.get("owner") == 209:
+                if binding.get("variant") not in ("primary", "unmasked"):
+                    raise ValueError("The Rina source receipt has no exact costume variant.")
+                is_masked = binding["variant"] == "primary"
+                family = (binding.get("region"), binding.get("suit_id"))
+        if code is not None or family is not None:
+            facts[p] = {"code": code, "masked": is_masked, "family": family, "platform": plat}
+        elif any(extract_chara_id_from_texture_name(name) in (209, 9999) for name in _bundle_texture_names(p)):
+            raise ValueError(f"{os.path.basename(p)}: Rina costume/board role is ambiguous; choose an original native costume with a valid source receipt. Multiple costume identities are not paired by filename.")
 
-    jobs = build_pack_jobs(masked, platforms, combine_pairs)
-    return jobs, rina_map, rina_by_path, platforms
+    primaries = [path for path, fact in facts.items() if fact["masked"] is True]
+    helpers = [path for path, fact in facts.items() if fact["masked"] is False]
+    def matches(first, second):
+        a, b = facts[first], facts[second]
+        if a["platform"] != b["platform"]:
+            return False
+        if a["family"] is not None and b["family"] is not None:
+            return a["family"] == b["family"]
+        return a["code"] is not None and a["code"] == b["code"]
+    rina_by_path, used = {}, set()
+    for primary in primaries:
+        candidates = [path for path in helpers if matches(primary, path)]
+        if len(candidates) != 1:
+            reason = "missing" if not candidates else "ambiguous"
+            raise ValueError(f"{os.path.basename(primary)}: {reason} unmasked Rina companion for the same costume and native {platforms[primary]} platform; selected {len(candidates)} matching companions.")
+        helper = candidates[0]
+        if helper in used:
+            raise ValueError("Ambiguous Rina selection: one unmasked file matches more than one masked costume.")
+        used.add(helper)
+        rina_by_path[primary] = helper
+        log(f"🎭 Verified Rina pair ({platforms[primary]}): {os.path.basename(primary)} + {os.path.basename(helper)}")
+    orphaned = set(helpers) - used
+    if orphaned:
+        raise ValueError("Missing matching masked Rina costume for selected unmasked file(s): " + ", ".join(os.path.basename(path) for path in sorted(orphaned)))
+    mains = [path for path in files if path not in used]
+    jobs = build_pack_jobs(mains, platforms, combine_pairs)
+    for job in jobs:
+        if job[0] != "pair":
+            continue
+        first, second = facts.get(job[2]), facts.get(job[3])
+        if first is None and second is None:
+            continue
+        same = (first is not None and second is not None and
+                ((first["family"] == second["family"]) if first["family"] is not None and second["family"] is not None
+                 else first["code"] is not None and first["code"] == second["code"]))
+        if not same:
+            raise ValueError("The filename-matched Android/iOS bodies do not identify the same Rina costume. Choose matching native costumes or disable combined Android+iOS packing.")
+    return jobs, {}, rina_by_path, platforms
+
+
+def _check_installer_names(jobs, platforms, append_suffix):
+    names = set()
+    for job in jobs:
+        name = (job[1] + "_apk_ios.zip" if job[0] == "pair" else
+                compute_zip_basename(os.path.splitext(os.path.basename(job[1]))[0],
+                                     platforms[job[1]], append_suffix) + ".zip")
+        if name.casefold() in names:
+            raise ValueError("Selected costumes would produce the same installer filename: " + name +
+                             ". Give the source costumes distinct names before packing them together.")
+        names.add(name.casefold())
 
 
 def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                   thumbnail_size=256, append_suffix=True, combine_pairs=True,
-                  ask_chara_id=None, log=print, thumbnail_provider=None):
+                  ask_chara_id=None, log=print, thumbnail_provider=None, source_bindings=None):
     """Pre-scan Rina unmasked helpers, detect platforms, build jobs (pairing
     android+ios), and package each into out_dir. Returns (success, fail)."""
     out_dir = os.path.expanduser(out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    jobs, rina_map, rina_by_path, platforms = prepare_pack_jobs(files, combine_pairs=combine_pairs, log=log)
+    expected_hashes = {}
+    jobs, rina_map, rina_by_path, platforms = prepare_pack_jobs(files, combine_pairs=combine_pairs, log=log, source_bindings=source_bindings, expected_hashes=expected_hashes)
+    _check_installer_names(jobs, platforms, append_suffix)
     pair_count = sum(1 for j in jobs if j[0] == 'pair')
     if combine_pairs:
         if pair_count:
@@ -1486,7 +1577,7 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                 ok = pack_pair_bundles(key, ap, ip, out_dir, auto_chara_id=auto_chara_id,
                                        manual_chara_id=manual_chara_id, thumbnail_size=thumbnail_size,
                                        rina_unmasked_map=rina_map, rina_unmasked_by_path=rina_by_path,
-                                       ask_chara_id=ask_chara_id, log=log, thumbnail_provider=thumbnail_provider)
+                                       ask_chara_id=ask_chara_id, log=log, thumbnail_provider=thumbnail_provider, expected_hashes=expected_hashes)
             else:
                 bp = job[1]
                 log(f"\n📦 [{i}/{total}] {os.path.basename(bp)}")
@@ -1495,7 +1586,7 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
                                              append_suffix=append_suffix, rina_unmasked_map=rina_map,
                                              rina_unmasked_by_path=rina_by_path,
                                              ask_chara_id=ask_chara_id,
-                                             platform=platforms.get(bp), log=log, thumbnail_provider=thumbnail_provider))
+                                             platform=platforms.get(bp), log=log, thumbnail_provider=thumbnail_provider, expected_hashes=expected_hashes))
             if ok:
                 success += 1
             else:
@@ -1508,6 +1599,16 @@ def run_pack_jobs(files, out_dir, *, auto_chara_id=True, manual_chara_id=0,
 
 
 # -------- Library scan helpers (modded source) --------
+def _source_walk(root):
+    try:
+        from webtools.core.viewer_cache import source_walk
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        return os.walk(root)
+    return source_walk(root)
+
+
 def is_unity_bundle(path):
     try:
         with open(path, "rb") as f:
@@ -1522,7 +1623,7 @@ def find_asset_bundles(root):
     if not os.path.isdir(root):
         return []
     out = []
-    for dp, _, files in os.walk(root):
+    for dp, _, files in _source_walk(root):
         for fn in files:
             p = os.path.join(dp, fn)
             if is_unity_bundle(p):
@@ -1944,14 +2045,7 @@ def run_web(host="127.0.0.1", port=8000, open_browser=False):
 class UnityAssetBundleModPackerAutoCharaID:
     
     def normalize_rina_key(self, filename: str):
-        """'209rinamasked...' or '209rinaunmasked...' to 'rina...' for pairing."""
-        s = re.sub(r"^\d+", "", filename, count=1)
-        s = s.lower()
-        if s.startswith("rinamasked"):
-            return s.replace("rinamasked", "rina", 1)
-        if s.startswith("rinaunmasked"):
-            return s.replace("rinaunmasked", "rina", 1)
-        return s
+        return normalize_rina_key(filename)
 
     def __init__(self, root):
         self.root = root
@@ -2217,7 +2311,7 @@ class UnityAssetBundleModPackerAutoCharaID:
         folder = filedialog.askdirectory(title=_tr("Select Folder"), initialdir=default_sukusta_dir("modded"))
         if not folder: return
         added = 0
-        for root, _, files in os.walk(folder):
+        for root, _, files in _source_walk(folder):
             for f in files:
                 p = os.path.join(root, f)
                 if p not in self.bundle_files:
@@ -2336,38 +2430,17 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.current_file_index = 0
         self.log("="*70 + f"\n🚀 Starting processing for {self.total_files} file(s).")
         
-        # Pre-scan for Rina unmasked files
-        self.rina_unmasked_map.clear()
-        self.log("🔎 Pre-scanning for '209rinaunmasked' helper files...")
-        unmasked_files = []
-        masked_files_to_process = []
-        
-        for p in files:
-            bn_no_ext = os.path.splitext(os.path.basename(p))[0].lower()
-            if bn_no_ext.startswith("209rinaunmasked"):
-                key = self.normalize_rina_key(bn_no_ext)
-                self.rina_unmasked_map[key] = p
-                unmasked_files.append(os.path.basename(p))
-            else:
-                 masked_files_to_process.append(p)
-
-        if self.rina_unmasked_map:
-            self.log(f"✅ Found {len(self.rina_unmasked_map)} unmasked files: {', '.join(unmasked_files)}")
-        else:
-            self.log("🟡 No '209rinaunmasked' files found.")
-
-        # ---- 플랫폼 감지 (Android / iOS) ----
-        self.log("🔎 Detecting bundle platforms (Android / iOS)...")
-        self.bundle_platforms = {}
-        for p in masked_files_to_process:
-            plat = detect_bundle_platform(p)
-            self.bundle_platforms[p] = plat
-            icon = {'android': '🤖', 'ios': '🍎'}.get(plat, '❓')
-            self.log(f"  {icon} {os.path.basename(p)}: {plat if plat else 'unknown'}")
-
-        # ---- 작업 목록 구성 (android+ios 페어는 하나로 묶음) ----
-        jobs = build_pack_jobs(masked_files_to_process, self.bundle_platforms,
-                               self.combine_pairs.get())
+        try:
+            self.expected_source_hashes = {}
+            jobs, self.rina_unmasked_map, self.rina_unmasked_by_path, self.bundle_platforms = prepare_pack_jobs(
+                files, combine_pairs=self.combine_pairs.get(), log=self.log, expected_hashes=self.expected_source_hashes)
+            _check_installer_names(jobs, self.bundle_platforms, self.append_platform_suffix.get())
+        except Exception as exc:
+            self.log(f"❌ Costume selection cannot be packed: {exc}")
+            self.update_current_status("Selection needs attention")
+            self.is_processing = False
+            self.root.after(0, lambda: self.process_btn.config(state="normal", text=_tr("🚀 Create Mod Package(s)")))
+            return
         pair_count = sum(1 for j in jobs if j[0] == 'pair')
         if self.combine_pairs.get():
             if pair_count:
@@ -2421,199 +2494,34 @@ class UnityAssetBundleModPackerAutoCharaID:
         self.root.after(0, lambda: self.process_btn.config(state="normal", text=_tr("🚀 Create Mod Package(s)")))
 
     def process_single_file(self, bundle_path: str, platform=None, out_dir_override=None, force_suffix=False):
-        """번들 하나를 zip으로 패키징한다.
-
-        platform: 미리 감지된 플랫폼 ('android'/'ios'/None). None이면 여기서 감지.
-        out_dir_override: 페어 묶음용 임시 출력 경로.
-        force_suffix: 페어 내부 zip은 옵션과 무관하게 접미사를 강제한다 (이름 충돌 방지).
-        반환: 성공 시 생성된 zip 경로, 실패 시 None.
-        """
-        bn_with_ext = os.path.basename(bundle_path)
-        bn_no_ext = os.path.splitext(bn_with_ext)[0]
-
-        if platform is None:
-            platform = getattr(self, 'bundle_platforms', {}).get(bundle_path)
-        if platform is None:
-            platform = detect_bundle_platform(bundle_path)
-        if platform is None and self.append_platform_suffix.get():
-            self.log(f"❓ Platform unknown for '{bn_with_ext}' - zip name will have no platform suffix")
-
-        self.update_current_progress(20); self.update_current_status("Extracting texture...")
-        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(bundle_path, log=self.log)
-
-        self.update_current_progress(40); self.update_current_status("Detecting chara ID...")
-        cid = 0
-        if self.auto_chara_id.get():
-            cid_from_tex = extract_chara_id_from_texture_name(tex_name)
-            cid_from_file = extract_chara_id_from_filename(bn_no_ext)
-            cid = cid_from_tex or cid_from_file or self.chara_id.get()
-            source = "texture" if cid_from_tex else "filename" if cid_from_file else "manual"
-            self.log(f"🎯 Chara ID: {cid} (from {source})")
-        else:
-            cid = self.chara_id.get()
-            self.log(f"👤 Manual Chara ID: {cid}")
-        
-        # Force chara_id to 209 if filename indicates a Rina pair
-        if bn_no_ext.lower().startswith("209rinamasked"):
-            if cid != 209:
-                self.log(f"⚠️ Overriding chara_id to 209 for Rina file '{bn_with_ext}'")
-                cid = 209
-
-        self.update_current_progress(60); self.update_current_status("Creating thumbnail...")
-        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_name_thumbnail_png(bn_no_ext, self.thumbnail_size.get(), cid)
-        if not thumb_bytes: self.log("❌ Thumbnail creation failed."); return None
-        thumb_name = "im" + pack_safe_stem(bn_no_ext) + ".png"
-        
-        unmasked_bundle_path = None
-        unmasked_filename = None
-        
-        if cid == 209 and bn_no_ext.lower().startswith("209rinamasked"):
-            key = self.normalize_rina_key(bn_no_ext.lower())
-            if key in self.rina_unmasked_map:
-                unmasked_bundle_path = self.rina_unmasked_map[key]
-                unmasked_filename = os.path.basename(unmasked_bundle_path)
-                self.log(f"🎭 Paired '{bn_with_ext}' with '{unmasked_filename}'")
-                # 가면 해제 모델의 플랫폼이 본체와 다르면 경고
-                unmasked_platform = detect_bundle_platform(unmasked_bundle_path)
-                if platform and unmasked_platform and unmasked_platform != platform:
-                    self.log(f"⚠️ Platform mismatch! masked={platform}, unmasked={unmasked_platform} "
-                             f"- the unmasked model will not load on {platform}")
-            else:
-                self.log(f"⚠️ Could not find a matching 'unmasked' file for key: '{key}'")
-
-        if cid == 209 and not unmasked_bundle_path:
-            self.log("❌ chara_id is 209 (Rina), which needs an unmasked model "
-                     "('209rinaunmasked...') - none was found. Skipping this file "
-                     "(the installer would crash). Add the unmasked file or set the correct chara ID.")
-            return None
-
-        self.update_current_progress(80); self.update_current_status("Creating modinstall.txt...")
-        safe_costume = safe_arc_name(bn_with_ext)
-        safe_unmask = safe_arc_name(unmasked_filename) if unmasked_filename else None
-        modinstall = generate_modinstall_txt(bn_no_ext, safe_costume, thumb_name, cid, safe_unmask)
-        
-        if out_dir_override:
-            out_dir = out_dir_override
-        elif self.output_to_bundle_location.get():
-            out_dir = os.path.dirname(os.path.abspath(bundle_path))
-        else:
-            out_dir = self.output_dir.get()
-
-        append_suffix = self.append_platform_suffix.get() or force_suffix
-        zip_base = compute_zip_basename(bn_no_ext, platform, append_suffix)
-        out_zip = os.path.join(out_dir, f"{zip_base}.zip")
-        
-        self.update_current_status("Creating ZIP package...")
-        ok = create_zip_package(out_zip, bundle_path, thumb_bytes, thumb_name, modinstall,
-                                unmasked_bundle_path, masked_arcname=safe_costume,
-                                unmasked_arcname=safe_unmask)
-        
-        if ok:
-            self.update_current_progress(100)
-            self.log(f"💾 Created: {os.path.basename(out_zip)}")
-            return out_zip
-        return None
+        """Package the same validated job used by the web and text interfaces."""
+        self.update_current_progress(20)
+        self.update_current_status("Creating costume installer...")
+        out_dir = (out_dir_override or
+                   (os.path.dirname(os.path.abspath(bundle_path)) if self.output_to_bundle_location.get()
+                    else self.output_dir.get()))
+        result = pack_single_bundle(
+            bundle_path, out_dir, auto_chara_id=self.auto_chara_id.get(),
+            manual_chara_id=self.chara_id.get(), thumbnail_size=self.thumbnail_size.get(),
+            append_suffix=self.append_platform_suffix.get() or force_suffix,
+            rina_unmasked_by_path=self.rina_unmasked_by_path,
+            platform=platform, log=self.log, expected_hashes=self.expected_source_hashes)
+        self.update_current_progress(100 if result else 0)
+        return result
 
     def process_pair(self, pair_key, android_path, ios_path):
-        """Android+iOS 번들 한 쌍을 하나의 평면(flat) 합본 zip으로 만든다.
-
-        zip 구성: 안드로이드 번들 + iOS 번들 + 썸네일 + modinstall.txt
-        - modinstall의 costume_file은 안드로이드 번들을 가리키므로,
-          구버전 인스톨러로 설치해도 안드로이드용이 올바르게 설치된다
-          (iOS 번들은 구버전에서 무시됨).
-        - 신버전 인스톨러는 costume_file_ios를 읽어 의상 1개로
-          양쪽 플랫폼을 모두 등록한다."""
-        and_name = os.path.basename(android_path)
-        ios_name = os.path.basename(ios_path)
-        and_no_ext = os.path.splitext(and_name)[0]
-
-        # ---- 썸네일/캐릭터 ID: 안드로이드 번들 우선, 실패 시 iOS ----
-        self.update_current_progress(20); self.update_current_status("Extracting texture...")
-        tex_name, tex_png_bytes = extract_body_texture_with_unitypy(android_path, log=self.log)
-        if not tex_png_bytes:
-            tex_name, tex_png_bytes = extract_body_texture_with_unitypy(ios_path, log=self.log)
-
-        self.update_current_progress(40); self.update_current_status("Detecting chara ID...")
-        if self.auto_chara_id.get():
-            cid_from_tex = extract_chara_id_from_texture_name(tex_name)
-            cid_from_file = (extract_chara_id_from_filename(and_no_ext)
-                             or extract_chara_id_from_filename(os.path.splitext(ios_name)[0]))
-            cid = cid_from_tex or cid_from_file or self.chara_id.get()
-            source = "texture" if cid_from_tex else "filename" if cid_from_file else "manual"
-            self.log(f"🎯 Chara ID: {cid} (from {source})")
-        else:
-            cid = self.chara_id.get()
-            self.log(f"👤 Manual Chara ID: {cid}")
-
-        if and_no_ext.lower().startswith("209rinamasked") or os.path.splitext(ios_name)[0].lower().startswith("209rinamasked"):
-            if cid != 209:
-                self.log(f"⚠️ Overriding chara_id to 209 for Rina pair '{pair_key}'")
-                cid = 209
-
-        self.update_current_progress(60); self.update_current_status("Creating thumbnail...")
-        thumb_bytes = make_thumbnail_png(tex_png_bytes, self.thumbnail_size.get()) if tex_png_bytes else make_name_thumbnail_png(pair_key, self.thumbnail_size.get(), cid)
-        if not thumb_bytes:
-            self.log("❌ Thumbnail creation failed.")
-            return False
-        thumb_name = "im" + pack_safe_stem(pair_key) + ".png"
-
-        # ---- 리나(209) 가면 해제 페어: 플랫폼별로 각각 매칭 ----
-        unmask_and_path = unmask_and_name = None
-        unmask_ios_path = unmask_ios_name = None
-        if cid == 209:
-            key_and = self.normalize_rina_key(and_no_ext.lower())
-            key_ios = self.normalize_rina_key(os.path.splitext(ios_name)[0].lower())
-            if key_and in self.rina_unmasked_map:
-                unmask_and_path = self.rina_unmasked_map[key_and]
-                unmask_and_name = os.path.basename(unmask_and_path)
-                self.log(f"🎭 Paired android '{and_name}' with '{unmask_and_name}'")
-            else:
-                self.log(f"⚠️ No android 'unmasked' match for key: '{key_and}'")
-            if key_ios in self.rina_unmasked_map:
-                unmask_ios_path = self.rina_unmasked_map[key_ios]
-                unmask_ios_name = os.path.basename(unmask_ios_path)
-                self.log(f"🎭 Paired ios '{ios_name}' with '{unmask_ios_name}'")
-            else:
-                self.log(f"⚠️ No ios 'unmasked' match for key: '{key_ios}'")
-
-        if cid == 209 and not unmask_and_path:
-            self.log("❌ chara_id is 209 (Rina), which needs an unmasked model "
-                     "('209rinaunmasked...') - none was found. Skipping this pair "
-                     "(the installer would crash). Add the unmasked file or set the correct chara ID.")
-            return False
-
-        self.update_current_progress(80); self.update_current_status("Creating modinstall.txt...")
-        safe_and = safe_arc_name(and_name)
-        safe_ios = safe_arc_name(ios_name)
-        safe_unmask_and = safe_arc_name(unmask_and_name) if unmask_and_name else None
-        safe_unmask_ios = safe_arc_name(unmask_ios_name) if unmask_ios_name else None
-        modinstall = generate_modinstall_txt(pair_key, safe_and, thumb_name, cid,
-                                             safe_unmask_and,
-                                             ios_costume_filename=safe_ios,
-                                             ios_unmask_filename=safe_unmask_ios)
-
-        if self.output_to_bundle_location.get():
-            out_dir = os.path.dirname(os.path.abspath(android_path))
-        else:
-            out_dir = self.output_dir.get()
-        combined = os.path.join(out_dir, f"{pair_key}_apk_ios.zip")
-
-        self.update_current_status("Creating combined ZIP package...")
-        os.makedirs(os.path.dirname(combined), exist_ok=True)
-        with zipfile.ZipFile(combined, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            zf.write(android_path, safe_and)
-            zf.write(ios_path, safe_ios)
-            if unmask_and_path and os.path.isfile(unmask_and_path):
-                zf.write(unmask_and_path, safe_unmask_and)
-            if unmask_ios_path and os.path.isfile(unmask_ios_path):
-                zf.write(unmask_ios_path, safe_unmask_ios)
-            zf.writestr(thumb_name, thumb_bytes)
-            zf.writestr("modinstall.txt", modinstall.encode("utf-8"))
-
-        self.update_current_progress(100)
-        self.log(f"💾 Created combined package: {os.path.basename(combined)} "
-                 f"(android={and_name}, ios={ios_name})")
-        return True
+        """Package a validated Android+iOS job without regrouping its helpers."""
+        self.update_current_progress(20)
+        self.update_current_status("Creating combined costume installer...")
+        out_dir = (os.path.dirname(os.path.abspath(android_path)) if self.output_to_bundle_location.get()
+                   else self.output_dir.get())
+        result = pack_pair_bundles(
+            pair_key, android_path, ios_path, out_dir,
+            auto_chara_id=self.auto_chara_id.get(), manual_chara_id=self.chara_id.get(),
+            thumbnail_size=self.thumbnail_size.get(),
+            rina_unmasked_by_path=self.rina_unmasked_by_path, log=self.log, expected_hashes=self.expected_source_hashes)
+        self.update_current_progress(100 if result else 0)
+        return result
 
     def show_completion_dialog(self, succ, fail):
         if self.output_to_bundle_location.get():

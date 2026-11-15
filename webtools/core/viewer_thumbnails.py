@@ -120,9 +120,9 @@ def _viewer_owner(context, requested):
     if requested is not None:
         return _owner(requested)
     from . import viewer_mod_flow
-    from .sukusta import default_sukusta_dir
+    from .viewer_cache import game_models_dir
     metadata = viewer_mod_flow.metadata(context, repo_root=Path.cwd(),
-        cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
+        cache_root=game_models_dir())
     return _owner(metadata.get("characterId"))
 
 
@@ -148,38 +148,37 @@ def plan(params):
             from webtools.core.repo import ensure_repo_on_path
             ensure_repo_on_path()
             import unity_costumemod_packer as packer
-            groups = {}
+            groups, rina_paths, planned_hashes = {}, {}, {}
             if options["mode"] == "single":
                 paths = [_file(options["in_path"])]
                 groups[paths[0]] = paths[:]
-            elif options["mode"] == "multi":
-                from webtools.tools.common import parse_multi_paths
-                paths = list(dict.fromkeys(_file(path) for path in parse_multi_paths(params["params"])))
-                _require(paths and len(paths) <= MAX_ITEMS, "Choose one to 128 costume files for automatic 3D thumbnails.")
-                groups = {path: [path] for path in paths}
+                planned_hashes.update(packer._capture_source_hashes(paths))
             else:
-                from webtools import filebrowser
-                from .sukusta import find_bundles
-                directory = Path(options["in_dir"]).expanduser().resolve()
-                _require(filebrowser.is_within_allowed(str(directory)) and directory.is_dir(), "Choose an allowed costume folder.")
-                sources = [_file(str(path)) for path in find_bundles(str(directory))]
-                _require(sources and len(sources) <= MAX_ITEMS * 4, "Choose a bounded costume batch for automatic 3D thumbnails.")
-                jobs, rina_names, rina_paths, _ = packer.prepare_pack_jobs(sources, combine_pairs=bool(options["combine_pairs"]), log=lambda message: None)
-                # An Android+iOS package uses its Android costume preview; all
-                # paired/helper bytes still participate in the source binding.
+                if options["mode"] == "multi":
+                    from webtools.tools.common import parse_multi_paths
+                    sources = list(dict.fromkeys(_file(path) for path in parse_multi_paths(params["params"])))
+                    _require(sources and len(sources) <= MAX_ITEMS, "Choose one to 128 costume files for automatic 3D thumbnails.")
+                else:
+                    from webtools import filebrowser
+                    from .sukusta import find_bundles
+                    directory = Path(options["in_dir"]).expanduser().resolve()
+                    _require(filebrowser.is_within_allowed(str(directory)) and directory.is_dir(), "Choose an allowed costume folder.")
+                    sources = [_file(str(path)) for path in find_bundles(str(directory))]
+                    _require(sources and len(sources) <= MAX_ITEMS * 4, "Choose a bounded costume batch for automatic 3D thumbnails.")
+                jobs, _, rina_paths, _ = packer.prepare_pack_jobs(sources, combine_pairs=bool(options["combine_pairs"]), log=lambda message: None, expected_hashes=planned_hashes)
+                # Use the same jobs and source-bound companions as packaging.
+                # Android+iOS installers preview Android but bind both bodies.
                 paths = []
                 for job in jobs:
                     primary = job[2] if job[0] == "pair" else job[1]
                     bound = list(job[2:]) if job[0] == "pair" else [primary]
                     for path in bound[:]:
                         helper = rina_paths.get(path)
-                        if helper is None and Path(path).stem.lower().startswith("209rinamasked"):
-                            helper = rina_names.get(packer.normalize_rina_key(Path(path).stem.lower()))
                         if helper and helper not in bound:
                             bound.append(helper)
                     paths.append(primary)
                     groups[primary] = bound
-                _require(paths and len(paths) <= MAX_ITEMS, "Choose a batch of one to 128 costumes for automatic 3D thumbnails.")
+                _require(paths and len(paths) <= MAX_ITEMS, "Choose one to 128 costumes for automatic 3D thumbnails.")
             items = []
             for path in paths:
                 _require(not zipfile.is_zipfile(path), "Choose costume bundles here. Use Replace existing Mod thumbnail for installer ZIPs.")
@@ -187,12 +186,16 @@ def plan(params):
                 owners = {packer.extract_chara_id_from_texture_name(name) for name in names}
                 owners.discard(None)
                 if options["auto_chara_id"]:
-                    _require(len(owners) <= 1, "This costume has ambiguous members. Choose the target member manually.")
-                    owner = next(iter(owners), None) or packer.extract_chara_id_from_filename(Path(path).stem) or int(options["manual_chara_id"] or 0)
+                    if path in rina_paths:
+                        owner = 209
+                    else:
+                        _require(len(owners) <= 1, "This costume has ambiguous members. Choose the target member manually.")
+                        owner = next(iter(owners), None) or packer.extract_chara_id_from_filename(Path(path).stem) or int(options["manual_chara_id"] or 0)
                 else:
                     owner = int(options["manual_chara_id"] or 0)
+                    _require(path not in rina_paths or owner == 209, "The verified Rina pair requires target member 209.")
                 owner = _owner(owner)
-                items.append({"paths": [path], "source_hashes": [[source, _sha(source)] for source in groups[path]], "characterId": owner})
+                items.append({"paths": [path], "source_hashes": [[source, planned_hashes[source] if source in planned_hashes else _sha(source)] for source in groups[path]], "characterId": owner})
             binding = options
         elif kind == "updater":
             _require(set(params) == {"kind", "params"} and isinstance(params["params"], dict), "Invalid thumbnail replacement options.")
@@ -215,18 +218,21 @@ def plan(params):
             _require(mesh is None or not (params["counterpart_path"] or viewer_scene_roles.session_metadata(params["token"])),
                      "Mesh edits cannot be propagated to paired or scene costumes. Save an individual edited Unity bundle instead.")
             from .sukusta import default_sukusta_dir
+            from .viewer_cache import game_models_dir
             root = Path(default_sukusta_dir("")) / ".viewer-cache" / "thumbnails"
             _require(not root.is_symlink(), "The thumbnail cache cannot be a symbolic link.")
             root.mkdir(parents=True, exist_ok=True)
             temporary = tempfile.mkdtemp(prefix="render-", dir=root)
             result = viewer_mod_flow.export_current(params["token"], normalized, temporary, mesh_state=mesh, allow_empty=True,
-                repo_root=Path.cwd(), cache_root=Path(default_sukusta_dir("extracted")) / "game-models")
+                repo_root=Path.cwd(), cache_root=game_models_dir())
             paths = list(result["preview_paths"])
             items = [{"paths": paths, "source_hashes": [[row["path"], row["sha256"]] for row in context["containers"]], "characterId": owner}]
             size = 256
         _require(64 <= size <= 1024, "Choose a thumbnail size between 64 and 1024 pixels.")
         color_table = profile["memberColors"]
         for item in items:
+            if kind == "packer":
+                _unchanged(item)
             _require(str(item["characterId"]) in color_table, "The SDK thumbnail template has no color for this member.")
             item["id"] = secrets.token_hex(16)
             item["png"] = None

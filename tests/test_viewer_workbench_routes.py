@@ -98,7 +98,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         data.assert_called_once_with(self.token, self.mesh)
         export.assert_called_once_with(self.token, self.body, self.library / 'modded/viewer',
             mesh_state=self.mesh_state, allow_empty=True, repo_root=Path.cwd(),
-            cache_root=self.library / 'extracted/game-models')
+            cache_root=self.library / 'cache/viewer/game-models')
 
     def test_motion_catalog_bounds_queries_and_preserves_keyword_signature(self):
         catalog = self.backend_patch(game_motions, 'catalog', return_value={'motions': []})
@@ -118,7 +118,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         self.assertEqual(status, 200, response)
         job = self.finish(response['job_id'])
         validate.assert_called_once_with(Path.cwd(), self.motion, 'ja')
-        run.assert_called_once_with(job, repo_root=Path.cwd(), output_root=self.library / 'extracted/game-motions', record=record)
+        run.assert_called_once_with(job, repo_root=Path.cwd(), output_root=self.library / 'cache/viewer/game-motions', record=record)
         validate.side_effect = ValueError('Motion no longer exists')
         with patch.object(MANAGER, 'create') as create:
             self.assertEqual(self.request('/api/viewer/game/motions/import', self.motion)[0], 400)
@@ -136,7 +136,7 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         job = self.finish(response['job_id'])
         validate.assert_called_once_with(self.transplant)
         run.assert_called_once_with(job, {'validated': True}, output_root=self.library / 'modded/viewer',
-            cache_root=self.library / '.viewer-cache', repo_root=Path.cwd(), physics_cache_root=self.library / 'extracted/game-models')
+            cache_root=self.library / '.viewer-cache', repo_root=Path.cwd(), physics_cache_root=self.library / 'cache/viewer/game-models')
         validate.side_effect = ValueError('Cut planes are reversed')
         with patch.object(MANAGER, 'create') as create:
             self.assertEqual(self.request('/api/viewer/transplant/run', self.transplant)[0], 400)
@@ -231,8 +231,8 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
     def test_output_symlinks_cannot_redirect_motion_imports(self):
         outside = self.root / 'outside'
         outside.mkdir()
-        (self.library / 'extracted').mkdir()
-        (self.library / 'extracted/game-motions').symlink_to(outside, target_is_directory=True)
+        (self.library / 'cache/viewer').mkdir(parents=True)
+        (self.library / 'cache/viewer/game-motions').symlink_to(outside, target_is_directory=True)
         self.backend_patch(game_motions, 'validate_selection', return_value={})
         with patch.object(MANAGER, 'create') as create:
             self.assertEqual(self.request('/api/viewer/game/motions/import', self.motion)[0], 403)

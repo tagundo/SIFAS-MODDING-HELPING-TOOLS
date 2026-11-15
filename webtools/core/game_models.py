@@ -360,7 +360,7 @@ def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimpor
     _tool_body(body, record["platform"])
     signature = [{"archive_sha256": scene["sha256"]}]
     identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
-    cached = None if reimport else _cache_hit(root, identity, signature)
+    cached, _ = (None, None) if reimport else _cached_model(root, identity, signature, record)
     if cached and Path(cached).name != _tool_name(record):
         cached = None
     if cached:
@@ -448,12 +448,18 @@ def _source(root, record, extractor, job, deadline):
     return None, None
 
 
-def _cache_hit(root, identity, signature):
+def _cache_hit(root, identity, signature, record=None):
     manifest = root / (".selection-" + identity + ".json")
     try:
         if manifest.is_symlink() or manifest.stat().st_size > 8192:
             return None
         value = json.loads(manifest.read_text())
+        if record is not None:
+            stored = value.get("selection_record")
+            if (not isinstance(stored, dict) or
+                    {key: item for key, item in stored.items() if key != "download"} !=
+                    {key: item for key, item in record.items() if key != "download"}):
+                return None
         relative = value["model"]
         if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
             return None
@@ -467,6 +473,15 @@ def _cache_hit(root, identity, signature):
         return model
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _cached_model(root, identity, signature, record):
+    from .viewer_cache import legacy_cache_roots
+    for candidate_root in (root, *legacy_cache_roots(root, "models")):
+        cached = _cache_hit(candidate_root, identity, signature, record=record)
+        if cached:
+            return cached, candidate_root
+    return None, None
 
 
 def _metapack_download(url, offset, size, deadline):
@@ -591,6 +606,15 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
                                           **({"reimport": True} if reimport else {}))
             source = Path(scene["archive_path"])
             destination = root / ("scene-" + scene["sha256"] + "-" + record["variant"] + ".zip")
+            if not reimport and not destination.exists():
+                from .viewer_cache import legacy_cache_roots
+                for legacy in legacy_cache_roots(root, "models"):
+                    old = legacy / destination.name
+                    if (old.is_file() and not old.is_symlink() and old.stat().st_size == source.stat().st_size
+                            and _sha(old) == scene["sha256"]):
+                        _check(job, deadline)
+                        job.add_output(str(old)); job.progress(1, 1)
+                        return "Verified canonical scene costume cache ready for re-editing."
             if reimport:
                 destination = root / (destination.stem + "-" + secrets.token_hex(4) + ".zip")
             if destination.is_symlink():
@@ -613,7 +637,7 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
         found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]
         identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
-        cached = None if reimport else _cache_hit(root, identity, signatures)
+        cached, cached_root = (None, None) if reimport else _cached_model(root, identity, signatures, record)
         if tool and cached and Path(cached).name != _tool_name(record):
             cached = None
         if cached:
@@ -629,9 +653,13 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
                 return "Native costume body ready for transplanting."
             from webtools.core.viewer_mod_sources import register_game_import
             # Upgrade an existing cache receipt without changing the model.
-            receipt_path = root / (".selection-" + identity + ".json")
+            receipt_path = cached_root / (".selection-" + identity + ".json")
             receipt = json.loads(receipt_path.read_text())
             register_game_import(cached, record, expected_sha256=receipt["sha256"])
+            if cached_root != root:
+                job.log("Using the verified legacy game model cache without moving or changing it.")
+                job.add_output(cached)
+                return "Game model ready."
             receipt["selection_record"] = record
             fd, receipt_name = tempfile.mkstemp(prefix=".selection-", suffix=".part", dir=root)
             temporary_manifest = Path(receipt_name)

@@ -1305,7 +1305,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     conversion keep their forty-second caps. Recovery reuses both original
     deadlines instead of renewing either allowance. Completed GLBs are immutable.
     """
-    from .model_faces import FacePlan, FACE_SECONDS
+    from .model_faces import FacePlan, FACE_SECONDS, SavedFacePlatformMismatch
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
@@ -1401,6 +1401,11 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
                 if faces.status == "already_present":
                     warnings = [warning for warning in warnings if warning["code"] != "facial_assets_missing"]
                 completed = (base[0], base[1], warnings, faces.metadata()) + base[4:]
+        except SavedFacePlatformMismatch as error:
+            # A saved source-bound edit cannot be replaced with stock geometry
+            # under the optional-face fallback. Keep the original files intact
+            # and report this precise conflict before any costume operation.
+            raise ModelViewerError(str(error)) from None
         except Exception:
             if faces is None:
                 faces = FacePlan(scene, paths, None, face_deadline)

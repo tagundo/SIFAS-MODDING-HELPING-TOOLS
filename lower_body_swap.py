@@ -36,6 +36,18 @@ import os, sys, json, math, struct, argparse, traceback
 # --------------------------------------------------------------------------- #
 #  Lazy / optional dependencies                                               #
 # --------------------------------------------------------------------------- #
+def _source_walk(root):
+    # Keep a copied standalone script usable without the optional web UI.
+    try:
+        from webtools.core.viewer_cache import source_walk
+    except ModuleNotFoundError as error:
+        if error.name not in ("webtools", "webtools.core", "webtools.core.viewer_cache"):
+            raise
+        import os
+        return os.walk(root)
+    return source_walk(root)
+
+
 def _require(mod, pipname=None):
     try:
         return __import__(mod)
@@ -1030,7 +1042,7 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
 #  Batch                                                                       #
 # --------------------------------------------------------------------------- #
 def iter_bundles(folder):
-    for root, _dirs, files in os.walk(folder):
+    for root, _dirs, files in _source_walk(folder):
         for fn in files:
             if fn.lower().endswith((".meta", ".png", ".txt", ".zip")):
                 continue
