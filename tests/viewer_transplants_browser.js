@@ -88,6 +88,15 @@ async function start() {
       assert.equal(new Set(Object.values(hints)).size, 3, 'The help changes for all three UV methods');
       await placement.selectOption('same_position');
       report.uvOptionsForm.locales.push({ language, fieldLabel, choices: labels, hints, defaultPlacement: 'same_position', legacyCheckboxesAbsent: true, valuesCollected: true });
+      await page.evaluate(() => selectTool('lower_body_swap'));
+      const lowerPlacement = form.locator('#f_uv_placement');
+      assert.equal(await form.locator('label[for="f_uv_placement"]').innerText(), fieldLabel);
+      assert.equal(await lowerPlacement.inputValue(), 'atlas');
+      assert.deepEqual(await lowerPlacement.locator('option').allTextContents(), labels);
+      for (const choice of placementChoices) {
+        await lowerPlacement.selectOption(choice);
+        assert.equal(await page.evaluate(() => collectParams().uv_placement), choice);
+      }
     }
     if (process.env.VIEWER_UV_OPTIONS_ONLY === '1') { assert.deepEqual(errors, []); report.pageErrors = errors; report.status = 'PASS'; return; }
     await page.evaluate(() => { document.getElementById('viewer-auto-face').checked = false; });
@@ -210,11 +219,18 @@ async function start() {
         selectedPart = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'part').partRoots[0]);
       }
       if (operation.value === 'lower') {
+        const placement = panel.locator('#viewer-lower-transplant-uv-placement');
+        assert.equal(await placement.inputValue(), 'atlas', 'Lower-body replacement defaults to its existing atlas layout');
+        assert.deepEqual(await placement.locator('option').evaluateAll(options => options.map(option => option.value)), placementChoices);
+        assert.equal(await placement.isDisabled(), false);
+        await placement.selectOption('same_position');
+        assert((await panel.locator('#viewer-lower-transplant-uv-placement-help').innerText()).includes('keep the original UV positions.'));
         assert.equal(await panel.locator('#' + operation.id + '-high').inputValue(), '.92', 'The default upper cut is .92');
         await panel.locator('#' + operation.id + '-low').fill(realModels ? '.38' : '.5');
         if (realModels) await panel.locator('.viewer-transplant-cuts select').nth(1).selectOption('lower_belly');
         const cuts = await page.evaluate(() => ModelViewer.getState().transplants.donors.find(entry => entry.operation === 'lower'));
         assert.equal(cuts.cutLow, realModels ? .38 : .5); assert.equal(cuts.cutHigh, .92);
+        assert.equal(cuts.uvPlacement, 'same_position');
         assert(cuts.selectedTriangles > 0, 'Exact highlighted donor selection must be nonempty');
         previewSelectedTriangles = cuts.selectedTriangles;
         await panel.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(evidence, 'lower-cut-preview.png') });
@@ -255,6 +271,7 @@ async function start() {
       }
       if (operation.value === 'lower') {
         assert.equal(requests.at(-1).cutLow, realModels ? .38 : .5); assert.equal(requests.at(-1).cutHigh, .92);
+        assert.equal(requests.at(-1).uvPlacement, 'same_position', 'Lower-body placement reaches the actual graft request');
         assert((await panel.locator('.viewer-transplant-log').innerText()).includes('one game-compatible submesh'));
         const selected = (await panel.locator('.viewer-transplant-log').innerText()).match(/donor take: (\d+) tris/);
         assert(selected); assert.equal(Number(selected[1]), previewSelectedTriangles, 'Preview and written donor triangle counts match');
@@ -284,6 +301,7 @@ async function start() {
       if (meshGrafts) assert.deepEqual((await page.evaluate(() => ModelViewer.getState())).meshTools.edits.meshes, [], 'Redo opens the baked graft once');
       report.cases.push({ operation: operation.value, currentEdits: requests.at(-1).state.edits.length, output, triangles: after.stats.triangles, previewSelectedTriangles, undoRestoredOriginal: true, authoringRestored: true, cameraRestored: true, redoRestoredOutput: true, originalUnchanged: true, donorUnchanged: true,
         ...(operation.value === 'part' ? { uvPlacement: requests.at(-1).uvPlacement, defaultPlacement: 'same_position', legacyCheckboxesAbsent: true, atlasChoiceVerified: true, uvMethodHelpChanged: true } : {}),
+        ...(operation.value === 'lower' ? { uvPlacement: requests.at(-1).uvPlacement, defaultPlacement: 'atlas' } : {}),
         ...(meshGrafts ? { meshChannelSent: true, meshDraftRestoredByUndo: true, bakedOnceOnRedo: true, retainedGeometryVerified: operation.value !== 'costume' } : {}) });
     }
     if (!realModels) {

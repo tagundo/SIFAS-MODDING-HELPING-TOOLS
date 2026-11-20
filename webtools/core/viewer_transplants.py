@@ -374,19 +374,13 @@ def validate_request(params):
     source_index = next(iter(candidates))
     if source_index >= len(context["sources"]):
         raise ValueError("The wearer model editing identity is invalid.")
-    container = context["containers"][context["sources"][source_index]["container"]]
+    source = context["sources"][source_index]
+    container = context["containers"][source["container"]]
     if zipfile.is_zipfile(io.BytesIO(container["raw"])):
         # Different platforms and Rina variants need independently matched
         # donors. Never emit a ZIP whose other installer models remain stale.
         with zipfile.ZipFile(io.BytesIO(container["raw"])) as archive:
-            model_count = 0
-            for entry in archive.infolist():
-                if entry.is_dir():
-                    continue
-                with archive.open(entry) as member:
-                    if viewer_archive._model_header(member.read(48), entry.file_size):
-                        model_count += 1
-            if model_count != 1:
+            if not viewer_archive.has_one_transplant_body(archive, source["member"]):
                 raise ValueError("For transplanting, open a single Unity costume bundle or a ZIP with one model. Paired platform and Rina ZIPs need separate donor models.")
     donor, raw = _read_donor(params["donor"])
     digest = hashlib.sha256(raw).hexdigest()
@@ -510,6 +504,7 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
                 costume.run_lower_body_swap(job, {**params, "cut": "custom", "region": request["region"],
                     "cut_low": request["cutLow"], "cut_high": request["cutHigh"],
                     "exclude_accessories": request["excludeAccessories"], "selection_scope": request["selectionScope"],
+                    "uv_placement": request["uvPlacement"],
                     "donor_renderer": request["donorRenderer"] or None, "target_renderer": request["targetRenderer"] or None})
         changed = models / "wearer_transplant.unity"
         stage("validate_output", changed)

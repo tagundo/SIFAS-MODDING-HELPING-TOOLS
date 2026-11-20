@@ -163,6 +163,36 @@ class ViewerArchiveTests(unittest.TestCase):
                     self.assertEqual([Path(path).name for path in expanded.paths], [expected])
                     self.assertEqual(expanded.variants[0]["selected"], choice or "primary")
 
+    def test_declared_faces_follow_the_selected_body_and_missing_face_stays_optional(self):
+        manifest = ("costume_file='android-body'\n"
+                    "costume_file_ios='ios-body'\n"
+                    "costume_facedynamic_file='android-face'\n"
+                    "costume_facedynamic_file_ios='ios-face'\n").encode()
+        for files, expected in (
+                (("android-body", "ios-body", "android-face", "ios-face"), ["android-body", "android-face"]),
+                (("ios-body", "android-face", "ios-face"), ["ios-body", "ios-face"]),
+                (("ios-body", "android-face"), ["ios-body"])):
+            with self.subTest(files=files):
+                entries = [(f"nested/{name}", self.fixture) for name in files]
+                self.write_zip(entries + [("nested/modinstall.txt", manifest), ("accessory", self.fixture)])
+                original = self.archive.read_bytes()
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], [*expected, "accessory"])
+                self.assertEqual(self.archive.read_bytes(), original)
+
+    def test_rina_fallback_body_gets_the_face_for_its_own_role(self):
+        self.write_zip([("board", self.fixture), ("unmasked-ios", self.fixture),
+                        ("primary-face", self.fixture), ("ios-face", self.fixture),
+                        ("modinstall.txt", b"costume_file='board'\n"
+                                           b"rina_unmask_costume_file_ios='unmasked-ios'\n"
+                                           b"costume_facedynamic_file='primary-face'\n"
+                                           b"costume_facedynamic_file_ios='ios-face'\n")])
+        for variant, expected in (("primary", ["board", "primary-face"]),
+                                  ("unmasked", ["unmasked-ios", "ios-face"])):
+            with self.subTest(variant=variant):
+                with viewer_archive.expand_inputs([str(self.archive)], self.cache, {str(self.archive): variant}) as expanded:
+                    self.assertEqual([Path(path).name for path in expanded.paths], expected)
+
     def test_variant_reference_aliases_to_the_same_member_are_not_alternatives(self):
         self.write_zip([("nested/models/shared", self.fixture), ("accessory", self.fixture),
                         ("nested/modinstall.txt", b"costume_file='models/SHARED'\n"

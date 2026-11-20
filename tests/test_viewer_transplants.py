@@ -146,10 +146,28 @@ class ViewerTransplantTests(unittest.TestCase):
                 self.assertEqual(transplant.call_args.kwargs['uv_placement'], placement)
 
     def test_real_lower_body_swap_replaces_only_the_selected_vertical_band(self):
-        output = self.run_graft(self.request(operation="lower", cutLow=.5, cutHigh=.96))
-        logs = "\n".join(event.get("line", "") for event in self.last_job._events)
-        self.assertIn("one game-compatible submesh", logs)
-        self.assertGreater(output.stat().st_size, 0)
+        import costume_part_transplant as part
+        default_bundle = None
+        for placement in (None, "atlas", "same_position", "move_to_empty"):
+            with self.subTest(placement=placement), patch.object(part, "transplant_part", wraps=part.transplant_part) as transplant:
+                options = {"uvPlacement": placement} if placement is not None else {}
+                output = self.run_graft(self.request(operation="lower", cutLow=.5, cutHigh=.96, **options))
+                logs = "\n".join(event.get("line", "") for event in self.last_job._events)
+                self.assertIn("one game-compatible submesh", logs)
+                self.assertGreater(output.stat().st_size, 0)
+                self.assertEqual(transplant.call_args.kwargs["uv_placement"], placement)
+                self.assertIs(transplant.call_args.kwargs["reuse_empty_uv"], False)
+                if placement is None:
+                    default_bundle = output.read_bytes()
+                elif placement == "atlas":
+                    self.assertEqual(output.read_bytes(), default_bundle)
+
+    def test_legacy_lower_body_swap_rejects_explicit_uv_reuse(self):
+        import lower_body_swap as lower
+        for placement in ("same_position", "move_to_empty"):
+            for legacy_options in ({"open_cap_lift": .1}, {"preserve_materials": False}):
+                with self.subTest(placement=placement, **legacy_options), self.assertRaisesRegex(ValueError, "UV reuse requires"):
+                    lower.graft_one("wearer.unity", "donor.unity", "output.unity", uv_placement=placement, **legacy_options)
 
     def test_mesh_edits_are_baked_before_each_graft_and_retained_outside_replaced_geometry(self):
         from webtools.core import viewer_mesh_tools as mesh, viewer_mod_flow as flow
@@ -532,6 +550,52 @@ class ViewerTransplantTests(unittest.TestCase):
             output_root=self.root / "modded/viewer", cache_root=self.root / ".viewer-cache")
         self.assertEqual(len(job.output_paths()), 1)
         self.assertEqual(self.source.read_bytes(), self.raw)
+
+    def test_ios_installer_graft_replaces_only_the_declared_body(self):
+        from test_model_faces import FaceTests, bundle
+        from webtools.core import viewer_archive
+
+        archive = self.root / "extracted/legacy-ios.zip"
+        body = costume_fixture(platform=9, body_owner=207)
+        self.donor.write_bytes(body)
+        face_author = FaceTests()
+        face_author.UnityPy = UnityPy
+        members = {
+            "costume.unity": body,
+            "existing-face.unity": bundle([("Eyes.assets", face_author.scene("Eyes", 207, 13))]),
+            "thumbnail.unity": bundle_fixture(platform=13),
+            "modinstall.txt": (b"chara_id=207\ncostume_file='costume.unity'\n"
+                               b"costume_facedynamic_file='existing-face.unity'\n"
+                               b"thumbnail_file='thumbnail.unity'\n"),
+        }
+        with zipfile.ZipFile(archive, "w") as writer:
+            for name, raw in members.items():
+                writer.writestr(name, raw)
+        original = archive.read_bytes()
+        cache = self.root / ".viewer-cache"
+        with viewer_archive.expand_inputs([str(archive)], cache) as expanded:
+            self.assertEqual([expanded.archive_members[path] for path in expanded.paths],
+                             ["costume.unity", "existing-face.unity"])
+            rig = model_viewer.prepare(expanded.paths, rigged=True, face_context={"enabled": False})["rig"]
+            model_edits.register_session(self.token, expanded.paths, rig, originals=[str(archive)],
+                                         origins=expanded.origins, archive_members=expanded.archive_members)
+        request = viewer_transplants.validate_request(self.request(operation="part", partRoot="BreastSize"))
+        job = Job(secrets.token_hex(6), "viewer_transplant")
+        viewer_transplants.run_transplant(job, request, output_root=self.root / "modded/viewer",
+                                          cache_root=cache, repo_root=self.root)
+        self.assertEqual(len(job.output_paths()), 1)
+        receipts = list((cache / "viewer-derived-physics").glob("*.json"))
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(json.loads(receipts[0].read_text())["sources"][0]["member"], "costume.unity")
+        self.assertEqual(archive.read_bytes(), original)
+        self.assertEqual(self.donor.read_bytes(), body)
+        with zipfile.ZipFile(job.output_paths()[0]) as result:
+            self.assertEqual(result.namelist(), list(members))
+            changed = result.read("costume.unity")
+            self.assertNotEqual(changed, body)
+            self.assertEqual({int(asset.target_platform) for asset in UnityPy.load(changed).assets}, {9})
+            for name in ("existing-face.unity", "thumbnail.unity", "modinstall.txt"):
+                self.assertEqual(result.read(name), members[name])
 
     def test_paired_target_archive_is_refused_instead_of_leaving_stale_models(self):
         archive = self.root / "extracted/paired.zip"

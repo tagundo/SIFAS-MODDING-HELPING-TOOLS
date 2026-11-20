@@ -24,6 +24,16 @@ class ReuseEmptyUVToolTests(unittest.TestCase):
         self.assertIs(fields['preserve_physics']['default'], True)
         self.assertIs(fields['restore_collision']['default'], True)
 
+    def test_lower_body_form_shares_uv_choices_and_defaults_to_atlas(self):
+        for language in ('en', 'ko', 'ja'):
+            with self.subTest(language=language):
+                tools = {tool['id']: tool for tool in registry.public_tools(language)}
+                lower = next(field for field in tools['lower_body_swap']['fields'] if field['name'] == 'uv_placement')
+                part = next(field for field in tools['costume_part_transplant']['fields'] if field['name'] == 'uv_placement')
+                self.assertEqual(lower['label'], part['label'])
+                self.assertEqual(lower['options'], part['options'])
+                self.assertEqual(lower['default'], 'atlas')
+
     def test_asset_tool_rejects_non_boolean_uv_reuse_before_loading_or_writing(self):
         for option in ('reuse_empty_uv', 'relocate_empty_uv', 'upscale_textures_for_uv_reuse'):
             for invalid in ('false', 0, 1, None, [], {}):

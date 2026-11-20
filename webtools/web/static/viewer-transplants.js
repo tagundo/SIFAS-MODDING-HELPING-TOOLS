@@ -284,9 +284,10 @@
         if (entry.game.disabled !== locked) entry.game.disabled = locked;
         entry.donorMesh.disabled = locked || entry.inspecting || !entry.donor;
         entry.targetMesh.disabled = locked || entry.inspecting || !ready;
+        if (entry.uvPlacement) entry.uvPlacement.disabled = locked || entry.inspecting || !entry.donor;
         if (entry.operation === "part") {
           var selectionLocked = locked || entry.inspecting || !entry.donor;
-          [entry.selectionMode, entry.parts, entry.includeChildren, entry.boneSearch, entry.sceneAction, entry.brushRadius, entry.fromBones, entry.textureMaterial, entry.textureZoom, entry.texturePan, entry.textureFit, entry.selectionClear, entry.uvPlacement].forEach(function (control) { control.disabled = selectionLocked; });
+          [entry.selectionMode, entry.parts, entry.includeChildren, entry.boneSearch, entry.sceneAction, entry.brushRadius, entry.fromBones, entry.textureMaterial, entry.textureZoom, entry.texturePan, entry.textureFit, entry.selectionClear].forEach(function (control) { control.disabled = selectionLocked; });
           (entry.boneRows || []).forEach(function (row) { row.input.disabled = selectionLocked; });
           entry.selectionUndo.disabled = selectionLocked || !entry.selectionHistory.length; entry.selectionRedo.disabled = selectionLocked || !entry.selectionFuture.length;
           if (entry.syncCanvasTools) entry.syncCanvasTools();
@@ -675,8 +676,8 @@
         selectionScope: entry.scope.value, donorRenderer: entry.geometry && entry.geometry.renderer || "", targetRenderer: entry.targetMesh.value };
       var meshState = c.getMeshEdits ? c.getMeshEdits() : null;
       if (meshState && meshState.meshes && meshState.meshes.length) payload.mesh_state = meshState;
+      if (entry.uvPlacement) payload.uvPlacement = entry.uvPlacement.value;
       if (entry.operation === "part") {
-        payload.uvPlacement = entry.uvPlacement.value;
         var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones);
         payload.partRoot = manifest.partRoots[0] || ""; payload.partSelectionMode = entry.selectionMode.value;
         payload.partRoots = manifest.partRoots; payload.includeDescendants = manifest.includeDescendants;
@@ -889,7 +890,7 @@
       entry.skinOnly = element("input", { type: "checkbox", checked: "" }); entry.skinOnly.disabled = true;
       entry.panel.appendChild(element("div", { className: "viewer-transplant-options" }, [label("Match skin colour", entry.matchSkin), label("Skin only (preserve outfit colours)", entry.skinOnly)]));
       entry.matchSkin.addEventListener("change", function () { entry.skinOnly.disabled = !entry.matchSkin.checked; });
-      if (operation === "part") {
+      if (operation === "part" || operation === "lower") {
         entry.uvPlacement = element("select", { id: id + "-uv-placement" });
         var placementChoices = [
           { value: 'same_position', label: 'Reuse original UV positions', help: 'Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added.' },
@@ -899,7 +900,7 @@
         placementChoices.forEach(function (choice) {
           entry.uvPlacement.appendChild(element("option", { value: choice.value, "data-transplant-label": choice.label, text: choice.label }));
         });
-        entry.uvPlacement.value = "same_position";
+        entry.uvPlacement.value = operation === "lower" ? "atlas" : "same_position";
         entry.panel.appendChild(label("Texture and UV placement", entry.uvPlacement));
         entry.uvPlacementHint = element("p", { className: "viewer-render-note", id: id + "-uv-placement-help" });
         entry.uvPlacement.setAttribute("aria-describedby", entry.uvPlacementHint.id);
@@ -981,7 +982,8 @@
         entries.forEach(function (entry) { entry.panel.querySelectorAll("[data-transplant-label]").forEach(function (node) { node.textContent = t(node.dataset.transplantLabel); }); if (entry.uvColor) entry.uvColor.updateLanguage(); if (entry.operation === "part") updatePartUI(entry); status(entry, entry.statusKey || ""); }); refresh();
       },
       getState: function () { return { busy: busy, jobId: jobId, undoCount: undoHistory.length, redoCount: redoHistory.length, historyLimit: MAX_HISTORY, donors: entries.map(function (entry) { var manifest = selectedBoneManifest(entry.partOptions, entry.selectedBones), result = { operation: entry.operation, donor: entry.donor, part: entry.parts.value, cutLow: Number(entry.low.value), cutHigh: Number(entry.high.value), matchSkin: entry.matchSkin.checked, skinOnly: entry.skinOnly.checked, selectionScope: entry.scope.value, excludeAccessories: entry.exclude.checked, selectedTriangles: entry.selectedTriangles || 0 };
-        if (entry.operation === "part") Object.assign(result, { uvPlacement: entry.uvPlacement.value, selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
+        if (entry.uvPlacement) result.uvPlacement = entry.uvPlacement.value;
+        if (entry.operation === "part") Object.assign(result, { selectionMode: entry.selectionMode.value, includeChildren: entry.includeChildren.checked, partRoots: manifest.partRoots, includeDescendants: manifest.includeDescendants, selectedBones: Array.from(entry.selectedBones).sort(), selectedFaces: Array.from(entry.selectedFaces).sort(function (a, b) { return a - b; }), highlightedFaces: Array.from(entry.highlightedFaces).sort(function (a, b) { return a - b; }), donorSha256: entry.donorSha256 || "", donorSelectionFingerprint: entry.donorSelectionFingerprint || "", donorRenderer: entry.geometry && entry.geometry.renderer, donorMesh: entry.geometry && entry.geometry.mesh, selectionUndoCount: entry.selectionHistory.length, selectionRedoCount: entry.selectionFuture.length, textureView: entry.preview && entry.preview.getTextureView(), availableBones: (entry.partOptions || []).map(function (row) { return { value: row.value, parent: row.parent, depth: row.depth, bones: row.bones }; }) }); return result; }) }; },
       dispose: function () { disposed = true; if (events) events.close(); if (jobId) fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" }).catch(function () {}); entries.forEach(function (entry) { if (entry.request) entry.request.abort(); if (entry.uvColor) entry.uvColor.dispose(); if (entry.preview) entry.preview.dispose(); entry.panel.remove(); }); }
     };
   }

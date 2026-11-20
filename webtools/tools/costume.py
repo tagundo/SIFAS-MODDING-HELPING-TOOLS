@@ -244,7 +244,7 @@ def run_lower_body_swap(job, params):
     kw = dict(exclude_accessories=exclude_acc, log=job.log,
               selection_scope=params.get("selection_scope", "skin"),
               donor_renderer=params.get("donor_renderer"), target_renderer=params.get("target_renderer"),
-              physics_provenance=params.get("_physics_provenance"))
+              physics_provenance=params.get("_physics_provenance"), uv_placement=params.get("uv_placement"))
 
     # Band: a named preset (like the desktop tool), unless 'custom', in which case
     # the raw Cut low/high Y + Region fields are used. Presets always graft the

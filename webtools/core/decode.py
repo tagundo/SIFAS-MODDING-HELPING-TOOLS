@@ -165,9 +165,15 @@ def _android_image(texture, deadline):
                   + b"\x01\x00\x00")
         with tempfile.TemporaryDirectory(prefix="webtools_astc_") as directory:
             source = os.path.join(directory, "texture.astc")
-            # The viewer will encode the final PNG after Unity's vertical flip.
-            # A lossless TGA intermediate avoids compressing that image twice.
-            output = os.path.join(directory, "texture.tga")
+            # astcenc can emit a short TGA without a footer for a small mip.
+            # Pillow's TGA reader seeks 26 bytes from the end when loading it.
+            # Use PNG for these mips and keep the faster TGA path for 2D images.
+            if min(width, height) == 1:
+                from PIL.PngImagePlugin import PngImageFile as decoded_image
+                output = os.path.join(directory, "texture.png")
+            else:
+                from PIL.TgaImagePlugin import TgaImageFile as decoded_image
+                output = os.path.join(directory, "texture.tga")
             with open(source, "wb") as stream:
                 stream.write(header)
                 stream.write(data[:needed])  # the remaining bytes are lower mip levels
@@ -179,10 +185,8 @@ def _android_image(texture, deadline):
             subprocess.run([binary, "-dl", source, output, "-j", str(threads)], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            timeout=_remaining(deadline))
-            # This output is always TGA. Generic Image.open falls back to
-            # importing every Pillow plugin when TGA is not preinitialized.
-            from PIL.TgaImagePlugin import TgaImageFile
-            with TgaImageFile(output) as decoded:
+            # Explicit readers avoid importing unrelated Pillow plugins.
+            with decoded_image(output) as decoded:
                 if decoded.size != (width, height):
                     raise ValueError("ASTC decoder returned incorrect dimensions")
                 image = decoded.convert("RGBA")

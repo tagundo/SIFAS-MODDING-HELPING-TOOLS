@@ -421,8 +421,8 @@ _TABLES = {
         "Re-anchor NodeScaling (keep the wearer's body shaping)":
             "NodeScaling 재고정 (착용자의 체형 유지)",
         "Open skirt cap lift (0 = off)": "열린 치마 캡 리프트 (0 = 끔)",
-        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
-            "짧은 공여 하체가 구멍을 남기지 않도록 열린 캡을 들어올림; 0 = 평평한 캡.",
+        "Lift the open cap to close gaps above a shorter lower body. Open caps require a new texture atlas. Use 0 for a flat cap.":
+            "짧은 하체 위의 틈을 메우려면 열린 캡을 들어 올리세요. 열린 캡에는 새 텍스처 아틀라스가 필요합니다. 평평한 캡은 0으로 설정하세요.",
         "Recolour skin only": "피부만 재색상화",
         "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
             "재색상화를 피부 영역으로 제한합니다. 가능하면 메시의 본 가중치를 사용해(치마/소매/리본/악세서리 제외) 실제 피부는 절대 빠뜨리지 않습니다. 주의: 몸통 본에 밀착된 옷(보디스)은 가슴 피부와 구분이 안 되어 색이 변할 수 있습니다. 정확한 결과를 원하면 텍스처를 export 후 스킨톤 변경 도구로 직접 수정하세요. 폰 앱에서는 기본 켜짐, 데스크톱에서는 기본 꺼짐.",
@@ -938,8 +938,8 @@ _TABLES = {
         "Re-anchor NodeScaling (keep the wearer's body shaping)":
             "NodeScaling を再アンカー（着用者の体型を維持）",
         "Open skirt cap lift (0 = off)": "開いたスカートキャップのリフト（0 = オフ）",
-        "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap.":
-            "短い提供元の下半身が穴を残さないように開いたキャップを持ち上げる; 0 = 平らなキャップ。",
+        "Lift the open cap to close gaps above a shorter lower body. Open caps require a new texture atlas. Use 0 for a flat cap.":
+            "短い下半身との隙間を埋めるにはキャップを持ち上げます。開いたキャップには新しいテクスチャアトラスが必要です。平らなキャップは0に設定します。",
         "Recolour skin only": "肌のみ再着色",
         "Restrict the recolour to the skin region, using the mesh's bone weights when available (excludes skirt / sleeves / ribbon / accessories) and never dropping real skin. NOTE: torso-tight clothing on body bones (a bodice) can't be told from chest skin, so its colour may still shift. For an exact result, export the texture and edit it with the Skin Tone Changer. On by default on the phone app, off on desktop.":
             "再着色を肌の領域に限定します。可能ならメッシュのボーンウェイトを使い（スカート/袖/リボン/アクセサリを除外）、実際の肌は決して取りこぼしません。注意: ボディボーンに密着した衣装（ボディス）は胸の肌と区別できず、色が変わることがあります。正確な結果が必要なら、テクスチャを export して肌色チェンジャーで直接編集してください。スマホアプリでは既定でオン、デスクトップではオフ。",

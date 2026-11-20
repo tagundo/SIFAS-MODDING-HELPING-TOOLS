@@ -76,66 +76,125 @@ def _copy_member(archive, info, destination):
 
 _PLATFORM_PAIRS = (("costume_file", "costume_file_ios"),
                    ("rina_unmask_costume_file", "rina_unmask_costume_file_ios"))
+_BODY_FIELDS = frozenset(key for pair in _PLATFORM_PAIRS for key in pair)
+_FACE_FIELDS = ("costume_facedynamic_file", "costume_facedynamic_file_ios")
+_COMPANION_FIELDS = _FACE_FIELDS + ("thumbnail_file",)
+_MODEL_FIELDS = _BODY_FIELDS.union(_COMPANION_FIELDS)
+
+
+def _manifest_model_references(raw, relative, available):
+    """Resolve only bounded literal model references in this archive."""
+    try:
+        tree = ast.parse(raw.decode("utf-8-sig"))
+        values, assignments, unresolved = {}, {}, set()
+        for item in tree.body:
+            if (isinstance(item, ast.Assign) and len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)
+                    and item.targets[0].id in _MODEL_FIELDS):
+                key = item.targets[0].id
+                try:
+                    value = ast.literal_eval(item.value)
+                except (ValueError, TypeError, RecursionError):
+                    if key in _BODY_FIELDS:
+                        return None
+                    unresolved.add(key)
+                    value = None
+                values[key] = value
+                assignments.setdefault(key, []).append(value)
+    except (UnicodeError, SyntaxError, ValueError, TypeError, RecursionError):
+        return None
+
+    def member(value):
+        if not isinstance(value, str) or not value or len(value) > 512:
+            return None
+        target = PurePosixPath(value.replace("\\", "/"))
+        if (target.is_absolute() or ".." in target.parts or "\0" in value
+                or any(":" in part for part in target.parts)):
+            return None
+        target = str(relative.parent / target).casefold()
+        return target if target in available else None
+
+    resolved = {key: member(values.get(key)) for key in _MODEL_FIELDS}
+    conflicts = {key for key, assigned in assignments.items()
+                 if any(member(value) != resolved[key] for value in assigned)}
+    return resolved, conflicts | unresolved
 
 
 def _manifest_models(models, manifests):
-    """Resolve only bounded literal model references in this archive."""
-    keys = {key for pair in _PLATFORM_PAIRS for key in pair}
     available = {str(relative).casefold() for _, relative in models}
     records = []
     for path, relative in manifests:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-            values, assignments = {}, {}
-            for item in tree.body:
-                if (isinstance(item, ast.Assign) and len(item.targets) == 1
-                        and isinstance(item.targets[0], ast.Name)
-                        and item.targets[0].id in keys):
-                    key = item.targets[0].id
-                    value = ast.literal_eval(item.value)
-                    values[key] = value
-                    assignments.setdefault(key, []).append(value)
-        except (OSError, UnicodeError, SyntaxError, ValueError, TypeError, RecursionError):
+            record = _manifest_model_references(path.read_bytes(), relative, available)
+        except OSError:
             continue
-
-        def member(value):
-            if not isinstance(value, str) or not value or len(value) > 512:
-                return None
-            target = PurePosixPath(value.replace("\\", "/"))
-            if (target.is_absolute() or ".." in target.parts or "\0" in value
-                    or any(":" in part for part in target.parts)):
-                return None
-            target = str(relative.parent / target).casefold()
-            return target if target in available else None
-
-        resolved = {key: member(values.get(key)) for key in keys}
-        conflicts = {key for key, assigned in assignments.items()
-                     if any(member(value) != resolved[key] for value in assigned)}
-        records.append((resolved, conflicts))
+        if record is not None:
+            records.append(record)
     return records
 
 
-def _platform_models(models, manifests, records=None):
-    """Prefer declared Android variants, preserving unrelated model parts.
+def _platform_models(models, manifests, records=None, selected_member=None):
+    """Load only the face declared for the selected body role.
 
-    A dual-platform installer names two alternative copies of each costume.
-    Loading both duplicates the skeleton and prevents automatic facial bones
-    from joining it. Only exclude an iOS member when its declared Android
-    counterpart is also a real model in this ZIP. Names alone are not evidence
-    of a platform, and iOS-only packages remain usable by the viewer.
+    Like the game installer, the viewer uses the unsuffixed face for the
+    primary body (including a standalone iOS package), and the iOS face for
+    the iOS alternative. Missing platform-specific faces use normal face
+    discovery. Other explicit model inputs remain independently selectable.
     """
     preferred, alternatives = set(), set()
-    for values, _ in records if records is not None else _manifest_models(models, manifests):
-        for android, ios in _PLATFORM_PAIRS:
-            primary, alternate = values.get(android), values.get(ios)
+    for values, conflicts in records if records is not None else _manifest_models(models, manifests):
+        body_faces = {}
+        for primary_key, ios_key in _PLATFORM_PAIRS:
+            primary, alternate = values[primary_key], values[ios_key]
             if primary is not None:
                 preferred.add(primary)
+                body_faces[primary] = _FACE_FIELDS[0]
                 if alternate is not None and alternate != primary:
                     alternatives.add(alternate)
+            elif alternate is not None:
+                preferred.add(alternate)
+                body_faces.setdefault(alternate, _FACE_FIELDS[1])
+        if body_faces and not conflicts:
+            active_faces = {body_faces[selected_member]} if selected_member in body_faces else set(body_faces.values())
+            for key in _FACE_FIELDS:
+                face = values[key]
+                if face is not None:
+                    (preferred if key in active_faces else alternatives).add(face)
+            thumbnail = values["thumbnail_file"]
+            if thumbnail is not None:
+                alternatives.add(thumbnail)
     # A model explicitly selected as primary by another installer must survive.
     excluded = alternatives - preferred
     return [(info, relative) for info, relative in models
             if str(relative).casefold() not in excluded]
+
+
+def has_one_transplant_body(archive, selected_member):
+    """Require one archived body; declared companions stay in the source ZIP."""
+    models, manifests = set(), []
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        relative = _entry_path(info)
+        if relative.name.lower() == "modinstall.txt" and info.file_size <= MAX_MANIFEST_BYTES:
+            manifests.append((info, relative))
+            continue
+        with archive.open(info) as member:
+            if _model_header(member.read(48), info.file_size):
+                models.add(str(relative).casefold())
+    if len(models) == 1:
+        return True
+    if len(manifests) != 1 or selected_member is None:
+        return False
+    info, relative = manifests[0]
+    record = _manifest_model_references(archive.read(info), relative, models)
+    if record is None:
+        return False
+    values, conflicts = record
+    selected = str(_entry_path(archive.getinfo(selected_member))).casefold()
+    bodies = {values[key] for key in _BODY_FIELDS if values[key] is not None}
+    companions = {values[key] for key in _COMPANION_FIELDS if values[key] is not None}
+    return not conflicts and bodies == {selected} and models - companions == bodies
 
 
 def _variant_models(models, manifests, choice):
@@ -160,7 +219,7 @@ def _variant_models(models, manifests, choice):
                 values.get(_PLATFORM_PAIRS[0][0]) or values.get(_PLATFORM_PAIRS[0][1])) == (
                 values.get(_PLATFORM_PAIRS[1][0]) or values.get(_PLATFORM_PAIRS[1][1])):
             continue
-        if primary & unmasked or conflicts:
+        if primary & unmasked or conflicts.intersection(_BODY_FIELDS):
             conflicting = True
         pair = (primary, unmasked)
         previous = declarations.get(pair)
@@ -184,7 +243,7 @@ def _variant_models(models, manifests, choice):
         selected_member = values.get(family[0]) or values.get(family[1])
         excluded = (primary | unmasked) - {selected_member}
         filtered = {str(relative).casefold()
-                    for _, relative in _platform_models(models, manifests, records)}
+                    for _, relative in _platform_models(models, manifests, records, selected_member)}
         return ([(info, relative) for info, relative in models
                  if str(relative).casefold() not in excluded and
                  (str(relative).casefold() in filtered or

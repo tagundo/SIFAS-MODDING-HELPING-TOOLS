@@ -89,6 +89,24 @@ def _match_fields():
     ]
 
 
+def _uv_placement_field(default):
+    return {
+        "name": "uv_placement", "label": "Texture and UV placement", "type": "select",
+        "default": default,
+        "options": [
+            {"value": "same_position", "label": "Reuse original UV positions",
+             "help": "Match corresponding main, rimlight and other UV textures to the larger resolution "
+                     "and keep the original UV positions. If those positions are occupied, use a new atlas. "
+                     "No padding is added."},
+            {"value": "move_to_empty", "label": "Move into empty UV areas",
+             "help": "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures "
+                     "and UVs together into unused space. If no space fits, use a new atlas. No padding is added."},
+            {"value": "atlas", "label": "Build a new texture atlas",
+             "help": "Combine textures into a new atlas and remap UVs. No padding is added."},
+        ],
+    }
+
+
 def _out_dir():
     return {"name": "out_dir", "label": "Output folder", "type": "dir", "required": True,
             "root": "modded", "help": "Where modified bundles are written."}
@@ -626,15 +644,7 @@ TOOLS = [
              "blank_label": "(auto — biggest part)",
              "help": "Pick a part from the donor bundle (press Load to read its parts). "
                      "Blank / auto = the biggest costume-specific part."},
-            {"name": "uv_placement", "label": "Texture and UV placement", "type": "select",
-             "default": "same_position", "options": [
-                 {"value": "same_position", "label": "Reuse original UV positions",
-                  "help": "Match corresponding main, rimlight and other UV textures to the larger resolution and keep the original UV positions. If those positions are occupied, use a new atlas. No padding is added."},
-                 {"value": "move_to_empty", "label": "Move into empty UV areas",
-                  "help": "Keep main-texture resolution, match auxiliary-map ratios, and move the selected textures and UVs together into unused space. If no space fits, use a new atlas. No padding is added."},
-                 {"value": "atlas", "label": "Build a new texture atlas",
-                  "help": "Combine textures into a new atlas and remap UVs. No padding is added."},
-             ]},
+            _uv_placement_field("same_position"),
             {"name": "preserve_physics", "label": "Preserve part physics", "type": "checkbox", "default": True},
             {"name": "restore_collision", "label": "Restore collision", "type": "checkbox", "default": True},
             {"name": "worldspace", "label": "World-space the body mesh (so swinging parts render correctly)",
@@ -683,8 +693,10 @@ TOOLS = [
              "help": "Keep only the donor's main body component (drops a thigh dagger, garter rings). "
                      "Turn OFF if the donor's hips/thighs are a SEPARATE mesh piece and got left out "
                      "(a cause of 'nothing to graft')."},
+            _uv_placement_field("atlas"),
             {"name": "open_cap", "label": "Open skirt cap lift (0 = off)", "type": "number", "default": "0",
-             "help": "Lift the open cap so a shorter donor lower body doesn't leave a hole; 0 = flat cap."},
+             "help": "Lift the open cap to close gaps above a shorter lower body. "
+                     "Open caps require a new texture atlas. Use 0 for a flat cap."},
             {"name": "open_cap_edge", "label": "Cap edge lift — all sides", "type": "number", "default": "0",
              "help": "Raise the cap's rim on every side (used together with the lift above)."},
             {"name": "cap_edge_front", "label": "Cap edge — front (blank = all)", "type": "number", "default": ""},

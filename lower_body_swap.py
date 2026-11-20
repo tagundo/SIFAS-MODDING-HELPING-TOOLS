@@ -670,8 +670,8 @@ def band_selection(body, cut_low, cut_high, region="lower", exclude_accessories=
 
 def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
                      exclude_accessories, selection_scope, donor_renderer, target_renderer,
-                     dry_run, log, physics_provenance=None):
-    """Keep the selected skin/physics, then bake materials into the game body atlas."""
+                     dry_run, log, physics_provenance=None, uv_placement=None):
+    """Keep the selected skin and physics, then bake the game body material."""
     import copy
     import tempfile
     import numpy as np
@@ -708,6 +708,7 @@ def _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, regio
         write_working_bundle(target.env.file, removed)
         cpt.transplant_part(donor_path, removed, out_path,
             triangle_indices=np.flatnonzero(take), new_submesh="atlas", reuse_empty_uv=False,
+            uv_placement=uv_placement,
             donor_renderer=donor.smr_obj.path_id, target_renderer=target.smr_obj.path_id,
             worldspace=False, fix_nodescaling=False, verbose=False,
             physics_provenance=physics_provenance, log_callback=log)
@@ -722,7 +723,8 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
               open_cap_edge_left=None, open_cap_edge_right=None,
               exclude_accessories=True, merge_rim=True, mipmaps=True,
               dry_run=False, log=print, selection_scope="skin", donor_renderer=None,
-              target_renderer=None, preserve_materials=True, physics_provenance=None):
+              target_renderer=None, preserve_materials=True, physics_provenance=None,
+              uv_placement=None):
     """Graft donor body skin in the band [cut_low, cut_high] (world Y) onto the
     target.  `region` ("lower" / "lower_belly" / "central") bounds which bones
     may be replaced so arms/head are never touched. Default grafts retain wearer
@@ -731,6 +733,14 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     Source textures and remapped UVs share the original game Body material and
     one submesh. The legacy atlas/cap mode can additionally snap its
     lower cut to a coincident vertex ring when ``weld`` is enabled."""
+    if uv_placement is not None and (not isinstance(uv_placement, str) or
+                                     uv_placement not in ("same_position", "move_to_empty", "atlas")):
+        raise ValueError("Choose same_position, move_to_empty or atlas for UV placement.")
+    game_materials = preserve_materials and not any((open_cap_lift, open_cap_edge, open_cap_edge_front,
+                                                     open_cap_edge_back, open_cap_edge_left, open_cap_edge_right))
+    if not game_materials and uv_placement not in (None, "atlas"):
+        raise ValueError("UV reuse requires the game-compatible material mode without Open Cap adjustments.")
+
     import numpy as np
     from PIL import Image
     from UnityPy.enums import TextureFormat
@@ -740,11 +750,10 @@ def graft_one(target_path, donor_path, out_path, cut_low=-INF, cut_high=INF,
     if os.path.isdir(out_path):
         out_path = os.path.join(out_path, os.path.basename(target_path))
 
-    if preserve_materials and not any((open_cap_lift, open_cap_edge, open_cap_edge_front,
-                                      open_cap_edge_back, open_cap_edge_left, open_cap_edge_right)):
+    if game_materials:
         return _graft_materials(target_path, donor_path, out_path, cut_low, cut_high, region,
             exclude_accessories, selection_scope, donor_renderer, target_renderer, dry_run, log,
-            physics_provenance=physics_provenance)
+            physics_provenance=physics_provenance, uv_placement=uv_placement)
 
     bones = REGIONS.get(region, LOWER)
     T = BodyMesh(up.load(target_path), target_path)
