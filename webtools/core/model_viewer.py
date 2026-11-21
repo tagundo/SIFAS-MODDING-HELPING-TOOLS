@@ -685,7 +685,7 @@ def _png_texture(image, deadline):
         return output.getvalue()
 
 
-def _texture_png(texture, deadline):
+def _texture_png(texture, deadline, *, stage=False):
     """Decode original texture bytes once, including across ZIP temp paths.
 
     Source hashes belong to the actual encoded pixels, not file timestamps or
@@ -699,10 +699,13 @@ def _texture_png(texture, deadline):
     reader = getattr(texture, "object_reader", None)
     platform = getattr(reader, "platform", None)
     blob = getattr(texture, "m_PlatformBlob", None)
+    stage_format = False
     try:
         from UnityPy.enums import TextureFormat
         name = TextureFormat(texture.m_TextureFormat).name
-        supported = name in decode._RAW_FORMATS or name == "ETC2_RGBA8Crunched" or bool(re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name))
+        stage_format = stage and name in decode._STAGE_BLOCK_FORMATS
+        supported = (name in decode._RAW_FORMATS or name == "ETC2_RGBA8Crunched"
+                     or stage_format or bool(re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name)))
     except (AttributeError, TypeError, ValueError):
         supported = False
     bounded = (callable(getattr(texture, "get_image_data", None))
@@ -719,7 +722,7 @@ def _texture_png(texture, deadline):
     if not bounded:
         # The decoder supplies the existing detailed validation error without
         # reading an oversized external stream just to construct a cache key.
-        image = decode._android_image(texture, deadline)
+        image = decode._android_image(texture, deadline, **({"stage": True} if stage_format else {}))
         try:
             return _png_texture(image, deadline)
         finally:
@@ -728,7 +731,7 @@ def _texture_png(texture, deadline):
     data = texture.get_image_data()
     if len(data) > decode._MAX_SOURCE_BYTES:
         raise ValueError("Texture data exceeds the preview limit")
-    binary = os.environ.get("ELICHIKA_TEXTURE65_BIN" if name == "ETC2_RGBA8Crunched" else "ASTCENC_BIN", "")
+    binary = os.environ.get("ELICHIKA_TEXTURE65_BIN" if name == "ETC2_RGBA8Crunched" or stage_format else "ASTCENC_BIN", "")
     try:
         stat = os.stat(binary)
         decoder = (os.path.realpath(binary), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -750,7 +753,7 @@ def _texture_png(texture, deadline):
         def get_image_data(self):
             return data
 
-    image = decode._android_image(TextureBytes(), deadline)
+    image = decode._android_image(TextureBytes(), deadline, **({"stage": True} if stage_format else {}))
     try:
         png = _png_texture(image, deadline)
     finally:
@@ -831,7 +834,10 @@ class _Materials:
         if isinstance(png, Exception):
             raise png
         if png is None:
-            png = _texture_png(texture, self.scene.deadline)
+            if getattr(self.scene, "preview_stage", False):
+                png = _texture_png(texture, self.scene.deadline, stage=True)
+            else:
+                png = _texture_png(texture, self.scene.deadline)
         image_index = len(self.glb.doc["images"])
         self.glb.doc["images"].append({"bufferView": self.glb.view(png), "mimeType": "image/png",
                                        "name": str(texture.m_Name)})

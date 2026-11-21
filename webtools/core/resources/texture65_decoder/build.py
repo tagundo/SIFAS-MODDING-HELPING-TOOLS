@@ -81,7 +81,8 @@ def build(target, output, *, ndk=None, abi="arm64-v8a", cxx=None):
     if not compiler or not Path(compiler).is_file():
         raise ValueError("The selected C++ compiler is unavailable.")
     command = [str(compiler), *arguments, "-I" + str(ROOT / "upstream"),
-               str(ROOT / "texture65.cpp"), str(ROOT / "upstream/etc.cpp"), "-o", str(temporary)]
+               str(ROOT / "texture65.cpp"), str(ROOT / "upstream/etc.cpp"), str(ROOT / "upstream/pvrtc.cpp"),
+               "-o", str(temporary)]
     try:
         subprocess.run(command, check=True)
         if strip:
@@ -93,8 +94,8 @@ def build(target, output, *, ndk=None, abi="arm64-v8a", cxx=None):
         return {"status": "PASS", "target": target, "abi": abi if target == "android" else None,
                 "output": str(output), "bytes": len(raw), "sha256": sha(output),
                 "command": command, "sources": provenance, "load_segments": segments,
-                "interface": "WIDTH HEIGHT INPUT_CRN OUTPUT_RGBA [--mip N]; unflipped straight RGBA8",
-                "capabilities": ["texture65-etc2a-rgba8", "authored-mip-v1"]}
+                "interface": "WIDTH HEIGHT INPUT_CRN OUTPUT_RGBA [--mip N] or --raw etc1|pvrtc4 WIDTH HEIGHT INPUT OUTPUT; unflipped RGBA8",
+                "capabilities": ["texture65-etc2a-rgba8", "authored-mip-v1", "raw-etc1-pvrtc4-v1"]}
     finally:
         temporary.unlink(missing_ok=True)
 

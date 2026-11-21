@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Elichika contributors. MIT licensed.
-// Isolated, bounded UnityCrunch ETC2_RGBA8Crunched (TextureFormat 65) decoder.
+// Isolated, bounded UnityCrunch ETC2A, ETC1 and PVRTC4 RGB decoder.
 // Upstream decoder files are unchanged; see source-manifest.json and licenses.
 #include <algorithm>
 #include <cerrno>
@@ -18,12 +18,14 @@
 #include <unistd.h>
 #include "unitycrunch/crn_decomp.h"
 #include "etc.h"
+#include "pvrtc.h"
 
 namespace {
 constexpr size_t MiB = 1024 * 1024;
 constexpr size_t MaxInput = 128 * MiB;
 constexpr size_t MaxMemory = 256 * MiB;
 constexpr size_t MaxCrunchMemory = 64 * MiB;
+constexpr size_t MaxRawMemory = 26 * MiB;
 constexpr uint64_t AllocationMagic = UINT64_C(0x454c494348494b41);
 struct Failure : std::runtime_error {
     int code;
@@ -90,16 +92,87 @@ struct Context {
     unitycrnd::crnd_unpack_context value;
     ~Context() { if (value) unitycrnd::crnd_unpack_end(value); }
 };
-struct Output {
+struct File {
     int value;
-    ~Output() { if (value >= 0) close(value); }
+    ~File() { if (value >= 0) close(value); }
 };
+
+void write_rgba(const char* path, const std::vector<uint32_t>& bgra,
+                unsigned width, unsigned height, bool opaque) {
+    File output{open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)};
+    if (output.value < 0) throw Failure(13, "Cannot create exclusive decoded output");
+    // The upstream decoder returns BGRA bytes on both endian layouts.
+    // Preserve encoded color and straight alpha without gamma conversion.
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(bgra.data());
+    std::vector<uint8_t> row(size_t(width) * 4);
+    for (unsigned y = 0; y < height; ++y) {
+        const size_t base = size_t(y) * width * 4;
+        for (unsigned x = 0; x < width; ++x) {
+            const size_t at = size_t(x) * 4;
+            row[at] = bytes[base + at + 2];
+            row[at + 1] = bytes[base + at + 1];
+            row[at + 2] = bytes[base + at];
+            row[at + 3] = opaque ? 255 : bytes[base + at + 3];
+        }
+        write_all(output.value, row.data(), row.size());
+    }
+}
+
+bool power_of_two(unsigned value) { return value && !(value & (value - 1)); }
+
+void decode_raw(const char* format, unsigned width, unsigned height, const char* input, const char* output) {
+    const bool pvrtc = std::strcmp(format, "pvrtc4") == 0;
+    if (!pvrtc && std::strcmp(format, "etc1")) throw Failure(2, "Unsupported raw texture format");
+    if (width > 4096 || height > 4096 ||
+        (pvrtc && (width < 8 || height < 8 || !power_of_two(width) || !power_of_two(height))))
+        throw Failure(3, "Invalid raw texture dimensions");
+    const size_t pixels = size_t(width) * height;
+    const size_t blocks = ((size_t(width) + 3) / 4) * ((size_t(height) + 3) / 4);
+    const size_t encoded_bytes = blocks * 8;
+    const size_t output_bytes = pixels * 4;
+    const size_t workspace = pvrtc ? blocks * sizeof(PVRTCTexelInfo) : 0;
+    if (encoded_bytes + output_bytes + workspace + size_t(width) * 4 > MaxRawMemory)
+        throw Failure(5, "Raw texture exceeds the decoder memory budget");
+    constrain(RLIMIT_CORE, 0);
+    constrain(RLIMIT_CPU, 5);
+    constrain(RLIMIT_FSIZE, output_bytes);
+
+    File source{open(input, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)};
+    if (source.value < 0) throw Failure(4, "Cannot read encoded texture");
+    struct stat info{};
+    if (fstat(source.value, &info) || !S_ISREG(info.st_mode) || info.st_size != static_cast<off_t>(encoded_bytes))
+        throw Failure(5, "Expected exactly one raw texture level");
+    std::vector<uint8_t> encoded(encoded_bytes);
+    size_t offset = 0;
+    while (offset < encoded.size()) {
+        const ssize_t count = read(source.value, encoded.data() + offset, encoded.size() - offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) throw Failure(6, "Encoded texture is truncated");
+        offset += static_cast<size_t>(count);
+    }
+    if (fstat(source.value, &info) || info.st_size != static_cast<off_t>(encoded_bytes))
+        throw Failure(6, "Encoded texture changed while reading");
+
+    std::vector<uint32_t> bgra(pixels);
+    const int success = pvrtc ? decode_pvrtc(encoded.data(), width, height, bgra.data(), 0)
+                              : decode_etc1(encoded.data(), width, height, bgra.data());
+    if (!success) throw Failure(12, "Raw texture pixel decode failed");
+    write_rgba(output, bgra, width, height, true);
+}
 } // namespace
 
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && !std::strcmp(argv[1], "--version")) {
             std::puts("elichika-texture65 1 (UnityCrunch ETC2A RGBA8)"); return 0;
+        }
+        if (argc >= 2 && !std::strcmp(argv[1], "--raw")) {
+            if (argc == 3 && !std::strcmp(argv[2], "--version")) {
+                std::puts("elichika-texture65 raw 1 (ETC1 and PVRTC4 RGB to RGBA8)"); return 0;
+            }
+            if (argc != 7) throw Failure(2, "Usage: texture65 --raw etc1|pvrtc4 WIDTH HEIGHT INPUT OUTPUT");
+            decode_raw(argv[2], dimension(argv[3]), dimension(argv[4]), argv[5], argv[6]);
+            return 0;
         }
         if (argc != 5 && argc != 7) throw Failure(2, "Usage: texture65 WIDTH HEIGHT INPUT_CRN OUTPUT_RGBA [--mip N]");
         const unsigned width = dimension(argv[1]), height = dimension(argv[2]);
@@ -165,22 +238,7 @@ int main(int argc, char** argv) {
         void* destination = blocks.data();
         if (!unitycrnd::crnd_unpack_level(context.value, &destination, block_bytes, pitch, mip)) throw Failure(11, "Crunch level decode failed");
         if (!decode_etc2a8(blocks.data(), selected_width, selected_height, bgra.data())) throw Failure(12, "ETC2A pixel decode failed");
-        Output output{open(argv[4], O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)};
-        if (output.value < 0) throw Failure(13, "Cannot create exclusive decoded output");
-        // The upstream decoder returns BGRA bytes on both endian layouts.
-        // Preserve straight alpha and encoded color values; do not premultiply
-        // or apply color-space conversion. The caller applies Unity's flip.
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(bgra.data());
-        std::vector<uint8_t> row(size_t(selected_width) * 4);
-        for (unsigned y = 0; y < selected_height; ++y) {
-            const size_t base = size_t(y) * selected_width * 4;
-            for (unsigned x = 0; x < selected_width; ++x) {
-                const size_t at = size_t(x) * 4;
-                row[at] = bytes[base + at + 2]; row[at + 1] = bytes[base + at + 1];
-                row[at + 2] = bytes[base + at]; row[at + 3] = bytes[base + at + 3];
-            }
-            write_all(output.value, row.data(), row.size());
-        }
+        write_rgba(argv[4], bgra, selected_width, selected_height, false);
         return 0;
     } catch (const Failure& error) {
         std::fprintf(stderr, "%s\n", error.what()); return error.code;

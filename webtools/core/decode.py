@@ -34,6 +34,7 @@ _RAW_FORMATS = {
     "ARGB32": ("RGBA", "ARGB", 4),
     "BGRA32": ("RGBA", "BGRA", 4),
 }
+_STAGE_BLOCK_FORMATS = {"ETC_RGB4": "etc1", "PVRTC_RGB4": "pvrtc4"}
 
 
 def _embedded_android():
@@ -73,7 +74,45 @@ def _texture65_profile(texture):
     return width, height, mip
 
 
-def _android_image(texture, deadline):
+def _stage_block_image(format_name, data, width, height, deadline):
+    from PIL import Image
+
+    if format_name == "etc1":
+        size = ((width + 3) // 4) * ((height + 3) // 4) * 8
+    else:
+        if min(width, height) < 8 or width & (width - 1) or height & (height - 1):
+            raise ValueError("PVRTC stage textures must have power-of-two dimensions.")
+        size = width * height // 2
+    if len(data) < size:
+        raise ValueError("Truncated compressed stage texture data.")
+    binary = os.environ.get("ELICHIKA_TEXTURE65_BIN")
+    if not binary or not os.path.isfile(binary):
+        raise ValueError("The bundled stage texture decoder is unavailable.")
+    if not _TEXTURE65_SLOT.acquire(timeout=_remaining(deadline)):
+        raise TimeoutError("Another compressed texture is still decoding.")
+    try:
+        with tempfile.TemporaryDirectory(prefix="webtools_stage_texture_") as directory:
+            source = os.path.join(directory, "texture.blocks")
+            output = os.path.join(directory, "texture.rgba")
+            with open(source, "wb") as stream:
+                stream.write(data[:size])
+            result = subprocess.run([binary, "--raw", format_name, str(width), str(height), source, output],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=min(12, _remaining(deadline)))
+            if result.returncode:
+                raise ValueError("The compressed stage texture could not be decoded.")
+            expected = width * height * 4
+            if os.path.islink(output) or not os.path.isfile(output) or os.path.getsize(output) != expected:
+                raise ValueError("The stage texture decoder returned an incorrect pixel count.")
+            with open(output, "rb") as stream:
+                pixels = stream.read(expected + 1)
+            if len(pixels) != expected:
+                raise ValueError("The stage texture decoder output changed while reading.")
+            return Image.frombytes("RGBA", (width, height), pixels)
+    finally:
+        _TEXTURE65_SLOT.release()
+
+
+def _android_image(texture, deadline, *, stage=False):
     """Decode raw pixels or isolated ASTC/UnityCrunch ETC2A CLI results.
 
     Do not access Texture2D.image: unsupported formats can enter native texture
@@ -99,7 +138,8 @@ def _android_image(texture, deadline):
     raw = _RAW_FORMATS.get(name)
     astc = re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name)
     crunch65 = name == "ETC2_RGBA8Crunched"
-    if raw is None and astc is None and not crunch65:
+    stage_format = _STAGE_BLOCK_FORMATS.get(name) if stage else None
+    if raw is None and astc is None and not crunch65 and not stage_format:
         raise ValueError(f"Texture format {name} is unavailable for Android previews")
     profile = _texture65_profile(texture) if crunch65 else None
     stream = getattr(texture, "m_StreamData", None)
@@ -119,6 +159,8 @@ def _android_image(texture, deadline):
         if len(data) < needed:
             raise ValueError("Truncated raw texture data")
         image = Image.frombytes(mode, (width, height), bytes(data[:needed]), "raw", layout)
+    elif stage_format:
+        image = _stage_block_image(stage_format, data, width, height, deadline)
     elif crunch65:
         # Never load texture2ddecoder into the app interpreter. The trusted
         # executable validates/budgets Crunch and ETC2A in a disposable process.
@@ -191,7 +233,10 @@ def _android_image(texture, deadline):
                     raise ValueError("ASTC decoder returned incorrect dimensions")
                 image = decoded.convert("RGBA")
     # UnityPy's Texture2D.image applies this same final flip by default.
-    return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    try:
+        return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    finally:
+        image.close()
 
 
 def _android_thumbnail(bundle_path, deadline):

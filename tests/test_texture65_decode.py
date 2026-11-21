@@ -155,6 +155,41 @@ class NativeTexture65Tests(unittest.TestCase):
     def texture(self, **values):
         return Texture(self.encoded, self.meta["width"], self.meta["height"], **values)
 
+    def test_raw_stage_rgb_blocks_have_exact_opaque_rgba(self):
+        probe = subprocess.check_output([str(self.binary), "--raw", "--version"], text=True, timeout=5)
+        self.assertTrue(probe.startswith("elichika-texture65 raw 1"))
+        cases = [("etc1", 5, 3, bytes.fromhex("ff00000000000000") * 2, bytes([255, 2, 2, 255])),
+                 ("pvrtc4", 16, 8, bytes.fromhex("0000000000fc00fc") * 8, bytes([255, 0, 0, 255])),
+                 ("pvrtc4", 8, 8, bytes(32), bytes([0, 0, 0, 255]))]
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "input.blocks"
+            for index, (mode, width, height, data, pixel) in enumerate(cases):
+                with self.subTest(mode=mode, width=width):
+                    source.write_bytes(data)
+                    dest = Path(temporary) / f"{index}.rgba"
+                    subprocess.run([str(self.binary), "--raw", mode, str(width), str(height), str(source), str(dest)],
+                                   check=True, timeout=5)
+                    self.assertEqual(dest.read_bytes(), pixel * (width * height))
+
+    def test_raw_stage_limits_input_extent_and_exclusive_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dest = Path(temporary) / "input.blocks", Path(temporary) / "output.rgba"
+            for mode, width, height, size, published in (
+                    ("etc1", 4, 4, 7, False), ("etc1", 4, 4, 9, False),
+                    ("pvrtc4", 4, 8, 16, False), ("pvrtc4", 12, 8, 48, False),
+                    ("pvrtc4", 4096, 4096, 32, False), ("etc1", 4, 4, 8, True)):
+                with self.subTest(mode=mode, width=width, source_bytes=size, existing=published):
+                    source.write_bytes(bytes(size))
+                    if published:
+                        dest.write_bytes(b"keep existing")
+                    failed = subprocess.run([str(self.binary), "--raw", mode, str(width), str(height), str(source), str(dest)],
+                                            capture_output=True, timeout=5)
+                    self.assertNotEqual(failed.returncode, 0)
+                    if published:
+                        self.assertEqual(dest.read_bytes(), b"keep existing")
+                    else:
+                        self.assertFalse(dest.exists())
+
     def test_authored_asymmetric_rgba_exact_one_flip_straight_alpha_and_color_space(self):
         self.assertEqual(hashlib.sha256(self.encoded).hexdigest(), self.meta["encoded_sha256"])
         self.assertNotEqual(self.meta["rgba_unflipped_sha256"], self.meta["rgba_display_sha256"])

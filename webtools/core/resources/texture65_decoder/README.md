@@ -1,12 +1,13 @@
-# Isolated TextureFormat 65 decoder
+# Isolated Unity texture decoder
 
 This executable restores preview decoding for Unity's
 `ETC2_RGBA8Crunched` textures without loading a native codec into the app's
 Python process. It transcodes UnityCrunch ETC2A (CRN format 12), then decodes
-ETC2 RGBA8. Other Unity/CRN formats are rejected. The default returns the base
-mip; `--mip N` returns the original authored level without recompression.
+ETC2 RGBA8. The default returns the base mip, and `--mip N` returns the
+original authored level without recompression. A separate raw-block mode
+supports ETC1 RGB and PVRTC4 RGB for stage materials.
 
-The seven unchanged upstream source files are pinned to
+The unchanged upstream source files are pinned to
 K0lb3/texture2ddecoder commit `3ebc3b758bd6b1a3108b50148f7998ee34f058c6`
 (package version 1.0.6). `source-manifest.json` records their hashes.
 Retain `LICENSE-MIT`, `LICENSE-Zlib` and the original source notices in every
@@ -18,6 +19,13 @@ bytes of unflipped, straight RGBA8 (`N=0` by default). Upstream BGRA bytes are
 reordered without premultiplication or gamma conversion. The Python caller
 applies Unity's final vertical flip once and preserves source color-space and
 material metadata. It never rewrites the original encoded texture.
+
+Run `texture65 --raw etc1|pvrtc4 WIDTH HEIGHT INPUT OUTPUT` for one raw
+compressed level. The input must contain exactly the base-level block bytes,
+with lower mips removed. PVRTC4 requires power-of-two dimensions of at least
+8×8. Output is unflipped RGBA8 with full opacity. Raw decoding enforces a 26 MiB
+buffer budget, a five-second CPU limit and exclusive file creation. Probe
+support with `texture65 --raw --version`.
 
 The wrapper validates dimensions, pixel/input/output limits, one face,
 unsegmented CRN layout, mip/header/palette/table offsets and both checksums.
