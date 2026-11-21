@@ -346,7 +346,7 @@
 
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
-    let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null;
+    let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -527,6 +527,8 @@
       stageShine = null;
       stageParticles?.dispose();
       stageParticles = null;
+      stageSpotlight?.dispose();
+      stageSpotlight = null;
       lastShaftFrame = null;
       resetShafts = true;
       // Actors borrow stage geometries. Detach the instances before clearing the stage.
@@ -1026,6 +1028,7 @@
         return;
       }
       stageParticles = particles;
+      stageSpotlight = global.MVStudioStageSpotlight?.apply(T, scene, value.stageSpotlight);
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1223,6 +1226,7 @@
       stageTitle?.invalidate();
       stageRibbons?.invalidate();
       stageShine?.invalidate();
+      stageSpotlight?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1292,6 +1296,7 @@
       stageRibbons?.update(currentTime, project);
       stageShine?.update(currentTime, project);
       stageParticles?.update(currentTime, project);
+      stageSpotlight?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);

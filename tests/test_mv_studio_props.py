@@ -103,6 +103,20 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                      [item["eventId"] for item in ribbons["cues"]])
                     self.assertEqual([item["lifetime"] for item in shine["cues"]], [[10, 13], [10, 10]])
                     self.assertTrue(all(item["rate"] == 10 and item["cycle"] == 5 for item in shine["cues"]))
+                    spotlight = project["stageSpotlight"]
+                    spot_track = tracks[spotlight["trackId"]]
+                    spot, = [event for event in spot_track["events"] if event["id"] == spotlight["eventId"]]
+                    self.assertEqual(spot_track["label"], "StageEffect/Expert/Control/par_12_spot")
+                    self.assertAlmostEqual(spot["start"], 75.0166666667)
+                    self.assertAlmostEqual(spot["duration"], 3)
+                    self.assertAlmostEqual(spotlight["duration"], 1.8)
+                    shapes = {mesh["name"]: (len(mesh["positions"]), len(mesh["indices"]))
+                              for mesh in spotlight["meshes"]}
+                    self.assertEqual(shapes, {"Glow_03": (84, 390), "Glow_02": (81, 420)})
+                    for mesh in spotlight["meshes"]:
+                        self.assertEqual(len(mesh["alpha"]), len(mesh["positions"]))
+                        self.assertEqual(len(mesh["matrix"]), 16)
+                        self.assertEqual(len(mesh["tintCurves"]), 4)
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

@@ -184,6 +184,25 @@ class MVStudioStorageTests(unittest.TestCase):
                 parse.assert_called_once_with(self.original, "Edited ribbon", preview_split=False,
                                               preview_stage_title=True, preview_stage_ribbons=True)
 
+    def test_saved_spotlight_source_restores_effect_without_changing_event_time(self):
+        project = mv_studio._blank("Edited spotlight")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA, "cues": []}
+        project["tracks"] = [{
+            "id": "spot", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/par_12_spot",
+            "events": [{"id": "clip", "start": 76, "duration": 3, "values": {}}],
+        }]
+        spotlight = {"trackId": "spot", "eventId": "clip", "duration": 1.8}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+            "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSpotlight": spotlight},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited spotlight", preview_split=False,
+                                      preview_stage_title=False, preview_stage_spotlight=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSpotlight"], spotlight)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")
