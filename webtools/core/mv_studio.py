@@ -283,7 +283,8 @@ def _timeline(path):
     from . import mv_studio_timeline
     raw = path.read_bytes()
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
-                                               preview_member_shafts=True, preview_stage_title=True)
+                                               preview_member_shafts=True, preview_stage_title=True,
+                                               preview_stage_particles=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -454,7 +455,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
             native, parsed = _timeline(timeline)
-            project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle")
+            project.update({field: parsed[field] for field in
+                            ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -764,16 +766,20 @@ def _open_saved(archive, entries):
     restore_title = (type(schema) is not int or schema < 2) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Display/" in str(track.get("label", ""))
         for track in project["tracks"])
-    if source is not None and (restore_split or restore_title):
+    restore_particles = "stageParticles" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and "/Control/" in str(track.get("label", ""))
+        for track in project["tracks"])
+    if source is not None and (restore_split or restore_title or restore_particles):
         from . import mv_studio_timeline
 
         try:
+            particles = {"preview_stage_particles": True} if restore_particles else {}
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
-                                                         preview_stage_title=restore_title)
+                                                         preview_stage_title=restore_title, **particles)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle"):
+            for field in ("splitScreen", "stageTitle", "stageParticles"):
                 if field in original:
                     project[field] = original[field]
     return _register(project, source)
@@ -794,7 +800,8 @@ def _mod_files(project, files):
                     project["warnings"].append(f"{label}: open this timeline separately to edit this variant.")
                     continue
                 native = raw
-                project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle")
+                project.update({field: parsed[field] for field in
+                                ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

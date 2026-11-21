@@ -42,6 +42,28 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual(len(stages), 1)
                     self.assertTrue(stages[0]["stage"]["glb"])
                     self.assertFalse(any(row.get("attachment") for row in stages[0]["assets"]))
+                    effects = project["stageParticles"]
+                    tracks = {track["id"]: track for track in project["tracks"]}
+                    self.assertEqual(len(effects["cues"]), 8)
+                    self.assertEqual([len(levels) for levels in effects["textures"]], [10, 10])
+                    waves, umbrellas = [], []
+                    for cue in effects["cues"]:
+                        track = tracks[cue["trackId"]]
+                        clip, = [event for event in track["events"] if event["id"] == cue["eventId"]]
+                        template = effects["templates"][cue["template"]]
+                        if track["label"].endswith("/par_15_foot_wave"):
+                            waves.append(round(clip["start"], 6))
+                            self.assertEqual([round(emitter["birth"], 8) for emitter in template], [0, .05, .1])
+                            self.assertTrue(all(emitter["material"]["premultiply"] for emitter in template))
+                        elif track["label"].endswith("/flo_01-03_umbrella"):
+                            umbrellas.append(round(clip["start"], 6))
+                            emitter, = template
+                            self.assertEqual(emitter["birth"], 0)
+                            self.assertEqual(emitter["material"]["cull"], 2)
+                        else:
+                            self.fail(track["label"])
+                    self.assertEqual(waves, [42.85, 46, 49.333333, 50.933333])
+                    self.assertEqual(umbrellas, [58.933333, 62.183333, 75.016667, 78.016667])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

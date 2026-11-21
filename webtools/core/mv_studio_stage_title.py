@@ -38,7 +38,7 @@ def _declared(objects, owner, tree, identity):
     return tuple(declaration.get(field) for field in ("m_AssemblyName", "m_Namespace", "m_ClassName")) == identity
 
 
-def _group(objects, owner, tree):
+def _group(objects, owner, tree, section="display"):
     groups = []
     for _ in range(3):
         child = owner
@@ -52,17 +52,17 @@ def _group(objects, owner, tree):
             return False
         groups.append(tree["m_Name"].replace(" ", "").lower())
     root = _local(objects, owner, tree.get("m_Parent"), "MonoBehaviour")
-    if groups[0] != "display" or groups[2] != "stageeffect" or root is None:
+    if groups[0] != section or groups[2] != "stageeffect" or root is None:
         return False
     tree = root.read_typetree()
     return (_declared(objects, root, tree, ("UnityEngine.Timeline.dll", "UnityEngine.Timeline", "TimelineAsset"))
             and any(_local(objects, root, ref, "MonoBehaviour") is owner for ref in tree.get("m_Tracks", [])))
 
 
-def _components(objects, game, types, *, require_active=True):
+def _components(objects, game, types, *, require_active=True, layer=26):
     tree = game.read_typetree()
     refs = tree.get("m_Component", [])
-    if tree.get("m_Layer") != 26 or (require_active and not tree.get("m_IsActive")) or len(refs) != len(types):
+    if tree.get("m_Layer") != layer or (require_active and not tree.get("m_IsActive")) or len(refs) != len(types):
         return None
     components = {}
     for entry in refs:

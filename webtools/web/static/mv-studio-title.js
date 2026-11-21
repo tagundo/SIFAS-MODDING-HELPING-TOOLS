@@ -310,5 +310,5 @@
       dispose
     };
   }
-  global.MVStudioTitle = { apply };
+  global.MVStudioTitle = { apply, validTexture, boundedCurve, gradientKeys, gradient };
 })(typeof window !== "undefined" ? window : globalThis);
