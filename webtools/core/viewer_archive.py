@@ -146,7 +146,12 @@ def _platform_models(models, manifests, records=None, selected_member=None):
         body_faces = {}
         for primary_key, ios_key in _PLATFORM_PAIRS:
             primary, alternate = values[primary_key], values[ios_key]
-            if primary is not None:
+            if alternate is not None and alternate == selected_member and alternate != primary:
+                preferred.add(alternate)
+                body_faces[alternate] = _FACE_FIELDS[1]
+                if primary is not None:
+                    alternatives.add(primary)
+            elif primary is not None:
                 preferred.add(primary)
                 body_faces[primary] = _FACE_FIELDS[0]
                 if alternate is not None and alternate != primary:
@@ -197,7 +202,7 @@ def has_one_transplant_body(archive, selected_member):
     return not conflicts and bodies == {selected} and models - companions == bodies
 
 
-def _variant_models(models, manifests, choice):
+def _variant_models(models, manifests, choice, platform=None):
     """Choose one declared costume family before any Unity model is loaded.
 
     The manifest's primary and Rina-unmasked files are alternatives, while
@@ -240,7 +245,7 @@ def _variant_models(models, manifests, choice):
         selected = choice or "primary"
         values = next(iter(declarations.values()))
         family = _PLATFORM_PAIRS[0 if selected == "primary" else 1]
-        selected_member = values.get(family[0]) or values.get(family[1])
+        selected_member = (values.get(family[1]) if platform == "ios" else None) or values.get(family[0]) or values.get(family[1])
         excluded = (primary | unmasked) - {selected_member}
         filtered = {str(relative).casefold()
                     for _, relative in _platform_models(models, manifests, records, selected_member)}
@@ -285,7 +290,7 @@ def _preflight_zip(path):
 
 
 @contextmanager
-def _expand_legacy_inputs(paths, cache_root, variant_choices=None):
+def _expand_legacy_inputs(paths, cache_root, variant_choices=None, *, scene_platform=None):
     """Yield selected files plus isolated ZIP members for one conversion.
 
     Only Unity model bytes and bounded modinstall.txt data are extracted. All
@@ -363,7 +368,7 @@ def _expand_legacy_inputs(paths, cache_root, variant_choices=None):
                             continue
                         models.append((info, relative))
                     selected_models, selected_variant = _variant_models(
-                        models, archive_manifests, choices.get(path))
+                        models, archive_manifests, choices.get(path), scene_platform)
                     if selected_variant is not None:
                         variants.append({"source_path": path, "source_name": Path(path).name,
                                          "selected": selected_variant,
@@ -391,7 +396,7 @@ def _expand_legacy_inputs(paths, cache_root, variant_choices=None):
 
 
 @contextmanager
-def expand_inputs(paths, cache_root, variant_choices=None):
+def expand_inputs(paths, cache_root, variant_choices=None, *, game_platform=None):
     from . import viewer_scene_format, viewer_scene_roles
     scenes = [path for path in paths if viewer_scene_format.is_scene_package(path)]
     if not scenes:
@@ -408,7 +413,7 @@ def expand_inputs(paths, cache_root, variant_choices=None):
         raise ValueError("The model preview cache cannot be a symbolic link.")
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="viewer-scene-", dir=root) as temporary:
-        scene = viewer_scene_roles.expand_scene(paths[0], temporary, choices.get(paths[0]))
+        scene = viewer_scene_roles.expand_scene(paths[0], temporary, choices.get(paths[0]), platform=game_platform)
         raw = Path(scene["path"]).read_bytes()
         saved = root / "scene-originals"
         if saved.is_symlink():
@@ -429,7 +434,9 @@ def expand_inputs(paths, cache_root, variant_choices=None):
                     raise ValueError("The canonical scene cache changed while opening.")
         canonical = str(canonical_path)
         canonical_choices = {canonical: scene["variant"]}
-        with _expand_legacy_inputs([canonical], cache_root, canonical_choices) as expanded:
+        # Preserve both source families for subsequent editing and packaging.
+        # Only the body and face opened in this preview follow the picker.
+        with _expand_legacy_inputs([canonical], cache_root, canonical_choices, scene_platform=scene["platform"]) as expanded:
             expanded.editing_originals = [canonical]
             expanded.editing_variants = canonical_choices
             expanded.scene_context = scene

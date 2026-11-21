@@ -66,14 +66,25 @@ def _record(record):
                 result["variant"] not in ("primary", "unmasked") or
                 not isinstance(result["download"], bool)):
             raise ValueError()
+        if {"purpose", "platform", "selection_language"} & result.keys():
+            language = result.get("selection_language")
+            if (result.get("purpose") not in ("viewer", "transplant") or
+                    result.get("platform") not in ("android", "ios") or
+                    not isinstance(language, str) or not 0 < len(language) <= 16):
+                raise ValueError()
         return result
     except (KeyError, TypeError, ValueError, OverflowError, RecursionError) as error:
         raise ValueError("The game model source receipt is invalid.") from error
 
 
 def _selection(record):
-    return {"region": record["region"], "suit": f"suit:{record['suit_id']}",
-            "variant": record["variant"], "download": record["download"]}
+    selection = {"region": record["region"], "suit": f"suit:{record['suit_id']}",
+                 "variant": record["variant"], "download": record["download"]}
+    # Reopen the same native catalog when replaying a receipt or choosing
+    # its counterpart. Legacy receipts must retain the implicit Android shape.
+    if "purpose" in record:
+        selection.update(purpose=record["purpose"], platform=record["platform"])
+    return selection
 
 
 def _descriptor(record):
@@ -177,9 +188,11 @@ def game_context(context, repo_root, *, receipts=()):
         record = matches.get((source["path"], source["sha256"])) if source["member"] is None else None
         if record is None:
             continue
-        current = game_models.validate_selection(repo_root, _selection(record))
+        current = game_models.validate_selection(repo_root, _selection(record), record.get("selection_language", "en"))
         if _descriptor(current) != _descriptor(record):
             raise ValueError("The costume catalog changed. Import that costume again before pairing.")
+        if "platform" in record:
+            game_models._native_bundle(source["raw"], record["platform"])
         result.append({key: source[key] for key in ("container", "source", "path", "sha256")} | {"record": record})
     return result
 
@@ -361,14 +374,14 @@ def resolve_pair(context, export_result, *, repo_root, output_root, job, selecti
         if binding is None:
             raise ValueError("Rina needs both variants. Import this costume from Game assets, open a complete paired Mod ZIP, or explicitly choose its counterpart and variant.")
         record = binding["record"]
-        if facts["platform"] != "android":
+        if facts["platform"] != record.get("platform", "android"):
             raise ValueError("This game import receipt does not identify the model's platform.")
         from webtools.core import game_models
         request = _selection(record)
         request["variant"] = "unmasked" if record["variant"] == "primary" else "primary"
-        counterpart = game_models.validate_selection(repo_root, request)
+        counterpart = game_models.validate_selection(repo_root, request, record.get("selection_language", "en"))
         if (counterpart.get("owner") != 209 or any(counterpart.get(key) != record.get(key)
-                for key in ("region", "suit_id", "attach_key"))):
+                for key in ("region", "suit_id", "attach_key", "platform"))):
             raise ValueError("The game catalog does not provide a matching Rina counterpart.")
         importing = _ImportJob(job)
         game_models.run_import(importing, repo_root=repo_root, output_root=output_root, record=counterpart)

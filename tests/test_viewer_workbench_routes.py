@@ -114,10 +114,11 @@ class ViewerWorkbenchRouteTests(WorkbenchHTTPBase):
         record = {'resources': [], 'download': False}
         validate = self.backend_patch(game_motions, 'validate_selection', return_value=record)
         run = self.backend_patch(game_motions, 'run_import', return_value='Ready')
-        status, response = self.request('/api/viewer/game/motions/import?lang=ja', self.motion)
+        selection = {**self.motion, 'platform': 'ios'}
+        status, response = self.request('/api/viewer/game/motions/import?lang=ja', selection)
         self.assertEqual(status, 200, response)
         job = self.finish(response['job_id'])
-        validate.assert_called_once_with(Path.cwd(), self.motion, 'ja')
+        validate.assert_called_once_with(Path.cwd(), selection, 'ja')
         run.assert_called_once_with(job, repo_root=Path.cwd(), output_root=self.library / 'cache/viewer/game-motions', record=record)
         validate.side_effect = ValueError('Motion no longer exists')
         with patch.object(MANAGER, 'create') as create:

@@ -14,7 +14,7 @@ const evidence = process.env.EVIDENCE_DIR || fs.mkdtempSync(path.join(os.tmpdir(
 fs.mkdirSync(evidence, { recursive: true });
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const sources = ['webtools/core/game_models.py', 'webtools/server.py', 'webtools/tools/registry.py',
-  'webtools/web/static/app.js', 'webtools/web/static/viewer-game-assets.js'];
+  'webtools/web/static/app.js', 'webtools/web/static/model-viewer.js', 'webtools/web/static/viewer-game-assets.js'];
 const sourceHashes = () => Object.fromEntries(sources.map(name => [name, sha(fs.readFileSync(path.join(product, name)))]));
 const report = { status: 'RUNNING', scope: 'Chromium with simulated native adapters; real isolated product catalog, pack decryption, native bundle cache and SSE. No game playback or physical-device claim.', sourceBefore: sourceHashes(), cases: [] };
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -76,15 +76,19 @@ async function choose(page, { region = 'gl', character = '101', suit = 'suit:1',
   await page.locator('#viewer-game-download').uncheck();
 }
 
-async function seedViewer(page) {
+async function seedViewer(page, expectedPlatform) {
   await page.evaluate(() => ElichikaNavigation.showSection('viewer', { notify: false }));
   await page.locator('#viewer-file-options').evaluate(node => { node.open = true; });
   await page.locator('#viewer-auto-face').uncheck();
   await page.locator('#viewer-file-options').evaluate(node => { node.open = false; });
-  await page.locator('#viewer-game-assets').click(); await choose(page);
-  assert.equal(await page.locator('#viewer-game-platform').count(), 0, 'Existing viewer selection keeps its original four-field protocol');
+  await page.locator('#viewer-game-assets').click(); await catalogReady(page);
+  assert.equal(await page.locator('#viewer-game-platform').inputValue(), expectedPlatform);
+  await choose(page, { platform: expectedPlatform });
+  const prepare = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/api/viewer/prepare'));
   await page.locator('#viewer-game-import').click();
+  assert.equal((await prepare).postDataJSON().game_platform, expectedPlatform);
   await page.waitForFunction(() => !document.querySelector('#viewer-game-assets-dialog').open && ModelViewer.getState().loaded && !ModelViewer.getState().loading);
+  assert.equal(await page.evaluate(() => ModelViewer.getState().modelPlatform), expectedPlatform);
   await page.locator('[data-viewer-view="left"]').click(); await frames(page);
   await page.evaluate(() => ElichikaNavigation.showSection('tools', { notify: false }));
   await page.locator('#tool-list button[data-id="costume_transplant"]').click();
@@ -188,14 +192,19 @@ async function delayedPostInvalidation(page, invalidate) {
       }, profile);
       await page.goto(ready.url + (profile.mode === 'browser' ? '/' : '/?embedded=1&lang=' + profile.lang));
       await page.waitForFunction(() => window.GameAssetPicker && document.querySelector('#tool-list button[data-id="costume_transplant"]'));
-      await seedViewer(page);
+      await seedViewer(page, profile.platform);
       const originalModel = await modelState(page), prepareCount = prepares;
-      assert.equal(posts.length, 1); assert.deepEqual(Object.keys(posts[0]).sort(), ['download', 'region', 'suit', 'variant']);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].purpose, 'viewer');
+      assert.equal(posts[0].platform, profile.platform);
       assert.equal(await button(page, 'donor').count(), 1); assert.equal(await button(page, 'target').count(), 1);
       const inputRows = await inputRowLayout(page, profile.mode === 'macos' ? 34 : 44);
       for (const name of ['donor', 'target']) {
         await field(page, name).evaluate(node => ['input', 'change'].forEach(type => node.addEventListener(type, () => __fieldEvents.push({ name: node.dataset.name, type }))));
       }
+      await button(page, 'donor').click(); await catalogReady(page);
+      assert.equal(await page.locator('#viewer-game-platform').inputValue(), profile.platform, 'The first tool picker uses the native host default');
+      await page.keyboard.press('Escape');
       const donor = await pickField(page, 'donor', { platform: profile.platform });
       assert.equal(await field(page, 'target').inputValue(), '');
       await button(page, 'target').click(); await catalogReady(page);

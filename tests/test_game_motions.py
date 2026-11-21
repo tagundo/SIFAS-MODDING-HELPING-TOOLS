@@ -126,6 +126,41 @@ class GameMotionTests(unittest.TestCase):
         for path, digest in self.originals.items():
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
 
+    def test_selected_platform_controls_motion_and_cache(self):
+        android = self.select()
+        self.assertEqual(android['platform'], 'android')
+        with self.assertRaisesRegex(ValueError, 'iOS asset catalog'):
+            self.select(platform='ios')
+        ios_catalog = self.assets.with_name('asset_i_ko.db')
+        ios_catalog.write_bytes(self.assets.read_bytes())
+        bundle = UnityPy.load(self.payload)
+        clip = next(obj for obj in bundle.objects if obj.type.name == 'AnimationClip')
+        clip.assets_file._m_target_platform = 9
+        tree = clip.read_typetree()
+        tree['m_Name'] = '홈 모션・ホーム'
+        clip.save_typetree(tree)
+        payload = bytearray(next(iter(bundle.files.values())).save())
+        extractor.decrypt_section(payload, extractor.FIXED_KEY0, 7, 11)
+        (self.packs / 'ios_idle').write_bytes(payload)
+        with sqlite3.connect(ios_catalog) as db:
+            db.execute("UPDATE navi_motion SET pack_name='ios_idle',size=? WHERE asset_path='idle'", (len(payload),))
+            db.execute("INSERT INTO m_asset_package_mapping VALUES ('ios_idle',?,NULL,0)", (len(payload),))
+
+        ios = self.select(platform='ios')
+        self.assertEqual(ios['platform'], 'ios')
+        self.assertEqual(Path(ios['asset_database']), ios_catalog)
+        self.assertEqual(ios['resources'][0]['pack_name'], 'ios_idle')
+        android_path, = self.run_import(android).output_paths()
+        ios_path, = self.run_import(ios).output_paths()
+        self.assertNotEqual(android_path, ios_path)
+        self.assert_motion_only(android_path)
+        restored = UnityPy.load(ios_path)
+        self.assertEqual([obj.peek_name() for obj in restored.objects], ['홈 모션・ホーム'])
+        self.assertEqual({int(asset.target_platform) for asset in restored.assets}, {9})
+        self.assertEqual(motion.resolve_import([ios_path])[0]['platform'], 'ios')
+        self.assertEqual(self.run_import(ios).output_paths(), [ios_path])
+        self.assertEqual(self.run_import(android).output_paths(), [android_path])
+
     def test_changed_cache_is_preserved_and_not_reused(self):
         original = Path(self.run_import().output_paths()[0])
         original.write_bytes(b"user edited")
@@ -199,7 +234,7 @@ class GameMotionTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_invalid_requests_cannot_supply_file_paths_or_wrong_types(self):
-        for params in [dict(path="/etc/passwd"), dict(category=[]), dict(motion="../../escape"), dict(download=1), dict(region="../../gl"), dict(character="1 OR 1=1")]:
+        for params in [dict(path="/etc/passwd"), dict(category=[]), dict(motion="../../escape"), dict(download=1), dict(region="../../gl"), dict(character="1 OR 1=1"), dict(platform=[]), dict(platform="macos")]:
             with self.assertRaises(ValueError):
                 self.select(**params)
         with self.assertRaises(ValueError):

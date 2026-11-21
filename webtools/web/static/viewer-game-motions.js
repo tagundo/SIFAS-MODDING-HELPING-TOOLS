@@ -37,6 +37,14 @@
     }
     function text(tag, key, props) { var node = make(tag, Object.assign({ "data-i18n": key, text: t(key) }, props)); return node; }
     function label(key, control) { return make("label", {}, [text("span", key), control]); }
+    function defaultPlatform() {
+      var model = window.ModelViewer && window.ModelViewer.getState();
+      if (model && (model.modelPlatform === "android" || model.modelPlatform === "ios")) return model.modelPlatform;
+      // PlayCover loads iOS assets on Mac. Use the legacy Android default when
+      // the source of a loose or mixed model is unknown on APK or the web.
+      var host = window.ElichikaPlatform && window.ElichikaPlatform.info();
+      return host && host.native && host.platform === "macos" ? "ios" : "android";
+    }
     function fill(select, options, placeholder, selected) {
       select.replaceChildren();
       if (placeholder) select.appendChild(make("option", { value: "", text: t(placeholder) }));
@@ -49,7 +57,7 @@
     actions.appendChild(button);
     var dialog = make("dialog", { id: "viewer-game-motions-dialog", className: "viewer-game-assets-dialog", "aria-labelledby": "viewer-game-motions-title" });
     (document.getElementById("tab-viewer") || document.body).appendChild(dialog);
-    var region, character, category, search, motion, performer, songType, linkedAudio, download, status, progress, submit, cancel, previousPage, nextPage, pageInfo, options = [];
+    var region, platform, character, category, search, motion, performer, songType, linkedAudio, download, status, progress, submit, cancel, previousPage, nextPage, pageInfo, options = [];
     var pageOffset = 0, pageLimit = 200, pageTotal = 0;
     var generation = 0, request = null, stream = null, job = "", timer = 0, busy = false;
     function message(value, error) { status.textContent = t(value); status.classList.toggle("viewer-warning", !!error); }
@@ -59,7 +67,7 @@
     function close() { generation += 1; clearTimeout(timer); stopRequest(); stopStream(); cancelJob(); if (dialog.open) dialog.close(); button.focus(); }
     function setBusy(value) {
       busy = value;
-      [region, character, category, search, motion, performer, songType, linkedAudio, download].forEach(function (node) { node.disabled = value; });
+      [region, platform, character, category, search, motion, performer, songType, linkedAudio, download].forEach(function (node) { node.disabled = value; });
       submit.disabled = value || !motion.value;
       cancel.textContent = t(value ? "Cancel" : "Close");
       dialog.setAttribute("aria-busy", String(value));
@@ -128,7 +136,7 @@
       try {
         var response = await fetch("/api/viewer/game/motions/import?lang=" + encodeURIComponent(document.documentElement.lang || "en"), {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ region: region.value, character: character.value, category: category.value, motion: motion.value, target_character: targetCharacter, performer: category.value === "mv" ? performer.value : "", audio: linkedAudio.checked, download: download.checked })
+          body: JSON.stringify({ region: region.value, platform: platform.value, character: character.value, category: category.value, motion: motion.value, target_character: targetCharacter, performer: category.value === "mv" ? performer.value : "", audio: linkedAudio.checked, download: download.checked })
         });
         var data = await jsonResponse(response);
         if (!/^[a-f0-9]{12}$/.test(data.job_id || "")) throw new Error("The motion server returned an invalid job identity.");
@@ -193,6 +201,8 @@
       dialog.replaceChildren(); busy = false;
       var exit = text("button", "Close", { type: "button" }); exit.addEventListener("click", close);
       region = make("select", { id: "viewer-motion-region" }); character = make("select", { id: "viewer-motion-character" });
+      platform = make("select", { id: "viewer-motion-platform" });
+      fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, defaultPlatform());
       var selectedRegion = ""; try { selectedRegion = localStorage.getItem("elichika.game-motions.region.v1") || ""; } catch (_) {}
       if (["gl", "jp"].indexOf(selectedRegion) >= 0) fill(region, [{ value: selectedRegion, label: selectedRegion === "jp" ? "Japan (JP)" : "Global (GL)" }], null, selectedRegion);
       category = make("select", { id: "viewer-motion-category" }); fill(category, [{ value: "home", label: "Home and idle motions" }]);
@@ -212,7 +222,7 @@
       previousPage.addEventListener("click", function () { catalog(false, Math.max(0, pageOffset - pageLimit)); });
       nextPage.addEventListener("click", function () { catalog(false, pageOffset + pageLimit); });
       dialog.append(make("div", { className: "modal-head" }, [text("h2", "Game motions", { id: "viewer-game-motions-title" }), exit]),
-        make("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Motion category", category), label("Song type", songType), label("Search motions", search), label("Motion", motion), label("Original dance performer", performer)]),
+        make("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Bundle platform", platform), label("Character", character), label("Motion category", category), label("Song type", songType), label("Search motions", search), label("Motion", motion), label("Original dance performer", performer)]),
         make("div", { className: "viewer-game-assets-actions" }, [previousPage, pageInfo, nextPage]),
         make("label", { className: "viewer-game-assets-download" }, [download, text("span", "Download missing assets")]),
         make("label", { className: "viewer-game-assets-download" }, [linkedAudio, text("span", "Load linked game voice or music")]),

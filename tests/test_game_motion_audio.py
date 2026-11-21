@@ -172,6 +172,13 @@ class CatalogAudioTests(unittest.TestCase):
         self.assertGreaterEqual(result["tracks"][0]["playDuration"], 1.)
         self.assertLess(result["tracks"][0]["playDuration"], 1.002)  # ADX encoder block padding
 
+    def test_shared_cri_voice_can_use_an_ios_only_catalog(self):
+        android = self.root / "assets/db/gl/asset_a_en.db"
+        android.rename(android.with_name("asset_i_en.db"))
+        result = self.prepare()
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual([track["sheet"] for track in result["tracks"]], ["original-tone"])
+
     def test_unknown_cue_and_missing_packs_report_audio_warning(self):
         event = {"kind": "voice", "cue": "unmapped", "startTime": 0, "offset": 0, "playDuration": 1, "playbackRate": 1}
         result = self.prepare(event=event)

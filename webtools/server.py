@@ -283,8 +283,11 @@ class Handler(BaseHTTPRequestHandler):
         params = self._read_json_body()
         if not isinstance(params, dict):
             return self._send_json({"error": "Choose at least one model file."}, status=400)
-        if set(params) - {"paths", "motion_paths", "auto_face", "rigged", "archive_variants", "preview_only", "reimport"}:
+        if set(params) - {"paths", "motion_paths", "auto_face", "rigged", "archive_variants", "preview_only", "reimport", "game_platform"}:
             return self._send_json({"error": "Unsupported model viewer option."}, status=400)
+        game_platform = params.get("game_platform")
+        if game_platform is not None and game_platform not in ("android", "ios"):
+            return self._send_json({"error": "Choose Android or iOS game assets."}, status=400)
         auto_face = params.get("auto_face", True)
         if not isinstance(auto_face, bool):
             return self._send_json({"error": "Automatic face loading must be on or off."}, status=400)
@@ -371,7 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         }
         try:
             with ExitStack() as opened:
-                expanded = opened.enter_context(viewer_archive.expand_inputs(resolved, cache_dir, variant_choices=variant_choices))
+                expanded = opened.enter_context(viewer_archive.expand_inputs(resolved, cache_dir, variant_choices=variant_choices,
+                                                                             game_platform=game_platform))
                 expanded_motions = []
                 for source in resolved_motions:
                     motion_inputs = opened.enter_context(viewer_archive.expand_inputs([source], cache_dir))
@@ -387,6 +391,11 @@ class Handler(BaseHTTPRequestHandler):
                 if expanded_motions:
                     options["motion_paths"] = expanded_motions
                 result = model_viewer.prepare(expanded.paths, **options)
+                native_platform = (result.get("rig") or {}).get("modelPlatform")
+                if game_platform and native_platform and native_platform != game_platform:
+                    raise ValueError("The game costume does not match the selected native platform.")
+                if native_platform:
+                    result["model_platform"] = native_platform
                 result["source_names"] = expanded.source_names
                 # Indices select among the caller's already jailed inputs, never
                 # arbitrary archive members or temporary extracted paths.
@@ -593,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
         from sqlite3 import Error as SQLiteError
         try:
             params = self._viewer_feature_request({"region", "character", "category", "motion", "download"},
-                optional_fields={"performer", "audio", "target_character"}, max_bytes=4096, token=False)
+                optional_fields={"performer", "audio", "target_character", "platform"}, max_bytes=4096, token=False)
             record = game_motions.validate_selection(Path.cwd(), params, self._lang())
             output = self._viewer_feature_output("cache/viewer/game-motions")
             job = MANAGER.create("viewer_game_motions")

@@ -19,7 +19,8 @@ const state = {
   savedModelPaths: [],
   nativeSurface: "",
   formLanguage: "",
-  gameAssetPlatform: "android",
+  // Let the shared picker choose the native platform until a tool model is selected.
+  gameAssetPlatform: null,
 };
 
 const $ = (sel) => document.querySelector(sel);

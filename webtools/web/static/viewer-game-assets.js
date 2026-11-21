@@ -13,6 +13,11 @@
     var region, platform, character, search, costume, variant, download, reimport, status, log, progress, submit, closeButton, cancel;
     function t(value) { return typeof window.T === "function" ? window.T(value) : value; }
     function language() { return document.documentElement.lang || "en"; }
+    function defaultPlatform() {
+      // The native Mac bridge identifies PlayCover's iOS assets. Browser and APK sessions use Android by default.
+      var host = window.ElichikaPlatform && window.ElichikaPlatform.info();
+      return host && host.platform === "macos" ? "ios" : "android";
+    }
     function element(tag, attributes, children) {
       var node = document.createElement(tag);
       Object.keys(attributes || {}).forEach(function (key) {
@@ -111,13 +116,10 @@
       fill(character, [], "Choose a character"); fill(costume, [], "Choose a costume");
       var fields = element("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Search costumes", search), label("Costume", costume), label("Costume variant", variant)]);
       variant.parentNode.hidden = true;
-      platform = null;
-      if (consumer.purpose === "transplant") {
-        platform = element("select", { id: "viewer-game-platform" });
-        fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, consumer.platform);
-        platform.disabled = consumer.lockPlatform;
-        fields.insertBefore(label("Bundle platform", platform), character.parentNode);
-      }
+      platform = element("select", { id: "viewer-game-platform" });
+      fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, consumer.platform);
+      platform.disabled = consumer.lockPlatform;
+      fields.insertBefore(label("Bundle platform", platform), character.parentNode);
       download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = consumer.downloadByDefault;
       var downloadLabel = element("label", { className: "viewer-game-assets-download" }, [download, element("span", { text: t("Download missing assets") })]);
       reimport = element("input", { id: "viewer-game-reimport", type: "checkbox" });
@@ -157,12 +159,13 @@
       if (!current(selection)) { invalidate(); return; }
       var token = ++generation;
       var importedVariant = variant.value || "primary";
-      var importedPlatform = platform ? platform.value : null;
+      var importedPlatform = platform.value;
       var importedReimport = reimport.checked;
-      if (selection.purpose === "transplant" && ["android", "ios"].indexOf(importedPlatform) < 0) return;
-      var payload = { region: region.value, suit: costume.value, variant: importedVariant, download: download.checked };
+      if (["android", "ios"].indexOf(importedPlatform) < 0) return;
+      // Omitting the platform from viewer imports uses the legacy Android route.
+      var payload = { region: region.value, suit: costume.value, variant: importedVariant, download: download.checked,
+        purpose: selection.purpose, platform: importedPlatform };
       if (importedReimport) payload.reimport = true;
-      if (selection.purpose === "transplant") { payload.purpose = "transplant"; payload.platform = importedPlatform; }
       clearTimeout(timer); stopRequest(); setBusy(true); setStatus("Preparing game assets…"); log.textContent = ""; log.hidden = false; progress.hidden = false; progress.removeAttribute("value");
       try {
         var response = await fetch("/api/viewer/game/import?lang=" + encodeURIComponent(language()), {
@@ -221,7 +224,7 @@
       if (dialog.open || ["viewer", "transplant"].indexOf(purpose) < 0 || typeof options.onSelect !== "function" || typeof options.isCurrent !== "function") return false;
       try { if (options.isCurrent() !== true) return false; } catch (_) { return false; }
       consumer = { purpose: purpose, trigger: options.trigger, label: String(options.label || ""),
-        platform: options.platform === "ios" ? "ios" : "android", language: language(),
+        platform: ["android", "ios"].indexOf(options.platform) >= 0 ? options.platform : defaultPlatform(), language: language(),
         lockPlatform: options.lockPlatform === true, downloadByDefault: options.downloadByDefault !== false,
         region: ["gl", "jp"].indexOf(options.region) < 0 ? "" : options.region,
         onSelect: options.onSelect, isCurrent: options.isCurrent };
@@ -229,18 +232,21 @@
       return true;
     }
     window.GameAssetPicker = Object.freeze({ open: open, close: close, invalidate: invalidate });
-    // Existing viewer transplant panels use a callback with scene ZIP variants.
-    // Keep that interface on the same guarded picker used by native body forms.
     window.ViewerGameAssets = Object.freeze({ pick: function (callback) {
       var trigger = document.activeElement || button;
-      var originalModel = window.ModelViewer && window.ModelViewer.getState().modelId;
-      return open({ trigger: trigger, purpose: "viewer", isCurrent: function () {
+      var wearer = window.ModelViewer && window.ModelViewer.getState();
+      var originalModel = wearer && wearer.modelId;
+      var donor = typeof callback === "function";
+      // A scene ZIP can contain both platforms. Select the donor's exact native body before inspection.
+      return open({ trigger: trigger, purpose: donor ? "transplant" : "viewer",
+        platform: donor && wearer ? wearer.modelPlatform : null, isCurrent: function () {
         return document.getElementById("tab-viewer").classList.contains("active") &&
           (!originalModel || window.ModelViewer && window.ModelViewer.getState().modelId === originalModel);
       }, onSelect: function (path, info) {
         var variants = /\.zip$/i.test(path) ? { 0: info.variant } : null;
-        if (typeof callback === "function") return callback([path], variants, { reimport: info.reimport });
-        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], variants, { reimport: info.reimport });
+        var importOptions = { reimport: info.reimport, gamePlatform: info.platform };
+        if (donor) return callback([path], variants, importOptions);
+        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], variants, importOptions);
       } });
     } });
 
@@ -248,7 +254,8 @@
       open({ trigger: button, purpose: "viewer", isCurrent: function () {
         return document.getElementById("tab-viewer").classList.contains("active");
       }, onSelect: function (path, info) {
-        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], /\.zip$/i.test(path) ? { 0: info.variant } : null, { reimport: info.reimport });
+        if (typeof window.openModelViewer === "function") return window.openModelViewer([path], /\.zip$/i.test(path) ? { 0: info.variant } : null,
+          { reimport: info.reimport, gamePlatform: info.platform });
       } });
     });
     dialog.addEventListener("cancel", function (event) { event.preventDefault(); close(); });

@@ -61,6 +61,26 @@ class CostumePackSourceTests(unittest.TestCase):
                 self.assertEqual(self.read(path, cache_roots=[root])[str(path)]["suit_id"], 12)
                 self.assertEqual(before, {str(p): p.read_bytes() for p in self.library.rglob("*") if p.is_file()})
 
+    def test_explicit_ios_viewer_receipt_replays_its_catalog_and_platform(self):
+        self.record["purpose"] = "viewer"
+        path, _, _ = self.receipt()
+        found = self.read(path)[str(path)]
+        _, selection, language = self.validate_mock.call_args.args
+        self.assertEqual((selection["purpose"], selection["platform"], language), ("viewer", "ios", "ko"))
+        self.assertEqual((found["platform"], found["native_platform_verified"]), ("ios", True))
+
+    def test_explicit_and_legacy_android_receipts_agree_on_identical_catalog_bytes(self):
+        self.record.update(purpose="viewer", platform="android")
+        self.platform_mock.return_value = 13
+        path, _, _ = self.receipt(tag="new")
+        legacy = {key: value for key, value in self.record.items()
+                  if key not in ("purpose", "platform", "selection_language")}
+        self.receipt(self.old, record=legacy, tag="old")
+        self.validate_mock.side_effect = lambda repo, params, lang: self.record if "purpose" in params else legacy
+        found = self.read(path)[str(path)]
+        self.assertEqual(found["platform"], "android")
+        self.assertEqual(found["receipt"]["record"]["purpose"], "viewer")
+
     def test_changed_selected_cache_and_stale_current_catalog_are_clear_errors(self):
         path, _, _ = self.receipt(); path.write_bytes(b"edited without source receipt")
         with self.assertRaisesRegex(ValueError, "changed after its source receipt"):
