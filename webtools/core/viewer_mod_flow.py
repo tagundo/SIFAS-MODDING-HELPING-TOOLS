@@ -422,7 +422,14 @@ def _package_inputs(context, result):
             current.write_bytes(raw)
         facts = viewer_mod_sources._model_facts(original_raw)
         from .member_identity import member_from_native
-        owner = member_from_native(facts["owner"]) if facts["owner"] is not None else target_hint
+        owner = member_from_native(facts["owner"]) if facts["owner"] is not None else None
+        if owner is None:
+            # Some native faces carry only meshes and link shared textures.
+            # Their prefab/renderers can still prove the face's member.
+            from . import face_platforms, model_faces, model_viewer
+            deadline = time.monotonic() + model_faces.FACE_SECONDS
+            scene = model_viewer._Scene(model_viewer._environment([str(current)], deadline), deadline)
+            owner = face_platforms.face_owner(scene) or target_hint
         companions.append({"path": str(current), "sha256": hashlib.sha256(raw).hexdigest(),
             "original_path": result["original_paths"][container], "original_sha256": original["sha256"],
             "source_sha256": source["sha256"], "source_index": index, "container": container,

@@ -427,8 +427,8 @@ class RigBuilder:
                                                           clips=self.clips),
                 "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
         result["readOnlySkinJoints"] = sorted(self.read_only_skin_joints)
-        # Only successfully rendered, server-resolved faces receive outline
-        # source identities. Their body/skin transforms stay protected.
+        # Ordinary auto-faces must be rendered. A saved, digest-bound face also
+        # stays in the editing session when a complete native face is shown.
         from .model_viewer import _source_path, _source_hash
         shown_sources = {primitive.get("extras", {}).get("viewerMesh", {}).get("mesh", {}).get("source")
                          for mesh in self.glb.doc.get("meshes", []) for primitive in mesh.get("primitives", [])}
@@ -436,7 +436,8 @@ class RigBuilder:
                   if _source_path(obj) in self.faces.auto_paths}
         result["_editingCompanions"] = [{"path": path, "sha256": hashes[path], "sourceIndex": index}
                                          for path, index in self.source_indices.items()
-                                         if path in self.faces.auto_paths and index in shown_sources and hashes.get(path)]
+                                         if path in self.faces.auto_paths and hashes.get(path)
+                                         and (index in shown_sources or path in self.faces.saved_paths)]
         if self.source_positions:
             result["sourcePositions"] = self.source_positions
         return copy.deepcopy(result)

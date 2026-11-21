@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import time
 import zipfile
 
 from webtools import filebrowser
@@ -220,50 +221,78 @@ def _face_export_raw(source, previews, containers):
     return raw
 
 
-def _prepare_face_companions(context, saved, body_platform, body_name):
-    """Verify exact saved faces before spending time on the costume graft.
+def _prepare_face_companions(context, saved, body, body_index, body_platform, directory):
+    """Verify and stage separate facial inputs before running the graft."""
+    from . import face_platforms, model_faces, model_viewer
 
-    Keep only paths/digests across the expensive graft, not four extra decoded
-    faces or raw blobs. Publication rereads and checks the same bytes without
-    deserializing the faces a second time.
-    """
-    indices = context.get("outline_only_sources", [])
-    if not indices:
-        return []
     sources, containers = context["sources"], context["containers"]
+    indices = context.get("outline_only_sources", [])
+    if (not isinstance(indices, list) or len(indices) > model_faces.MAX_AUTO_FILES
+            or any(type(index) is not int or not 0 <= index < len(sources) for index in indices)
+            or len(set(indices)) != len(indices)):
+        raise ValueError("The edited facial companions lost their original source identities.")
+    bound = set(indices)
+    wearer = sources[body_index]
+    # A ZIP keeps its declared face in the archive. Explicitly selected loose
+    # face files also belong to the result, even with auto-face turned off.
+    selected = {index for index, source in enumerate(sources) if index not in bound
+                and source["container"] != wearer["container"] and source["member"] is None}
+    if not bound and not selected:
+        return []
     recipe = saved.get("recipe", {})
     if recipe.get("tool") == "mesh-tools":
         recipe = recipe.get("bodyRecipe", {})
     previews = saved.get("preview_paths", [])
-    if (not isinstance(indices, list) or len(indices) > 4
-            or any(type(index) is not int or not 0 <= index < len(sources) for index in indices)
-            or len(set(indices)) != len(indices)
-            or len(previews) != len(containers)
-            or recipe.get("sources") != sources):
+    if len(previews) != len(containers) or recipe.get("sources") != sources:
         raise ValueError("The edited facial companions lost their original source identities.")
     original_records = [{"name": row["name"], "sha256": row["sha256"]} for row in containers]
     if recipe.get("originals") != original_records:
         raise ValueError("The edited facial companions do not match their original files.")
-    import UnityPy
+    deadline = time.monotonic() + model_faces.FACE_SECONDS
+    directory.mkdir()
+    owner = None
     prepared = []
-    for index in indices:
+    for index in sorted(bound | selected):
         source = sources[index]
         name = str(source["name"])
+        if index in selected and Path(previews[source["container"]]).stat().st_size > model_faces.MAX_PACK_BYTES:
+            continue  # A large separately selected model or motion is not a face candidate.
         if not name or name in (".", "..") or len(name) > 256 or any(char in name for char in ("/", "\\", "\0")):
             raise ValueError("The facial companion has an invalid original filename.")
         raw = _face_export_raw(source, previews, containers)
-        platform = _platform(name, environment=UnityPy.load(raw))
-        model_platforms.require_compatible(body_platform, platform,
-            wearer_name=body_name, other_name=name, role="facial companion")
+        staged_path = directory / f"face-{index}.unity"
+        staged_path.write_bytes(raw)
+        environment = model_viewer._environment([str(staged_path)], deadline)
+        scene = model_viewer._Scene(environment, deadline)
+        if index in selected and not face_platforms.is_face(scene):
+            staged_path.unlink()
+            continue
+        platform = _platform(name, environment=environment)
+        matches_platform = model_platforms.compatible(body_platform, platform)
+        if index in selected or not matches_platform:
+            if owner is None:
+                wearer_scene = model_viewer._Scene(model_viewer._environment([str(body)], deadline), deadline)
+                owners = model_faces.source_owner(wearer_scene, str(body))
+                owner = next(iter(owners)) if len(owners) == 1 else 0
+            if not owner or not face_platforms.is_face(scene, owner):
+                model_platforms.require_compatible(body_platform, platform,
+                    wearer_name=wearer["name"], other_name=name, role="facial companion")
+                raise ValueError(f"The facial companion '{name}' does not match the wearer's character.")
+        copy_raw = raw
+        if not matches_platform:
+            copy_raw = face_platforms.copy_for_platform(raw, scene, body_platform, name)
+            staged_path.write_bytes(copy_raw)
+            platform = body_platform
+        if len(prepared) >= model_faces.MAX_AUTO_FILES:
+            raise ValueError("The costume has too many separate facial companions.")
         prepared.append({"index": index, "source": dict(source), "name": name,
-            "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "platform": platform})
+            "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "platform": platform,
+            "path": staged_path, "copy_sha256": hashlib.sha256(copy_raw).hexdigest()})
     return prepared
 
 
-def _preserve_face_companions(context, saved, models, body, body_platform, *, prepared=None):
-    """Copy source-bound separate preview faces; never convert their native data."""
-    if prepared is None:
-        prepared = _prepare_face_companions(context, saved, body_platform, body.name)
+def _preserve_face_companions(context, saved, models, body, body_platform, *, prepared):
+    """Publish source-bound face copies alongside the transplanted body."""
     if not prepared:
         return []
     import unicodedata
@@ -278,6 +307,10 @@ def _preserve_face_companions(context, saved, models, body, body_platform, *, pr
         digest = hashlib.sha256(raw).hexdigest()
         if len(raw) != record["bytes"] or digest != record["sha256"]:
             raise ValueError(f"The verified facial companion '{record['name']}' changed during transplanting. Reopen it before retrying; no result was published.")
+        raw = record["path"].read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != record["copy_sha256"]:
+            raise ValueError("The prepared facial companion changed during transplanting.")
         name, index = record["name"], record["index"]
         original_name, ordinal = name, 0
         while key(name) in used:
@@ -476,7 +509,8 @@ def run_transplant(job, request, *, output_root, cache_root, export_fn=None, rep
             model_platforms.require_compatible(wearer_platform, donor_platform,
                 wearer_name=source["name"], other_name=request["donorName"], role="donor")
             # Exact face/source checks belong before the potentially long graft.
-            face_companions = _prepare_face_companions(context, saved, wearer_platform, source["name"])
+            face_companions = _prepare_face_companions(context, saved, wearer, request["sourceIndex"],
+                                                       wearer_platform, inputs / "facial-companions")
             if job.should_stop():
                 return "Cancelled"
             job.progress(1, 3)

@@ -529,6 +529,8 @@ class FacePlan:
         self.enabled = bool(context and self.context.get("enabled", True))
         self.deadline = min(deadline, time.monotonic() + FACE_SECONDS)
         self.paths, self.auto_paths, self.warnings = list(paths), [], []
+        self.saved_paths = set()
+        self.source_roles = {}
         self.owner, self.added, self.transferred = None, 0, 0
         self.face_mode = "normal"
         self.status, self.needed, self.dynamic_sources = "not_needed", set(), set()
@@ -634,9 +636,9 @@ class FacePlan:
         trusted = path in self.database_paths
         if not owners and not trusted:
             return None
-        # Every automatic source, not only saved companion hints, must respect
-        # a known native body. NoTarget stays unclassified: a separately bound
-        # preview face does not assign or convert its body's native platform.
+        # Automatically discovered game assets must match the native body.
+        # Explicit saved companions can be previewed after identity checks.
+        # An unassigned wearer keeps its original platform classification.
         try:
             body_platform = model_platforms.single_platform(self._body_platforms, self.paths[0])
             face_platform = model_platforms.from_environment(scene.env, path)
@@ -645,13 +647,18 @@ class FacePlan:
                 raise SavedFacePlatformMismatch(str(error)) from None
             return None
         if not model_platforms.compatible(body_platform, face_platform):
-            if hint is not None:
+            if hint is None:
+                return None
+            # Saved, digest-bound faces are an explicit user choice. A valid
+            # same-owner face can be previewed as-is; the transplant verifies
+            # the target payload before generating a compatible copy.
+            from . import face_platforms
+            if not face_platforms.is_face(scene, self.owner):
                 try:
                     model_platforms.require_compatible(body_platform, face_platform,
                         wearer_name=self.paths[0], other_name=path, role="saved facial companion")
                 except ValueError as error:
                     raise SavedFacePlatformMismatch(str(error)) from None
-            return None
         available = roles(scene)
         if self.face_mode == "normal" and "board" in available:
             return None
@@ -661,7 +668,11 @@ class FacePlan:
         if "eyes" in self.needed and "board" in available:
             found.add("board")
         if not found:
-            return None
+            # A complete body can keep its native preview (for example Rina's
+            # board) while an explicitly saved face remains an editing source.
+            from . import face_platforms
+            if hint is None or not face_platforms.is_face(scene, self.owner):
+                return None
         return scene, dynamic, found
 
     def _verified_companions(self):
@@ -1029,14 +1040,13 @@ class FacePlan:
         return str(output)
 
     def resolve(self):
-        if not self.enabled or self.owner is None or not self.needed:
+        if not self.enabled or self.owner is None:
             return []
         try:
             pending = []
             try:
                 for path in self._verified_companions():
-                    if self._accept(path):
-                        break
+                    self._accept(path)
             except SavedFacePlatformMismatch:
                 raise
             except Exception:
@@ -1096,7 +1106,7 @@ class FacePlan:
             self.status = "partial" if self.auto_paths else "unavailable"
             self.warn("face_source_unavailable", "The original face is unavailable. The costume is still shown; check the asset connection and try again.")
         else:
-            self.status = "added"
+            self.status = "added" if any(self.source_roles.values()) else "already_present"
         try:
             if self.context.get("cache_dir"):
                 _prune_cache(self.context["cache_dir"], self.auto_paths, self.deadline)
@@ -1112,18 +1122,18 @@ class FacePlan:
             if inspected is None:
                 return False
             scene, dynamic, found = inspected
-            self.auto_paths.append(path)
-            self.dynamic_sources.update(dynamic)
-            self.source_adjustments[path] = None
-            if not hasattr(self, "source_roles"):
-                self.source_roles = {}
             accepted_roles = set().union(*self.source_roles.values())
             available = roles(scene)
             auxiliaries = (available & (set(_AUXILIARY) | {"face_overlay", "board_shell"})) - self.initial_roles - accepted_roles
-            if self.face_mode == "board" and "board" not in available:
+            if not found or self.face_mode == "board" and "board" not in available:
                 auxiliaries.clear()
             if self.face_mode != "board" or "board" not in available:
                 auxiliaries.difference_update({"face_overlay", "board_shell"})
+            self.auto_paths.append(path)
+            if os.path.realpath(path) in self._hint_sources:
+                self.saved_paths.add(path)
+            self.dynamic_sources.update(dynamic)
+            self.source_adjustments[path] = None
             self.source_roles[path] = set(found) | auxiliaries
             self.needed.difference_update(completion_roles(found))
             return not self.needed

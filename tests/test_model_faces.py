@@ -111,7 +111,7 @@ class FaceTests(unittest.TestCase):
 
     def scene(self, name, owner=207, platform=13):
         env = self.UnityPy.load(FIXTURE.read_bytes())
-        # Fixture authoring only. Runtime code never changes a build target.
+        # Author the intended platform of this test input.
         for asset in env.assets:
             asset.target_platform = platform
             asset._m_target_platform = platform
@@ -198,30 +198,15 @@ class FaceTests(unittest.TestCase):
         (self.selected / faces.COMPANION_HINT).write_bytes(b' ' * (faces.MAX_HINT_BYTES + 1))
         self.assertEqual(list(self.plan()._verified_companions()), [])
 
-    def test_saved_face_hint_still_rejects_wrong_character_and_platform(self):
+    def test_saved_face_hint_still_rejects_wrong_character(self):
         edited = self.selected / 'edited.unity'
-        for change in ('owner', 'platform'):
-            with self.subTest(change=change):
-                raw = self.donor(208 if change == 'owner' else 207)
-                if change == 'platform':
-                    env = self.UnityPy.load(raw)
-                    current = next(iter(self.plan()._body_platforms))
-                    for asset in env.assets:
-                        asset.target_platform = 13 if current != 13 else 9
-                        asset._m_target_platform = int(asset.target_platform)
-                        asset.mark_changed()
-                    raw = env.file.save(packer='original')
-                edited.write_bytes(raw)
-                self.write_companion_hint(edited)
-                plan = self.plan()
-                candidates = list(plan._verified_companions())
-                self.assertEqual(candidates, [str(edited)])
-                if change == 'platform':
-                    with self.assertRaisesRegex(faces.SavedFacePlatformMismatch, "edited.unity.*iOS"):
-                        plan._accept(candidates[0])
-                else:
-                    self.assertFalse(plan._accept(candidates[0]))
-                self.assertEqual(plan.auto_paths, [])
+        edited.write_bytes(bundle([(role + '.assets', self.scene(role, owner=208)) for role in ('Face', 'Eyes')]))
+        self.write_companion_hint(edited)
+        plan = self.plan()
+        candidates = list(plan._verified_companions())
+        self.assertEqual(candidates, [str(edited)])
+        self.assertFalse(plan._accept(candidates[0]))
+        self.assertEqual(plan.auto_paths, [])
 
     def test_compatible_saved_edited_face_keeps_priority_for_generic_or_known_body(self):
         for body_platform, face_platform, stock_platform in [(-2, 9, 13), (9, -2, 9)]:
@@ -243,15 +228,32 @@ class FaceTests(unittest.TestCase):
                 self.assertEqual(saved.read_bytes(), edited)
                 self.assertEqual({int(a.target_platform) for a in self.UnityPy.load(edited).assets}, {face_platform})
 
-    def test_conflicting_bound_face_is_not_silently_replaced_with_stock(self):
-        self.body.write_bytes(self.scene('Body', platform=9))
-        saved = self.selected / 'saved-android-face.unity'; saved.write_bytes(self.donor(platform=13))
-        original = saved.read_bytes()
-        (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor(platform=9))
+    def test_saved_face_of_same_character_takes_priority_with_either_mobile_header(self):
+        for body_platform, face_platform in ((9, 13), (13, 9)):
+            with self.subTest(body=body_platform, face=face_platform):
+                self.body.write_bytes(self.scene('Body', platform=body_platform))
+                saved = self.selected / 'saved-edited-face.unity'
+                original = bundle([(role + '.assets', self.scene(role, platform=face_platform)) for role in ('Face', 'Eyes')])
+                saved.write_bytes(original)
+                (self.library / 'ch0207_facedynamic.unity').write_bytes(self.donor(platform=body_platform))
+                self.write_companion_hint(saved)
+                plan = self.plan()
+                with patch.object(plan, '_known_local') as known:
+                    self.assertEqual(plan.resolve(), [str(saved)])
+                known.assert_not_called()
+                self.assertEqual(saved.read_bytes(), original)
+
+    def test_saved_face_stays_bound_when_body_already_has_a_complete_face(self):
+        self.body.write_bytes(bundle([(role + '.assets', self.scene(role)) for role in ('Body', 'Face', 'Eyes')]))
+        saved = self.selected / 'custom-edited-face.unity'
+        saved.write_bytes(bundle([(role + '.assets', self.scene(role)) for role in ('Face', 'Eyes')]))
         self.write_companion_hint(saved)
-        with self.assertRaisesRegex(viewer.ModelViewerError, "saved-android-face.unity.*Android"):
-            viewer.prepare([str(self.body)], face_context=self.context)
-        self.assertEqual(saved.read_bytes(), original)
+        plan = self.plan()
+        self.assertFalse(plan.needed)
+        self.assertEqual(plan.resolve(), [str(saved)])
+        self.assertEqual(plan.saved_paths, {str(saved)})
+        self.assertEqual(plan.source_roles[str(saved)], set())
+        self.assertEqual(plan.status, 'already_present')
 
     def test_ambiguous_bound_face_is_not_silently_replaced_with_stock(self):
         self.body.write_bytes(self.scene('Body', platform=9))

@@ -246,7 +246,7 @@ class ViewerTransplantTests(unittest.TestCase):
         raw = costume_fixture(platform=-2, body_owner=207)
         self.source.write_bytes(raw); self.donor.write_bytes(raw)
         # Author a tiny original iOS face fixture with an already-baked pixel
-        # edit. Header changes here create test inputs; production never retags.
+        # edit. The unassigned wearer keeps its companion's native header.
         helper = FaceTests(); helper.UnityPy = UnityPy
         environment = UnityPy.load(helper.donor(owner=207))
         for asset in environment.assets:
@@ -294,6 +294,103 @@ class ViewerTransplantTests(unittest.TestCase):
         self.assertEqual(edited[0].read_bytes(), original_body)
         self.assertEqual(self.donor.read_bytes(), original_donor)
         self.assertEqual(face.read_bytes(), face_raw)
+
+    def test_explicit_opposite_face_is_relabelled_without_rewriting_assets_in_both_directions(self):
+        from test_model_faces import FaceTests, bundle
+        from webtools.core import viewer_mod_flow, viewer_mod_package, viewer_mod_sources
+
+        helper = FaceTests()
+        helper.UnityPy = UnityPy
+        pixels = bytes([210, 30, 80, 255]) * 4
+
+        def serialized_objects(raw):
+            return {asset.name: {obj.path_id: (obj.type.name, obj.get_raw_data()) for obj in asset.objects.values()}
+                    for asset in UnityPy.load(raw).assets}
+
+        for body_platform, face_platform in ((13, 9), (9, 13)):
+            with self.subTest(wearer=body_platform, face=face_platform):
+                directory = self.source.parent / str(body_platform)
+                directory.mkdir()
+                wearer, donor, face = (directory / name for name in ('wearer.unity', 'donor.unity', 'baked-face.unity'))
+                body_raw = costume_fixture(platform=body_platform, body_owner=207)
+                wearer.write_bytes(body_raw)
+                donor.write_bytes(body_raw)
+                environment = UnityPy.load(bundle([(name + '.assets', helper.scene(name, 207, face_platform))
+                                                    for name in ('Face', 'Eyes')]))
+                for obj in environment.objects:
+                    if obj.type.name == 'Texture2D':
+                        tree = obj.read_typetree()
+                        tree['image data'] = pixels
+                        obj.save_typetree(tree)
+                face_raw = environment.file.save(packer='original')
+                face.write_bytes(face_raw)
+                original_objects = serialized_objects(face_raw)
+                original_textures = [bytes(obj.read().get_image_data()) for obj in UnityPy.load(face_raw).objects
+                                     if obj.type.name == 'Texture2D']
+                self.assertEqual(original_textures, [pixels, pixels])
+
+                # An existing saved association previews the exact opposite-platform face.
+                sidecar = directory / viewer_transplants.COMPANION_HINT
+                face_sha256 = hashlib.sha256(face_raw).hexdigest()
+                sidecar.write_text(json.dumps({'version': 1,
+                    'body': {'file': wearer.name, 'sha256': hashlib.sha256(body_raw).hexdigest()},
+                    'companions': [{'file': face.name, 'sha256': face_sha256}]}))
+                associated = model_viewer.prepare([str(wearer)], rigged=True,
+                    face_context={'enabled': True, 'allow_download': False})
+                verified = model_viewer.get_editing_companions(associated['id'])
+                self.assertEqual([(row['path'], row['sha256']) for row in verified], [(str(face), face_sha256)])
+                sidecar.unlink()
+
+                # The normal picker selects the body and loose face together.
+                # Only reopening the graft relies on its saved companion hint.
+                selected = [str(wearer), str(face)]
+                preview = model_viewer.prepare(selected, rigged=True, face_context={'enabled': False})
+                self.assertEqual(model_viewer.get_editing_companions(preview['id']), [])
+                token = preview['id']
+                model_edits.register_session(token, selected, preview['rig'])
+
+                for iteration in range(2):
+                    request = viewer_transplants.validate_request(self.request(token=token, donor=str(donor),
+                        operation='part', partRoot='BreastSize'))
+                    job = Job(secrets.token_hex(6), 'viewer_transplant')
+                    viewer_transplants.run_transplant(job, request, output_root=self.root / 'modded/viewer',
+                                                      cache_root=self.root / '.viewer-cache')
+                    self.assertEqual(len(job.output_paths()), 1)
+                    output = Path(job.output_paths()[0])
+                    self.assertEqual(viewer_transplants._platform(output), body_platform)
+                    hint = json.loads((output.parent / viewer_transplants.COMPANION_HINT).read_text())
+                    self.assertEqual(hint['body']['sha256'], hashlib.sha256(output.read_bytes()).hexdigest())
+                    self.assertEqual(len(hint['companions']), 1)
+                    companion = hint['companions'][0]
+                    copied = output.parent / companion['file']
+                    rewritten = copied.read_bytes()
+                    self.assertEqual(companion['sha256'], hashlib.sha256(rewritten).hexdigest())
+                    self.assertEqual(viewer_transplants._platform(copied), body_platform)
+                    self.assertEqual(serialized_objects(rewritten), original_objects)
+                    self.assertEqual([bytes(obj.read().get_image_data()) for obj in UnityPy.load(rewritten).objects
+                                      if obj.type.name == 'Texture2D'], original_textures)
+
+                    selected = [str(output)]
+                    reopened = model_viewer.prepare(selected, rigged=True,
+                        face_context={'enabled': True, 'allow_download': False, 'library_roots': [str(directory)]})
+                    verified = model_viewer.get_editing_companions(reopened['id'])
+                    self.assertEqual([(row['path'], row['sha256']) for row in verified],
+                                     [(str(copied), companion['sha256'])], iteration)
+                    token = reopened['id']
+                    model_edits.register_session(token, selected, reopened['rig'], companions=verified)
+
+                self.assertIsNone(viewer_mod_sources._model_facts(rewritten)['owner'])
+                context = model_edits.mod_source_context(token)
+                exported = model_edits.export(token, self.request()['state'], self.root / 'install-preview', allow_empty=True)
+                exported['metadata'] = {}  # Identify this face by its prefabs, without a costume hint.
+                body_export, face_inputs = viewer_mod_flow._package_inputs(context, exported)
+                records = viewer_mod_package._verified_face_companions(body_export, face_inputs)
+                self.assertEqual([(row['owner'], row['platform']) for row in records],
+                                 [(207, 'android' if body_platform == 13 else 'ios')])
+                self.assertEqual(wearer.read_bytes(), body_raw)
+                self.assertEqual(donor.read_bytes(), body_raw)
+                self.assertEqual(face.read_bytes(), face_raw)
+                self.assertEqual(viewer_transplants._platform(face), face_platform)
 
     def test_concrete_wrong_face_rejected_before_part_graft_with_names_and_platforms(self):
         self.source.write_bytes(costume_fixture(platform=9)); self.donor.write_bytes(costume_fixture(platform=9))
