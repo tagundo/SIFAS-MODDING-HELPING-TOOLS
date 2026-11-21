@@ -782,7 +782,8 @@ def _open_saved(archive, entries):
     restore_spotlight = "stageSpotlight" not in project and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_12_spot")
         for track in project["tracks"])
-    restore_speed_back = "stageSpeedBack" not in project and any(
+    speed_back = project.get("stageSpeedBack")
+    restore_speed_back = (not isinstance(speed_back, dict) or "centerStars" not in speed_back) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/light")
         and any(event.get("label") == "fx_dis_so2056_09" or event["values"].get("prefabGameObject") == {
             "m_FileID": 0, "m_PathID": "9155575924868579619",
@@ -806,9 +807,14 @@ def _open_saved(archive, entries):
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageSpeedBack"):
+            for field in ("splitScreen", "stageTitle", "stageSpotlight"):
                 if field in original:
                     project[field] = original[field]
+            rebuilt_background = original.get("stageSpeedBack")
+            if rebuilt_background and not isinstance(speed_back, dict):
+                project["stageSpeedBack"] = rebuilt_background
+            elif rebuilt_background and "centerStars" in rebuilt_background:
+                project["stageSpeedBack"] = {**speed_back, "centerStars": rebuilt_background["centerStars"]}
             rebuilt_ribbons = original.get("stageRibbons")
             if rebuilt_ribbons and not isinstance(ribbons, dict):
                 project["stageRibbons"] = rebuilt_ribbons

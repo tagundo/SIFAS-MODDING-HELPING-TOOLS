@@ -80,6 +80,17 @@
     mesh.matrix.fromArray(data.matrix);
     mesh.matrixAutoUpdate = false;
     mesh.visible = false;
+    let stars = null;
+    if (vector(data.centerStars?.position, 3)) {
+      geometry.computeBoundingBox();
+      const backgroundCenter = geometry.boundingBox.getCenter(new T.Vector3()).applyMatrix4(mesh.matrix);
+      const starCenter = new T.Vector3().fromArray(data.centerStars.position);
+      // The fixed pair order holds while center separation is below the
+      // difference in the original sort biases.
+      if (backgroundCenter.distanceTo(starCenter) < 4) {
+        stars = await global.MVStudioCenterStars?.apply(T, root, data.centerStars);
+      }
+    }
     root.add(mesh);
     let tracks, track, disposed = false;
     return {
@@ -92,10 +103,13 @@
           track = matches.length === 1 ? matches[0] : null;
         }
         const event = !track?.muted && track?.events.find(row => row.id === data.eventId);
-        mesh.visible = Boolean(project?.quality?.values?.stage_display !== false && title.neutralClip(event) &&
-          time >= event.start && time < event.start + Math.min(event.duration, data.lifetime));
+        const active = project?.quality?.values?.stage_display !== false && title.neutralClip(event) &&
+          time >= event.start && time < event.start + event.duration;
+        const elapsed = active ? time - event.start : null;
+        stars?.update(elapsed);
+        mesh.visible = active && elapsed < data.lifetime;
         if (!mesh.visible) return;
-        const local = Math.min(data.duration, time - event.start);
+        const local = Math.min(data.duration, elapsed);
         const [sx, sy, ox, oy] = data.uvCurves.map(curve => motion.evaluate(curve, local));
         uv.set(sx, sy, ox, 1 - sy - oy);
       },
@@ -103,6 +117,7 @@
         if (disposed) return;
         disposed = true;
         root.remove(mesh);
+        stars?.dispose();
         geometry.dispose();
         material.dispose();
         texture.dispose();

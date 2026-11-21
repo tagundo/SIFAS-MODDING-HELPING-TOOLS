@@ -224,6 +224,20 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageTitle"], project["stageTitle"])
         self.assertEqual(reopened["stageSpeedBack"], display)
 
+        legacy_display = {**display, "matrix": [1, 2, 3]}
+        project["stageSpeedBack"] = legacy_display
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        stars = {"seed": 3710075818}
+        for companion in ({}, {"centerStars": stars}):
+            with self.subTest(restored=bool(companion)), ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={
+                    "stageSpeedBack": {**display, "matrix": [3, 2, 1], **companion},
+                },
+            ):
+                reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                self.assertEqual(reopened["stageSpeedBack"], {**legacy_display, **companion})
+                self.assertEqual(reopened["tracks"], project["tracks"])
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

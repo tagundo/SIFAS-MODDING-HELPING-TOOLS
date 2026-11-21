@@ -262,5 +262,5 @@
     };
   }
 
-  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit };
+  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit, nativeColor, validNativeColor };
 })(typeof window !== "undefined" ? window : globalThis);

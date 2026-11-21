@@ -117,7 +117,7 @@ def _geometry(reader, particle_color, deadline):
 
 
 def _prefab(objects, game, deadline):
-    from . import mv_studio_speed_back_animation
+    from . import mv_studio_center_stars, mv_studio_speed_back_animation
 
     outer = title._components(objects, game, {"Transform"})
     if outer is None:
@@ -163,7 +163,8 @@ def _prefab(objects, game, deadline):
     x, y, z = pose["translation"]
     sx, sy, sz = pose["scale"]
     matrix = [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, x, y, z, 1]
-    return {**geometry, **animation, "lifetime": lifetime, "matrix": matrix}, texture
+    center = mv_studio_center_stars.read(objects, leaves["stars_center"], deadline)
+    return {**geometry, **animation, "lifetime": lifetime, "matrix": matrix}, texture, center
 
 
 def read(objects, mono, tracks, deadline):
@@ -198,11 +199,20 @@ def read(objects, mono, tracks, deadline):
             continue
     if len(matches) != 1:
         return None
-    event, track, background, source = matches[0]
+    event, track, background, source, center = matches[0]
     try:
         texture = particles._texture(source, deadline)
     except title._UNSUPPORTED:
         return None
     if not texture or len(texture) != 10:
         return None
-    return {**background, "texture": texture, "trackId": track["id"], "eventId": event["id"]}
+    result = {**background, "texture": texture, "trackId": track["id"], "eventId": event["id"]}
+    if center is not None:
+        emitter, source = center
+        try:
+            mips = particles._texture(source, deadline)
+            if mips and len(mips) == 10:
+                result["centerStars"] = {**emitter, "texture": mips}
+        except title._UNSUPPORTED:
+            pass
+    return result

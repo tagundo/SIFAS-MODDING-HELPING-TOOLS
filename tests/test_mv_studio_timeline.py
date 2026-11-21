@@ -249,6 +249,13 @@ class ActualTimelineTests(unittest.TestCase):
                                  [512 >> index for index in range(10)])
                 for curve, expected in zip(effect["uvCurves"], (1.535, 1, .465, 69.75)):
                     self.assertAlmostEqual(_evaluate(curve, 23.25), expected, places=6)
+                stars = effect["centerStars"]
+                self.assertEqual(stars["seed"], 3710075818)
+                self.assertEqual((stars["size"], stars["lifetime"], stars["rate"], stars["cycle"]), (2, 1, 2, 5))
+                self.assertEqual(stars["uv"], [.25, .25, 0, .25])
+                self.assertAlmostEqual(stars["sizePeriod"], .2)
+                self.assertEqual([row["width"] for row in stars["texture"]],
+                                 [512 >> index for index in range(10)])
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 
