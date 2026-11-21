@@ -304,23 +304,29 @@
       if (!disposed && visible && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
     }
 
-    function resize() {
+    function resize(forceDraw = true) {
       const width = mount.clientWidth, height = mount.clientHeight;
-      if (disposed || !width || !height) return;
+      if (disposed || !visible || !width || !height) return;
       const displayed = preparation?.shown ? preparation.preview : project;
       const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
       const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
         ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
       const previewResolution = resolution * (preparation?.shown ? 1 : previewScale);
-      if (renderer.getPixelRatio() !== previewResolution) renderer.setPixelRatio(previewResolution);
+      const changedRatio = renderer.getPixelRatio() !== previewResolution;
+      renderer.getSize(size);
+      const changedSize = size.x !== width || size.y !== height;
       renderHeight = nativeHeight;
       viewportDirty = false;
-      renderer.getSize(size);
-      if (size.x !== width || size.y !== height) renderer.setSize(width, height, false);
+      if (!forceDraw && !changedRatio && !changedSize) return;
+      if (changedRatio) renderer.setPixelRatio(previewResolution);
+      if (changedSize) renderer.setSize(width, height, false);
+      const aspect = width / height;
       for (const camera of [editorCamera, liveCamera, stageCamera]) {
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
+        if (camera.aspect !== aspect) {
+          camera.aspect = aspect;
+          camera.updateProjectionMatrix();
+        }
       }
       draw();
     }
@@ -901,7 +907,7 @@
       } else draw();
     }
 
-    const observer = global.ResizeObserver ? new global.ResizeObserver(resize) : null;
+    const observer = global.ResizeObserver ? new global.ResizeObserver(() => resize(false)) : null;
     if (observer) observer.observe(mount);
     controls.addEventListener("change", requestDraw);
     resize();
@@ -910,7 +916,12 @@
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       frameAll,
-      setVisible(value) { visible = Boolean(value); if (visible) resize(); else cancelDraw(); },
+      setVisible(value) {
+        const changed = visible !== Boolean(value);
+        visible = Boolean(value);
+        if (visible) resize(changed);
+        else cancelDraw();
+      },
       dispose() {
         disposed = true;
         if (request) request.abort();

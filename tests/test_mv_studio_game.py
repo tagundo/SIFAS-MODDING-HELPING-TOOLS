@@ -151,3 +151,29 @@ class MVGameCatalogTests(unittest.TestCase):
             motion.write_bytes(b"Different authored timeline clip data")
             open_actor()
             self.assertEqual(prepare.call_count, 3)
+
+    def test_exact_game_stage_reuses_successful_media_across_staging_directories(self):
+        first = self.root / "old-import" / "game-2.unity"
+        repeated = self.root / "new-import" / "game-2.unity"
+        for file in (first, repeated):
+            file.parent.mkdir()
+            file.write_bytes(b"Verified native stage source")
+        glb = model_viewer._Glb().finish()
+        with (
+            patch.object(mv_studio, "_root", return_value=self.root),
+            patch.object(model_viewer, "prepare", return_value={"id": "stage", "warnings": []}) as prepare,
+            patch.object(model_viewer, "get_model", return_value=glb),
+        ):
+            output = mv_studio._preview(first, reuse=True)
+            self.assertEqual(mv_studio._preview(repeated, reuse=True), output)
+            self.assertEqual(prepare.call_count, 1)
+            media_path = mv_studio.media(output[0].rsplit("/", 1)[-1])[0]
+            media_path.write_bytes(glb[:-1] + bytes([glb[-1] ^ 1]))
+            self.assertEqual(mv_studio._preview(repeated, reuse=True), output)
+            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(media_path.read_bytes(), glb)
+            repeated.write_bytes(b"Changed stage source")
+            prepare.return_value["warnings"] = ["A stage texture was temporarily unavailable."]
+            mv_studio._preview(repeated, reuse=True)
+            mv_studio._preview(repeated, reuse=True)
+            self.assertEqual(prepare.call_count, 4)

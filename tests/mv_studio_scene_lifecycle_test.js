@@ -15,7 +15,7 @@ function latch() {
 function fixture(visible = true) {
   const frames = [], samples = [], models = new Map(), holds = new Map(), queued = new Map();
   const fetched = [], parsing = new Map();
-  let world, renderer, serial = 0;
+  let world, renderer, onResize, serial = 0;
   THREE.WebGLRenderer = class {
     constructor() {
       renderer = this;
@@ -76,6 +76,11 @@ function fixture(visible = true) {
   const window = {
     THREE, requestAnimationFrame(callback) { queued.set(++serial, callback); return serial; },
     cancelAnimationFrame(id) { queued.delete(id); },
+    ResizeObserver: class {
+      constructor(callback) { onResize = callback; }
+      observe() {}
+      disconnect() {}
+    },
     SifasMaterial: { ...shader, apply(root) {
       const id = root.userData.id, info = models.get(id), mesh = info.mesh;
       const outline = new THREE.SkinnedMesh(mesh.geometry, new THREE.ShaderMaterial({
@@ -101,15 +106,47 @@ function fixture(visible = true) {
   }
   vm.runInNewContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'),
     { window, fetch, AbortController, Uint8Array, Uint16Array });
-  const app = window.MVStudioScene.create({ clientWidth: 1280, clientHeight: 720, appendChild() {} },
+  const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
+  const app = window.MVStudioScene.create(mount,
     { visible, onError(message) { throw new Error(message); } });
-  return { app, frames, samples, models, holds, queued, fetched, parsing, renderer, get world() { return world; } };
+  return { app, frames, samples, models, holds, queued, fetched, parsing, renderer, mount, window,
+    checkResize: onResize, get world() { return world; } };
 }
 
 function project(id) {
   return { token: `project-${id}`, performers: [{ id: 'solo', position: 1, glb: address(id), motion: {}, transform: { position: [0,0,0] } }],
     tracks: [{ kind: 'camera', binding: '/MainCamera', events: [{ start: 0, duration: 10,
       values: { position: [0,0,10], rotation: [0,0,0,1], fov: 45 } }] }] };
+}
+
+function checkResizeDraws() {
+  const f = fixture();
+  f.checkResize();
+  f.app.setVisible(true);
+  assert.equal(f.frames.length, 1, 'an initial resize notification and repeated visibility do not duplicate the draw');
+  f.mount.clientWidth = 800;
+  f.checkResize();
+  assert.equal(f.frames.length, 2);
+  assert.equal(f.renderer.size.x, 800);
+  f.window.devicePixelRatio = 2;
+  f.checkResize();
+  assert.equal(f.frames.length, 3, 'a changed pixel ratio redraws even at the same logical size');
+  assert.equal(f.renderer.getPixelRatio(), 2);
+  f.app.resize();
+  assert.equal(f.frames.length, 4, 'explicit scene resize still requests a draw');
+  f.app.setVisible(false);
+  f.mount.clientWidth = 640;
+  f.window.devicePixelRatio = 1;
+  f.checkResize();
+  f.app.resize();
+  assert.equal(f.frames.length, 4);
+  assert.equal(f.renderer.size.x, 800, 'a hidden canvas keeps its allocation until shown');
+  assert.equal(f.renderer.getPixelRatio(), 2);
+  f.app.setVisible(true);
+  assert.equal(f.frames.length, 5);
+  assert.equal(f.renderer.size.x, 640);
+  assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.dispose();
 }
 
 async function checkStagePreparation() {
@@ -215,6 +252,7 @@ async function checkStagePreparation() {
 }
 
 (async () => {
+  checkResizeDraws();
   const f = fixture(), first = project(1);
   await f.app.load(first);
   assert.deepEqual(f.frames.at(-1), ['model-1', 'outline-1']);
@@ -270,5 +308,5 @@ async function checkStagePreparation() {
   assert.equal(f.models.get(3).releases, 1);
   assert.equal(f.queued.size, 0);
   await checkStagePreparation();
-  console.log('MV Studio render-only scrubbing, conservative culling, skeleton lifecycle and stage reuse passed');
+  console.log('MV Studio viewport, render-only scrubbing, conservative culling, skeleton lifecycle and stage reuse passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

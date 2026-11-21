@@ -36,6 +36,7 @@ _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
 _ACTOR_PREVIEWS = OrderedDict()
+_STAGE_PREVIEWS = OrderedDict()
 _ACTOR_PREVIEW_ENTRIES = 24
 _ACTOR_PREVIEW_METADATA_BYTES = 4 * 1024 * 1024
 
@@ -177,12 +178,13 @@ def _path(value):
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
     models = [path, *companions]
     key = None
-    if reuse and performer and motions and companions:
-        # Only game imports with all inputs specified can reuse a conversion.
-        # Missing companions let the viewer discover local faces dynamically.
+    cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
+    if reuse and ((performer and motions and companions) or (not performer and not motions and not companions)):
+        # Game stage previews depend on one exact input. Performer previews
+        # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
                tuple((item.name, game_models._sha(item)) for item in motions))
-        cached = model_viewer._conversion_get(_ACTOR_PREVIEWS, key, time.monotonic() + model_viewer.BUILD_SECONDS)
+        cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
             try:
@@ -199,11 +201,15 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
     if payload is None:
         raise ValueError("The 3D preview expired. Reopen the asset.")
     url, rig = _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
-    if key is not None and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
-        model_viewer._conversion_put(
-            _ACTOR_PREVIEWS, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
-            max_bytes=_ACTOR_PREVIEW_METADATA_BYTES, max_entries=_ACTOR_PREVIEW_ENTRIES,
-        )
+    if key is not None:
+        if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
+            model_viewer._conversion_put(
+                cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
+                max_bytes=_ACTOR_PREVIEW_METADATA_BYTES, max_entries=_ACTOR_PREVIEW_ENTRIES,
+            )
+        elif not performer and not prepared.get("warnings"):
+            model_viewer._conversion_put(cache, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
+                                         max_bytes=16 * 1024, max_entries=32)
     return url, rig
 
 
@@ -412,7 +418,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 if preview_path is None:
                     continue
                 try:
-                    row["previewUrl"], _ = _preview(preview_path)
+                    row["previewUrl"], _ = _preview(preview_path, reuse=True)
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):
@@ -424,7 +430,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
             if prop_file is not None:
                 try:
-                    prop_row["previewUrl"], _ = _preview(prop_file)
+                    prop_row["previewUrl"], _ = _preview(prop_file, reuse=True)
                 except (ValueError, OSError) as error:
                     warnings.append(f"{prop_row['label']}: {error}")
             if on_stage is not None and project["stage"] is not None:
