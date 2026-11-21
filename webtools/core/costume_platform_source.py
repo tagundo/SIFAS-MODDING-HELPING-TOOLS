@@ -1,16 +1,18 @@
 """Resolve the original counterpart of one edited costume body."""
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import os
 from pathlib import Path
 import re
 import sqlite3
+import tempfile
 import time
+import zipfile
 
 from webtools import filebrowser
 
 from . import costume_pack_sources, game_models as game, viewer_mod_flow
-from . import viewer_mod_sources, viewer_physics_runtime
+from . import viewer_archive, viewer_mod_package, viewer_mod_sources, viewer_physics_runtime
 from .viewer_cache import game_models_dir
 
 DIRECTIONS = {"android_to_ios": ("android", "ios"), "ios_to_android": ("ios", "android")}
@@ -19,6 +21,8 @@ AMBIGUOUS = "More than one original costume matches this bundle. Choose the cost
 WRONG_REGION = "The edited bundle's source belongs to a different game region. Select that region or choose the original manually."
 _PREFAB = re.compile(r"assets/llas/resources/characters/models/ch(\d{4})/ch\1_[a-z0-9_]{1,96}_member\.prefab")
 _FILENAME_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?:_[a-z0-9_-]{1,60})?\.unity(?:3d)?", re.I)
+_DISPLAY_HINT = re.compile(r"ch(\d{4})_suit([1-9][0-9]{0,11})_(primary|unmasked)(?=$|[^a-z0-9])", re.I)
+_NATIVE_PLATFORMS = {"android": 13, "ios": 9}
 _CAB = re.compile(r"cab-[0-9a-f]{32}")
 _PACK_WRAPPERS = ("", "files", "files/files", "static")
 _PACK_BUCKETS = tuple(prefix + str(bucket) for prefix in ("pak", "pkg") for bucket in range(10))
@@ -36,6 +40,120 @@ def _checked_path(value, *, directory=False):
     if not (path.is_dir() if directory else path.is_file()):
         raise ValueError("The selected costume bundle or packs folder is unavailable.")
     return path
+
+
+
+def _archive_models(archive):
+    members, manifests, models = {}, [], set()
+    unpacked = 0
+    entries = archive.infolist()
+    if not 1 <= len(entries) <= viewer_archive.MAX_ENTRIES:
+        raise ValueError("The costume ZIP contains too many files.")
+    for info in entries:
+        relative = viewer_archive._entry_path(info)
+        key = str(relative).casefold()
+        unpacked += info.file_size
+        if key in members:
+            raise ValueError("The costume ZIP contains duplicate file paths.")
+        if not 0 <= unpacked <= viewer_archive.MAX_UNPACKED_BYTES:
+            raise ValueError("The costume ZIP expands beyond the model import limit.")
+        members[key] = info
+        if info.is_dir():
+            continue
+        if relative.name.lower() == "modinstall.txt":
+            if info.file_size > viewer_archive.MAX_MANIFEST_BYTES:
+                raise ValueError("The costume manifest is too large.")
+            manifests.append((info, relative))
+            continue
+        with archive.open(info) as source:
+            header = source.read(48)
+        if viewer_archive._model_header(header, info.file_size):
+            models.add(key)
+    if not manifests:
+        if len(models) != 1:
+            raise ValueError("Choose a costume ZIP containing one Unity body or one installer manifest.")
+        return [members[key] for key in models], ()
+    if len(manifests) != 1:
+        raise ValueError("The costume ZIP contains multiple installer manifests.")
+    info, relative = manifests[0]
+    raw = archive.read(info)
+    values, _ = viewer_mod_package._manifest(raw, "")
+    references, conflicts = viewer_archive._manifest_model_references(
+        raw, relative, {key for key, member in members.items() if not member.is_dir()},
+    )
+    if conflicts or any(values.get(key) and references.get(key) is None
+                        for key in viewer_archive._MODEL_FIELDS):
+        raise ValueError("The costume ZIP has missing or conflicting model references.")
+    declared_bodies = [references[key] for key in viewer_archive._BODY_FIELDS if references[key]]
+    bodies = set(declared_bodies)
+    companions = {references[key] for key in viewer_archive._COMPANION_FIELDS if references[key]}
+    if len(bodies) != len(declared_bodies):
+        raise ValueError("The costume ZIP reuses one body for multiple installer roles.")
+    if not bodies or bodies & companions or models - companions != bodies:
+        raise ValueError("The costume ZIP does not declare each Unity model as a body or companion.")
+    names = tuple(values[key] for key in viewer_mod_package._NAMES if isinstance(values.get(key), str))
+    return [members[key] for key in sorted(bodies)], names
+
+
+def _read_archive_body(path, source_platform):
+    import UnityPy
+
+    from .model_viewer import _preflight_bundle
+
+    # Preflight and parse the same bounded snapshot, including when a mod is
+    # being copied into the library while the chooser is open.
+    snapshot = viewer_mod_sources._read(path)
+    with tempfile.TemporaryDirectory(prefix="costume-conversion-zip-") as temporary:
+        private = Path(temporary) / "source.zip"
+        private.write_bytes(snapshot)
+        del snapshot
+        viewer_archive._preflight_zip(private)
+        try:
+            with zipfile.ZipFile(private) as archive:
+                models, names = _archive_models(archive)
+                selected = None
+                for info in models:
+                    if not 0 < info.file_size <= game.MAX_MODEL_BYTES:
+                        raise ValueError("A costume ZIP body exceeds the model import limit.")
+                    raw = archive.read(info)
+                    if not raw.startswith(b"UnityFS\0"):
+                        raise ValueError("The costume ZIP needs original UnityFS body bundles.")
+                    _preflight_bundle(raw)
+                    try:
+                        environment = UnityPy.load(raw)
+                        platforms = {int(asset.target_platform) for asset in environment.assets}
+                    except Exception as exc:
+                        raise ValueError("A costume ZIP body could not be read as a native Unity bundle.") from exc
+                    if len(platforms) != 1 or not platforms <= set(_NATIVE_PLATFORMS.values()):
+                        raise ValueError("The costume ZIP contains a body without one native platform.")
+                    if platforms != {_NATIVE_PLATFORMS[source_platform]}:
+                        continue
+                    if selected is not None:
+                        raise ValueError("The costume ZIP contains multiple bodies for this conversion platform.")
+                    selected = raw, info.filename
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, RuntimeError) as exc:
+            raise ValueError("The costume ZIP could not be read. Check the archive and try again.") from exc
+    if selected is None:
+        label = "Android" if source_platform == "android" else "iOS"
+        raise ValueError(f"The costume ZIP contains no {label} body for this conversion direction.")
+    raw, member = selected
+    return raw, member, names
+
+
+@contextmanager
+def converter_input(path, source_platform, *, expected_sha256=None):
+    """Supply the existing converter with a pinned native body file."""
+    if path.suffix.lower() != ".zip":
+        yield path, expected_sha256
+        return
+    raw, _, _ = _read_archive_body(_checked_path(str(path)), source_platform)
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ValueError("The costume body in the ZIP changed. Match the original again.")
+    with tempfile.TemporaryDirectory(prefix="costume-conversion-body-") as temporary:
+        body = Path(temporary) / "body.unity"
+        body.write_bytes(raw)
+        yield body, digest
 
 
 def _proof(path, digest):
@@ -259,6 +377,36 @@ def _unity_selection(path, env, *, repo_root, region, language, platforms, packs
     return "unknown", None
 
 
+
+def _archive_selection(member, names, env, *, repo_root, region, language, platform, packs):
+    identity = _body_identity(env)
+    if identity is None:
+        return "unknown", None
+    owner, prefab, _, _ = identity
+    with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
+        candidates = _named_catalog_matches(db, owner, prefab)
+        hints = [_FILENAME_HINT.fullmatch(Path(member).name)]
+        hints.extend(_DISPLAY_HINT.match(name) for name in names)
+        candidates.update((int(hint.group(2)), hint.group(3).lower()) for hint in hints
+                          if hint and int(hint.group(1)) == owner)
+        matched = set()
+        for suit_id, variant in sorted(candidates):
+            try:
+                record = game.validate_selection(repo_root, _selection(region, suit_id, variant, platform), language)
+                if record["owner"] != owner or not _matches_local_identity(repo_root, record, packs, identity):
+                    continue
+            except (OSError, ValueError):
+                continue
+            if record.get("attach_key") or _model_aliases(db, owner, record["model"]) != {(suit_id, variant)}:
+                return "ambiguous", None
+            matched.add((suit_id, variant))
+        if len(matched) > 1:
+            return "ambiguous", None
+        if matched:
+            return "matched", matched.pop()
+    return "unknown", None
+
+
 def _label(repo_root, region, suit_id, owner, language):
     extractor = game._extractor()
     with closing(game._readonly(Path(repo_root) / "assets/db" / region / "masterdata.db")) as db:
@@ -286,7 +434,11 @@ def resolve(repo_root, payload, *, language="en", cache_root=None):
     source, target = DIRECTIONS[payload["direction"]]
     cache_root = game_models_dir() if cache_root is None else Path(cache_root)
     packs = _LocalPacks(extra)
-    raw = viewer_mod_sources._read(donor)
+    member, names = None, ()
+    if donor.suffix.lower() == ".zip":
+        raw, member, names = _read_archive_body(donor, source)
+    else:
+        raw = viewer_mod_sources._read(donor)
     if len(raw) > game.MAX_MODEL_BYTES:
         raise ValueError("The edited costume bundle exceeds the model import limit.")
     try:
@@ -299,7 +451,8 @@ def resolve(repo_root, payload, *, language="en", cache_root=None):
               "source_platform": source, "target_platform": target, "donor_path": donor,
               "donor_sha256": hashlib.sha256(raw).hexdigest(), "packs_dir": extra}
     try:
-        status, receipt = _receipt_selection(donor, result["donor_sha256"], repo_root, cache_root)
+        status, receipt = (_receipt_selection(donor, result["donor_sha256"], repo_root, cache_root)
+                           if member is None else ("unknown", None))
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         # A stale or malformed provenance chain never becomes a filename match.
         return result
@@ -312,8 +465,12 @@ def resolve(repo_root, payload, *, language="en", cache_root=None):
     elif status == "ambiguous":
         return {**result, "status": "ambiguous", "message": AMBIGUOUS}
     else:
-        status, identity = _unity_selection(donor, env, repo_root=repo_root, region=region,
-                                            language=language, platforms=(source, target), packs=packs)
+        if member is None:
+            status, identity = _unity_selection(donor, env, repo_root=repo_root, region=region,
+                                                language=language, platforms=(source, target), packs=packs)
+        else:
+            status, identity = _archive_selection(member, names, env, repo_root=repo_root, region=region,
+                                                  language=language, platform=source, packs=packs)
         if status != "matched":
             return {**result, "status": status, "message": AMBIGUOUS if status == "ambiguous" else UNKNOWN}
     suit_id, variant = identity

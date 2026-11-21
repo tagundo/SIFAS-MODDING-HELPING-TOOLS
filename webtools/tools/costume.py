@@ -510,13 +510,12 @@ def run_iosapk_import(job, params):
     ensure_tk_stub()
     ensure_repo_on_path()
     import assetbundle_IosApk_batch_import_plus as converter
+    from webtools.core import costume_platform_source
 
     direction = params.get("direction")
-    if not isinstance(direction, str):
+    if not isinstance(direction, str) or direction not in costume_platform_source.DIRECTIONS:
         raise ValueError("Choose the costume conversion direction.")
-    platform = {"android_to_ios": "ios", "ios_to_android": "android"}.get(direction)
-    if not platform:
-        raise ValueError("Choose the costume conversion direction.")
+    source_platform, platform = costume_platform_source.DIRECTIONS[direction]
     physics_source = params.get("physics_source", "target")
     if physics_source not in ("target", "donor"):
         raise ValueError("Choose which costume's existing swing physics to use.")
@@ -537,7 +536,6 @@ def run_iosapk_import(job, params):
         raise ValueError("Use a filename prefix and suffix without directory separators.")
 
     def library_target(source):
-        from webtools.core import costume_platform_source
         from webtools.core.game_models import ImportCancelled
         from webtools.core.viewer_cache import game_models_dir
         root = Path.cwd()
@@ -568,8 +566,9 @@ def run_iosapk_import(job, params):
     def convert(source, target, original, source_sha256, output):
         if job.should_stop():
             return False
-        result = converter.convert_costume_bundle(source, target, output, platform=platform, physics=physics,
-            source_original_bundle=original, source_expected_sha256=source_sha256)
+        with costume_platform_source.converter_input(source, source_platform, expected_sha256=source_sha256) as (body, digest):
+            result = converter.convert_costume_bundle(body, target, output, platform=platform, physics=physics,
+                source_original_bundle=original, source_expected_sha256=digest)
         job.add_output(str(output))
         job.log(f"{source.name} → {output.name}: {result['copied']} updated objects, "
                 f"{result['added']} new objects, {result['textures_retained']} native textures retained, "
@@ -585,7 +584,8 @@ def run_iosapk_import(job, params):
             raise ValueError("Choose the same original costume for the output platform.")
         job.progress(0, 1)
         target, original, digest = library_target(source) if base_mode == "library" else (Path(params["target"]).expanduser(), None, None)
-        output = single_out_path(out_dir, source, "", suffix)
+        output_source = source.with_suffix(".unity") if source.suffix.lower() == ".zip" else source
+        output = single_out_path(out_dir, output_source, "", suffix)
         if not convert(source, target, original, digest, output):
             return "Costume conversion cancelled."
         job.progress(1, 1)

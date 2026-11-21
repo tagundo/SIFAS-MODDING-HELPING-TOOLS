@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+import zipfile
 
 import UnityPy
 
@@ -148,6 +149,73 @@ class CostumePlatformSourceTests(unittest.TestCase):
             db.execute("DELETE FROM m_suit WHERE id=3")
         with patch.object(platform, "_body_identity", return_value=identity):
             self.assertEqual(self.preview()["status"], "matched")
+
+
+    def write_costume_zip(self, bodies, manifest=None):
+        self.file = self.file.with_name("opaque.zip")
+        with zipfile.ZipFile(self.file, "w", zipfile.ZIP_DEFLATED) as package:
+            for name, raw in bodies.items():
+                package.writestr(name, raw)
+            if manifest is not None:
+                package.writestr("modinstall.txt", manifest)
+
+    def test_zip_label_requires_same_platform_canonical_identity(self):
+        self.write_costume_zip({"opaque-body.unity": self.fixture.helper.payload},
+                               'costume_file = "opaque-body.unity"\n'
+                               'costume_name_ko = "ch0101_suit1_primary · Edited"\n')
+        identity = (101, "assets/llas/resources/characters/models/ch0101/ch0101_co0002_member.prefab",
+                    1, "cab-" + "a" * 32)
+        with sqlite3.connect(self.root / "assets/db/gl/masterdata.db") as db:
+            db.execute("DELETE FROM m_suit WHERE id=3")
+        with patch.object(platform, "_body_identity", side_effect=(identity, None)):
+            self.assertEqual(self.preview()["status"], "unknown")
+        with patch.object(platform, "_body_identity", return_value=identity):
+            self.assertEqual(self.preview()["selection"]["suit"], "suit:1")
+            (self.packs / "basepack").unlink()
+            self.assertEqual(self.preview()["status"], "unknown")
+        self.no_download.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "no iOS body"):
+            self.preview(direction="ios_to_android")
+
+    def test_zip_chooses_verified_native_body_and_pins_conversion_snapshot(self):
+        android = self.fixture.helper.payload
+        extractor = fixtures.extractor
+        ios = bytearray((self.packs / "basepack_ios").read_bytes())
+        extractor.decrypt_section(ios, extractor.FIXED_KEY0, 7, 11)
+        self.write_costume_zip({"bodyA.unity": android, "bodyI.unity": bytes(ios)},
+                               'costume_file = "bodyA.unity"\ncostume_file_ios = "bodyI.unity"\n')
+        archive = self.file.read_bytes()
+        for name, target, raw in (("android", 13, android), ("ios", 9, bytes(ios))):
+            with self.subTest(platform=name):
+                with platform.converter_input(self.file, name) as (body, sha):
+                    self.assertEqual(body.read_bytes(), raw)
+                    self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
+                    self.assertEqual({int(asset.target_platform) for asset in UnityPy.load(str(body)).assets}, {target})
+                self.assertFalse(body.exists())
+        with self.assertRaisesRegex(ValueError, "ZIP changed"):
+            with platform.converter_input(self.file, "android", expected_sha256="0" * 64):
+                self.fail("An unexpected body must not reach the converter.")
+        self.assertEqual(self.file.read_bytes(), archive)
+
+    def test_ambiguous_and_unsafe_archives_are_refused(self):
+        android = self.fixture.helper.payload
+        self.write_costume_zip({"one.unity": android, "two.unity": android},
+                               'costume_file = "one.unity"\ncostume_file_ios = "two.unity"\n')
+        with self.assertRaisesRegex(ValueError, "multiple bodies"):
+            self.preview()
+        self.write_costume_zip({"one.unity": android}, 'costume_file = "missing.unity"\n')
+        with self.assertRaisesRegex(ValueError, "missing or conflicting"):
+            self.preview()
+        self.write_costume_zip({"one.unity": android, "../escape": b"ignored"},
+                               'costume_file = "one.unity"\n')
+        with self.assertRaisesRegex(ValueError, "unsafe file path"):
+            self.preview()
+        escaped = self.root / "executed"
+        self.write_costume_zip({"one.unity": android},
+                               f'open({str(escaped)!r}, "w")\ncostume_file = "one.unity"\n')
+        with self.assertRaisesRegex(ValueError, "literal assignments"):
+            self.preview()
+        self.assertFalse(escaped.exists())
 
     def test_alternate_link_escapes_are_rejected_or_ignored(self):
         self.edited_bundle_from_receipt()
