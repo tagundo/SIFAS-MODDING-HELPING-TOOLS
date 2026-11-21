@@ -9,7 +9,7 @@ from . import mv_studio_stage_motion as motion, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 
 
-SCHEMA = 2
+SCHEMA = 3
 _MAX_EMITTERS = 12
 
 
@@ -77,9 +77,9 @@ def _texture(reader, deadline):
 
 
 def read(objects, mono, tracks, deadline):
-    from . import mv_studio_foot_particles, mv_studio_umbrella_particles
+    from . import mv_studio_finale_flashes, mv_studio_foot_particles, mv_studio_umbrella_particles
 
-    readers = (mv_studio_umbrella_particles.read, mv_studio_foot_particles.read)
+    readers = (mv_studio_finale_flashes.read, mv_studio_umbrella_particles.read, mv_studio_foot_particles.read)
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
     textures, templates, cues = [], [], []

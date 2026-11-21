@@ -4,7 +4,7 @@ import math
 import re
 from zlib import crc32
 
-from . import model_animation, model_viewer as viewer, mv_studio_timeline
+from . import model_animation, model_materials, model_viewer as viewer, mv_studio_timeline
 
 
 _MEMBER_PROP = re.compile(
@@ -12,6 +12,8 @@ _MEMBER_PROP = re.compile(
     r"([A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)/(chp[0-9]+)\Z"
 )
 _FAN_ANGLE = crc32(b"clipUV2Angle")
+_FAN_SHADER = ("cab-2e396210aff4c20f7175085dc1e3e4e6", -8442881240486637179)
+_FAN_TEXTURES = {"_MainTex": 1024, "_RimlightTex": 256}
 
 
 def bindings(tracks):
@@ -115,6 +117,62 @@ def _angle_curves(native, source_name, clips, deadline):
     return curves
 
 
+def _attach_fan_material(scene, materials, obj, tree, exported):
+    """Export the verified native MainProp and unexpanded OutlineProp inputs."""
+    if (set(tree.get("m_ShaderKeywords", "").split()) != {"_RIMLIGHT_ON", "_UV2ANGLE_ON"}
+            or tree.get("m_CustomRenderQueue") != -1 or tree.get("disabledShaderPasses")):
+        return False
+    if mv_studio_timeline._pointer(obj, tree.get("m_Shader")) != _FAN_SHADER:
+        return False
+    if not any(candidate.type.name == "AssetBundle" and candidate.assets_file is obj.assets_file
+               and "asmemberprop.shader.unity3d" in scene.tree(candidate).get("m_Dependencies", [])
+               for candidate in scene.env.objects):
+        return False
+    floats = viewer._properties(tree, "m_Floats")
+    if any(floats.get(name) != value for name, value in (
+            ("_CullMode", 2), ("_OutlineStencilComp", 8), ("_ZWrite", 1),
+            ("_Mode", 0), ("_SrcBlend", 1), ("_DstBlend", 0))):
+        return False
+    envs = viewer._properties(tree, "m_TexEnvs")
+    for name, size in _FAN_TEXTURES.items():
+        source = envs.get(name, {})
+        target = viewer._ref(obj, source.get("m_Texture"))
+        if target is None or target.assets_file is not obj.assets_file or target.type.name != "Texture2D":
+            return False
+        texture = target.read()
+        if (texture.m_Width, texture.m_Height, texture.m_MipCount) != (size, size, size.bit_length()):
+            return False
+        if [source.get("m_Scale", {}).get(axis) for axis in "xy"] != [1, 1] or any(
+                source.get("m_Offset", {}).get(axis) != 0 for axis in "xy"):
+            return False
+    # Keep the original unlit export if an optional source mip cannot be decoded.
+    glb = materials.glb
+    data_size = len(glb.data)
+    tables = {name: len(glb.doc[name]) for name in ("bufferViews", "images", "textures", "samplers")}
+    saved_textures, pixels, texture_count = dict(materials.textures), materials.pixels, scene.stats["textures"]
+    complete = False
+    try:
+        metadata = model_materials.attach_member_metadata(
+            scene, obj, tree, {}, materials.texture, mip_resolver=materials.mip_textures)
+        complete = (metadata["features"]["rimlight"] and not metadata["limitations"]
+                    and all(len(metadata["textures"].get(name, {}).get("mipmaps", ())) == size.bit_length()
+                            for name, size in _FAN_TEXTURES.items()))
+    finally:
+        if not complete:
+            del glb.data[data_size:]
+            for name, count in tables.items():
+                del glb.doc[name][count:]
+            materials.textures, materials.pixels = saved_textures, pixels
+            scene.stats["textures"] = texture_count
+    if not complete:
+        return False
+    # The prop Main pass shares the supported AS/Member equations. The
+    # distinct shader identity selects its original back-face pass in Studio.
+    metadata["shader"] = "AS/MemberProp"
+    exported.setdefault("extras", {})["sifas"] = metadata
+    return True
+
+
 def _mesh(scene, glb, renderer, hand):
     import numpy as np
     from .model_mesh import PreviewMeshHandler
@@ -139,11 +197,14 @@ def _mesh(scene, glb, renderer, hand):
                   "NORMAL": glb.attribute(normals, "VEC3"),
                   "TEXCOORD_0": glb.attribute(uv, "VEC2"),
                   "_MV_FAN_UV": glb.attribute(uv2, "VEC2")}
+    colors = np.asarray(handler.m_Colors, dtype=np.float32)
+    native_colors = (colors.shape == (len(positions), 4) and np.isfinite(colors).all()
+                     and (colors >= 0).all() and (colors <= 1).all())
     materials = viewer._Materials(scene, glb)
     refs = tree.get("m_Materials", [])
     if not refs:
         raise ValueError("The selected fan has no native material.")
-    primitives, limits = [], []
+    primitives, limits, evaluated_materials = [], [], set()
     for index, indices in enumerate(parts):
         if not len(indices):
             continue
@@ -158,6 +219,14 @@ def _mesh(scene, glb, renderer, hand):
                 or type(limit) not in (int, float) or not math.isfinite(limit) or not 0 <= limit <= 360):
             raise ValueError("The selected fan shader has unsupported angle settings.")
         material = materials.material(obj)
+        if native_colors and material not in evaluated_materials:
+            evaluated_materials.add(material)
+            try:
+                native_material = _attach_fan_material(scene, materials, obj, original, glb.doc["materials"][material])
+            except (ValueError, TypeError, KeyError, AttributeError, OSError):
+                native_material = False
+            if native_material and "_SIFAS_COLOR" not in attributes:
+                attributes["_SIFAS_COLOR"] = glb.attribute(colors, "VEC4")
         primitives.append({
             "attributes": attributes, "material": material, "mode": 4,
             "indices": glb.attribute(indices.reshape(-1), "SCALAR", 5123 if len(positions) <= 65535 else 5125),
@@ -191,6 +260,7 @@ def preview(path, native, source_name, binding, deadline):
     limit = _mesh(scene, glb, renderer, hand)
     return glb.finish(), {
         "kind": "fan", "member": binding["member"], "bone": binding["bone"],
+        "binding": "/EntryPoint/Live/Members/" + "/".join(binding["path"]),
         "track": binding["track"], "activation": binding["activation"], "curves": curves,
         "defaultAngle": default, "defaultVisible": scene.active(target), "limit": limit,
     }

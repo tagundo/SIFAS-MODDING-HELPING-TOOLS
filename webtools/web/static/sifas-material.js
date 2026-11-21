@@ -177,9 +177,87 @@
     "}"
   ].join("\n"));
 
-  function metadata(material) {
+  // MainProp's UV2 angle is already applied to position by MVStudioProps.
+  // Its source normal is unchanged and the rim direction is in view space.
+  var PROP_VERTEX = [
+    "attribute mediump vec4 _sifas_color;",
+    "uniform vec4 uRimlightDirection;",
+    "varying vec2 vPropUv;",
+    "varying mediump float vPropBlue;",
+    "varying vec3 vPropNormal;",
+    "varying vec3 vPropRimDirection;",
+    "void main() {",
+    "  vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);",
+    "  gl_Position = projectionMatrix * viewPosition;",
+    "  vPropUv = uv;",
+    "  vPropBlue = _sifas_color.b;",
+    "  vPropNormal = mat3(modelViewMatrix) * normal;",
+    "  vPropRimDirection = normalize(-viewPosition.xyz - uRimlightDirection.xyz);",
+    "}"
+  ].join("\n");
+  var PROP_FRAGMENT = [
+    "uniform sampler2D uMainTex;",
+    "uniform sampler2D uRimlightTex;",
+    "uniform mediump vec4 uTintColor;",
+    "uniform mediump vec4 uAmbientColor;",
+    "uniform mediump vec4 uRimlightColor;",
+    "uniform mediump float uRimglightIntensity;",
+    "uniform mediump float uRimglightPower;",
+    "uniform float uMainTexMipmapBias;",
+    "varying vec2 vPropUv;",
+    "varying mediump float vPropBlue;",
+    "varying vec3 vPropNormal;",
+    "varying vec3 vPropRimDirection;",
+    "void main() {",
+    "  mediump vec4 texel = texture2D(uMainTex, vPropUv, uMainTexMipmapBias);",
+    "  mediump vec3 rgb = texel.rgb * (vPropBlue < 0.1 ? 0.35 : 1.0);",
+    "  rgb = mix(rgb, uAmbientColor.rgb, uAmbientColor.a);",
+    "  rgb = mix(rgb, rgb * uTintColor.rgb, uTintColor.a);",
+    "  mediump float rim = pow(1.0 - clamp(dot(vPropRimDirection, vPropNormal), 0.0, 1.0), uRimglightPower);",
+    "  rim *= texture2D(uRimlightTex, vPropUv).r * (uRimlightColor.a * uRimglightIntensity);",
+    "  rgb += rim * uRimlightColor.rgb;",
+    "  gl_FragColor = max(vec4(rgb, texel.a), vec4(0.0));",
+    "}"
+  ].join("\n");
+  // The native MainProp OUTLINE pass shades unexpanded back faces, with
+  // the original main texture sampled at LOD 0 before interpolation.
+  var PROP_OUTLINE_VERTEX = [
+    "uniform sampler2D uMainTex;",
+    "uniform mediump vec4 uTintColor;",
+    "uniform mediump vec4 uAmbientColor;",
+    "varying mediump vec4 vSifasOutlineColor;",
+    "void main() {",
+    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "  #if __VERSION__ >= 300",
+    "    mediump vec4 texel = textureLod(uMainTex, uv, 0.0);",
+    "  #else",
+    "    mediump vec4 texel = texture2DLod(uMainTex, uv, 0.0);",
+    "  #endif",
+    "  mediump vec3 rgb = mix(texel.rgb * 0.35, uAmbientColor.rgb, uAmbientColor.a);",
+    "  vSifasOutlineColor = vec4(mix(rgb, rgb * uTintColor.rgb, uTintColor.a), texel.a);",
+    "}"
+  ].join("\n");
+  var PROP_OUTLINE_FRAGMENT = OUTLINE_FRAGMENT.replace("varying vec4", "varying mediump vec4");
+  var PROP_TEXTURE_SIZES = { _MainTex: 1024, _RimlightTex: 256 };
+
+  function validPropTexture(info, size) {
+    var levels = info?.mipmaps;
+    return info?.filterMode === 1 && !info.default && Array.isArray(levels) && levels.length === Math.log2(size) + 1 &&
+      levels[0] === info.index && levels.every((index) => Number.isInteger(index) && index >= 0) &&
+      new Set(levels).size === levels.length;
+  }
+
+  function metadata(material, mesh, memberProp) {
     var data = material && material.userData && material.userData.sifas;
-    return data && data.version === 1 && data.shader === "AS/Member" ? data : null;
+    if (data?.version !== 1) return null;
+    if (!memberProp) return data.shader === "AS/Member" ? data : null;
+    var { position, normal, uv, _sifas_color: color, _mv_fan_uv: fan } = mesh.geometry.attributes;
+    if (data.shader !== "AS/MemberProp" || data.pipeline !== "gamma" || data.floats?._CullMode !== 2 ||
+        data.floats?._OutlineStencilComp !== 8 || !data.features?.rimlight || !data.features?.outline ||
+        mesh.isSkinnedMesh || !position || !normal || !uv || color?.itemSize !== 4 || fan?.itemSize !== 2 ||
+        color.count !== position.count || fan.count !== position.count ||
+        !Object.entries(PROP_TEXTURE_SIZES).every(([name, size]) => validPropTexture(data.textures?.[name], size))) return null;
+    return data;
   }
   function finite(value, fallback) {
     return typeof value === "number" && isFinite(value) && Math.abs(value) <= 65504 ? value : fallback;
@@ -195,7 +273,8 @@
     var T = global.THREE;
     if (!T || !root || !renderer) throw new Error("The shader renderer is unavailable.");
     var enabled = options.enabled !== false;
-    var rimlightEnabled = options.rimlight !== false;
+    var memberProp = options.memberProp === true;
+    var rimlightEnabled = memberProp || options.rimlight !== false;
     var mouthCentroidDepth = options.mouthCentroidDepth === true &&
       !!(renderer.capabilities && renderer.capabilities.isWebGL2);
     var disposed = false;
@@ -225,7 +304,7 @@
     var textureBindings = [], textureOverrides = new Map();
     var animated = false;
     var state = { recognizedMaterials: 0, meshes: 0, outlines: 0, gpuInvalidations: 0, pipeline: "gamma",
-      source: "AS/Member", implementation: "reconstructed", gamePixelParityVerified: false };
+      source: memberProp ? "AS/MemberProp" : "AS/Member", implementation: "reconstructed", gamePixelParityVerified: false };
 
     function textureIdentityKey(identity) {
       if (!identity || !Number.isInteger(identity.source) || !Number.isInteger(identity.file) || typeof identity.id !== "string") return "";
@@ -301,42 +380,59 @@
       return texture;
     }
 
-    function loadTexture(info, fallback, originalMap) {
+    function loadTexture(info, fallback, originalMap, propSize) {
       if (!info || info.default) return Promise.resolve(constantTexture(info && info.default || fallback));
-      var key = "index:" + info.index;
+      var key = "index:" + info.index + (propSize ? ":" + propSize : "");
       if (textureCache.has(key)) return textureCache.get(key);
       var promise;
-      if (parser && typeof parser.getDependency === "function" && typeof info.index === "number") {
+      if (propSize) {
+        if (!parser || typeof parser.getDependency !== "function") return Promise.resolve(null);
+        var source = parser;
+        // Wait for every requested mip so a failed request cannot strand
+        // other parser textures during cancellation or fallback.
+        promise = Promise.all(info.mipmaps.map((index) => Promise.resolve()
+          .then(() => source.getDependency("texture", index)).catch(() => null)))
+          .then(([original, ...mips]) => ({ original, mips }));
+      } else if (parser && typeof parser.getDependency === "function" && typeof info.index === "number") {
         promise = parser.getDependency("texture", info.index);
       } else if (originalMap) promise = Promise.resolve(originalMap);
       else {
         limitations.add("Auxiliary shader texture loading is unavailable.");
         return Promise.resolve(constantTexture(fallback));
       }
-      promise = promise.then(function (original) {
+      if (!propSize) promise = promise.then(function (original) {
         if (!original || !original.isTexture) throw new Error("Invalid shader texture");
         var chain = Array.isArray(info.mipmaps) ? info.mipmaps : [];
         var mipRequests = chain.length > 1 && parser && typeof parser.getDependency === "function"
           ? chain.slice(1, 14).map(function (index) { return parser.getDependency("texture", index); }) : [];
         return Promise.all(mipRequests).then(function (mips) { return { original: original, mips: mips }; });
-      }).then(function (loaded) {
+      });
+      promise = promise.then(function (loaded) {
+        var original = loaded.original, originals = [original].concat(loaded.mips);
         if (disposed) {
-          [loaded.original].concat(loaded.mips).forEach(function (texture) {
-            if (texture && !baselineTextures.has(texture)) { releaseTexture(texture); closeImage(texture.image); }
+          originals.forEach(function (texture) {
+            if (texture?.isTexture && !baselineTextures.has(texture)) { releaseTexture(texture); closeImage(texture.image); }
           });
           return null;
         }
-        var original = loaded.original;
-        [original].concat(loaded.mips).forEach(function (item) {
-          if (!item || !item.isTexture) throw new Error("Invalid authored mip texture");
+        originals.forEach(function (item) {
+          if (!item?.isTexture) return;
           if (!baselineTextures.has(item)) auxiliaryOriginals.add(item);
           if (item.image && !baselineImages.has(item.image)) auxiliaryImages.add(item.image);
         });
+        if (originals.some((item) => !item?.isTexture)) throw new Error("Invalid authored mip texture");
+        if (propSize && originals.some((item, level) => item.image?.width !== (propSize >> level) ||
+            item.image?.height !== (propSize >> level))) throw new Error("Invalid prop mip dimensions");
         var texture = original.clone();
         // Pixel bytes and wrapping are shared unchanged. Only the sampling
         // color-space flag differs: the source APK calculates in Gamma space.
         texture.encoding = T.LinearEncoding;
         texture.generateMipmaps = false;
+        if (propSize) {
+          texture.wrapS = texture.wrapT = T.RepeatWrapping;
+          texture.flipY = false;
+          texture.anisotropy = 1;
+        }
         texture.magFilter = info.filterMode === 0 ? T.NearestFilter : T.LinearFilter;
         texture.minFilter = texture.magFilter;
         if (loaded.mips.length) {
@@ -360,7 +456,7 @@
       }).catch(function () {
         if (disposed) return null;
         limitations.add("A shader texture could not be loaded.");
-        return constantTexture(fallback);
+        return propSize ? null : constantTexture(fallback);
       });
       textureCache.set(key, promise);
       return promise;
@@ -407,13 +503,13 @@
         _MatcapTexAdd: 0, _MatcapSpanColTexAdd: 0, _MatcapTexDarkenR: 1,
         _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekIntensity: 0 };
       Object.keys(defaults).forEach(function (name) { uniforms["u" + name.slice(1)] = { value: finite(floats[name], defaults[name]) }; });
-      uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
+      if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
       var defines = {};
-      ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
+      if (!memberProp) ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
         if (features[name] && (name !== "rimlight" || rimlightEnabled)) defines["SIFAS_" + name.toUpperCase()] = 1;
       });
-      var parameters = { vertexShader: mouthDepth ? MOUTH_VERTEX : VERTEX,
-        fragmentShader: mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
+      var parameters = { vertexShader: memberProp ? PROP_VERTEX : mouthDepth ? MOUTH_VERTEX : VERTEX,
+        fragmentShader: memberProp ? PROP_FRAGMENT : mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
         defines: defines, skinning: !!mesh.isSkinnedMesh, morphTargets: morph,
         morphNormals: morphNormals, depthTest: true, depthWrite: true,
         side: floats._CullMode === 0 ? T.DoubleSide : floats._CullMode === 1 ? T.BackSide : T.FrontSide,
@@ -421,12 +517,12 @@
         stencilWrite: true, stencilRef: 1, stencilFunc: T.AlwaysStencilFunc,
         stencilFail: T.KeepStencilOp, stencilZFail: T.KeepStencilOp, stencilZPass: T.ReplaceStencilOp };
       var main = new T.ShaderMaterial(parameters);
-      main.name = original.name + " (AS/Member)";
+      main.name = original.name + " (" + data.shader + ")";
       main.userData.sifas = data;
       main.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       var outlineParameters = Object.assign({}, parameters, {
-        vertexShader: mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
-        fragmentShader: mouthDepth ? MOUTH_OUTLINE_FRAGMENT : OUTLINE_FRAGMENT,
+        vertexShader: memberProp ? PROP_OUTLINE_VERTEX : mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
+        fragmentShader: memberProp ? PROP_OUTLINE_FRAGMENT : mouthDepth ? MOUTH_OUTLINE_FRAGMENT : OUTLINE_FRAGMENT,
         uniforms: uniforms, side: T.BackSide, defines: {},
         stencilZPass: T.KeepStencilOp,
         stencilFunc: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,
@@ -434,43 +530,61 @@
           T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][Math.floor(finite(floats._OutlineStencilComp, 8))] || T.AlwaysStencilFunc
       });
       var outline = new T.ShaderMaterial(outlineParameters);
-      outline.name = original.name + " (AS/Member outline)";
+      outline.name = original.name + " (" + data.shader + " outline)";
       outline.userData.viewerHelper = true;
       outline.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
-      var pair = { main: main, outline: outline, uniforms: uniforms, features: features,
+      var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
       materialCache.set(key, pair);
-      if (features.emissive) {
+      if (!memberProp && features.emissive) {
         animated = true;
         limitations.add("Preview emissive timing is not synchronized to game music.");
       }
       var textures = data.textures || {};
-      var names = ["_MainTex"];
-      if (features.rimlight) names.push("_RimlightTex");
-      if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
-      if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
-      if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
+      var names = memberProp ? Object.keys(PROP_TEXTURE_SIZES) : ["_MainTex"];
+      if (!memberProp) {
+        if (features.rimlight) names.push("_RimlightTex");
+        if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
+        if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
+        if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
+      }
       names.forEach(function (name) {
         var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
           uniform: uniforms["u" + name.slice(1)], baseline: null };
         textureBindings.push(binding);
-        pending.push(loadTexture(textures[name], name === "_EmissiveTex" ? [0, 0, 0, 1] : [1, 1, 1, 1], name === "_MainTex" ? original.map : null)
-          .then(function (texture) { if (!disposed && texture) { binding.baseline = texture; applyTextureBinding(binding); } }));
+        pending.push(loadTexture(textures[name], name === "_EmissiveTex" ? [0, 0, 0, 1] : [1, 1, 1, 1],
+          name === "_MainTex" ? original.map : null, memberProp ? PROP_TEXTURE_SIZES[name] : undefined)
+          .then(function (texture) {
+            if (disposed) return;
+            if (!texture) pair.usable = false;
+            else { binding.baseline = texture; applyTextureBinding(binding); }
+          }));
       });
       return pair;
+    }
+
+    function refreshEntry(entry) {
+      var active = enabled && (!memberProp || (!loading && entry.pairs.every((pair) => pair?.usable)));
+      entry.mesh.material = active ? entry.custom : entry.original;
+      entry.helper.visible = active;
+      if (memberProp) {
+        // The ordinary opaque GLTF meshes use 0 as Geometry (2000).
+        entry.mesh.renderOrder = active ? -100 : entry.renderOrder;
+        entry.helper.renderOrder = entry.mesh.renderOrder + .01;
+      }
     }
 
     var meshes = [];
     root.traverse(function (mesh) { if (mesh.isMesh && !mesh.userData.viewerHelper) meshes.push(mesh); });
     meshes.forEach(function (mesh) {
       var originals = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      var hasMember = originals.some(function (material) { return !!metadata(material); });
-      if (!hasMember) return;
-      var pairs = originals.map(function (material) { var data = metadata(material); return data ? makeMaterials(material, data, mesh) : null; });
+      var sources = originals.map(function (material) { return metadata(material, mesh, memberProp); });
+      if (!sources.some(Boolean) || (memberProp && !sources.every(Boolean))) return;
+      var pairs = sources.map(function (data, index) { return data ? makeMaterials(originals[index], data, mesh) : null; });
       var main = pairs.map(function (pair, index) { return pair ? pair.main : originals[index]; });
       var skip = null;
       var outline = pairs.map(function (pair) {
@@ -492,9 +606,9 @@
       if (mesh.morphTargetInfluences) helper.morphTargetInfluences = mesh.morphTargetInfluences;
       if (mesh.morphTargetDictionary) helper.morphTargetDictionary = mesh.morphTargetDictionary;
       mesh.add(helper);
-      var entry = { mesh: mesh, original: mesh.material,
+      var entry = { mesh: mesh, original: mesh.material, renderOrder: mesh.renderOrder, pairs: pairs,
         custom: Array.isArray(mesh.material) ? main : main[0], helper: helper };
-      helper.onBeforeRender = function (renderer, scene, camera, geometry, material) {
+      if (!memberProp) helper.onBeforeRender = function (renderer, scene, camera, geometry, material) {
         if (material && material.uniforms && material.uniforms.uOutlineScale) {
           material.uniforms.uOutlineScale.value = entry.outlineFactor === undefined ? 1 : entry.outlineFactor;
           material.uniforms.uOutlineEdited.value = entry.outlineEdited ? 1 : 0;
@@ -503,8 +617,7 @@
         }
       };
       entries.push(entry);
-      mesh.material = enabled ? entry.custom : entry.original;
-      helper.visible = enabled;
+      refreshEntry(entry);
     });
     state.recognizedMaterials = recognized.size;
     state.meshes = entries.length;
@@ -512,6 +625,7 @@
     var ready = Promise.all(pending).then(function () {
       if (releaseParserAfterLoad) parser = null;
       loading = false;
+      if (!disposed && memberProp) entries.forEach(refreshEntry);
       if (!disposed && options.onChange) options.onChange();
       return controller;
     });
@@ -572,10 +686,7 @@
       setEnabled: function (value) {
         if (disposed) return;
         enabled = !!value;
-        entries.forEach(function (entry) {
-          entry.mesh.material = enabled ? entry.custom : entry.original;
-          entry.helper.visible = enabled;
-        });
+        entries.forEach(refreshEntry);
         if (options.onChange) options.onChange();
       },
       getOriginalMaterials: function (mesh) {
@@ -624,7 +735,7 @@
         });
       },
       setRimlight: function (value) {
-        if (disposed || rimlightEnabled === !!value) return;
+        if (disposed || memberProp || rimlightEnabled === !!value) return;
         rimlightEnabled = !!value;
         materialCache.forEach(function (pair) {
           if (!pair.features.rimlight) return;
@@ -636,7 +747,7 @@
       },
       getMaterial: function (mesh) {
         for (var i = 0; i < entries.length; i += 1) {
-          if (entries[i].mesh === mesh) return enabled ? entries[i].custom : entries[i].original;
+          if (entries[i].mesh === mesh) return memberProp ? mesh.material : enabled ? entries[i].custom : entries[i].original;
         }
         return originalMaterials.has(mesh) ? originalMaterials.get(mesh) : mesh.material;
       },
@@ -692,6 +803,7 @@
         disposed = true;
         entries.forEach(function (entry) {
           entry.mesh.material = entry.original;
+          if (memberProp) entry.mesh.renderOrder = entry.renderOrder;
           entry.mesh.remove(entry.helper);
         });
         originalMaterials.forEach(function (material, mesh) { mesh.material = material; });

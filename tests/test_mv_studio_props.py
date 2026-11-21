@@ -2,12 +2,14 @@ from pathlib import Path
 import json
 import math
 import os
+import struct
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from webtools.core import model_animation, model_viewer, mv_studio, mv_studio_props, mv_studio_timeline
+from webtools.core import model_animation, model_viewer, mv_studio, mv_studio_props
+from webtools.core import mv_studio_stage_particles, mv_studio_timeline
 
 
 _FIXTURE = os.environ.get("ELICHIKA_AION_PROP_FIXTURE")
@@ -46,7 +48,7 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     effects = project["stageParticles"]
                     tracks = {track["id"]: track for track in project["tracks"]}
                     self.assertEqual(len(effects["cues"]), 8)
-                    self.assertEqual(effects["schema"], 2)
+                    self.assertEqual(effects["schema"], mv_studio_stage_particles.SCHEMA)
                     self.assertEqual(sorted(len(levels) for levels in effects["textures"]), [9, 9, 10, 10])
                     waves, umbrellas = [], []
                     for cue in effects["cues"]:
@@ -137,6 +139,7 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertTrue(actor["motion"])
                     spec = prop["attachment"]
                     self.assertEqual((spec["member"], spec["bone"], spec["limit"]), (1, _HAND, 135))
+                    self.assertEqual(spec["binding"], _TARGET)
                     nodes = [bone["node"] for bone in actor["rig"]["bones"]
                              if bone["path"] == _HAND or bone["path"].endswith("/" + _HAND)]
                     self.assertEqual(len(nodes), 1)
@@ -162,9 +165,31 @@ class MVStudioPropBindingsTests(unittest.TestCase):
     def _check_glb(self, raw):
         length = int.from_bytes(raw[12:16], "little")
         document = json.loads(raw[20:20+length])
-        attributes = document["meshes"][0]["primitives"][0]["attributes"]
+        primitive, = document["meshes"][0]["primitives"]
+        attributes = primitive["attributes"]
         self.assertEqual(document["accessors"][attributes["_MV_FAN_UV"]]["count"], 288)
-        self.assertEqual([image["name"] for image in document["images"]], ["chp0001"])
+        colors = document["accessors"][attributes["_SIFAS_COLOR"]]
+        self.assertEqual((colors["count"], colors["type"], colors["componentType"]), (288, "VEC4", 5126))
+        color_data = document["bufferViews"][colors["bufferView"]]
+        offset = 28 + length + color_data["byteOffset"]
+        entries = list(struct.iter_unpack("<4f", raw[offset:offset + color_data["byteLength"]]))
+        self.assertEqual(entries.count((1, 1, 1, 1)), 208)
+        self.assertEqual(entries.count((0, 0, 1, 1)), 80)
+        material = document["materials"][primitive["material"]]
+        self.assertIn("KHR_materials_unlit", material["extensions"])
+        native = material["extras"]["sifas"]
+        self.assertEqual((native["version"], native["shader"], native["pipeline"]), (1, "AS/MemberProp", "gamma"))
+        self.assertTrue(native["features"]["rimlight"])
+        for field, name, size in (("_MainTex", "chp0001", 1024), ("_RimlightTex", "chp0001_rim", 256)):
+            texture = native["textures"][field]
+            widths = [size >> level for level in range(size.bit_length())]
+            self.assertEqual(texture["mipWidths"], widths)
+            self.assertEqual(texture["mipHeights"], widths)
+            self.assertEqual(texture["filterMode"], 1)
+            self.assertEqual(texture["mipmaps"][0], texture["index"])
+            images = [document["images"][document["textures"][index]["source"]]["name"]
+                      for index in texture["mipmaps"]]
+            self.assertEqual(images, [name, *[f"{name}_mip_{i}" for i in range(1, len(widths))]])
         self.assertEqual(document["nodes"][0]["matrix"], [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 
     def _check_angle(self, source):

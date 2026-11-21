@@ -499,6 +499,7 @@
         for (const item of records) if (item.prop) item.prop.detach(record);
       }
       if (record.prop) record.prop.detach();
+      record.propMaterial?.dispose();
       record.shaft?.dispose();
       record.shaftTemplates?.dispose();
       record.spotlightArea?.dispose();
@@ -751,6 +752,15 @@
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
           record.stageFlash = await global.MVStudioStageFlash?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
+        }
+        if (record.prop && entry.spec.attachment.binding && global.SifasMaterial) {
+          record.propLight = global.MVStudioPropLight?.create(entry.spec.attachment.binding, record.propMember);
+          record.propMaterial = global.SifasMaterial.apply(gltf.scene, renderer, {
+            memberProp: true, parser: gltf.parser, enabled: true, rimlight: true,
+            onChange: requestDraw, releaseParserAfterLoad: true
+          });
+          await record.propMaterial?.ready;
           if (!active()) return null;
         }
         if (entry.group === actors) {
@@ -1213,6 +1223,7 @@
         if (record.motion) updateMotion(record);
         record.materials?.setRimlight?.(settings.member_rim_light !== false);
         if (record.prop) record.prop.setTracks(tracks);
+        record.propLight?.setProject(project);
       }
     }
 
@@ -1331,6 +1342,7 @@
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);
+        if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
       }
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {

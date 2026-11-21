@@ -89,4 +89,73 @@ async function test() {
   assert.equal(root.children.length, 0);
   console.log("Native stage particles preserve activation age, world offsets, separate cues, UV offsets and original mips.");
 }
-test().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function testFinaleFlash() {
+  const root = new T.Group();
+  const geometry = {
+    positions: [[.5,-.5,0],[-.5,.5,0],[-.5,-.5,0],[.5,.5,0]],
+    uv: [[0,1],[1,0],[1,1],[0,0]], indices: [0,2,1,1,3,0],
+  };
+  const flash = {
+    geometry, material: {queue: 3010, cull: 0, blend: "add", tint: [2,2,2,1], uv: [1,1,0,0]},
+    texture: 0, position: [0,0,-.10999999940395355], rotation: [0,0,0,1], scale: [1,1,1],
+    birth: 0, lifetime: 6, size: 55, sizeCurve: ["constant", 1], yaw: 0, yawSpeed: 0, maxViewportWidth: 4,
+    color: {rgba8: {start: [170,128,255,242], keys: [[0,255,255,255,0],
+      [0.3000076413154602,255,255,255,0], [0.3199969530105591,255,255,255,255], [1,255,255,255,255]]}},
+  };
+  const horizontal = {...flash, position: [0,.009999999776482582,-.10000000149011612],
+    rotation: [Math.SQRT1_2,0,0,Math.SQRT1_2]};
+  const descriptor = {
+    schema: 3, textures: [Array.from({length:10}, (_, index) => level(512 >> index))],
+    templates: [[flash, horizontal]], cues: [{trackId: "stage", eventId: "flash", template: 0}],
+  };
+  const event = {id: "flash", start: 113.03333333333333, duration: 5.583333333333385, values: {
+    playableClass: "CustomControlClip", timeScale: 1, weight: 1, offset: {x:0,y:0,z:0},
+  }};
+  const project = {tracks: [{id: "stage", events: [event]}], quality: {values: {stage_control:true}}};
+  assert.equal(await MVStudioStageParticles.apply(T, root, {
+    ...descriptor, templates: [[{...flash, maxViewportWidth: undefined}]],
+  }), null);
+  const controller = await MVStudioStageParticles.apply(T, root, descriptor);
+  assert(controller);
+  const [group] = root.children;
+  const [verticalMesh, horizontalMesh] = group.children;
+  const uniforms = verticalMesh.material.uniforms;
+  assert.equal(uniforms.uTexture.value, horizontalMesh.material.uniforms.uTexture.value);
+  assert.equal(verticalMesh.geometry, horizontalMesh.geometry);
+  assert.deepEqual(verticalMesh.material.defines, {VIEWPORT_SIZE_LIMIT: 1});
+  controller.update(114.83, project);
+  assert.equal(uniforms.uTint.value.w, 0);
+  controller.update(114.9, project);
+  assert(uniforms.uTint.value.w > 0 && uniforms.uTint.value.w < 242/255);
+  controller.update(115, project);
+  assert.deepEqual(uniforms.uTint.value.toArray(), [340/255,256/255,2,242/255]);
+
+  const camera = new T.PerspectiveCamera(31.890792846679688, 16/9, .1, 1000);
+  camera.position.set(-.08395847776131166, .9213643821069722, 10.883033130660202);
+  camera.quaternion.set(.04636735570090267, 0, 0, .9989244557649524).normalize();
+  camera.updateMatrixWorld();
+  root.updateMatrixWorld(true);
+  for (const [mesh, expected] of [[verticalMesh,44.131207727776435], [horizontalMesh,44.09451175360153]]) {
+    mesh.onBeforeRender(null, null, camera);
+    assert(Math.abs(mesh.material.uniforms.uViewportScale.value * 55 - expected) < 1e-5);
+    assert.deepEqual(mesh.scale.toArray(), [55,55,55]);
+  }
+  assert.deepEqual(horizontalMesh.quaternion.toArray(), horizontal.rotation);
+  camera.position.z = 20;
+  camera.updateMatrixWorld();
+  verticalMesh.onBeforeRender(null, null, camera);
+  assert.equal(uniforms.uViewportScale.value, 1);
+
+  const orthographic = new T.OrthographicCamera(-3, 3, 2, -2, .1, 1000);
+  orthographic.updateMatrixWorld();
+  verticalMesh.onBeforeRender(null, null, orthographic);
+  assert.equal(uniforms.uViewportScale.value * 55, 24);
+  controller.update(event.start + event.duration, project);
+  assert.equal(group.visible, false);
+  controller.dispose();
+  assert.equal(root.children.length, 0);
+  console.log("Monster Girls finale flash preserves native fade, local planes and the per-camera width limit.");
+}
+
+test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

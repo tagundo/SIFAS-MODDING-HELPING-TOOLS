@@ -3,10 +3,17 @@
 
   const vertexShader = [
     "uniform vec4 uTextureST;",
+    "#ifdef VIEWPORT_SIZE_LIMIT",
+    "uniform float uViewportScale;",
+    "#endif",
     "varying vec2 vParticle;",
     "void main() {",
     "  vParticle = uv * uTextureST.xy + uTextureST.zw;",
-    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "  vec3 vertex = position;",
+    "#ifdef VIEWPORT_SIZE_LIMIT",
+    "  vertex *= uViewportScale;",
+    "#endif",
+    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(vertex, 1.0);",
     "}"
   ].join("\n");
   const fragmentShader = [
@@ -80,13 +87,16 @@
           Number.isInteger(cue.template) && templates[cue.template])) return false;
     return templates.every(emitters => Array.isArray(emitters) && emitters.length > 0 && emitters.length <= 12 &&
       emitters.every(emitter => {
-        const { geometry, material, texture, uvOffset, color, orbitY } = emitter || {};
+        const { geometry, material, texture, uvOffset, color, orbitY, maxViewportWidth } = emitter || {};
         const packed = value => particle.boundedCurve(value, curve.validCurve);
         return !!textures[texture] && Number.isInteger(texture) && !!geometry && validGeometry(geometry) &&
           material?.blend === "add" && (material.queue === 3000 || material.queue === 3010) &&
           (material.cull === 0 || material.cull === 2) && vector(material.tint, 4) && vector(material.uv, 4) &&
           vector(emitter.position, 3) && vector(emitter.rotation, 4) && vector(emitter.scale, 3) &&
-          inRange(emitter.birth, 0, 15) && inRange(emitter.lifetime, 0.01, 120) && inRange(emitter.size, 0.01, 32) &&
+          inRange(emitter.birth, 0, 15) && inRange(emitter.lifetime, 0.01, 120) &&
+          (maxViewportWidth === undefined ? inRange(emitter.size, 0.01, 32) :
+            inRange(maxViewportWidth, 0.01, 4) && emitter.scale.every(value => value === 1) &&
+              inRange(emitter.size, 0.01, 64)) &&
           inRange(emitter.yaw, -40, 40) && inRange(emitter.yawSpeed, -40, 40) &&
           (orbitY === undefined || inRange(orbitY, -40, 40)) &&
           packed(emitter.sizeCurve) && (uvOffset === undefined ||
@@ -102,7 +112,7 @@
     if (!root?.isObject3D || !descriptor || !curve?.evaluate || !particle?.validMipChain || !particle?.loadTexture ||
         !checked(descriptor, curve, particle)) return null;
     const textures = [], geometry = new Map(), groups = [], loader = new T.TextureLoader();
-    const vertical = new T.Vector3(0, 1, 0), turn = new T.Quaternion();
+    const vertical = new T.Vector3(0, 1, 0), turn = new T.Quaternion(), particleCenter = new T.Vector3();
     let disposed = false;
     function dispose() {
       if (disposed) return;
@@ -131,19 +141,36 @@
             geometry.set(key, shape);
           }
           const fields = emitter.material;
+          const limit = emitter.maxViewportWidth;
+          const defines = fields.premultiply === true ? {SOURCE_ALPHA: 1} : {};
+          if (limit !== undefined) defines.VIEWPORT_SIZE_LIMIT = 1;
           const shader = new T.ShaderMaterial({
             name: "Native stage particle", vertexShader, fragmentShader,
-            defines: fields.premultiply === true ? {SOURCE_ALPHA: 1} : {},
+            defines,
             transparent: true, toneMapped: false, side: fields.cull === 0 ? T.DoubleSide : T.FrontSide,
             depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false, blending: T.CustomBlending,
             blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
             blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
             uniforms: {uTexture: {value: textures[emitter.texture]},
-              uTint: {value: new T.Vector4()}, uTextureST: {value: new T.Vector4()}},
+              uTint: {value: new T.Vector4()}, uTextureST: {value: new T.Vector4()},
+              ...(limit === undefined ? {} : {uViewportScale: {value: 1}})},
           });
           const mesh = new T.Mesh(geometry.get(key), shader);
           mesh.position.fromArray(emitter.position);
           mesh.renderOrder = fields.queue;
+          if (limit !== undefined) {
+            mesh.onBeforeRender = (_renderer, _scene, camera) => {
+              // Unity clamps size at the particle center to a fraction of the
+              // current camera's horizontal frustum width before making the quad.
+              const depth = camera.isPerspectiveCamera
+                ? -particleCenter.setFromMatrixPosition(mesh.matrixWorld).applyMatrix4(camera.matrixWorldInverse).z
+                : 1;
+              const width = 2 * depth / Math.abs(camera.projectionMatrix.elements[0]);
+              shader.uniforms.uViewportScale.value = (camera.isPerspectiveCamera || camera.isOrthographicCamera) &&
+                depth >= 0 && Number.isFinite(width) ? Math.min(1, limit * width / mesh.scale.x) : 1;
+              shader.uniformsNeedUpdate = true;
+            };
+          }
           group.add(mesh);
           meshes.push({emitter, mesh, orientation: new T.Quaternion().fromArray(emitter.rotation)});
         }

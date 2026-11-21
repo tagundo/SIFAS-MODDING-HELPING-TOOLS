@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from webtools.core import mv_studio
+from webtools.core import mv_studio, mv_studio_stage_particles
 
 
 class MVStudioStorageTests(unittest.TestCase):
@@ -83,7 +83,8 @@ class MVStudioStorageTests(unittest.TestCase):
             "events": [{"id": "clip", "label": "Edited cue", "start": 43, "duration": 1.6,
                         "values": {"playableClass": "CustomControlClip", "offset": {"x": 0, "y": 0, "z": 1.25}}}],
         }]
-        restored = {"schema": 2, "cues": [{"trackId": "effect", "eventId": "clip", "template": 0}]}
+        restored = {"schema": mv_studio_stage_particles.SCHEMA,
+                    "cues": [{"trackId": "effect", "eventId": "clip", "template": 0}]}
         for previous in ({}, {"stageParticles": {"cues": []}}):
             with self.subTest(previous=previous):
                 saved = mv_studio.save(mv_studio._register({**project, **previous}, self.original))
@@ -127,7 +128,7 @@ class MVStudioStorageTests(unittest.TestCase):
         upgraded_center = {**center, "texture": 2}
         new_emitter = {"texture": 0, "birth": 0}
         upgraded = {
-            "schema": 2,
+            "schema": mv_studio_stage_particles.SCHEMA,
             "cues": [{**second, "template": 0}, {**first, "template": 1}],
             "textures": [added, wave, umbrella],
             "templates": [[upgraded_center, new_emitter], [*upgraded_waves, new_emitter]],
