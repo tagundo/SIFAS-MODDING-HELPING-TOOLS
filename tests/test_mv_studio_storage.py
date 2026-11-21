@@ -384,6 +384,31 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
         self.assertEqual(reopened["stageSparksB"], descriptor)
 
+    def test_saved_front_sparks_restore_the_clip_seeds_without_replacing_side_sparks(self):
+        project = mv_studio._blank("Edited front sparks")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{
+            "id": "front-sparks", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/sparks_A_02",
+            "events": [{"id": "front-cue", "label": "Retimed front sparks", "start": 78.75, "duration": 2.5,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "6581900986414377151"},
+                                   "offset": {"x": 2, "y": 3, "z": 4}}}],
+        }]
+        texture = [{"png": "native stars"}]
+        project["stageSpeedBack"] = {"centerStars": {"texture": texture}}
+        project["stageSparksB"] = {"textures": ["speedBackCenterStars"], "cues": [{"trackId": "other"}]}
+        descriptor = {"textures": [texture], "cues": [{"trackId": "front-sparks", "eventId": "front-cue", "seed": 200}]}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSparksA": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited front sparks", preview_split=False,
+                                      preview_stage_title=False, preview_stage_sparks_a=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSparksB"], project["stageSparksB"])
+        self.assertEqual(reopened["stageSparksA"], {**descriptor, "textures": ["speedBackCenterStars"]})
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

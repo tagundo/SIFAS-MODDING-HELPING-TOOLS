@@ -33,7 +33,7 @@ def preserves(saved, restored):
     return all(cue in rebuilt and emitters <= rebuilt[cue] for cue, emitters in required.items())
 
 
-def _source(objects, owner, tree, event):
+def _source(objects, owner, tree, event, *, overwrite_seed=False):
     values = event["values"]
     if (values.get("playableClass") != "CustomControlClip" or values.get("timeScale") != 1
             or not 0 < event["duration"] <= 60
@@ -48,7 +48,8 @@ def _source(objects, owner, tree, event):
     offset = fields.get("offset")
     seed = fields.get("particleRandomSeed")
     if (not title._declared(objects, asset, fields, (*title._NAMESPACE, "CustomControlClip"))
-            or not fields.get("m_Enabled") or fields.get("weight") != 1 or fields.get("overwriteRandomSeed") != 0
+            or not fields.get("m_Enabled") or fields.get("weight") != 1
+            or fields.get("overwriteRandomSeed") != int(overwrite_seed)
             or type(seed) is not int or not 0 <= seed <= 0xFFFFFFFF
             or not isinstance(offset, dict)
             or any(type(offset.get(axis)) not in (int, float) or not math.isfinite(offset[axis])

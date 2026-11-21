@@ -348,7 +348,7 @@
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
-    let stageSparksB = null;
+    let stageSparksA = null, stageSparksB = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -534,6 +534,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageSparksA?.dispose();
+      stageSparksA = null;
       stageSparksB?.dispose();
       stageSparksB = null;
       stageFinaleFloor?.dispose();
@@ -1080,12 +1082,18 @@
         return;
       }
       stageFinaleFloor = finaleFloor;
-      const sparksB = await global.MVStudioSparksB?.apply(T, scene, value.stageSparksB, displayAtlases);
+      const sparksB = await global.MVStudioStageSparks?.apply(T, scene, value.stageSparksB, displayAtlases, "B");
       if (!active()) {
         sparksB?.dispose();
         return;
       }
       stageSparksB = sparksB;
+      const sparksA = await global.MVStudioStageSparks?.apply(T, scene, value.stageSparksA, displayAtlases, "A");
+      if (!active()) {
+        sparksA?.dispose();
+        return;
+      }
+      stageSparksA = sparksA;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1289,6 +1297,7 @@
       stageFallingEffects?.invalidate();
       stageBreak?.invalidate();
       stageFinaleFloor?.invalidate();
+      stageSparksA?.invalidate();
       stageSparksB?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
@@ -1365,6 +1374,7 @@
       stageFallingEffects?.update(currentTime, project);
       stageBreak?.update(currentTime, project);
       stageFinaleFloor?.update(currentTime, project);
+      stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);

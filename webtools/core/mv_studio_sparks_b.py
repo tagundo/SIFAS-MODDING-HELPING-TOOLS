@@ -60,7 +60,14 @@ def _surface(objects, renderer, fields, name):
                                            "m_RendererPriority"))
             or any(fields[key]["m_PathID"] for key in ("m_Mesh", "m_Mesh1", "m_Mesh2", "m_Mesh3", "m_StaticBatchRoot"))):
         return None
-    refs = fields["m_Materials"]
+    texture = _spark_atlas(objects, renderer, fields["m_Materials"])
+    if texture is None:
+        return None
+    stretch = {"lengthScale": length, "velocityScale": speed} if stretched else None
+    return {"maxViewportWidth": fields["m_MaxParticleSize"], "stretch": stretch}, texture
+
+
+def _spark_atlas(objects, renderer, refs):
     if len(refs) != 2 or refs[0] != refs[1]:
         return None
     material = title._local(objects, renderer, refs[0], "Material")
@@ -91,8 +98,7 @@ def _surface(objects, renderer, fields, name):
             != (512, 512, 65, 10, 1) or (sampler.m_FilterMode, sampler.m_Aniso, sampler.m_MipBias,
                                           sampler.m_WrapU, sampler.m_WrapV, sampler.m_WrapW) != (1, 1, 0, 0, 0, 0)):
         return None
-    stretch = {"lengthScale": length, "velocityScale": speed} if stretched else None
-    return {"maxViewportWidth": fields["m_MaxParticleSize"], "stretch": stretch}, texture
+    return texture
 
 
 def _range(source, mode, lower, upper):
@@ -199,18 +205,17 @@ def _motion(source, name, deadline):
     return {"velocityCurves": curves, "velocityMultipliers": multipliers, "clamp": clamp}
 
 
-def _colors(source, name):
-    grow = name == "grow"
+def _colors(source, start_mode, life_mode):
     start = source["InitialModule"]["startColor"]
     fade = source["ColorModule"]
-    if start["minMaxState"] != (0 if grow else 2) or fade["gradient"]["minMaxState"] != (1 if grow else 3):
+    if start["minMaxState"] != start_mode or fade["gradient"]["minMaxState"] != life_mode:
         return None
-    endpoints = ("maxColor", "maxColor") if grow else ("minColor", "maxColor")
+    endpoints = ("maxColor", "maxColor") if start_mode == 0 else ("minColor", "maxColor")
     start_colors = [[start[key][axis] for axis in "rgba"] for key in endpoints]
     if any(not _number(channel, 0, 1) for rgba in start_colors for channel in rgba):
         return None
     gradients = fade["gradient"]
-    modes = ("maxGradient", "maxGradient") if grow else ("minGradient", "maxGradient")
+    modes = ("maxGradient", "maxGradient") if life_mode == 1 else ("minGradient", "maxGradient")
     life_colors = []
     for key in modes:
         module = {**fade, "gradient": {**gradients, "minMaxState": 1, "maxGradient": gradients[key]}}
@@ -260,8 +265,9 @@ def _leaf(objects, game, name, deadline):
     if shape is None or uv is None or surface is None:
         return None
     renderer, texture = surface
+    grow = name == "grow"
     state = (_emission(source, name), _initial(source, name), _size(source["SizeModule"], name, deadline),
-             _motion(source, name, deadline), _colors(source, name))
+             _motion(source, name, deadline), _colors(source, 0 if grow else 2, 1 if grow else 3))
     if any(section is None for section in state):
         return None
     row = {"name": name, "shape": shape, "uv": uv, **renderer}

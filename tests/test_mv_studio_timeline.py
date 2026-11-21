@@ -364,6 +364,36 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertEqual(len(descriptors), 2)
         self.assertEqual(*descriptors)
 
+    def test_native_front_spark_cues_preserve_the_distinct_seed_overrides(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_speed_back=True,
+                                               preview_stage_sparks_a=True)
+                sparks = parsed.pop("stageSparksA")
+                self.assertEqual(sparks["textures"], ["speedBackCenterStars"])
+                del parsed["stageSpeedBack"]
+                self.assertEqual(parsed, self.original[platform])
+                emitter, = sparks["emitters"]
+                self.assertEqual(emitter["name"], "hibana_01")
+                self.assertEqual(emitter["shape"]["type"], 8)
+                self.assertEqual(emitter["bursts"], [[0, 1000]])
+                self.assertEqual(emitter["maxViewportWidth"], 1)
+                self.assertAlmostEqual(emitter["stretch"]["velocityScale"], .025)
+                self.assertEqual(emitter["uv"], [.25, .25, .75, 0])
+                self.assertEqual(len(sparks["cues"]), 2)
+                for index, (cue, x, y) in enumerate(zip(sparks["cues"], (7, -4), (-1, -2)), 1):
+                    self.assertEqual(cue["seed"], 100 * index)
+                    track, = [row for row in parsed["tracks"] if row["id"] == cue["trackId"]]
+                    event, = [row for row in track["events"] if row["id"] == cue["eventId"]]
+                    self.assertTrue(track["label"].endswith(f"/Control/sparks_A_{index:02}"))
+                    self.assertAlmostEqual(event["start"], 77.7333333333)
+                    self.assertAlmostEqual(event["start"] + event["duration"], 83.1333333333)
+                    self.assertEqual(event["values"]["offset"], {"x": x, "y": y, "z": 8})
+                descriptors.append(sparks)
+        self.assertEqual(len(descriptors), 2)
+        self.assertEqual(*descriptors)
+
     def test_native_spark_pair_matches_the_source_and_shares_the_star_atlas(self):
         descriptors = []
         for platform, raw in self.raw.items():

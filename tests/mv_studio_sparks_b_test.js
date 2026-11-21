@@ -8,7 +8,7 @@ require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-display-lights.js");
 require("../webtools/web/static/mv-studio-moving-companions.js");
 require("../webtools/web/static/mv-studio-sparks-b-simulation.js");
-require("../webtools/web/static/mv-studio-sparks-b.js");
+require("../webtools/web/static/mv-studio-stage-sparks.js");
 
 const f32 = Math.fround, start = 77.41666666666667, duration = 5.716666666666669;
 const alias = "speedBackCenterStars", tint = [2, 2, 2, 1];
@@ -175,9 +175,9 @@ async function verifyPackets() {
         emit(seed + tick / 60, -.25, .5, -3, 2, 1, .75, -.5, ...colors[row.name]);
       }};
     }};
-    assert.equal(await MVStudioSparksB.apply(T, root, source, {}), null);
+    assert.equal(await MVStudioStageSparks.apply(T, root, source, {}, "B"), null);
     assert.equal(root.children.length, 0);
-    controller = await MVStudioSparksB.apply(T, root, source, {[alias]: texture});
+    controller = await MVStudioStageSparks.apply(T, root, source, {[alias]: texture}, "B");
     assert.ok(controller);
   } finally {
     particles.autoSeed = originalSeed;
