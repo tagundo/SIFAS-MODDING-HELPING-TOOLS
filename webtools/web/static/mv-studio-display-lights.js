@@ -5,6 +5,9 @@
     uniform vec3 uAxisX;
     uniform vec3 uAxisY;
     uniform float uMaxWidth;
+    #ifdef MIN_VIEWPORT_WIDTH
+    uniform float uMinWidth;
+    #endif
     uniform vec4 uAtlas;
     uniform float uAtlasColumns;
     attribute vec4 centerAndTile;
@@ -20,7 +23,15 @@
       float depth = projectionMatrix[3][3] == 1.0 ? 1.0 : -center.z;
       float largerSide = max(particleSize.x, particleSize.y);
       float sideLimit = 2.0 * uMaxWidth * depth / abs(projectionMatrix[0][0]);
+      #ifdef MIN_VIEWPORT_WIDTH
+      // Native camera-facing quads cap their largest XY side in both directions,
+      // then preserve the authored aspect ratio and collapse behind the camera.
+      float sideMinimum = 2.0 * uMinWidth * depth / abs(projectionMatrix[0][0]);
+      float extent = max(largerSide, 1e-6);
+      float scale = depth < 0.0 ? 0.0 : clamp(extent, sideMinimum, sideLimit) / extent;
+      #else
       float scale = depth < 0.0 ? 1.0 : min(1.0, sideLimit / largerSide);
+      #endif
       vec2 local = position.xy * particleSize;
       #ifdef VIEW_ALIGNED
       local.x = -local.x;
@@ -98,7 +109,7 @@
   }
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
-    additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1]}) {
+    additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1], minViewportWidth = 0}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -115,7 +126,8 @@
     const destination = additive ? T.OneFactor : T.OneMinusSrcAlphaFactor;
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader, transparent: true,
-      defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {})},
+      defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {}),
+        ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {})},
       toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
@@ -124,6 +136,7 @@
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},
         uTint: {value: new T.Vector4().fromArray(tint)},
+        ...(minViewportWidth > 0 ? {uMinWidth: {value: minViewportWidth}} : {}),
         uAtlas: {value: new T.Vector4().fromArray(atlas)}, uAtlasColumns: {value: columns},
         uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(rotation)},
         uAxisY: {value: new T.Vector3(0, 1, 0).applyQuaternion(rotation)}},

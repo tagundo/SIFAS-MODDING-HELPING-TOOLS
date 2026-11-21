@@ -409,6 +409,36 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSparksB"], project["stageSparksB"])
         self.assertEqual(reopened["stageSparksA"], {**descriptor, "textures": ["speedBackCenterStars"]})
 
+    def test_saved_spark_primary_upgrades_when_it_shares_the_authentic_atlas(self):
+        project = mv_studio._blank("Existing front sparks")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{
+            "id": "front", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/sparks_A_01",
+            "events": [{"id": "burst", "label": "Moved sparks", "start": 75, "duration": 5,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "6581900986414377151"},
+                                   "offset": {"x": 2, "y": 5, "z": -3}}}],
+        }]
+        alias = "speedBackCenterStars"
+        authentic = [{"png": "native sparks"}]
+        primary = {"name": "hibana_01", "preservedField": "saved value"}
+        secondary = {"name": "hibana_02"}
+        cues = [{"trackId": "front", "eventId": "burst", "seed": 100}]
+        original = {"textures": [authentic], "emitters": [{"name": "hibana_01"}, secondary], "cues": cues}
+        saved = {"textures": [alias], "emitters": [primary], "cues": cues}
+        project["stageSparksA"] = saved
+        for atlas, expected in ((authentic, [primary, secondary]), ([{"png": "custom"}], [primary])):
+            with self.subTest(atlas=atlas):
+                project["stageSpeedBack"] = {"centerStars": {"texture": atlas}}
+                result = mv_studio.save(mv_studio._register(project, self.original))
+                with ZipFile(result["path"]) as archive, patch(
+                        "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSparksA": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                self.assertTrue(parse.call_args.kwargs["preview_stage_sparks_a"])
+                self.assertEqual(reopened["tracks"], project["tracks"])
+                self.assertEqual(reopened["stageSparksA"], {**saved, "emitters": expected})
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

@@ -771,6 +771,33 @@ def _restore_display_atlases(project, original, field, aliases):
     project[field] = {**descriptor, "textures": restored}
 
 
+
+def _restore_front_sparks(project, original, saved):
+    field = "stageSparksA"
+    alias = "speedBackCenterStars"
+    if saved is None:
+        _restore_display_atlases(project, original, field, (alias,))
+        return
+    rebuilt = original.get(field)
+    saved_textures = saved.get("textures")
+    if (not rebuilt or rebuilt["cues"] != saved.get("cues")
+            or not isinstance(saved_textures, list) or len(saved_textures) != 1):
+        return
+    secondary = next((row for row in rebuilt["emitters"] if row["name"] == "hibana_02"), None)
+    if secondary is None:
+        return
+    previous, = saved_textures
+    authentic, = rebuilt["textures"]
+    if previous == alias:
+        previous = _display_particle_atlases(project)[alias]
+    if authentic == alias:
+        authentic = _display_particle_atlases(original)[alias]
+    # Both emitters share one atlas. Leave an existing custom atlas and its
+    # primary emitter intact when the native secondary cannot share it.
+    if authentic is not None and previous == authentic:
+        project[field] = {**saved, "emitters": [*saved["emitters"], secondary]}
+
+
 def _open_saved(archive, entries):
     from . import mv_studio_stage_particles
 
@@ -840,7 +867,11 @@ def _open_saved(archive, entries):
         and any(event.get("label") == "fx_flo_so2056_01" or event["values"].get("prefabGameObject") == {
             "m_FileID": 0, "m_PathID": "-1916851570489530364",
         } for event in track["events"]) for track in project["tracks"])
-    restore_sparks_a = "stageSparksA" not in project and any(
+    sparks_a = project.get("stageSparksA")
+    front_emitters = sparks_a.get("emitters") if isinstance(sparks_a, dict) else None
+    missing_secondary = (isinstance(front_emitters, list) and len(front_emitters) == 1
+                         and isinstance(front_emitters[0], dict) and front_emitters[0].get("name") == "hibana_01")
+    restore_sparks_a = (sparks_a is None or missing_secondary) and any(
         track.get("nativeClass") == "CustomControlTrack"
         and str(track.get("label", "")).endswith(("/Control/sparks_A_01", "/Control/sparks_A_02"))
         and any(event.get("label") == "fx_par_so2056_01" or event["values"].get("prefabGameObject") == {
@@ -905,7 +936,8 @@ def _open_saved(archive, entries):
             _restore_display_atlases(project, original, "stageFallingEffects", ("displayLights", "speedBackCenterStars"))
             _restore_display_atlases(project, original, "stageBreak", (None, "displayLights", "speedBackCenterStars"))
             _restore_display_atlases(project, original, "stageFinaleFloor", ("speedBackCenterStars",))
-            _restore_display_atlases(project, original, "stageSparksA", ("speedBackCenterStars",))
+            if restore_sparks_a:
+                _restore_front_sparks(project, original, sparks_a)
             _restore_display_atlases(project, original, "stageSparksB", ("speedBackCenterStars",))
             rebuilt_ribbons = original.get("stageRibbons")
             if rebuilt_ribbons and not isinstance(ribbons, dict):

@@ -374,8 +374,17 @@ class ActualTimelineTests(unittest.TestCase):
                 self.assertEqual(sparks["textures"], ["speedBackCenterStars"])
                 del parsed["stageSpeedBack"]
                 self.assertEqual(parsed, self.original[platform])
-                emitter, = sparks["emitters"]
+                emitter, secondary = sparks["emitters"]
                 self.assertEqual(emitter["name"], "hibana_01")
+                self.assertEqual(secondary["name"], "hibana_02")
+                self.assertAlmostEqual(secondary["delay"], .12)
+                self.assertEqual(secondary["shape"]["length"], 7)
+                self.assertEqual(secondary["bursts"][0][:3], [0, 60, 3])
+                self.assertAlmostEqual(secondary["bursts"][0][3], .15)
+                self.assertEqual(len(secondary["size3D"]), 3)
+                self.assertEqual(secondary["atlas"], {"tiles": [4, 4], "start": (0, .125)})
+                self.assertAlmostEqual(secondary["minViewportWidth"], .02)
+                self.assertEqual(secondary["maxViewportWidth"], 2)
                 self.assertEqual(emitter["shape"]["type"], 8)
                 self.assertEqual(emitter["bursts"], [[0, 1000]])
                 self.assertEqual(emitter["maxViewportWidth"], 1)

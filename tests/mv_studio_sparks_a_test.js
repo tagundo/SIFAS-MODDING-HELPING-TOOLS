@@ -8,6 +8,7 @@ require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-display-lights.js");
 require("../webtools/web/static/mv-studio-moving-companions.js");
 require("../webtools/web/static/mv-studio-sparks-a-simulation.js");
+require("../webtools/web/static/mv-studio-sparks-a-secondary-simulation.js");
 require("../webtools/web/static/mv-studio-stage-sparks.js");
 
 const f32 = Math.fround, alias = "speedBackCenterStars";
@@ -30,9 +31,29 @@ function hibanaFixture() {
     stretch: {lengthScale: 0, velocityScale: f32(.025)}};
 }
 
-function sourceFor(row) {
+function secondaryFixture() {
+  const size3D = Array.from({length: 3}, () => [f32(.4), f32(.1)]);
+  const sizeCurve = ["cubic", [[0, 0, 0, 1], [.19500809907913208, 140.4936011609281, -48.73917319137393, 1],
+    [.42628398537635803, -2136.2655495030826, 299.1419261948255, .13100433349609375],
+    [.5196375250816345, 2686.2765616630095, -365.20361921747093, 1],
+    [.6102719306945801, -951.8628605277804, 142.3464581837675, 0],
+    [.7099686861038208, 1114.3862171808166, -151.5027978939471, .4716148376464844],
+    [.8006032109260559, -1642.2439105569006, 223.26716933767986, .05676901340484619],
+    [.8912382125854492, 1038.6277746880155, -169.44451985019884, .6681268811225891], [1, 0, 0, 0]]
+    .map(([time, a, b, value]) => [time, [a, b, 0, value]])];
+  const lifeColors = [[[0, 255, 255, 255, 0], [12157, 255, 247, 208, 172], [18008, 253, 244, 206, 255],
+    [32768, 249, 238, 202, 180], [33052, 249, 238, 202, 178], [65535, 108, 59, 66, 0]]
+    .map(([stamp, ...rgba]) => [f32(stamp / 65535), ...rgba])];
+  return {name: "hibana_02", delay: f32(.12), lifetime: [f32(.16), f32(.2)], size3D, roll: [0, f32(6.283185)],
+    gravity: f32(.1), shape: {type: 8, radius: .25, radiusThickness: 1, angle: 18, length: 7, arc: 360, arcMode: 0,
+      scale: [1, 1, 1], rotation: [-90, 0, 0]}, duration: .5, bursts: [[0, 60, 3, f32(.15)]], sizeCurve,
+    sizeMultiplier: 1, velocityY: [6, 2], lifeColors, atlas: {tiles: [4, 4], start: [0, .125]},
+    capacity: 1000, minViewportWidth: f32(.02), maxViewportWidth: 2};
+}
+
+function sourceFor(...emitters) {
   const cues = [100, 200].map((seed, index) => ({trackId: `sparks_A_0${index + 1}`, eventId: `spark-${index + 1}`, seed}));
-  return {textures: [alias], cues, emitters: [row]};
+  return {textures: [alias], cues, emitters};
 }
 
 function projectFor(source) {
@@ -49,8 +70,8 @@ function near(actual, expected, tolerance = .00002) {
   assert.ok(actual.every((value, index) => Math.abs(value - expected[index]) <= tolerance), `${actual} differs from ${expected}`);
 }
 
-function sampleOf(row, seed) {
-  const simulation = MVStudioSparksASimulation.create(row, seed);
+function sampleOf(row, seed, solver = MVStudioSparksASimulation) {
+  const simulation = solver.create(row, seed);
   assert.ok(simulation);
   return (time, fps = 60) => {
     const particles = [];
@@ -118,13 +139,39 @@ function verifyStretch(mesh) {
   assert.deepEqual(atlas, [.75, 0, 1, 0, 1, .25, .75, .25]);
 }
 
-async function run() {
-  const row = hibanaFixture();
-  await verifyPackets(row, verifyNative(row));
-  console.log("Native Sparks A: seeded cone burst, ordinary cadence, velocity stretch, independent cue control and atlas ownership.");
+function verifyNativeSecondary(row) {
+  const solver = MVStudioSparksASecondarySimulation;
+  assert.equal(solver.create(row, 101), null);
+  assert.equal(solver.create({...row, bursts: [[0, 60, 1, f32(.15)]]}, 100), null);
+  // Exact Android Unity samples at tick 10, with X reflected and per-particle atlas tiles.
+  const expected = [
+    {seed: 100, sample: [-1.259944200515747, 4.475674152374268, -.730385422706604, .2048317939043045,
+      .3555539548397064, 6.213929653167725, 255, 247, 208, 182, 1], zeroTile: 4, overlap: 112},
+    {seed: 200, sample: [.4830437898635864, 3.6330883502960205, .39684465527534485, .25109174847602844,
+      .3510780334472656, .16439062356948853, 255, 248, 211, 161, 1], zeroTile: 3, overlap: 107},
+  ];
+  return expected.map(({seed, sample: first, zeroTile, overlap}) => {
+    const take = sampleOf(row, seed, solver);
+    const at = tick => take(tick / 60);
+    assert.deepEqual(at(7), []);
+    const born = at(8);
+    assert.equal(born.length, 60);
+    assert.ok(born.every(particle => particle[9] === 0));
+    assert.equal(at(9).filter(particle => particle[9] > 0).length, 60);
+    const warm = at(10);
+    near(warm[0].slice(0, 6), first.slice(0, 6));
+    assert.deepEqual(warm[0].slice(6), first.slice(6));
+    assert.deepEqual(warm.slice(0, zeroTile + 1).map(particle => particle[10]), [...Array(zeroTile).fill(1), 0]);
+    assert.deepEqual([at(16).length, at(17).length, at(18).length], [60, 120, overlap]);
+    assert.deepEqual([at(25).length, at(26).length, at(27).length], [60, 120, 111]);
+    assert.deepEqual(at(38), []);
+    assert.deepEqual(take(4 / 30, 30), born);
+    assert.deepEqual(take(9 / 60, 30), born);
+    assert.deepEqual(take(5 / 30, 30), warm);
+    assert.deepEqual(at(10), warm);
+    return warm;
+  });
 }
-
-run().catch(error => { console.error(error); process.exitCode = 1; });
 
 async function verifyPackets(row, native) {
   const source = sourceFor(row), project = projectFor(source), {tracks, quality: {values: quality}} = project;
@@ -219,3 +266,99 @@ async function verifyPackets(row, native) {
   atlas.dispose();
   assert.equal(textures, 1);
 }
+
+async function verifySecondaryPackets(primary, secondary, samples, tick) {
+  const source = sourceFor(primary, secondary), project = projectFor(source);
+  const {tracks, quality: {values: quality}} = project;
+  const root = new T.Scene(), atlas = new T.Texture();
+  const effect = await MVStudioStageSparks.apply(T, root, source, {[alias]: atlas}, "A");
+  assert.ok(effect);
+  const meshes = root.children.slice();
+  assert.deepEqual(meshes.map(mesh => mesh.name), ["Native spark A 1 hibana_01", "Native spark A 1 hibana_02",
+    "Native spark A 2 hibana_01", "Native spark A 2 hibana_02"]);
+  const secondaryMeshes = [meshes[1], meshes[3]];
+  let geometries = 0, materials = 0, textures = 0;
+  atlas.addEventListener("dispose", () => textures++);
+  for (const mesh of meshes) {
+    assert.equal(mesh.material.uniforms.uTexture.value, atlas);
+    mesh.geometry.addEventListener("dispose", () => geometries++);
+    mesh.material.addEventListener("dispose", () => materials++);
+  }
+  for (const mesh of secondaryMeshes) {
+    const {geometry, material} = mesh;
+    assert.equal(mesh.renderOrder, 3010);
+    assert.equal(geometry.isInstancedBufferGeometry, true);
+    assert.equal(geometry.index.count, 6);
+    const capacity = geometry.getAttribute("centerAndTile").count;
+    assert.ok(capacity >= 120 && capacity <= secondary.capacity);
+    assert.equal(geometry.getAttribute("particleSize").itemSize, 2);
+    assert.equal(geometry.getAttribute("particleRoll").itemSize, 1);
+    assert.equal(geometry.getAttribute("particleColor").normalized, true);
+    assert.equal(material.defines.VIEW_ALIGNED, 1);
+    assert.equal(material.defines.PARTICLE_ROLL, 1);
+    assert.deepEqual(material.uniforms.uAtlas.value.toArray(), [.25, .25, 0, 0]);
+    assert.equal(material.uniforms.uAtlasColumns.value, 4);
+    assert.equal(material.uniforms.uMaxWidth.value, 2);
+    assert.equal(material.uniforms.uMinWidth.value, f32(.02));
+    assert.equal(material.blendSrc, T.SrcAlphaFactor);
+    assert.equal(material.blendDst, T.OneFactor);
+    assert.equal(material.stencilFunc, T.AlwaysStencilFunc);
+  }
+
+  const expectVisible = samples.map(sample => sample.filter(row => row[3] > 0 && row[4] > 0 && row[9] > 0));
+  const counts = () => secondaryMeshes.map(mesh => mesh.geometry.instanceCount);
+  function verifySecondaries() {
+    assert.deepEqual(counts(), expectVisible.map(rows => rows.length));
+    secondaryMeshes.forEach(({geometry}, index) => {
+      const [x, y, z, width, height, roll, r, g, b, a, tile] = expectVisible[index][0];
+      const centers = geometry.getAttribute("centerAndTile"), sizes = geometry.getAttribute("particleSize");
+      const colors = geometry.getAttribute("particleColor"), rolls = geometry.getAttribute("particleRoll");
+      near([...centers.array.slice(0, 4)], [x, y, z, tile]);
+      near([...sizes.array.slice(0, 2), rolls.getX(0)], [width, height, roll]);
+      assert.deepEqual([...colors.array.slice(0, 4)], [r, g, b, a]);
+      assert.equal(centers.updateRange.count, geometry.instanceCount * 4);
+      assert.equal(sizes.updateRange.count, geometry.instanceCount * 2);
+    });
+  }
+
+  effect.update(start + 7 / 60, project);
+  assert.deepEqual(counts(), [0, 0]);
+  assert.ok(meshes[0].visible && meshes[2].visible);
+  const time = start + tick / 60;
+  effect.update(time, project);
+  verifySecondaries();
+  assert.deepEqual(secondaryMeshes.map(mesh => mesh.position.toArray()), [[-7, -1, 8], [4, -2, 8]]);
+  effect.update(start + 18 / 60, project);
+  assert.deepEqual(counts(), [112, 107]);
+  tracks[1].muted = true;
+  effect.update(time, project);
+  assert.deepEqual(counts(), [expectVisible[0].length, 0]);
+  assert.equal(meshes[2].visible, false);
+  tracks[1].muted = false;
+  quality.stage_control = false;
+  effect.update(time, project);
+  assert.ok(meshes.every(mesh => !mesh.visible));
+  quality.stage_control = true;
+  effect.update(start + 5, project);
+  assert.deepEqual(counts(), [0, 0]);
+  effect.update(time, project);
+  verifySecondaries();
+  quality.frame_rate_60fps = false;
+  effect.update(time, project);
+  verifySecondaries();
+
+  effect.dispose();
+  assert.equal(root.children.length, 0);
+  assert.deepEqual([geometries, materials, textures], [4, 4, 0]);
+  atlas.dispose();
+  assert.equal(textures, 1);
+}
+
+async function run() {
+  const primary = hibanaFixture(), secondary = secondaryFixture();
+  await verifyPackets(primary, verifyNative(primary));
+  await verifySecondaryPackets(primary, secondary, verifyNativeSecondary(secondary), 10);
+  console.log("Native Sparks A: original seeded stretch, three delayed anisotropic bursts, cadence, atlas and cue ownership.");
+}
+
+run().catch(error => { console.error(error); process.exitCode = 1; });

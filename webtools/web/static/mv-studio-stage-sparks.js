@@ -4,22 +4,24 @@
   const atlasAlias = "speedBackCenterStars";
   const tint = [2, 2, 2, 1];
   const profiles = new Map([
-    ["A", {names: new Set(["hibana_01"]), width: 1, usesCueSeed: true, simulation: "MVStudioSparksASimulation"}],
-    ["B", {names: new Set(["grow", "hibana", "late_kirakira"]), width: .5, usesCueSeed: false,
+    ["A", {widths: new Map([["hibana_01", 1], ["hibana_02", 2]]), usesCueSeed: true,
+      simulation: "MVStudioSparksASimulation"}],
+    ["B", {widths: new Map([["grow", .5], ["hibana", .5], ["late_kirakira", .5]]), usesCueSeed: false,
       simulation: "MVStudioSparksBSimulation"}],
   ]);
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
 
-  function checked(source, {names, width, usesCueSeed}) {
+  function checked(source, {widths, usesCueSeed}) {
     return Array.isArray(source?.textures) && source.textures.length === 1 &&
       Array.isArray(source.cues) && source.cues.length >= 1 && source.cues.length <= 2 &&
       source.cues.every(cue => id(cue?.trackId) && id(cue.eventId) &&
         (!usesCueSeed || (Number.isInteger(cue.seed) && cue.seed >= 0 && cue.seed <= 0xffffffff))) &&
       new Set(source.cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === source.cues.length &&
-      Array.isArray(source.emitters) && source.emitters.length === names.size &&
-      new Set(source.emitters.map(row => row?.name)).size === names.size &&
-      source.emitters.every(row => names.has(row?.name) && Number.isInteger(row.capacity) &&
-        row.capacity > 0 && row.capacity <= 1000 && row.maxViewportWidth === width);
+      Array.isArray(source.emitters) && source.emitters.length <= widths.size &&
+      (usesCueSeed ? source.emitters.some(row => row?.name === "hibana_01") : source.emitters.length === widths.size) &&
+      new Set(source.emitters.map(row => row?.name)).size === source.emitters.length &&
+      source.emitters.every(row => widths.has(row?.name) && Number.isInteger(row.capacity) &&
+        row.capacity > 0 && row.capacity <= 1000 && row.maxViewportWidth === widths.get(row.name));
   }
 
   async function apply(T, root, source, atlases, kind) {
@@ -62,27 +64,32 @@
         groups.push({cue, entries, track: null});
         for (const row of source.emitters) {
           const {name, seed, stretch, uv} = row;
+          const sheet = name === "hibana_02";
           const shared = !profile.usesCueSeed && seed !== null;
           let stream = shared ? fixed.get(row) : null;
           if (!stream) {
             // Retain the native clip seed override or give an automatic leaf a
             // stable preview seed for independent seeks and replays.
             const initialSeed = profile.usesCueSeed ? cue.seed : (seed ?? particles.autoSeed());
-            stream = simulation.create(row, initialSeed);
+            const engine = sheet ? global.MVStudioSparksASecondarySimulation : simulation;
+            stream = engine?.create(row, initialSeed);
             if (!stream?.sample) throw new Error("Invalid native spark emitter.");
             if (shared) fixed.set(row, stream);
           }
-          const capacity = Math.min(row.capacity, row.bursts.reduce((sum, burst) => sum + burst[1], 0) +
-            Math.ceil(row.duration * row.rate) + 1);
+          const capacity = Math.min(row.capacity, row.bursts.reduce((sum, burst) => sum + burst[1] * (burst[2] ?? 1), 0) +
+            Math.ceil(row.duration * (row.rate ?? 0)) + 1);
           const fields = {texture, capacity, maxViewportWidth: row.maxViewportWidth,
             name: `Native stage sparks ${kind}`, tint};
+          const [columns, rows] = sheet ? row.atlas.tiles : [1, 1];
+          const atlas = sheet ? [1 / columns, 1 / rows, 0, 0] : uv;
           const packet = stretch ? velocityBillboards(T, {...fields, uv, stretch}) :
-            localBillboards(T, {...fields, atlas: uv, rotation, additive: true, rolling: true, viewAligned: true});
+            localBillboards(T, {...fields, atlas, columns, rotation, additive: true, rolling: true, viewAligned: true,
+              minViewportWidth: row.minViewportWidth});
           packet.mesh.name = `Native spark ${kind} ${index + 1} ${name}`;
           packet.mesh.renderOrder = 3010;
           packet.mesh.material.stencilFunc = T.AlwaysStencilFunc;
           packet.mesh.material.stencilRef = 0;
-          entries.push({...packet, stream, capacity, lastFrame: -1, fps: 0});
+          entries.push({...packet, stream, capacity, sheet, lastFrame: -1, fps: 0});
           root.add(packet.mesh);
         }
       });
@@ -109,7 +116,16 @@
       entry.lastFrame = frame;
       entry.fps = fps;
       let count = 0;
-      stream.sample(elapsed, fps, (px, py, pz, vx, vy, vz, size, roll, r, g, b, a) => {
+      if (entry.sheet) {
+        stream.sample(elapsed, fps, (px, py, pz, width, height, roll, r, g, b, a, tile) => {
+          if (count >= capacity || Math.max(width, height) <= 0 || a <= 0) return;
+          centers.setXYZW(count, px, py, pz, tile);
+          sizes.setXY(count, width, height);
+          rolls.setX(count, roll);
+          colors.setXYZW(count, r, g, b, a);
+          count++;
+        });
+      } else stream.sample(elapsed, fps, (px, py, pz, vx, vy, vz, size, roll, r, g, b, a) => {
         if (count >= capacity || size <= 0 || a <= 0) return;
         if (velocities) {
           centers.setXYZW(count, px, py, pz, size);
