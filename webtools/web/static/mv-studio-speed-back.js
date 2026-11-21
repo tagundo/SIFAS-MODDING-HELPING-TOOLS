@@ -102,6 +102,7 @@
     root.add(mesh);
     let tracks, track, disposed = false;
     return {
+      centerTexture: stars?.texture,
       invalidate() { tracks = null; },
       sort(camera) {
         if (disposed || !sortEntries || !companions.batches.some(({mesh}) => mesh.visible)) return;

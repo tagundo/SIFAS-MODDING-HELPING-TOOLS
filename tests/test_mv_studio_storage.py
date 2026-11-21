@@ -282,6 +282,33 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["tracks"], project["tracks"])
         self.assertEqual(reopened["stageDisplayLights"], descriptor)
 
+    def test_saved_falling_effects_share_only_matching_atlases_and_keep_edits(self):
+        base = mv_studio._blank("Edited display pairs")
+        base["stageTitle"] = {"particleSchema": 2}
+        base["tracks"] = [{
+            "id": "display", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/light",
+            "events": [{"id": "early", "label": "Renamed lights", "start": 14, "duration": 8,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "-1918126523244823858"}}}],
+        }]
+        light, star = [{"png": "source light"}], [{"png": "source star"}]
+        base["stageDisplayLights"] = {"texture": light}
+        descriptor = {"textures": [light, star], "cues": [{"eventId": "early"}]}
+        for saved_star, expected in ((star, "speedBackCenterStars"), ([{"png": "edited star"}], star)):
+            with self.subTest(saved_star=saved_star):
+                base["stageSpeedBack"] = {"centerStars": {"texture": saved_star}, "movingCompanions": []}
+                saved = mv_studio.save(mv_studio._register(base, self.original))
+                with ZipFile(saved["path"]) as archive, patch(
+                        "webtools.core.mv_studio_timeline.parse_timeline",
+                        return_value={"stageFallingEffects": descriptor},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                parse.assert_called_once_with(self.original, "Edited display pairs", preview_split=False,
+                                              preview_stage_title=False, preview_stage_falling_effects=True)
+                self.assertEqual(reopened["tracks"], base["tracks"])
+                self.assertEqual(reopened["stageSpeedBack"], base["stageSpeedBack"])
+                self.assertEqual(reopened["stageFallingEffects"]["textures"], ["displayLights", expected])
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

@@ -324,6 +324,23 @@
     let tracks;
     return {
       invalidate() { tracks = null; },
+      displaySortEntries() {
+        if (disposed || ribbons) return [];
+        const entries = [];
+        for (const {track, event, group, meshes, isParticle} of groups) {
+          // Three stationary title particles still draw over the opening
+          // display lights. Their native renderer centers are their origins.
+          const prefab = event?.values?.prefabGameObject;
+          if (!isParticle || !group.visible || !track?.label?.endsWith("/Title_mainDis") ||
+              prefab?.m_FileID !== 0 || prefab.m_PathID !== "678762954342101232") continue;
+          for (const {mesh, emitter} of meshes) {
+            if (mesh.visible && ["title_sub", "title_main_vanish", "block"].includes(emitter.name)) {
+              entries.push({mesh, center: mesh.position, sortBias: 0, order: entries.length - 3});
+            }
+          }
+        }
+        return entries;
+      },
       update(time, project) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
@@ -342,7 +359,10 @@
           if (!group.visible) continue;
           const elapsed = time - event.start;
           if (isParticle) {
-            for (const particle of meshes) updateParticle(particle, elapsed, curves.evaluate);
+            for (const particle of meshes) {
+              particle.mesh.renderOrder = particle.emitter.material.queue;
+              updateParticle(particle, elapsed, curves.evaluate);
+            }
             continue;
           }
           const { start, duration, loop } = cue.animation;

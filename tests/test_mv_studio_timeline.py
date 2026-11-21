@@ -290,6 +290,31 @@ class ActualTimelineTests(unittest.TestCase):
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 
+    def test_native_falling_effects_reuse_the_existing_paired_atlases(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_display_lights=True,
+                                               preview_stage_speed_back=True, preview_stage_falling_effects=True)
+                effect = parsed.pop("stageFallingEffects")
+                self.assertEqual(effect["textures"], ["displayLights", "speedBackCenterStars"])
+                self.assertEqual(len(parsed.pop("stageDisplayLights")["texture"]), 10)
+                self.assertEqual(len(parsed.pop("stageSpeedBack")["centerStars"]["texture"]), 10)
+                self.assertEqual(parsed, self.original[platform])
+                emitters = {row["name"]: row for row in effect["emitters"]}
+                self.assertEqual(set(emitters), {"light_big", "light_smole", "light_smole_L", "light_smole_R", "stars"})
+                self.assertEqual(emitters["stars"]["rate"], 10)
+                self.assertTrue(all(emitters[name]["burstPeriod"] == 1 for name in emitters if name != "stars"))
+                starts = {"fx_dis_so2056_05": 670 / 60, "fx_dis_so2056_07": 62.95}
+                palettes = {"fx_dis_so2056_05": [32768, 128, 170, 255], "fx_dis_so2056_07": [32768, 255, 128, 128]}
+                for cue in effect["cues"]:
+                    track, = [row for row in parsed["tracks"] if row["id"] == cue["trackId"]]
+                    event, = [row for row in track["events"] if row["id"] == cue["eventId"]]
+                    self.assertAlmostEqual(event["start"], starts[event["label"]])
+                    self.assertEqual(cue["starPalette"]["rgb"][0], palettes[event["label"]])
+                descriptors.append(effect)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 

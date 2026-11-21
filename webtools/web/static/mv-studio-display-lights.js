@@ -5,9 +5,13 @@
     uniform vec3 uAxisX;
     uniform vec3 uAxisY;
     uniform float uMaxWidth;
+    uniform vec4 uAtlas;
     attribute vec4 centerAndTile;
     attribute vec2 particleSize;
     attribute vec4 particleColor;
+    #ifdef PARTICLE_ROLL
+    attribute float particleRoll;
+    #endif
     varying vec2 vParticleUV;
     varying vec4 vParticleColor;
     void main() {
@@ -16,9 +20,14 @@
       float largerSide = max(particleSize.x, particleSize.y);
       float sideLimit = 2.0 * uMaxWidth * depth / abs(projectionMatrix[0][0]);
       float scale = depth < 0.0 ? 1.0 : min(1.0, sideLimit / largerSide);
-      vec3 offset = (uAxisX * (position.x * particleSize.x) + uAxisY * (position.y * particleSize.y)) * scale;
+      vec2 local = position.xy * particleSize;
+      #ifdef PARTICLE_ROLL
+      float c = cos(particleRoll), s = sin(particleRoll);
+      local = mat2(c, s, -s, c) * local;
+      #endif
+      vec3 offset = (uAxisX * local.x + uAxisY * local.y) * scale;
       gl_Position = projectionMatrix * (center + vec4(mat3(modelViewMatrix) * offset, 0.0));
-      vParticleUV = vec2(uv.x, (uv.y + centerAndTile.w) * 0.25);
+      vParticleUV = (uv + vec2(0.0, centerAndTile.w)) * uAtlas.xy + uAtlas.zw;
       vParticleColor = particleColor;
     }
   `;
@@ -74,46 +83,56 @@
     return {fps, birthTicks: birthTicks.reverse(), phaseAges};
   }
 
-  function makeEmitter(T, row, texture) {
+  function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name, additive = false, rolling = false}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
     geometry.setIndex([0,2,1,0,3,2]);
-    const capacity = Math.ceil(row.lifetime) + 1;
     const centers = new T.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(T.DynamicDrawUsage);
     const sizes = new T.InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(T.DynamicDrawUsage);
     const colors = new T.InstancedBufferAttribute(new Uint8Array(capacity * 4), 4, true).setUsage(T.DynamicDrawUsage);
     geometry.setAttribute("centerAndTile", centers);
     geometry.setAttribute("particleSize", sizes);
     geometry.setAttribute("particleColor", colors);
+    const rolls = rolling ? new T.InstancedBufferAttribute(new Float32Array(capacity), 1).setUsage(T.DynamicDrawUsage) : null;
+    if (rolls) geometry.setAttribute("particleRoll", rolls);
     geometry.instanceCount = 0;
-    const emitter = new T.Quaternion().fromArray(row.rotation);
-    const [x, y, z] = row.particleRotation;
-    // The native Local renderer applies the negative initial Z-X-Y angles
-    // before the emitter rotation. The stage uses reflected X coordinates.
-    const plane = emitter.clone().multiply(new T.Quaternion().setFromEuler(new T.Euler(-x, y, z, "YXZ")));
-    const origin = new T.Vector3().fromArray(row.position);
-    const velocity = new T.Vector3(0, 0, row.speed).applyQuaternion(emitter);
-    const center = origin.clone().addScaledVector(velocity, row.lifetime * 0.5);
+    const destination = additive ? T.OneFactor : T.OneMinusSrcAlphaFactor;
     const material = new T.ShaderMaterial({
-      name: "Native stage display lights", vertexShader, fragmentShader, transparent: true,
+      name, vertexShader, fragmentShader, transparent: true,
+      defines: rolling ? {PARTICLE_ROLL: 1} : {},
       toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
-      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor,
-      blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor,
+      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
+      blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
       stencilWrite: true, stencilFunc: T.EqualStencilFunc, stencilRef: 2,
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
-      uniforms: {uTexture: {value: texture}, uMaxWidth: {value: row.maxViewportWidth},
-        uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(plane)},
-        uAxisY: {value: new T.Vector3(0, 1, 0).applyQuaternion(plane)}},
+      uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},
+        uAtlas: {value: new T.Vector4().fromArray(atlas)},
+        uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(rotation)},
+        uAxisY: {value: new T.Vector3(0, 1, 0).applyQuaternion(rotation)}},
     });
     const mesh = new T.Mesh(geometry, material);
-    mesh.name = `Native stage display ${row.name}`;
     mesh.renderOrder = 2900;
     mesh.matrixAutoUpdate = false;
     mesh.frustumCulled = false;
     mesh.visible = false;
-    return {row, mesh, center, origin, velocity, centers, sizes, colors, distance: 0};
+    return {mesh, centers, sizes, colors, rolls};
+  }
+
+  function makeEmitter(T, row, texture) {
+    const emitter = new T.Quaternion().fromArray(row.rotation);
+    const [x, y, z] = row.particleRotation;
+    // The native Local renderer applies the negative initial Z-X-Y angles
+    // before the emitter rotation. The stage uses reflected X coordinates.
+    const rotation = emitter.clone().multiply(new T.Quaternion().setFromEuler(new T.Euler(-x, y, z, "YXZ")));
+    const origin = new T.Vector3().fromArray(row.position);
+    const velocity = new T.Vector3(0, 0, row.speed).applyQuaternion(emitter);
+    const center = origin.clone().addScaledVector(velocity, row.lifetime * 0.5);
+    const geometry = localBillboards(T, {texture, rotation, capacity: row.lifetime + 1, atlas: [1,.25,0,0],
+      maxViewportWidth: row.maxViewportWidth, name: "Native stage display lights"});
+    geometry.mesh.name = `Native stage display ${row.name}`;
+    return {...geometry, row, center, origin, velocity, distance: 0};
   }
 
   async function apply(T, root, source) {
@@ -170,6 +189,7 @@
     }
 
     return {
+      texture,
       invalidate() { tracks = null; },
       update(time, project) {
         if (disposed) return;
@@ -212,5 +232,5 @@
     };
   }
 
-  global.MVStudioDisplayLights = {apply};
+  global.MVStudioDisplayLights = {apply, localBillboards};
 })(typeof window !== "undefined" ? window : globalThis);

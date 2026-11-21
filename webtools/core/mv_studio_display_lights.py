@@ -202,7 +202,7 @@ def _prefab(objects, game, deadline):
     return list(found.values()), atlas
 
 
-def read(objects, mono, tracks, deadline):
+def read(objects, mono, tracks, deadline, *, atlas_refs=None):
     """Return the six typed source strokes for the supported Stage Display cue."""
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
@@ -243,4 +243,6 @@ def read(objects, mono, tracks, deadline):
         return None
     if not texture or len(texture) != 10:
         return None
+    if atlas_refs is not None:
+        atlas_refs[viewer._key(atlas)] = "displayLights"
     return {"trackId": track_id, "eventId": event_id, "texture": texture, "emitters": emitters}

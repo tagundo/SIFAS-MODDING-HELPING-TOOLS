@@ -169,7 +169,7 @@ def _prefab(objects, game, deadline):
     return {**geometry, **animation, "lifetime": lifetime, "matrix": matrix}, texture, center, rows
 
 
-def read(objects, mono, tracks, deadline):
+def read(objects, mono, tracks, deadline, *, atlas_refs=None):
     """Return the native background for a supported Stage Display cue."""
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
@@ -215,6 +215,8 @@ def read(objects, mono, tracks, deadline):
             mips = particles._texture(source, deadline)
             if mips and len(mips) == 10:
                 result["centerStars"] = {**emitter, "texture": mips}
+                if atlas_refs is not None:
+                    atlas_refs[viewer._key(source)] = "speedBackCenterStars"
                 if rows is not None:
                     result["movingCompanions"] = rows
         except title._UNSUPPORTED:

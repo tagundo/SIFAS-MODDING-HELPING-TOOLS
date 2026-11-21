@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageSpeedBack = null, stageDisplayLights = null;
+    let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -406,6 +406,7 @@
     function renderScene(camera) {
       stageSpeedBack?.sort(camera);
       stageDisplayLights?.sort(camera);
+      stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
@@ -532,6 +533,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageFallingEffects?.dispose();
+      stageFallingEffects = null;
       stageSpeedBack?.dispose();
       stageSpeedBack = null;
       stageDisplayLights?.dispose();
@@ -1048,6 +1051,15 @@
         return;
       }
       stageDisplayLights = displayLights;
+      const fallingEffects = await global.MVStudioFallingDisplay?.apply(T, scene, value.stageFallingEffects, {
+        displayLights: displayLights?.texture || value.stageDisplayLights?.texture,
+        speedBackCenterStars: speedBack?.centerTexture || value.stageSpeedBack?.centerStars?.texture,
+      });
+      if (!active()) {
+        fallingEffects?.dispose();
+        return;
+      }
+      stageFallingEffects = fallingEffects;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1248,6 +1260,7 @@
       stageSpotlight?.invalidate();
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
+      stageFallingEffects?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1320,6 +1333,7 @@
       stageSpotlight?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);
+      stageFallingEffects?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);
