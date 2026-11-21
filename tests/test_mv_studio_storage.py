@@ -262,6 +262,26 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageSpeedBack"], {**legacy_display, **previous, **additions})
                 self.assertEqual(reopened["tracks"], project["tracks"])
 
+    def test_saved_display_lights_retain_edited_cue_after_atlas_recovery(self):
+        project = mv_studio._blank("Edited display")
+        project["stageTitle"] = {"particleSchema": 2}
+        project["tracks"] = [{
+            "id": "display", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/light",
+            "events": [{"id": "clip", "label": "Edited lights", "start": 45, "duration": 12,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "-3728220010162171534"}}}],
+        }]
+        descriptor = {"trackId": "display", "eventId": "clip", "emitters": [{"name": "light_up"}]}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageDisplayLights": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited display", preview_split=False,
+                                      preview_stage_title=False, preview_stage_display_lights=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageDisplayLights"], descriptor)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

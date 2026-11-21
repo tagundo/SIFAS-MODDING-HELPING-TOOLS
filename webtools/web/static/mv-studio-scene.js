@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageSpeedBack = null;
+    let stageSpeedBack = null, stageDisplayLights = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -405,6 +405,7 @@
 
     function renderScene(camera) {
       stageSpeedBack?.sort(camera);
+      stageDisplayLights?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
@@ -533,6 +534,8 @@
       stageSpotlight = null;
       stageSpeedBack?.dispose();
       stageSpeedBack = null;
+      stageDisplayLights?.dispose();
+      stageDisplayLights = null;
       lastShaftFrame = null;
       resetShafts = true;
       // Actors borrow stage geometries. Detach the instances before clearing the stage.
@@ -1039,6 +1042,12 @@
         return;
       }
       stageSpeedBack = speedBack;
+      const displayLights = await global.MVStudioDisplayLights?.apply(T, scene, value.stageDisplayLights);
+      if (!active()) {
+        displayLights?.dispose();
+        return;
+      }
+      stageDisplayLights = displayLights;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1238,6 +1247,7 @@
       stageShine?.invalidate();
       stageSpotlight?.invalidate();
       stageSpeedBack?.invalidate();
+      stageDisplayLights?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1309,6 +1319,7 @@
       stageParticles?.update(currentTime, project);
       stageSpotlight?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
+      stageDisplayLights?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);

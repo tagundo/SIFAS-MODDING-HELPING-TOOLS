@@ -266,6 +266,30 @@ class ActualTimelineTests(unittest.TestCase):
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 
+    def test_native_display_lights_match_across_android_and_ios(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_display_lights=True)
+                effect = parsed.pop("stageDisplayLights")
+                self.assertEqual(parsed, self.original[platform])
+                track, = [row for row in parsed["tracks"] if row["id"] == effect["trackId"]]
+                event, = [row for row in track["events"] if row["id"] == effect["eventId"]]
+                self.assertEqual(track["label"], "StageEffect/Expert/Display/light")
+                self.assertEqual(event["label"], "fx_dis_so2056_06")
+                self.assertAlmostEqual(event["start"], 2897 / 60)
+                self.assertAlmostEqual(event["start"] + event["duration"], 62.95)
+                self.assertEqual([row["width"] for row in effect["texture"]], [512 >> index for index in range(10)])
+                emitters = {row["name"]: row for row in effect["emitters"]}
+                self.assertEqual(set(emitters), {"light_up", "light_down", "light_right", "light_left", "light_L", "light_R"})
+                for name, row in emitters.items():
+                    side = name in {"light_L", "light_R"}
+                    self.assertEqual(row["bursts"], [[0, 2], [1, 2]] if side else [[0, 1]])
+                    self.assertEqual((row["speed"], row["lifetime"], row["sortBias"]), (-1 if side else 1, 4, 0))
+                    self.assertNotIn("texture", row)
+                descriptors.append(effect)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 

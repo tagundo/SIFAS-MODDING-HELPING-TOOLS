@@ -61,10 +61,15 @@
         row.slice(1).every(byte));
   }
 
-  function nativeColor({start, keys}, normalized) {
+  function nativeColor(source, normalized) {
+    const f32 = Math.fround;
+    return nativeColorAtTime(source, f32(f32(f32(normalized) * 100) * f32(.01)));
+  }
+
+  function nativeColorAtTime({start, keys}, time) {
     // Unity's particle ColorModule interpolates its packed byte gradient and
     // multiplies the resulting bytes by the generated starting color.
-    const f32 = Math.fround, time = f32(f32(f32(normalized) * 100) * f32(.01));
+    const f32 = Math.fround;
     const next = keys.findIndex(row => row[0] > time);
     const right = keys[next < 0 ? keys.length - 1 : next];
     const left = next > 0 ? keys[next - 1] : right;
@@ -262,5 +267,5 @@
     };
   }
 
-  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit, nativeColor, validNativeColor };
+  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor };
 })(typeof window !== "undefined" ? window : globalThis);
