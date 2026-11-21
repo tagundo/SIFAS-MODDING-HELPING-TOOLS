@@ -62,13 +62,14 @@
   function create(row) {
     const motion = global.MVStudioStageMotion, particles = global.MVStudioStageParticles;
     if (!motion || !particles || !supported(row, motion)) return null;
-    const {nativeRandom, nativeUnit} = particles, {evaluate} = motion;
+    const {nativeRandom, nativeUnit, nativeFrame, nativeStep, nativeStepRate} = particles, {evaluate} = motion;
     const {seed, lifetime, cycle, rate, burstPeriod, box, position, rotation} = row;
     const stars = row.name === "stars", inverseLife = f32(1 / lifetime);
     const [rollStart, rollEnd] = row.rollRange, [spinStart, spinEnd] = row.rollSpeedRange;
     const cosine = f32(1 - 2 * rotation[1] * rotation[1]), sine = f32(2 * rotation[1] * rotation[3]);
-    let frame = 0, fps = 0, clock, carry, births, active, initial, shape, warmed;
-    let checkpoints;
+    const checkpointFrames = nativeStepRate * checkpointSeconds;
+    let frame = 0, displayFps, clock, carry, births, active, initial, shape;
+    let warmed, warmRemainder, firstFrameSteps, firstFrameRemainder, checkpoints;
 
     function starVelocity(axis, phase, weight) {
       const [lowCurve, highCurve] = row.velocityCurves[axis];
@@ -174,42 +175,49 @@
       for (let draw = 0; draw < births * 3; draw++) shape();
     }
 
-    function resetCadence(cadence) {
-      if (!warmed) {
-        initial = nativeRandom(seed);
-        shape = nativeRandom(seed);
-        active = [];
-        births = 0;
-        clock = cycle - lifetime;
-        carry = initialCarry(lifetime, cycle, rate);
-        let remaining = lifetime;
-        for (let dt = remaining > 5 ? catchUpStep : fixedStep; remaining >= dt;
-            dt = remaining > 5 ? catchUpStep : fixedStep) {
-          step(dt);
-          remaining = f32(remaining - dt);
-        }
-        warmed = snapshot();
-        frame = 0;
-      } else {
-        restore(warmed, 0);
+    function warm() {
+      initial = nativeRandom(seed);
+      shape = nativeRandom(seed);
+      active = [];
+      births = 0;
+      clock = cycle - lifetime;
+      carry = initialCarry(lifetime, cycle, rate);
+      let remaining = lifetime;
+      for (let dt = remaining > 5 ? catchUpStep : fixedStep; remaining >= dt;
+          dt = remaining > 5 ? catchUpStep : fixedStep) {
+        step(dt);
+        remaining = f32(remaining - dt);
       }
-      fps = cadence;
+      warmed = snapshot();
+      warmRemainder = remaining;
+    }
+
+    function selectDisplayRate(fps) {
+      if (warmed) restore(warmed, 0);
+      else warm();
+      displayFps = fps;
       checkpoints = [warmed];
+      firstFrameSteps = nativeStepRate / fps;
+      // The warm-up ends with a fraction of a fixed step in Unity's step
+      // accumulator. The next game frame runs it after its full updates.
+      firstFrameRemainder = f32(f32(1 / fps) + warmRemainder);
+      for (let step = 0; step < firstFrameSteps; step++) {
+        firstFrameRemainder = f32(firstFrameRemainder - nativeStep);
+      }
     }
 
     return {
-      sample(elapsed, cadence, emit) {
-        if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 60 || (cadence !== 30 && cadence !== 60)) return;
-        const target = Math.floor(elapsed * cadence + 1e-9);
-        if (fps !== cadence) resetCadence(cadence);
-        const checkpointFrames = fps * checkpointSeconds;
+      sample(elapsed, fps, emit) {
+        const target = nativeFrame(elapsed, fps);
+        if (target < 0 || elapsed > 60) return;
+        if (displayFps !== fps) selectDisplayRate(fps);
         const index = Math.min(checkpoints.length - 1, Math.floor(target / checkpointFrames));
         const storedFrame = index * checkpointFrames;
         if (target < frame || storedFrame > frame) restore(checkpoints[index], storedFrame);
-        const dt = f32(1 / fps);
         while (frame < target) {
-          step(dt);
+          step(nativeStep);
           frame++;
+          if (frame === firstFrameSteps && firstFrameRemainder >= birthBias) step(firstFrameRemainder);
           if (frame === checkpoints.length * checkpointFrames) checkpoints.push(snapshot());
         }
         for (const particle of active) {

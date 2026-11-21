@@ -107,16 +107,33 @@ function verifyNativeWarmState() {
     -2.7737183570861816, .9750025177001953);
   assert.deepEqual(lightWarm[0].slice(3, 5), [4, 1]);
   compareNative(starWarm[0], [2.663102149963379, 1.6578537225723267, -7], -1.252691626548767, .999981460571289);
+  assert.ok(Math.abs(starWarm[0][3] - .3800473213195801) < .000001);
   assert.ok(starWarm[0][7] < 32768 && starWarm.at(-1)[7] > 32768);
   const lightNext = sample(light, 61 / 60), starNext = sample(stars, 61 / 60);
   assert.deepEqual([lightNext.length, starNext.length], [8, 50]);
-  compareNative(lightNext.at(-1), [-2.1222219467163086, 6.4445061683654785, -6.992047309875488],
-    -2.176302909851074, .002083335518836975);
-  compareNative(starNext.at(-1), [-2.0011119842529297, 4.279577732086182, -7], -5.2191925048828125, .22333494186401367);
+  compareNative(lightNext[0], [-3.828301429748535, 5.062197208404541, -6.216256141662598],
+    1.9576174020767212, .12708416938781738);
+  compareNative(starNext[0], [2.2865188121795654, 4.679867267608643, -7], 4.270015239715576, .20333620071411133);
   assert.deepEqual(sample(light, 0, 30), lightWarm);
   assert.deepEqual(sample(stars, 0, 30), starWarm);
   assert.deepEqual(sample(light, 61 / 60), lightNext);
   assert.deepEqual(sample(stars, 61 / 60), starNext);
+
+  // The native clock has cleared a light slot on tick 60. A single
+  // old 1/30-second integration per frame used to leave nine live.
+  for (const fps of [30, 60]) {
+    const lightsAtOne = sample(light, 1, fps), starsAtOne = sample(stars, 1, fps);
+    assert.deepEqual([lightsAtOne.length, starsAtOne.length], [8, 51]);
+    compareNative(lightsAtOne[0], [-3.828301429748535, 5.078756809234619, -6.216256141662598],
+      1.9538403749465942, .12500083923339844);
+    compareNative(starsAtOne[0], [2.2861599922180176, 4.690165042877197, -7], 4.269911766052246, .2000028610229492);
+    for (const [emitter, expected] of [[light, lightsAtOne], [stars, starsAtOne]]) {
+      sample(emitter, 6.5, fps); // Advance beyond several seek checkpoints.
+      assert.deepEqual(sample(emitter, 1 + .5 / fps, fps), expected, "seek restores the last completed frame");
+      sample(emitter, 3, 90 - fps);
+      assert.deepEqual(sample(emitter, 1, fps), expected, "a change of display cadence preserves deterministic seeks");
+    }
+  }
 }
 
 async function verifyPackets() {

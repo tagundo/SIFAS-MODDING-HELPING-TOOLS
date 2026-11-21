@@ -64,7 +64,7 @@
     const particles = global.MVStudioStageParticles;
     if (!particles || !supported(row, particles)) return null;
     const {seed, cycle, lifetime, capacity, rate, position, shape, colorKeys, palette} = row;
-    const {nativeRandom, nativeUnit, nativeColor} = particles;
+    const {nativeRandom, nativeUnit, nativeColor, nativeFrame, nativeStep, nativeStepRate} = particles;
     const [minSize, maxSize] = row.size;
     const [minSpeed, maxSpeed] = row.speed;
     const matrix = rotationMatrix(row.rotation);
@@ -77,17 +77,13 @@
     const ageColor = {start: white, keys: colorKeys};
 
     // One piece of shared scenery lasts at most the original 60-second
-    // particle lifetime. Keep one cadence's packed births for exact seeking.
+    // particle lifetime. The two display rates share these packed births.
     let records = new Float64Array(0), colors = new Uint8Array(0), expiry = new Uint16Array(0);
-    const frameEnds = new Uint16Array(60 * maxTime + 1);
+    const frameEnds = new Uint16Array(nativeStepRate * maxTime + 1);
     const frameStarts = new Uint16Array(frameEnds.length);
-    let initial, shaping, tick = 0, phase = 0, carry = 0, length = 0, firstAlive = 0, fps = 0;
-    function useCadence(value) {
-      initial = Array.from({length: 4}, (_, lane) => nativeRandom((seed + 367 * lane) >>> 0));
-      shaping = Array.from({length: 4}, (_, lane) => nativeRandom((seed + 367 * lane) >>> 0));
-      fps = value;
-      tick = phase = carry = length = firstAlive = 0;
-    }
+    const initial = Array.from({length: 4}, (_, lane) => nativeRandom((seed + 367 * lane) >>> 0));
+    const shaping = Array.from({length: 4}, (_, lane) => nativeRandom((seed + 367 * lane) >>> 0));
+    let tick = 0, phase = 0, carry = 0, length = 0, firstAlive = 0;
 
     function ensureCapacity(wanted) {
       if (colors.length / 3 >= wanted) return;
@@ -117,7 +113,7 @@
       const requested = Math.trunc(countAndCarry);
       carry = f32(countAndCarry - requested);
       const fraction = f32(1 / amount);
-      const time = ++tick / fps;
+      const time = ++tick / nativeStepRate;
       while (firstAlive < length && expiry[firstAlive] <= tick) firstAlive++;
       const count = Math.min(requested, capacity - (length - firstAlive));
       const ageStep = f32(f32(dt * 100) / lifetime);
@@ -178,11 +174,11 @@
     }
 
     return {
-      sample(time, cadence, emit) {
-        if (!between(time, 0, maxTime) || ![30, 60].includes(cadence)) return;
-        if (fps !== cadence) useCadence(cadence);
-        const frame = Math.floor(time * fps + 1e-9), dt = f32(1 / fps);
-        while (tick < frame) step(dt);
+      sample(elapsed, fps, emit) {
+        const frame = nativeFrame(elapsed, fps);
+        if (frame < 0 || elapsed > maxTime) return;
+        const time = frame / nativeStepRate;
+        while (tick < frame) step(nativeStep);
         // A seek between two ticks only sees the births already submitted.
         for (let slot = frameEnds[frame] - 1; slot >= frameStarts[frame]; slot--) {
           const offset = slot * stride;

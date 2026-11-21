@@ -170,11 +170,20 @@ async function run() {
   update(-.001, 0);
   update(0, 0);
   update(1 / 60, 1);
+  update(2 / 60, 1);
+  const firstOrdinaryFrame = meshes.map(mesh => particle(mesh, 0));
+  nearVector(firstOrdinaryFrame[0].size, [0.0350000374, 0.0087500094]);
   update(60 / 60, 1);
   update(61 / 60, 2);
   settings.frame_rate_60fps = false;
+  update(1 / 60, 0);
+  update(1 / 30, 1);
+  assert.deepEqual(meshes.map(mesh => particle(mesh, 0)), firstOrdinaryFrame,
+    "the first 30 Hz paint contains both native steps");
   update(29 / 30, 1);
-  update(30 / 30, 2);
+  update(30 / 30, 1);
+  update(61 / 60, 1);
+  update(31 / 30, 2);
   settings.frame_rate_60fps = true;
 
   const up = byName.get("light_up"), rightSide = byName.get("light_R");

@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-title.js");
+require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-speed-back.js");
 
 function mip(size) {
@@ -107,8 +108,12 @@ async function run() {
   speedBack.update(start - .001, project);
   assert.equal(mesh.visible, false);
   speedBack.update(start, project);
-  assert.equal(mesh.visible, true, "the display effect is independent of stage_control");
+  assert.equal(mesh.visible, false, "native burst has not run at tick zero");
   near(textureST(), [2, 1, 0, 0]);
+  speedBack.update(start + 1 / 60, project);
+  assert.equal(mesh.visible, false, "30 fps paints after both particle updates");
+  speedBack.update(start + 1 / 30, project);
+  assert.equal(mesh.visible, true, "the display effect is independent of stage_control");
   speedBack.update(start + 10.5, project);
   near(textureST(), [1.79, 1, .21, -31.5]);
   speedBack.update(start + event.duration, project);
@@ -122,7 +127,9 @@ async function run() {
   assert.equal(mesh.visible, true);
   near(textureST(), [1, 1, 1, -150]);
   speedBack.update(start + 60, project);
-  assert.equal(mesh.visible, false, "the particle dies even in a longer cue");
+  assert.equal(mesh.visible, true, "native particle is still live on its last frame");
+  speedBack.update(start + 60 + 1 / 30, project);
+  assert.equal(mesh.visible, false, "the particle expires on the next rendered frame");
   speedBack.update(start + 10.5, project);
   assert.equal(mesh.visible, true);
   near(textureST(), [1.79, 1, .21, -31.5]);

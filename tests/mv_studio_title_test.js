@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-title.js");
+require("../webtools/web/static/mv-studio-stage-particles.js");
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/dtoAAAAASUVORK5CYII=";
 const constant = value => ["constant", value];
@@ -303,6 +304,104 @@ async function runSeededParticles() {
   console.log("Native title pair: independent life, colors and looped sheets, rewind, and cue/quality gating.");
 }
 
+async function runStockParticleCadence() {
+  const root = new T.Scene(), source = structuredClone(descriptor), f32 = Math.fround;
+  const prefab = (id, path, start, duration) => ({id, start, duration, values: {playableClass: "CustomControlClip",
+    clipIn: 0, timeScale: 1, weight: 1, offset: {x: 0, y: 0, z: 0}, prefabGameObject: {m_FileID: 0, m_PathID: path}}});
+  const first = prefab("01", "-8435186680480702496", 5.833333333333333, 1.9333333333333336);
+  const second = prefab("02", "4756982803957209729", 7.766666666666667, 1.9);
+  const third = prefab("03", "678762954342101232", 9.666666666666666, 1.833333333333334);
+  const nativeTrack = {id: "main-title", label: "StageEffect/Expert/Display/Title_mainDis",
+    nativeClass: "CustomControlTrack", events: [first, second, third]};
+  const base = {name: "title", texture: 0, scale: [1, 1, 1], active: [0, null], position: [0, f32(3.05), -7],
+    rotation: [0, -1, 0, 0], size: [5, 5], lifetime: 1.5, sizeCurves: [constant(1), constant(1)],
+    material: source.cues[0].material, atlas: {tiles: [1, 4], row: 0, frame: constant(0)},
+    color: {rgb: [[0, 1, 1, 1]], alpha: [[0, 1]]}};
+  // The .02 fixed seed pair has separate birth lifetimes, color and size
+  // lanes. Its original 2x4 atlas repeats every half of normalized age.
+  const pairAtlas = {tiles: [2, 4], row: null, period: .5, frame: ["cubic",
+    [0, 1, .7, .2, .65, .1, .9, .4, .6, .2, 1].map((phase, index) =>
+      [f32(index / 20), [0, 0, 0, f32(f32(phase) * f32(.9999))]])]};
+  const redWidth = 18.36803436279297, whiteWidth = 18.04229736328125;
+  const mainEnd = 1.1663333177566528, subStart = 1.1666666269302368, subEnd = 1.850000023841858;
+  const emitters = [[{...base, name: "title_main", lifetime: 2, size: [f32(4.65), 2.25],
+    color: {...base.color, alpha: [[42598 / 65535, 0], [49151 / 65535, 1]]}}], [
+    {...base, atlas: pairAtlas, size: [redWidth, redWidth], lifetime: 2.9159176349639893,
+      color: {...base.color, rgb: [[0, 228 / 255, 10 / 255, 56 / 255]]}},
+    {...base, atlas: pairAtlas, size: [whiteWidth, whiteWidth], lifetime: 3.2112085819244385},
+  ], [
+    {...base, name: "title_main", active: [0, mainEnd]},
+    {...base, name: "square", active: [0, subEnd]},
+    {...base, name: "title_sub", active: [subStart, subEnd], atlas: {...base.atlas, row: 1}},
+  ]];
+  source.particles = nativeTrack.events.map((event, i) => ({trackId: nativeTrack.id, eventId: event.id, emitters: emitters[i]}));
+  const local = {...T, TextureLoader: class {async loadAsync() { return new T.Texture({width: 1, height: 1}); }}};
+  const title = await MVStudioTitle.apply(local, root, source);
+  assert.ok(title);
+  const [, opening, pair, closing] = root.children, [red, white] = pair.children;
+  const [main, square, sub] = closing.children;
+  const settings = {stage_display: true, frame_rate_60fps: true};
+  const project = {tracks: [nativeTrack], quality: {values: settings}};
+  const textureST = mesh => mesh.material.uniforms.uTextureST.value.toArray();
+  title.update(first.start, project);
+  assert.equal(opening.visible, true);
+  assert.equal(opening.children[0].visible, false, "a native emitter has no particle before its first simulation tick");
+  title.update(first.start + 1 / 60, project);
+  assert.equal(opening.children[0].visible, true);
+  settings.frame_rate_60fps = false;
+  title.update(first.start + 1 / 60, project);
+  assert.equal(opening.children[0].visible, false, "30 Hz paint has no completed frame at a single native tick");
+  title.update(first.start + 1 / 30, project);
+  assert.equal(opening.children[0].visible, true);
+
+  title.update(second.start, project);
+  assert.equal(opening.visible, false);
+  assert.equal(pair.visible, true);
+  assert.equal(red.visible, false);
+  for (const fps of [30, 60]) {
+    settings.frame_rate_60fps = fps === 60;
+    title.update(second.start + 1 / 6, project);
+    assert.equal(red.visible, true);
+    compare(textureST(red), [.5, .25, .5, .75]); // Native lane 0 tile 7.
+    compare(textureST(white), [.5, .25, 0, 0]); // Native lane 1 is still on tile 0.
+    title.update(second.start + .2, project);
+    compare(textureST(white), [.5, .25, .5, .75]);
+    title.update(second.start + 1.5, project);
+    compare(textureST(red), [.5, .25, 0, 0]);
+    compare(textureST(white), [.5, .25, .5, 0]); // Native lane 1 tile 1 before its wrap.
+  }
+
+  title.update(third.start + mainEnd - 1e-6, project);
+  assert.equal(main.visible, true);
+  title.update(third.start + mainEnd, project);
+  assert.equal(main.visible, false);
+  title.update(third.start + subStart, project);
+  assert.equal(sub.visible, false, "the late renderer owns its activation clock");
+  title.update(third.start + subStart + 1 / 60, project);
+  assert.equal(sub.visible, true);
+  compare(textureST(sub), [1, .25, 0, .25]);
+  title.update(third.start + 90 / 60, project);
+  assert.equal(square.visible, true, "the 1.5-second square survives native tick 90");
+  title.update(third.start + 91 / 60, project);
+  assert.equal(square.visible, false);
+  settings.frame_rate_60fps = false;
+  title.update(third.start + 91 / 60, project);
+  assert.equal(square.visible, true, "ordinary playback holds tick 90 until the next 30 Hz paint");
+  title.update(third.start + 46 / 30, project);
+  assert.equal(square.visible, false);
+  title.update(third.start + third.duration, project);
+  assert.equal(closing.visible, false);
+  title.update(second.start + 1 / 6, project);
+  assert.equal(pair.visible, true);
+  compare(textureST(white), [.5, .25, 0, 0]);
+  nativeTrack.muted = true;
+  title.update(second.start + 1 / 6, project);
+  assert.equal(pair.visible, false);
+  title.dispose();
+  assert.equal(root.children.length, 0);
+  console.log("Native title particle cadence: independent activation epochs, 30/60 Hz atlas lanes, expiry, and rewind.");
+}
+
 async function runRibbons() {
   const root = new T.Scene();
   const levels = Array.from({length: 10}, (_, index) => {
@@ -426,5 +525,5 @@ async function runRibbons() {
   console.log("Native stage ribbons: authored mips, parent and leaf transforms, looped animation, cue transitions and cleanup.");
 }
 
-run().then(runParticles).then(runSeededParticles).then(runRibbons)
+run().then(runParticles).then(runSeededParticles).then(runStockParticleCadence).then(runRibbons)
   .catch(error => { console.error(error); process.exitCode = 1; });

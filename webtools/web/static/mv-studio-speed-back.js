@@ -48,8 +48,8 @@
   }
 
   async function apply(T, root, data) {
-    const title = global.MVStudioTitle, motion = global.MVStudioStageMotion;
-    if (!data || !root?.isObject3D || !title || !motion || !checked(data, title, motion)) return null;
+    const title = global.MVStudioTitle, motion = global.MVStudioStageMotion, particles = global.MVStudioStageParticles;
+    if (!data || !root?.isObject3D || !title || !motion || !particles || !checked(data, title, motion)) return null;
     let texture;
     try {
       texture = await title.loadTexture(T, new T.TextureLoader(), data.texture);
@@ -131,11 +131,14 @@
         const active = project?.quality?.values?.stage_display !== false && title.neutralClip(event) &&
           time >= event.start && time < event.start + event.duration;
         const elapsed = active ? time - event.start : null;
-        stars?.update(elapsed);
-        mesh.visible = active && elapsed < data.lifetime;
         const fps = project?.quality?.values?.frame_rate_60fps === true ? 60 : 30;
+        stars?.update(elapsed, fps);
+        const step = particles.nativeFrame(elapsed, fps);
+        mesh.visible = active && step > 0 && step <= data.lifetime * particles.nativeStepRate;
         companions?.update(elapsed, fps, mesh.visible);
-        if (!mesh.visible) return;
+        // The mesh particle has a native lifetime, while its texture scroll
+        // is driven by the separate Animator at the authored timeline time.
+        if (!active) return;
         const local = Math.min(data.duration, elapsed);
         const [sx, sy, ox, oy] = data.uvCurves.map(curve => motion.evaluate(curve, local));
         uv.set(sx, sy, ox, 1 - sy - oy);

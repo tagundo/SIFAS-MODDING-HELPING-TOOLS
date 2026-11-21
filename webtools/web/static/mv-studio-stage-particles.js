@@ -82,6 +82,17 @@
     });
   }
 
+  const nativeStepRate = 60;
+  const nativeStep = Math.fround(1 / nativeStepRate);
+
+  function nativeFrame(elapsed, fps) {
+    if (!Number.isFinite(elapsed) || elapsed < 0 || (fps !== 30 && fps !== 60)) return -1;
+    // The stock TimeManager caps a particle update at .03 seconds. Each
+    // 30 fps display frame contains two ordinary 60 Hz particle updates.
+    const step = Math.floor(elapsed * fps + 1e-9) * (nativeStepRate / fps);
+    return Number.isSafeInteger(step) ? step : -1;
+  }
+
   function autoSeed() {
     if (global.crypto?.getRandomValues) return global.crypto.getRandomValues(new Uint32Array(1))[0];
     return Math.floor(Math.random() * 0x100000000);
@@ -267,5 +278,8 @@
     };
   }
 
-  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor };
+  global.MVStudioStageParticles = {
+    apply, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
+    nativeFrame, nativeStep, nativeStepRate,
+  };
 })(typeof window !== "undefined" ? window : globalThis);

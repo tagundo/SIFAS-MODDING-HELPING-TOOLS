@@ -2,8 +2,7 @@
   "use strict";
 
   const f32 = Math.fround;
-  const stepRate = 60;
-  const dt = f32(1 / stepRate);
+  const {nativeFrame, nativeStep: dt, nativeStepRate: stepRate} = global.MVStudioStageParticles;
   const frameLimit = 2.5 * stepRate;
   const fraction = f32(.01);
   const birthBias = f32(1e-6);
@@ -42,11 +41,7 @@
   }
 
   function substeps(elapsed, fps) {
-    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > frameLimit / stepRate ||
-        (fps !== 30 && fps !== 60)) return -1;
-    // Stock TimeManager limits a particle update to .03 seconds. A
-    // 30 fps render therefore performs two of the same 60 Hz substeps.
-    return Math.floor(elapsed * fps + 1e-9) * (stepRate / fps);
+    return elapsed <= frameLimit / stepRate ? nativeFrame(elapsed, fps) : -1;
   }
 
   function birthStep(delay) {

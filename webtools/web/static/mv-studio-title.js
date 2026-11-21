@@ -20,6 +20,9 @@
   const dimension = value => Number.isInteger(value) && value > 0 && value <= 1024 && (value & (value - 1)) === 0;
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
   const channelWidth = { translation: 3, overlayTint: 4, overlayUV: 4, visibility: 1 };
+  const stockFinalTitle = "678762954342101232";
+  const stockParticleTitles = new Set(["-8435186680480702496", "4756982803957209729", stockFinalTitle]);
+  const f32 = Math.fround;
 
   function validTexture(source) {
     const { png, width, height } = source || {};
@@ -140,14 +143,35 @@
     return keys[keys.length - 1][channel];
   }
 
-  function updateParticle({ emitter, mesh, uv }, elapsed, evaluate) {
+  function stockParticleTitle(track, event) {
+    const prefab = event?.values?.prefabGameObject;
+    return track?.label === "StageEffect/Expert/Display/Title_mainDis" &&
+      prefab?.m_FileID === 0 && stockParticleTitles.has(prefab.m_PathID);
+  }
+
+  function stationaryAges(lifetime, step) {
+    const inverse = f32(1 / lifetime);
+    const increment = f32(f32(step * 100) * inverse);
+    // A time-zero burst uses a small fraction of its first simulation step.
+    let phase = f32(f32(f32(step * f32(1e-6)) * 100) * inverse);
+    const ages = [undefined];
+    while (phase <= 100) {
+      ages.push(f32(phase * f32(.01)));
+      phase = f32(phase + increment);
+    }
+    return ages;
+  }
+
+  function updateParticle({ emitter, mesh, uv, ages }, elapsed, evaluate, frameAt, fps) {
     const [from, to] = emitter.active, age = elapsed - from;
-    mesh.visible = age >= 0 && age < emitter.lifetime && (to === null || elapsed < to);
-    if (!mesh.visible) return;
     const { period } = emitter.atlas;
-    // This pair uses Unity's float32 percent age before native size and sheet sampling.
-    const time = period === undefined ? age / emitter.lifetime :
-      Math.fround(Math.fround(100 * age / emitter.lifetime) * Math.fround(0.01));
+    let time;
+    if (frameAt) time = ages[frameAt(age, fps)];
+    else if (age >= 0 && age < emitter.lifetime) {
+      time = period === undefined ? age / emitter.lifetime : f32(f32(100 * age / emitter.lifetime) * f32(.01));
+    }
+    mesh.visible = time !== undefined && (to === null || elapsed < to);
+    if (!mesh.visible) return;
     const [sx, sy, sz] = emitter.scale;
     const width = evaluate(emitter.sizeCurves[0], time), height = evaluate(emitter.sizeCurves[1], time);
     mesh.scale.set(period === undefined ? sx * emitter.size[0] * width : sx * Math.fround(emitter.size[0] * width),
@@ -258,6 +282,8 @@
     const source = checkedCues(descriptor, curves.validCurve, ribbons);
     if (!source) return null;
     const particles = ribbons ? [] : checkedParticles(descriptor, curves.validCurve);
+    const { nativeFrame, nativeStep } = global.MVStudioStageParticles || {};
+    const particleAges = new Map();
     const { geometry: fields } = descriptor;
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(fields.positions.flat(), 3));
@@ -312,7 +338,10 @@
           mesh.visible = false;
           mesh.renderOrder = emitter.material.queue;
           group.add(mesh);
-          meshes.push({ emitter, mesh, uv: mesh.material.uniforms.uTextureST.value });
+          if (nativeFrame && !particleAges.has(emitter.lifetime)) {
+            particleAges.set(emitter.lifetime, stationaryAges(emitter.lifetime, nativeStep));
+          }
+          meshes.push({ emitter, mesh, uv: mesh.material.uniforms.uTextureST.value, ages: particleAges.get(emitter.lifetime) });
         }
         root.add(group);
       }
@@ -328,14 +357,16 @@
         if (disposed || ribbons) return [];
         const entries = [];
         for (const {track, event, group, meshes, isParticle} of groups) {
-          // Three stationary title particles still draw over the opening
+          // Stationary title particles still draw over the opening
           // display lights. Their native renderer centers are their origins.
           const prefab = event?.values?.prefabGameObject;
           if (!isParticle || !group.visible || !track?.label?.endsWith("/Title_mainDis") ||
-              prefab?.m_FileID !== 0 || prefab.m_PathID !== "678762954342101232") continue;
+              prefab?.m_FileID !== 0 || prefab.m_PathID !== stockFinalTitle) continue;
+          const coSortSquare = nativeFrame && stockParticleTitle(track, event);
           for (const {mesh, emitter} of meshes) {
-            if (mesh.visible && ["title_sub", "title_main_vanish", "block"].includes(emitter.name)) {
-              entries.push({mesh, center: mesh.position, sortBias: 0, order: entries.length - 3});
+            if (mesh.visible && (emitter.name === "title_sub" || emitter.name === "title_main_vanish" ||
+                emitter.name === "block" || (coSortSquare && emitter.name === "square"))) {
+              entries.push({mesh, center: mesh.position, sortBias: 0, order: entries.length - 4});
             }
           }
         }
@@ -359,9 +390,11 @@
           if (!group.visible) continue;
           const elapsed = time - event.start;
           if (isParticle) {
+            const fps = project?.quality?.values?.frame_rate_60fps === true ? 60 : 30;
+            const frameAt = stockParticleTitle(track, event) ? nativeFrame : null;
             for (const particle of meshes) {
               particle.mesh.renderOrder = particle.emitter.material.queue;
-              updateParticle(particle, elapsed, curves.evaluate);
+              updateParticle(particle, elapsed, curves.evaluate, frameAt, fps);
             }
             continue;
           }

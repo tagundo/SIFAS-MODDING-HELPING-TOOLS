@@ -78,10 +78,10 @@ function verifySimulation(rows) {
     }
   }
 
-  // Captured at the end of the first native 30 Hz birth job. Positions and
-  // velocities are reflected in X and listed in native within-job order.
-  function checkJob(row, job) {
-    const live = sample(make(row), .5, 30), sinceBirthJob = .5 - 1 / 30;
+  // Stock ARM 60 Hz birth jobs also run at 30 Hz display cadence, twice
+  // per ordinary frame. Positions and velocities are reflected in X.
+  function checkJob(row, tick, job) {
+    const live = sample(make(row), .5, 30), sinceBirthJob = .5 - tick / 60;
     let previous = -1;
     for (const birth of job) {
       const index = live.findIndex(particle => birth.velocity.every((component, i) =>
@@ -95,20 +95,17 @@ function verifySimulation(rows) {
     }
   }
 
-  checkJob(rows[3], [
-    {position: [.03263811767101288, 3.0557639598846436, -6.998230934143066],
-      velocity: [9.776623725891113, 1.726562261581421, .5307674407958984],
-      age: .0016666674613952637, startSize: 1.724185585975647, rgba: [179, 255, 216, 255]},
-    {position: [.05735037848353386, 3.083767890930176, -6.99498176574707],
-      velocity: [4.2989821434021, 2.531230926513672, .37636715173721313],
-      age: .006666667461395264, startSize: 1.752451777458191, rgba: [255, 185, 179, 255]},
-    {position: [.14135146141052246, 2.926349401473999, -6.9868645668029785],
-      velocity: [6.0566840171813965, -5.2982306480407715, .5629463195800781],
-      age: .011666666269302368, startSize: 1.1105531454086304, rgba: [255, 185, 179, 255]},
+  checkJob(rows[3], 2, [
+    {position: [-.015610327012836933, 3.0323071479797363, -6.995307922363281],
+      velocity: [-4.680423259735107, -5.304830551147461, 1.4076714515686035],
+      age: .0016666674613952637, startSize: 1.8421690464019775, rgba: [179, 204, 255, 255]},
+    {position: [-.08710205554962158, 2.976325035095215, -6.991600513458252],
+      velocity: [-6.530570030212402, -5.5238423347473145, .6299440860748291],
+      age: .006666667461395264, startSize: 1.2671869993209839, rgba: [128, 170, 255, 255]},
   ]);
-  checkJob(rows[1], [{position: [4.540884017944336, 3.0799171924591064, -3.0433828830718994],
+  checkJob(rows[1], 1, [{position: [4.581724166870117, 3.1046993732452393, -3.019804000854492],
     velocity: [12.251935958862305, 7.434611797332764, 7.073657035827637],
-    age: .0016666674613952637, startSize: .9445784091949463, rgba: [179, 204, 255, 255]}]);
+    age: .003333333730697632, startSize: .9445784091949463, rgba: [179, 204, 255, 255]}]);
 
   // Native 60 Hz speed tick 258 expires four of 500 particles and accepts
   // only four of the five requested births. The unused SIMD group must not
@@ -133,6 +130,12 @@ function verifySimulation(rows) {
   nearVector(fading.slice(0, 3), [-4.478747367859, 3.519021034241, -6.681262969971], .0001);
   nearVector([fading[6]], [.05691439658403], .00001);
   assert.deepEqual(fading.slice(7), [179, 255, 216, 128]);
+
+  assert.deepEqual(sample(speed, 129 / 30, 30), atCap);
+  assert.deepEqual(sample(speed, 259 / 60, 30), atCap, "ordinary playback holds its completed frame between substeps");
+  const nextOrdinary = sample(speed, 130 / 30, 30);
+  assert.equal(nextOrdinary.length, 499);
+  assert.deepEqual(nextOrdinary, sample(speed, 260 / 60, 60));
 }
 
 function prefix(attribute, count) {

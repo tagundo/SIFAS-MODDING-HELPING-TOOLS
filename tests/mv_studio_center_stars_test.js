@@ -93,8 +93,8 @@ async function run() {
   assert.deepEqual(loaded[0].mipmaps.map(image => image.width), levelSizes);
   assert.deepEqual(disposed, levelSizes.slice(1));
 
-  function sample(time, count) {
-    stars.update(time);
+  function sample(time, count, fps = 60) {
+    stars.update(time, fps);
     assert.equal(mesh.visible, count > 0, `visibility at cue age ${time}`);
     assert.equal(geometry.instanceCount, count, `instance count at cue age ${time}`);
   }
@@ -106,43 +106,60 @@ async function run() {
     assert.deepEqual(observed, rgba);
   }
 
-  sample(0, 0); // The initial burst starts with zero alpha.
+  sample(0, 0);
+  sample(1 / 60, 0); // The first native step emits at effectively zero alpha.
+  sample(1 / 30, 1, 30);
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 42]);
+  near(shapes.getZ(0), 1.906005620956421);
+  sample(.05, 1, 30);
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 42]);
+  near(shapes.getZ(0), 1.906005620956421);
   sample(.05, 1);
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 84]);
+  near(shapes.getZ(0), 1.7992184162139893);
+  sample(4 / 60, 1);
   checkParticle(0, 4.593316078186035, [179, 255, 216, 127]);
-  near(shapes.getZ(0), 1.6924312114715576);
+  near(shapes.getZ(0), 1.692431092262268);
   sample(.15, 1);
   checkParticle(0, 4.593316078186035, [179, 255, 216, 255]);
-  near(shapes.getZ(0), 1.6825687885284424);
-  sample(.25, 1);
+  near(shapes.getZ(0), 1.5867483615875244);
+  sample(16 / 60, 1);
   near(shapes.getZ(0), 1.6924312114715576);
-  sample(.35, 1);
-  near(shapes.getZ(0), 1.6825686693191528);
   sample(.5, 1);
-  near(shapes.getZ(0), 1.5);
+  near(shapes.getZ(0), 1.5300285816192627);
   sample(.55, 2);
-  checkParticle(0, 6.263189315795898, [179, 204, 255, 127]);
-  checkParticle(1, 4.593316078186035, [179, 255, 216, 255]);
-  sample(.95, 2);
-  checkParticle(1, 4.593316078186035, [179, 255, 216, 128]);
-  sample(1, 1); // The initial burst is gone at exactly one lifetime.
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 255]);
+  checkParticle(1, 6.263189315795898, [179, 204, 255, 127]);
+  sample(1, 2);
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 44]);
+  sample(62 / 60, 2);
+  checkParticle(0, 3.9250669479370117, [179, 204, 255, 84]);
 
-  sample(5, 1);
+  sample(5, 2);
   checkParticle(0, 5.986086845397949, [255, 255, 255, 255]);
+  checkParticle(1, -5.228089332580566, [255, 185, 179, 2]);
+  // At tick 300 the regular emission and the cycle's initial burst share
+  // a SIMD group. A native swap-removal places lane 1 before lane 0.
+  sample(5.05, 3, 30);
+  checkParticle(0, 5.986086845397949, [255, 255, 255, 255]);
+  checkParticle(1, -.3852877616882324, [255, 255, 255, 84]);
+  checkParticle(2, 5.556103706359863, [255, 185, 179, 85]);
+  near(shapes.getZ(0), 1.5867652893066406);
+  near(shapes.getZ(1), 1.7992184162139893);
+  near(shapes.getZ(2), 1.7991530895233154);
   sample(5.05, 3);
-  // The renderer visits newest particles first. The t=5 continuous emission
-  // consumes its native draw before the t=5 burst consumes the next draw.
-  checkParticle(0, -2.5738635063171387, [255, 255, 255, 127]);
-  checkParticle(1, 5.556103706359863, [255, 185, 179, 127]);
-  checkParticle(2, 5.986086845397949, [255, 255, 255, 255]);
-  near(shapes.getZ(0), 1.6924312114715576);
-  near(shapes.getZ(1), 1.6924312114715576);
-  near(shapes.getZ(2), 1.6825687885284424);
+  checkParticle(0, 5.986086845397949, [255, 255, 255, 255]);
+  checkParticle(1, -.3852877616882324, [255, 255, 255, 127]);
+  checkParticle(2, 5.556103706359863, [255, 185, 179, 127]);
+  near(shapes.getZ(0), 1.6825908422470093);
+  near(shapes.getZ(1), 1.692431092262268);
+  near(shapes.getZ(2), 1.6923695802688599);
 
   const shapeBytes = [...shapes.array], colorBytes = [...colors.array];
   stars.update(null); // The parent disables the effect outside its display cue.
   assert.equal(mesh.visible, false);
   sample(.05, 1);
-  checkParticle(0, 4.593316078186035, [179, 255, 216, 127]);
+  checkParticle(0, 4.593316078186035, [179, 255, 216, 84]);
   sample(5.05, 3);
   assert.deepEqual([...shapes.array], shapeBytes);
   assert.deepEqual([...colors.array], colorBytes);

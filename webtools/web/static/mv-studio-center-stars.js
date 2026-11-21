@@ -50,46 +50,65 @@
   }
 
   function birthStream(data, particles) {
-    const draw = particles.nativeRandom(data.seed), f32 = Math.fround;
+    const f32 = Math.fround, dt = particles.nativeStep;
+    const ageStep = f32(dt * 100), fraction = f32(.01), birthBias = f32(1e-6);
     const [min, max] = data.rollRange;
-    let regular = 1, burst = 0;
-    const records = [];
+    const draws = Array.from({length: 4}, (_, lane) => particles.nativeRandom((data.seed + 367 * lane) >>> 0));
+    const active = [], frames = [[]];
+    let clock = 0, carry = 0;
+
     function paletteAt(entries, time) {
       return entries.find(row => row[0] >= time) || entries[entries.length - 1];
     }
-    return {
-      records,
-      through(time) {
-        for (;;) {
-          const nextRegular = regular / data.rate, nextBurst = burst * data.cycle;
-          const birth = Math.min(nextRegular, nextBurst);
-          if (birth > time) return;
-          // A particle due at the loop boundary is emitted by the preceding
-          // interval before the new cycle's zero-time burst.
-          if (nextRegular <= nextBurst) regular++;
-          else burst++;
-          draw(); // stored particle seed
-          draw(); // lifetime lane
-          draw(); // size lane
+
+    function step() {
+      for (const particle of active) particle.age = f32(particle.age + ageStep);
+      // Unity's unsorted renderer sees storage order after swap-removal.
+      for (let index = active.length - 1; index >= 0; index--) {
+        if (active[index].age <= 100) continue;
+        const last = active.pop();
+        if (index < active.length) active[index] = last;
+      }
+      const previous = clock;
+      clock = f32(clock + dt);
+      const wrapped = clock > data.cycle;
+      let amount = f32(f32(clock - previous) * data.rate);
+      if (wrapped) {
+        clock = f32(clock - data.cycle);
+        amount = f32(f32(f32(data.cycle - previous) * data.rate) + f32(clock * data.rate));
+      }
+      const requested = f32(amount + carry);
+      const regular = Math.trunc(requested);
+      carry = f32(requested - regular);
+      const count = regular + Number(previous === 0 || wrapped);
+      if (count > 0) {
+        const inverseAmount = amount < f32(.0001) ? 1 : f32(1 / amount);
+        // Continuous emission and the zero-time burst can share one step.
+        // They use different lanes, and padding advances the unused lanes too.
+        for (const [lane, draw] of draws.entries()) {
+          draw(); // Particle seed.
+          draw(); // Fixed lifetime.
+          draw(); // Fixed size.
           const roll = f32(min + f32(f32(max - min) * particles.nativeUnit(draw())));
           const stamp = f32(particles.nativeUnit(draw()) * 65535);
+          if (lane >= count) continue;
           const rgb = paletteAt(data.palette.rgb, stamp);
           const alpha = paletteAt(data.palette.alpha, stamp);
-          records.push({birth, cosine: Math.cos(roll), sine: Math.sin(roll),
+          const ageFraction = lane < regular ? f32(f32(lane + carry) * inverseAmount) : 0;
+          const within = f32(dt * Math.min(1, Math.max(birthBias, ageFraction)));
+          active.push({age: f32(within * 100), cosine: Math.cos(roll), sine: Math.sin(roll),
             color: {start: [rgb[1], rgb[2], rgb[3], alpha[1]], keys: data.colorKeys}});
         }
+      }
+      frames.push(active.map(({age, cosine, sine, color}) => ({normalized: f32(age * fraction), cosine, sine, color})));
+    }
+
+    return {
+      at(tick) {
+        while (frames.length <= tick) step();
+        return frames[tick];
       },
     };
-  }
-
-  function lastBirth(records, time) {
-    let min = 0, max = records.length;
-    while (min < max) {
-      const middle = (min + max) >> 1;
-      if (records[middle].birth <= time) min = middle + 1;
-      else max = middle;
-    }
-    return min - 1;
   }
 
   async function apply(T, root, data) {
@@ -138,23 +157,21 @@
     let disposed = false;
     return {
       mesh, texture,
-      update(time) {
+      update(time, fps = 60) {
         if (disposed) return;
-        if (!inRange(time, 0, 3600)) {
+        const tick = inRange(time, 0, 60) ? particles.nativeFrame(time, fps) : -1;
+        if (tick < 0) {
           mesh.visible = false;
           return;
         }
-        stream.through(time);
         let count = 0;
-        for (let index = lastBirth(stream.records, time); index >= 0; index--) {
-          const entry = stream.records[index], age = time - entry.birth;
-          if (age >= data.lifetime) break;
-          const ratio = age / data.lifetime, f32 = Math.fround;
-          const normalized = f32(f32(f32(ratio) * 100) * f32(.01));
-          const phase = data.sizePeriod > 0 && normalized > data.sizePeriod ?
-            f32(normalized % data.sizePeriod) : normalized;
+        for (const entry of stream.at(tick)) {
+          const {normalized} = entry, f32 = Math.fround;
+          const period = data.sizePeriod;
+          const phase = period > 0 && normalized > period ?
+            f32(normalized - f32(Math.floor(normalized / period) * period)) : normalized;
           const size = f32(data.size * f32(motion.evaluate(data.sizeCurve, phase)));
-          const color = particles.nativeColor(entry.color, ratio);
+          const color = particles.nativeColorAtTime(entry.color, normalized);
           if (!(size > 0) || !(color[3] > 0)) continue;
           shapes.setXYZ(count, entry.cosine, entry.sine, size);
           colors.setXYZW(count, ...color);

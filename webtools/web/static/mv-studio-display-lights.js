@@ -75,8 +75,8 @@
       title.boundedCurve(row.sizeCurve, motion.validCurve) && particles.validNativeColor(row.color));
   }
 
-  function useCadence(row, fps) {
-    const dt = f32(1 / fps), phaseAges = [], birthTicks = [];
+  function scheduleBursts(row, dt) {
+    const phaseAges = [], birthTicks = [];
     // The six checked schedules each emit one particle per second. Native
     // bursts compare against their accumulated float32 clock, including at 0.
     let clock = 0, tick = 0;
@@ -93,7 +93,7 @@
       phaseAges.push(age);
       age = f32(age + step);
     }
-    return {fps, birthTicks: birthTicks.reverse(), phaseAges};
+    return {birthTicks: birthTicks.reverse(), phaseAges};
   }
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
@@ -163,13 +163,13 @@
     emitters.forEach((entry, order) => { entry.order = order; });
     const eye = new T.Vector3(), scratch = new T.Vector3();
     for (const {mesh} of emitters) root.add(mesh);
-    let disposed = false, tracks, track, cadence, visible = false;
+    let disposed = false, tracks, track, schedule, visible = false;
 
     function updateEmitter(entry, frame) {
       const {row, mesh, origin, velocity, centers, sizes, colors} = entry;
       let count = 0;
       if (frame !== null) {
-        const {birthTicks, phaseAges} = cadence;
+        const {birthTicks, phaseAges} = schedule;
         // OldestInFront draws the newest particles first on the same emitter.
         for (const tick of birthTicks) {
           const index = frame - tick;
@@ -216,8 +216,8 @@
         const active = project?.quality?.values?.stage_display !== false && title.neutralClip(event) &&
           time >= event.start && time < event.start + event.duration;
         const fps = project?.quality?.values?.frame_rate_60fps === true ? 60 : 30;
-        if (active && cadence?.fps !== fps) cadence = useCadence(emitters[0].row, fps);
-        const frame = active ? Math.floor((time - event.start) * fps + 1e-9) : null;
+        if (active && !schedule) schedule = scheduleBursts(emitters[0].row, particles.nativeStep);
+        const frame = active ? particles.nativeFrame(time - event.start, fps) : null;
         for (const entry of emitters) updateEmitter(entry, frame);
         visible = emitters.some(({mesh}) => mesh.visible);
       },
