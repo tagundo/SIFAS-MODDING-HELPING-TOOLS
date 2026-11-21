@@ -44,19 +44,51 @@
     return [x, y, z].every(value => inRange(value, -1000, 1000)) ? [-x, y, z] : null;
   }
 
+  function validMipChain(levels, validTexture) {
+    const size = levels?.[0]?.width;
+    return Array.isArray(levels) && (size === 256 || size === 512) &&
+      levels.length === (size === 512 ? 10 : 9) &&
+      levels.every((bitmap, index) => bitmap?.width === (size >> index) &&
+        bitmap.height === bitmap.width && validTexture(bitmap));
+  }
+
+  function validNativeColor(source) {
+    const {start, keys} = source || {};
+    const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
+    return Array.isArray(start) && start.length === 4 && start.every(byte) &&
+      Array.isArray(keys) && keys.length > 0 && keys.length <= 16 &&
+      keys.every((row, index) => Array.isArray(row) && row.length === 5 && inRange(row[0], 0, 1) &&
+        (index === 0 || Math.fround(row[0]) - Math.fround(keys[index - 1][0]) >= Number.EPSILON) &&
+        row.slice(1).every(byte));
+  }
+
+  function nativeColor({start, keys}, normalized) {
+    // Unity's particle ColorModule interpolates its packed byte gradient and
+    // multiplies the resulting bytes by the generated starting color.
+    const f32 = Math.fround, time = f32(f32(f32(normalized) * 100) * f32(.01));
+    const next = keys.findIndex(row => row[0] > time);
+    const right = keys[next < 0 ? keys.length - 1 : next];
+    const left = next > 0 ? keys[next - 1] : right;
+    const blend = left === right ? 0 : Math.trunc(f32(f32(f32(time - left[0]) *
+      f32(1 / f32(right[0] - left[0]))) * 255));
+    return start.map((value, index) => {
+      const from = left[index + 1], to = right[index + 1];
+      const gradient = from + ((128 + blend * (to - from)) >> 8);
+      return Math.floor((value * gradient + 127) / 255) / 255;
+    });
+  }
+
   function checked(source, curve, particle) {
     const { textures, templates, cues } = source || {};
     if (!Array.isArray(textures) || textures.length < 1 || textures.length > 4 ||
-        !textures.every(levels => Array.isArray(levels) && levels.length === 10 &&
-          levels.every((bitmap, level) => bitmap?.width === (512 >> level) &&
-            bitmap.height === (512 >> level) && particle.validTexture(bitmap))) ||
+        !textures.every(levels => validMipChain(levels, particle.validTexture)) ||
         !Array.isArray(templates) || templates.length < 1 || templates.length > 8 ||
         !Array.isArray(cues) || cues.length < 1 || cues.length > 32 ||
         !cues.every(cue => id(cue?.trackId) && id(cue.eventId) &&
           Number.isInteger(cue.template) && templates[cue.template])) return false;
-    return templates.every(emitters => Array.isArray(emitters) && emitters.length > 0 && emitters.length <= 8 &&
+    return templates.every(emitters => Array.isArray(emitters) && emitters.length > 0 && emitters.length <= 12 &&
       emitters.every(emitter => {
-        const { geometry, material, texture, uvOffset, color } = emitter || {};
+        const { geometry, material, texture, uvOffset, color, orbitY } = emitter || {};
         const packed = value => particle.boundedCurve(value, curve.validCurve);
         return !!textures[texture] && Number.isInteger(texture) && !!geometry && validGeometry(geometry) &&
           material?.blend === "add" && (material.queue === 3000 || material.queue === 3010) &&
@@ -64,9 +96,12 @@
           vector(emitter.position, 3) && vector(emitter.rotation, 4) && vector(emitter.scale, 3) &&
           inRange(emitter.birth, 0, 15) && inRange(emitter.lifetime, 0.01, 120) && inRange(emitter.size, 0.01, 32) &&
           inRange(emitter.yaw, -40, 40) && inRange(emitter.yawSpeed, -40, 40) &&
+          (orbitY === undefined || inRange(orbitY, -40, 40)) &&
           packed(emitter.sizeCurve) && (uvOffset === undefined ||
             (Array.isArray(uvOffset) && uvOffset.length === 2 && uvOffset.every(packed))) &&
-          particle.gradientKeys(color?.rgb, 3) && particle.gradientKeys(color?.alpha, 1);
+          (color?.rgba8 === undefined
+            ? particle.gradientKeys(color?.rgb, 3) && particle.gradientKeys(color?.alpha, 1)
+            : validNativeColor(color.rgba8));
       }));
   }
 
@@ -172,12 +207,18 @@
             mesh.visible = size > 0;
             if (!mesh.visible) continue;
             const normalized = age / emitter.lifetime;
-            const [x, y, z] = emitter.scale, { yaw, yawSpeed, material, color, uvOffset } = emitter;
+            const [x, y, z] = emitter.scale, { yaw, yawSpeed, material, color, uvOffset, orbitY } = emitter;
             mesh.scale.set(x * size, y * size, z * size);
+            if (orbitY) {
+              const [px, py, pz] = emitter.position;
+              const cos = Math.cos(orbitY * age), sin = Math.sin(orbitY * age);
+              mesh.position.set(cos * px + sin * pz, py, cos * pz - sin * px);
+            }
             mesh.quaternion.copy(orientation).multiply(turn.setFromAxisAngle(vertical, yaw + yawSpeed * age));
             const {uTint, uTextureST} = mesh.material.uniforms;
-            uTint.value.set(...material.tint.map((value, i) => value *
-              particle.gradient(i === 3 ? color.alpha : color.rgb, normalized, i === 3 ? 1 : i + 1)));
+            const bytes = color.rgba8 && nativeColor(color.rgba8, normalized);
+            uTint.value.set(...material.tint.map((value, i) => value * (bytes ? bytes[i] :
+              particle.gradient(i === 3 ? color.alpha : color.rgb, normalized, i === 3 ? 1 : i + 1))));
             const [sx, sy, u, v] = material.uv;
             const ox = uvOffset ? curve.evaluate(uvOffset[0], normalized) : 0;
             const oy = uvOffset ? curve.evaluate(uvOffset[1], normalized) : 0;

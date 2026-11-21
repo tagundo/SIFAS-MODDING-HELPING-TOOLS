@@ -8,6 +8,10 @@ from . import mv_studio_stage_motion as motion, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 
 
+SCHEMA = 2
+_MAX_EMITTERS = 12
+
+
 def _source(objects, owner, tree, event):
     values = event["values"]
     if (values.get("playableClass") != "CustomControlClip" or values.get("timeScale") != 1
@@ -21,19 +25,22 @@ def _source(objects, owner, tree, event):
         return None
     fields = asset.read_typetree()
     offset = fields.get("offset")
+    seed = fields.get("particleRandomSeed")
     if (not title._declared(objects, asset, fields, (*title._NAMESPACE, "CustomControlClip"))
             or not fields.get("m_Enabled") or fields.get("weight") != 1 or fields.get("overwriteRandomSeed") != 0
+            or type(seed) is not int or not 0 <= seed <= 0xFFFFFFFF
             or not isinstance(offset, dict)
             or any(type(offset.get(axis)) not in (int, float) or not math.isfinite(offset[axis])
                    or abs(offset[axis]) > 1000 for axis in "xyz")):
         return None
     # PrefabControl activates the clone and lets its ParticleSystems start on
     # awake. The graph's clipIn is not an input to their simulation clock.
-    return title._local(objects, asset, fields.get("prefabGameObject"), "GameObject")
+    prefab = title._local(objects, asset, fields.get("prefabGameObject"), "GameObject")
+    return (prefab, seed) if prefab is not None else None
 
 
 def _texture(reader, deadline):
-    base = title._texture(reader, deadline)
+    base = title._texture(reader, deadline, sizes=(256, 512))
     if base is None:
         return None
     levels = [base]
@@ -45,7 +52,7 @@ def _texture(reader, deadline):
             return None
         levels.append({"png": base64.b64encode(png).decode("ascii"),
                        "width": native.m_Width, "height": native.m_Height})
-    return levels
+    return levels if len(levels) == base["width"].bit_length() else None
 
 
 def read(objects, mono, tracks, deadline):
@@ -72,37 +79,42 @@ def read(objects, mono, tracks, deadline):
         for event in track["events"]:
             viewer._remaining(deadline)
             try:
-                prefab = _source(objects, owner, fields, event)
-                if prefab is None:
+                source = _source(objects, owner, fields, event)
+                if source is None:
                     continue
-                key = viewer._key(prefab)
+                prefab, seed = source
+                key = (viewer._key(prefab), seed)
                 if key not in prefab_ids:
+                    if len(templates) >= 8:
+                        continue
                     prefab_ids[key] = None
                     authored = None
                     for reader in readers:
                         try:
-                            authored = reader(objects, prefab, deadline)
+                            authored = reader(objects, prefab, deadline, clip_seed=seed)
                         except title._UNSUPPORTED:
                             continue
                         if authored:
                             break
-                    if not authored or len(authored) > 8 or len(templates) >= 8:
+                    if not authored or len(authored) > _MAX_EMITTERS:
                         continue
-                    emitters, images, indexed = [], [], dict(texture_ids)
+                    emitters = []
                     for emitter, reader in authored:
                         texture = viewer._key(reader)
-                        if texture not in indexed:
-                            if len(textures) + len(images) >= 4:
-                                break
-                            levels = _texture(reader, deadline)
-                            if levels is None:
-                                break
-                            indexed[texture] = len(textures) + len(images)
-                            images.append(levels)
-                        emitters.append({**emitter, "texture": indexed[texture]})
-                    else:
-                        textures.extend(images)
-                        texture_ids = indexed
+                        if texture not in texture_ids:
+                            texture_ids[texture] = None
+                            if len(textures) < 4:
+                                try:
+                                    levels = _texture(reader, deadline)
+                                except title._UNSUPPORTED:
+                                    levels = None
+                                if levels is not None:
+                                    texture_ids[texture] = len(textures)
+                                    textures.append(levels)
+                        index = texture_ids[texture]
+                        if index is not None:
+                            emitters.append({**emitter, "texture": index})
+                    if emitters:
                         prefab_ids[key] = len(templates)
                         templates.append(emitters)
                 template = prefab_ids[key]
@@ -112,4 +124,4 @@ def read(objects, mono, tracks, deadline):
                     cues.append({"trackId": track["id"], "eventId": event["id"], "template": template})
             except title._UNSUPPORTED:
                 continue
-    return {"textures": textures, "templates": templates, "cues": cues} if cues else None
+    return {"schema": SCHEMA, "textures": textures, "templates": templates, "cues": cues} if cues else None

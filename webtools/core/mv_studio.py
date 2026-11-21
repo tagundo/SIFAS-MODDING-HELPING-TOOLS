@@ -741,6 +741,8 @@ def _archive_entries(archive):
 
 
 def _open_saved(archive, entries):
+    from .mv_studio_stage_particles import SCHEMA as particle_schema
+
     entry = entries["project.json"]
     if entry.file_size > PROJECT_BYTES:
         raise ValueError("The saved MV project file is too large.")
@@ -766,16 +768,18 @@ def _open_saved(archive, entries):
     restore_title = (type(schema) is not int or schema < 2) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Display/" in str(track.get("label", ""))
         for track in project["tracks"])
-    restore_particles = "stageParticles" not in project and any(
+    particles = project.get("stageParticles")
+    schema = particles.get("schema") if isinstance(particles, dict) else None
+    restore_particles = (type(schema) is not int or schema < particle_schema) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Control/" in str(track.get("label", ""))
         for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles):
         from . import mv_studio_timeline
 
         try:
-            particles = {"preview_stage_particles": True} if restore_particles else {}
+            particle_options = {"preview_stage_particles": True} if restore_particles else {}
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
-                                                         preview_stage_title=restore_title, **particles)
+                                                         preview_stage_title=restore_title, **particle_options)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:

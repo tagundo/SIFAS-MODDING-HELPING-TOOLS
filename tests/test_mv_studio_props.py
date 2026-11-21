@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import math
 import os
 import tempfile
 import time
@@ -45,7 +46,8 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     effects = project["stageParticles"]
                     tracks = {track["id"]: track for track in project["tracks"]}
                     self.assertEqual(len(effects["cues"]), 8)
-                    self.assertEqual([len(levels) for levels in effects["textures"]], [10, 10])
+                    self.assertEqual(effects["schema"], 2)
+                    self.assertEqual(sorted(len(levels) for levels in effects["textures"]), [9, 9, 10, 10])
                     waves, umbrellas = [], []
                     for cue in effects["cues"]:
                         track = tracks[cue["trackId"]]
@@ -53,13 +55,24 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                         template = effects["templates"][cue["template"]]
                         if track["label"].endswith("/par_15_foot_wave"):
                             waves.append(round(clip["start"], 6))
-                            self.assertEqual([round(emitter["birth"], 8) for emitter in template], [0, .05, .1])
-                            self.assertTrue(all(emitter["material"]["premultiply"] for emitter in template))
+                            ripples = [emitter for emitter in template if emitter["material"]["premultiply"]]
+                            self.assertEqual([round(emitter["birth"], 8) for emitter in ripples], [0, .05, .1])
+                            glow, = [emitter for emitter in template if not emitter["material"]["premultiply"]]
+                            self.assertEqual(glow["material"]["cull"], 0)
+                            self.assertEqual(glow["size"], 1.5)
+                            self.assertEqual(len(glow["geometry"]["positions"]), 4)
                         elif track["label"].endswith("/flo_01-03_umbrella"):
                             umbrellas.append(round(clip["start"], 6))
-                            emitter, = template
+                            emitter, = [item for item in template if not item.get("orbitY")]
                             self.assertEqual(emitter["birth"], 0)
                             self.assertEqual(emitter["material"]["cull"], 2)
+                            ring = [item for item in template if item.get("orbitY")]
+                            self.assertEqual(len(ring), 6 if round(clip["start"], 6) == 75.016667 else 8)
+                            self.assertTrue(all(item["birth"] == 0 and item["lifetime"] == 90 for item in ring))
+                            for item in ring:
+                                self.assertAlmostEqual(item["orbitY"], .075)
+                                x, _, z = item["position"]
+                                self.assertAlmostEqual(math.hypot(x, z), 3.8, places=6)
                         else:
                             self.fail(track["label"])
                     self.assertEqual(waves, [42.85, 46, 49.333333, 50.933333])

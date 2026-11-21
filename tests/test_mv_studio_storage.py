@@ -83,16 +83,26 @@ class MVStudioStorageTests(unittest.TestCase):
             "events": [{"id": "clip", "label": "Edited cue", "start": 43, "duration": 1.6,
                         "values": {"playableClass": "CustomControlClip", "offset": {"x": 0, "y": 0, "z": 1.25}}}],
         }]
-        restored = {"cues": [{"trackId": "effect", "eventId": "clip", "template": 0}]}
-        saved = mv_studio.save(mv_studio._register(project, self.original))
+        restored = {"schema": 2, "cues": [{"trackId": "effect", "eventId": "clip", "template": 0}]}
+        for previous in ({}, {"stageParticles": {"cues": []}}):
+            with self.subTest(previous=previous):
+                saved = mv_studio.save(mv_studio._register({**project, **previous}, self.original))
+                with ZipFile(saved["path"]) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageParticles": restored},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                parse.assert_called_once_with(self.original, "Edited effects", preview_split=False,
+                                              preview_stage_title=False, preview_stage_particles=True)
+                self.assertEqual(reopened["tracks"], project["tracks"])
+                self.assertEqual(reopened["stageParticles"], restored)
+
+        saved = mv_studio.save(mv_studio._register({**project, "stageParticles": restored}, self.original))
         with ZipFile(saved["path"]) as archive, patch(
-            "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageParticles": restored},
+            "webtools.core.mv_studio_timeline.parse_timeline",
         ) as parse:
-            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
-        parse.assert_called_once_with(self.original, "Edited effects", preview_split=False, preview_stage_title=False,
-                                      preview_stage_particles=True)
-        self.assertEqual(reopened["tracks"], project["tracks"])
-        self.assertEqual(reopened["stageParticles"], restored)
+            current = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_not_called()
+        self.assertEqual(current["stageParticles"], restored)
 
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32

@@ -1,10 +1,12 @@
-"""Read the native timed floor-wave mesh particles from a stage control prefab."""
+"""Read the native floor ripple and glow particles from a stage control prefab."""
+
+import math
 
 from . import model_viewer as viewer
 from . import mv_studio_stage_title as native
 from .model_rig import _authored_trs
 from .mv_studio_stage_title_particles import (
-    _color, _constant, _constant_range, _native_draws, _native_lerp, _native_unit, _scalar,
+    _color, _constant, _constant_range, _float32, _native_draws, _native_lerp, _native_unit, _scalar,
 )
 
 
@@ -13,10 +15,14 @@ _SHADER = (469499217473811506, "cab-7e68b9f01486ca88e5670d5f6b90807c")
 _MODULES = {"InitialModule", "EmissionModule", "SizeModule", "RotationModule", "ColorModule", "CustomDataModule"}
 _FLOATS = {"_BlendSrc": 5, "_BlendDst": 1, "_CullMode": 0, "_ZTestMode": 4, "_ZWriteParam": 0,
            "_StencilComp": 8, "_StencilRef": 2, "_StencilPassOp": 0, "_StencilZFailOp": 0}
+_GLOW_SHADER = (7151384334892346267, "cab-adf9ba7b61bd035c754bf74ae44927cb")
+_GLOW_MODULES = {"InitialModule", "EmissionModule", "SizeModule", "ColorModule", "UVModule"}
+_GLOW_KEYWORDS = {"_ALPHAPREMULTIPLY_ON", "_VERTEXCOLOR_ON", "_VERTEX_COLOR_ON"}
+_GLOW_FLOATS = {**_FLOATS, "_SATURATE": 0, "_VERTEX_COLOR": 1}
 _WORD_MASK = 0xffffffff
 
 
-def _material(objects, renderer, fields):
+def _material(objects, renderer, fields, *, glow=False):
     refs = fields["m_Materials"]
     if len(refs) != 2 or refs[0] != refs[1]:
         return None
@@ -27,10 +33,16 @@ def _material(objects, renderer, fields):
     shader = tree["m_Shader"]
     file_id = shader["m_FileID"]
     externals = material.assets_file.externals
-    if (shader["m_PathID"] != _SHADER[0] or not 0 < file_id <= len(externals)
-            or externals[file_id - 1].name.lower() != _SHADER[1]
-            or tree["m_ShaderKeywords"] or tree["m_CustomRenderQueue"] != 3010
-            or viewer._properties(tree, "m_Floats") != _FLOATS):
+    path, cab = _GLOW_SHADER if glow else _SHADER
+    floats = viewer._properties(tree, "m_Floats")
+    if (shader["m_PathID"] != path or not 0 < file_id <= len(externals)
+            or externals[file_id - 1].name.lower() != cab or tree["m_CustomRenderQueue"] != 3010):
+        return None
+    keywords = set(tree["m_ShaderKeywords"].split())
+    if glow:
+        if keywords != _GLOW_KEYWORDS or any(floats.get(name) != value for name, value in _GLOW_FLOATS.items()):
+            return None
+    elif keywords or floats != _FLOATS:
         return None
     color = viewer._properties(tree, "m_Colors")["_TintColor"]
     main = viewer._properties(tree, "m_TexEnvs")["_MainTex"]
@@ -39,7 +51,10 @@ def _material(objects, renderer, fields):
     texture = native._local(objects, material, main["m_Texture"], "Texture2D")
     if texture is None or tint != [1, 1, 1, 1] or uv != [1, 1, 0, 0]:
         return None
-    return {"tint": tint, "uv": uv, "queue": 3010, "cull": 0, "blend": "add", "premultiply": True}, texture
+    # AS/General/Transparent's vertex-color pass multiplies tint and color
+    # once, without the additional texture-alpha factor used by the wave.
+    return {"tint": tint, "uv": uv, "queue": 3010, "cull": 0, "blend": "add",
+            "premultiply": not glow}, texture
 
 
 def _geometry(objects, renderer, fields, deadline):
@@ -145,8 +160,121 @@ def _wave(objects, game, deadline):
     return [({**shared, **particle}, texture) for particle in records]
 
 
-def read(objects, game, deadline):
-    """Read the original Circle_tex emitter in a local stage control prefab."""
+def _sample_gradient(keys, stamp):
+    start = keys[0]
+    for end in keys[1:]:
+        if stamp <= end[0]:
+            weight = _float32((max(stamp, start[0]) - start[0]) / (end[0] - start[0]))
+            return [_native_lerp(first, last, weight) for first, last in zip(start[1:], end[1:])]
+        start = end
+    return start[1:]
+
+
+def _rgba8(initial, module):
+    unmultiplied = {"startColor": {"minMaxState": 0, "maxColor": dict.fromkeys("rgba", 1)}}
+    gradient = _color(unmultiplied, module)
+    start = initial["startColor"]
+    if gradient is None or _color(initial, module) is None:
+        return None
+    rgb, alpha = gradient["rgb"], gradient["alpha"]
+    stamps = sorted({row[0] for row in (*rgb, *alpha)})
+
+    def byte(value):
+        return int(_float32(_float32(value * 255) + .5))
+
+    # Unity combines RGB and alpha times before converting all gradient
+    # channels to bytes for its SIMD color-over-lifetime evaluator.
+    return {"rgba8": {
+        "start": [byte(start["maxColor"][axis]) for axis in "rgba"],
+        "keys": [[_float32(stamp), *map(byte, _sample_gradient(rgb, stamp) + _sample_gradient(alpha, stamp))]
+                 for stamp in stamps],
+    }}
+
+
+def _glow_geometry(sheet, tilt, roll):
+    if (sheet["mode"] or sheet["timeMode"] or sheet["animationType"] or sheet["cycles"] != 1
+            or sheet["flipU"] or sheet["flipV"] or not sheet["uvChannelMask"] & 1
+            or _constant(sheet["frameOverTime"]) != 0):
+        return None
+    columns, rows = sheet["tilesX"], sheet["tilesY"]
+    offset = _constant(sheet["startFrame"])
+    if not (1 <= columns <= 8 and 1 <= rows <= 8 and offset is not None and 0 <= offset < 1):
+        return None
+    frame = int(_float32(offset * columns * rows))
+    column, row = frame % columns, frame // columns
+    cx, sx = math.cos(-tilt), math.sin(-tilt)
+    cz, sz = math.cos(-roll), math.sin(-roll)
+    positions = []
+    for x, y in ((-.5, .5), (.5, .5), (.5, -.5), (-.5, -.5)):
+        # Native World-aligned Billboard uses Rx(-tilt) followed in matrix
+        # order by Rz(-roll) on its XY corners. Reflect X for the preview.
+        planar = sz * x + cz * y
+        positions.append([-(cz * x - sz * y), cx * planar, sx * planar])
+    uv = [[(column + x) / columns, (row + y) / rows] for x, y in ((0, 0), (1, 0), (1, 1), (0, 1))]
+    return {"positions": positions, "uv": uv, "indices": [0, 2, 1, 0, 3, 2]}
+
+
+def _glow(objects, game, deadline, clip_seed):
+    row = native._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"}, layer=_LAYER)
+    if row is None or type(clip_seed) is not int or not 0 < clip_seed <= _WORD_MASK:
+        return None
+    parts = row[1]
+    _, source = parts["ParticleSystem"]
+    renderer, shape = parts["ParticleSystemRenderer"]
+    _, transform = parts["Transform"]
+    trs = _authored_trs(transform)
+    if (transform["m_Children"] or trs["rotation"] != native._IDENTITY["rotation"]
+            or trs["scale"] != native._IDENTITY["scale"] or not shape["m_Enabled"]
+            or shape["m_RenderMode"] != 0 or shape["m_RenderAlignment"] != 1
+            or shape["m_UseCustomVertexStreams"] or tuple(shape["m_VertexStreams"]) != (0, 1, 3, 4)
+            or not shape["m_ApplyActiveColorSpace"] or not shape["m_AllowRoll"]
+            or shape["m_MaxParticleSize"] != 2
+            or any(shape[key] for key in ("m_MinParticleSize", "m_SortMode", "m_SortingLayerID", "m_SortingOrder",
+                                          "m_MaskInteraction", "m_CameraVelocityScale", "m_VelocityScale"))
+            or any(shape[key][axis] for key in ("m_Pivot", "m_Flip") for axis in "xyz")
+            or any(shape[key]["m_PathID"] for key in ("m_Mesh", "m_Mesh1", "m_Mesh2", "m_Mesh3"))):
+        return None
+    modules = {key for key, value in source.items() if key.endswith("Module") and value.get("enabled")}
+    if (modules != _GLOW_MODULES or source["simulationSpeed"] != 1 or not source["autoRandomSeed"]
+            or not source["playOnAwake"] or source["moveWithCustomTransform"]["m_PathID"]
+            or _constant(source["startDelay"]) != 0 or any(source[key] for key in (
+                "moveWithTransform", "scalingMode", "prewarm", "looping", "stopAction", "ringBufferMode",
+                "cullingMode", "useUnscaledTime"))):
+        return None
+    initial, emission, size = source["InitialModule"], source["EmissionModule"], source["SizeModule"]
+    bursts = emission["m_Bursts"]
+    if (initial["size3D"] or not initial["rotation3D"] or initial["randomizeRotationDirection"]
+            or any(_constant(initial[key]) != 0 for key in ("startSpeed", "gravityModifier"))
+            or size["separateAxes"] or any(_constant(emission[key]) != 0 for key in ("rateOverTime", "rateOverDistance"))
+            or len(bursts) != 1 or emission["m_BurstCount"] != 1):
+        return None
+    (burst,) = bursts
+    if (burst["time"] != 0 or burst["probability"] != 1 or burst["cycleCount"] != 1
+            or _constant(burst["countCurve"]) != 1):
+        return None
+    dimension, life = _constant(initial["startSize"]), _constant(initial["startLifetime"])
+    tilt = _constant_range(initial["startRotationX"], -math.pi, math.pi)
+    roll = _constant_range(initial["startRotation"], -math.pi, math.pi)
+    if (dimension is None or not 0 < dimension <= 4 or life is None or not 0 < life <= 3
+            or tilt is None or tilt[0] != tilt[1] or roll is None
+            or _constant_range(initial["startRotationY"], 0, 0) is None):
+        return None
+    _, _, _, roll_draw = _native_draws(clip_seed, 4)
+    geometry = _glow_geometry(source["UVModule"], tilt[0], _native_lerp(*roll, _native_unit(roll_draw)))
+    size_curve = _scalar(size["curve"], deadline)
+    color = _rgba8(initial, source["ColorModule"])
+    surface = _material(objects, renderer, shape, glow=True)
+    if None in (geometry, size_curve, color, surface):
+        return None
+    material, texture = surface
+    emitter = {"geometry": geometry, "position": trs["translation"], "rotation": trs["rotation"],
+               "scale": trs["scale"], "material": material, "birth": 0, "lifetime": life, "size": dimension,
+               "sizeCurve": size_curve, "yaw": 0, "yawSpeed": 0, "color": color}
+    return emitter, texture
+
+
+def read(objects, game, deadline, *, clip_seed=None):
+    """Read supported emitters in a local floor-wave control prefab."""
     for depth in range(2):
         row = native._components(objects, game, {"Transform"}, layer=_LAYER)
         if row is None:
@@ -164,4 +292,13 @@ def read(objects, game, deadline):
         return None
     candidates = [native._transform_child(objects, transform, ref) for ref in refs]
     waves = [child for child in candidates if child is not None and child.peek_name() == "wave"]
-    return _wave(objects, waves[0], deadline) if len(waves) == 1 else None
+    records = _wave(objects, waves[0], deadline) if len(waves) == 1 else None
+    glows = [child for child in candidates if child is not None and child.peek_name() == "glow"]
+    if records and len(glows) == 1:
+        try:
+            glow = _glow(objects, glows[0], deadline, clip_seed)
+        except native._UNSUPPORTED:
+            glow = None
+        if glow is not None:
+            records.append(glow)
+    return records

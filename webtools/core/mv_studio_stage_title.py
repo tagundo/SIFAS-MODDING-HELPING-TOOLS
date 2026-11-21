@@ -226,9 +226,11 @@ def _material(objects, item):
     return {"tint": tint, "uv": uv, "queue": 2900}, texture
 
 
-def _texture(reader, deadline):
+def _texture(reader, deadline, sizes=(512,)):
     texture = reader.read()
-    if (texture.m_TextureFormat, texture.m_Width, texture.m_Height, texture.m_MipCount) != (65, 512, 512, 10):
+    size = texture.m_Width
+    if (texture.m_TextureFormat != 65 or size not in sizes or texture.m_Height != size
+            or texture.m_MipCount != size.bit_length()):
         return None
     settings = texture.m_TextureSettings
     if (settings.m_FilterMode, settings.m_WrapU, settings.m_WrapV) != (1, 0, 0):
@@ -247,7 +249,7 @@ def _texture(reader, deadline):
     with decode._android_image(texture, deadline, stage=True) as image:
         png = viewer._png_texture(image, deadline)
     if len(png) <= _MAX_IMAGE_BYTES:
-        return {"png": base64.b64encode(png).decode("ascii"), "width": 512, "height": 512}
+        return {"png": base64.b64encode(png).decode("ascii"), "width": size, "height": size}
     return None
 
 

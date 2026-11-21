@@ -32,8 +32,12 @@ async function test() {
     birth: .05, lifetime: 1, size: .75, sizeCurve: ["constant", 1], yaw: .5, yawSpeed: -.25,
     color: {rgb: [[0,1,1,1]], alpha: [[0,.6]]}, uvOffset: [["constant", .25], ["constant", .5]],
     material: {queue: 3010, cull: 0, blend: "add", tint: [1,1,1,1], uv: [.5,.25,.125,.25], premultiply: true}};
-  const descriptor = {textures: [Array.from({length:10}, (_, index) => level(512 >> index))],
-    templates: [[native]], cues: [{trackId: "track", eventId: "first", template: 0},
+  const orbit = {...native, texture: 1, position: [2, .05, 0], orbitY: Math.PI / 2,
+    color: {rgba8: {start: [189, 255, 128, 77], keys: [[0, 200, 100, 255, 20], [1, 90, 254, 0, 100]]}},
+    material: {...native.material, premultiply: false}};
+  const descriptor = {textures: [Array.from({length:10}, (_, index) => level(512 >> index)),
+    Array.from({length:9}, (_, index) => level(256 >> index))],
+    templates: [[native, orbit]], cues: [{trackId: "track", eventId: "first", template: 0},
       {trackId: "track", eventId: "second", template: 0}]};
   const controller = await MVStudioStageParticles.apply(T, root, descriptor);
   assert(controller);
@@ -61,11 +65,19 @@ async function test() {
   assert.equal(mesh.material.defines.SOURCE_ALPHA, 1);
   assert.equal(mesh.material.blendDst, T.OneFactor);
   assert.equal(mesh.material.depthWrite, false);
+  const orbitMesh = first.children[1], angle = (43.15 - event.start - orbit.birth) * orbit.orbitY;
+  assert(Math.abs(orbitMesh.position.x - 2 * Math.cos(angle)) < 1e-9);
+  assert(Math.abs(orbitMesh.position.z + 2 * Math.sin(angle)) < 1e-9);
+  assert.equal(orbitMesh.position.y, .05);
+  assert.equal(orbitMesh.material.uniforms.uTexture.value.mipmaps.length, 9);
+  assert.deepEqual(orbitMesh.material.uniforms.uTint.value.toArray(), [128,138,96,12].map(byte => byte / 255));
+  assert.deepEqual(orbitMesh.material.defines, {});
   controller.update(46.17, project);
   assert.equal(first.visible, false);
   assert.equal(second.visible, true);
   controller.update(43.15, project);
   assert.equal(first.visible, true);
+  assert(Math.abs(orbitMesh.position.x - 2 * Math.cos(angle)) < 1e-9);
   project.quality.values.stage_control = false;
   controller.update(43.15, project);
   assert.equal(first.visible, false);
