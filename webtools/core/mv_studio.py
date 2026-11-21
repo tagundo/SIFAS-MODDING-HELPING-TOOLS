@@ -783,7 +783,8 @@ def _open_saved(archive, entries):
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_12_spot")
         for track in project["tracks"])
     speed_back = project.get("stageSpeedBack")
-    restore_speed_back = (not isinstance(speed_back, dict) or "centerStars" not in speed_back) and any(
+    restore_speed_back = (not isinstance(speed_back, dict) or
+                          not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/light")
         and any(event.get("label") == "fx_dis_so2056_09" or event["values"].get("prefabGameObject") == {
             "m_FileID": 0, "m_PathID": "9155575924868579619",
@@ -813,8 +814,18 @@ def _open_saved(archive, entries):
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background
-            elif rebuilt_background and "centerStars" in rebuilt_background:
-                project["stageSpeedBack"] = {**speed_back, "centerStars": rebuilt_background["centerStars"]}
+            elif rebuilt_background and "centerStars" in rebuilt_background and all(
+                    speed_back.get(key) == rebuilt_background.get(key) for key in ("trackId", "eventId")):
+                original_stars = rebuilt_background["centerStars"]
+                saved_stars = speed_back.get("centerStars", original_stars)
+                restored = {**speed_back, "centerStars": saved_stars}
+                # Moving emitters share the original center atlas. Preserve
+                # any saved atlas and only attach these emitters if it matches.
+                original_atlas = original_stars.get("texture")
+                if ("movingCompanions" in rebuilt_background and original_atlas and isinstance(saved_stars, dict)
+                        and saved_stars.get("texture") == original_atlas):
+                    restored.setdefault("movingCompanions", rebuilt_background["movingCompanions"])
+                project["stageSpeedBack"] = restored
             rebuilt_ribbons = original.get("stageRibbons")
             if rebuilt_ribbons and not isinstance(ribbons, dict):
                 project["stageRibbons"] = rebuilt_ribbons

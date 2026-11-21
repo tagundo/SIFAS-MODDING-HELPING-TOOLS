@@ -404,6 +404,7 @@
     }
 
     function renderScene(camera) {
+      stageSpeedBack?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;

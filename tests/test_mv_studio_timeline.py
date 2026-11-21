@@ -256,6 +256,13 @@ class ActualTimelineTests(unittest.TestCase):
                 self.assertAlmostEqual(stars["sizePeriod"], .2)
                 self.assertEqual([row["width"] for row in stars["texture"]],
                                  [512 >> index for index in range(10)])
+                moving = effect["movingCompanions"]
+                self.assertEqual([row["name"] for row in moving], ["speed", "speed_R", "speed_L", "stars"])
+                self.assertEqual([row["rate"] for row in moving], [250, 100, 100, 100])
+                self.assertEqual([row["seed"] for row in moving], [0, 1626203053, 2207999926, 3710075818])
+                self.assertEqual([row["shape"]["type"] for row in moving], [4, 10, 10, 4])
+                self.assertEqual([row["uv"] for row in moving], [[.25, .25, .75, 0]] * 3 + [[.25, .25, .75, .25]])
+                self.assertTrue(all("texture" not in row for row in moving))
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 

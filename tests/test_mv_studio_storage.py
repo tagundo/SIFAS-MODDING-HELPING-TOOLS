@@ -238,6 +238,30 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageSpeedBack"], {**legacy_display, **companion})
                 self.assertEqual(reopened["tracks"], project["tracks"])
 
+        original_stars = {"seed": 3710075818, "texture": [{"width": 512, "height": 512, "png": "source"}]}
+        moving = [{"name": "speed", "rate": 250}]
+        rebuilt = {**display, "centerStars": original_stars, "movingCompanions": moving}
+        edited_stars = {**original_stars, "position": [2, 3, 4]}
+        incompatible = {**edited_stars, "texture": [{"width": 512, "height": 512, "png": "modified"}]}
+        cases = [
+            ({}, {"centerStars": original_stars, "movingCompanions": moving}),
+            ({"centerStars": edited_stars}, {"movingCompanions": moving}),
+            ({"centerStars": incompatible}, {}),
+            ({"centerStars": None}, {}),
+            ({"eventId": "unrelated"}, {}),
+            ({"movingCompanions": [{"name": "user value"}]}, {"centerStars": original_stars}),
+        ]
+        for previous, additions in cases:
+            with self.subTest(previous=previous):
+                project["stageSpeedBack"] = {**legacy_display, **previous}
+                saved = mv_studio.save(mv_studio._register(project, self.original))
+                with ZipFile(saved["path"]) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSpeedBack": rebuilt},
+                ):
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                self.assertEqual(reopened["stageSpeedBack"], {**legacy_display, **previous, **additions})
+                self.assertEqual(reopened["tracks"], project["tracks"])
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

@@ -137,6 +137,7 @@
     const stream = birthStream(data, particles);
     let disposed = false;
     return {
+      mesh, texture,
       update(time) {
         if (disposed) return;
         if (!inRange(time, 0, 3600)) {

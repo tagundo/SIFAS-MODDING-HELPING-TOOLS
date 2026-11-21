@@ -26,7 +26,10 @@ def _surface(objects, renderer, fields):
                                            "m_ReceiveShadows", "m_SortingLayerID", "m_SortingOrder", "m_RendererPriority"))
             or any(fields[key]["m_PathID"] for key in ("m_Mesh", "m_Mesh1", "m_Mesh2", "m_Mesh3", "m_StaticBatchRoot"))):
         return None
-    refs = fields["m_Materials"]
+    return _material(objects, renderer, fields["m_Materials"])
+
+
+def _material(objects, renderer, refs):
     if len(refs) != 2 or refs[0] != refs[1]:
         return None
     material = title._local(objects, renderer, refs[0], "Material")
