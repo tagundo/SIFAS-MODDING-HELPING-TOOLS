@@ -2503,6 +2503,11 @@ _COSTUME_CONVERSION_TRANSLATIONS = {
     ],
     "Conversion direction": ["변환 방향", "変換の方向"],
     "Modified costume bundle": ["변환할 모드 의상 번들", "変換する改造済み衣装バンドル"],
+    "Modified costume (.unity or ZIP)": ["변환할 모드 의상 (.unity 또는 ZIP)", "変換する改造済み衣装 (.unity または ZIP)"],
+    "Select a Unity bundle or a Mod ZIP containing a costume for the source platform.": [
+        "Unity 번들이나 변환 전 플랫폼의 의상이 포함된 모드 ZIP을 선택하세요.",
+        "Unity バンドル、または変換元プラットフォームの衣装が入った Mod ZIP を選びます。"
+    ],
     "Folder of modified costumes": ["변환할 모드 의상 폴더", "変換する改造済み衣装のフォルダ"],
     "Where to find the matching costume": ["출력 플랫폼의 원본 의상 선택", "変換先の元の衣装を選択"],
     "Find the same costume in game data": ["게임 데이터에서 같은 의상 찾기", "ゲームデータから同じ衣装を探す"],
