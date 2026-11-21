@@ -1197,7 +1197,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         for path in faces.auto_paths:
             if path not in rig.source_indices:
                 rig.source_indices[path] = len(rig.source_indices)
-    penlights, audience_points, shaft_templates, shaft_sources = {}, set(), set(), []
+    penlights, audience_points, detached_templates, shaft_sources, area_sources = {}, set(), set(), [], []
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
     stage_nodes = None
     if stage_materials and getattr(scene, "stage_motion_bindings", ()):
@@ -1208,10 +1208,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     animated_effect = stage_nodes is not None and stage_nodes.roots and getattr(scene, "native_stage_effect", False)
     mesh_limit = MAX_NATIVE_STAGE_EFFECT_MESHES if animated_effect else MAX_MESHES
     if stage_materials:
-        from . import mv_studio_shaft, mv_studio_stage_coloring, mv_studio_stage_display
-        from . import mv_studio_stage_materials, mv_studio_stage_overlay
+        from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
+        from . import mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
+        single_ambient = {}
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
+        stage_flashes = {}
     for obj in scene.env.objects:
         if auto_only and _source_path(obj) not in faces.auto_paths:
             continue
@@ -1236,10 +1238,18 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 penlights[owner] = linked_materials, suffix
         if stage_materials:
             excluded, shaft_source = mv_studio_shaft.references(scene, obj, tree)
-            shaft_templates.update(excluded)
+            detached_templates.update(excluded)
             if shaft_source is not None:
                 shaft_sources.append(shaft_source)
-            ambient_materials.update(mv_studio_stage_materials.ambient_materials(scene, obj, tree))
+            area = mv_studio_spotlight_area.reference(scene, obj, tree)
+            if area is not None:
+                detached_templates.add(_key(area[0]))
+                area_sources.append(area)
+            defaults, ambient_binding = mv_studio_stage_materials.ambient_materials(scene, obj, tree)
+            ambient_materials.update(defaults)
+            if ambient_binding:
+                for identity in defaults:
+                    single_ambient[identity] = None if identity in single_ambient else ambient_binding
             coloring = mv_studio_stage_coloring.binding(scene, obj, tree)
             if coloring is not None:
                 identity, entry = coloring
@@ -1248,6 +1258,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if display is not None:
                 identity, entry = display
                 stage_displays[identity] = None if identity in stage_displays else entry
+            flash = mv_studio_stage_flash.binding(scene, obj, tree)
+            if flash is not None:
+                identity, entry = flash
+                stage_flashes[identity] = None if identity in stage_flashes else entry
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
@@ -1259,6 +1273,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         retained = mv_studio_shaft.export(scene, glb, materials, shaft_sources[0], deadline)
         if retained:
             glb.doc["scenes"][0].setdefault("extras", {})["mvShaftTemplates"] = retained
+    if len(area_sources) == 1:
+        try:
+            area = mv_studio_spotlight_area.export(scene, glb, materials, area_sources[0], deadline)
+        except (ValueError, TypeError, KeyError, IndexError, OverflowError, OSError):
+            area = None
+        if area is not None:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvSpotlightArea"] = area
     # Match the serialized-file ordinals used by the editor's _inspect(raw).
     # A CAB's ordinal belongs to its selected input, not the combined scene.
     source_files = {}
@@ -1273,11 +1294,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if auto_only and _source_path(renderer) not in faces.auto_paths:
             continue
         _remaining(deadline)
-        if shaft_templates and _key(game_object) in shaft_templates:
+        if _key(game_object) in detached_templates:
             continue
         stage_motion = stage_nodes.binding(game_object) if stage_nodes is not None and renderer.type.name == "MeshRenderer" else None
         overlay = stage_motion is not None and mv_studio_stage_overlay.layer(scene, game_object)
-        if not tree.get("m_Enabled", True) or (stage_motion is None and not scene.active(game_object)):
+        flash_binding = stage_flashes.get(_key(renderer)) if stage_materials else None
+        renderer_enabled = tree.get("m_Enabled", True)
+        if (not renderer_enabled and flash_binding is None) or (stage_motion is None and not scene.active(game_object)):
             continue
         game_name = scene.name(game_object)
         if renderer.type.name == "Mesh":
@@ -1302,7 +1325,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         raw = {} if rig is not None else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
-        stage_inputs, coloring_for_renderer = {} if overlay else None, {}
+        stage_inputs, coloring_for_renderer = {} if overlay or flash_binding else None, {}
         if stage_materials and renderer.type.name == "MeshRenderer":
             for pointer in tree.get("m_Materials", ()):
                 candidate = _ref(renderer, pointer)
@@ -1310,14 +1333,19 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     continue
                 identity = _key(candidate)
                 if identity not in stage_metadata:
-                    stage_metadata[identity] = mv_studio_stage_materials.read_material(scene, candidate, ambient_materials)
+                    stage_metadata[identity] = mv_studio_stage_materials.read_material(
+                        scene, candidate, ambient_materials, single_ambient)
                 description = stage_metadata[identity]
                 if description and description.get("vertexColor"):
-                    stage_inputs = {}
+                    if stage_inputs is None:
+                        stage_inputs = {}
+                    if description.get("usesEmissive"):
+                        stage_inputs["needsEmissiveUV"] = True
                 coloring = mv_studio_stage_coloring.renderer_binding(scene, game_object, stage_coloring.get(identity))
                 if coloring is not None:
                     coloring_for_renderer[identity] = coloring
-                    stage_inputs = {}
+                    if stage_inputs is None:
+                        stage_inputs = {}
         bones, skin_warnings = None, []
         try:
             if renderer.type.name == "SkinnedMeshRenderer":
@@ -1363,6 +1391,15 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             scene.warn(warning, game_name)
         if not any(map(len, submeshes)):
             continue
+        flash = None
+        if flash_binding is not None:
+            if uv is not None and len(submeshes) == 1 and "lightUV" in stage_inputs:
+                try:
+                    flash = mv_studio_stage_flash.export(materials, flash_binding)
+                except ValueError:
+                    pass
+            if flash is None and not renderer_enabled:
+                continue
         if scene.stats["meshes"] + 1 > mesh_limit or scene.stats["vertices"] + len(positions) > MAX_VERTICES \
                 or scene.stats["triangles"] + sum(map(len, submeshes)) > MAX_TRIANGLES:
             if auto_face:
@@ -1409,7 +1446,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if native_attributes:
             penlight_transform = {"bindingSuffix": penlight[1],
                                   "localToPreview": position_matrix.T.reshape(-1).tolist()}
-        stage_color, stage_lightmap, stage_uv, coloring_uv = None, None, None, None
+        stage_color = stage_lightmap = stage_uv = stage_emissive_uv = coloring_uv = None
         primitives, refs, first_face = [], tree.get("m_Materials", []), 0
         for index, triangles in enumerate(submeshes):
             if not len(triangles):
@@ -1448,6 +1485,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         })
                     primitives[-1]["attributes"] = penlight_attributes
                     primitives[-1]["extras"]["mvPenlight"] = {**penlight_transform, "material": native_material}
+            if flash is not None:
+                primitives[-1]["attributes"] = {**attributes, "_STAGE_FLASH_UV": glb.attribute(stage_inputs["lightUV"], "VEC2")}
+                primitives[-1]["extras"]["mvStageFlash"] = flash
             display = stage_displays.get(_key(renderer)) if stage_materials and uv is not None and len(submeshes) == 1 else None
             if display:
                 try:
@@ -1496,6 +1536,21 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                 descriptor["reflection"] = reflection
                     else:
                         descriptor = None
+                if descriptor and descriptor.pop("usesEmissive", False):
+                    emissive = None
+                    if "emissiveUV" in stage_inputs:
+                        try:
+                            emissive = mv_studio_stage_materials.export_emissive(scene, materials, material_obj)
+                        except ValueError:
+                            pass
+                    if emissive is None:
+                        descriptor = None
+                    else:
+                        descriptor["emissive"] = emissive
+                        if stage_emissive_uv is None:
+                            coords = stage_inputs["emissiveUV"].copy()
+                            coords[:, 1] = 1 - coords[:, 1]
+                            stage_emissive_uv = glb.attribute(coords, "VEC2")
                 if descriptor:
                     custom = {}
                     if descriptor.get("vertexColor"):
@@ -1504,6 +1559,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_COLOR"] = stage_color
                     if descriptor["shader"] == "stage":
                         custom["_STAGE_LIGHT_UV"] = stage_uv
+                    if "emissive" in descriptor:
+                        custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
             coloring = coloring_for_renderer.get(_key(material_obj)) if material_obj is not None else None

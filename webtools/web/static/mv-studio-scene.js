@@ -357,7 +357,7 @@
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
     const memberCullingTracks = new Map();
-    const memberShaftTracks = new Map();
+    const memberShaftTracks = new Map(), memberAreaTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
@@ -501,8 +501,11 @@
       if (record.prop) record.prop.detach();
       record.shaft?.dispose();
       record.shaftTemplates?.dispose();
+      record.spotlightArea?.dispose();
+      record.areaTemplate?.dispose();
       if (record.materials) record.materials.dispose();
       record.penlight?.dispose();
+      record.stageFlash?.dispose();
       record.stageMaterial?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
@@ -739,8 +742,12 @@
           if (!active()) return null;
           record.shaftTemplates = await global.MVStudioShaft?.prepare(T, gltf);
           if (!active()) return null;
+          record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
+          if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
+          record.stageFlash = await global.MVStudioStageFlash?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
         }
         if (entry.group === actors) {
           record.actorVisible = record.root.visible;
@@ -867,6 +874,7 @@
             return false;
           }
           for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
+          record.stageFlash?.update(0, preview);
           record.stageMotion?.update(0, preview);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
@@ -1119,6 +1127,7 @@
       memberScaleTracks.clear();
       memberCullingTracks.clear();
       memberShaftTracks.clear();
+      memberAreaTracks.clear();
       cameraOffsets.clear();
       for (const track of tracks) {
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightShaftTrack") {
@@ -1127,6 +1136,15 @@
           if (bound && slot === Number(bound[1])) {
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightShaftClip");
             if (events.length) memberShaftTracks.set(slot, (memberShaftTracks.get(slot) || []).concat(events));
+          }
+          continue;
+        }
+        if (!track.muted && track.nativeClass === "LiveMemberSpotLightAreaTrack") {
+          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          if (binding) {
+            const slot = Number(binding[1]);
+            const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightAreaClip");
+            if (events.length) memberAreaTracks.set(slot, (memberAreaTracks.get(slot) || []).concat(events));
           }
           continue;
         }
@@ -1171,6 +1189,7 @@
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
+        record.stageFlash?.invalidate();
         record.stageColoring?.invalidate();
         record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
@@ -1183,7 +1202,10 @@
       physicsClock?.reset();
       resetShafts = true;
       lastShaftFrame = null;
-      for (const record of records) record.physics?.reset(reason);
+      for (const record of records) {
+        record.physics?.reset(reason);
+        record.spotlightArea?.reset();
+      }
     }
 
     function seek(time, value, deferDraw = false) {
@@ -1229,6 +1251,7 @@
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
       stageTitle?.update(currentTime, project);
+      for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
@@ -1275,6 +1298,15 @@
         }
         lastShaftFrame = timestamp;
         resetShafts = false;
+      }
+      const areaTemplate = records.find(record => record.areaTemplate)?.areaTemplate;
+      if (areaTemplate) for (const record of records) {
+        if (!record.shaftAnchor) continue;
+        const clips = settings.member_spot_light_area !== false ? memberAreaTracks.get(record.position) : null;
+        if (!record.spotlightArea && clips) {
+          record.spotlightArea = global.MVStudioSpotlightArea?.create(T, areaTemplate, record.shaftAnchor);
+        }
+        record.spotlightArea?.frame(clips, currentTime, project);
       }
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);

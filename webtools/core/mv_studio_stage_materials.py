@@ -5,6 +5,7 @@ import subprocess
 import numpy as np
 
 from .model_viewer import MAX_TEXTURE_PIXELS, _key, _properties, _ref
+from .mv_studio_stage_coloring import _path as _object_path
 
 
 _SHADERS = {
@@ -13,6 +14,7 @@ _SHADERS = {
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
 }
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
+_MAIN_STAGE = "/EntryPoint/Live/Stages/MainStage"
 _COLOR_FIELDS = ("_AmbientColor", "_TintColor", "_BlendColor")
 _PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_ON"}
 _REFLECTION_BLENDS = {
@@ -38,17 +40,25 @@ def _colors(tree):
 def ambient_materials(scene, component, tree):
     materials = tree.get("materials")
     if not isinstance(materials, list) or not 0 < len(materials) <= 128 or not tree.get("m_Enabled", True):
-        return {}
+        return {}, None
     script = _ref(component, tree.get("m_Script"))
     if script is None or script.type.name != "MonoScript":
-        return {}
+        return {}, None
     script_tree = scene.tree(script)
     if tuple(script_tree.get(field) for field in ("m_ClassName", "m_Namespace", "m_AssemblyName")) != _AMBIENT_SCRIPT:
-        return {}
+        return {}, None
     objects = [_ref(component, pointer) for pointer in materials if isinstance(pointer, dict)]
     if len(objects) != len(materials) or any(obj is None or obj.type.name != "Material" for obj in objects):
-        return {}
-    return dict.fromkeys((_key(obj) for obj in objects), _colors(scene.tree(objects[0])))
+        return {}, None
+    defaults = dict.fromkeys((_key(obj) for obj in objects), _colors(scene.tree(objects[0])))
+    path = _object_path(scene, _ref(component, tree.get("m_GameObject")))
+    binding = None
+    if getattr(scene, "native_stage_effect", False):
+        if len(path) == 1:
+            binding = _MAIN_STAGE + "/Effect"
+    elif len(path) == 3 and path[1] == "Ambient":
+        binding = _MAIN_STAGE + "/Model/" + "/".join(path[1:])
+    return defaults, binding
 
 
 def _shader(material, tree):
@@ -61,7 +71,7 @@ def _shader(material, tree):
     return _SHADERS.get((cab, pointer.get("m_PathID")))
 
 
-def read_material(scene, material, ambient):
+def read_material(scene, material, ambient, single_ambient):
     if material is None or material.type.name != "Material":
         return None
     tree = scene.tree(material)
@@ -72,13 +82,21 @@ def read_material(scene, material, ambient):
     keywords = set(tree.get("m_ShaderKeywords", "").split())
     if (floats.get("_SrcBlend", 1) != 1 or floats.get("_DstBlend", 0) != 0 or floats.get("_ZWrite", 1) != 1
             or floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
-            or floats.get("_StencilZFailOp", 0) != 0 or "_ALPHATEST_ON" in keywords):
+            or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)
     if "_TintColor" not in colors or mode != "solid" and "_AmbientColor" not in colors:
         return None
-    meta = {"shader": mode, "colors": colors, "ambientDefaults": ambient.get(_key(material)),
+    identity = _key(material)
+    meta = {"shader": mode, "colors": colors, "ambientDefaults": ambient.get(identity),
             "cull": floats.get("_CullMode", 2) if mode != "stage" else 2}
+    if single := single_ambient.get(identity):
+        meta["singleAmbientBinding"] = single
+    if "_ALPHATEST_ON" in keywords:
+        cutoff = floats.get("_Cutoff", 0.5)
+        if mode != "stage" or type(cutoff) not in (int, float) or not 0 <= cutoff <= 1:
+            return None
+        meta["alphaCutoff"] = cutoff
     if mode == "solid":
         return meta
     env = _properties(tree, "m_TexEnvs").get("_MainTex", {})
@@ -89,7 +107,9 @@ def read_material(scene, material, ambient):
     if mode == "general":
         meta["vertexColor"] = "_VERTEX_COLOR_ON" in keywords
         return meta
-    if not {"_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA", "_THIRD_TEX_MODE_OFF"} <= keywords:
+    third_modes = keywords & {"_THIRD_TEX_MODE_OFF", "_THIRD_TEX_MODE_EMISSIVE", "_THIRD_TEX_MODE_DECAL"}
+    if ("_ALPHA_TRANSPARENCY_MAIN_TEX_ALPHA" not in keywords or len(third_modes) != 1
+            or "_THIRD_TEX_MODE_DECAL" in third_modes):
         return None
     modes = keywords & {"_CUBEMAP_MODE_OFF", "_CUBEMAP_MODE_FRAGMENT", "_CUBEMAP_MODE_VERTEX"}
     if len(modes) != 1:
@@ -97,7 +117,29 @@ def read_material(scene, material, ambient):
     bias = floats.get("_MainTexMipmapBias", 0)
     if type(bias) not in (float, int) or not math.isfinite(bias) or "_BlendColor" not in colors:
         return None
-    return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle="_CUBEMAP_MODE_OFF" not in modes)
+    reflection = "_CUBEMAP_MODE_OFF" not in modes
+    emissive = "_THIRD_TEX_MODE_EMISSIVE" in third_modes
+    if emissive and reflection:
+        return None
+    return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle=reflection, usesEmissive=emissive)
+
+
+def export_emissive(scene, materials, material):
+    tree = scene.tree(material)
+    env = _properties(tree, "m_TexEnvs").get("_EmissiveTex", {})
+    scale = _numbers(env.get("m_Scale"), "xy")
+    offset = _numbers(env.get("m_Offset"), "xy")
+    color = _numbers(_properties(tree, "m_Colors").get("_EmissiveColor"), "rgba")
+    intensity = _properties(tree, "m_Floats").get("_EmissiveIntensity")
+    texture = _ref(material, env.get("m_Texture"))
+    if (scale is None or offset is None or color is None or type(intensity) not in (int, float)
+            or not math.isfinite(intensity) or texture is None or texture.type.name != "Texture2D"):
+        return None
+    index = materials.texture(texture)
+    if index is not None:
+        return {"texture": index, "color": color, "intensity": intensity,
+                "uvTransform": [*scale, offset[0], 1 - scale[1] - offset[1]]}
+    return None
 
 
 def lightmap_for(scene, renderer, tree, lightmap_settings):
@@ -218,3 +260,7 @@ def read_vertex_inputs(handler, output, count):
     uv = np.asarray(handler.m_UV1, dtype=np.float32)
     if uv.shape == (count, 2) and np.isfinite(uv).all():
         output["lightUV"] = uv
+    if output.get("needsEmissiveUV"):
+        uv = np.asarray(handler.m_UV2, dtype=np.float32)
+        if uv.shape == (count, 2) and np.isfinite(uv).all():
+            output["emissiveUV"] = uv

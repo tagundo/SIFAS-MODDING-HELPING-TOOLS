@@ -17,6 +17,11 @@
       attribute vec2 _stage_light_uv;
       varying vec2 vStageLightUV;
     #endif
+    #ifdef EMISSIVE
+      attribute vec2 _stage_emissive_uv;
+      uniform vec4 emissiveUVTransform;
+      varying vec2 vStageEmissiveUV;
+    #endif
     #ifdef CUBEMAP
       varying vec3 vReflectionPosition;
       varying vec3 vReflectionNormal;
@@ -30,6 +35,9 @@
       #endif
       #ifdef LIGHTMAPPED
         vStageLightUV = _stage_light_uv;
+      #endif
+      #ifdef EMISSIVE
+        vStageEmissiveUV = _stage_emissive_uv * emissiveUVTransform.xy + emissiveUVTransform.zw;
       #endif
       #ifdef CUBEMAP
         const vec3 unityAxes = vec3(-1.0, 1.0, 1.0);
@@ -57,6 +65,15 @@
       uniform vec4 blendColor;
       varying vec2 vStageLightUV;
     #endif
+    #ifdef CUTOUT
+      uniform float alphaCutoff;
+    #endif
+    #ifdef EMISSIVE
+      uniform sampler2D emissiveMap;
+      uniform vec4 emissiveColor;
+      uniform float emissiveIntensity;
+      varying vec2 vStageEmissiveUV;
+    #endif
     #ifdef CUBEMAP
       uniform bool useReflection;
       uniform samplerCube reflectionCube;
@@ -67,8 +84,12 @@
     void main() {
       #ifdef LIGHTMAPPED
         vec4 surface = texture2D(mainMap, vStageUV, mipBias);
+        #ifdef CUTOUT
+          if (surface.a < alphaCutoff) discard;
+        #endif
         vec3 baked = 2.0 * texture2D(lightMap, vStageLightUV).rgb;
-        vec3 lit = mix(surface.rgb, ambient.rgb, ambient.a) * baked * vStageColor.rgb;
+        vec3 ambientSurface = mix(surface.rgb, ambient.rgb, ambient.a);
+        vec3 lit = ambientSurface * baked * vStageColor.rgb;
         #ifdef CUBEMAP
           if (useReflection) {
             vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
@@ -84,8 +105,12 @@
             #endif
           }
         #endif
-        lit *= tint.rgb;
-        gl_FragColor = vec4(mix(lit, blendColor.rgb, blendColor.a), surface.a * tint.a);
+        vec3 color = mix(lit * tint.rgb, blendColor.rgb, blendColor.a);
+        #ifdef EMISSIVE
+          vec3 emission = mix(ambientSurface, emissiveColor.rgb, emissiveColor.a) * emissiveIntensity;
+          color = mix(color, emission, texture2D(emissiveMap, vStageEmissiveUV).r);
+        #endif
+        gl_FragColor = vec4(color, surface.a * tint.a);
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
         #ifdef VERTEX_COLOR
@@ -100,6 +125,9 @@
 
   const fields = ["color", "tintColor", "blendColor"];
   const propertyNames = ["_AmbientColor", "_TintColor", "_BlendColor"];
+  const ambientUniforms = ["ambient", "tint", "blendColor"];
+  // LiveCoreStageAmbient initializes these defaults independently of the material.
+  const singleDefaults = [[1, 1, 1, 0], [1, 1, 1, 1], [1, 1, 1, 0]];
   const mainStage = "/EntryPoint/Live/Stages/MainStage";
 
   function isColor(value) {
@@ -146,10 +174,12 @@
     if (!track || track.muted || project?.quality?.values?.stage_ambient === false ||
         !api?.nativeWeight || !api?.memberColor) return null;
     const colors = fields.map(() => [0, 0, 0, 0]);
+    const clipClass = track.nativeClass === "LiveStageSingleAmbientTrack" ?
+      "LiveStageSingleAmbientClip" : "LiveStageAmbientClip";
     let present = false;
     for (const event of track.events) {
       const values = event.values;
-      if (values?.playableClass !== "LiveStageAmbientClip") continue;
+      if (values?.playableClass !== clipClass) continue;
       const weight = api.nativeWeight(event, seconds);
       if (!(weight > 0)) continue;
       present = true;
@@ -162,7 +192,7 @@
   }
 
   async function apply(T, root, parser) {
-    const candidates = [], textures = new Map(), nativeLightmaps = new Set(), cubes = new Map(), records = [];
+    const candidates = [], textures = new Map(), nativeMaps = new Set(), cubes = new Map(), records = [];
     root.traverse((node) => {
       const meta = node.geometry?.userData?.mvStageMaterial;
       if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
@@ -172,6 +202,12 @@
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
+      if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
+          meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if (meta.emissive && (meta.shader !== "stage" || meta.reflectionToggle ||
+          !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
+          meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
+          !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
       candidates.push({node, original: node.material, meta});
     });
     if (!candidates.length) return null;
@@ -203,11 +239,27 @@
         try { lightMap = await parser.getDependency("texture", meta.lightmap); }
         catch { continue; }
         if (!lightMap?.isTexture) continue;
-        nativeLightmaps.add(lightMap);
+        nativeMaps.add(lightMap);
         defines.LIGHTMAPPED = 1;
         uniforms.lightMap = {value: gammaTexture(lightMap)};
         uniforms.mipBias = {value: meta.mipBias};
         uniforms.blendColor = {value: new T.Vector4().fromArray(meta.colors._BlendColor)};
+        if (meta.alphaCutoff !== undefined) {
+          defines.CUTOUT = 1;
+          uniforms.alphaCutoff = {value: meta.alphaCutoff};
+        }
+        if (meta.emissive) {
+          let emissive;
+          try { emissive = await parser.getDependency("texture", meta.emissive.texture); }
+          catch { continue; }
+          if (!emissive?.isTexture) continue;
+          nativeMaps.add(emissive);
+          defines.EMISSIVE = 1;
+          uniforms.emissiveMap = {value: gammaTexture(emissive)};
+          uniforms.emissiveUVTransform = {value: new T.Vector4().fromArray(meta.emissive.uvTransform)};
+          uniforms.emissiveColor = {value: new T.Vector4().fromArray(meta.emissive.color)};
+          uniforms.emissiveIntensity = {value: meta.emissive.intensity};
+        }
         const source = meta.reflection;
         if (meta.reflectionToggle && reflectionSource(source)) {
           if (!cubes.has(source.bufferView)) cubes.set(source.bufferView, await loadCube(T, parser, source));
@@ -231,6 +283,8 @@
       records.push({...entry, material, reflectionCube});
     }
 
+    const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
+    const singleTracks = new Map(), samples = new Map();
     let sourceTracks, ambientTrack;
     return {
       update(seconds, project, lighting) {
@@ -239,8 +293,15 @@
           const matches = sourceTracks?.filter(track => track.nativeClass === "LiveStageAmbientTrack" &&
             track.binding === mainStage);
           ambientTrack = matches?.length === 1 ? matches[0] : null;
+          singleTracks.clear();
+          for (const track of sourceTracks || []) {
+            if (track.nativeClass !== "LiveStageSingleAmbientTrack" || !singleBindings.has(track.binding)) continue;
+            singleTracks.set(track.binding, singleTracks.has(track.binding) ? null : track);
+          }
         }
         const active = stageAmbient(project, seconds, ambientTrack);
+        samples.clear();
+        const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube} of records) {
           if (meta.reflectionToggle) {
             const enable = project?.quality?.values?.stage_cubemap !== false;
@@ -253,10 +314,18 @@
             if (node.material === original) continue;
           }
           if (!meta.ambientDefaults) continue;
-          const property = ["ambient", "tint", "blendColor"];
-          for (let index = 0; index < property.length; index++) {
-            const uniform = material.uniforms[property[index]];
+          const singleTrack = singleTracks.get(meta.singleAmbientBinding);
+          if (singleTrack && !samples.has(singleTrack)) samples.set(singleTrack, stageAmbient(project, seconds, singleTrack));
+          const single = samples.get(singleTrack);
+          for (let index = 0; index < ambientUniforms.length; index++) {
+            const uniform = material.uniforms[ambientUniforms[index]];
             if (!uniform) continue;
+            if (singleTrack) {
+              const base = index === 0 ? baseAmbient : index === 1 ? lighting?.baseTint : null;
+              const paint = single ? single[index] : (index === 0 && baseAmbient) || singleDefaults[index];
+              uniform.value.fromArray(single && isColor(base) ? paint.map((value, channel) => value * base[channel]) : paint);
+              continue;
+            }
             const name = propertyNames[index];
             const fallback = meta.ambientDefaults[name] || meta.colors[name];
             const base = index === 0 ? lighting?.baseAmbient : index === 1 && lighting?.baseAmbient ? lighting.baseTint : null;
@@ -273,7 +342,7 @@
           material.dispose();
         }
         for (const copy of textures.values()) copy.dispose();
-        for (const original of nativeLightmaps) original.dispose();
+        for (const original of nativeMaps) original.dispose();
         for (const cube of cubes.values()) cube?.dispose();
       },
     };

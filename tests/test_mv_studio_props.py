@@ -42,18 +42,46 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual(len(stages), 1)
                     self.assertTrue(stages[0]["stage"]["glb"])
                     self.assertFalse(any(row.get("attachment") for row in stages[0]["assets"]))
+                    stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
+                    stage_bytes = stage_glb.read_bytes()
+                    stage_length = int.from_bytes(stage_bytes[12:16], "little")
+                    stage_doc = json.loads(stage_bytes[20:20+stage_length])
+                    stage_ambient = [primitive["extras"]["mvStageMaterial"]
+                                     for mesh in stage_doc["meshes"] for primitive in mesh["primitives"]
+                                     if "singleAmbientBinding" in primitive.get("extras", {}).get("mvStageMaterial", {})]
+                    self.assertEqual({data["singleAmbientBinding"].rsplit("/", 1)[-1] for data in stage_ambient},
+                                     {f"Ambient{i}" for i in range(1, 9)})
+                    cutouts = [data for data in stage_ambient if "alphaCutoff" in data]
+                    self.assertEqual([data["alphaCutoff"] for data in cutouts], [.5, .5, .5])
+                    far, = [data for data in cutouts if "emissive" in data]
+                    image = stage_doc["textures"][far["emissive"]["texture"]]["source"]
+                    self.assertEqual(stage_doc["images"][image]["name"], "bg0025_01_farAalp_emi")
                     effect, = [item for item in stages[0]["assets"] if item["kind"] == "effect"]
                     effect_glb, _ = mv_studio.media(effect["previewUrl"].rsplit("/", 1)[-1])
                     effect_bytes = effect_glb.read_bytes()
                     effect_length = int.from_bytes(effect_bytes[12:16], "little")
                     effect_doc = json.loads(effect_bytes[20:20+effect_length])
-                    self.assertEqual(len(effect_doc["meshes"]), 148)
+                    self.assertEqual(len(effect_doc["meshes"]), 149)
                     self.assertGreater(len(effect_doc["meshes"]), model_viewer.MAX_MESHES)
+                    effect_ambient = [primitive["extras"]["mvStageMaterial"]["singleAmbientBinding"]
+                                      for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
+                                      if "singleAmbientBinding" in primitive.get("extras", {}).get("mvStageMaterial", {})]
+                    self.assertEqual(effect_ambient, ["/EntryPoint/Live/Stages/MainStage/Effect"] * 76)
                     penlights = {primitive["extras"]["mvPenlight"]["bindingSuffix"]
                                  for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
                                  if "mvPenlight" in primitive.get("extras", {})}
                     self.assertEqual(penlights, {f"aud_root/aud_0{i}" for i in range(1, 7)})
                     self.assertIn("tex_aud_gen_01", [image["name"] for image in effect_doc["images"]])
+                    flashlight, = [primitive for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
+                                   if "mvStageFlash" in primitive.get("extras", {})]
+                    flash, = [track for track in project["tracks"] if track["nativeClass"] == "LiveFlashLightTrack"]
+                    fields = flashlight["extras"]["mvStageFlash"]
+                    uv = effect_doc["accessors"][flashlight["attributes"]["_STAGE_FLASH_UV"]]
+                    self.assertEqual((fields["binding"], fields["atlasST"], uv["count"]),
+                                     (flash["binding"], [4, 2, 0, 0], 96))
+                    names = [effect_doc["images"][effect_doc["textures"][fields[key]]["source"]]["name"]
+                             for key in ("texture", "atlas")]
+                    self.assertEqual(names, ["tex_grs_fla_gen_01", "tex_msk_fla_01_gen_01"])
                     prop, = [item for item in project["assets"] if item.get("attachment")]
                     actor, = project["performers"]
                     self.assertEqual((actor["memberId"], actor["position"]), (208, 1))
