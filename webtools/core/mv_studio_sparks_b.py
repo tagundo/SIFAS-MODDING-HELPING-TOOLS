@@ -147,7 +147,11 @@ def _initial(source, name):
 
 
 def _shape(fields, name):
-    radius, arc, arc_mode, scale, rotation = _SHAPES[name]
+    return _sphere_shape(fields, _SHAPES[name])
+
+
+def _sphere_shape(fields, expected):
+    radius, arc, arc_mode, scale, rotation = expected
     radius_settings, arc_settings = fields["radius"], fields["arc"]
     if (fields["type"] != 0 or fields["m_Position"] != _ZERO or fields["boxThickness"] != _ZERO
             or [fields["m_Scale"][axis] for axis in "xyz"] != scale

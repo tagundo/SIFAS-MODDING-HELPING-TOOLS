@@ -59,32 +59,6 @@
       matches(row.velocityMultipliers, 1, 4, 1) && row.clamp === null;
   }
 
-  function sphereCos(turns) {
-    // The ShapeModule's sine/cosine approximation is a polynomial in
-    // reduced turns. This also keeps the stock near-zero endpoint behavior.
-    const triangle = f32(.25 - Math.abs(f32(turns - Math.round(turns))));
-    const square = f32(triangle * triangle), fourth = f32(square * square);
-    const last = f32(f32(square * -76.56861877441406) + 81.60182189941406);
-    const first = f32(f32(square * -41.34165954589844) + 6.283185005187988);
-    return f32(triangle * f32(f32(f32(fourth * fourth) * 39.65703201293945) +
-      f32(first + f32(fourth * last))));
-  }
-
-  function sphereRadius(u) {
-    // Source radiusThickness is one. The native SIMD path approximates
-    // cbrt(1-u) by evaluating log2 and exp2 polynomials in float32.
-    const value = f32(1 - u);
-    if (value === 0) return 0;
-    const exponent = Math.floor(Math.log2(value));
-    const m = f32(f32(value * 2 ** -exponent) - 1);
-    const log = f32(f32(f32(exponent) + f32(m * 1.437907099723816)) +
-      f32(f32(m * m) * f32(f32(m * .19438113272190094) - .6322882175445557)));
-    const power = f32(log * f32(1 / 3)), powerFloor = Math.floor(power);
-    const rest = f32(power - powerFloor);
-    return f32(f32(f32(f32(rest * rest) * .3177299201488495) +
-      f32(f32(rest * .6822701096534729) + 1)) * 2 ** powerFloor);
-  }
-
   function cull(active) {
     for (let first = 0; first < active.length;) {
       let removed = false;
@@ -101,7 +75,8 @@
   function create(row, requestedSeed) {
     const particles = global.MVStudioStageParticles, motion = global.MVStudioStageMotion;
     if (!particles || !motion || !supported(row, motion, particles)) return null;
-    const {nativeRandom, nativeUnit, nativeColorAtTime, nativeFrame, nativeStep: dt, nativeStepRate} = particles;
+    const {nativeRandom, nativeUnit, nativeColorAtTime, nativeFrame, nativeStep: dt, nativeStepRate,
+      nativeSpherePosition} = particles;
     const {evaluate} = motion;
     const seed = row.seed ?? requestedSeed;
     if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) return null;
@@ -141,12 +116,7 @@
       const angleFraction = row.shape.arcMode === 3 ? f32(slot * f32(1 / Math.max(1, count - 1))) :
         nativeUnit(shape());
       const turns = f32(f32(turnLimit * angleFraction) * .15915493667125702);
-      const z = f32(f32(2 * nativeUnit(shape())) - 1);
-      const radial = sphereRadius(nativeUnit(shape()));
-      const xy = f32(Math.sqrt(f32(1 - f32(z * z))));
-      const shapePosition = [f32(sphereCos(turns) * xy), f32(sphereCos(f32(turns - .25)) * xy), z];
-      const length = f32(row.shape.radius * radial);
-      const axes = shapePosition.map((value, i) => f32(f32(value * length) * row.shape.scale[i]));
+      const axes = nativeSpherePosition(turns, nativeUnit(shape()), nativeUnit(shape()), row.shape.radius, row.shape.scale);
       const position = grow ? [-axes[0], axes[1], axes[2]] : [-axes[0], -axes[2], axes[1]];
       const magnitude = Math.sqrt(position.reduce((sum, v) => sum + v * v, 0));
       const velocity = position.map(value => magnitude > 0 ? f32(f32(value / magnitude) * speed) : 0);

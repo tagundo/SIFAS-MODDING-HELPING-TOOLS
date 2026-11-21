@@ -114,6 +114,42 @@
     return Math.fround((word & 0x7fffff) * Math.fround(1 / 0x7fffff));
   }
 
+  function sphereCos(turns) {
+    // ShapeModule evaluates a sine polynomial in reduced turns.
+    const f32 = Math.fround;
+    const triangle = f32(.25 - Math.abs(f32(turns - Math.round(turns))));
+    const square = f32(triangle * triangle), fourth = f32(square * square);
+    const last = f32(f32(square * -76.56861877441406) + 81.60182189941406);
+    const first = f32(f32(square * -41.34165954589844) + 6.283185005187988);
+    return f32(triangle * f32(f32(f32(fourth * fourth) * 39.65703201293945) +
+      f32(first + f32(fourth * last))));
+  }
+
+  function sphereRadius(u) {
+    // Full-thickness source spheres use the native log2/exp2 polynomials
+    // to form an approximately uniform volume from cbrt(1-u).
+    const f32 = Math.fround;
+    const value = f32(1 - u);
+    if (value === 0) return 0;
+    const exponent = Math.floor(Math.log2(value));
+    const m = f32(f32(value * 2 ** -exponent) - 1);
+    const log = f32(f32(f32(exponent) + f32(m * 1.437907099723816)) +
+      f32(f32(m * m) * f32(f32(m * .19438113272190094) - .6322882175445557)));
+    const power = f32(log * f32(1 / 3)), powerFloor = Math.floor(power);
+    const rest = f32(power - powerFloor);
+    return f32(f32(f32(f32(rest * rest) * .3177299201488495) +
+      f32(f32(rest * .6822701096534729) + 1)) * 2 ** powerFloor);
+  }
+
+  function nativeSpherePosition(turns, polar, radial, radius, scale) {
+    const f32 = Math.fround;
+    const z = f32(f32(2 * polar) - 1);
+    const xy = f32(Math.sqrt(f32(1 - f32(z * z))));
+    const position = [f32(sphereCos(turns) * xy), f32(sphereCos(f32(turns - .25)) * xy), z];
+    const length = f32(radius * sphereRadius(radial));
+    return position.map((value, i) => f32(f32(value * length) * scale[i]));
+  }
+
   function nativeRoll([min, max]) {
     const draw = nativeRandom();
     // Unity's InitialModule stores the Z roll from the fourth draw.
@@ -280,6 +316,6 @@
 
   global.MVStudioStageParticles = {
     apply, activeOffset, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
-    nativeFrame, nativeStep, nativeStepRate,
+    nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition,
   };
 })(typeof window !== "undefined" ? window : globalThis);

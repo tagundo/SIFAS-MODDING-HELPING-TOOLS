@@ -348,7 +348,7 @@
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
-    let stageSparksA = null, stageSparksB = null;
+    let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -534,6 +534,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageSparksRoop?.dispose();
+      stageSparksRoop = null;
       stageSparksA?.dispose();
       stageSparksA = null;
       stageSparksB?.dispose();
@@ -1094,6 +1096,12 @@
         return;
       }
       stageSparksA = sparksA;
+      const sparksRoop = await global.MVStudioStageSparks?.apply(T, scene, value.stageSparksRoop, displayAtlases, "roop");
+      if (!active()) {
+        sparksRoop?.dispose();
+        return;
+      }
+      stageSparksRoop = sparksRoop;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1299,6 +1307,7 @@
       stageFinaleFloor?.invalidate();
       stageSparksA?.invalidate();
       stageSparksB?.invalidate();
+      stageSparksRoop?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1376,6 +1385,7 @@
       stageFinaleFloor?.update(currentTime, project);
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
+      stageSparksRoop?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);

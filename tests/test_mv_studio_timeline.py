@@ -438,6 +438,39 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertEqual(len(descriptors), 2)
         self.assertEqual(*descriptors)
 
+    def test_native_roop_shares_the_paired_sphere_profile_and_borrows_the_star_atlas(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_speed_back=True,
+                                               preview_stage_sparks_roop=True)
+                sparks = parsed.pop("stageSparksRoop")
+                self.assertEqual(sparks["textures"], ["speedBackCenterStars"])
+                del parsed["stageSpeedBack"]
+                self.assertEqual(parsed, self.original[platform])
+                names = [row["name"] for row in sparks["emitters"]]
+                self.assertEqual(names, ["sparks_R1", "sparks_R2", "sparks_L1", "sparks_L2"])
+                for row, (x, z, rate) in zip(sparks["emitters"], ((7, -4.8, 100), (9.5, -.95, 200),
+                                                                (-7, -4.8, 100), (-9.5, -.95, 200))):
+                    self.assertEqual(row["shape"]["type"], 0)
+                    self.assertIsNone(row["seed"])
+                    self.assertEqual(row["duration"], 13)
+                    self.assertEqual(row["rate"], rate)
+                    self.assertEqual(tuple(row["lifetime"]), (3, 2))
+                    self.assertEqual(row["uv"], [.25, .25, .75, .25])
+                    self.assertAlmostEqual(row["position"][0], x)
+                    self.assertAlmostEqual(row["position"][1], 9.2, places=6)
+                    self.assertAlmostEqual(row["position"][2], z, places=6)
+                cue, = sparks["cues"]
+                track, = [row for row in parsed["tracks"] if row["id"] == cue["trackId"]]
+                event, = [row for row in track["events"] if row["id"] == cue["eventId"]]
+                self.assertEqual(track["label"], "StageEffect/Expert/Control/sparks_roop")
+                self.assertAlmostEqual(event["start"], 77.05)
+                self.assertAlmostEqual(event["start"] + event["duration"], 92.8333333333)
+                descriptors.append(sparks)
+        self.assertEqual(len(descriptors), 2)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 

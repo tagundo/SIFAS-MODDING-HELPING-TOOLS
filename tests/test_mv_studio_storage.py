@@ -446,6 +446,32 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["tracks"], project["tracks"])
                 self.assertEqual(reopened["stageSparksA"], {**saved, "emitters": expected})
 
+    def test_saved_roop_restores_native_atlas_and_preserves_the_edited_cue(self):
+        project = mv_studio._blank("Edited sparks_roop")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{
+            "id": "roop", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/sparks_roop",
+            "events": [{"id": "spray", "label": "Retimed spray", "start": 75.5, "duration": 16,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "1069439206166195116"},
+                                   "offset": {"x": 3, "y": 1, "z": 2}}}],
+        }]
+        project["stageSpeedBack"] = {"centerStars": {"texture": [{"png": "edited atlas"}]}}
+        original_atlas = [{"png": "native sparks"}]
+        project["stageSparksB"] = {"textures": ["speedBackCenterStars"]}
+        descriptor = {"textures": [original_atlas], "cues": [{"trackId": "roop", "eventId": "spray"}]}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSparksRoop": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited sparks_roop", preview_split=False,
+                                      preview_stage_title=False, preview_stage_sparks_roop=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSparksB"], project["stageSparksB"])
+        self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
+        self.assertEqual(reopened["stageSparksRoop"], descriptor)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

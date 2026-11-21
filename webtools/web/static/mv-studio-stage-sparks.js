@@ -8,12 +8,14 @@
       simulation: "MVStudioSparksASimulation"}],
     ["B", {widths: new Map([["grow", .5], ["hibana", .5], ["late_kirakira", .5]]), usesCueSeed: false,
       simulation: "MVStudioSparksBSimulation"}],
+    ["roop", {widths: new Map(["sparks_R1", "sparks_R2", "sparks_L1", "sparks_L2"].map(name => [name, .5])),
+      usesCueSeed: false, maxCues: 1, simulation: "MVStudioSparksRoopSimulation"}],
   ]);
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
 
-  function checked(source, {widths, usesCueSeed}) {
+  function checked(source, {widths, usesCueSeed, maxCues = 2}) {
     return Array.isArray(source?.textures) && source.textures.length === 1 &&
-      Array.isArray(source.cues) && source.cues.length >= 1 && source.cues.length <= 2 &&
+      Array.isArray(source.cues) && source.cues.length >= 1 && source.cues.length <= maxCues &&
       source.cues.every(cue => id(cue?.trackId) && id(cue.eventId) &&
         (!usesCueSeed || (Number.isInteger(cue.seed) && cue.seed >= 0 && cue.seed <= 0xffffffff))) &&
       new Set(source.cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === source.cues.length &&
@@ -81,7 +83,7 @@
             if (shared) fixed.set(row, stream);
           }
           const capacity = smoke ? row.capacity : Math.min(row.capacity,
-            row.bursts.reduce((sum, burst) => sum + burst[1] * (burst[2] ?? 1), 0) +
+            (row.bursts?.reduce((sum, burst) => sum + burst[1] * (burst[2] ?? 1), 0) ?? 0) +
             Math.ceil(row.duration * (row.rate ?? 0)) + 1);
           const fields = {texture, capacity, maxViewportWidth: row.maxViewportWidth,
             name: `Native stage sparks ${kind}`, tint};
@@ -94,7 +96,7 @@
           packet.mesh.renderOrder = 3010;
           packet.mesh.material.stencilFunc = T.AlwaysStencilFunc;
           packet.mesh.material.stencilRef = 0;
-          entries.push({...packet, stream, capacity, viewSize: sheet || smoke, lastFrame: -1, fps: 0});
+          entries.push({...packet, stream, capacity, viewSize: sheet || smoke || kind === "roop", lastFrame: -1, fps: 0});
           root.add(packet.mesh);
         }
       });
