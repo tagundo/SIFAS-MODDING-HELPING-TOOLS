@@ -4,7 +4,7 @@
   const atlasAlias = "speedBackCenterStars";
   const tint = [2, 2, 2, 1];
   const profiles = new Map([
-    ["A", {widths: new Map([["hibana_01", 1], ["hibana_02", 2]]), usesCueSeed: true,
+    ["A", {widths: new Map([["hibana_01", 1], ["hibana_02", 2], ["smoke", 2]]), usesCueSeed: true,
       simulation: "MVStudioSparksASimulation"}],
     ["B", {widths: new Map([["grow", .5], ["hibana", .5], ["late_kirakira", .5]]), usesCueSeed: false,
       simulation: "MVStudioSparksBSimulation"}],
@@ -64,19 +64,24 @@
         groups.push({cue, entries, track: null});
         for (const row of source.emitters) {
           const {name, seed, stretch, uv} = row;
-          const sheet = name === "hibana_02";
+          const sheet = name === "hibana_02", smoke = name === "smoke";
           const shared = !profile.usesCueSeed && seed !== null;
           let stream = shared ? fixed.get(row) : null;
           if (!stream) {
             // Retain the native clip seed override or give an automatic leaf a
             // stable preview seed for independent seeks and replays.
             const initialSeed = profile.usesCueSeed ? cue.seed : (seed ?? particles.autoSeed());
-            const engine = sheet ? global.MVStudioSparksASecondarySimulation : simulation;
+            const engine = smoke ? global.MVStudioSparksASmokeSimulation :
+              sheet ? global.MVStudioSparksASecondarySimulation : simulation;
             stream = engine?.create(row, initialSeed);
-            if (!stream?.sample) throw new Error("Invalid native spark emitter.");
+            if (!stream?.sample) {
+              if (sheet || smoke) continue;
+              throw new Error("Invalid native spark emitter.");
+            }
             if (shared) fixed.set(row, stream);
           }
-          const capacity = Math.min(row.capacity, row.bursts.reduce((sum, burst) => sum + burst[1] * (burst[2] ?? 1), 0) +
+          const capacity = smoke ? row.capacity : Math.min(row.capacity,
+            row.bursts.reduce((sum, burst) => sum + burst[1] * (burst[2] ?? 1), 0) +
             Math.ceil(row.duration * (row.rate ?? 0)) + 1);
           const fields = {texture, capacity, maxViewportWidth: row.maxViewportWidth,
             name: `Native stage sparks ${kind}`, tint};
@@ -89,7 +94,7 @@
           packet.mesh.renderOrder = 3010;
           packet.mesh.material.stencilFunc = T.AlwaysStencilFunc;
           packet.mesh.material.stencilRef = 0;
-          entries.push({...packet, stream, capacity, sheet, lastFrame: -1, fps: 0});
+          entries.push({...packet, stream, capacity, viewSize: sheet || smoke, lastFrame: -1, fps: 0});
           root.add(packet.mesh);
         }
       });
@@ -116,8 +121,8 @@
       entry.lastFrame = frame;
       entry.fps = fps;
       let count = 0;
-      if (entry.sheet) {
-        stream.sample(elapsed, fps, (px, py, pz, width, height, roll, r, g, b, a, tile) => {
+      if (entry.viewSize) {
+        stream.sample(elapsed, fps, (px, py, pz, width, height, roll, r, g, b, a, tile = 0) => {
           if (count >= capacity || Math.max(width, height) <= 0 || a <= 0) return;
           centers.setXYZW(count, px, py, pz, tile);
           sizes.setXY(count, width, height);

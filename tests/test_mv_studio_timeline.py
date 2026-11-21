@@ -374,7 +374,7 @@ class ActualTimelineTests(unittest.TestCase):
                 self.assertEqual(sparks["textures"], ["speedBackCenterStars"])
                 del parsed["stageSpeedBack"]
                 self.assertEqual(parsed, self.original[platform])
-                emitter, secondary = sparks["emitters"]
+                emitter, secondary, smoke = sparks["emitters"]
                 self.assertEqual(emitter["name"], "hibana_01")
                 self.assertEqual(secondary["name"], "hibana_02")
                 self.assertAlmostEqual(secondary["delay"], .12)
@@ -385,6 +385,12 @@ class ActualTimelineTests(unittest.TestCase):
                 self.assertEqual(secondary["atlas"], {"tiles": [4, 4], "start": (0, .125)})
                 self.assertAlmostEqual(secondary["minViewportWidth"], .02)
                 self.assertEqual(secondary["maxViewportWidth"], 2)
+                self.assertEqual(smoke["name"], "smoke")
+                self.assertAlmostEqual(smoke["duration"], .3)
+                self.assertEqual(smoke["rateMultiplier"], 30)
+                self.assertEqual(len(smoke["startGradients"]), 2)
+                self.assertEqual(smoke["sortMode"], 3)
+                self.assertEqual(smoke["uv"], [.25, .25, 0, .5])
                 self.assertEqual(emitter["shape"]["type"], 8)
                 self.assertEqual(emitter["bursts"], [[0, 1000]])
                 self.assertEqual(emitter["maxViewportWidth"], 1)

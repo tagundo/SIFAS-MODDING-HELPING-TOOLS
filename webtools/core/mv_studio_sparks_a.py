@@ -1,6 +1,7 @@
 """Read the source front spark bursts in Monster Girls Expert."""
 
 from . import model_viewer as viewer
+from . import mv_studio_sparks_a_smoke as smoke
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_rig import _authored_trs
 from .mv_studio_display_lights import _enabled
@@ -240,6 +241,12 @@ def _prefab(objects, game, deadline):
         secondary = None
     if secondary is not None and viewer._key(secondary[1]) == viewer._key(texture):
         emitters.append(secondary[0])
+    try:
+        authored_smoke = smoke.read(objects, children[2], deadline)
+    except title._UNSUPPORTED:
+        authored_smoke = None
+    if authored_smoke is not None and viewer._key(authored_smoke[1]) == viewer._key(texture):
+        emitters.append(authored_smoke[0])
     return emitters, texture
 
 

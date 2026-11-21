@@ -9,6 +9,7 @@ require("../webtools/web/static/mv-studio-display-lights.js");
 require("../webtools/web/static/mv-studio-moving-companions.js");
 require("../webtools/web/static/mv-studio-sparks-a-simulation.js");
 require("../webtools/web/static/mv-studio-sparks-a-secondary-simulation.js");
+require("../webtools/web/static/mv-studio-sparks-a-smoke-simulation.js");
 require("../webtools/web/static/mv-studio-stage-sparks.js");
 
 const f32 = Math.fround, alias = "speedBackCenterStars";
@@ -49,6 +50,32 @@ function secondaryFixture() {
       scale: [1, 1, 1], rotation: [-90, 0, 0]}, duration: .5, bursts: [[0, 60, 3, f32(.15)]], sizeCurve,
     sizeMultiplier: 1, velocityY: [6, 2], lifeColors, atlas: {tiles: [4, 4], start: [0, .125]},
     capacity: 1000, minViewportWidth: f32(.02), maxViewportWidth: 2};
+}
+
+function smokeFixture() {
+  const curve = (coefficients, finalValue, end = 1) => ["cubic", [[0, coefficients], [end, [0, 0, 0, finalValue]]]];
+  const initial = (curves, minMultiplier, maxMultiplier) => ({curves, minMultiplier, maxMultiplier});
+  const gradient = (g, b, alpha) => ({rgb: [[0, 1, g, b], [65535, 1, 1, 1]], alpha: [[0, alpha], [65535, alpha]]});
+  const life = (first, second, third) => [[0, 0], [first, 120], [second, 140], [third, 100], [65535, 0]]
+    .map(([stamp, alpha]) => [f32(stamp / 65535), 255, 255, 255, alpha]);
+  const turn = f32(6.283185), quarter = f32(1.57079625), rotation = .7071067811865475;
+  return {name: "smoke", delay: 0, duration: f32(.3), roll: [-turn, turn], capacity: 1000,
+    shape: {type: 8, radius: .25, radiusMode: 1, radiusSpeed: 10, radiusThickness: 1, angle: 8, length: 6,
+      arc: 360, arcMode: 0, scale: [1, 1, 1], rotation: [0, 0, 0]},
+    initialLifetime: initial([curve([.2110232854801314, -1.6137312068803724, 0, .8683472871780396], f32(.15), f32(.7)),
+      curve([.01333552598953247, -.3581506013870239, 0, 1], .6551849246025085)], 3, 1.5),
+    initialSize: initial([curve([.8315461007837078, -2.1126945576660963, 0, 1], .25, f32(.7)),
+      curve([-.21180105209350586, -.24506694078445435, 0, 1], .5431320071220398)], 1, 2),
+    initialSpeed: initial([curve([-1.862645149230957e-8, 2.7939677238464355e-8, -.7455999851226807, .75], .004400024190545082),
+      curve([5.960464477539063e-8, -8.940696716308594e-8, -.720168948173523, 1], .27983102202415466)], 5, 15),
+    rateCurve: curve([1, -1.5, 0, 1], .5), rateMultiplier: 30, rollSpeed: [quarter, -quarter], velocityY: [f32(.2), f32(.02)],
+    clamp: {curve: curve([.1897217035293579, -1.189721703529358, 0, 1], 0), dampen: f32(.15)},
+    startGradients: [gradient(.9266636967658997, .8028329014778137, f32(80 / 255)), gradient(1, 1, f32(120 / 255))],
+    lifeColors: [life(13107, 28033, 46413), life(9830, 22937, 32768)],
+    sizeCurves: [curve([.17603769898414612, -.6577358692884445, 1.0816981792449951, f32(.2)], f32(.8)),
+      curve([.0057138800621032715, -.4698649048805237, 1.2141510248184204, .25], 1)], sizeMultiplier: 2,
+    uv: [.25, .25, 0, .5], rotation: [-rotation, 0, 0, rotation],
+    maxViewportWidth: 2, sortMode: 3};
 }
 
 function sourceFor(...emitters) {
@@ -170,6 +197,37 @@ function verifyNativeSecondary(row) {
     assert.deepEqual(take(5 / 30, 30), warm);
     assert.deepEqual(at(10), warm);
     return warm;
+  });
+}
+
+function verifyNativeSmoke(row, tick) {
+  const solver = MVStudioSparksASmokeSimulation;
+  assert.equal(solver.create(row, 101), null);
+  assert.equal(solver.create({...row, sortMode: 0}, 100), null);
+  // Native SortMode 3 puts slot 5 first for seed 100 and slot 4 first for
+  // seed 200. The first row differs from slot order in both captures.
+  const expected = [
+    {seed: 100, alpha: [37, 30, 44, 53, 55, 26], first: [.35591471195, 4.71360301971, -.08980579674,
+      .57577943802, .57577943802, .34082463384, 255, 254, 253, 37]},
+    {seed: 200, alpha: [42, 13, 44, 42, 52, 55], first: [-.18219816685, 2.10337495804, .13556826115,
+      .56116920710, .56116920710, -1.41965997219, 255, 252, 247, 42]},
+  ];
+  return expected.map(({seed, alpha, first}) => {
+    const take = sampleOf(row, seed, solver);
+    const at = step => take(step / 60);
+    assert.deepEqual(at(2), []);
+    assert.equal(at(3).length, 1);
+    assert.deepEqual([5, 7, 9, 12, 16].map(step => at(step).length), [2, 3, 4, 5, 6]);
+    const sample = at(tick);
+    assert.deepEqual(sample.map(particle => particle[9]), alpha);
+    near(sample[0].slice(0, 6), first.slice(0, 6));
+    assert.deepEqual(sample[0].slice(6), first.slice(6));
+    assert.deepEqual(take(3 / 60, 30), []);
+    assert.deepEqual(take(tick / 60, 30), sample);
+    assert.deepEqual(take((tick + 1) / 60, 30), sample);
+    assert.deepEqual(take(2), []);
+    assert.deepEqual(at(tick), sample);
+    return sample;
   });
 }
 
@@ -354,11 +412,89 @@ async function verifySecondaryPackets(primary, secondary, samples, tick) {
   assert.equal(textures, 1);
 }
 
+async function verifySmokePackets(primary, secondary, smoke, samples, tick) {
+  const source = sourceFor(primary, secondary, smoke), project = projectFor(source);
+  const {tracks, quality: {values: quality}} = project;
+  const root = new T.Scene(), atlas = new T.Texture();
+  const effect = await MVStudioStageSparks.apply(T, root, source, {[alias]: atlas}, "A");
+  assert.ok(effect);
+  const meshes = root.children.slice();
+  assert.deepEqual(meshes.map(mesh => mesh.name), ["Native spark A 1 hibana_01", "Native spark A 1 hibana_02",
+    "Native spark A 1 smoke", "Native spark A 2 hibana_01", "Native spark A 2 hibana_02", "Native spark A 2 smoke"]);
+  const smokeMeshes = [meshes[2], meshes[5]];
+  let geometries = 0, materials = 0, textures = 0;
+  atlas.addEventListener("dispose", () => textures++);
+  for (const mesh of meshes) {
+    assert.equal(mesh.material.uniforms.uTexture.value, atlas);
+    mesh.geometry.addEventListener("dispose", () => geometries++);
+    mesh.material.addEventListener("dispose", () => materials++);
+  }
+  for (const {geometry, material, renderOrder} of smokeMeshes) {
+    assert.equal(renderOrder, 3010);
+    assert.equal(geometry.isInstancedBufferGeometry, true);
+    assert.equal(geometry.index.count, 6);
+    assert.equal(geometry.getAttribute("particleColor").normalized, true);
+    assert.equal(material.defines.VIEW_ALIGNED, 1);
+    assert.equal(material.defines.PARTICLE_ROLL, 1);
+    assert.equal(material.uniforms.uMaxWidth.value, 2);
+    assert.deepEqual(material.uniforms.uAtlas.value.toArray(), [.25, .25, 0, .5]);
+    assert.deepEqual(material.uniforms.uTint.value.toArray(), [2, 2, 2, 1]);
+    assert.equal(material.blendSrc, T.SrcAlphaFactor);
+    assert.equal(material.blendDst, T.OneFactor);
+    assert.equal(material.stencilFunc, T.AlwaysStencilFunc);
+    assert.equal(material.depthWrite, false);
+  }
+
+  function assertUploaded({geometry, visible}, sample) {
+    const rows = sample.filter(particle => particle[3] > 0 && particle[4] > 0 && particle[9] > 0);
+    assert.equal(visible, rows.length > 0);
+    assert.equal(geometry.instanceCount, rows.length);
+    const centers = geometry.getAttribute("centerAndTile"), sizes = geometry.getAttribute("particleSize");
+    const rolls = geometry.getAttribute("particleRoll"), colors = geometry.getAttribute("particleColor");
+    assert.ok(centers.count >= rows.length);
+    assert.equal(centers.updateRange.count, rows.length * 4);
+    for (const [index, [x, y, z, width, height, roll, r, g, b, a]] of rows.entries()) {
+      near([...centers.array.slice(index * 4, index * 4 + 4)], [x, y, z, 0]);
+      near([...sizes.array.slice(index * 2, index * 2 + 2), rolls.getX(index)], [width, height, roll]);
+      assert.deepEqual([...colors.array.slice(index * 4, index * 4 + 4)], [r, g, b, a]);
+    }
+  }
+
+  const time = start + tick / 60;
+  effect.update(start, project);
+  assert.ok(meshes.every(mesh => !mesh.visible));
+  effect.update(time, project);
+  assert.ok(meshes.every(mesh => mesh.visible));
+  smokeMeshes.forEach((mesh, index) => assertUploaded(mesh, samples[index]));
+  assert.deepEqual(smokeMeshes.map(mesh => mesh.position.toArray()), [[-7, -1, 8], [4, -2, 8]]);
+  tracks[0].muted = true;
+  effect.update(time, project);
+  assert.ok(meshes.slice(0, 3).every(mesh => !mesh.visible));
+  assertUploaded(smokeMeshes[1], samples[1]);
+  tracks[0].muted = false;
+  quality.stage_control = false;
+  effect.update(time, project);
+  assert.ok(meshes.every(mesh => !mesh.visible));
+  quality.stage_control = true;
+  quality.frame_rate_60fps = false;
+  effect.update(start + duration, project);
+  assert.ok(meshes.every(mesh => !mesh.visible));
+  effect.update(time, project);
+  smokeMeshes.forEach((mesh, index) => assertUploaded(mesh, samples[index]));
+
+  effect.dispose();
+  assert.equal(root.children.length, 0);
+  assert.deepEqual([geometries, materials, textures], [6, 6, 0]);
+  atlas.dispose();
+  assert.equal(textures, 1);
+}
+
 async function run() {
-  const primary = hibanaFixture(), secondary = secondaryFixture();
+  const primary = hibanaFixture(), secondary = secondaryFixture(), smoke = smokeFixture(), smokeTick = 18;
   await verifyPackets(primary, verifyNative(primary));
   await verifySecondaryPackets(primary, secondary, verifyNativeSecondary(secondary), 10);
-  console.log("Native Sparks A: original seeded stretch, three delayed anisotropic bursts, cadence, atlas and cue ownership.");
+  await verifySmokePackets(primary, secondary, smoke, verifyNativeSmoke(smoke, smokeTick), smokeTick);
+  console.log("Native Sparks A: seeded stretch, anisotropic bursts, sorted smoke, cadence, atlas and cue ownership.");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

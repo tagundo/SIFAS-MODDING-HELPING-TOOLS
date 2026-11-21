@@ -409,7 +409,7 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSparksB"], project["stageSparksB"])
         self.assertEqual(reopened["stageSparksA"], {**descriptor, "textures": ["speedBackCenterStars"]})
 
-    def test_saved_spark_primary_upgrades_when_it_shares_the_authentic_atlas(self):
+    def test_saved_sparks_gain_missing_emitters_when_they_share_the_authentic_atlas(self):
         project = mv_studio._blank("Existing front sparks")
         project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
         project["tracks"] = [{
@@ -423,12 +423,19 @@ class MVStudioStorageTests(unittest.TestCase):
         authentic = [{"png": "native sparks"}]
         primary = {"name": "hibana_01", "preservedField": "saved value"}
         secondary = {"name": "hibana_02"}
+        edited_secondary = {**secondary, "preservedField": "another saved value"}
+        smoke = {"name": "smoke"}
         cues = [{"trackId": "front", "eventId": "burst", "seed": 100}]
-        original = {"textures": [authentic], "emitters": [{"name": "hibana_01"}, secondary], "cues": cues}
-        saved = {"textures": [alias], "emitters": [primary], "cues": cues}
-        project["stageSparksA"] = saved
-        for atlas, expected in ((authentic, [primary, secondary]), ([{"png": "custom"}], [primary])):
-            with self.subTest(atlas=atlas):
+        original = {"textures": [authentic], "emitters": [{"name": "hibana_01"}, secondary, smoke], "cues": cues}
+        cases = (
+            (authentic, [primary], [primary, secondary, smoke]),
+            (authentic, [primary, edited_secondary], [primary, edited_secondary, smoke]),
+            ([{"png": "custom"}], [primary, edited_secondary], [primary, edited_secondary]),
+        )
+        for atlas, emitters, expected in cases:
+            with self.subTest(atlas=atlas, emitters=len(emitters)):
+                saved = {"textures": [alias], "emitters": emitters, "cues": cues}
+                project["stageSparksA"] = saved
                 project["stageSpeedBack"] = {"centerStars": {"texture": atlas}}
                 result = mv_studio.save(mv_studio._register(project, self.original))
                 with ZipFile(result["path"]) as archive, patch(

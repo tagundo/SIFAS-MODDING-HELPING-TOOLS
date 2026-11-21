@@ -783,8 +783,9 @@ def _restore_front_sparks(project, original, saved):
     if (not rebuilt or rebuilt["cues"] != saved.get("cues")
             or not isinstance(saved_textures, list) or len(saved_textures) != 1):
         return
-    secondary = next((row for row in rebuilt["emitters"] if row["name"] == "hibana_02"), None)
-    if secondary is None:
+    present = {row["name"] for row in saved["emitters"]}
+    additions = [row for row in rebuilt["emitters"] if row["name"] not in present]
+    if not additions:
         return
     previous, = saved_textures
     authentic, = rebuilt["textures"]
@@ -792,10 +793,10 @@ def _restore_front_sparks(project, original, saved):
         previous = _display_particle_atlases(project)[alias]
     if authentic == alias:
         authentic = _display_particle_atlases(original)[alias]
-    # Both emitters share one atlas. Leave an existing custom atlas and its
-    # primary emitter intact when the native secondary cannot share it.
+    # Keep a saved custom atlas and its existing emitters intact when the
+    # recovered native emitters cannot share that atlas.
     if authentic is not None and previous == authentic:
-        project[field] = {**saved, "emitters": [*saved["emitters"], secondary]}
+        project[field] = {**saved, "emitters": [*saved["emitters"], *additions]}
 
 
 def _open_saved(archive, entries):
@@ -869,9 +870,12 @@ def _open_saved(archive, entries):
         } for event in track["events"]) for track in project["tracks"])
     sparks_a = project.get("stageSparksA")
     front_emitters = sparks_a.get("emitters") if isinstance(sparks_a, dict) else None
-    missing_secondary = (isinstance(front_emitters, list) and len(front_emitters) == 1
-                         and isinstance(front_emitters[0], dict) and front_emitters[0].get("name") == "hibana_01")
-    restore_sparks_a = (sparks_a is None or missing_secondary) and any(
+    front_names = (
+        tuple(row.get("name") if isinstance(row, dict) else None for row in front_emitters)
+        if isinstance(front_emitters, list) else ()
+    )
+    missing_front_emitters = front_names in (("hibana_01",), ("hibana_01", "hibana_02"), ("hibana_01", "smoke"))
+    restore_sparks_a = (sparks_a is None or missing_front_emitters) and any(
         track.get("nativeClass") == "CustomControlTrack"
         and str(track.get("label", "")).endswith(("/Control/sparks_A_01", "/Control/sparks_A_02"))
         and any(event.get("label") == "fx_par_so2056_01" or event["values"].get("prefabGameObject") == {
