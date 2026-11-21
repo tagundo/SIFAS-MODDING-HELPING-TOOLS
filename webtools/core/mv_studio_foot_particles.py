@@ -191,7 +191,7 @@ def _rgba8(initial, module):
     }}
 
 
-def _glow_geometry(sheet, tilt, roll):
+def _glow_geometry(sheet):
     if (sheet["mode"] or sheet["timeMode"] or sheet["animationType"] or sheet["cycles"] != 1
             or sheet["flipU"] or sheet["flipV"] or not sheet["uvChannelMask"] & 1
             or _constant(sheet["frameOverTime"]) != 0):
@@ -202,21 +202,14 @@ def _glow_geometry(sheet, tilt, roll):
         return None
     frame = int(_float32(offset * columns * rows))
     column, row = frame % columns, frame // columns
-    cx, sx = math.cos(-tilt), math.sin(-tilt)
-    cz, sz = math.cos(-roll), math.sin(-roll)
-    positions = []
-    for x, y in ((-.5, .5), (.5, .5), (.5, -.5), (-.5, -.5)):
-        # Native World-aligned Billboard uses Rx(-tilt) followed in matrix
-        # order by Rz(-roll) on its XY corners. Reflect X for the preview.
-        planar = sz * x + cz * y
-        positions.append([-(cz * x - sz * y), cx * planar, sx * planar])
+    positions = [[.5, .5, 0], [-.5, .5, 0], [-.5, -.5, 0], [.5, -.5, 0]]
     uv = [[(column + x) / columns, (row + y) / rows] for x, y in ((0, 0), (1, 0), (1, 1), (0, 1))]
     return {"positions": positions, "uv": uv, "indices": [0, 2, 1, 0, 3, 2]}
 
 
-def _glow(objects, game, deadline, clip_seed):
+def _glow(objects, game, deadline):
     row = native._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"}, layer=_LAYER)
-    if row is None or type(clip_seed) is not int or not 0 < clip_seed <= _WORD_MASK:
+    if row is None:
         return None
     parts = row[1]
     _, source = parts["ParticleSystem"]
@@ -256,18 +249,20 @@ def _glow(objects, game, deadline, clip_seed):
     tilt = _constant_range(initial["startRotationX"], -math.pi, math.pi)
     roll = _constant_range(initial["startRotation"], -math.pi, math.pi)
     if (dimension is None or not 0 < dimension <= 4 or life is None or not 0 < life <= 3
-            or tilt is None or tilt[0] != tilt[1] or roll is None
+            or tilt is None or tilt[0] != tilt[1] or roll is None or roll[0] > roll[1]
             or _constant_range(initial["startRotationY"], 0, 0) is None):
         return None
-    _, _, _, roll_draw = _native_draws(clip_seed, 4)
-    geometry = _glow_geometry(source["UVModule"], tilt[0], _native_lerp(*roll, _native_unit(roll_draw)))
+    geometry = _glow_geometry(source["UVModule"])
     size_curve = _scalar(size["curve"], deadline)
     color = _rgba8(initial, source["ColorModule"])
     surface = _material(objects, renderer, shape, glow=True)
     if None in (geometry, size_curve, color, surface):
         return None
     material, texture = surface
-    emitter = {"geometry": geometry, "position": trs["translation"], "rotation": trs["rotation"],
+    # World billboard uses Rx(-tilt) * Rz(-roll) before reflecting X. The
+    # reflected roll is drawn at activation; the clip's seed override is off.
+    rotation = [-math.sin(tilt[0] / 2), 0, 0, math.cos(tilt[0] / 2)]
+    emitter = {"geometry": geometry, "position": trs["translation"], "rotation": rotation, "rollRange": roll,
                "scale": trs["scale"], "material": material, "birth": 0, "lifetime": life, "size": dimension,
                "sizeCurve": size_curve, "yaw": 0, "yawSpeed": 0, "color": color}
     return emitter, texture
@@ -296,7 +291,7 @@ def read(objects, game, deadline, *, clip_seed=None):
     glows = [child for child in candidates if child is not None and child.peek_name() == "glow"]
     if records and len(glows) == 1:
         try:
-            glow = _glow(objects, glows[0], deadline, clip_seed)
+            glow = _glow(objects, glows[0], deadline)
         except native._UNSUPPORTED:
             glow = None
         if glow is not None:

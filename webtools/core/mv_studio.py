@@ -773,7 +773,8 @@ def _open_saved(archive, entries):
     restore_particles = (type(schema) is not int or schema < mv_studio_stage_particles.SCHEMA) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Control/" in str(track.get("label", ""))
         for track in project["tracks"])
-    restore_ribbons = "stageRibbons" not in project and any(
+    ribbons = project.get("stageRibbons")
+    restore_ribbons = (not isinstance(ribbons, dict) or "shine" not in ribbons) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/dis_par_01-02_obi")
         for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons):
@@ -790,9 +791,14 @@ def _open_saved(archive, entries):
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageRibbons"):
+            for field in ("splitScreen", "stageTitle"):
                 if field in original:
                     project[field] = original[field]
+            rebuilt_ribbons = original.get("stageRibbons")
+            if rebuilt_ribbons and not isinstance(ribbons, dict):
+                project["stageRibbons"] = rebuilt_ribbons
+            elif rebuilt_ribbons and "shine" in rebuilt_ribbons:
+                project["stageRibbons"] = {**ribbons, "shine": rebuilt_ribbons["shine"]}
             rebuilt = original.get("stageParticles")
             if rebuilt is not None and mv_studio_stage_particles.preserves(particles, rebuilt):
                 project["stageParticles"] = rebuilt

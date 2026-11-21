@@ -9,7 +9,7 @@ from . import mv_studio_stage_motion as motion, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 
 
-SCHEMA = 3
+SCHEMA = 4
 _MAX_EMITTERS = 12
 
 

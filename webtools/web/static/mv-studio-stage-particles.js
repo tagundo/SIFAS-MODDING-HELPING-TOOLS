@@ -77,6 +77,36 @@
     });
   }
 
+  function autoSeed() {
+    if (global.crypto?.getRandomValues) return global.crypto.getRandomValues(new Uint32Array(1))[0];
+    return Math.floor(Math.random() * 0x100000000);
+  }
+
+  function nativeRandom(seed = autoSeed()) {
+    const words = new Uint32Array(4);
+    words[0] = seed;
+    for (let i = 1; i < words.length; i++) words[i] = Math.imul(words[i - 1], 0x6c078965) + 1;
+    return function draw() {
+      const first = words[0] ^ (words[0] << 11), last = words[3];
+      words.copyWithin(0, 1);
+      words[3] = first ^ (first >>> 8) ^ last ^ (last >>> 19);
+      return words[3];
+    };
+  }
+
+  function nativeUnit(word) {
+    return Math.fround((word & 0x7fffff) * Math.fround(1 / 0x7fffff));
+  }
+
+  function nativeRoll([min, max]) {
+    const draw = nativeRandom();
+    // Unity's InitialModule stores the Z roll from the fourth draw.
+    draw();
+    draw();
+    draw();
+    return Math.fround(min + Math.fround(Math.fround(max - min) * nativeUnit(draw())));
+  }
+
   function checked(source, curve, particle) {
     const { textures, templates, cues } = source || {};
     if (!Array.isArray(textures) || textures.length < 1 || textures.length > 4 ||
@@ -87,7 +117,7 @@
           Number.isInteger(cue.template) && templates[cue.template])) return false;
     return templates.every(emitters => Array.isArray(emitters) && emitters.length > 0 && emitters.length <= 12 &&
       emitters.every(emitter => {
-        const { geometry, material, texture, uvOffset, color, orbitY, maxViewportWidth } = emitter || {};
+        const { geometry, material, texture, uvOffset, color, orbitY, maxViewportWidth, rollRange } = emitter || {};
         const packed = value => particle.boundedCurve(value, curve.validCurve);
         return !!textures[texture] && Number.isInteger(texture) && !!geometry && validGeometry(geometry) &&
           material?.blend === "add" && (material.queue === 3000 || material.queue === 3010) &&
@@ -99,6 +129,8 @@
               inRange(emitter.size, 0.01, 64)) &&
           inRange(emitter.yaw, -40, 40) && inRange(emitter.yawSpeed, -40, 40) &&
           (orbitY === undefined || inRange(orbitY, -40, 40)) &&
+          (rollRange === undefined || (vector(rollRange, 2) && inRange(rollRange[0], -3.15, rollRange[1]) &&
+            rollRange[1] <= 3.15)) &&
           packed(emitter.sizeCurve) && (uvOffset === undefined ||
             (Array.isArray(uvOffset) && uvOffset.length === 2 && uvOffset.every(packed))) &&
           (color?.rgba8 === undefined
@@ -112,7 +144,8 @@
     if (!root?.isObject3D || !descriptor || !curve?.evaluate || !particle?.validMipChain || !particle?.loadTexture ||
         !checked(descriptor, curve, particle)) return null;
     const textures = [], geometry = new Map(), groups = [], loader = new T.TextureLoader();
-    const vertical = new T.Vector3(0, 1, 0), turn = new T.Quaternion(), particleCenter = new T.Vector3();
+    const vertical = new T.Vector3(0, 1, 0), forward = new T.Vector3(0, 0, 1), turn = new T.Quaternion();
+    const particleCenter = new T.Vector3();
     let disposed = false;
     function dispose() {
       if (disposed) return;
@@ -172,7 +205,11 @@
             };
           }
           group.add(mesh);
-          meshes.push({emitter, mesh, orientation: new T.Quaternion().fromArray(emitter.rotation)});
+          const orientation = new T.Quaternion().fromArray(emitter.rotation);
+          // Each activated preview cue gets its own auto seed. Keep that
+          // realization while seeking so inspecting the same frame is stable.
+          if (emitter.rollRange) orientation.multiply(turn.setFromAxisAngle(forward, nativeRoll(emitter.rollRange)));
+          meshes.push({emitter, mesh, orientation});
         }
         root.add(group);
       }
@@ -225,5 +262,5 @@
     };
   }
 
-  global.MVStudioStageParticles = { apply };
+  global.MVStudioStageParticles = { apply, autoSeed, nativeRandom, nativeUnit };
 })(typeof window !== "undefined" ? window : globalThis);

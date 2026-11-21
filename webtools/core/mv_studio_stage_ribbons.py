@@ -4,6 +4,7 @@ import math
 from zlib import crc32
 
 from . import model_animation as animation, model_viewer as viewer
+from . import mv_studio_ribbon_shine
 from . import mv_studio_stage_motion as motion, mv_studio_stage_particles as particles
 from . import mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_rig import _authored_trs
@@ -210,16 +211,16 @@ def _prefab(objects, game, deadline):
     transform, fields = row[1]["Transform"]
     if len(fields["m_Children"]) != 5:
         return None
-    found, shine = {}, False
+    found, shine = {}, None
     for ref in fields["m_Children"]:
         game = title._transform_child(objects, transform, ref)
         if game is None:
             return None
         name = game.peek_name()
         if name == "shine":
-            if shine or title._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"}) is None:
+            if shine is not None or title._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"}) is None:
                 return None
-            shine = True
+            shine = game
             continue
         if name not in _RIBBONS or name in found:
             return None
@@ -227,7 +228,7 @@ def _prefab(objects, game, deadline):
         if mesh is None:
             return None
         found[name] = mesh
-    if not shine or found.keys() != set(_RIBBONS):
+    if shine is None or found.keys() != set(_RIBBONS):
         return None
     meshes, geometry, textures = zip(*(found[name] for name in _RIBBONS))
     if len({viewer._key(source) for source in geometry}) != 1 or len({viewer._key(tex) for tex in textures}) != 2:
@@ -238,7 +239,7 @@ def _prefab(objects, game, deadline):
     authored = _animation(objects, *parts["Animator"], paths, deadline)
     if authored is None:
         return None
-    return {"parent": _pose(fields), "animation": authored}, geometry[0], list(zip(meshes, textures))
+    return {"parent": _pose(fields), "animation": authored}, geometry[0], list(zip(meshes, textures)), shine
 
 
 def read(objects, mono, tracks, deadline):
@@ -246,6 +247,7 @@ def read(objects, mono, tracks, deadline):
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
     textures, indexed, cues, geometry = [], {}, [], None
+    shine_sources = []
     for track in tracks:
         source = controls.get(track["id"])
         if source is None or track.get("binding") or track.get("bindings") or motion._quality(track["label"]) != "stage_display":
@@ -270,7 +272,7 @@ def read(objects, mono, tracks, deadline):
                 original = _prefab(objects, source[0], deadline)
                 if original is None or event["duration"] > original[0]["animation"]["duration"]:
                     continue
-                cue, mesh, leaves = original
+                cue, mesh, leaves, shine = original
                 if len(cues) >= 2 or (geometry is not None and geometry[0] != viewer._key(mesh)):
                     return None
                 shape = geometry[1] if geometry is not None else _geometry(mesh, deadline)
@@ -293,6 +295,27 @@ def read(objects, mono, tracks, deadline):
                     textures.extend(pending)
                     cues.append({**cue, "trackId": track["id"], "eventId": event["id"], "meshes": meshes})
                     geometry = (viewer._key(mesh), shape)
+                    shine_sources.append(shine)
             except title._UNSUPPORTED:
                 continue
-    return {"geometry": geometry[1], "textures": textures, "cues": cues} if cues else None
+    if not cues:
+        return None
+    result = {"geometry": geometry[1], "textures": textures, "cues": cues}
+    try:
+        shines, texture = [], None
+        for cue, source in zip(cues, shine_sources):
+            row = mv_studio_ribbon_shine.read(objects, source, deadline)
+            if row is None or cue["parent"]["rotation"] != title._IDENTITY["rotation"]:
+                break
+            emitter, reader = row
+            if texture is not None and viewer._key(texture) != viewer._key(reader):
+                break
+            texture = reader
+            shines.append({**emitter, "trackId": cue["trackId"], "eventId": cue["eventId"], "parent": cue["parent"]})
+        else:
+            levels = particles._texture(texture, deadline)
+            if levels is not None:
+                result["shine"] = {"texture": levels, "cues": shines}
+    except title._UNSUPPORTED:
+        pass
+    return result

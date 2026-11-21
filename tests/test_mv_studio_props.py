@@ -63,11 +63,14 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                             self.assertEqual(glow["material"]["cull"], 0)
                             self.assertEqual(glow["size"], 1.5)
                             self.assertEqual(len(glow["geometry"]["positions"]), 4)
+                            self.assertEqual(tuple(glow["rollRange"]), (-1.570796251296997, 1.570796251296997))
                         elif track["label"].endswith("/flo_01-03_umbrella"):
                             umbrellas.append(round(clip["start"], 6))
                             emitter, = [item for item in template if not item.get("orbitY")]
                             self.assertEqual(emitter["birth"], 0)
                             self.assertEqual(emitter["material"]["cull"], 2)
+                            self.assertEqual(emitter["geometry"]["uv"], [[0, 0], [1, 0], [1, 1], [0, 1]])
+                            self.assertAlmostEqual(math.hypot(*emitter["geometry"]["positions"][0]), .5)
                             ring = [item for item in template if item.get("orbitY")]
                             self.assertEqual(len(ring), 6 if round(clip["start"], 6) == 75.016667 else 8)
                             self.assertTrue(all(item["birth"] == 0 and item["lifetime"] == 90 for item in ring))
@@ -93,6 +96,13 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                         self.assertEqual({channel["kind"] for channel in cue["animation"]["channels"]},
                                          {"translation", "overlayUV", "overlayTint", "visibility"})
                     self.assertEqual(ribbon_times, [(10.35, 48.933333), (59.283333, 38.6)])
+                    shine = ribbons["shine"]
+                    self.assertEqual([level["width"] for level in shine["texture"]],
+                                     [256 >> index for index in range(9)])
+                    self.assertEqual([item["eventId"] for item in shine["cues"]],
+                                     [item["eventId"] for item in ribbons["cues"]])
+                    self.assertEqual([item["lifetime"] for item in shine["cues"]], [[10, 13], [10, 10]])
+                    self.assertTrue(all(item["rate"] == 10 and item["cycle"] == 5 for item in shine["cues"]))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

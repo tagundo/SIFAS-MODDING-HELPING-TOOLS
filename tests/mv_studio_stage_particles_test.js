@@ -35,11 +35,26 @@ async function test() {
   const orbit = {...native, texture: 1, position: [2, .05, 0], orbitY: Math.PI / 2,
     color: {rgba8: {start: [189, 255, 128, 77], keys: [[0, 200, 100, 255, 20], [1, 90, 254, 0, 100]]}},
     material: {...native.material, premultiply: false}};
+  const tilt = 1.570796251296997;
+  const glow = {...native, rollRange: [-tilt, tilt], yaw: 0, yawSpeed: 0,
+    rotation: [-Math.sin(tilt / 2), 0, 0, Math.cos(tilt / 2)]};
   const descriptor = {textures: [Array.from({length:10}, (_, index) => level(512 >> index)),
     Array.from({length:9}, (_, index) => level(256 >> index))],
-    templates: [[native, orbit]], cues: [{trackId: "track", eventId: "first", template: 0},
+    templates: [[native, orbit, glow]], cues: [{trackId: "track", eventId: "first", template: 0},
       {trackId: "track", eventId: "second", template: 0}]};
-  const controller = await MVStudioStageParticles.apply(T, root, descriptor);
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const seeds = [2914, 1];
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true, value: {getRandomValues(words) { words[0] = seeds.shift(); return words; }},
+  });
+  let controller;
+  try {
+    controller = await MVStudioStageParticles.apply(T, root, descriptor);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "crypto", previous);
+    else delete globalThis.crypto;
+  }
+  assert.deepEqual(seeds, []);
   assert(controller);
   const [first, second] = root.children;
   assert.equal(first.children[0].geometry, second.children[0].geometry);
@@ -72,11 +87,17 @@ async function test() {
   assert.equal(orbitMesh.material.uniforms.uTexture.value.mipmaps.length, 9);
   assert.deepEqual(orbitMesh.material.uniforms.uTint.value.toArray(), [128,138,96,12].map(byte => byte / 255));
   assert.deepEqual(orbitMesh.material.defines, {});
+  const glowMesh = first.children[2];
+  const expectedGlow = new T.Quaternion().fromArray(glow.rotation).multiply(
+    new T.Quaternion().setFromAxisAngle(new T.Vector3(0, 0, 1), -.8231363296508789));
+  assert(glowMesh.quaternion.angleTo(expectedGlow) < 1e-6);
   controller.update(46.17, project);
   assert.equal(first.visible, false);
   assert.equal(second.visible, true);
+  assert(second.children[2].quaternion.angleTo(glowMesh.quaternion) > .1);
   controller.update(43.15, project);
   assert.equal(first.visible, true);
+  assert(glowMesh.quaternion.angleTo(expectedGlow) < 1e-6);
   assert(Math.abs(orbitMesh.position.x - 2 * Math.cos(angle)) < 1e-9);
   project.quality.values.stage_control = false;
   controller.update(43.15, project);

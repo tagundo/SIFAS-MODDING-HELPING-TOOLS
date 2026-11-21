@@ -15,11 +15,13 @@ _OPTIONAL_MODULES = {"SizeModule", "ColorModule"}
 _RING_MODULES = {"ShapeModule", "VelocityModule"}
 _CENTER = "kasa_loop"
 _RINGS = ("kasa_out_loop_01", "kasa_out_loop_02")
-# The stock mode-2 unit billboard uses XZ corners. Mirror X, reverse winding
-# and flip texture V to preserve the native corner/UV pairs in the GLB basis.
+# The stock horizontal scalar billboard treats size as its diagonal. Mirror
+# X, reverse winding and flip V to preserve the native corner/UV pairs.
+_HALF_SIDE = .3535533845424652
 _GEOMETRY = {
-    "positions": [[.5, 0, .5], [-.5, 0, .5], [-.5, 0, -.5], [.5, 0, -.5]],
-    "uv": [[0, 0], [0, 1], [1, 1], [1, 0]],
+    "positions": [[_HALF_SIDE, 0, _HALF_SIDE], [-_HALF_SIDE, 0, _HALF_SIDE],
+                  [-_HALF_SIDE, 0, -_HALF_SIDE], [_HALF_SIDE, 0, -_HALF_SIDE]],
+    "uv": [[0, 0], [1, 0], [1, 1], [0, 1]],
     "indices": [0, 2, 1, 0, 3, 2],
 }
 _PIVOT = dict(x=0, y=0, z=0)

@@ -353,5 +353,5 @@
       dispose
     };
   }
-  global.MVStudioTitle = { apply, validTexture, validMipChain, loadTexture, boundedCurve, gradientKeys, gradient };
+  global.MVStudioTitle = { apply, validTexture, validMipChain, loadTexture, boundedCurve, gradientKeys, gradient, neutralClip };
 })(typeof window !== "undefined" ? window : globalThis);

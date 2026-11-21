@@ -161,6 +161,29 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageParticles"], expected)
                 self.assertEqual(mv_studio._native(reopened), self.original)
 
+    def test_saved_ribbon_can_add_shine_without_replacing_meshes(self):
+        project = mv_studio._blank("Edited ribbon")
+        project["tracks"] = [{
+            "id": "ribbon", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/dis_par_01-02_obi",
+            "events": [{"id": "first", "start": 12, "duration": 30, "values": {}}],
+        }]
+        original = {"cues": [{"eventId": "first"}], "geometry": {"positions": [[0, 1, 2]]}}
+        shine = {"cues": [{"trackId": "ribbon", "eventId": "first"}]}
+        project["stageRibbons"] = original
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        new_ribbon = {"geometry": {"positions": [[2, 1, 0]]}}
+        for added in ({}, {"shine": shine}):
+            with self.subTest(has_shine=bool(added)), ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline",
+                return_value={"stageRibbons": {**new_ribbon, **added}},
+            ) as parse:
+                reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                self.assertEqual(reopened["stageRibbons"], {**original, **added})
+                self.assertEqual(reopened["tracks"], project["tracks"])
+                parse.assert_called_once_with(self.original, "Edited ribbon", preview_split=False,
+                                              preview_stage_title=True, preview_stage_ribbons=True)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")
