@@ -537,6 +537,7 @@ class _Scene:
             "skin_bones_unavailable": "Some bone transforms are unavailable. Those parts use their saved renderer placement.",
             "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
             "rig_unavailable": "This model uses a static preview because its rig could not be loaded.",
+            "stage_hidden_transform": "An animated stage mesh starts at zero scale and is hidden in this preview.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -1151,9 +1152,15 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 keywords["morph_weights"] = tree["m_BlendShapeWeights"]
                 keywords["deadline"] = deadline
             name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
-        except Exception:
+        except Exception as error:
             if auto_face:
                 faces.failed()
+                continue
+            if getattr(scene, "preview_stage", False) and str(error) in {
+                "A model skin contains a zero-scale transform.",
+                "The model contains a zero-scale transform.",
+            }:
+                scene.warn("stage_hidden_transform", game_name)
                 continue
             raise
         for warning in skin_warnings:
@@ -1308,6 +1315,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     from .model_faces import FacePlan, FACE_SECONDS, SavedFacePlatformMismatch
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
+    scene.preview_stage = bool((face_context or {}).get("_mv_stage"))
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:

@@ -146,7 +146,7 @@ async function ready(page) {
 
     const { context, page, errors } = await openPage(browser, { hash: 'gallery' });
     await ready(page);
-    assert.equal(await page.locator('.tab').count(), 2);
+    assert.deepEqual(await page.locator('.tab').evaluateAll(nodes => nodes.map(node => node.dataset.tab)), ['tools', 'viewer', 'mv']);
     assert.equal(await page.locator('.tab[data-tab="gallery"]').count(), 0);
     assert.equal(await page.evaluate(() => ElichikaNavigation.currentSection()), 'tools');
     assert(await page.locator('#tool-gallery-panel').isVisible());
@@ -157,11 +157,16 @@ async function ready(page) {
     await page.locator('#gallery-grid .gallery-view-model').click();
     await page.waitForFunction(() => ModelViewer.getState().loaded && !ModelViewer.getState().loading);
     assert.equal(await page.evaluate(() => ElichikaNavigation.currentSection()), 'viewer');
+    const modelId = await page.evaluate(() => ModelViewer.getState().modelId);
+    await page.locator('.tab[data-tab="mv"]').click();
+    assert.equal(await page.evaluate(() => [location.hash, MVStudio.getState().visible].join(':')), '#mv:true');
+    await page.locator('.tab[data-tab="viewer"]').click();
+    assert.equal(await page.evaluate(() => ModelViewer.getState().modelId), modelId);
     await page.locator('.tab[data-tab="tools"]').click();
     assert(await page.locator('#tool-gallery-panel').isVisible());
     assert.equal(await page.locator('#gallery-path').inputValue(), '/legacy original folder');
     assert.deepEqual(errors, []);
-    report.cases.push({ name: 'standalone-two-sections-and-legacy-gallery-to-viewer', status: 'PASS' });
+    report.cases.push({ name: 'standalone-three-sections-and-legacy-gallery-to-viewer', status: 'PASS' });
     await context.close();
     report.status = 'PASS';
   } catch (error) {

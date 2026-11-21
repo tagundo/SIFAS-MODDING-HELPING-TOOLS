@@ -31,12 +31,12 @@ const sectionNavigation = { ready: false, section: "tools", pending: null };
 
 function routeFromLocation() {
   const hash = window.location.hash.slice(1);
-  if (hash === "viewer") return { section: "viewer" };
+  if (hash === "viewer" || hash === "mv") return { section: hash };
   if (hash === "gallery" || hash === "textures") return { section: "tools", gallery: true };
   return { section: "tools" };
 }
 
-// A host keeps one live page for both native tabs. Calls made while i18n or
+// A host keeps one live page for native asset tabs. Calls made while i18n or
 // tools load are queued rather than recreating the viewer or dropping edits.
 sectionNavigation.section = routeFromLocation().section;
 const embedded = new URLSearchParams(window.location.search).get("embedded") === "1";
@@ -56,7 +56,7 @@ function notifyHostSection(event) {
 }
 
 function showSection(name, options) {
-  if (name !== "tools" && name !== "viewer") return false;
+  if (name !== "tools" && name !== "viewer" && name !== "mv") return false;
   const notify = !options || options.notify !== false;
   const changed = sectionNavigation.section !== name;
   sectionNavigation.section = name;
@@ -69,6 +69,7 @@ function showSection(name, options) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
   if (window.ModelViewer) window.ModelViewer.setVisible(name === "viewer");
+  if (window.MVStudio) window.MVStudio.setVisible(name === "mv");
   if (window.GameAssetPicker) GameAssetPicker.invalidate();
   // Replace only the known fragment. Selecting native tabs must not create
   // navigation entries, reload the document, or discard current form fields.
@@ -152,6 +153,7 @@ async function reloadForLang() {
     if (again) { state.currentTool = again; renderForm(); }
   }
   if (window.ModelViewer) window.ModelViewer.updateLanguage();
+  if (window.MVStudio) window.MVStudio.updateLanguage();
 }
 
 async function loadTools() {
@@ -238,6 +240,10 @@ async function init() {
     pickTextureProject: (onPick) => openPicker("path", onPick, "modded", undefined, { title: T("Choose texture project"), extensions: ["json"] }),
     nativeFilePicker: !!(window.ElichikaPlatform && ElichikaPlatform.supports("openFiles")),
   });
+  if (window.MVStudio) window.MVStudio.mount({
+    translate: T, language: () => state.lang,
+    pickFile: (onPick, title, extensions) => openPicker("path", onPick, "modded", undefined, { title, extensions }),
+  });
   const initial = sectionNavigation.pending || routeFromLocation();
   sectionNavigation.ready = true;
   if (initial.gallery) selectTool(TEXTURE_PREVIEWS_TOOL);
@@ -247,7 +253,11 @@ async function init() {
   if (window.ElichikaPlatform) ElichikaPlatform.bind({
     showViewer: () => switchTab("viewer", { native: true }),
     showTools: () => switchTab("tools", { native: true }),
+    showMV: () => switchTab("mv", { native: true }),
+    openMV: () => { if (sectionNavigation.section === "mv" && window.MVStudio) return window.MVStudio.open(); },
+    saveMV: () => { if (sectionNavigation.section === "mv" && window.MVStudio) return window.MVStudio.save(); },
     openModel: async (args) => {
+      if (!args.paths && sectionNavigation.section === "mv" && window.MVStudio) return window.MVStudio.open();
       const result = args.paths ? { paths: args.paths } : await ElichikaPlatform.request("openFiles", {
         multiple: true, extensions: ["unity", "zip", "bundle", "asset", "bytes"], title: T("Choose costume file"),
       });
@@ -256,6 +266,7 @@ async function init() {
       if (paths.length) return openModelViewer(paths);
     },
     saveModel: () => {
+      if (sectionNavigation.section === "mv" && window.MVStudio) return window.MVStudio.save();
       if (!$("#tab-viewer").classList.contains("active")) return;
       if (window.ModelViewer && typeof ModelViewer.saveMeshIfPending === "function" && ModelViewer.saveMeshIfPending()) return;
       const save = $("#viewer-save");

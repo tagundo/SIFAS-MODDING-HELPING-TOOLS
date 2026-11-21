@@ -78,7 +78,7 @@
       message.width = args.width;
     }
     if (action === "setEditorSurface") {
-      if (["tools", "viewer"].indexOf(args.editorSurface) < 0) return Promise.reject(new Error("Choose a valid editor view."));
+      if (["tools", "viewer", "mv"].indexOf(args.editorSurface) < 0) return Promise.reject(new Error("Choose a valid editor view."));
       message.editorSurface = args.editorSurface;
     }
     if (action === "setPanelSettings") {
@@ -89,7 +89,7 @@
       message.panelSettings = JSON.parse(JSON.stringify(args.panelSettings));
     }
     if (action === "setSection") {
-      if (["tools", "viewer"].indexOf(args.section) < 0 ||
+      if (["tools", "viewer", "mv"].indexOf(args.section) < 0 ||
           args.event !== undefined && ["ready", "change"].indexOf(args.event) < 0) {
         return Promise.reject(new Error("Choose an available app section."));
       }
@@ -106,7 +106,7 @@
     });
   }
   function perform(action, args) {
-    if (["openModel", "saveModel", "showViewer", "showTools"].indexOf(action) < 0 || !native || unloading) return false;
+    if (["openModel", "saveModel", "showViewer", "showTools", "showMV", "openMV", "saveMV"].indexOf(action) < 0 || !native || unloading) return false;
     if (!bindings) { if (queued.length < 8) queued.push({ action: action, args: args }); return true; }
     if (typeof bindings[action] !== "function") return false;
     try {
@@ -122,7 +122,7 @@
   function info() {
     return { platform: native ? "macos" : "browser", native: native,
       editorNavigation: supports("editorNavigation"),
-      editorSurface: native && ["tools", "viewer"].indexOf(description.editorSurface) >= 0 ? description.editorSurface : "tools",
+      editorSurface: native && ["tools", "viewer", "mv"].indexOf(description.editorSurface) >= 0 ? description.editorSurface : "tools",
       language: native && ["en", "ko", "ja"].indexOf(description.language) >= 0 ? description.language : "",
       viewerPanelWidth: native && validPanelWidth(description.viewerPanelWidth) ? description.viewerPanelWidth : 0,
       viewerFilesWidth: native && validFilesWidth(description.viewerFilesWidth) ? description.viewerFilesWidth : 0 };

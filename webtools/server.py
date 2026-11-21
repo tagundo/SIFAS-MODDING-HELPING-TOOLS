@@ -100,6 +100,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_motion_catalog()
             if path.startswith("/api/viewer/game/motions/audio/"):
                 return self._api_viewer_motion_audio(path.rsplit("/", 1)[1])
+            if path == "/api/mv-studio/catalog":
+                return self._api_mv_studio_catalog()
+            if path == "/api/mv-studio/chart-templates":
+                return self._api_mv_chart_templates()
+            if path.startswith("/api/mv-studio/media/"):
+                from webtools.core import mv_studio
+                try:
+                    result = mv_studio.media(path.rsplit("/", 1)[1])
+                except FileNotFoundError:
+                    return self._send_json({"error": "MV preview asset unavailable."}, status=404)
+                return self._serve_preview_media(*result)
             if path.startswith("/api/viewer/edit/result/"):
                 return self._api_viewer_edit_result(path[len("/api/viewer/edit/result/"):])
             if path.startswith("/api/jobs/") and path.endswith("/events"):
@@ -123,6 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_costume_platform_match()
             if path == "/api/viewer/game/motions/import":
                 return self._api_viewer_motion_import()
+            if path.startswith("/api/mv-studio/"):
+                return self._api_mv_studio(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
                 return self._api_viewer_mesh(path.rsplit("/", 1)[1])
             if path in ("/api/viewer/texture/inspect", "/api/viewer/texture/data", "/api/viewer/texture/decode"):
@@ -169,12 +182,15 @@ class Handler(BaseHTTPRequestHandler):
             result = None
         if not result:
             return self._send_json({"error": "audio expired"}, status=404)
-        path, content_type = result
+        return self._serve_preview_media(*result)
+
+    def _serve_preview_media(self, path, content_type):
+        import re
         size = path.stat().st_size
         start, end, status = 0, size - 1, 200
         requested = self.headers.get("Range")
         if requested:
-            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
+            match = re.fullmatch(r"bytes=(\d{0,18})-(\d{0,18})", requested.strip())
             if not match or not any(match.groups()):
                 self.send_response(416)
                 self.send_header("Content-Range", "bytes */%d" % size)
@@ -211,6 +227,117 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
+
+    def _api_mv_studio_catalog(self):
+        from sqlite3 import Error as SQLiteError
+        from webtools.core import mv_studio_game
+        query = self._query()
+        try:
+            if (len(urlsplit(self.path).query) > 1024 or set(query) - {"region", "platform", "search", "lang"}
+                    or any(len(values) != 1 for values in query.values())):
+                raise ValueError("Choose a valid MV search.")
+            return self._send_json(mv_studio_game.catalog(Path.cwd(), language=self._lang(),
+                region=query.get("region", ["gl"])[0], platform=query.get("platform", ["android"])[0],
+                search=query.get("search", [""])[0]))
+        except (OSError, ValueError, SQLiteError) as error:
+            return self._send_json({"error": str(error)}, status=400)
+
+    def _api_mv_studio(self, action):
+        from sqlite3 import Error as SQLiteError
+        from webtools.core import mv_studio
+        try:
+            if action == "game":
+                data = self._viewer_feature_request({"region", "platform", "liveId", "assetId"}, token=False,
+                                                    optional_fields={"download"})
+                return self._send_json(mv_studio.load_game(Path.cwd(), language=self._lang(),
+                    region=data["region"], platform=data["platform"], live_id=data["liveId"],
+                    asset_id=data["assetId"], download=data.get("download", False)))
+            if action == "open":
+                data = self._viewer_feature_request({"path"}, token=False)
+                return self._send_json(mv_studio.open_project(data["path"]))
+            if action == "asset":
+                data = self._viewer_feature_request({"path", "kind"}, token=False)
+                return self._send_json(mv_studio.import_asset(data["path"], data["kind"]))
+            if action in {"save", "export-timeline"}:
+                data = self._viewer_feature_request({"project"}, token=False, max_bytes=mv_studio.PROJECT_BYTES + 4096,
+                                                    optional_fields={"name"} if action == "save" else ())
+                result = mv_studio.save(data["project"], data.get("name")) if action == "save" else mv_studio.export_timeline(data["project"])
+                return self._send_json(result)
+            if action in {"register", "charts"}:
+                return self._api_mv_song_update(action)
+            return self._send_json({"error": "not found"}, status=404)
+        except PermissionError as error:
+            return self._send_json({"error": str(error)}, status=403)
+        except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
+            return self._send_json({"error": str(error)}, status=400)
+
+    def _api_mv_chart_templates(self):
+        from sqlite3 import Error as SQLiteError
+        try:
+            from mv_studio_live import chart_templates
+            query = self._query()
+            if (len(urlsplit(self.path).query) > 512 or {"region", "liveId"} - set(query)
+                    or set(query) - {"region", "liveId", "lang"}
+                    or any(len(values) != 1 for values in query.values())):
+                raise ValueError("Choose a registered MV.")
+            rows = chart_templates(Path.cwd(), region=query["region"][0], live_id=int(query["liveId"][0]))
+            names = {10: ("Beginner", "초급", "初級"), 20: ("Intermediate", "중급", "中級"),
+                     30: ("Advanced", "상급", "上級"), 40: ("Advanced+", "상급+", "上級+"),
+                     50: ("Challenge", "챌린지", "チャレンジ")}
+            index = {"ko": 1, "ja": 2}.get(self._lang(), 0)
+            response = []
+            for row in rows:
+                identity, difficulty = row["live_difficulty_id"], row["live_difficulty_type"]
+                title = names.get(difficulty, (str(difficulty),) * 3)[index]
+                response.append({"id": identity, "difficultyType": difficulty, "label": f"{title} ({identity})"})
+            return self._send_json({"templates": response})
+        except ImportError:
+            return self._send_json({"error": "MV registration requires the Elichika server app."}, status=501)
+        except (OSError, ValueError, SQLiteError) as error:
+            return self._send_json({"error": str(error)}, status=400)
+
+    def _api_mv_song_update(self, action):
+        from webtools.core import mv_studio
+        try:
+            import database_maintenance
+            from mv_studio_live import attach_live_charts, register_mv_only
+        except ImportError:
+            return self._send_json({"error": "MV registration requires the Elichika server app."}, status=501)
+        self._require_local_tools_host("Open 3D MV at the local app address before changing the game catalog.")
+        root = Path.cwd()
+        try:
+            if action == "register":
+                data = self._viewer_feature_request({"region", "sourceLiveId", "title"}, token=False,
+                                                    optional_fields={"assetId", "timelinePaths", "audioAcbPath", "audioAwbPath"})
+                timelines = data.get("timelinePaths", {})
+                if not isinstance(timelines, dict) or set(timelines) - {"android", "ios"}:
+                    raise ValueError("Choose an Android or iOS timeline file.")
+                overrides = {"timeline_paths": {key: mv_studio._path(value) for key, value in timelines.items()}} if timelines else {}
+                for field, argument in (("audioAcbPath", "audio_acb"), ("audioAwbPath", "audio_awb")):
+                    if field in data:
+                        overrides[argument] = mv_studio._path(data[field])
+                with database_maintenance.guard(root):
+                    result = register_mv_only(root, region=data["region"], source_live_id=data["sourceLiveId"],
+                                              title=data["title"], asset_3d_id=data.get("assetId"), **overrides)
+            else:
+                data = self._viewer_feature_request({"region", "liveId", "charts"}, token=False)
+                entries = data["charts"]
+                if not isinstance(entries, dict) or not 1 <= len(entries) <= 6:
+                    raise ValueError("Provide one or more native chart files.")
+                charts = {}
+                for key, entry in entries.items():
+                    if (not isinstance(entry, dict) or set(entry) != {"path", "template_difficulty_id"}
+                            or not key.isdecimal() or not 1 <= len(key) <= 2 or key.startswith("0")):
+                        raise ValueError("Provide a matching chart and difficulty template.")
+                    charts[int(key)] = {"path": mv_studio._path(entry["path"]),
+                                        "template_difficulty_id": entry["template_difficulty_id"]}
+                with database_maintenance.guard(root):
+                    result = attach_live_charts(root, region=data["region"], live_id=data["liveId"], charts=charts)
+        except (database_maintenance.BusyError, database_maintenance.LockError) as error:
+            return self._send_json({"error": str(error)}, status=409)
+        return self._send_json({"liveId": result["live_id"], "assetId": result["asset_3d_id"],
+                                "mvOnly": result["mv_only"], "title": result["title"],
+                                "difficulties": result["difficulties"], "restartRequired": True})
 
     def _serve_file(self, fpath: Path, content_type=None):
         if not fpath.is_file():
@@ -843,10 +970,8 @@ class Handler(BaseHTTPRequestHandler):
         except TimeoutError:
             return self._send_json({"error": "Another model is saving. Try again shortly."}, status=503)
 
-    def _viewer_mod_request(self, fields, *, optional_fields=(), max_bytes=512 * 1024):
-        """Validate app-origin writes; Mod installation accepts an opaque token."""
+    def _require_local_tools_host(self, message):
         import ipaddress
-        import re
         try:
             if len(self.headers.get_all("Host", [])) != 1:
                 raise ValueError()
@@ -864,7 +989,12 @@ class Handler(BaseHTTPRequestHandler):
             if not allowed_host:
                 raise ValueError()
         except ValueError:
-            raise PermissionError("Open the editor at its local app address before creating or adding a Mod ZIP.") from None
+            raise PermissionError(message) from None
+
+    def _viewer_mod_request(self, fields, *, optional_fields=(), max_bytes=512 * 1024):
+        """Validate app-origin writes; Mod installation accepts an opaque token."""
+        import re
+        self._require_local_tools_host("Open the editor at its local app address before creating or adding a Mod ZIP.")
         origins = self.headers.get_all("Origin", [])
         if len(origins) > 1 or self.headers.get("Sec-Fetch-Site") == "cross-site":
             raise PermissionError("Open the editor from this app before creating or adding a Mod ZIP.")

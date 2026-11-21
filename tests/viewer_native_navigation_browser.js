@@ -36,7 +36,7 @@ async function startServer() {
 async function hostNavigate(page, surface) {
   await page.evaluate(surface => {
     window.__nativeSurface = surface; ElichikaDesktop.editorSurface = surface;
-    ElichikaPlatform.perform(surface === 'viewer' ? 'showViewer' : 'showTools');
+    ElichikaPlatform.perform({ viewer: 'showViewer', tools: 'showTools', mv: 'showMV' }[surface]);
   }, surface);
   await page.waitForFunction(surface => document.getElementById('tab-' + surface).classList.contains('active'), surface);
 }
@@ -76,7 +76,7 @@ async function run() {
     await page.goto(server.url);
     await page.waitForFunction(() => document.querySelector('#tool-list [data-id="texture_previews"]') && ElichikaPlatform.info().editorNavigation);
     assert(!await page.locator('body > header').isVisible(), 'Native sidebar replaces duplicate web header');
-    assert.equal(await page.locator('.tab').count(), 2);
+    assert.deepEqual(await page.locator('.tab').evaluateAll(nodes => nodes.map(node => node.dataset.tab)), ['tools', 'viewer', 'mv']);
     assert.equal(await page.locator('.tab[data-tab=gallery]').count(), 0);
     assert(await page.locator('#tab-tools').isVisible());
     await page.locator('#tool-list [data-id=texture_previews]').click();
@@ -115,6 +115,15 @@ async function run() {
       await hostNavigate(page, 'viewer');
       assert.deepStrictEqual(await retainedState(page), before, 'Native surface changes retain model, camera, body, playhead, source and panel preferences');
     }
+    await hostNavigate(page, 'mv');
+    assert(await page.locator('#tab-mv .mv-timeline').isVisible());
+    assert(!await page.evaluate(() => ModelViewer.getState().visible));
+    await page.evaluate(() => ElichikaNavigation.showSection('viewer'));
+    await page.waitForFunction(() => __nativeSurface === 'viewer');
+    assert.deepStrictEqual(await retainedState(page), before, 'The 3D MV tab preserves the previous model session');
+    await page.evaluate(() => ElichikaNavigation.showSection('mv'));
+    await page.waitForFunction(() => __nativeSurface === 'mv' && location.hash === '#mv');
+    await hostNavigate(page, 'viewer');
     assert.equal(prepares.length, prepareCount, 'Navigation never reloads the model');
     await page.locator('#viewer-fullscreen').click();
     await page.waitForFunction(() => ModelViewer.getState().layout.fullscreen === 'native');
@@ -131,6 +140,7 @@ async function run() {
     const mesh = await page.locator('#viewer-mesh-modify-select option').evaluateAll(options => options.find(option => option.value).value);
     await page.locator('#viewer-mesh-modify-select').selectOption(mesh);
     await page.waitForFunction(() => !document.getElementById('viewer-mesh-modify-select-vertex').disabled);
+    await page.locator('#viewer-mesh-modify [data-uv-settings]').click();
     await page.locator('#viewer-mesh-modify-vertex').fill('0'); await page.locator('#viewer-mesh-modify-select-vertex').click();
     for (const [axis, value] of [['X', '.2'], ['Y', '.8'], ['Z', '-.1']]) await page.locator('#viewer-mesh-modify [data-mesh-position-axis=' + axis + ']').fill(value);
     await page.locator('#viewer-mesh-modify-position-set').click();
@@ -163,9 +173,11 @@ async function run() {
     await phone.goto(server.url); await phone.waitForSelector('#tool-list [data-id=texture_previews]');
     assert(await phone.locator('body > header').isVisible());
     assert(await phone.locator('.tab[data-tab=tools]').isVisible()); assert(await phone.locator('.tab[data-tab=viewer]').isVisible());
+    assert(await phone.locator('.tab[data-tab=mv]').isVisible());
     await phone.locator('#tool-list [data-id=texture_previews]').click(); assert(await phone.locator('#gallery-browse').isVisible());
     await phone.locator('.tab[data-tab=viewer]').click(); assert(await phone.locator('#tab-viewer').isVisible());
-    report.cases.push({ name: 'browser and Android layout', twoWebTabs: true, galleryInToolList: true, nativeHeaderUnaffected: true });
+    await phone.locator('.tab[data-tab=mv]').click(); assert(await phone.locator('#tab-mv').isVisible());
+    report.cases.push({ name: 'browser and Android layout', threeWebTabs: true, galleryInToolList: true, nativeHeaderUnaffected: true });
     assert.deepStrictEqual(errors, []); report.status = 'PASS';
   } catch (error) { report.status = 'FAIL'; report.error = String(error.stack || error); throw error; }
   finally { if (browser) await browser.close(); if (server) { server.child.kill(); server.log.end(); } fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify({ status: report.status, evidence })); }

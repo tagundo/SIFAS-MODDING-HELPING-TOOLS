@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/texture-panel-expand.css"/>
   <link rel="stylesheet" href="/static/viewer-interaction-tools.css"/>
   <link rel="stylesheet" href="/static/viewer-signed-inputs.css"/>
+  <link rel="stylesheet" href="/static/mv-studio.css"/>
 </head>
 <body>
   <header id="asset-tools-header">
@@ -17,6 +18,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="tools" data-i18n="Tools">Tools</button>
       <button class="tab" data-tab="viewer" data-i18n="3D model">3D model</button>
+      <button class="tab" data-tab="mv" data-i18n="3D MV">3D MV</button>
     </nav>
     <label class="lang-pick">
       <span data-i18n="Language">Language</span>
@@ -437,6 +439,88 @@
       </div>
     </section>
 
+    <section id="tab-mv" class="tab-panel" aria-labelledby="mv-project-title">
+      <div class="mv-toolbar">
+        <h2 id="mv-project-title" data-i18n="3D MV">3D MV</h2>
+        <div class="mv-controls">
+          <button id="mv-import-game" type="button" data-i18n="Load MV from game">Load MV from game</button>
+          <button id="mv-open" type="button" data-i18n="Open mod or project">Open mod or project</button>
+          <button id="mv-save" type="button" data-i18n="Save MV project" disabled>Save MV project</button>
+          <button id="mv-export-timeline" type="button" data-i18n="Export native timeline" hidden>Export native timeline</button>
+          <details class="mv-panel-menu" id="mv-panel-menu">
+            <summary data-i18n="Panel settings">Panel settings</summary>
+            <div id="mv-panel-options"></div>
+          </details>
+        </div>
+      </div>
+      <p id="mv-status" class="mv-status" role="status" hidden></p>
+      <div id="mv-save-result" class="mv-save-result" hidden></div>
+      <div class="mv-workspace" id="mv-workspace">
+        <div class="mv-preview">
+          <div id="mv-scene" class="mv-scene"></div>
+          <p id="mv-empty-preview" class="mv-empty-preview" data-i18n="Open an MV to preview its stage and timeline.">Open an MV to preview its stage and timeline.</p>
+          <div class="mv-preview-controls" id="mv-preview-controls" hidden>
+            <label><span class="sr-only" data-i18n="Preview camera">Preview camera</span><select id="mv-camera-mode">
+              <option value="live" data-i18n="Game camera">Game camera</option>
+              <option value="orbit" data-i18n="Free camera">Free camera</option>
+            </select></label>
+            <button id="mv-frame-scene" type="button" data-i18n="Frame scene">Frame scene</button>
+          </div>
+        </div>
+        <aside class="mv-inspector" id="mv-inspector">
+          <details open id="mv-assets" data-mv-panel="assets">
+            <summary data-i18n="MV assets">MV assets</summary>
+            <div class="mv-panel-content" id="mv-asset-list"></div>
+          </details>
+          <details id="mv-performers" data-mv-panel="performers">
+            <summary data-i18n="Performers">Performers</summary>
+            <div class="mv-panel-content" id="mv-performer-fields"></div>
+          </details>
+          <details id="mv-soundtrack" data-mv-panel="soundtrack">
+            <summary data-i18n="Soundtrack">Soundtrack</summary>
+            <div class="mv-panel-content" id="mv-soundtrack-fields"></div>
+          </details>
+          <details open id="mv-tracks" data-mv-panel="tracks">
+            <summary data-i18n="Tracks">Tracks</summary>
+            <div class="mv-panel-content" id="mv-track-controls"></div>
+          </details>
+          <details open id="mv-events" data-mv-panel="events">
+            <summary data-i18n="Selected event">Selected event</summary>
+            <div class="mv-panel-content" id="mv-event-fields"></div>
+          </details>
+          <details id="mv-quality" data-mv-panel="quality">
+            <summary data-i18n="MV quality settings">MV quality settings</summary>
+            <div class="mv-panel-content" id="mv-quality-fields"></div>
+          </details>
+          <details id="mv-registration" data-mv-panel="registration" hidden>
+            <summary data-i18n="Register in game">Register in game</summary>
+            <div class="mv-panel-content" id="mv-registration-fields"></div>
+          </details>
+          <details id="mv-warnings" data-mv-panel="warnings" hidden>
+            <summary data-i18n="Import notes">Import notes</summary>
+            <ul class="mv-panel-content" id="mv-warning-list"></ul>
+          </details>
+        </aside>
+        <section class="mv-timeline" aria-labelledby="mv-timeline-label">
+          <div class="mv-timeline-toolbar">
+            <h3 id="mv-timeline-label" data-i18n="MV timeline">MV timeline</h3>
+            <div class="mv-controls">
+              <button id="mv-rewind" type="button" data-i18n="Go to start" disabled>Go to start</button>
+              <button id="mv-play" type="button" data-i18n="Play" disabled>Play</button>
+              <output id="mv-time">0:00.00 / 0:00.00</output>
+            </div>
+            <label class="mv-seek-label"><span data-i18n="Playhead">Playhead</span><input id="mv-seek" type="range" min="0" max="0" value="0" step="0.001" disabled></label>
+            <label><span data-i18n="Timeline scale">Timeline scale</span><select id="mv-zoom">
+              <option value="fit" data-i18n="Fit to width">Fit to width</option>
+              <option value="16">16 px/s</option><option value="48">48 px/s</option><option value="96">96 px/s</option>
+            </select></label>
+          </div>
+          <div class="mv-timeline-scroll" id="mv-timeline-scroll">
+            <div class="mv-timeline-grid" id="mv-timeline-grid"></div>
+          </div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <!-- run console (shared) -->
@@ -455,6 +539,22 @@
   </div>
 
   <dialog id="viewer-game-assets-dialog" class="viewer-game-assets-dialog" aria-labelledby="viewer-game-assets-title"></dialog>
+  <dialog id="mv-game-picker" class="viewer-game-assets-dialog mv-dialog" aria-labelledby="mv-game-picker-title">
+    <div class="modal-head">
+      <h2 id="mv-game-picker-title" data-i18n="Load MV from game">Load MV from game</h2>
+      <button id="mv-game-close" type="button" class="ghost" data-i18n="Close">Close</button>
+    </div>
+    <div class="viewer-game-assets-fields">
+      <label><span data-i18n="Game region">Game region</span><select id="mv-game-region"></select></label>
+      <label><span data-i18n="Bundle platform">Bundle platform</span><select id="mv-game-platform"></select></label>
+      <label><span data-i18n="Search MVs">Search MVs</span><input id="mv-game-search" type="search" maxlength="120"></label>
+      <label><span data-i18n="Song">Song</span><select id="mv-game-song"></select></label>
+      <label><span data-i18n="MV variant">MV variant</span><select id="mv-game-variant"></select></label>
+    </div>
+    <label class="mv-check"><input id="mv-game-download" type="checkbox"><span data-i18n="Download missing assets">Download missing assets</span></label>
+    <p id="mv-game-status" class="mv-status" role="status"></p>
+    <div class="viewer-game-assets-actions"><button id="mv-game-load" type="button" class="viewer-primary" data-i18n="Load MV" disabled>Load MV</button></div>
+  </dialog>
 
   <!-- file picker modal -->
   <div id="picker" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="picker-title">
@@ -510,6 +610,8 @@
   <script src="/static/viewer-texture-tools.js"></script>
   <script src="/static/viewer-interaction-tools.js"></script>
   <script src="/static/model-viewer.js"></script>
+  <script src="/static/mv-studio-scene.js"></script>
+  <script src="/static/mv-studio.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/viewer-game-assets.js"></script>
   <script src="/static/viewer-native-pcm-player.js"></script>
