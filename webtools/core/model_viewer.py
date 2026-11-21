@@ -34,6 +34,7 @@ MAX_UNPACKED_BYTES = 192 * 1024 * 1024
 MAX_VERTICES = 250_000
 MAX_TRIANGLES = 500_000
 MAX_MESHES = 128
+MAX_NATIVE_STAGE_EFFECT_MESHES = 192
 MAX_TEXTURE_PIXELS = 32 * 1024 * 1024
 MAX_GLB_BYTES = 64 * 1024 * 1024
 MAX_CACHE_BYTES = 64 * 1024 * 1024
@@ -1203,6 +1204,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from .mv_studio_stage_nodes import StageNodes
 
         stage_nodes = StageNodes(scene, glb, scene.stage_motion_bindings)
+    # Native stage effects retain dormant renderers driven by authored animation.
+    animated_effect = stage_nodes is not None and stage_nodes.roots and getattr(scene, "native_stage_effect", False)
+    mesh_limit = MAX_NATIVE_STAGE_EFFECT_MESHES if animated_effect else MAX_MESHES
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_materials, mv_studio_stage_overlay
@@ -1359,7 +1363,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             scene.warn(warning, game_name)
         if not any(map(len, submeshes)):
             continue
-        if scene.stats["meshes"] + 1 > MAX_MESHES or scene.stats["vertices"] + len(positions) > MAX_VERTICES \
+        if scene.stats["meshes"] + 1 > mesh_limit or scene.stats["vertices"] + len(positions) > MAX_VERTICES \
                 or scene.stats["triangles"] + sum(map(len, submeshes)) > MAX_TRIANGLES:
             if auto_face:
                 faces.failed()
@@ -1599,6 +1603,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     scene, glb = _Scene(env, deadline), _Glb()
     scene.preview_stage = bool((face_context or {}).get("_mv_stage"))
     scene.stage_motion_bindings = (face_context or {}).get("_mv_stage_motion_bindings", ())
+    scene.native_stage_effect = (face_context or {}).get("_mv_native_stage_effect") is True
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:

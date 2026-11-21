@@ -114,10 +114,54 @@
     return values.every(Number.isFinite) ? values : null;
   }
 
-  function beatAt(seconds, sync) {
+  function prepareBeatClock(sync) {
     if (!Number.isFinite(sync?.bpm) || sync.bpm <= 0 ||
         !Number.isFinite(sync.startSample) || !Number.isFinite(sync.baseRate) || sync.baseRate <= 0) return null;
-    return Math.max(0, seconds - sync.startSample / sync.baseRate) * sync.bpm / 60;
+    const { bpm, startSample, baseRate } = sync;
+    if (!Array.isArray(sync.segments) || sync.segments.length < 2) return { bpm, startSample, baseRate };
+    // Saved projects may supply their own stage metadata.
+    if (sync.segments.length > 256) return null;
+    const regions = [];
+    for (const region of sync.segments) {
+      if (!Number.isFinite(region?.bpm) || region.bpm <= 0 || region.bpm > 1000 ||
+          !Number.isSafeInteger(region.startSample) || !Number.isSafeInteger(region.endSample) ||
+          region.startSample < 0 || region.endSample <= region.startSample ||
+          !Number.isInteger(region.numBeats) || region.numBeats < 2 || region.numBeats > 32) return null;
+      const previous = regions[regions.length - 1];
+      if (previous && (region.startSample !== previous.endSample + 1 || region.numBeats !== previous.numBeats)) return null;
+      regions.push({
+        bpm: region.bpm, startSample: region.startSample, endSample: region.endSample, numBeats: region.numBeats,
+        periodMs: Math.fround(Math.fround(60 / region.bpm) * 1000),
+      });
+    }
+    return { baseRate, regions };
+  }
+
+  function beatAt(seconds, clock) {
+    if (!clock) return null;
+    const { baseRate, regions } = clock;
+    if (regions) {
+      let previousIndex = -1, beat = 0;
+      const sample = Math.floor(seconds * baseRate);
+      for (const region of regions) {
+        if (sample < region.startSample) break;
+        const elapsed = (Math.min(sample, region.endSample) - region.startSample) / baseRate;
+        const elapsedMs = Math.floor(Math.fround(Math.fround(elapsed) * 1000));
+        const periodMs = region.periodMs;
+        const count = Math.floor(elapsedMs / periodMs);
+        // CRI counts from each region's start. Its callback keeps the
+        // previous clock when the new region begins on the same beat index.
+        if (count > 0 || previousIndex !== 0) {
+          const onset = count > 0 ? Math.ceil(count * periodMs) / 1000 : 0;
+          const origin = region.startSample / baseRate + onset;
+          beat = count + Math.max(0, seconds - origin) * region.bpm / 60;
+        }
+        if (sample <= region.endSample) break;
+        previousIndex = count % region.numBeats;
+      }
+      return beat;
+    }
+    return Math.max(0, seconds - clock.startSample / baseRate) * clock.bpm / 60;
   }
 
   function paletteFor(values, project) {
@@ -194,6 +238,7 @@
 
   function apply(T, root) {
     const members = [];
+    let checkedClock, clock = null;
     root.traverse((node) => {
       const meta = node.geometry?.userData?.mvPenlight;
       if (!node.isMesh || !meta?.bindingSuffix || !node.material?.map ||
@@ -209,6 +254,12 @@
     if (!members.length) return null;
 
     function update(seconds, project) {
+      const timing = project?.stage?.beatSync;
+      if (timing !== checkedClock) {
+        checkedClock = timing;
+        clock = prepareBeatClock(timing);
+      }
+      const beat = beatAt(seconds, clock);
       for (const member of members) {
         const { node, original, shader, meta, base, frustumCulled } = member;
         if (member.registration !== project) {
@@ -236,7 +287,6 @@
           shader.visible = false;
           continue;
         }
-        const beat = beatAt(seconds, project?.stage?.beatSync);
         if (!constantInput || member.inputs !== constantInput) {
           const { fields, palette } = mixInputs(inputs, project);
           const mode = fields?.swingMode;
@@ -289,7 +339,11 @@
 
     return {
       update,
-      invalidate() { for (const member of members) member.registration = null; },
+      invalidate() {
+        checkedClock = undefined;
+        clock = null;
+        for (const member of members) member.registration = null;
+      },
       dispose() {
         for (const { node, original, shader, frustumCulled } of members) {
           node.material = original;

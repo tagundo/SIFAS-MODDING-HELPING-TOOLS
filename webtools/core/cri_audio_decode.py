@@ -18,6 +18,7 @@ MAX_ACB_BYTES = 32 * 1024 * 1024
 MAX_AWB_BYTES = 128 * 1024 * 1024
 MAX_PCM_BYTES = 256 * 1024 * 1024
 MAX_ROWS = 65536
+MAX_BEAT_SYNC_REGIONS = 256
 SIFAS_HCA_KEY = 6498535309877346413
 _RESOURCE = Path(__file__).parent / "resources" / "cri_hca"
 
@@ -131,22 +132,31 @@ def inspect_beat_sync(acb, cue):
             or names[0].get("CueIndex") != 0 or cues[0].get("ReferenceType") != 3):
         return None
     rows = table("BeatSyncInfoTable")
-    if len(rows) != 1:
+    if not 0 < len(rows) <= MAX_BEAT_SYNC_REGIONS:
         return None
-    item = rows[0]
-    bpm = item.get("Bpm")
-    beats, denominator, rate, start, end, flags = (
-        item.get(field) for field in ("NumBeats", "BeatDenominator", "BaseRate",
-                                      "StartSample", "EndSample", "SyncBeatFlags")
-    )
-    if (type(bpm) not in (int, float) or not math.isfinite(bpm) or not 0 < bpm <= 1000
-            or any(type(value) is not int for value in (beats, denominator, rate, start, end, flags))
-            or not 1 <= beats <= 32 or denominator not in (1, 2, 4, 8, 16, 32)
-            or not 8_000 <= rate <= 192_000 or not 0 <= start < end <= rate * 3600
-            or flags & ((1 << beats) - 1) != (1 << beats) - 1):
-        return None
-    return {"bpm": bpm, "numBeats": beats, "beatDenominator": denominator, "baseRate": rate,
-            "startSample": start, "endSample": end}
+    regions = []
+    for item in rows:
+        bpm = item.get("Bpm")
+        beats, denominator, rate, start, end, flags = (
+            item.get(field) for field in ("NumBeats", "BeatDenominator", "BaseRate",
+                                          "StartSample", "EndSample", "SyncBeatFlags")
+        )
+        if (type(bpm) not in (int, float) or not math.isfinite(bpm) or not 0 < bpm <= 1000
+                or any(type(value) is not int for value in (beats, denominator, rate, start, end, flags))
+                or not 1 <= beats <= 32 or denominator not in (1, 2, 4, 8, 16, 32)
+                or not 8_000 <= rate <= 192_000 or not 0 <= start < end <= rate * 3600
+                or flags & ((1 << beats) - 1) != (1 << beats) - 1):
+            return None
+        if regions:
+            previous = regions[-1]
+            # Region starts and ends are inclusive sample positions in CRI.
+            if (start != previous["endSample"] + 1 or beats < 2
+                    or (beats, denominator, rate) !=
+                    (previous["numBeats"], previous["beatDenominator"], previous["baseRate"])):
+                return None
+        regions.append({"bpm": bpm, "numBeats": beats, "beatDenominator": denominator, "baseRate": rate,
+                        "startSample": start, "endSample": end})
+    return {**regions[0], "segments": regions} if len(regions) > 1 else regions[0]
 
 
 def inspect_cues(acb):

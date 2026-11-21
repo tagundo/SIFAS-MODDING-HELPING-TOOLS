@@ -177,7 +177,8 @@ def _path(value):
     return path
 
 
-def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=()):
+def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
+             native_stage_effect=False):
     models = [path, *companions]
     key = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
@@ -185,7 +186,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         # Game stage previews depend on one exact input. Performer previews
         # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
-               tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings))
+               tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings),
+               native_stage_effect)
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
@@ -198,7 +200,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
-                      "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer},
+                      "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer,
+                      "_mv_native_stage_effect": native_stage_effect},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
@@ -464,7 +467,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     continue
                 try:
                     bindings = project.get("stageMotion", {}).get("bindings", ()) if row is effect_row else ()
-                    row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings)
+                    row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings,
+                                                    native_stage_effect=row is effect_row)
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):

@@ -81,6 +81,17 @@ class CriTableTests(unittest.TestCase):
         self.assertIsNone(cri.inspect_beat_sync(cue_bank([dict(source, SyncBeatFlags=1)]), "original-tone"))
         self.assertIsNone(cri.inspect_beat_sync(original_acb(), "original-tone"))
 
+        following = dict(source, Bpm=70, StartSample=480001, EndSample=520000)
+        self.assertEqual(cri.inspect_beat_sync(cue_bank([source, following]), "original-tone"), {
+            **cri.inspect_beat_sync(raw, "original-tone"),
+            "segments": [cri.inspect_beat_sync(cue_bank([region]), "original-tone")
+                         for region in (source, following)],
+        })
+        for unsupported in (dict(following, StartSample=480002), dict(following, NumBeats=3),
+                            dict(following, BeatDenominator=8), dict(following, BaseRate=44100)):
+            with self.subTest(unsupported=unsupported):
+                self.assertIsNone(cri.inspect_beat_sync(cue_bank([source, unsupported]), "original-tone"))
+
     def test_exact_cue_name_and_id_follow_synth_to_distinct_awb_id(self):
         result = cri.inspect_cues(original_acb())
         self.assertEqual(result["sheet"], "original-sheet")

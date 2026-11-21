@@ -66,6 +66,31 @@ assert.equal(light.material.visible, false, "no authored contribution during a g
 uniforms(1);
 assert.equal(light.material.visible, true);
 
+const region = (bpm, startSample, endSample) => ({ bpm, startSample, endSample, numBeats: 4, baseRate: 10000 });
+const regions = [region(120, 0, 22999), region(60, 23000, 28999), region(120, 29000, 42999),
+  region(60, 43000, 66999)];
+project.stage.beatSync = { ...regions[0], segments: regions };
+const animated = clip(0, 10, 2, 1, [0, 0, 0]);
+project.tracks[0].events = [animated];
+preview.invalidate();
+assert.equal(uniforms(2.25).uBeat.value, 4.5);
+assert.equal(uniforms(2.5).uBeat.value, 5, "same-index transition retains the previous callback");
+assert.equal(uniforms(2.75).uBeat.value, 5.5, "a short region publishes no callback at the same index");
+assert.ok(Math.abs(uniforms(2.95).uBeat.value - 5.9) < 1e-9);
+assert.equal(uniforms(3.4).uBeat.value, 1, "the first changed beat index resets to the local row's count");
+assert.ok(Math.abs(uniforms(4.45).uBeat.value - .15) < 1e-9, "a changed index can reset at the region start");
+assert.ok(Math.abs(uniforms(7).uBeat.value - 2.7) < 1e-9, "the director extrapolates the last callback");
+assert.equal(uniforms(1.25).uBeat.value, 2.5, "seeking does not depend on previous render frames");
+assert.equal(uniforms(1.25).uMode.value, 2);
+
+for (const segments of [[regions[0], null], Array(257).fill(regions[0])]) {
+  project.stage.beatSync = { ...regions[0], segments };
+  preview.update(1.25, project);
+  assert.equal(light.material, original, "invalid saved timing uses the base material");
+}
+project.stage.beatSync = { ...regions[0], segments: regions };
+assert.equal(uniforms(1.25).uBeat.value, 2.5);
+
 let disposals = 0;
 light.material.addEventListener("dispose", () => { disposals++; });
 preview.dispose();

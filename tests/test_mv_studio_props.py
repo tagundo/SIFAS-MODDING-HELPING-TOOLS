@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from webtools.core import model_animation, mv_studio, mv_studio_props, mv_studio_timeline
+from webtools.core import model_animation, model_viewer, mv_studio, mv_studio_props, mv_studio_timeline
 
 
 _FIXTURE = os.environ.get("ELICHIKA_AION_PROP_FIXTURE")
@@ -42,6 +42,18 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual(len(stages), 1)
                     self.assertTrue(stages[0]["stage"]["glb"])
                     self.assertFalse(any(row.get("attachment") for row in stages[0]["assets"]))
+                    effect, = [item for item in stages[0]["assets"] if item["kind"] == "effect"]
+                    effect_glb, _ = mv_studio.media(effect["previewUrl"].rsplit("/", 1)[-1])
+                    effect_bytes = effect_glb.read_bytes()
+                    effect_length = int.from_bytes(effect_bytes[12:16], "little")
+                    effect_doc = json.loads(effect_bytes[20:20+effect_length])
+                    self.assertEqual(len(effect_doc["meshes"]), 148)
+                    self.assertGreater(len(effect_doc["meshes"]), model_viewer.MAX_MESHES)
+                    penlights = {primitive["extras"]["mvPenlight"]["bindingSuffix"]
+                                 for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
+                                 if "mvPenlight" in primitive.get("extras", {})}
+                    self.assertEqual(penlights, {f"aud_root/aud_0{i}" for i in range(1, 7)})
+                    self.assertIn("tex_aud_gen_01", [image["name"] for image in effect_doc["images"]])
                     prop, = [item for item in project["assets"] if item.get("attachment")]
                     actor, = project["performers"]
                     self.assertEqual((actor["memberId"], actor["position"]), (208, 1))
