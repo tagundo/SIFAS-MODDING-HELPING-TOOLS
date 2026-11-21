@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULES = (
     "webtools/__init__.py", "webtools/core/__init__.py", "webtools/tools/__init__.py",
     "webtools/core/repo.py", "webtools/core/sukusta.py", "webtools/core/tkstub.py",
+    "webtools/core/viewer_cache.py",
     "webtools/tools/common.py", "webtools/tools/renamer.py",
     "sifas-assetbundle-renamer-by-texture.py",
 )
