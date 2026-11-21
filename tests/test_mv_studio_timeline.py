@@ -364,6 +364,35 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertEqual(len(descriptors), 2)
         self.assertEqual(*descriptors)
 
+    def test_native_spark_pair_matches_the_source_and_shares_the_star_atlas(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_speed_back=True,
+                                               preview_stage_sparks_b=True)
+                sparks = parsed.pop("stageSparksB")
+                self.assertEqual(sparks["textures"], ["speedBackCenterStars"])
+                del parsed["stageSpeedBack"]
+                self.assertEqual(parsed, self.original[platform])
+                self.assertEqual([row["name"] for row in sparks["emitters"]], ["grow", "hibana", "late_kirakira"])
+                self.assertEqual([row["seed"] for row in sparks["emitters"]], [None, 0, None])
+                glow, streak, glimmer = sparks["emitters"]
+                self.assertEqual(glow["uv"], [.25, .25, 0, .5])
+                self.assertEqual([burst[1] for burst in streak["bursts"]], [100, 75, 50])
+                self.assertEqual(streak["stretch"]["lengthScale"], 2.5)
+                self.assertEqual(glimmer["rate"], 75)
+                self.assertEqual(len(sparks["cues"]), 2)
+                for index, (cue, x) in enumerate(zip(sparks["cues"], (4, -4)), 1):
+                    track, = [row for row in parsed["tracks"] if row["id"] == cue["trackId"]]
+                    event, = [row for row in track["events"] if row["id"] == cue["eventId"]]
+                    self.assertTrue(track["label"].endswith(f"/Control/sparks_B_{index:02}"))
+                    self.assertAlmostEqual(event["start"], 77.4166666667)
+                    self.assertAlmostEqual(event["start"] + event["duration"], 83.1333333333)
+                    self.assertEqual(event["values"]["offset"], {"x": x, "y": 5.5, "z": -5})
+                descriptors.append(sparks)
+        self.assertEqual(len(descriptors), 2)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 

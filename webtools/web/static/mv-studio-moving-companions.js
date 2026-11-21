@@ -34,11 +34,11 @@
       vec4 point = head;
       #ifdef STRETCHED
       vec3 movement = mat3(modelViewMatrix) * velocity;
-      float squared = dot(movement, movement);
+      float squared = (movement.z * movement.z + movement.y * movement.y) + movement.x * movement.x;
       if (squared > 1.0e-30) {
-        // Reflection negates the cross product. The head stays anchored and
-        // its tail extends along the full 3D velocity, including view depth.
-        vec2 across = -cross(head.xyz, movement).xy;
+        // These are already in the native render-view basis. Keep the cross
+        // product winding to preserve the atlas orientation on the streak.
+        vec2 across = cross(head.xyz, movement).xy;
         float sideSquared = dot(across, across);
         if (sideSquared > 1.0e-30) {
           point.xy += across * inversesqrt(sideSquared) * (0.5 * width * position.y);
@@ -60,9 +60,10 @@
   `;
   const fragmentShader = `
     uniform sampler2D uTexture;
+    uniform vec4 uTint;
     varying vec2 vParticleUV;
     varying vec4 vParticleColor;
-    void main() { gl_FragColor = texture2D(uTexture, vParticleUV) * vParticleColor; }
+    void main() { gl_FragColor = texture2D(uTexture, vParticleUV) * vParticleColor * uTint; }
   `;
 
   const roles = new Set(["speed", "speed_R", "speed_L", "stars"]);
@@ -78,6 +79,43 @@
     return row.name === "stars" ? stretch == null : !!stretch &&
       Number.isFinite(stretch.lengthScale) && stretch.lengthScale >= 0 && stretch.lengthScale <= 32 &&
       Number.isFinite(stretch.velocityScale) && stretch.velocityScale >= 0 && stretch.velocityScale <= 1;
+  }
+
+  function velocityBillboards(T, {texture, capacity, stretch, uv, maxViewportWidth, name, tint = [1, 1, 1, 1]}) {
+    const geometry = new T.InstancedBufferGeometry();
+    geometry.setAttribute("position", new T.Float32BufferAttribute([-1, 1, 0, 1, 1, 0, 1, -1, 0, -1, -1, 0], 3));
+    geometry.setAttribute("uv", new T.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+    geometry.setIndex([0, 2, 1, 0, 3, 2]);
+    const centers = new T.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(T.DynamicDrawUsage);
+    const colors = new T.InstancedBufferAttribute(new Uint8Array(capacity * 4), 4, true).setUsage(T.DynamicDrawUsage);
+    const velocities = stretch ? new T.InstancedBufferAttribute(new Float32Array(capacity * 3), 3)
+      .setUsage(T.DynamicDrawUsage) : null;
+    geometry.setAttribute("centerAndSize", centers);
+    geometry.setAttribute("particleColor", colors);
+    if (velocities) geometry.setAttribute("velocity", velocities);
+    geometry.instanceCount = 0;
+    const material = new T.ShaderMaterial({
+      name, vertexShader, fragmentShader,
+      defines: stretch ? {STRETCHED: 1} : {},
+      uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(uv)},
+        uTint: {value: new T.Vector4().fromArray(tint)},
+        uMaxWidth: {value: maxViewportWidth},
+        ...(stretch ? {uStretch: {value: new T.Vector2(stretch.lengthScale, stretch.velocityScale)}} : {})},
+      transparent: true, toneMapped: false, side: T.DoubleSide,
+      depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
+      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
+      blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
+      stencilWrite: true, stencilRef: 2, stencilFunc: T.EqualStencilFunc,
+      stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
+      stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
+    });
+    const mesh = new T.Mesh(geometry, material);
+    mesh.renderOrder = 2900;
+    mesh.visible = false;
+    mesh.matrixAutoUpdate = false;
+    // Expanded shader vertices are outside the static unit quad bounds.
+    mesh.frustumCulled = false;
+    return {mesh, centers, colors, velocities};
   }
 
   function create(T, group, rows, atlas) {
@@ -103,39 +141,11 @@
     try {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i], source = sources[i], {capacity, stretch} = row;
-        const geometry = new T.InstancedBufferGeometry();
-        geometry.setAttribute("position", new T.Float32BufferAttribute([-1, 1, 0, 1, 1, 0, 1, -1, 0, -1, -1, 0], 3));
-        geometry.setAttribute("uv", new T.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
-        geometry.setIndex([0, 2, 1, 0, 3, 2]);
-        const centers = new T.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(T.DynamicDrawUsage);
-        const colors = new T.InstancedBufferAttribute(new Uint8Array(capacity * 4), 4, true).setUsage(T.DynamicDrawUsage);
-        const velocities = stretch ? new T.InstancedBufferAttribute(new Float32Array(capacity * 3), 3)
-          .setUsage(T.DynamicDrawUsage) : null;
-        geometry.setAttribute("centerAndSize", centers);
-        geometry.setAttribute("particleColor", colors);
-        if (velocities) geometry.setAttribute("velocity", velocities);
-        geometry.instanceCount = 0;
-        const material = new T.ShaderMaterial({
-          name: "Native stage moving particles", vertexShader, fragmentShader,
-          defines: stretch ? {STRETCHED: 1} : {},
-          uniforms: {uTexture: {value: atlas}, uAtlas: {value: new T.Vector4().fromArray(row.uv)},
-            uMaxWidth: {value: row.maxViewportWidth},
-            ...(stretch ? {uStretch: {value: new T.Vector2(stretch.lengthScale, stretch.velocityScale)}} : {})},
-          transparent: true, toneMapped: false, side: T.DoubleSide,
-          depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
-          blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
-          blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
-          stencilWrite: true, stencilRef: 2, stencilFunc: T.EqualStencilFunc,
-          stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
-          stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
+        const {mesh, centers, colors, velocities} = velocityBillboards(T, {
+          texture: atlas, capacity, stretch, uv: row.uv, maxViewportWidth: row.maxViewportWidth,
+          name: "Native stage moving particles",
         });
-        const mesh = new T.Mesh(geometry, material);
         mesh.name = `Native stage moving ${row.name}`;
-        mesh.renderOrder = 2900;
-        mesh.visible = false;
-        mesh.matrixAutoUpdate = false;
-        // Expanded shader vertices are outside the static unit quad bounds.
-        mesh.frustumCulled = false;
         // Unity uses the procedural simulation envelope for renderer sorting.
         const offset = row.name === "speed" ? 25 : row.name === "stars" ? 10 : 0;
         const center = new T.Vector3(0, 0, offset).applyQuaternion(rotation.fromArray(row.rotation));
@@ -185,5 +195,5 @@
     return {update, dispose, batches};
   }
 
-  global.MVStudioMovingCompanions = {create};
+  global.MVStudioMovingCompanions = {create, velocityBillboards};
 })(typeof window !== "undefined" ? window : globalThis);

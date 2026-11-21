@@ -357,6 +357,33 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
         self.assertEqual(reopened["stageFinaleFloor"], {**descriptor, "textures": ["speedBackCenterStars"]})
 
+    def test_saved_spark_pair_preserves_shifted_cues_and_uses_the_original_atlas(self):
+        project = mv_studio._blank("Edited sparks")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{
+            "id": f"sparks-{index}", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": f"StageEffect/Expert/Control/sparks_B_{index:02}",
+            "events": [{"id": f"sparks-cue-{index}", "label": f"Retimed sparks {index}",
+                        "start": 76 + .25 * index, "duration": 3,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "-8184682665616244301"},
+                                   "offset": {"x": index, "y": 5, "z": -1}}}],
+        } for index in (1, 2)]
+        texture = [{"png": "native stars"}]
+        project["stageSpeedBack"] = {"centerStars": {"texture": [{"png": "edited stars"}]}}
+        descriptor = {"textures": [texture], "cues": [
+            {"trackId": track["id"], "eventId": track["events"][0]["id"]} for track in project["tracks"]
+        ]}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSparksB": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited sparks", preview_split=False,
+                                      preview_stage_title=False, preview_stage_sparks_b=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
+        self.assertEqual(reopened["stageSparksB"], descriptor)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

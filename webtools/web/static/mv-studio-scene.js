@@ -348,6 +348,7 @@
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
+    let stageSparksB = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -533,6 +534,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageSparksB?.dispose();
+      stageSparksB = null;
       stageFinaleFloor?.dispose();
       stageFinaleFloor = null;
       stageBreak?.dispose();
@@ -1077,6 +1080,12 @@
         return;
       }
       stageFinaleFloor = finaleFloor;
+      const sparksB = await global.MVStudioSparksB?.apply(T, scene, value.stageSparksB, displayAtlases);
+      if (!active()) {
+        sparksB?.dispose();
+        return;
+      }
+      stageSparksB = sparksB;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1280,6 +1289,7 @@
       stageFallingEffects?.invalidate();
       stageBreak?.invalidate();
       stageFinaleFloor?.invalidate();
+      stageSparksB?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1355,6 +1365,7 @@
       stageFallingEffects?.update(currentTime, project);
       stageBreak?.update(currentTime, project);
       stageFinaleFloor?.update(currentTime, project);
+      stageSparksB?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);

@@ -46,9 +46,10 @@
   `;
   const fragmentShader = `
     uniform sampler2D uTexture;
+    uniform vec4 uTint;
     varying vec2 vParticleUV;
     varying vec4 vParticleColor;
-    void main() { gl_FragColor = texture2D(uTexture, vParticleUV) * vParticleColor; }
+    void main() { gl_FragColor = texture2D(uTexture, vParticleUV) * vParticleColor * uTint; }
   `;
 
   const names = new Set(["light_up", "light_down", "light_left", "light_right", "light_L", "light_R"]);
@@ -97,7 +98,7 @@
   }
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
-    additive = false, rolling = false, viewAligned = false, columns = 1}) {
+    additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1]}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -122,6 +123,7 @@
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},
+        uTint: {value: new T.Vector4().fromArray(tint)},
         uAtlas: {value: new T.Vector4().fromArray(atlas)}, uAtlasColumns: {value: columns},
         uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(rotation)},
         uAxisY: {value: new T.Vector3(0, 1, 0).applyQuaternion(rotation)}},
