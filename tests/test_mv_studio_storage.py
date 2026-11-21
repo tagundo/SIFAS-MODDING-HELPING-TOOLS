@@ -203,6 +203,27 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["tracks"], project["tracks"])
         self.assertEqual(reopened["stageSpotlight"], spotlight)
 
+    def test_saved_speed_background_uses_original_binding_after_event_rename(self):
+        project = mv_studio._blank("Edited display")
+        project["stageTitle"] = {"particleSchema": 2}
+        project["tracks"] = [{
+            "id": "display", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/light",
+            "events": [{"id": "clip", "label": "Edited name", "start": 78, "duration": 24,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "9155575924868579619"}}}],
+        }]
+        display = {"trackId": "display", "eventId": "clip", "duration": 50}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+            "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageSpeedBack": display},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited display", preview_split=False,
+                                      preview_stage_title=False, preview_stage_speed_back=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageTitle"], project["stageTitle"])
+        self.assertEqual(reopened["stageSpeedBack"], display)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

@@ -285,7 +285,7 @@ def _timeline(path):
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
-                                               preview_stage_spotlight=True)
+                                               preview_stage_spotlight=True, preview_stage_speed_back=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -458,7 +458,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             native, parsed = _timeline(timeline)
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                             "stageRibbons", "stageSpotlight")
+                             "stageRibbons", "stageSpotlight", "stageSpeedBack")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -782,7 +782,13 @@ def _open_saved(archive, entries):
     restore_spotlight = "stageSpotlight" not in project and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_12_spot")
         for track in project["tracks"])
-    if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons or restore_spotlight):
+    restore_speed_back = "stageSpeedBack" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/light")
+        and any(event.get("label") == "fx_dis_so2056_09" or event["values"].get("prefabGameObject") == {
+            "m_FileID": 0, "m_PathID": "9155575924868579619",
+        } for event in track["events"]) for track in project["tracks"])
+    if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
+                               or restore_spotlight or restore_speed_back):
         from . import mv_studio_timeline
 
         try:
@@ -793,12 +799,14 @@ def _open_saved(archive, entries):
                 options["preview_stage_ribbons"] = True
             if restore_spotlight:
                 options["preview_stage_spotlight"] = True
+            if restore_speed_back:
+                options["preview_stage_speed_back"] = True
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
                                                          preview_stage_title=restore_title, **options)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageSpotlight"):
+            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageSpeedBack"):
                 if field in original:
                     project[field] = original[field]
             rebuilt_ribbons = original.get("stageRibbons")
@@ -829,7 +837,7 @@ def _mod_files(project, files):
                 native = raw
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                                 "stageRibbons", "stageSpotlight")
+                                 "stageRibbons", "stageSpotlight", "stageSpeedBack")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,
