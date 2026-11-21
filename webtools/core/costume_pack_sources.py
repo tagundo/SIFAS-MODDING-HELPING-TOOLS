@@ -30,6 +30,15 @@ def _descriptor(record):
     return {key: value for key, value in record.items() if key != "download"}
 
 
+def _selection_source(record):
+    # Purpose and locale can produce separate receipts for identical native
+    # packs. Keep the platform and every resource descriptor in the identity.
+    source = {key: value for key, value in record.items()
+              if key not in ("download", "purpose", "selection_language")}
+    source.setdefault("platform", "android")
+    return source
+
+
 def _roots(requested):
     current = game_models_dir()
     legacy = current.parents[2] / "extracted" / "game-models"
@@ -65,13 +74,8 @@ def _current_record(repo_root, record):
     record = sources._record(record)
     if type(record.get("owner")) is not int or not 0 < record["owner"] < 10000:
         raise ValueError("The game costume receipt has no valid character identity.")
-    params = {"region": record["region"], "suit": "suit:" + str(record["suit_id"]),
-              "variant": record["variant"], "download": record["download"]}
+    params = sources._selection(record)
     if "purpose" in record:
-        if (record["purpose"] != "transplant" or record.get("platform") not in ("android", "ios") or
-                not isinstance(record.get("selection_language"), str) or not 0 < len(record["selection_language"]) <= 16):
-            raise ValueError("The native costume receipt has incomplete purpose/platform/language provenance.")
-        params.update(purpose=record["purpose"], platform=record["platform"])
         languages = (record["selection_language"],)
     else:
         # Viewer records predate a language field. Check the actual finite DB
@@ -253,10 +257,10 @@ def source_bindings(paths, repo_root=None, cache_roots=None):
     for path, candidates in matches.items():
         if not candidates:
             continue
-        identities = {json.dumps(_descriptor(item["record"]), sort_keys=True, allow_nan=False) for item in candidates}
+        identities = {json.dumps(_selection_source(item["record"]), sort_keys=True, allow_nan=False) for item in candidates}
         if len(identities) != 1:
             raise ValueError("The selected bytes match conflicting game costume receipts; choose a freshly imported exact costume/variant.")
-        receipt = candidates[0]
+        receipt = max(candidates, key=lambda item: "platform" in item["record"])
         record = receipt["record"]
         for candidate in candidates:
             _check_local_signatures(candidate["sources"])

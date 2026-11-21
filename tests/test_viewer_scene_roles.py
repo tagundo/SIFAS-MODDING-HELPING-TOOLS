@@ -55,9 +55,10 @@ class SceneRolesTests(unittest.TestCase):
             archive.writestr("modinstall.txt", "\n".join(key + " = " + repr(value) for key, value in values.items()) + "\n")
         return path
 
-    def prepare(self, path, variant=None):
+    def prepare(self, path, variant=None, *, game_platform=None):
         choices = None if variant is None else {str(path): variant}
-        with viewer_archive.expand_inputs([str(path)], self.root / "cache", variant_choices=choices) as expanded:
+        with viewer_archive.expand_inputs([str(path)], self.root / "cache", variant_choices=choices,
+                                          game_platform=game_platform) as expanded:
             prepared = model_viewer.prepare(expanded.paths, rigged=True, face_context={"enabled": False, "allow_download": False})
             metadata = edits.register_session(prepared["id"], expanded.paths, prepared["rig"],
                 originals=expanded.editing_originals or [str(path)], origins=expanded.origins,
@@ -65,6 +66,20 @@ class SceneRolesTests(unittest.TestCase):
                 variants=expanded.editing_variants if expanded.editing_variants is not None else {str(path): "primary"})
             state = roles.register_reopened(prepared["id"], expanded.scene_context) if expanded.scene_context else None
         return prepared["id"], {row["name"]: row for row in metadata["nodes"]}, state
+
+    def test_explicit_ios_scene_preview_restores_its_recipe_and_preserves_both_originals(self):
+        token, nodes, _ = self.prepare(self.source(("android", "ios")))
+        result, original = self.package(token, self.state(nodes))
+        path = Path(result["mod_package"]["package_path"])
+        reopened, _, state = self.prepare(path, "unmasked", game_platform="ios")
+        context = edits.mod_source_context(reopened)
+        body, = context["sources"]
+        self.assertEqual(body["member"], "ios_unmasked.unity")
+        self.assertIsNotNone(state)
+        self.assertEqual(set(original["manifest"]["platforms"]), {"android", "ios"})
+        with zipfile.ZipFile(io.BytesIO(context["containers"][body["container"]]["raw"])) as archive:
+            for (platform, variant), raw in self.originals.items():
+                self.assertEqual(archive.read(f"{platform}_{variant}.unity"), raw)
 
     def state(self, nodes, mesh=False):
         return {"version": 1, "savedSettingsEnabled": True, "edits": [

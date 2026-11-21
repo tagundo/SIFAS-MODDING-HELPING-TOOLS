@@ -123,6 +123,11 @@ class RigBuilder:
             if tree.get("m_Enabled", True) and scene.active(game_object)
         }
         manifests = _manifest_owners(selected_paths, faces.context.get("manifest_paths"), faces.context.get("origins"))
+        selected_geometry = (geometry_sources & self.selected) - self.facial_sources
+        native_platforms = {renderer.assets_file.target_platform for renderer, tree, game_object in scene.renderers
+                            if _source_path(renderer) in selected_geometry
+                            and tree.get("m_Enabled", True) and scene.active(game_object)}
+        self.native_platform = {frozenset({9}): "ios", frozenset({13}): "android"}.get(frozenset(native_platforms))
         for source in geometry_sources:
             owners.update(source_owner(scene, source, manifests.get(source)))
         self.owner = next(iter(owners)) if len(owners) == 1 else None
@@ -460,6 +465,8 @@ class RigBuilder:
                                                           owner=self.owner, sources=self.expression_sources,
                                                           clips=self.clips),
                 "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
+        if self.native_platform is not None:
+            result["modelPlatform"] = self.native_platform
         result["readOnlySkinJoints"] = sorted(self.read_only_skin_joints)
         if self.faces.context.get("_mv_performer"):
             focus = self._focus_parts()

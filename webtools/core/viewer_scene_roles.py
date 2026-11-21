@@ -354,14 +354,17 @@ def _fill_source_provenance(manifest, repo_root):
     manifest["source_provenance"] = proof
 
 
-def expand_scene(path, directory, variant=None):
+def expand_scene(path, directory, variant=None, *, platform=None):
     """Recover only canonical originals into a deterministic legacy input ZIP."""
     decoded = fmt.read_package(path)
     manifest, files = decoded["manifest"], decoded["files"]
     if variant is None:
         variant = manifest.get("default_variant", "primary")
     _require(variant in fmt.VARIANTS, "Choose a valid Rina costume variant.")
-    platform = "android" if "android" in manifest["platforms"] else "ios"
+    # The selected body and edit recipe must come from the same native family.
+    if platform is None:
+        platform = "android" if "android" in manifest["platforms"] else "ios"
+    _require(platform in manifest["platforms"], "The scene costume has no body for the selected platform.")
     members, values = {}, {"chara_id": 209}
     for native, family in manifest["authoring"].items():
         for role in fmt.VARIANTS:
@@ -411,7 +414,8 @@ def expand_scene(path, directory, variant=None):
     recipe = _json(files[manifest["authoring"][platform][variant]["recipe"]["member"]])
     face = manifest.get("face_authoring", {}).get(platform)
     face_recipes = [_json(files[face["recipe"]["member"]])] if face else []
-    return {"path": str(original_zip), "variant": variant, "recipe": recipe, "face_recipes": face_recipes,
+    return {"path": str(original_zip), "variant": variant, "platform": platform,
+            "recipe": recipe, "face_recipes": face_recipes,
             "metadata": {**{key: copy.deepcopy(manifest[key]) for key in ("display_name", "source_suit_id", "source_provenance")},
                          "target_member_id": manifest.get("target_member_id", 209),
                          "default_variant": manifest.get("default_variant", "primary")}}

@@ -1,5 +1,6 @@
 """Native body consumers keep viewer imports and all game sources unchanged."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -97,9 +98,46 @@ class TransplantGameModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "native platform"):
             self.run_import(self.selection(platform="ios"))
 
+    def test_viewer_native_selection_preserves_legacy_cache_and_checks_warm_platform(self):
+        with self.assertRaisesRegex(ValueError, "iOS asset catalog"):
+            self.helper.select(purpose="viewer", platform="ios")
+        self.ios_catalog()
+        legacy = Path(self.helper.run_import().output_paths()[0])
+        android = Path(self.helper.run_import(self.helper.select(purpose="viewer", platform="android")).output_paths()[0])
+        record = self.helper.select(purpose="viewer", platform="ios")
+        self.assertEqual((record["pack_name"], record["selection_language"]), ("basepack_ios", "ko"))
+        ios = Path(self.helper.run_import(record).output_paths()[0])
+        self.assertEqual(len({legacy, android, ios}), 3)
+        self.assertEqual(legacy.read_bytes(), android.read_bytes())
+        self.assertEqual({int(asset.target_platform) for asset in UnityPy.load(ios.read_bytes()).assets}, {9})
+        self.assertEqual(self.helper.run_import().output_paths(), [str(legacy)])
+        self.assertEqual(self.helper.run_import(record).output_paths(), [str(ios)])
+
+        receipt_path = self.helper.output / (".selection-" + game._selection_identity(record) + ".json")
+        receipt = json.loads(receipt_path.read_text())
+        wrong = android.read_bytes()
+        ios.write_bytes(wrong)
+        receipt["sha256"] = hashlib.sha256(wrong).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+        job = Job("wrong-cached-platform", "viewer_game_assets")
+        with self.assertRaisesRegex(ValueError, "native platform"):
+            self.helper.run_import(record, job)
+        self.assertEqual(job.output_paths(), [])
+        self.assertEqual(ios.read_bytes(), wrong)
+
+    def test_viewer_rejects_mislabeled_cold_ios_without_legacy_fallback(self):
+        self.ios_catalog(wrong_platform=True)
+        record = self.helper.select(purpose="viewer", platform="ios")
+        job = Job("wrong-fresh-platform", "viewer_game_assets")
+        with self.assertRaisesRegex(ValueError, "native platform"):
+            self.helper.run_import(record, job)
+        self.assertEqual(job.output_paths(), [])
+        self.assertEqual(list(self.helper.output.iterdir()), [])
+
     def test_request_boundary_rejects_untrusted_paths_platforms_and_unknown_intents(self):
         valid = {"region": "gl", "suit": "suit:1", "variant": "primary", "download": False}
-        bad = [{"purpose": "body"}, {"purpose": True}, {"platform": "android"},
+        bad = [{"purpose": "body"}, {"purpose": True}, {"purpose": None}, {"platform": "android"},
+               {"purpose": "viewer"}, {"purpose": "viewer", "platform": "mac"},
                {"purpose": "transplant", "platform": "../ios"}, {"purpose": "transplant", "path": "/tmp/body"},
                {"purpose": "transplant", "url": "https://example.invalid/body"}]
         for extra in bad:
@@ -184,28 +222,48 @@ class TransplantGameModelTests(unittest.TestCase):
         return prefix + struct.pack(">QIII", len(prefix) + 20 + len(info) + len(raw), len(info), len(info), 64) + info + raw
 
     def test_real_selected_colour_texture_is_inside_returned_body_without_uv_resampling(self):
-        def texture(raw, name, colour):
+        def texture(raw, name, colour, platform):
             env = UnityPy.load(raw)
+            for asset in env.assets:
+                asset.target_platform = platform
+                asset._m_target_platform = platform
             for obj in env.objects:
                 if obj.type.name == "Texture2D":
                     image = obj.read(); image.m_Name = name; image.m_TextureFormat = 4
                     image.image = Image.new("RGBA", (2, 2), colour); image.save()
             return env.file.save()
-        body = texture(geometry.make_fixture(), "Body", (0, 0, 255, 255))
-        variant = texture((Path(__file__).parent / "fixtures/viewer_textured_triangle.unity").read_bytes(),
-                          "Body_c1", (255, 0, 0, 255))
-        catalog = self.root / "assets/db/gl/asset_a_ko.db"
-        self.store(catalog, "basepack", self.bundle("base.assets", body))
-        self.store(catalog, "colourpack", self.bundle("colour.assets", variant))
-        before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.root.rglob("*") if p.is_file()}
-        path = Path(self.run_import(self.selection(suit="suit:3"))[0])
-        env = UnityPy.load(path.read_bytes())
-        images = [obj.read().image.convert("RGBA") for obj in env.objects if obj.type.name == "Texture2D"]
-        self.assertTrue(images)
-        self.assertEqual(images[0].size, (2, 2)); self.assertEqual(set(images[0].getdata()), {(255, 0, 0, 255)})
-        old_mesh = next(obj.get_raw_data() for obj in UnityPy.load(body).objects if obj.type.name == "Mesh")
-        self.assertEqual(next(obj.get_raw_data() for obj in env.objects if obj.type.name == "Mesh"), old_mesh)
-        for name, digest in before.items(): self.assertEqual(hashlib.sha256(Path(name).read_bytes()).hexdigest(), digest)
+        self.ios_catalog()
+        colour_fixture = (Path(__file__).parent / "fixtures/viewer_textured_triangle.unity").read_bytes()
+        for catalog_code, pack_suffix, platform in (("a", "", 13), ("i", "_ios", 9)):
+            body = texture(geometry.make_fixture(), "Body", (0, 0, 255, 255), platform)
+            variant = texture(colour_fixture, "Body_c1", (255, 0, 0, 255), platform)
+            catalog = self.root / f"assets/db/gl/asset_{catalog_code}_ko.db"
+            self.store(catalog, "basepack" + pack_suffix, self.bundle("base.assets", body))
+            self.store(catalog, "colourpack" + pack_suffix, self.bundle("colour.assets", variant))
+            before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.root.rglob("*") if p.is_file()}
+            if platform == 13:
+                output = self.run_import(self.selection(suit="suit:3"))[0]
+            else:
+                record = self.helper.select("suit:3", purpose="viewer", platform="ios")
+                output = self.helper.run_import(record).output_paths()[0]
+            env = UnityPy.load(Path(output).read_bytes())
+            self.assertEqual({int(asset.target_platform) for asset in env.assets}, {platform})
+            images = [obj.read().image.convert("RGBA") for obj in env.objects if obj.type.name == "Texture2D"]
+            self.assertTrue(images)
+            self.assertEqual(images[0].size, (2, 2))
+            self.assertEqual(images[0].tobytes(), bytes((255, 0, 0, 255)) * 4)
+            old_mesh = next(obj.get_raw_data() for obj in UnityPy.load(body).objects if obj.type.name == "Mesh")
+            self.assertEqual(next(obj.get_raw_data() for obj in env.objects if obj.type.name == "Mesh"), old_mesh)
+            for name, digest in before.items():
+                self.assertEqual(hashlib.sha256(Path(name).read_bytes()).hexdigest(), digest)
+
+        android_variant = texture(colour_fixture, "Body_c1", (255, 0, 0, 255), 13)
+        self.store(self.root / "assets/db/gl/asset_i_ko.db", "colourpack_ios", self.bundle("colour.assets", android_variant))
+        job = Job("wrong-ios-colour", "viewer_game_assets")
+        record = self.helper.select("suit:3", purpose="viewer", platform="ios")
+        with self.assertRaisesRegex(ValueError, "native platform"):
+            game.run_import(job, repo_root=self.root, output_root=self.helper.output, record=record, reimport=True)
+        self.assertEqual(job.output_paths(), [])
 
     def test_canonical_scene_returns_exact_selected_body_while_viewer_keeps_original_zip(self):
         helper = scenes.SceneRolesTests(); helper.setUp(); self.addCleanup(helper.doCleanups)
@@ -223,6 +281,23 @@ class TransplantGameModelTests(unittest.TestCase):
             self.assertEqual(self.run_import(record), [str(output)])
             legacy = self.helper.run_import(self.helper.select("suit:2")).output_paths()
             self.assertEqual(Path(legacy[0]).read_bytes(), archive.read_bytes()); self.assertEqual(Path(legacy[0]).suffix, ".zip")
+            viewer = self.helper.select("suit:2", purpose="viewer", platform="ios")
+            self.assertEqual(self.helper.run_import(viewer).output_paths(), legacy)
+
+    def test_viewer_canonical_scene_checks_requested_family_and_preserves_the_zip(self):
+        helper = scenes.SceneRolesTests(); helper.setUp(); self.addCleanup(helper.doCleanups)
+        token, nodes, _ = helper.prepare(helper.source(("android",)))
+        result, _ = helper.package(token, helper.state(nodes))
+        archive = Path(result["mod_package"]["package_path"])
+        scene = {"archive_path": str(archive), "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                 "target_member_id": 209}
+        with patch.object(game, "_installed_scene", return_value=scene):
+            android = self.helper.select("suit:2", purpose="viewer", platform="android")
+            path = Path(self.helper.run_import(android).output_paths()[0])
+            self.assertEqual(path.read_bytes(), archive.read_bytes())
+            ios = self.helper.select("suit:2", purpose="viewer", platform="ios")
+            with self.assertRaisesRegex(ValueError, "no canonical body for that platform"):
+                self.helper.run_import(ios)
 
 
 if __name__ == "__main__":

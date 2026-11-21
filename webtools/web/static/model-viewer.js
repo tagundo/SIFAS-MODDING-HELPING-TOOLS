@@ -9,6 +9,7 @@
   var mounted = false;
   var pendingOpen = null;
   var paths = [];
+  var gameSource = null;
   var loadedPaths = [];
   var importedGameMotionPaths = [];
   var motionLibraryPaths = [];
@@ -1600,6 +1601,7 @@
       textureDocuments: textureToolsController && textureToolsController.captureDocuments ? textureToolsController.captureDocuments(true) : null,
       textureRevision: textureToolsController && textureToolsController.getRevision ? textureToolsController.getRevision() : null,
       sourceFingerprint: fingerprint, paths: loadedPaths.slice(), variants: loadedVariants.slice(), archiveChoices: choices,
+      gameSource: gameSource && loadedPaths.indexOf(gameSource.path) >= 0 ? gameSource : null,
       autoFace: loadedAutoFace, authoring: authoring, meshState: meshToolsController && meshToolsController.getEdits ? meshToolsController.getEdits() : null,
       meshRevision: meshToolsController && meshToolsController.getEditRevision ? meshToolsController.getEditRevision() : null,
       pose: rigController && rigController.getState(),
@@ -1636,6 +1638,7 @@
           value.motionLibraryPaths.some(function (path, index, all) { return typeof path !== "string" || !path || all.indexOf(path) !== index; })) throw new Error(t("The model inspection snapshot is invalid."));
       nextMotions = value.motionLibraryPaths.slice();
     }
+    gameSource = value.gameSource || null;
     paths = value.paths.slice(); variantChoices = nextChoices; variantOptions = {}; motionLibraryPaths = nextMotions;
     node("viewer-auto-face").checked = value.autoFace;
     importedGameMotionPaths = (value.importedGameMotionPaths || []).filter(function (path) { return motionLibraryPaths.indexOf(path) >= 0; });
@@ -1648,7 +1651,7 @@
     if (textureToolsController && textureToolsController.hasPending()) throw new Error(t("Apply or cancel the texture preview before saving."));
     if (meshSelectionPending() || persistenceController && persistenceController.getState().busy) throw new Error(t("Apply selected face deletions before saving."));
     var before = expectedCurrent || captureViewerCheckpoint();
-    var oldSelection = { paths: paths.slice(), choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
+    var oldSelection = { paths: paths.slice(), gameSource: gameSource, choices: cloneCheckpoint(variantChoices), options: cloneCheckpoint(variantOptions),
       autoFace: node("viewer-auto-face").checked, imported: importedGameMotionPaths.slice(), motions: motionLibraryPaths.slice() };
     selectCheckpointInputs(value);
     var promise = loadSelected({ preserveMotionInputs: true, throwOnFailure: true,
@@ -1673,7 +1676,7 @@
       // asynchronous operation fails or finishes after it.
       if (requestEpoch !== generation || destroyed) return false;
       if (metadata && metadata.id === before.modelId && metadata.editing && metadata.editing.sourceFingerprint === before.sourceFingerprint) {
-        paths = oldSelection.paths; variantChoices = oldSelection.choices; variantOptions = oldSelection.options;
+        paths = oldSelection.paths; gameSource = oldSelection.gameSource; variantChoices = oldSelection.choices; variantOptions = oldSelection.options;
         node("viewer-auto-face").checked = oldSelection.autoFace; importedGameMotionPaths = oldSelection.imported;
         motionLibraryPaths = oldSelection.motions;
         renderFiles(); setLoading(false);
@@ -1717,6 +1720,7 @@
       if (variantOptions[path] || Object.prototype.hasOwnProperty.call(variantChoices, path)) archiveVariants[index] = selectedVariants[index];
     });
     var payload = { paths: selected, auto_face: selectedAutoFace, rigged: true };
+    if (gameSource && selected.indexOf(gameSource.path) >= 0) payload.game_platform = gameSource.platform;
     if (node("viewer-reimport") && node("viewer-reimport").checked) payload.reimport = true;
     if (selectedMotions.length) payload.motion_paths = selectedMotions;
     if (Object.keys(archiveVariants).length) payload.archive_variants = archiveVariants;
@@ -2591,6 +2595,11 @@
     if (unique.length > MAX_FILES) { setStatus("Choose up to eight costume files at a time.", true); return Promise.resolve(); }
     if (loading) motionLibraryPaths = loadedMotionPaths.slice();
     paths = unique;
+    if (paths.length === 1 && importOptions && ["android", "ios"].indexOf(importOptions.gamePlatform) >= 0) {
+      gameSource = { path: paths[0], platform: importOptions.gamePlatform };
+    } else if (gameSource && paths.indexOf(gameSource.path) < 0) {
+      gameSource = null;
+    }
     if (nextVariants && typeof nextVariants === "object") {
       paths.forEach(function (path, index) {
         if (Object.prototype.hasOwnProperty.call(nextVariants, index) &&
@@ -2744,6 +2753,7 @@
         sourceTriangles: visibleSourceTriangles(),
         framing: framingState, renderedFrames: renderedFrames, error: statusError ? statusDetail || statusKey : "",
         modelId: metadata ? metadata.id : null,
+        modelPlatform: metadata && ["android", "ios"].indexOf(metadata.model_platform) >= 0 ? metadata.model_platform : null,
         persistence: persistenceController ? persistenceController.getState() : null,
         meshTools: meshToolsController ? meshToolsController.getState() : null,
         textureTools: textureToolsController ? textureToolsController.getState() : null,

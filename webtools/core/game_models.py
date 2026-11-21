@@ -226,13 +226,16 @@ def validate_selection(root, params, language="en"):
     required = {"region", "suit", "variant", "download"}
     if not isinstance(params, dict) or not required <= set(params) or set(params) - required - {"purpose", "platform"}:
         raise ValueError("Unsupported game asset request.")
-    tool = "purpose" in params
-    if tool and params["purpose"] != "transplant" or not tool and "platform" in params:
+    purpose = params.get("purpose")
+    explicit = "purpose" in params
+    if (explicit and purpose not in ("transplant", "viewer")) or (not explicit and "platform" in params):
         raise ValueError("Choose a supported game asset purpose.")
-    platform = params.get("platform", "android")
+    platform = params.get("platform", None if purpose == "viewer" else "android")
     if platform not in ("android", "ios"):
         raise ValueError("Choose Android or iOS game assets.")
-    intent = ({"purpose": "transplant", "platform": platform, "selection_language": language} if tool else {})
+    # Only an explicit selection changes the catalog. Legacy Viewer requests
+    # keep their Android descriptor and cache identity across all host OSes.
+    intent = {"purpose": purpose, "platform": platform, "selection_language": language} if explicit else {}
     if not isinstance(params["download"], bool) or not isinstance(params["region"], str) or not isinstance(params["suit"], str):
         raise ValueError("Choose a valid costume and download option.")
     match = _SUIT.fullmatch(params["suit"])
@@ -272,7 +275,7 @@ def validate_selection(root, params, language="en"):
                 raise ValueError("This costume has no unmasked model.")
             model = unmasked[0]
     directory = Path(root) / "assets/db" / region
-    prefix = "asset_i_" if tool and platform == "ios" else "asset_a_"
+    prefix = "asset_i_" if platform == "ios" else "asset_a_"
     catalogs = sorted(directory.glob(prefix + "*.db"), key=lambda p: (p.name != f"{prefix}{language}.db", p.name != prefix + "en.db", p.name))
     for path in catalogs:
         with closing(_readonly(path)) as db:
@@ -291,7 +294,7 @@ def validate_selection(root, params, language="en"):
                 if any(item is None for item in record["recolours"]) or sum(item["size"] for item in record["recolours"]) + record["size"] > 128 * 1024 * 1024:
                     raise ValueError("The selected costume colour exceeds the model import limit.")
             return record
-    raise ValueError("This costume is missing from the " + ("iOS" if tool and platform == "ios" else "Android") + " asset catalog.")
+    raise ValueError("This costume is missing from the " + ("iOS" if platform == "ios" else "Android") + " asset catalog.")
 
 
 def _tool_selection_unchanged(root, record):
@@ -302,7 +305,8 @@ def _tool_selection_unchanged(root, record):
         raise ValueError("The costume catalog changed. Select the game costume again.")
 
 
-def _tool_native(raw, platform):
+def _native_bundle(raw, platform):
+    """Verify the asset's serialized target, independent of the host."""
     from .model_viewer import _preflight_bundle
     import UnityPy
     raw = bytes(raw)
@@ -318,7 +322,7 @@ def _tool_body(raw, platform):
     """Validate one native costume body, excluding texture/face/motion bundles."""
     if not bytes(raw).startswith(b"UnityFS\0"):
         raise ValueError("Transplanting requires an original UnityFS costume bundle.")
-    env = _tool_native(raw, platform)
+    env = _native_bundle(raw, platform)
     names = {obj.read_typetree().get("m_Name") for obj in env.objects if obj.type.name == "GameObject"}
     types = {obj.type.name for obj in env.objects}
     if (not {"Mesh", "SkinnedMeshRenderer"} <= types or "Move" not in names or
@@ -343,7 +347,7 @@ def _tool_name(record):
     return name if name.lower().endswith(".unity") else name + ".unity"
 
 
-def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimport=False):
+def _scene_platform(job, scene, platform, deadline):
     from . import viewer_scene_format as fmt
     source = Path(scene["archive_path"])
     raw = fmt._raw(source)
@@ -351,10 +355,15 @@ def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimpor
         raise ValueError("The canonical costume archive changed while loading.")
     _check(job, deadline)
     decoded = fmt.read_package(raw)
-    role = "mv_board" if record["variant"] == "primary" else "mv_unmasked"
-    family = decoded["manifest"]["canonical_goldens"].get(record["platform"])
+    family = decoded["manifest"]["canonical_goldens"].get(platform)
     if family is None:
         raise ValueError("The selected costume has no canonical body for that platform.")
+    return decoded, family
+
+
+def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimport=False):
+    decoded, family = _scene_platform(job, scene, record["platform"], deadline)
+    role = "mv_board" if record["variant"] == "primary" else "mv_unmasked"
     body = decoded["files"][family[role]["member"]]
     if not 0 < len(body) <= MAX_MODEL_BYTES:
         raise ValueError("The canonical costume body exceeds the model import limit.")
@@ -601,6 +610,7 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
         root = _safe_directory(Path(output_root))
         _check(job, deadline)
         tool = record.get("purpose") == "transplant"
+        viewer_platform = record["platform"] if record.get("purpose") == "viewer" else None
         if tool:
             _tool_selection_unchanged(repo_root, record)
         if record.get("scene_source") is not None:
@@ -610,6 +620,9 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
             if tool:
                 return _tool_scene_import(job, repo_root=repo_root, root=root, record=record, scene=scene, deadline=deadline,
                                           **({"reimport": True} if reimport else {}))
+            if viewer_platform:
+                _scene_platform(job, scene, viewer_platform, deadline)
+                _check(job, deadline)
             source = Path(scene["archive_path"])
             destination = root / ("scene-" + scene["sha256"] + "-" + record["variant"] + ".zip")
             if not reimport and not destination.exists():
@@ -658,6 +671,9 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
                 _check(job, deadline)
                 job.add_output(cached)
                 return "Native costume body ready for transplanting."
+            if viewer_platform:
+                _native_bundle(cached.read_bytes(), viewer_platform)
+                _check(job, deadline)
             from webtools.core.viewer_mod_sources import register_game_import
             # Upgrade an existing cache receipt without changing the model.
             receipt_path = cached_root / (".selection-" + identity + ".json")
@@ -687,6 +703,8 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
         data = _plain_section(job, record, source, signature, extractor, deadline)
         if tool:
             _tool_body(data, record["platform"])
+        elif viewer_platform and record["attach_key"]:
+            _native_bundle(data, viewer_platform)
         name = _tool_name(record) if tool else f"ch{record['owner']:04}_suit{record['suit_id']}_{record['variant']}.unity"
         output = temporary / name
         if record["attach_key"]:
@@ -699,8 +717,8 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
                 job.progress(index, total)
                 source, signature = found[index]
                 variant_data = _plain_section(job, dependency, source, signature, extractor, deadline)
-                if tool:
-                    _tool_native(variant_data, record["platform"])
+                if tool or viewer_platform:
+                    _native_bundle(variant_data, record["platform"])
                 variant_file = temporary / f".colour-{index}.unity"
                 variant_file.write_bytes(variant_data)
                 variants.append(variant_file)
@@ -716,14 +734,17 @@ def run_import(job, *, repo_root, output_root, record, reimport=False, source_lo
             with open(output, "xb") as handle:
                 handle.write(data)
         _check(job, deadline)
-        from webtools.core.model_viewer import _preflight_bundle
-        _preflight_bundle(output.read_bytes())
         if tool:
             _tool_body(output.read_bytes(), record["platform"])
             _tool_selection_unchanged(repo_root, record)
             current = [source_lookup(repo_root, item, extractor, job, deadline)[1] for item in resources]
             if current != signatures:
                 raise ValueError("A game source pack changed while preparing the costume body.")
+        elif viewer_platform:
+            _native_bundle(output.read_bytes(), viewer_platform)
+        else:
+            from webtools.core.model_viewer import _preflight_bundle
+            _preflight_bundle(output.read_bytes())
         manifest = {"model": str(output.relative_to(root)), "sha256": _sha(output),
                     "source": signatures, "selection_record": record}
         descriptor, temporary_name = tempfile.mkstemp(prefix=".selection-", suffix=".part", dir=root)

@@ -81,8 +81,11 @@ class ViewerModSourceTests(unittest.TestCase):
                              "sha256": sources._sha(raw if model_raw is None else model_raw)}],
                 "variants": {}, "nodes": []}
 
-    def imported(self, variant="primary", region="gl"):
-        record = game.validate_selection(self.root, {"region": region, "suit": "suit:12", "variant": variant, "download": False})
+    def imported(self, variant="primary", region="gl", *, language="en", platform=None):
+        selection = {"region": region, "suit": "suit:12", "variant": variant, "download": False}
+        if platform is not None:
+            selection.update(purpose="viewer", platform=platform)
+        record = game.validate_selection(self.root, selection, language)
         job = Job("import", "viewer_game_assets")
         game.run_import(job, repo_root=self.root, output_root=self.cache, record=record)
         path = Path(job.output_paths()[0])
@@ -136,6 +139,38 @@ class ViewerModSourceTests(unittest.TestCase):
         context = self.context(renamed, renamed.read_bytes())
         result = self.resolve(context, self.write("edit.unity", self.primary), receipts=[receipt])
         self.assertEqual(Path(result["unmasked"]["path"]).read_bytes(), self.unmasked)
+
+    def test_ios_receipt_replays_locale_and_keeps_rina_counterpart_on_ios(self):
+        ios_board = self.bundle("ch9999_co0123", platform=9)
+        directory = self.root / "assets/db/gl"
+        for language, family in (("ko", "preferred"), ("en", "fallback")):
+            catalog = directory / f"asset_i_{language}.db"
+            catalog.write_bytes((directory / "asset_a_en.db").read_bytes())
+            with sqlite3.connect(catalog) as database:
+                for model, raw in (("board", ios_board), ("unmasked", self.ios)):
+                    pack = f"{family}_{model}"
+                    encrypted = bytearray(raw)
+                    extractor.decrypt_section(encrypted, extractor.FIXED_KEY0, 7, 11)
+                    (self.packs / pack).write_bytes(encrypted)
+                    database.execute("UPDATE member_model SET pack_name=?, size=? WHERE asset_path=?", (pack, len(raw), model))
+                    database.execute("UPDATE m_asset_package_mapping SET pack_name=?, file_size=? WHERE pack_name=?",
+                                     (pack, len(raw), "gl" + model))
+        for variant, raw, other_raw, other_model in (("primary", ios_board, self.ios, "unmasked"),
+                                                       ("unmasked", self.ios, ios_board, "board")):
+            with self.subTest(variant=variant):
+                path, record, receipt = self.imported(variant, language="ko", platform="ios")
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(record["selection_language"], "ko")
+                with sources._LOCK:
+                    sources._REGISTRY.clear()
+                with patch.object(game, "run_import", wraps=game.run_import) as importer:
+                    result = self.resolve(self.context(path, raw), self.write("ios-edit.unity", raw), receipts=[receipt])
+                paired = importer.call_args.kwargs["record"]
+                self.assertEqual((paired["purpose"], paired["platform"], paired["pack_name"]),
+                                 ("viewer", "ios", f"preferred_{other_model}"))
+                self.assertEqual(result["platform"], "ios")
+                other = "unmasked" if variant == "primary" else "primary"
+                self.assertEqual(Path(result[other]["path"]).read_bytes(), other_raw)
 
     def test_catalog_change_rejects_registered_receipt(self):
         path, _, _ = self.imported()

@@ -254,8 +254,11 @@ def _facial_resources(root, region, asset_db, owner):
 
 def validate_selection(root, params, language="en"):
     required = {"region", "character", "category", "motion", "download"}
-    if not isinstance(params, dict) or not required <= set(params) or set(params) - required - {"performer", "audio", "target_character"} or type(params["download"]) is not bool or any(not isinstance(params[key], str) for key in ("region", "character", "category", "motion")) or not _CHOICE.fullmatch(params["motion"]):
+    if not isinstance(params, dict) or not required <= set(params) or set(params) - required - {"performer", "audio", "target_character", "platform"} or type(params["download"]) is not bool or any(not isinstance(params[key], str) for key in ("region", "character", "category", "motion")) or not _CHOICE.fullmatch(params["motion"]):
         raise ValueError("Unsupported game motion request.")
+    platform = params.get("platform", "android")
+    if platform not in ("android", "ios"):
+        raise ValueError("Choose Android or iOS game assets.")
     if type(params.get("audio", True)) is not bool or not isinstance(params.get("performer", ""), str):
         raise ValueError("Choose a valid performer and audio option.")
     owner = _owner(params["character"], optional=params["category"] == "mv")
@@ -276,7 +279,11 @@ def validate_selection(root, params, language="en"):
         preferred = preferred or next((entry for entry in performers if entry["is_center"]), None)
         performer = preferred["value"] if preferred else performers[0]["value"] if performers else "1"
     performer_position = int(performer or "1")
-    catalogs = sorted((Path(root) / "assets/db" / region).glob("asset_a_*.db"), key=lambda path: (path.name != f"asset_a_{language}.db", path.name != "asset_a_en.db", path.name))
+    # Master data supplies the same motion IDs, but Unity timelines and their
+    # animation/facial dependencies must come from one selected platform catalog.
+    prefix = "asset_i_" if platform == "ios" else "asset_a_"
+    catalogs = sorted((Path(root) / "assets/db" / region).glob(prefix + "*.db"),
+                      key=lambda path: (path.name != f"{prefix}{language}.db", path.name != f"{prefix}en.db", path.name))
     for path in catalogs:
         with closing(game._readonly(path)) as db:
             if choice["table"] in ("navi_timeline", "live_timeline"):
@@ -302,13 +309,14 @@ def validate_selection(root, params, language="en"):
             resources.extend(item for item in facial if (item["table"], item["asset"]) not in seen)
             if len(resources) > MAX_RESOURCES or sum(item["size"] for item in resources) > MAX_TOTAL_BYTES:
                 raise ValueError("This motion exceeds the viewer import limit.")
-            return {"version": 2, "region": region, "character": owner, "category": params["category"], "motion": params["motion"],
+            return {"version": 2, "region": region, "platform": platform, "character": owner, "category": params["category"], "motion": params["motion"],
                     "download": params["download"], "resources": resources, "audio": params.get("audio", True),
                     "timeline_asset": choice["asset"], "performer_position": performer_position,
                     "performer": next((entry for entry in performers if entry["position"] == performer_position), None),
                     "music_key": choice.get("music"), "live_id": choice.get("live_id"), "asset_3d_id": choice.get("asset_3d_id"),
                     "asset_database": str(path.resolve()), "label": choice["label"], "target_character": target}
-    raise ValueError("This motion is missing from the Android asset catalog.")
+    platform_name = "iOS" if platform == "ios" else "Android"
+    raise ValueError(f"This motion is missing from the {platform_name} asset catalog.")
 
 
 def _cached(root, identity, signatures, record=None):
@@ -324,7 +332,8 @@ def _cached(root, identity, signatures, record=None):
             if any(motion.get(key) != expected for key, expected in (
                     ("category", record["category"]), ("motion", record["motion"]),
                     ("performer", record.get("performer")), ("performerPosition", record.get("performer_position", 1)),
-                    ("targetCharacter", record.get("target_character")))):
+                    ("targetCharacter", record.get("target_character")),
+                    ("platform", record.get("platform")))):
                 return None
         paths = []
         for item in value["files"]:
@@ -497,6 +506,7 @@ def run_import(job, *, repo_root, output_root, record):
         if len(files) > MAX_BUNDLES:
             raise ValueError("The selected performer needs too many motion bundles for the viewer.")
         descriptor = {"version": 2, "category": record["category"], "motion": record["motion"], "label": record.get("label", record["motion"]),
+                      "platform": record.get("platform"),
                       "performer": record.get("performer"), "performerPosition": record.get("performer_position", 1),
                       "clipSources": clip_sources, "bodySegments": segments, "facialClips": facial_clips, "targetCharacter": record.get("target_character"),
                       "duration": max((row["start"] + row["duration"] for row in segments), default=0), "warnings": []}

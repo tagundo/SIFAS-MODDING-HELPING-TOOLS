@@ -113,7 +113,15 @@ def _pack(db, name):
 def _sound_candidates(repo_root, record, event):
     directory = Path(repo_root) / "assets/db" / record["region"]
     preferred = record.get("asset_database") or record.get("catalog_path")
-    paths = sorted(directory.glob("asset_a_*.db"), key=lambda p: (str(p) != str(preferred), p.name != "asset_a_en.db", p.name))
+    preferred = Path(preferred).resolve() if preferred else None
+    preferred_locale = preferred.stem.rsplit("_", 1)[-1] if preferred else "en"
+    # These CRI sheet/ACB/AWB IDs are shared by matching Android and iOS
+    # catalogs. Prefer the selected motion catalog so iOS-only installs work.
+    def rank(path):
+        locale = path.stem.rsplit("_", 1)[-1]
+        return path.resolve() != preferred, locale != preferred_locale, locale != "en", path.name
+
+    paths = sorted(directory.glob("asset_[ai]_*.db"), key=rank)
     cue = event["cue"]
     result, seen = [], set()
     for path in paths:
