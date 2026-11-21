@@ -324,6 +324,7 @@ def _tool_body(raw, platform):
     if (not {"Mesh", "SkinnedMeshRenderer"} <= types or "Move" not in names or
             not names.intersection({"Hips", "BreastSize", "HipsSize", "Spine", "Spine1", "Spine2", "LeftUpLeg", "RightUpLeg"})):
         raise ValueError("The selected asset is not a skinned costume body for transplanting.")
+    return env
 
 
 def _tool_name(record):
@@ -359,7 +360,7 @@ def _tool_scene_import(job, *, repo_root, root, record, scene, deadline, reimpor
         raise ValueError("The canonical costume body exceeds the model import limit.")
     _tool_body(body, record["platform"])
     signature = [{"archive_sha256": scene["sha256"]}]
-    identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
+    identity = _selection_identity(record)
     cached, _ = (None, None) if reimport else _cached_model(root, identity, signature, record)
     if cached and Path(cached).name != _tool_name(record):
         cached = None
@@ -414,6 +415,11 @@ def _safe_directory(path):
 def _sha(path):
     with open(path, "rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _selection_identity(record):
+    value = {key: item for key, item in record.items() if key != "download"}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:32]
 
 
 def _source(root, record, extractor, job, deadline):
@@ -583,7 +589,7 @@ def _plain_section(job, record, source, signature, extractor, deadline):
     return data
 
 
-def run_import(job, *, repo_root, output_root, record, reimport=False):
+def run_import(job, *, repo_root, output_root, record, reimport=False, source_lookup=None):
     """One exact selected costume, with colour and unmasked variants preserved."""
     if not isinstance(reimport, bool):
         raise ValueError("Reimport must be on or off.")
@@ -633,10 +639,11 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
             job.progress(1, 1)
             return "Canonical Rina scene costume prepared for re-editing."
         extractor = _extractor()
+        source_lookup = source_lookup or _source
         resources = [record] + record["recolours"]
-        found = [_source(repo_root, item, extractor, job, deadline) for item in resources]
+        found = [source_lookup(repo_root, item, extractor, job, deadline) for item in resources]
         signatures = [signature for _, signature in found]
-        identity = hashlib.sha256(json.dumps({key: value for key, value in record.items() if key != "download"}, sort_keys=True).encode()).hexdigest()[:32]
+        identity = _selection_identity(record)
         cached, cached_root = (None, None) if reimport else _cached_model(root, identity, signatures, record)
         if tool and cached and Path(cached).name != _tool_name(record):
             cached = None
@@ -645,7 +652,7 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
             if tool:
                 _tool_body(Path(cached).read_bytes(), record["platform"])
                 _tool_selection_unchanged(repo_root, record)
-                current = [_source(repo_root, item, extractor, job, deadline)[1] for item in resources]
+                current = [source_lookup(repo_root, item, extractor, job, deadline)[1] for item in resources]
                 if current != signatures:
                     raise ValueError("A game source pack changed while preparing the costume body.")
                 _check(job, deadline)
@@ -714,7 +721,7 @@ def run_import(job, *, repo_root, output_root, record, reimport=False):
         if tool:
             _tool_body(output.read_bytes(), record["platform"])
             _tool_selection_unchanged(repo_root, record)
-            current = [_source(repo_root, item, extractor, job, deadline)[1] for item in resources]
+            current = [source_lookup(repo_root, item, extractor, job, deadline)[1] for item in resources]
             if current != signatures:
                 raise ValueError("A game source pack changed while preparing the costume body.")
         manifest = {"model": str(output.relative_to(root)), "sha256": _sha(output),

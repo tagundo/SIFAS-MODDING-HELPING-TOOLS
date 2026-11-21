@@ -1,6 +1,7 @@
 # pip install UnityPy
 
 import re, fnmatch, traceback, copy
+import hashlib
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -399,6 +400,299 @@ def _make_object(sf, template, new_pid, tree):
         sf.objects.pop(new_pid, None)   # roll back a partial insert
         raise
     return o
+
+
+_NATIVE_COSTUME_PLATFORMS = {"android": 13, "ios": 9}
+_COSTUME_BONES = {"Hips", "BreastSize", "HipsSize", "Spine", "Spine1", "Spine2", "LeftUpLeg", "RightUpLeg"}
+_COSTUME_PHYSICS = {"SwingBone", "SwingCollider"}
+_MAX_COSTUME_BUNDLE_BYTES = 128 * 1024 * 1024
+
+
+def _native_costume(path, platform, expected_sha256=None):
+    with Path(path).open("rb") as stream:
+        head = stream.read(8)
+        if head != b"UnityFS\0":
+            raise ValueError("Select an original UnityFS costume body.")
+        raw = head + stream.read(_MAX_COSTUME_BUNDLE_BYTES - len(head) + 1)
+    if len(raw) > _MAX_COSTUME_BUNDLE_BYTES:
+        raise ValueError("The costume bundle exceeds the size limit.")
+    if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("The selected costume file changed before conversion.")
+    env = UnityPy.load(raw)
+    if len(env.files) != 1 or len(env.assets) != 1 or int(env.assets[0].target_platform) != platform:
+        raise ValueError("The costume body does not match the selected native platform.")
+    bundle, file = _get_bundle_and_sf(env)
+    objects = {obj.path_id: obj for obj in env.objects}
+    names = {obj.read_typetree().get("m_Name") for obj in objects.values() if obj.type.name == "GameObject"}
+    if (len(objects) != len(file.objects) or not {"Mesh", "SkinnedMeshRenderer"} <= {obj.type.name for obj in objects.values()}
+            or "Move" not in names or not names & _COSTUME_BONES):
+        raise ValueError("The selected Unity bundle is not a complete skinned costume body.")
+    return env, bundle, file, objects
+
+
+def _costume_container(env):
+    return tuple(sorted((name, pointer.path_id) for name, pointer in env.container.items()))
+
+
+def _costume_externals(file):
+    return tuple((value.path, value.guid, value.type) for value in file.externals)
+
+
+def _costume_schema(obj):
+    return tuple((node.m_Level, node.m_Type, node.m_Name, node.m_ByteSize, node.m_MetaFlag)
+                 for node in obj._get_typetree_node().traverse())
+
+
+def _costume_script(tree, objects):
+    pointer = tree.get("m_Script", {})
+    obj = objects.get(pointer.get("m_PathID")) if pointer.get("m_FileID") == 0 else None
+    return obj.read_typetree().get("m_ClassName") if obj is not None and obj.type.name == "MonoScript" else None
+
+
+def _costume_template_key(obj, tree, objects):
+    if obj.type.name == "MonoBehaviour":
+        return obj.type.name, _costume_script(tree, objects), _costume_schema(obj)
+    return obj.type.name, _costume_schema(obj)
+
+
+def _costume_invalid_pointers(objects):
+    from collections import Counter
+    from graft_game_compat import _pointers
+
+    invalid = Counter()
+    for pid, obj in objects.items():
+        if obj.type.name in {"Texture2D", "Texture2DArray", "MonoScript"}:
+            continue
+        for pointer in _pointers(obj.read_typetree()):
+            file_id, path_id = pointer["m_FileID"], pointer["m_PathID"]
+            if path_id and (file_id == 0 and path_id not in objects
+                            or not 0 <= file_id <= len(obj.assets_file.externals)):
+                invalid[pid, file_id, path_id] += 1
+    return invalid
+
+
+def _costume_texture_data(obj, tree):
+    texture = obj.read()
+    width, height, mips = (int(tree[name]) for name in ("m_Width", "m_Height", "m_MipCount"))
+    if (not 0 < width <= 4096 or not 0 < height <= 4096 or not 1 <= mips <= max(width, height).bit_length()
+            or tree.get("m_ImageCount") != 1 or tree.get("m_TextureDimension") != 2):
+        raise ValueError("The costume contains an invalid or oversized 2D texture.")
+    stream = tree.get("m_StreamData") or {}
+    if stream.get("size", 0):
+        filename = stream.get("path", "").replace("\\", "/").rsplit("/", 1)[-1]
+        resources = obj.assets_file.parent.files
+        length = getattr(resources.get(filename), "Length", 0)
+        if (not 0 < stream["size"] <= _MAX_COSTUME_BUNDLE_BYTES or stream["offset"] < 0
+                or stream["offset"] + stream["size"] > length):
+            raise ValueError("A costume texture stream is missing from its Unity bundle.")
+    data = bytes(texture.get_image_data())
+    if not data or len(data) > 128 * 1024 * 1024 or (stream.get("size", 0) and len(data) != stream["size"]):
+        raise ValueError("A costume texture has missing or oversized pixel data.")
+    return texture, data
+
+
+def _costume_texture_metadata(tree):
+    # Streaming offsets/serialized payload size differ between the two copies.
+    return {key: value for key, value in tree.items()
+            if key not in {"image data", "m_StreamData", "m_CompleteImageSize"}}
+
+
+def _costume_decoded_mips(obj, texture, deadline):
+    from PIL import Image
+    from webtools.core import decode
+    from webtools.core.model_materials import _original_mips
+
+    count = texture.m_MipCount
+    levels = [texture] + [proxy.read() for proxy in _original_mips(obj, texture)]
+    if len(levels) != count:
+        raise ValueError("The complete costume texture mip chain is unavailable.")
+    payload = bytearray()
+    for level in levels:
+        with decode._android_image(level, deadline) as image:
+            if image.size != (level.m_Width, level.m_Height):
+                raise ValueError("A costume texture decoded with incorrect dimensions.")
+            with image.convert("RGBA") as rgba, rgba.transpose(Image.Transpose.FLIP_TOP_BOTTOM) as native:
+                payload.extend(native.tobytes())
+    return bytes(payload)
+
+
+def _keep_costume_texture_storage(native, donor):
+    retained = dict(native)
+    for key in ("m_Name", "m_TextureSettings", "m_ColorSpace", "m_IsReadable"):
+        if key in native and key in donor:
+            retained[key] = donor[key]
+    return None if retained == native else retained
+
+
+def _costume_texture_tree(source, tree, target, original, deadline):
+    texture, data = _costume_texture_data(source, tree)
+    if original is not None:
+        clean = original.read_typetree()
+        if _costume_texture_metadata(clean) == _costume_texture_metadata(tree) and _costume_texture_data(original, clean)[1] == data:
+            return None, "retained"
+    native = target.read_typetree() if target is not None else None
+    shape = ("m_Width", "m_Height", "m_MipCount")
+    same_shape = native is not None and all(native[key] == tree[key] for key in shape)
+    same_codec = native is not None and native["m_TextureFormat"] == tree["m_TextureFormat"]
+    native_texture = None
+    if same_shape:
+        native_texture, native_data = _costume_texture_data(target, native)
+        if same_codec and native_data == data:
+            return _keep_costume_texture_storage(native, tree), "retained"
+
+    rgba = _costume_decoded_mips(source, texture, deadline)
+    if native_texture is not None and rgba == _costume_decoded_mips(target, native_texture, deadline):
+        # Transfer texture settings, but retain the target's native storage.
+        return _keep_costume_texture_storage(native, tree), "retained"
+
+    inline = dict(tree)
+    use_native_codec = same_codec or tree["m_TextureFormat"] == TextureFormat.RGBA32
+    inline["m_TextureFormat"] = int(tree["m_TextureFormat"] if use_native_codec else TextureFormat.RGBA32)
+    inline["image data"] = data if use_native_codec else rgba
+    inline["m_CompleteImageSize"] = tree["m_CompleteImageSize"] if use_native_codec else len(rgba)
+    inline["m_StreamData"] = {"offset": 0, "size": 0, "path": ""}
+    if "m_StreamingMipmaps" in inline:
+        inline["m_StreamingMipmaps"] = False
+    return inline, "rgba32" if inline["m_TextureFormat"] == TextureFormat.RGBA32 else "encoded"
+
+
+def _native_support_texture(name):
+    return name in {"dropshadow", "foot_shadow_Plane"} or re.fullmatch(r"ch\d+_co\d+_head(?:_rim)?", name)
+
+
+def _publish_costume(temporary, destination):
+    fd = _os.open(destination, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY, 0o600)
+    try:
+        reserved = _os.fstat(fd)
+    finally:
+        _os.close(fd)
+    try:
+        _os.replace(temporary, destination)
+    except BaseException:
+        try:
+            if _os.path.samestat(_os.lstat(destination), reserved):
+                destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def convert_costume_bundle(source_bundle: Path, target_bundle: Path, export_bundle: Path, *,
+                           platform: str, physics: str = "target", source_original_bundle=None,
+                           source_expected_sha256=None):
+    """Apply one costume body to its opposite native counterpart and validate the result."""
+    import tempfile
+    import time
+    from collections import Counter
+    from costume_transplant import physics_graph_issues
+
+    if platform not in _NATIVE_COSTUME_PLATFORMS or physics not in {"source", "target"}:
+        raise ValueError("Select Android or iOS output and source or target physics.")
+    destination = Path(export_bundle)
+    input_paths = [source_bundle, target_bundle, source_original_bundle]
+    if any(destination.resolve() == Path(path).resolve() for path in input_paths if path is not None):
+        raise ValueError("Save the converted costume to a different file.")
+    native = _NATIVE_COSTUME_PLATFORMS[platform]
+    opposite = next(code for code in _NATIVE_COSTUME_PLATFORMS.values() if code != native)
+    donor_env, _, donor_file, donor = _native_costume(source_bundle, opposite, source_expected_sha256)
+    target_env, bundle, target_file, target = _native_costume(target_bundle, native)
+    catalog = _costume_container(target_env)
+    externals = _costume_externals(target_file)
+    shared = donor.keys() & target.keys()
+    if (not catalog or _costume_container(donor_env) != catalog or _costume_externals(donor_file) != externals
+            or len(shared) * 5 < len(target) * 4):
+        raise ValueError("Use the matching native bundle for the same costume body.")
+    original = {}
+    if source_original_bundle is not None:
+        original_env, _, original_file, original = _native_costume(source_original_bundle, opposite)
+        if _costume_container(original_env) != catalog or _costume_externals(original_file) != externals:
+            raise ValueError("The source-side original does not match the selected costume.")
+    baseline_refs = _costume_invalid_pointers(target)
+    if _costume_invalid_pointers(donor) - baseline_refs:
+        raise ValueError("The source costume contains dangling object references.")
+    baseline_physics = Counter(physics_graph_issues(list(target.values()), target))
+    counts = dict(matched=len(shared), copied=0, added=0, textures_retained=0,
+                  textures_rgba32=0, physics_preserved=0)
+    templates = {}
+    expected_textures = {}
+    deadline = time.monotonic() + 120
+    # Register target-native schemas before applying any source changes.
+    for obj in target.values():
+        tree = obj.read_typetree()
+        templates.setdefault(_costume_template_key(obj, tree, target), obj)
+
+    for pid, source in donor.items():
+        current = target.get(pid)
+        kind = source.type.name
+        tree = source.read_typetree()
+        source_key = _costume_template_key(source, tree, donor)
+        if current is not None:
+            current_tree = current.read_typetree()
+            if source_key != _costume_template_key(current, current_tree, target):
+                raise ValueError(f"Incompatible target layout for {kind} object {pid}.")
+            if kind == "MonoScript" or kind == "Texture2DArray":
+                continue
+            if kind == "MonoBehaviour" and physics == "target" and source_key[1] in _COSTUME_PHYSICS:
+                counts["physics_preserved"] += 1
+                continue
+            if kind == "AssetBundle":
+                if any(tree[key] != current_tree[key] for key in tree if key not in {"m_PreloadTable", "m_Container"}):
+                    raise ValueError("The costume requires different native bundle dependencies.")
+            if kind == "Texture2D" and _native_support_texture(current_tree.get("m_Name", "")):
+                counts["textures_retained"] += 1
+                continue
+        elif kind not in {"GameObject", "Transform", "Mesh", "Material", "Texture2D", "MonoBehaviour"}:
+            raise ValueError(f"The target costume cannot import a new {kind} object.")
+
+        if kind == "Texture2D":
+            reference = original.get(pid) if current is not None else None
+            tree, treatment = _costume_texture_tree(source, tree, current, reference, deadline)
+            if treatment == "retained":
+                counts["textures_retained"] += 1
+            if tree is None:
+                continue
+            if treatment == "rgba32":
+                counts["textures_rgba32"] += 1
+            if not (tree.get("m_StreamData") or {}).get("size", 0):
+                expected_textures[pid] = hashlib.sha256(bytes(tree["image data"])).digest()
+        elif (tree.get("m_StreamData") or {}).get("size", 0):
+            raise ValueError(f"The costume contains an unsupported streamed {kind} object.")
+
+        if current is not None:
+            if tree != current_tree:
+                current.save_typetree(tree)
+                counts["copied"] += 1
+        else:
+            template = templates.get(source_key)
+            if template is None or (kind == "MonoBehaviour" and not source_key[1]):
+                raise ValueError(f"No native template for added {kind} object {pid}.")
+            _make_object(target_file, template, pid, tree)
+            counts["added"] += 1
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".unity", delete=False) as stream:
+            temporary = Path(stream.name)
+            bundle.mark_changed()
+            stream.write(bundle.save(packer="original"))
+        out_env, out_bundle, out_file, output = _native_costume(temporary, native)
+        if (output.keys() != (target.keys() | donor.keys()) or _costume_container(out_env) != catalog
+                or _costume_externals(out_file) != externals or set(out_bundle.files) != set(bundle.files)):
+            raise ValueError("The converted output did not preserve its native object and container structure.")
+        if _costume_invalid_pointers(output) - baseline_refs:
+            raise ValueError("The converted costume contains dangling object references.")
+        if Counter(physics_graph_issues(list(output.values()), output)) - baseline_physics:
+            raise ValueError("The converted costume has an invalid swing-physics graph.")
+        for pid, expected in expected_textures.items():
+            if hashlib.sha256(output[pid].read().get_image_data()).digest() != expected:
+                raise ValueError("A converted texture did not serialize its complete image data.")
+        _publish_costume(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return counts
+
 
 # ========== Selective copy for a paired bundle ==========
 

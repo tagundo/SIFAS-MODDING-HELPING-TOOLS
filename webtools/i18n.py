@@ -2493,6 +2493,64 @@ for _source, _translated in _VIEWER_MODEL_SAVE_TRANSLATIONS.items():
     _TABLES["ja"][_source] = _translated[1]
 
 
+_COSTUME_CONVERSION_TRANSLATIONS = {
+    "Costume platform conversion": ["코스튬 플랫폼 변환", "衣装のプラットフォーム変換"],
+    "Convert a modified costume body for Android (APK) or iOS using the same costume from the output platform.": [
+        "수정한 코스튬 본체를 출력 플랫폼의 동일한 의상 원본으로 변환합니다.",
+        "変換先の同じ衣装を使って、改造した衣装本体を Android (APK) または iOS 用に変換します。"
+    ],
+    "Conversion direction": ["변환 방향", "変換の方向"],
+    "Modified costume bundle": ["변환할 모드 의상 번들", "変換する改造済み衣装バンドル"],
+    "Folder of modified costumes": ["변환할 모드 의상 폴더", "変換する改造済み衣装のフォルダ"],
+    "Where to find the matching costume": ["출력 플랫폼의 원본 의상 선택", "変換先の元の衣装を選択"],
+    "Find the same costume in game data": ["게임 데이터에서 같은 의상 찾기", "ゲームデータから同じ衣装を探す"],
+    "Choose the original manually": ["원본 의상 직접 선택", "元の衣装を手動で選ぶ"],
+    "Game packs folder (optional)": ["게임 packs 폴더 (선택)", "ゲームの packs フォルダ（任意）"],
+    "Leave blank to use the configured packs folder. Only packs for the matching costume are read.": [
+        "비워 두면 설정된 packs 폴더를 사용합니다. 같은 의상에 필요한 팩만 읽습니다.",
+        "空欄の場合は設定済みの packs フォルダを使用し、該当する衣装のパックだけを読み込みます。"
+    ],
+    "Download any missing packs for the matching costume": ["이 의상에 필요한 누락 팩 다운로드", "該当する衣装に必要な不足パックをダウンロード"],
+    "Original costume bundle for the output platform": ["출력 플랫폼의 같은 의상 원본 번들", "変換先プラットフォームの同じ衣装の元バンドル"],
+    "Folder of extracted original costumes for the output platform": ["출력 플랫폼에서 추출한 원본 의상 폴더", "変換先プラットフォームから抽出した元の衣装のフォルダ"],
+    "Leave blank to name the file for the output platform.": ["비워 두면 파일 이름에 출력 플랫폼이 붙습니다.", "空欄の場合はファイル名に変換先のプラットフォームが付きます。"],
+    "Swing settings for existing bones and colliders": ["기존 본·콜라이더에 적용할 흔들림 설정", "既存のボーンとコライダーに適用する揺れ設定"],
+    "Use swing settings from the output platform’s original costume": ["출력 플랫폼의 원본 의상 설정 사용", "変換先の元の衣装の揺れ設定を使う"],
+    "Bring over the modified costume’s swing settings": ["변환할 모드 의상 설정 가져오기", "変換する改造済み衣装の揺れ設定を引き継ぐ"],
+    "Use the iOS original costume’s swing settings": ["iOS 원본 의상의 흔들림 사용", "iOS の元の衣装の揺れ設定を使う"],
+    "Use the Android original costume’s swing settings": ["Android 원본 의상의 흔들림 사용", "Android の元の衣装の揺れ設定を使う"],
+    "Bring over the iOS mod costume’s swing settings": ["iOS 모드 의상의 흔들림 가져오기", "iOS の改造済み衣装の揺れ設定を引き継ぐ"],
+    "Bring over the Android mod costume’s swing settings": ["Android 모드 의상의 흔들림 가져오기", "Android の改造済み衣装の揺れ設定を引き継ぐ"],
+    "Both options keep new objects and physics added by a costume transplant.": [
+        "어느 쪽을 선택해도 의상 이식으로 추가된 오브젝트와 물리 효과는 함께 옮겨집니다.",
+        "どちらを選んでも、衣装の移植で追加されたオブジェクトや物理設定は引き継がれます。"
+    ],
+    "Convert costume": ["코스튬 변환", "衣装を変換"],
+    "Check for a match again": ["같은 의상 다시 찾기", "同じ衣装を再検索"],
+    "Choose the modified costume to find its original.": ["변환할 모드 의상을 선택하면 같은 의상의 원본을 찾습니다.", "改造済み衣装を選ぶと、同じ衣装の元データを探します。"],
+    "Each costume is matched using the game catalog.": ["게임 목록에서 각 의상의 원본을 찾습니다.", "衣装ごとに元の衣装をゲームの一覧から探します。"],
+    "Finding the original costume…": ["원본 의상 찾는 중…", "元の衣装を検索中…"],
+    "Could not check the game data.": ["게임 데이터를 확인하지 못했습니다.", "ゲームデータを確認できませんでした。"],
+    "Matching costume found in local game packs.": ["다운로드된 게임 팩에서 같은 의상 원본을 찾았습니다.", "ダウンロード済みのゲームパックに同じ衣装が見つかりました。"],
+    "Matching costume found. Download its missing packs or choose the original manually.": [
+        "같은 의상 원본을 찾았습니다. 필요한 팩을 다운로드하거나 원본을 직접 선택하세요.",
+        "同じ衣装が見つかりました。不足パックをダウンロードするか、元の衣装を手動で選んでください。"
+    ],
+    "Choose the matching original costume manually.": ["같은 의상의 원본을 직접 선택하세요.", "同じ衣装の元データを手動で選んでください。"],
+    "Choose the original costume and variant manually. The edited bundle could not be matched to the game catalog.": [
+        "게임 목록에서 변환할 의상을 확인하지 못했습니다. 원본 의상과 종류를 직접 선택하세요.",
+        "変換する衣装をゲームの一覧で確認できませんでした。元の衣装と種類を手動で選んでください。"
+    ],
+    "More than one original costume matches this bundle. Choose the costume and variant manually.": [
+        "이 번들과 일치하는 원본이 여러 개 있습니다. 의상과 종류를 직접 선택하세요.",
+        "このバンドルに一致する元の衣装が複数あります。衣装と種類を手動で選んでください。"
+    ],
+}
+for _source, _translated in _COSTUME_CONVERSION_TRANSLATIONS.items():
+    _TABLES["ko"][_source] = _translated[0]
+    _TABLES["ja"][_source] = _translated[1]
+
+
 # Texture authoring labels shared with the viewer save form.
 _TABLES["ko"].update({
     "Open texture editor": "텍스쳐 편집기 열기",

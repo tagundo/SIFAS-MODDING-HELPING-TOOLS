@@ -49,7 +49,7 @@ def roots_listing() -> dict:
     return {"roots": out}
 
 
-def list_dir(path) -> dict:
+def list_dir(path, *, directories_only=False) -> dict:
     """List one directory (jailed). `path` blank/None falls back to home."""
     if not path:
         path = os.path.expanduser("~")
@@ -59,6 +59,26 @@ def list_dir(path) -> dict:
     if not os.path.isdir(rp):
         raise NotADirectoryError(rp)
 
+    if directories_only:
+        try:
+            with os.scandir(rp) as children:
+                entries = [{"name": entry.name, "path": entry.path, "is_dir": True}
+                           for entry in children if not entry.name.startswith(".") and entry.is_dir()]
+        except OSError as exc:
+            raise PermissionError(str(exc)) from exc
+        entries.sort(key=lambda entry: entry["name"].lower())
+    else:
+        entries = _file_entries(rp)
+
+    parent = os.path.dirname(rp)
+    return {
+        "path": rp,
+        "parent": parent if (parent != rp and is_within_allowed(parent)) else None,
+        "entries": entries,
+    }
+
+
+def _file_entries(rp):
     entries = []
     try:
         names = sorted(os.listdir(rp), key=lambda s: s.lower())
@@ -82,9 +102,4 @@ def list_dir(path) -> dict:
             item["is_bundle"] = is_unity_bundle(full)
         entries.append(item)
 
-    parent = os.path.dirname(rp)
-    return {
-        "path": rp,
-        "parent": parent if (parent != rp and is_within_allowed(parent)) else None,
-        "entries": entries,
-    }
+    return entries

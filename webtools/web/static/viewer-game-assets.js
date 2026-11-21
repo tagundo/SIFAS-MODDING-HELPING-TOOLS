@@ -33,6 +33,7 @@
     function setBusy(value) {
       busy = value;
       [region, platform, character, search, costume, variant, download, reimport].forEach(function (node) { if (node) node.disabled = value; });
+      if (platform && consumer.lockPlatform) platform.disabled = true;
       submit.disabled = value || !costume.value;
       cancel.textContent = t(value ? "Cancel" : "Close");
       dialog.setAttribute("aria-busy", String(value));
@@ -74,7 +75,7 @@
       var currentCostume = costume.value;
       fill(costume, [], "Choose a costume"); submit.disabled = true; setStatus("Loading costumes…");
       var defaultRegion = language().split("-")[0] === "ja" ? "jp" : "gl";
-      var params = new URLSearchParams({ lang: language(), region: preferredRegion || defaultRegion, character: currentCharacter, search: search.value.trim() });
+      var params = new URLSearchParams({ lang: language(), region: selection.region || preferredRegion || defaultRegion, character: currentCharacter, search: search.value.trim() });
       try {
         var response = await fetch("/api/viewer/game/catalog?" + params, { signal: controller.signal });
         var data = await response.json();
@@ -105,7 +106,8 @@
       search = element("input", { id: "viewer-game-search", type: "search", maxlength: "120", placeholder: t("Search costumes") });
       costume = element("select", { id: "viewer-game-costume" });
       variant = element("select", { id: "viewer-game-variant" });
-      fill(region, preferredRegion ? [{ value: preferredRegion, label: preferredRegion === "jp" ? "Japan (JP)" : "Global (GL)" }] : [{ value: "", label: "Game region" }]);
+      var initialRegion = consumer.region || preferredRegion;
+      fill(region, initialRegion ? [{ value: initialRegion, label: initialRegion === "jp" ? "Japan (JP)" : "Global (GL)" }] : [{ value: "", label: "Game region" }]);
       fill(character, [], "Choose a character"); fill(costume, [], "Choose a costume");
       var fields = element("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Search costumes", search), label("Costume", costume), label("Costume variant", variant)]);
       variant.parentNode.hidden = true;
@@ -113,9 +115,10 @@
       if (consumer.purpose === "transplant") {
         platform = element("select", { id: "viewer-game-platform" });
         fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, consumer.platform);
+        platform.disabled = consumer.lockPlatform;
         fields.insertBefore(label("Bundle platform", platform), character.parentNode);
       }
-      download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = true;
+      download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = consumer.downloadByDefault;
       var downloadLabel = element("label", { className: "viewer-game-assets-download" }, [download, element("span", { text: t("Download missing assets") })]);
       reimport = element("input", { id: "viewer-game-reimport", type: "checkbox" });
       reimport.checked = !!(document.getElementById("viewer-reimport") && document.getElementById("viewer-reimport").checked);
@@ -133,8 +136,11 @@
         purposeHint,
         status, progress, log, element("div", { className: "viewer-game-assets-actions" }, [submit, cancel]));
       region.addEventListener("change", function () {
-        preferredRegion = region.value;
-        try { localStorage.setItem("elichika.game-assets.region.v1", preferredRegion); } catch (_) {}
+        if (consumer.region) consumer.region = region.value;
+        else {
+          preferredRegion = region.value;
+          try { localStorage.setItem("elichika.game-assets.region.v1", preferredRegion); } catch (_) {}
+        }
         loadCatalog(true);
       });
       character.addEventListener("change", function () { search.value = ""; loadCatalog(false); });
@@ -216,6 +222,8 @@
       try { if (options.isCurrent() !== true) return false; } catch (_) { return false; }
       consumer = { purpose: purpose, trigger: options.trigger, label: String(options.label || ""),
         platform: options.platform === "ios" ? "ios" : "android", language: language(),
+        lockPlatform: options.lockPlatform === true, downloadByDefault: options.downloadByDefault !== false,
+        region: ["gl", "jp"].indexOf(options.region) < 0 ? "" : options.region,
         onSelect: options.onSelect, isCurrent: options.isCurrent };
       generation += 1; choices = []; busy = false; build(); dialog.showModal(); loadCatalog(false);
       return true;

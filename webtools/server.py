@@ -119,6 +119,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_viewer_prepare()
             if path == "/api/viewer/game/import":
                 return self._api_viewer_game_import()
+            if path == "/api/costume-platform/match":
+                return self._api_costume_platform_match()
             if path == "/api/viewer/game/motions/import":
                 return self._api_viewer_motion_import()
             if path in ("/api/viewer/mesh/inspect", "/api/viewer/mesh/data", "/api/viewer/mesh/export"):
@@ -225,9 +227,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._serve_file(WEB_DIR / "static" / rel)
 
     def _api_fs_list(self):
-        path = (self._query().get("path") or [""])[0]
+        query = self._query()
+        path = (query.get("path") or [""])[0]
         try:
-            return self._send_json(filebrowser.list_dir(path))
+            return self._send_json(filebrowser.list_dir(path, directories_only=query.get("dirs") == ["1"]))
         except PermissionError as exc:
             return self._send_json({"error": str(exc)}, status=403)
         except (NotADirectoryError, FileNotFoundError) as exc:
@@ -519,6 +522,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(exc)}, status=400)
         except SQLiteError:
             return self._send_json({"error": "Game assets are unavailable. Start or prepare the server data first."}, status=400)
+
+    def _api_costume_platform_match(self):
+        from sqlite3 import Error as SQLiteError
+        from webtools.core import costume_platform_source
+
+        try:
+            payload = self._viewer_feature_request(
+                {"path", "direction", "region"}, max_bytes=12288, token=False, optional_fields={"packs_dir"})
+            return self._send_json(costume_platform_source.match(Path.cwd(), payload, language=self._lang()))
+        except PermissionError:
+            return self._send_json({"error": "Open the editor from this app and choose files in the allowed library."}, status=403)
+        except (OSError, SQLiteError):
+            return self._send_json({"error": "The costume or game catalog could not be read."}, status=400)
+        except ValueError as exc:
+            return self._send_json({"error": str(exc)}, status=400)
 
     def _viewer_feature_request(self, fields, *, max_bytes=512 * 1024, token=True, optional_fields=()):
         """Validate same-origin feature requests before doing work or starting jobs."""

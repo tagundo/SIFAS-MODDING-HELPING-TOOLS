@@ -368,6 +368,7 @@ function renderForm() {
 
   const form = el("form", { id: "tool-form", onsubmit: (e) => { e.preventDefault(); runTool(); } });
   if (tool.id === "mesh_baker") form.classList.add("mesh-form");
+  const convertsCostume = tool.id === "iosapk_import";
   const files = el("div", { class: "tool-io" });
   const settings = el("div", { class: "tool-settings" });
   const actions = el("div", { class: "tool-actions" });
@@ -378,7 +379,8 @@ function renderForm() {
     if (field.mode && field.mode !== state.currentMode) continue;
     const rendered = renderField(field);
     if (field.expert) { expert.appendChild(rendered); hasExpert = true; }
-    else if (["path", "dir", "paths"].includes(field.type) || ["prefix", "suffix"].includes(field.name)) files.appendChild(rendered);
+    else if (["path", "dir", "paths"].includes(field.type) || ["prefix", "suffix"].includes(field.name) ||
+      convertsCostume && ["direction", "base_mode", "region", "download_missing"].includes(field.name)) files.appendChild(rendered);
     else {
       if (["text", "textarea", "vec3", "preset", "dynamic_select", "bone_targets", "body_parts"].includes(field.type)) rendered.classList.add("tool-field-wide");
       settings.appendChild(rendered);
@@ -387,7 +389,8 @@ function renderForm() {
   if (hasExpert) settings.appendChild(expert);
   if (files.childNodes.length) { form.appendChild(files); form.classList.add("tool-form-has-files"); }
   if (settings.childNodes.length) { form.appendChild(settings); form.classList.add("tool-form-has-settings"); }
-  const run = el("button", { class: "run-btn", type: "submit", text: T(tool.id === "mesh_baker" ? "Save model" : "Run") });
+  const runLabel = tool.id === "mesh_baker" ? "Save model" : convertsCostume ? "Convert costume" : "Run";
+  const run = el("button", { class: "run-btn", type: "submit", text: T(runLabel) });
   if (tool.id === "mesh_baker") {
     const preview = el("button", { type: "button", id: "mesh-view-input", class: "mesh-preview-btn",
       text: T("View input model"), onclick: () => {
@@ -412,7 +415,106 @@ function renderForm() {
   }
   wireDynamicSelects(tool);
   wireBoneTargets(tool);
+  if (convertsCostume) wireCostumeConversion(form, run);
 
+}
+
+function costumeConversionPlatforms(direction) {
+  return direction === "ios_to_android" ? { source: "ios", output: "android" } : { source: "android", output: "ios" };
+}
+
+function wireCostumeConversion(form, run) {
+  const single = state.currentMode === "single";
+  const field = (name) => form.querySelector("#f_" + name);
+  const direction = field("direction"), mode = field("base_mode"), region = field("region");
+  const source = field(single ? "donor" : "donor_dir"), base = field(single ? "target" : "target_dir");
+  const packs = field("packs_dir"), download = field("download_missing"), physics = field("physics_source");
+  region.value = state.lang === "ja" ? "jp" : "gl";
+  const status = el("p", { id: "costume-platform-match", class: "help", role: "status" });
+  const retry = el("button", { type: "button", text: T("Check for a match again"), hidden: "", onclick: () => {
+    lastRequest = "";
+    refresh();
+  } });
+  const report = el("div", { class: "field" }, [status, retry]);
+  packs.closest(".field").after(report);
+  let lastRequest = "", timer = null, controller = null, match = null;
+  form._getCostumeMatch = () => match && match.selection;
+
+  function show(input, visible) {
+    input.closest(".field").hidden = !visible;
+    input.disabled = !visible;
+  }
+
+  function setStatus(kind, message) {
+    status.dataset.status = kind;
+    status.textContent = message;
+    retry.hidden = kind !== "error";
+  }
+
+  function updateRun() {
+    const manual = mode.value === "manual";
+    show(download, !manual && (!single || Boolean(match && match.missing)));
+    run.disabled = !source.value.trim() || !field("out_dir").value.trim() ||
+      (manual ? !base.value.trim() : single && (!match || match.missing && (!download.checked || !match.selection)));
+  }
+
+  function refresh() {
+    const { source: sourcePlatform, output } = costumeConversionPlatforms(direction.value);
+    physics.options[0].textContent = T(output === "ios" ? "Use the iOS original costume’s swing settings" : "Use the Android original costume’s swing settings");
+    physics.options[1].textContent = T(sourcePlatform === "ios" ? "Bring over the iOS mod costume’s swing settings" : "Bring over the Android mod costume’s swing settings");
+    const manual = mode.value === "manual";
+    show(base, manual);
+    show(region, !manual);
+    show(packs, !manual);
+    report.hidden = manual;
+
+    const payload = { path: source.value.trim(), region: region.value, direction: direction.value };
+    if (packs.value.trim()) payload.packs_dir = packs.value.trim();
+    const request = !manual && single && payload.path ? JSON.stringify(payload) : "";
+    if (request === lastRequest && request) { updateRun(); return; }
+    clearTimeout(timer);
+    if (controller) controller.abort();
+    lastRequest = request;
+    match = null;
+    if (single) download.checked = false;
+    updateRun();
+    if (!request) {
+      setStatus("idle", T(single ? "Choose the modified costume to find its original." : "Each costume is matched using the game catalog."));
+      return;
+    }
+    setStatus("loading", T("Finding the original costume…"));
+    const current = new AbortController();
+    controller = current;
+    const isCurrent = () => form.isConnected && !current.signal.aborted;
+    timer = setTimeout(async () => {
+      try {
+        if (!isCurrent()) return;
+        const response = await fetch("/api/costume-platform/match?lang=" + encodeURIComponent(state.lang), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: request, signal: current.signal,
+        });
+        const result = await response.json();
+        if (!isCurrent()) return;
+        if (!response.ok || result.error) throw new Error(result.error || "Could not check the game data.");
+        if (result.status === "matched") {
+          match = result;
+          const found = T(result.missing ? "Matching costume found. Download its missing packs or choose the original manually." : "Matching costume found in local game packs.");
+          const bytes = result.missing && Number.isFinite(result.missing_bytes) && result.missing_bytes > 0 ? " · " + fmtSize(result.missing_bytes) : "";
+          setStatus("matched", result.label + " · " + found + bytes);
+        } else {
+          setStatus(result.status === "ambiguous" ? "ambiguous" : "unknown", T(result.message || "Choose the matching original costume manually."));
+        }
+      } catch (error) {
+        if (isCurrent()) setStatus("error", T(error.message || "Could not check the game data."));
+      }
+      if (isCurrent()) updateRun();
+    }, 250);
+  }
+
+  for (const input of [direction, mode, region, source, base, packs, download, field("out_dir")]) {
+    input.addEventListener("change", refresh);
+    if (input.type === "text") input.addEventListener("input", refresh);
+  }
+  refresh();
 }
 
 function meshReferencePath() {
@@ -854,10 +956,11 @@ function renderField(field) {
     const browse = el("button", {
       type: "button", text: T("Browse"),
       onclick: () => openPicker(field.type, (p) => {
+        if (!input.isConnected) return;
         input.value = p;
         input.dispatchEvent(new Event("change", { bubbles: true }));  // notify dynamic_select deps
       }, field.root, field.type === "path" && input.value
-        ? input.value.replace(/\/[^/]*$/, "") : input.value),
+        ? input.value.replace(/\/[^/]*$/, "") : input.value, { directoriesOnly: field.name === "packs_dir" }),
     });
     const row = el("div", { class: "path-row" }, [input, browse]);
     if (field.type === "path" && field.game_asset === true) {
@@ -869,15 +972,20 @@ function renderField(field) {
         onclick: () => {
           if (!window.GameAssetPicker) return;
           const form = input.closest("#tool-form"), originalValue = input.value, originalLanguage = state.lang;
+          const direction = ownerTool === "iosapk_import" && form.querySelector("#f_direction");
+          const originalDirection = direction && direction.value;
           const isCurrent = () => input.isConnected && gameAssets.isConnected && form === input.closest("#tool-form") &&
             state.currentTool && state.currentTool.id === ownerTool && state.lang === originalLanguage &&
-            sectionNavigation.section === "tools" && input.value === originalValue;
+            sectionNavigation.section === "tools" && input.value === originalValue &&
+            (!direction || !input.disabled && direction.value === originalDirection);
+          const fixed = direction ? { platform: costumeConversionPlatforms(originalDirection).output,
+            lockPlatform: true, region: form.querySelector("#f_region").value, downloadByDefault: false } : { platform: state.gameAssetPlatform };
           GameAssetPicker.open({ trigger: gameAssets, purpose: "transplant", label: field.label,
-            platform: state.gameAssetPlatform, isCurrent,
+            ...fixed, isCurrent,
             onSelect: (path, selection) => {
               if (!isCurrent()) return;
               input.value = path;
-              state.gameAssetPlatform = selection.platform;
+              if (!direction) state.gameAssetPlatform = selection.platform;
               input.dispatchEvent(new Event("input", { bubbles: true }));
               input.dispatchEvent(new Event("change", { bubbles: true }));
             } });
@@ -961,6 +1069,7 @@ function renderField(field) {
 }
 
 function defaultPath(field) {
+  if (field.default !== undefined) return String(field.default);
   // dir fields prefill with their root; file fields start blank
   if (field.type === "dir" && field.root && state.roots[field.root]) return state.roots[field.root];
   return "";
@@ -975,6 +1084,7 @@ function collectParams() {
   document.querySelectorAll("#tool-form [data-name]").forEach((inp) => {
     const name = inp.dataset.name;
     if (inp.dataset.ftype === "preset") return; // UI-only; it fills other fields
+    if (state.formToolId === "iosapk_import" && inp.disabled) return;
     if (inp.dataset.ftype === "body_parts") params[name] = inp._collectBodyParts();
     else if (inp.dataset.ftype === "bone_targets") params[name] = inp._collectTargets();
     else if (inp.dataset.ftype === "checkbox") params[name] = inp.checked;
@@ -988,7 +1098,17 @@ async function runTool() {
   if (state.thumbnailRenderController) return;
   const tool = state.currentTool;
   if (!tool || tool.id === TEXTURE_PREVIEWS_TOOL) return;
+  if (tool.id === "iosapk_import" && $("#tool-form .run-btn").disabled) return;
   const params = collectParams();
+  if (tool.id === "iosapk_import") {
+    params.language = state.lang;
+    if (params.mode === "single" && params.base_mode === "library" && params.download_missing) {
+      const selection = $("#tool-form")._getCostumeMatch();
+      if (!selection) return;
+      const { region, suit, variant, platform } = selection;
+      params.match_selection = { region, suit, variant, platform };
+    }
+  }
 
   // generic required-field validation (respects the current single/batch mode)
   const missing = [];
@@ -1055,6 +1175,7 @@ function streamJob(jobId) {
         state.savedModelPaths = msg.output_paths.filter((p) => typeof p === "string" && p);
         $("#console-view-model").hidden = !state.savedModelPaths.length;
       }
+      if (state.jobToolId === "iosapk_import" && Array.isArray(msg.output_paths)) renderCostumeOutputs(msg.output_paths);
       finishConsole(msg.status);
       es.close(); state.es = null;
     }
@@ -1076,8 +1197,28 @@ function openConsole(title) {
   $("#cancel-btn").disabled = false;
   state.savedModelPaths = [];
   $("#console-view-model").hidden = true;
+  renderCostumeOutputs([]);
   setProgress(0, 1);
 }
+
+function renderCostumeOutputs(paths) {
+  const list = $("#console-costume-outputs");
+  list.replaceChildren();
+  for (const path of paths) {
+    if (typeof path !== "string" || !path) continue;
+    const name = baseName(path);
+    const link = el("a", { text: name, title: path, href: "/api/download?path=" + encodeURIComponent(path), download: name });
+    const item = el("li", {}, [link]);
+    if (window.ElichikaPlatform && ElichikaPlatform.supports("reveal")) {
+      item.appendChild(el("button", { type: "button", text: T("Show in Finder"), onclick: () => {
+        ElichikaPlatform.request("reveal", { path }).catch((error) => alert(T(String(error.message || error))));
+      } }));
+    }
+    list.appendChild(item);
+  }
+  list.hidden = !list.childElementCount;
+}
+
 function finishConsole(status) {
   const label = status === "done" ? T("done ✓") : status === "cancelled" ? T("cancelled") : T("error ✗");
   $("#console-title").textContent = (state.jobLabel || T("Job")) + " — " + label;
@@ -1139,7 +1280,8 @@ function openPicker(type, onPick, rootName, startPath, options) {
       .finally(() => { if (state.picker === picker) closePicker(); });
     return;
   }
-  state.picker = { type, onPick, cwd: "", navigation: 0, pending: true, selected: new Set(), visibleFiles: [], trigger };
+  state.picker = { type, onPick, cwd: "", navigation: 0, pending: true, selected: new Set(), visibleFiles: [], trigger,
+    directoriesOnly: options.directoriesOnly === true };
   $("#picker-title").textContent = title;
   $("#picker-use-folder").style.display = type === "dir" ? "" : "none";
   $("#picker-use-folder").disabled = true;
@@ -1182,7 +1324,8 @@ async function navigate(path) {
   refreshPickerSelection();
   let data;
   try {
-    data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path || ""))).json();
+    const dirs = picker.directoriesOnly ? "&dirs=1" : "";
+    data = await (await fetch("/api/fs/list?path=" + encodeURIComponent(path || "") + dirs)).json();
   } catch (e) {
     if (isCurrent()) { picker.pending = false; refreshPickerSelection(); alert(T("Cannot open: ") + e); }
     return;

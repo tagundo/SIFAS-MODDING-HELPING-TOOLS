@@ -11,7 +11,7 @@ from pathlib import Path
 from webtools.core.repo import ensure_repo_on_path
 from webtools.core.sukusta import find_bundles, default_sukusta_dir
 from webtools.core.tkstub import ensure_tk_stub
-from webtools.tools.common import as_float, parse_multi_paths, single_out_path
+from webtools.tools.common import as_float, batch_out_path, parse_multi_paths, single_out_path
 
 
 # ---- dynamic dropdown provider: donor -> candidate part-root bones ----------
@@ -505,54 +505,153 @@ def _recolour_batch(job, params, out_dir):
     return f"batch recolour: {ok}/{len(variants)} colour variants composited to {out_dir}"
 
 
-# ---------------------------------------------- iOS/APK selective pair import
+# ---------------------------------------------- iOS / Android costume conversion
 def run_iosapk_import(job, params):
     ensure_tk_stub()
     ensure_repo_on_path()
-    import assetbundle_IosApk_batch_import_plus as m
+    import assetbundle_IosApk_batch_import_plus as converter
 
-    import_new = bool(params.get("import_new_objects", True))
-    # The matcher consumers expect (matcher_fn, pattern) tuples from
-    # compile_name_patterns, NOT raw strings — passing strings crashes (unpack
-    # error) or silently no-ops. Compile with the tool's own function so the web
-    # filters behave exactly like the desktop GUI. digit_agnostic defaults on
-    # (GUI default) so ch0001_* patterns match any character id.
-    name_mode = params.get("name_mode") or "glob"
-    digit_agnostic = bool(params.get("digit_agnostic", True))
-
-    def _compile(raw):
-        return m.compile_name_patterns(raw or "", mode=name_mode, digit_agnostic=digit_agnostic)
-
-    name_inc = _compile(params.get("name_include"))
-    name_exc = _compile(params.get("name_exclude"))
-    # protect the wearer's own script components (swing physics) from being
-    # clobbered by a same-path_id donor MonoBehaviour, matching the GUI default.
-    script_exc = _compile(params.get("script_exclude") if params.get("script_exclude") is not None
-                          else "SwingBone, SwingCollider")
-    empty = set()
+    direction = params.get("direction")
+    if not isinstance(direction, str):
+        raise ValueError("Choose the costume conversion direction.")
+    platform = {"android_to_ios": "ios", "ios_to_android": "android"}.get(direction)
+    if not platform:
+        raise ValueError("Choose the costume conversion direction.")
+    physics_source = params.get("physics_source", "target")
+    if physics_source not in ("target", "donor"):
+        raise ValueError("Choose which costume's existing swing physics to use.")
+    physics = "source" if physics_source == "donor" else "target"
+    base_mode = params.get("base_mode", "library")
+    if base_mode not in ("library", "manual"):
+        raise ValueError("Choose where to find the original costume for the output platform.")
+    download = params.get("download_missing", False)
+    if not isinstance(download, bool):
+        raise ValueError("Choose whether to download the missing costume pack.")
     out_dir = params.get("out_dir")
+    if not isinstance(out_dir, str) or not out_dir:
+        raise ValueError("Choose the converted costume output folder.")
+    out_dir = Path(out_dir).expanduser()
+    prefix = params.get("prefix") or ""
+    suffix = params.get("suffix") or ("_iOS" if platform == "ios" else "_APK")
+    if any(not isinstance(part, str) or any(char in part for char in ("/", "\\", "\x00")) for part in (prefix, suffix)):
+        raise ValueError("Use a filename prefix and suffix without directory separators.")
 
-    if params.get("mode") == "batch":
-        prefix = params.get("prefix") or ""
-        suffix = params.get("suffix") or ""
-        job.log("pairing donor/target bundles by pathID intersection...")
+    def library_target(source):
+        from webtools.core import costume_platform_source
+        from webtools.core.game_models import ImportCancelled
+        from webtools.core.viewer_cache import game_models_dir
+        root = Path.cwd()
+        models = game_models_dir()
+        selection = {"path": str(source), "direction": direction, "region": params.get("region") or "gl"}
+        if params.get("packs_dir"):
+            selection["packs_dir"] = params["packs_dir"]
+        language = params.get("language")
+        if language not in ("en", "ko", "ja"):
+            language = "ja" if selection["region"] == "jp" else "en"
+        resolved = costume_platform_source.resolve(root, selection, language=language, cache_root=models)
+        if resolved["status"] != "matched":
+            raise ValueError(resolved["message"])
+        if download and mode == "single":
+            expected = {key: resolved["selection"][key] for key in ("region", "suit", "variant", "platform")}
+            if params.get("match_selection") != expected:
+                raise ValueError("Check the original costume again before downloading its missing packs.")
+        cache = models / "transplant-bodies"
+        try:
+            target = costume_platform_source.prepare_target(job, repo_root=root, resolved=resolved,
+                output_root=cache, download=download)
+            original = costume_platform_source.prepare_source_original(job, repo_root=root, resolved=resolved,
+                output_root=cache)
+        except ImportCancelled:
+            return None, None, None
+        return target, original, resolved.get("donor_sha256")
+
+    def convert(source, target, original, source_sha256, output):
+        if job.should_stop():
+            return False
+        result = converter.convert_costume_bundle(source, target, output, platform=platform, physics=physics,
+            source_original_bundle=original, source_expected_sha256=source_sha256)
+        job.add_output(str(output))
+        job.log(f"{source.name} → {output.name}: {result['copied']} updated objects, "
+                f"{result['added']} new objects, {result['textures_retained']} native textures retained, "
+                f"{result['textures_rgba32']} textures converted to RGBA32.")
+        return True
+
+    mode = params.get("mode", "single")
+    if mode == "single":
+        if not params.get("donor"):
+            raise ValueError("Choose a modified costume bundle.")
+        source = Path(params["donor"]).expanduser()
+        if base_mode == "manual" and not params.get("target"):
+            raise ValueError("Choose the same original costume for the output platform.")
         job.progress(0, 1)
-        m.batch_by_pid(
-            Path(params.get("donor_dir")), Path(params.get("target_dir")), Path(out_dir),
-            empty, empty, empty, empty, name_inc, name_exc, script_exc,
-            out_prefix=prefix, out_suffix=suffix, import_new_objects=import_new)
+        target, original, digest = library_target(source) if base_mode == "library" else (Path(params["target"]).expanduser(), None, None)
+        output = single_out_path(out_dir, source, "", suffix)
+        if not convert(source, target, original, digest, output):
+            return "Costume conversion cancelled."
         job.progress(1, 1)
-        return "batch import complete (see log)"
+        return f"Converted costume → {output.name}"
 
-    donor = params.get("donor")
-    target = params.get("target")
-    suffix = params.get("suffix") or "_import"
-    export = single_out_path(out_dir, target, "", suffix)
-    job.progress(0, 1)
-    candidates, applied, skipped, injected, failed = m.copy_selective_from_pair(
-        Path(donor), Path(target), export,
-        empty, empty, empty, empty, name_inc, name_exc, script_exc, import_new_objects=import_new)
-    job.log(f"OK -> {export.name}  (candidates={candidates}, applied={applied}, "
-            f"injected={injected}, skipped={skipped}, failed={len(failed)})")
-    job.progress(1, 1)
-    return f"applied={applied} injected={injected} -> {export}"
+    if mode != "batch" or not params.get("donor_dir"):
+        raise ValueError("Choose a folder of modified costume bundles.")
+    from webtools.core.viewer_cache import iter_source_files
+    from webtools.core.sukusta import is_unity_bundle
+
+    def chosen_bundles(folder):
+        candidates = []
+        for path in iter_source_files(folder):
+            if job.should_stop():
+                return []
+            if path.is_symlink() or not is_unity_bundle(path):
+                continue
+            candidates.append(path)
+            if len(candidates) > 512:
+                raise ValueError("Choose a folder containing at most 512 costume bundles.")
+        return sorted(candidates)
+
+    sources = chosen_bundles(params["donor_dir"])
+    if not sources:
+        raise ValueError("No costume bundles were found in the selected folder.")
+
+    def manual_targets():
+        if not params.get("target_dir"):
+            raise ValueError("Choose the folder containing original costumes for the output platform.")
+        target_dir = Path(params["target_dir"]).expanduser()
+        import UnityPy
+        target_platform = 9 if platform == "ios" else 13
+        index = {}
+        for path in chosen_bundles(target_dir):
+            try:
+                env = UnityPy.load(str(path))
+                if {int(asset.target_platform) for asset in env.assets} == {target_platform}:
+                    index[str(path.relative_to(target_dir))] = {"ids": {obj.path_id for obj in env.objects}}
+            except (OSError, ValueError, RuntimeError):
+                continue
+        if not index:
+            raise ValueError("The selected folder has no original costume bundles for the output platform.")
+
+        def locate(source):
+            match, details = converter.pair_by_pid_intersection(source, target_dir, index)
+            if match is None:
+                message = "More than one original costume matches." if details.get("error") == "AMBIGUOUS" else "No matching original costume was found."
+                raise ValueError(message + " Convert this costume separately to choose its original.")
+            return match, None, None
+
+        return locate
+
+    locate = library_target if base_mode == "library" else manual_targets()
+    converted = failed = 0
+    job.progress(0, len(sources))
+    for position, source in enumerate(sources, 1):
+        if job.should_stop():
+            break
+        try:
+            output = batch_out_path(params["donor_dir"], source, out_dir, prefix, suffix)
+            target, original, digest = locate(source)
+            converted += convert(source, target, original, digest, output)
+        except (OSError, RuntimeError, ValueError) as error:
+            failed += 1
+            job.log(f"{source.name}: {error}")
+        job.progress(position, len(sources))
+    if failed:
+        raise ValueError(f"{failed} costume(s) could not be converted. Check the details for each costume.")
+    return f"Converted {converted} costume(s)."
