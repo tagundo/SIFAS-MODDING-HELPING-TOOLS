@@ -15,6 +15,7 @@ _MAX_WARNINGS = 96
 _MAX_VALUE_ITEMS = 256
 _FOV = 2282594708
 _PERFORMER_MODEL = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model")
+_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9])")
 _COMMON = {"m_GameObject", "m_Enabled", "m_Script", "m_Name", "m_PrefabInstance", "m_PrefabAsset"}
 _CLIP_TIMING = {
     "m_ClipIn": "clipIn", "m_TimeScale": "timeScale", "m_EaseInDuration": "easeIn",
@@ -321,7 +322,17 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
             "values": values, "editableValues": editable}
 
 
-def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_motion=False) -> dict:
+def _shaft_slot(track):
+    binding = track.get("binding")
+    if track.get("nativeClass") == "LiveMemberSpotLightShaftTrack" and isinstance(binding, str):
+        target = _MEMBER_SHAFT.fullmatch(binding)
+        if target:
+            return int(target[1])
+    return None
+
+
+def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_motion=False,
+                   preview_member_shafts=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -405,6 +416,10 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
             result["binding"] = binding
         elif targets:
             result["bindings"] = targets
+        if preview_member_shafts:
+            slot = _shaft_slot(result)
+            if slot is not None:
+                result["shaftSlot"] = slot
         tracks.append(result)
 
     ordered, seen = [], set()
@@ -654,6 +669,15 @@ def edit_timeline(raw: bytes, original: dict, revised: dict) -> bytes:
 def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
     """Derive the base from these source bytes and export the submitted tracks."""
     original = parse_timeline(raw, name)
+    if isinstance(tracks, list):
+        # Shaft targets are derived preview metadata, independent of any clip's
+        # member color selector. The original track identity remains read-only.
+        tracks = [
+            {key: value for key, value in track.items() if key != "shaftSlot"}
+            if (isinstance(track, dict) and type(track.get("shaftSlot")) is int
+                and _shaft_slot(track) == track["shaftSlot"]) else track
+            for track in tracks
+        ]
     if original["tracks"] == tracks:
         return raw
     return _rewrite_timeline(raw, original, {**original, "tracks": tracks})

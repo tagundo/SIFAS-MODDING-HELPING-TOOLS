@@ -94,6 +94,21 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertIn("exact companion asset packs", " ".join(before["warnings"]))
         json.dumps(before, allow_nan=False)
 
+    def test_native_member_shaft_preview_binding_preserves_timeline_export(self):
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                preview = studio.parse_timeline(raw, platform, preview_member_shafts=True)
+                shafts = [track for track in preview["tracks"]
+                          if track["nativeClass"] == "LiveMemberSpotLightShaftTrack"]
+                self.assertEqual([track["shaftSlot"] for track in shafts], [1, 2, 3])
+                self.assertEqual([len(track["events"]) for track in shafts], [5, 6, 3])
+                self.assertEqual([track["binding"].rsplit("/", 1)[-1] for track in shafts],
+                                 ["Member1", "Member2", "Member3"])
+                self.assertIs(studio.export_timeline(raw, platform, preview["tracks"]), raw)
+                for shaft in shafts:
+                    del shaft["shaftSlot"]
+                self.assertEqual(preview, self.original[platform])
+
     def test_original_split_masks_and_clip_pointers_match_both_platforms(self):
         split = []
         for platform, raw in self.raw.items():

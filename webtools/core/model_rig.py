@@ -472,6 +472,11 @@ class RigBuilder:
             focus = self._focus_parts()
             if focus:
                 result["focusParts"] = focus
+            # Native member shaft setup resolves the exact Move transform on
+            # the performer. Names here come only from primary body transforms.
+            move = self.names.get("Move", ())
+            if len(move) == 1:
+                result["shaftAnchor"] = move[0]
         # Ordinary auto-faces must be rendered. A saved, digest-bound face also
         # stays in the editing session when a complete native face is shown.
         from .model_viewer import _source_path, _source_hash

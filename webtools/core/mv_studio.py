@@ -279,7 +279,8 @@ def import_asset(path, kind):
 def _timeline(path):
     from . import mv_studio_timeline
     raw = path.read_bytes()
-    parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True)
+    parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
+                                               preview_member_shafts=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed

@@ -350,11 +350,13 @@
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
+    let lastShaftFrame = null, resetShafts = true;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     let nativeMainLens = false, authoredMainFov = liveCamera.fov;
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
     const memberCullingTracks = new Map();
+    const memberShaftTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
@@ -400,6 +402,8 @@
     }
 
     function renderScene(camera) {
+      // AxisBillboard follows the camera currently drawing each split layer.
+      for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -494,6 +498,8 @@
         for (const item of records) if (item.prop) item.prop.detach(record);
       }
       if (record.prop) record.prop.detach();
+      record.shaft?.dispose();
+      record.shaftTemplates?.dispose();
       if (record.materials) record.materials.dispose();
       record.penlight?.dispose();
       record.stageMaterial?.dispose();
@@ -508,7 +514,11 @@
 
     function clear() {
       physicsClock?.reset();
-      for (const record of records) releaseRecord(record);
+      lastShaftFrame = null;
+      resetShafts = true;
+      // Actors borrow stage geometries. Detach the instances before clearing the stage.
+      for (const record of records) if (record.group === actors) releaseRecord(record);
+      for (const record of records) if (record.group !== actors) releaseRecord(record);
       records = [];
       loadedProjectToken = null;
       grid.visible = true;
@@ -724,6 +734,8 @@
           if (!active()) return null;
           record.stageOverlay = await global.MVStudioStageOverlay?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
+          record.shaftTemplates = await global.MVStudioShaft?.prepare(T, gltf);
+          if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
         }
@@ -732,13 +744,16 @@
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
           const parts = entry.spec.rig?.focusParts;
-          if (Number.isInteger(parts?.head) && Number.isInteger(parts?.hips)) {
+          const shaftAnchor = entry.spec.rig?.shaftAnchor;
+          const boneIds = new Set([parts?.head, parts?.hips, shaftAnchor].filter(Number.isInteger));
+          if (boneIds.size) {
             const nodes = new Map();
             gltf.scene.traverse(node => {
               const id = node.userData.elichika_node;
-              if (id === parts.head || id === parts.hips) nodes.set(id, nodes.has(id) ? null : node);
+              if (boneIds.has(id)) nodes.set(id, nodes.has(id) ? null : node);
             });
-            record.focusParts = { 0: nodes.get(parts.head), 3: nodes.get(parts.hips) };
+            record.focusParts = { 0: nodes.get(parts?.head), 3: nodes.get(parts?.hips) };
+            record.shaftAnchor = nodes.get(shaftAnchor);
           }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
@@ -1094,8 +1109,18 @@
       const heights = new Map(cast.map((performer) => [performer.position, heightScale(performer)]));
       memberScaleTracks.clear();
       memberCullingTracks.clear();
+      memberShaftTracks.clear();
       cameraOffsets.clear();
       for (const track of tracks) {
+        if (!track.muted && track.nativeClass === "LiveMemberSpotLightShaftTrack") {
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const slot = track.shaftSlot ?? (bound ? Number(bound[1]) : null);
+          if (bound && slot === Number(bound[1])) {
+            const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightShaftClip");
+            if (events.length) memberShaftTracks.set(slot, (memberShaftTracks.get(slot) || []).concat(events));
+          }
+          continue;
+        }
         if (!track.muted && track.nativeClass === "LiveMemberCullerTrack") {
           const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
           if (slot) {
@@ -1147,6 +1172,8 @@
 
     function resetPhysics(reason) {
       physicsClock?.reset();
+      resetShafts = true;
+      lastShaftFrame = null;
       for (const record of records) record.physics?.reset(reason);
     }
 
@@ -1162,6 +1189,7 @@
       if (playing === value) return;
       playing = value;
       physicsClock?.reset();
+      lastShaftFrame = null;
       lastPlaybackFrame = null;
       slowFrames = 0;
       if (!playing && previewScale !== 1) {
@@ -1221,6 +1249,23 @@
       const physicsStep = playing && visible && records.some((record) => record.physics)
         ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
       for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
+      // Unity gates both native member spot light tracks on the Area quality value.
+      const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
+      if (shaftTemplates) {
+        const timestamp = playing && Number.isFinite(frameTimestamp) ? frameTimestamp : null;
+        const elapsed = timestamp === null || lastShaftFrame === null ? 0 : (timestamp - lastShaftFrame) / 1000;
+        for (const record of records) {
+          if (!record.shaftAnchor) continue;
+          const clips = memberShaftTracks.get(record.position);
+          if (!record.shaft && clips) {
+            record.shaft = global.MVStudioShaft?.create(T, shaftTemplates, record.root, record.shaftAnchor);
+          }
+          record.shaft?.frame(settings.member_spot_light_area !== false ? clips : null,
+            currentTime, Math.max(0, elapsed), liveCamera, project, resetShafts || elapsed < 0 || elapsed > 0.25);
+        }
+        lastShaftFrame = timestamp;
+        resetShafts = false;
+      }
       for (const record of records) if (record.prop) {
         record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
         record.prop.evaluate(currentTime);

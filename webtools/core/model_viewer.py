@@ -1103,46 +1103,6 @@ def _stage_audience_point(scene, component, tree):
     return (-float(x), float(y), float(z)) if all(map(math.isfinite, (x, y, z))) else None
 
 
-def _stage_shaft_templates(scene, component, tree):
-    pointers = tree.get("spotLightShaftPrefabs")
-    if not isinstance(pointers, list) or not pointers:
-        return set()
-    script = _ref(component, tree.get("m_Script"))
-    if script is None or script.type.name != "MonoScript":
-        return set()
-    if tuple(scene.tree(script).get(field) for field in ("m_AssemblyName", "m_Namespace", "m_ClassName")) != (
-            "Assembly-CSharp.dll", "LLAS.Scene.Live.Components", "LiveCoreStageEffect"):
-        return set()
-    owner = _ref(component, tree.get("m_GameObject"))
-    if owner is None or owner.type.name != "GameObject":
-        return set()
-    # The live runtime instantiates separate copies below each performer.
-    # These disjoint prefab roots cannot appear in the static stage itself.
-    templates = set()
-    for pointer in pointers:
-        if not isinstance(pointer, dict) or pointer.get("m_FileID") != 0:
-            continue
-        game = _ref(component, pointer)
-        if game is None or game.type.name != "GameObject":
-            continue
-        transform = scene.transforms.get(_key(game))
-        if transform is None or (scene.tree(transform).get("m_Father") or {}).get("m_PathID"):
-            continue
-        pending, members = [transform], set()
-        while pending:
-            current = pending.pop()
-            values = scene.tree(current)
-            child_game = _ref(current, values.get("m_GameObject"))
-            if child_game is None or child_game.type.name != "GameObject" or _key(child_game) in members:
-                continue
-            members.add(_key(child_game))
-            pending.extend(child for ref in values.get("m_Children", []) if ref.get("m_FileID") == 0
-                           if (child := _ref(current, ref)) is not None and child.type.name == "Transform")
-        if _key(owner) not in members:
-            templates.update(members)
-    return templates
-
-
 def _penlight_binding(scene, component, tree):
     pointers = tree.get("materials")
     if not tree.get("m_Enabled", True) or not isinstance(pointers, list) or not 0 < len(pointers) <= MAX_MESHES:
@@ -1236,7 +1196,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         for path in faces.auto_paths:
             if path not in rig.source_indices:
                 rig.source_indices[path] = len(rig.source_indices)
-    penlights, audience_points, shaft_templates = {}, set(), set()
+    penlights, audience_points, shaft_templates, shaft_sources = {}, set(), set(), []
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
     stage_nodes = None
     if stage_materials and getattr(scene, "stage_motion_bindings", ()):
@@ -1244,7 +1204,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
 
         stage_nodes = StageNodes(scene, glb, scene.stage_motion_bindings)
     if stage_materials:
-        from . import mv_studio_stage_coloring, mv_studio_stage_display, mv_studio_stage_materials, mv_studio_stage_overlay
+        from . import mv_studio_shaft, mv_studio_stage_coloring, mv_studio_stage_display
+        from . import mv_studio_stage_materials, mv_studio_stage_overlay
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
     for obj in scene.env.objects:
@@ -1270,7 +1231,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 owner, linked_materials, suffix = binding
                 penlights[owner] = linked_materials, suffix
         if stage_materials:
-            shaft_templates.update(_stage_shaft_templates(scene, obj, tree))
+            excluded, shaft_source = mv_studio_shaft.references(scene, obj, tree)
+            shaft_templates.update(excluded)
+            if shaft_source is not None:
+                shaft_sources.append(shaft_source)
             ambient_materials.update(mv_studio_stage_materials.ambient_materials(scene, obj, tree))
             coloring = mv_studio_stage_coloring.binding(scene, obj, tree)
             if coloring is not None:
@@ -1287,6 +1251,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         glb.doc["scenes"][0].setdefault("extras", {})["mvAudiencePoint"] = next(iter(audience_points))
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
+    if len(shaft_sources) == 1:
+        retained = mv_studio_shaft.export(scene, glb, materials, shaft_sources[0], deadline)
+        if retained:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvShaftTemplates"] = retained
     # Match the serialized-file ordinals used by the editor's _inspect(raw).
     # A CAB's ordinal belongs to its selected input, not the combined scene.
     source_files = {}
