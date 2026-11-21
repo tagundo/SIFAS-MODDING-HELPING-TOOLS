@@ -759,7 +759,9 @@ def _open_saved(archive, entries):
     source = archive.read(timeline) if timeline is not None else None
     restore_split = "splitScreen" not in project and any(
         track.get("nativeClass") == "LiveSplitScreenTrack" for track in project["tracks"])
-    restore_title = "stageTitle" not in project and any(
+    title = project.get("stageTitle")
+    schema = title.get("particleSchema") if isinstance(title, dict) else None
+    restore_title = (type(schema) is not int or schema < 2) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Display/" in str(track.get("label", ""))
         for track in project["tracks"])
     if source is not None and (restore_split or restore_title):

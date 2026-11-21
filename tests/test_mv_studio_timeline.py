@@ -190,25 +190,57 @@ class ActualTimelineTests(unittest.TestCase):
             self.assertEqual({row["kind"] for row in main["animation"]["channels"]},
                              {"overlayUV", "overlayTint", "translation"})
             self.assertEqual(main["texture"], cue["texture"])
-            self.assertEqual(len(title["textures"]), 3)
+            self.assertEqual(title["particleSchema"], 2)
+            self.assertEqual(len(title["textures"]), 4)
             self.assertTrue(all((texture["width"], texture["height"]) == (512, 512)
                                 for texture in title["textures"]))
             track = next(track for track in parsed["tracks"] if track["id"] == cue["trackId"])
             event = next(event for event in track["events"] if event["id"] == cue["eventId"])
             self.assertAlmostEqual(event["start"], 350 / 60)
             self.assertAlmostEqual(event["start"] + event["duration"], 670 / 60)
-            first, last = title["particles"]
+            first, middle, last = title["particles"]
             self.assertEqual((main["trackId"], main["eventId"]), (first["trackId"], first["eventId"]))
             self.assertEqual([emitter["name"] for emitter in first["emitters"]], ["title_main"])
+            red, white = middle["emitters"]
+            self.assertEqual(red["lifetime"], 2.9159176349639893)
+            self.assertEqual(white["lifetime"], 3.2112085819244385)
+            self.assertEqual(red["size"], [18.36803436279297] * 2)
+            self.assertEqual(white["size"], [18.04229736328125] * 2)
+            self.assertEqual(red["color"]["rgb"], [[0, 228 / 255, 10 / 255, 56 / 255]])
+            self.assertEqual(white["color"]["rgb"], [[0, 1, 1, 1]])
+            self.assertEqual(red["texture"], white["texture"])
+            self.assertEqual(red["atlas"], white["atlas"])
+            self.assertEqual(red["atlas"]["tiles"], [2, 4])
+            self.assertEqual(red["atlas"]["period"], .5)
+            self.assertIsNone(red["atlas"]["row"])
             self.assertEqual({emitter["name"] for emitter in last["emitters"]},
                              {"title_main", "title_sub", "title_main_vanish", "square", "block"})
-            for group, start in ((first, 350 / 60), (last, 580 / 60)):
+            for group, start in ((first, 350 / 60), (middle, 466 / 60), (last, 580 / 60)):
                 track = next(track for track in parsed["tracks"] if track["id"] == group["trackId"])
                 event = next(event for event in track["events"] if event["id"] == group["eventId"])
                 self.assertAlmostEqual(event["start"], start)
             self.assertIs(studio.export_timeline(raw, platform, parsed["tracks"]), raw)
             descriptors.append(title)
         self.assertEqual(*descriptors)
+
+    def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
+        from UnityPy.files.ObjectReader import ObjectReader
+
+        track = next(track for track in self.original["a"]["tracks"] if track["label"].endswith("/Title_mainDis"))
+        event = track["events"][1]
+        source = int(event["values"]["asset"].rsplit(":", 1)[-1])
+        read = ObjectReader.read_typetree
+
+        def force_seed(reader, *args, **kwargs):
+            tree = read(reader, *args, **kwargs)
+            return {**tree, "overwriteRandomSeed": 1} if reader.path_id == source else tree
+
+        with patch.object(ObjectReader, "read_typetree", force_seed):
+            title = studio.parse_timeline(self.raw["a"], "android", preview_stage_title=True)["stageTitle"]
+        self.assertEqual(len(title["cues"]), 2)
+        self.assertEqual(len(title["textures"]), 3)
+        self.assertEqual([group["eventId"] for group in title["particles"]],
+                         [track["events"][0]["id"], track["events"][2]["id"]])
 
     def test_native_existing_point_and_bloom_edit_reopen_with_original_platform(self):
         import UnityPy

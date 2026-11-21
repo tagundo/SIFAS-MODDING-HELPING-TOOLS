@@ -247,4 +247,60 @@ async function runParticles() {
   console.log("Native title cues: shared texture, absolute mesh translation and tint, fixed particle bursts, atlas, scrub and cleanup.");
 }
 
-run().then(runParticles).catch(error => { console.error(error); process.exitCode = 1; });
+async function runSeededParticles() {
+  const root = new T.Scene(), source = structuredClone(descriptor);
+  const event = { id: "pair:event", start: 8, duration: 1.9, values: { playableClass: "CustomControlClip",
+    clipIn: 0, timeScale: 1, weight: 1, offset: { x: 0, y: 0, z: 0 } } };
+  const pairTrack = { id: "pair:track", nativeClass: "CustomControlTrack", events: [event] };
+  const atlas = { tiles: [2, 4], row: null, period: .5, frame: ["cubic", [
+    [0, [0, 0, 0, 0]], [Math.fround(.05), [0, 0, 0, Math.fround(.9999)]], [.5, [0, 0, 0, Math.fround(.9999)]]
+  ]] };
+  const base = { ...source.cues[0].meshes[0], name: "title", texture: 0, material: source.cues[0].material,
+    scale: [1.5, 1, 1], active: [0, null], atlas, sizeCurves: [constant(.75), constant(.75)] };
+  source.particles = [{ trackId: pairTrack.id, eventId: event.id, emitters: [
+    { ...base, size: [18.36803436279297, 18.36803436279297], lifetime: 2.9159176349639893,
+      color: { rgb: [[0, 228 / 255, 10 / 255, 56 / 255]], alpha: [[0, 1]] } },
+    { ...base, size: [18.04229736328125, 18.04229736328125], lifetime: 3.2112085819244385,
+      color: { rgb: [[0, 1, 1, 1]], alpha: [[0, 1]] } }
+  ] }];
+  const local = { ...T, TextureLoader: class {
+    async loadAsync() { return new T.Texture({ width: 1, height: 1 }); }
+  } };
+  const invalid = structuredClone(source);
+  invalid.particles[0].emitters[1].atlas.period = 0.6;
+  const rejected = await MVStudioTitle.apply(local, root, invalid);
+  assert.ok(rejected);
+  assert.equal(root.children.length, 1, "an unsupported loop drops the whole pair and keeps the mesh title");
+  rejected.dispose();
+
+  const title = await MVStudioTitle.apply(local, root, source);
+  assert.ok(title);
+  assert.equal(root.children.length, 2);
+  const pair = root.children[1], [red, white] = pair.children;
+  const project = { tracks: [track, pairTrack], quality: { values: { stage_display: true } } };
+  title.update(8, project);
+  assert.equal(pair.visible, true);
+  compare(red.material.uniforms.uTint.value.toArray(), [228/255, 10/255, 56/255, 1]);
+  compare(white.material.uniforms.uTint.value.toArray(), [1, 1, 1, 1]);
+  compare(red.scale.toArray(), [1.5 * Math.fround(18.36803436279297 * .75), Math.fround(18.36803436279297 * .75), 1]);
+  compare(red.material.uniforms.uTextureST.value.toArray(), [.5, .25, 0, 0]);
+
+  title.update(8.2, project);
+  compare(red.material.uniforms.uTextureST.value.toArray(), [.5, .25, .5, .75]);
+  title.update(9.5, project);
+  compare(red.material.uniforms.uTextureST.value.toArray(), [.5, .25, 0, 0]);
+  compare(white.material.uniforms.uTextureST.value.toArray(), [.5, .25, .5, .75]);
+  title.update(9.9, project);
+  assert.equal(pair.visible, false, "the emitter stops at the cue end, even with surviving particles");
+  title.update(9.5, project);
+  compare(red.material.uniforms.uTextureST.value.toArray(), [.5, .25, 0, 0]);
+  compare(white.material.uniforms.uTextureST.value.toArray(), [.5, .25, .5, .75]);
+  project.quality.values.stage_display = false;
+  title.update(9.5, project);
+  assert.equal(pair.visible, false);
+  title.dispose();
+  assert.equal(root.children.length, 0);
+  console.log("Native title pair: independent life, colors and looped sheets, rewind, and cue/quality gating.");
+}
+
+run().then(runParticles).then(runSeededParticles).catch(error => { console.error(error); process.exitCode = 1; });

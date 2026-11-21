@@ -48,6 +48,32 @@ class MVStudioStorageTests(unittest.TestCase):
         mv_studio._register(mv_studio._blank("Reopened"), self.original)
         self.assertEqual(mv_studio._native(first), self.original)
 
+    def test_old_title_descriptor_refresh_keeps_edited_event_times(self):
+        project = mv_studio._blank("Edited")
+        project["duration"] = 9.5
+        project["stageTitle"] = {"cues": [], "particles": []}
+        project["tracks"] = [{
+            "id": "title", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/Title_mainDis",
+            "events": [{"id": "clip", "label": "Edited title", "start": 8.0, "duration": 1.5,
+                        "values": {"playableClass": "CustomControlClip"}}],
+        }]
+        upgraded = {"cues": [], "particles": [{"eventId": "clip"}], "particleSchema": 2}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+            "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageTitle": upgraded},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited", preview_split=False, preview_stage_title=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageTitle"], upgraded)
+
+        saved = mv_studio.save(reopened)
+        with ZipFile(saved["path"]) as archive, patch("webtools.core.mv_studio_timeline.parse_timeline") as parse:
+            current = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_not_called()
+        self.assertEqual(current["stageTitle"], upgraded)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

@@ -93,10 +93,11 @@
         !gradientKeys(emitter.color?.rgb, 3) || !gradientKeys(emitter.color?.alpha, 1)) return false;
     const [from, to] = emitter.active;
     if (!Number.isFinite(from) || from < 0 || (to !== null && (!Number.isFinite(to) || to <= from))) return false;
-    const { tiles, row, frame } = emitter.atlas || {};
+    const { tiles, row, frame, period } = emitter.atlas || {};
     return Array.isArray(tiles) && tiles.length === 2 &&
       tiles.every(value => Number.isInteger(value) && value >= 1 && value <= 16) &&
       (row === null || (Number.isInteger(row) && row >= 0 && row < tiles[1])) &&
+      (period === undefined || (period === 0.5 && row === null && tiles[0] === 2 && tiles[1] === 4)) &&
       boundedCurve(frame, validCurve);
   }
 
@@ -123,10 +124,14 @@
     const [from, to] = emitter.active, age = elapsed - from;
     mesh.visible = age >= 0 && age < emitter.lifetime && (to === null || elapsed < to);
     if (!mesh.visible) return;
-    const time = age / emitter.lifetime;
+    const { period } = emitter.atlas;
+    // This pair uses Unity's float32 percent age before native size and sheet sampling.
+    const time = period === undefined ? age / emitter.lifetime :
+      Math.fround(Math.fround(100 * age / emitter.lifetime) * Math.fround(0.01));
     const [sx, sy, sz] = emitter.scale;
-    mesh.scale.set(sx * emitter.size[0] * evaluate(emitter.sizeCurves[0], time),
-      sy * emitter.size[1] * evaluate(emitter.sizeCurves[1], time), sz);
+    const width = evaluate(emitter.sizeCurves[0], time), height = evaluate(emitter.sizeCurves[1], time);
+    mesh.scale.set(period === undefined ? sx * emitter.size[0] * width : sx * Math.fround(emitter.size[0] * width),
+      period === undefined ? sy * emitter.size[1] * height : sy * Math.fround(emitter.size[1] * height), sz);
 
     const { tint, uv: [uScale, vScale, uOffset, vOffset] } = emitter.material;
     const { rgb, alpha } = emitter.color;
@@ -136,7 +141,10 @@
 
     const { tiles: [columns, rows], row, frame } = emitter.atlas;
     const count = row === null ? columns * rows : columns;
-    const index = Math.max(0, Math.min(count - 1, Math.floor(evaluate(frame, time) * count)));
+    const phase = period === undefined || time < period ? time :
+      Math.fround(time - period * Math.floor(time / period));
+    const tile = evaluate(frame, phase) * count;
+    const index = Math.max(0, Math.min(count - 1, Math.floor(period === undefined ? tile : Math.fround(tile))));
     const column = index % columns;
     const textureRow = row === null ? Math.floor(index / columns) : row;
     const x = uOffset + uScale * column / columns, y = vOffset + vScale * (rows - 1 - textureRow) / rows;

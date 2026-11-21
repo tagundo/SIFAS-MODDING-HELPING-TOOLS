@@ -339,7 +339,9 @@ def read(objects, mono, tracks, deadline):
             if len(particle_cues) > 4:
                 continue
             try:
-                sources = particles.read(objects, game, deadline)
+                overwrite_seed = event["values"].get("overwriteRandomSeed")
+                sources = particles.read(objects, game, deadline,
+                                         preserve_seed=type(overwrite_seed) in (int, bool) and not overwrite_seed)
             except _UNSUPPORTED:
                 continue
             if sources is not None:
@@ -363,6 +365,6 @@ def read(objects, mono, tracks, deadline):
         cues.append({**cue, "texture": indexed[key]})
     if not cues:
         return None
-    result = {"geometry": _QUAD, "textures": textures, "cues": cues}
+    result = {"particleSchema": 2, "geometry": _QUAD, "textures": textures, "cues": cues}
     _attach_particles(result, particle_cues, indexed, deadline)
     return result
