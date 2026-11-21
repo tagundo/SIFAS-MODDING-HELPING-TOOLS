@@ -45,16 +45,40 @@ const snapshot = page => page.evaluate(() => {
         document.getElementById('viewer-adjustments').open = true;
       });
       const before = await snapshot(page);
-      await page.locator('#viewer-game-motions').click();
-      await page.waitForFunction(() => document.getElementById('viewer-motion-character').options.length > 1);
-      await page.locator('#viewer-motion-character').selectOption('1');
-      await page.waitForFunction(() => document.getElementById('viewer-game-motion-choice').value === 'idle:1');
+      async function chooseMotion() {
+        await page.locator('#viewer-game-motions').click();
+        await page.waitForFunction(() => document.getElementById('viewer-motion-character').options.length > 1);
+        await page.locator('#viewer-motion-character').selectOption('1');
+        await page.waitForFunction(() => document.getElementById('viewer-game-motion-choice').value === 'idle:1');
+      }
+      await chooseMotion();
+      const modelPlatform = await page.evaluate(() => ModelViewer.getState().modelPlatform === 'ios' ? 'ios' : 'android');
+      const alternatePlatform = modelPlatform === 'ios' ? 'android' : 'ios';
+      const platform = page.locator('#viewer-motion-platform');
+      assert.equal(await platform.inputValue(), alternatePlatform);
+      assert.equal(await platform.isChecked(), false);
+      const alternates = [];
+      const importRoute = '**/api/viewer/game/motions/import?*';
+      await page.route(importRoute, route => {
+        alternates.push(route.request().postDataJSON().platform);
+        return route.fulfill({ status: 400, json: { error: 'Tested opposite platform.' } });
+      });
+      await platform.check();
+      await page.locator('#viewer-motion-import').click();
+      await page.locator('#viewer-game-motion-status.viewer-warning').waitFor();
+      assert.deepEqual(alternates, [alternatePlatform]);
+      await page.unroute(importRoute);
+      await page.keyboard.press('Escape');
+      await chooseMotion();
+      assert.equal(await platform.isChecked(), false, 'Reopening does not keep the previous platform override');
       const dialog = await page.locator('#viewer-game-motions-dialog').evaluate(element => {
         const r = element.getBoundingClientRect(); return { width: r.width, height: r.height, within: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight };
       });
       assert(dialog.within, 'Motion picker stays in viewport');
       await page.locator('#viewer-motion-download').uncheck();
+      const imported = page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/api/viewer/game/motions/import?'));
       await page.locator('#viewer-motion-import').click();
+      assert.equal((await imported).postDataJSON().platform, modelPlatform);
       await page.waitForFunction(() => !document.getElementById('viewer-game-motions-dialog').open && ModelViewer.getState().loadedPaths.length === 1 && ModelViewer.getState().loadedMotionPaths.length === 1 && !ModelViewer.getState().loading);
       const after = await snapshot(page);
       assert.deepStrictEqual(after.camera, before.camera, 'Import preserves camera exactly');

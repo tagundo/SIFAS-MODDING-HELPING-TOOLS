@@ -62,6 +62,12 @@ async function catalogReady(page) {
   await page.waitForFunction(() => document.querySelector('#viewer-game-assets-dialog').open && document.querySelector('#viewer-game-character').options.length > 1);
 }
 
+async function assertPreferredPlatform(page, expected, message) {
+  const control = page.locator('#viewer-game-platform');
+  assert.equal(await control.inputValue(), expected === 'ios' ? 'android' : 'ios', message);
+  assert.equal(await control.isChecked(), false, 'The opposite-platform option starts unchecked');
+}
+
 async function choose(page, { region = 'gl', character = '101', suit = 'suit:1', variant = 'primary', platform = 'android' } = {}) {
   await catalogReady(page);
   const change = page.waitForResponse(response => response.url().includes('/api/viewer/game/catalog?') && new URL(response.url()).searchParams.get('region') === region);
@@ -72,7 +78,8 @@ async function choose(page, { region = 'gl', character = '101', suit = 'suit:1',
   await page.locator('#viewer-game-costume').selectOption(suit);
   if (await page.locator('#viewer-game-variant').isVisible()) await page.locator('#viewer-game-variant').selectOption(variant);
   else assert.equal(await page.locator('#viewer-game-variant').inputValue(), variant, 'A single primary variant stays selected without a hidden-control action');
-  if (await page.locator('#viewer-game-platform').count()) await page.locator('#viewer-game-platform').selectOption(platform);
+  const platformOption = page.locator('#viewer-game-platform');
+  if (await platformOption.count()) await platformOption.setChecked(await platformOption.inputValue() === platform);
   await page.locator('#viewer-game-download').uncheck();
 }
 
@@ -82,7 +89,7 @@ async function seedViewer(page, expectedPlatform) {
   await page.locator('#viewer-auto-face').uncheck();
   await page.locator('#viewer-file-options').evaluate(node => { node.open = false; });
   await page.locator('#viewer-game-assets').click(); await catalogReady(page);
-  assert.equal(await page.locator('#viewer-game-platform').inputValue(), expectedPlatform);
+  await assertPreferredPlatform(page, expectedPlatform);
   await choose(page, { platform: expectedPlatform });
   const prepare = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/api/viewer/prepare'));
   await page.locator('#viewer-game-import').click();
@@ -203,12 +210,12 @@ async function delayedPostInvalidation(page, invalidate) {
         await field(page, name).evaluate(node => ['input', 'change'].forEach(type => node.addEventListener(type, () => __fieldEvents.push({ name: node.dataset.name, type }))));
       }
       await button(page, 'donor').click(); await catalogReady(page);
-      assert.equal(await page.locator('#viewer-game-platform').inputValue(), profile.platform, 'The first tool picker uses the native host default');
+      await assertPreferredPlatform(page, profile.platform, 'The first tool picker uses the native host default');
       await page.keyboard.press('Escape');
       const donor = await pickField(page, 'donor', { platform: profile.platform });
       assert.equal(await field(page, 'target').inputValue(), '');
       await button(page, 'target').click(); await catalogReady(page);
-      assert.equal(await page.locator('#viewer-game-platform').inputValue(), profile.platform, 'The second field defaults to the successful first platform');
+      await assertPreferredPlatform(page, profile.platform, 'The second field defaults to the successful first platform');
       await page.keyboard.press('Escape');
       const target = await pickField(page, 'target', { region: 'jp', character: '209', suit: 'suit:2', variant: 'unmasked', platform: profile.platform });
       assert.equal(path.basename(target.value), 'unmasked.unity'); assert.equal(await field(page, 'donor').inputValue(), donor.value);
@@ -229,7 +236,7 @@ async function delayedPostInvalidation(page, invalidate) {
         const platforms = JSON.parse(execFileSync(python, ['-c', 'import json,sys,UnityPy; print(json.dumps([int(a.target_platform) for a in UnityPy.load(sys.argv[1]).assets]))', override.value], { encoding: 'utf8' }));
         assert(platforms.every(value => value === 13)); assert.equal(await field(page, 'donor').inputValue(), donor.value);
         await button(page, 'donor').click(); await catalogReady(page);
-        assert.equal(await page.locator('#viewer-game-platform').inputValue(), 'android', 'A successful target override becomes the next donor default');
+        await assertPreferredPlatform(page, 'android', 'A successful target override becomes the next donor default');
         await page.keyboard.press('Escape');
         assert.deepEqual(await modelState(page), originalModel); assert.equal(prepares, prepareCount);
         report.cases.push({ name: 'iOS donor → iOS target default → explicit Android target → Android donor default', nativeTargets: platforms, fieldsIndependent: true, status: 'PASS' });

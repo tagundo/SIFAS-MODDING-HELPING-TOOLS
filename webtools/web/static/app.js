@@ -19,8 +19,6 @@ const state = {
   savedModelPaths: [],
   nativeSurface: "",
   formLanguage: "",
-  // Let the shared picker choose the native platform until a tool model is selected.
-  gameAssetPlatform: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -979,14 +977,18 @@ function renderField(field) {
             state.currentTool && state.currentTool.id === ownerTool && state.lang === originalLanguage &&
             sectionNavigation.section === "tools" && input.value === originalValue &&
             (!direction || !input.disabled && direction.value === originalDirection);
+          const other = ownerTool === "costume_transplant"
+            ? form.querySelector(field.name === "donor" ? "#f_target" : "#f_donor") : null;
+          const chosen = other && other.gameAssetChoice;
           const fixed = direction ? { platform: costumeConversionPlatforms(originalDirection).output,
-            lockPlatform: true, region: form.querySelector("#f_region").value, downloadByDefault: false } : { platform: state.gameAssetPlatform };
+            lockPlatform: true, region: form.querySelector("#f_region").value, downloadByDefault: false }
+            : { platform: chosen && chosen.path === other.value ? chosen.platform : null };
           GameAssetPicker.open({ trigger: gameAssets, purpose: "transplant", label: field.label,
             ...fixed, isCurrent,
             onSelect: (path, selection) => {
               if (!isCurrent()) return;
               input.value = path;
-              if (!direction) state.gameAssetPlatform = selection.platform;
+              if (!direction) input.gameAssetChoice = { path, platform: selection.platform };
               input.dispatchEvent(new Event("input", { bubbles: true }));
               input.dispatchEvent(new Event("change", { bubbles: true }));
             } });

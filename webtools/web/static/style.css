@@ -1000,6 +1000,8 @@ body.viewer-active-page > main, body.viewer-active-page > .tools-console-layout 
 .viewer-game-assets-dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .viewer-game-assets-fields { display: grid; gap: 12px; }
 .viewer-game-assets-fields label { display: grid; gap: 6px; min-width: 0; }
+.viewer-game-assets-fields .viewer-game-assets-platform { display: inline-flex; align-self: end; align-items: center; gap: 8px; min-height: 34px; justify-self: start; }
+.viewer-game-assets-platform input[type=checkbox] { width: 16px; height: 16px; flex: 0 0 auto; }
 .viewer-game-assets-fields select, .viewer-game-assets-fields input:not([type=checkbox]) { width: 100%; min-width: 0; }
 .viewer-game-assets-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .viewer-game-assets-dialog button { min-height: 44px; }
