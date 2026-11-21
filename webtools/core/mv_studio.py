@@ -286,7 +286,8 @@ def _timeline(path):
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
                                                preview_stage_spotlight=True, preview_stage_speed_back=True,
-                                               preview_stage_display_lights=True, preview_stage_falling_effects=True)
+                                               preview_stage_display_lights=True, preview_stage_falling_effects=True,
+                                               preview_stage_break=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -459,7 +460,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             native, parsed = _timeline(timeline)
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                             "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects")
+                             "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
+                             "stageBreak")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -750,6 +752,24 @@ def _display_particle_atlases(project):
             "speedBackCenterStars": center.get("texture") if isinstance(center, dict) else None}
 
 
+def _restore_display_atlases(project, original, field, aliases):
+    descriptor = original.get(field)
+    if not descriptor:
+        return
+    saved_atlases = _display_particle_atlases(project)
+    original_atlases = _display_particle_atlases(original)
+    restored = []
+    for texture, alias in zip(descriptor["textures"], aliases):
+        if alias is None:
+            restored.append(texture)
+            continue
+        # A saved project may have a custom atlas. Keep the authentic native
+        # one embedded when the previously saved owner's atlas differs.
+        authentic = original_atlases.get(alias) if texture == alias else texture
+        restored.append(alias if authentic == saved_atlases.get(alias) else authentic)
+    project[field] = {**descriptor, "textures": restored}
+
+
 def _open_saved(archive, entries):
     from . import mv_studio_stage_particles
 
@@ -809,8 +829,14 @@ def _open_saved(archive, entries):
                     {"m_FileID": 0, "m_PathID": "-1918126523244823858"},
                     {"m_FileID": 0, "m_PathID": "-4628465527854343341"})
                 for event in track["events"]) for track in project["tracks"])
+    restore_break = "stageBreak" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/break")
+        and any(event.get("label") == "fx_dis_so2056_08" or event["values"].get("prefabGameObject") == {
+            "m_FileID": 0, "m_PathID": "-277186095147178148",
+        } for event in track["events"]) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
-                               or restore_spotlight or restore_speed_back or restore_display_lights or restore_falling):
+                               or restore_spotlight or restore_speed_back or restore_display_lights or restore_falling
+                               or restore_break):
         from . import mv_studio_timeline
 
         try:
@@ -827,6 +853,8 @@ def _open_saved(archive, entries):
                 options["preview_stage_display_lights"] = True
             if restore_falling:
                 options["preview_stage_falling_effects"] = True
+            if restore_break:
+                options["preview_stage_break"] = True
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
                                                          preview_stage_title=restore_title, **options)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
@@ -850,20 +878,8 @@ def _open_saved(archive, entries):
                         and saved_stars.get("texture") == original_atlas):
                     restored.setdefault("movingCompanions", rebuilt_background["movingCompanions"])
                 project["stageSpeedBack"] = restored
-            falling = original.get("stageFallingEffects")
-            if falling:
-                atlases = _display_particle_atlases(project)
-                original_atlases = _display_particle_atlases(original)
-                resolved = []
-                for texture in falling["textures"]:
-                    if isinstance(texture, str):
-                        # A recovered owner can have a custom atlas in the saved project.
-                        # The parser registers references only to atlases it derived here.
-                        authentic = original_atlases.get(texture)
-                        resolved.append(texture if authentic == atlases.get(texture) else authentic)
-                    else:
-                        resolved.append(next((name for name, atlas in atlases.items() if texture == atlas), texture))
-                project["stageFallingEffects"] = {**falling, "textures": resolved}
+            _restore_display_atlases(project, original, "stageFallingEffects", ("displayLights", "speedBackCenterStars"))
+            _restore_display_atlases(project, original, "stageBreak", (None, "displayLights", "speedBackCenterStars"))
             rebuilt_ribbons = original.get("stageRibbons")
             if rebuilt_ribbons and not isinstance(ribbons, dict):
                 project["stageRibbons"] = rebuilt_ribbons
@@ -892,7 +908,8 @@ def _mod_files(project, files):
                 native = raw
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                                 "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects")
+                                 "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
+                                 "stageBreak")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

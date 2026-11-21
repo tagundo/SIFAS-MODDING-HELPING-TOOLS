@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null;
+    let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -404,7 +404,7 @@
     }
 
     function renderScene(camera) {
-      stageSpeedBack?.sort(camera);
+      if (!stageBreak?.sort(camera, stageSpeedBack?.displaySortEntries)) stageSpeedBack?.sort(camera);
       stageDisplayLights?.sort(camera);
       stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
       // AxisBillboard follows the camera currently drawing each split layer.
@@ -533,6 +533,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageBreak?.dispose();
+      stageBreak = null;
       stageFallingEffects?.dispose();
       stageFallingEffects = null;
       stageSpeedBack?.dispose();
@@ -1051,15 +1053,22 @@
         return;
       }
       stageDisplayLights = displayLights;
-      const fallingEffects = await global.MVStudioFallingDisplay?.apply(T, scene, value.stageFallingEffects, {
+      const displayAtlases = {
         displayLights: displayLights?.texture || value.stageDisplayLights?.texture,
         speedBackCenterStars: speedBack?.centerTexture || value.stageSpeedBack?.centerStars?.texture,
-      });
+      };
+      const fallingEffects = await global.MVStudioFallingDisplay?.apply(T, scene, value.stageFallingEffects, displayAtlases);
       if (!active()) {
         fallingEffects?.dispose();
         return;
       }
       stageFallingEffects = fallingEffects;
+      const fracture = await global.MVStudioStageBreak?.apply(T, scene, value.stageBreak, displayAtlases);
+      if (!active()) {
+        fracture?.dispose();
+        return;
+      }
+      stageBreak = fracture;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1261,6 +1270,7 @@
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
       stageFallingEffects?.invalidate();
+      stageBreak?.invalidate();
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
@@ -1334,6 +1344,7 @@
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);
       stageFallingEffects?.update(currentTime, project);
+      stageBreak?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);

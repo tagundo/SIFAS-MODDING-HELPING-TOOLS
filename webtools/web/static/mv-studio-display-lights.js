@@ -6,6 +6,7 @@
     uniform vec3 uAxisY;
     uniform float uMaxWidth;
     uniform vec4 uAtlas;
+    uniform float uAtlasColumns;
     attribute vec4 centerAndTile;
     attribute vec2 particleSize;
     attribute vec4 particleColor;
@@ -21,13 +22,25 @@
       float sideLimit = 2.0 * uMaxWidth * depth / abs(projectionMatrix[0][0]);
       float scale = depth < 0.0 ? 1.0 : min(1.0, sideLimit / largerSide);
       vec2 local = position.xy * particleSize;
+      #ifdef VIEW_ALIGNED
+      local.x = -local.x;
+      #endif
       #ifdef PARTICLE_ROLL
-      float c = cos(particleRoll), s = sin(particleRoll);
+      float angle = particleRoll;
+      #ifdef VIEW_ALIGNED
+      angle = -angle;
+      #endif
+      float c = cos(angle), s = sin(angle);
       local = mat2(c, s, -s, c) * local;
       #endif
-      vec3 offset = (uAxisX * local.x + uAxisY * local.y) * scale;
-      gl_Position = projectionMatrix * (center + vec4(mat3(modelViewMatrix) * offset, 0.0));
-      vParticleUV = (uv + vec2(0.0, centerAndTile.w)) * uAtlas.xy + uAtlas.zw;
+      #ifdef VIEW_ALIGNED
+      vec3 offset = vec3(local * scale, 0.0);
+      #else
+      vec3 offset = mat3(modelViewMatrix) * ((uAxisX * local.x + uAxisY * local.y) * scale);
+      #endif
+      gl_Position = projectionMatrix * (center + vec4(offset, 0.0));
+      vec2 tile = vec2(mod(centerAndTile.w, uAtlasColumns), floor(centerAndTile.w / uAtlasColumns));
+      vParticleUV = (uv + tile) * uAtlas.xy + uAtlas.zw;
       vParticleColor = particleColor;
     }
   `;
@@ -83,7 +96,8 @@
     return {fps, birthTicks: birthTicks.reverse(), phaseAges};
   }
 
-  function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name, additive = false, rolling = false}) {
+  function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
+    additive = false, rolling = false, viewAligned = false, columns = 1}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -100,7 +114,7 @@
     const destination = additive ? T.OneFactor : T.OneMinusSrcAlphaFactor;
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader, transparent: true,
-      defines: rolling ? {PARTICLE_ROLL: 1} : {},
+      defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {})},
       toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
@@ -108,7 +122,7 @@
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},
-        uAtlas: {value: new T.Vector4().fromArray(atlas)},
+        uAtlas: {value: new T.Vector4().fromArray(atlas)}, uAtlasColumns: {value: columns},
         uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(rotation)},
         uAxisY: {value: new T.Vector3(0, 1, 0).applyQuaternion(rotation)}},
     });

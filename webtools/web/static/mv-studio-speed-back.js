@@ -93,19 +93,20 @@
     }
     const companions = stars && data.movingCompanions &&
       global.MVStudioMovingCompanions?.create(T, root, data.movingCompanions, stars.texture);
-    const sortEntries = companions ? [
+    const sortEntries = [
       {mesh, center: backgroundCenter, bias: 5},
-      {mesh: stars.mesh, center: starCenter, bias: 1},
-      ...companions.batches.map(({mesh, center}) => ({mesh, center, bias: 0})),
-    ].map((entry, index) => ({...entry, index, distance: 0})) : null;
+      ...(stars ? [{mesh: stars.mesh, center: starCenter, bias: 1}] : []),
+      ...(companions?.batches.map(({mesh, center}) => ({mesh, center, bias: 0})) || []),
+    ].map((entry, index) => ({...entry, index, distance: 0}));
     const cameraPosition = new T.Vector3(), viewCenter = new T.Vector3();
     root.add(mesh);
     let tracks, track, disposed = false;
     return {
       centerTexture: stars?.texture,
+      displaySortEntries() { return disposed ? [] : sortEntries.filter(({mesh}) => mesh.visible); },
       invalidate() { tracks = null; },
       sort(camera) {
-        if (disposed || !sortEntries || !companions.batches.some(({mesh}) => mesh.visible)) return;
+        if (disposed || !companions?.batches.some(({mesh}) => mesh.visible)) return;
         camera.updateMatrixWorld();
         cameraPosition.setFromMatrixPosition(camera.matrixWorld);
         for (const entry of sortEntries) {

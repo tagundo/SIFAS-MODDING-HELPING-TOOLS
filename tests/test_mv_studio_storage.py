@@ -309,6 +309,30 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageSpeedBack"], base["stageSpeedBack"])
                 self.assertEqual(reopened["stageFallingEffects"]["textures"], ["displayLights", expected])
 
+    def test_saved_fracture_cue_preserves_edited_timing_and_embeds_a_conflicting_atlas(self):
+        project = mv_studio._blank("Edited fracture")
+        project["stageTitle"] = {"particleSchema": 2}
+        project["tracks"] = [{
+            "id": "fracture", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Display/break",
+            "events": [{"id": "transition", "label": "Edited transition", "start": 76.7, "duration": 2,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "-277186095147178148"}}}],
+        }]
+        crack, light, original_stars = [{"png": "break"}], [{"png": "lights"}], [{"png": "source atlas"}]
+        project["stageDisplayLights"] = {"texture": light}
+        project["stageSpeedBack"] = {"centerStars": {"texture": [{"png": "edited atlas"}]}, "movingCompanions": []}
+        descriptor = {"textures": [crack, light, original_stars], "trackId": "fracture", "eventId": "transition"}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageBreak": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited fracture", preview_split=False,
+                                      preview_stage_title=False, preview_stage_break=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
+        self.assertEqual(reopened["stageBreak"], {**descriptor, "textures": [crack, "displayLights", original_stars]})
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

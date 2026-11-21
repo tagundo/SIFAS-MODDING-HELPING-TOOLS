@@ -315,6 +315,31 @@ class ActualTimelineTests(unittest.TestCase):
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 
+    def test_native_stage_break_reuses_paired_atlases_and_retains_the_fracture_mesh(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_speed_back=True,
+                                               preview_stage_display_lights=True, preview_stage_break=True)
+                effect = parsed.pop("stageBreak")
+                self.assertEqual(effect["textures"][1:], ["displayLights", "speedBackCenterStars"])
+                self.assertEqual([level["width"] for level in effect["textures"][0]], [512 >> i for i in range(10)])
+                self.assertEqual(effect["mesh"]["color"]["start"], [95, 71, 75, 255])
+                self.assertEqual(effect["mesh"]["scale"], [11, 6, 1])
+                self.assertIsNone(effect["mesh"]["vertexColors"])
+                self.assertEqual((len(effect["mesh"]["positions"]), len(effect["mesh"]["indices"])), (49, 216))
+                roles = {row["name"]: (row["count"], row["delay"], row["texture"]) for row in effect["emitters"]}
+                self.assertEqual(roles, {"flash": (1, .25, 2), "Fall": (60, .25, 2), "light_big": (8, 0, 1)})
+                track, = [row for row in parsed["tracks"] if row["id"] == effect["trackId"]]
+                event, = [row for row in track["events"] if row["id"] == effect["eventId"]]
+                self.assertEqual(track["label"], "StageEffect/Expert/Display/break")
+                self.assertAlmostEqual(event["start"], 77.05)
+                self.assertAlmostEqual(event["start"] + event["duration"], 79.55)
+                del parsed["stageDisplayLights"], parsed["stageSpeedBack"]
+                self.assertEqual(parsed, self.original[platform])
+                descriptors.append(effect)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 
