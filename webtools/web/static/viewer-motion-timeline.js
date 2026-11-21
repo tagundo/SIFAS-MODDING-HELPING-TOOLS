@@ -38,6 +38,47 @@
     return clamp(value, 0, 1);
   }
   function weight(segment, time) { return weightWithTiming(segment, time, timing(segment.timing)); }
+  function buildTimingIndex(records, getSegment, getTiming) {
+    var ranges = [];
+    for (var ordinal = 0; ordinal < records.length; ordinal += 1) {
+      var record = records[ordinal], segment = getSegment ? getSegment(record) : record;
+      var spec = getTiming(segment), start = segment.start, span = segment.duration;
+      // Leave nonstandard inputs on the original evaluator.
+      if (!Number.isFinite(start) || !Number.isFinite(span) || span < 0) return null;
+      var before = spec.preMode ? Math.max(0, spec.preTime) : 0;
+      var after = spec.postMode ? Math.max(0, spec.postTime) : 0;
+      // Pad the coarse bounds for roundoff. The original relative-time weight
+      // still makes the exact inclusive boundary and extrapolation decisions.
+      var pad = 8 * Number.EPSILON * Math.max(1, Math.abs(start), span, before, after);
+      var low = start - before - pad, high = start + (span + after) + pad;
+      if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+      ranges.push({ record: record, ordinal: ordinal, low: low, high: high });
+    }
+    ranges.sort(function (a, b) { return a.low - b.low || a.ordinal - b.ordinal; });
+    var end = -Infinity;
+    ranges.forEach(function (range) { end = Math.max(end, range.high); range.end = end; });
+    return { ranges: ranges, matches: [], active: [], time: NaN };
+  }
+  function activeTimingRecords(index, time) {
+    if (time === index.time) return index.active;
+    var ranges = index.ranges, low = 0, high = ranges.length;
+    while (low < high) {
+      var mid = (low + high) >>> 1;
+      if (ranges[mid].low <= time) low = mid + 1;
+      else high = mid;
+    }
+    var matches = index.matches, active = index.active;
+    matches.length = 0; active.length = 0;
+    for (var i = low - 1; i >= 0 && ranges[i].end >= time; i -= 1) {
+      if (ranges[i].high >= time) matches.push(ranges[i]);
+    }
+    // Quaternion blending and visibility overrides use authored traversal
+    // order, irrespective of the order clips start on the timeline.
+    matches.sort(function (a, b) { return a.ordinal - b.ordinal; });
+    for (var j = 0; j < matches.length; j += 1) active.push(matches[j].record);
+    index.time = time;
+    return active;
+  }
   // GL3.12 MemberEyeContactBase uses 45 horizontal / 30 vertical degrees.
   // Targets31..36 are explicit pose directions; Camera/Audience/member targets
   // are positions transformed into the animated face's local rotation basis.
@@ -176,6 +217,27 @@
     var animationByName = {}, nodeByIndex = {}, faceChannels = {}, facePresets = {}, morphGroups = {}, sampleFrame = 0;
     var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
     var sampledSegments = new WeakMap(), sampleTime = null, sampleRevision = 0;
+    var indexTiming = options.indexTiming === true;
+    var timingSpecs = indexTiming ? new WeakMap() : null, timingIndexes = indexTiming ? new WeakMap() : null;
+    function getTiming(segment) {
+      if (!indexTiming) return timing(segment.timing);
+      var spec = timingSpecs.get(segment);
+      if (!spec) { spec = timing(segment.timing); timingSpecs.set(segment, spec); }
+      return spec;
+    }
+    function timedRecords(records, time, getSegment) {
+      if (!indexTiming || records.length < 8 || !Number.isFinite(time)) return records;
+      if (!timingIndexes.has(records)) timingIndexes.set(records, buildTimingIndex(records, getSegment, getTiming));
+      var index = timingIndexes.get(records);
+      return index ? activeTimingRecords(index, time) : records;
+    }
+    function trackSegment(record) { return record.segment; }
+    function morphSegment(track) { return track.record.segment; }
+    function visibilitySegment(record) { return record.event; }
+    function invalidateTiming() {
+      if (indexTiming) { timingSpecs = new WeakMap(); timingIndexes = new WeakMap(); }
+      sampleRevision += 1;
+    }
     function beginSample(time, fresh) {
       if (fresh || sampleTime !== time) { sampleTime = time; sampleRevision += 1; }
     }
@@ -183,8 +245,8 @@
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
       if (sample.revision !== sampleRevision) {
-        var spec = timing(segment.timing);
-        sample.revision = sampleRevision; sample.spec = spec;
+        var spec = getTiming(segment);
+        sample.revision = sampleRevision;
         sample.weight = weightWithTiming(segment, time, spec);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
@@ -323,7 +385,7 @@
     function evaluateGroups(collection, time) {
       collection.forEach(function (group) {
         var values = group.values, total = 0; values.length = 0;
-        group.tracks.forEach(function (record) {
+        timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
           var sample = sampleSegment(record.segment, time), amount = sample.weight;
           if (amount <= 0) return;
           var local = sample.local;
@@ -377,17 +439,20 @@
       sampleFrame += 1;
       shapeGroups.forEach(function (group) {
         var key = group.node.uuid + ":" + group.index;
-        group.tracks.forEach(function (track) {
+        timedRecords(group.tracks, time, morphSegment).forEach(function (track) {
           var record = track.record, amount = sampleWeight(record.segment, time); if (amount <= 0) return;
           if (record.sampleFrame !== sampleFrame) { record.sample = record.staticValue; record.sampleFrame = sampleFrame; }
           if (!contributions[key]) contributions[key] = [];
           contributions[key].push({ value: record.sample[track.component], weight: amount });
         });
       });
-      events.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
+      var activeEvents = timedRecords(events, time);
+      activeEvents.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
       // Navi speech follows decoded voice amplitude between authored mouth
       // poses. MV songs always use their original vowel timeline.
-      var hasAuthoredMouth = events.some(function (event) { return event.kind === "mouth" && sampleWeight(event, time) > 0; });
+      var hasAuthoredMouth = (!indexTiming || descriptor.category !== "mv") && activeEvents.some(function (event) {
+        return event.kind === "mouth" && sampleWeight(event, time) > 0;
+      });
       if (descriptor.category !== "mv" && !hasAuthoredMouth) {
         (descriptor.audio && descriptor.audio.tracks || []).forEach(function (track) {
           var envelope = track.envelope, local = number(track.offset, 0) + (time - number(track.startTime, 0)) * number(track.playbackRate, 1);
@@ -420,7 +485,7 @@
         group.node.morphTargetInfluences[group.index] = (group.base * remainder + value) / Math.max(1, total);
       });
     }
-    return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails,
+    return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails, invalidateTiming: invalidateTiming,
       animatedProperties: function (time) {
         beginSample(time, false);
         var owned = {};
@@ -428,14 +493,14 @@
           collection.forEach(function (group) {
             var binding = group.binding, property = binding.parsedPath && binding.parsedPath.propertyName;
             if (["position", "quaternion", "scale"].indexOf(property) < 0 ||
-                !group.tracks.some(function (record) { return sampleWeight(record.segment, time) > 0; })) return;
+                !timedRecords(group.tracks, time, trackSegment).some(function (record) { return sampleWeight(record.segment, time) > 0; })) return;
             var node = binding.targetObject || binding.node, id = node && node.userData && node.userData.elichika_node;
             if (id === undefined) return;
             if (!owned[String(id)]) owned[String(id)] = {};
             owned[String(id)][property] = true;
           });
         });
-        if (gazeEvents.some(function (event) { return sampleWeight(event, time) > 0; })) {
+        if (timedRecords(gazeEvents, time).some(function (event) { return sampleWeight(event, time) > 0; })) {
           var gazeProperties = gaze.properties(); Object.keys(gazeProperties).forEach(function (id) { owned[id] = Object.assign(owned[id] || {}, gazeProperties[id]); });
         }
         return owned;
@@ -444,13 +509,18 @@
         (descriptor.audio && descriptor.audio.tracks || []).reduce(function (end, track) { return Math.max(end, number(track.startTime, 0) + Math.max(0, number(track.duration, 0))); }, 0),
         (descriptor.bodySegments || []).reduce(function (end, segment) { return Math.max(end, segment.start + segment.duration); }, 0)),
       evaluate: function (time) { beginSample(time, true); evaluateGroups(bodyGroups, time); evaluateGroups(faceGroups, time); applyShapes(time);
-        gaze.evaluate(gazeEvents.map(function (event) { return { target: event.target, weight: sampleWeight(event, time) }; }).filter(function (event) { return event.weight > 0; }), options.getGazeContext ? options.getGazeContext() : {});
+        var requests = [];
+        timedRecords(gazeEvents, time).forEach(function (event) {
+          var amount = sampleWeight(event, time);
+          if (amount > 0) requests.push({ target: event.target, weight: amount });
+        });
+        gaze.evaluate(requests, options.getGazeContext ? options.getGazeContext() : {});
         gaze.warnings.forEach(warn);
         if (gaze.getState().missingTargets.length) warn("An original gaze target is unavailable in this single-model preview.");
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },
-      applyVisibility: function (time) { beginSample(time, false); visibility.forEach(function (record) {
+      applyVisibility: function (time) { beginSample(time, false); timedRecords(visibility, time, visibilitySegment).forEach(function (record) {
         if (sampleWeight(record.event, time) <= .5) return;
         var track = record.track, node = nodeByIndex[String(track.node)];
         if (!node || !track.values || !track.values.length) return;

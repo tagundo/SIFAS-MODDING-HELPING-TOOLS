@@ -1336,7 +1336,11 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
     face_enabled = bool(face_context and face_context.get("enabled", True))
     playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
-    if not face_context or (not face_enabled and not playable_rig):
+    authored_motion = bool(face_context and face_context.get("_mv_authored_motion"))
+    # An MV import supplies its timeline-selected clip bundles up front.
+    # They are already exported in base. A generic suit animation or a
+    # rediscovered donor would append unrelated or duplicate motion.
+    if not face_context or (not face_enabled and (not playable_rig or authored_motion)):
         return base
 
     geometry_deadline = _geometry_deadline
@@ -1349,7 +1353,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     # common allowance. No catalog/cache lookup or expression discovery runs
     # here, and automatic motion never becomes a selected NodeScaling source.
     early_motion, preload_failed = [], False
-    stage = face_context.get("_motion_stage")
+    stage = None if authored_motion else face_context.get("_motion_stage")
     if playable_rig and stage is not None:
         motion_deadline = min(geometry_deadline, time.monotonic() + FACE_SECONDS)
         try:
@@ -1449,7 +1453,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
 
     # Motion is independent of automatic facial completion. Unsupported/static
     # rigs cannot use discovered tracks; errors must not rewrite face status.
-    if preload_failed or rig is None or not (rig.skinned > 0 or rig.morphs):
+    if authored_motion or preload_failed or rig is None or not (rig.skinned > 0 or rig.morphs):
         return completed
     motion_deadline = min(optional_deadline, time.monotonic() + FACE_SECONDS)
     try:

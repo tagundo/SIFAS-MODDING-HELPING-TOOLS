@@ -239,6 +239,22 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in glb.doc["animations"]], [item["name"] for item in result["clips"]])
         self.assertEqual(values(glb, glb.doc["animations"][1]["samplers"][0]["output"])[0], (-1., 0., 0.))
 
+    def test_identical_samples_share_storage_without_sharing_rig_channels(self):
+        first = clip([binding(1, 1), binding(2, 1)], constant=[1, 2, 3, 1, 2, 3], name="First")
+        second = clip([binding(1, 1)], constant=[1, 2, 4], name="Second")
+        glb = builder()
+        result = animation.append_animations(scene([first, second]), glb, {1: 1, 2: 2})
+        self.assertEqual(result["warnings"], [])
+        a, b = glb.doc["animations"]
+        self.assertEqual([channel["target"]["node"] for channel in a["channels"]], [1, 2])
+        self.assertEqual(a["samplers"][0], a["samplers"][1])
+        shared = a["samplers"][0]
+        different = b["samplers"][0]
+        self.assertEqual(shared["input"], different["input"])
+        self.assertNotEqual(shared["output"], different["output"])
+        self.assertEqual(values(glb, shared["output"])[0], (-1., 2., 3.))
+        self.assertEqual(values(glb, different["output"])[0], (-1., 2., 4.))
+
     def test_unsupported_visibility_consumes_its_scalar_before_transform(self):
         tree = clip([binding(2, 3305885265, 25), binding(1, 1)], constant=[1, 2, 3, 4], duration=.1)
         glb = builder()

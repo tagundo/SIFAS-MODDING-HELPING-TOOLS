@@ -28,8 +28,9 @@
   const text = (value) => String(value == null ? "" : value);
   const finite = Number.isFinite;
   const basename = (path) => text(path).split(/[\\/]/).pop();
-  let settings, scene, project, selected, pending, catalogRequest, catalogTimer, songs = [];
+  let settings, scene, project, selected, pending, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
+  let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
   let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
@@ -102,10 +103,13 @@
     return resolved.origin === global.location.origin ? resolved.href : "";
   }
 
-  function syncPosition() {
-    byId("mv-seek").value = time;
-    byId("mv-time").textContent = formatTime(time) + " / " + formatTime(project ? project.duration : 0);
-    byId("mv-timeline-grid").style.setProperty("--mv-playhead", `${time * pixelsPerSecond}px`);
+  function syncPosition(now) {
+    if (playheadNode) playheadNode.style.transform = `translateX(${time * pixelsPerSecond}px)`;
+    if (now !== undefined && now - lastReadout < 100) return;
+    lastReadout = now ?? performance.now();
+    seekInput.value = time;
+    const label = formatTime(time) + " / " + formatTime(project ? project.duration : 0);
+    if (timeOutput.textContent !== label) timeOutput.textContent = label;
   }
 
   function audioOffset() {
@@ -124,17 +128,23 @@
     const control = byId("mv-play");
     control.textContent = t(playing ? "Pause" : "Play");
     control.setAttribute("aria-pressed", String(playing));
-    control.disabled = !project || !project.duration;
-    byId("mv-rewind").disabled = control.disabled;
-    byId("mv-seek").disabled = control.disabled;
-    byId("mv-seek").max = project ? project.duration : 0;
+    const empty = !project || !project.duration;
+    control.disabled = empty || previewLoading;
+    byId("mv-rewind").disabled = empty;
+    seekInput.disabled = empty;
+    seekInput.max = project ? project.duration : 0;
   }
 
   function pause() {
+    const wasPlaying = playing;
     playing = false;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     audio.pause();
+    if (wasPlaying) {
+      scene?.setPlaying?.(false);
+      seek(time, false);
+    }
     updatePlayButton();
   }
 
@@ -142,17 +152,20 @@
     if (!visible || !playing || !project) return;
     const position = audio.src && !audio.paused && !audio.ended ? audio.currentTime - audioOffset() : time + (now - lastFrame) / 1000;
     lastFrame = now;
-    seek(position, false);
+    time = clamp(finite(position) ? position : time, 0, project.duration);
+    if (scene) scene.playbackFrame(time, now);
+    syncPosition(now);
     if (time >= project.duration) pause();
     else frame = requestAnimationFrame(tick);
   }
 
   function togglePlayback() {
     if (playing) return pause();
-    if (!project || !project.duration || !visible) return;
+    if (!project || !project.duration || !visible || previewLoading) return;
     if (time >= project.duration) seek(0);
     playing = true;
     lastFrame = performance.now();
+    scene?.setPlaying?.(true);
     if (audio.src) audio.play().catch(() => {
       if (playing) report(t("Soundtrack playback is unavailable. The timeline is still playing."), true);
     });
@@ -525,6 +538,7 @@
   function renderTimeline() {
     const grid = byId("mv-timeline-grid"), scroll = byId("mv-timeline-scroll");
     grid.replaceChildren();
+    playheadNode = null;
     if (!project) return;
     const heading = make("p", t("Tracks"), { class: "mv-lane-label" });
     const ruler = make("div", null, { class: "mv-ruler" });
@@ -566,14 +580,23 @@
       lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
       grid.append(label, lane);
     }
-    grid.append(make("div", null, { class: "mv-playhead", "aria-hidden": "true" }));
+    playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true" });
+    grid.append(playheadNode);
     syncPosition();
+  }
+
+  function renderPreviewStatus() {
+    const hint = byId("mv-empty-preview");
+    const hasModels = !!(scene && project && (project.stage?.glb || (project.performers || []).some((actor) => actor.glb) ||
+      (project.assets || []).some((asset) => ["effect", "props", "background"].includes(asset.kind) && asset.previewUrl)));
+    hint.textContent = t(previewLoading ? "Loading 3D model…" : project ? "This MV has no visual assets available for preview." : "Open an MV to preview its stage and timeline.");
+    hint.hidden = hasModels && !previewLoading;
+    byId("mv-preview-controls").hidden = !hasModels || previewLoading;
   }
 
   function render() {
     byId("mv-project-title").textContent = project && project.name || t("3D MV");
-    byId("mv-empty-preview").textContent = t(project ? "This MV has no visual assets available for preview." : "Open an MV to preview its stage and timeline.");
-    byId("mv-preview-controls").hidden = byId("mv-empty-preview").hidden === false;
+    renderPreviewStatus();
     byId("mv-warning-list").replaceChildren(...(project && project.warnings || []).map((line) => make("li", t(line))));
     byId("mv-save").disabled = !project || !!pending;
     byId("mv-export-timeline").hidden = !(project && project.nativeTimeline);
@@ -604,10 +627,12 @@
     const playhead = preserveTime ? time : 0;
     pause();
     if (!scene && global.MVStudioScene) scene = MVStudioScene.create(byId("mv-scene"), { onError: showError });
-    if (scene) await scene.load(next);
     const source = resource(next.soundtrack && next.soundtrack.url);
-    if (source) audio.src = source;
-    else { audio.removeAttribute("src"); audio.load(); }
+    if (source) {
+      if (audio.src !== source) audio.src = source;
+    } else if (audio.hasAttribute("src")) {
+      audio.removeAttribute("src"); audio.load();
+    }
     const previous = selected;
     project = next;
     selected = preserveTime ? previous : null;
@@ -616,10 +641,18 @@
       registered = latestNativeTimeline = null; registrationTitle = performerId = ""; registrationTimelines = {}; registrationAudio = {};
       chartTemplates = []; chartTemplate = chartPath = "";
     }
-    byId("mv-empty-preview").hidden = !!(scene && (next.stage || (next.performers || []).length));
-    if (scene) scene.setVisible(visible);
-    render();
-    seek(playhead);
+    previewLoading = !!scene;
+    try {
+      const ready = scene && scene.load(next);
+      if (scene) scene.setVisible(visible);
+      render();
+      seek(playhead);
+      await ready;
+    } finally {
+      previewLoading = false;
+      renderPreviewStatus();
+      updatePlayButton();
+    }
   }
 
   async function operation(label, callback) {
@@ -712,6 +745,18 @@
     byId("mv-game-load").disabled = !song || !variants.value || !!catalogRequest;
   }
 
+  function foldSearch(value) { return text(value).normalize("NFKC").toLocaleLowerCase(settings.language()); }
+
+  function filterCatalog() {
+    if (catalogRequest) return;
+    const query = foldSearch(byId("mv-game-search").value.trim());
+    const select = byId("mv-game-song");
+    songs = catalogIndex.filter((entry) => !query || entry.search.includes(query)).map((entry) => entry.song);
+    replaceOptions(select, songs.map((song) => ({ id: song.id, label: song.title + (song.mvOnly ? " · " + t("MV only") : "") })), select.value);
+    byId("mv-game-status").textContent = songs.length ? "" : t("No matching MVs.");
+    syncVariants();
+  }
+
   async function loadCatalog() {
     const dialog = byId("mv-game-picker");
     if (!dialog.open) return;
@@ -724,17 +769,20 @@
     byId("mv-game-load").disabled = true;
     const native = global.ElichikaPlatform && ElichikaPlatform.info().platform === "macos";
     const query = new URLSearchParams({ region: region.value || (settings.language() === "ja" ? "jp" : "gl"),
-      platform: platform.value || (native ? "ios" : "android"), search: byId("mv-game-search").value.trim() });
+      platform: platform.value || (native ? "ios" : "android") });
     try {
       const data = await request("catalog?" + query, undefined, controller.signal);
       if (catalogRequest !== controller || !dialog.open) return;
       replaceOptions(region, data.regions || [], data.region || region.value);
       replaceOptions(platform, data.platforms || [], data.platform || platform.value);
-      songs = Array.isArray(data.songs) ? data.songs : [];
-      replaceOptions(song, songs.map((item) => ({ id: item.id, label: item.title + (item.mvOnly ? " · " + t("MV only") : "") })), song.value);
-      status.textContent = songs.length ? "" : t("No matching MVs.");
+      catalogIndex = (Array.isArray(data.songs) ? data.songs : []).map((song) => ({ song,
+        search: foldSearch([song.id, song.title, ...(song.variants || []).flatMap((variant) => [variant.id, variant.label])].join("\n")) }));
+      catalogRequest = null;
+      filterCatalog();
     } catch (error) {
-      if (catalogRequest === controller && error.name !== "AbortError") { songs = []; song.replaceChildren(); status.textContent = t(error.message); }
+      if (catalogRequest === controller && error.name !== "AbortError") {
+        catalogIndex = []; songs = []; song.replaceChildren(); status.textContent = t(error.message);
+      }
     } finally {
       if (catalogRequest === controller) { catalogRequest = null; syncVariants(); }
     }
@@ -777,6 +825,8 @@
   function mount(options) {
     if (settings) return;
     settings = options;
+    seekInput = byId("mv-seek");
+    timeOutput = byId("mv-time");
     try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelKeys.includes(key)); } catch (_) {}
     byId("mv-import-game").addEventListener("click", showCatalog);
     byId("mv-game-close").addEventListener("click", () => byId("mv-game-picker").close());
@@ -800,16 +850,12 @@
     byId("mv-game-platform").addEventListener("change", loadCatalog);
     byId("mv-game-song").addEventListener("change", syncVariants);
     byId("mv-game-variant").addEventListener("change", () => { byId("mv-game-download").checked = false; });
-    byId("mv-game-search").addEventListener("input", () => {
-      clearTimeout(catalogTimer);
-      byId("mv-game-load").disabled = true;
-      catalogTimer = setTimeout(loadCatalog, 200);
-    });
+    byId("mv-game-search").addEventListener("input", filterCatalog);
     byId("mv-game-load").addEventListener("click", importGame);
     byId("mv-game-picker").addEventListener("close", () => {
-      clearTimeout(catalogTimer);
       if (catalogRequest) catalogRequest.abort();
       catalogRequest = null;
+      catalogIndex = [];
     });
     document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); });
     global.addEventListener("pagehide", (event) => {

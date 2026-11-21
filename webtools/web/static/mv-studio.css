@@ -150,7 +150,7 @@
 .mv-lane[data-kind=dance], .mv-lane[data-kind=mouth], .mv-lane[data-kind=eyes], .mv-lane[data-kind=gaze] { --mv-clip-color: #8d4b85; }
 .mv-lane[data-kind=sound] { --mv-clip-color: #206960; }
 .mv-lane[data-kind=lighting], .mv-lane[data-kind=display], .mv-lane[data-kind=bloom], .mv-lane[data-kind=dof], .mv-lane[data-kind=effects] { --mv-clip-color: #9b523b; }
-.mv-playhead { position: absolute; z-index: 1; inset-block: 0; left: calc(var(--mv-track-label) + var(--mv-playhead, 0px)); width: 2px; background: #f18b52; pointer-events: none; }
+.mv-playhead { position: absolute; z-index: 1; inset-block: 0; left: var(--mv-track-label); width: 2px; background: #f18b52; pointer-events: none; }
 .mv-dialog .mv-check { margin-block: 8px; }
 @media (max-width: 640px) and (orientation: portrait) {
   .mv-workspace { grid-template: "preview" auto "inspector" auto "timeline" auto / minmax(0, 1fr); }

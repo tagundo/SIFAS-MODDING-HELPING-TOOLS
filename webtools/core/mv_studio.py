@@ -1,4 +1,5 @@
 """Shared MV workbench project, preview assets, and native timeline copies."""
+from collections import OrderedDict
 import hashlib
 import json
 import math
@@ -32,6 +33,9 @@ _UNITY_SUFFIXES = {".unity", ".unity3d", ".assets", ".bundle", ".bytes"}
 _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"}
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
+_ACTOR_PREVIEWS = OrderedDict()
+_ACTOR_PREVIEW_ENTRIES = 24
+_ACTOR_PREVIEW_METADATA_BYTES = 4 * 1024 * 1024
 
 
 def _root():
@@ -138,14 +142,37 @@ def _path(value):
     return path
 
 
-def _preview(path, *, performer=False, motions=(), companions=()):
-    prepared = model_viewer.prepare([str(path), *map(str, companions)], rigged=performer,
-        face_context={"enabled": performer and not companions, "allow_download": False, "_mv_stage": not performer},
+def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
+    models = [path, *companions]
+    key = None
+    if reuse and performer and motions and companions:
+        # Only game imports with all inputs specified can reuse a conversion.
+        # Missing companions let the viewer discover local faces dynamically.
+        key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
+               tuple((item.name, game_models._sha(item)) for item in motions))
+        cached = model_viewer._conversion_get(_ACTOR_PREVIEWS, key, time.monotonic() + model_viewer.BUILD_SECONDS)
+        if cached is not None:
+            name, rig = json.loads(cached)
+            try:
+                previous, _ = media(name)
+                if game_models._sha(previous)[:32] == previous.stem:
+                    return _MEDIA_URL + name, rig
+            except OSError:
+                pass
+    prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
+        face_context={"enabled": performer and not companions, "allow_download": False,
+                      "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions)},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
         raise ValueError("The 3D preview expired. Reopen the asset.")
-    return _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
+    url, rig = _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
+    if key is not None and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
+        model_viewer._conversion_put(
+            _ACTOR_PREVIEWS, key, json.dumps([url.removeprefix(_MEDIA_URL), rig]).encode(),
+            max_bytes=_ACTOR_PREVIEW_METADATA_BYTES, max_entries=_ACTOR_PREVIEW_ENTRIES,
+        )
+    return url, rig
 
 
 def _preview_file(path, kind):
@@ -385,7 +412,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     except (ValueError, OSError) as error:
                         warnings.append(f"{label} choreography: {error}")
                     try:
-                        result["glb"], result["rig"] = _preview(model, performer=True, motions=clips, companions=companions)
+                        result["glb"], result["rig"] = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
                         result["motion"] = motion
                         if motion and result["rig"].get("clips"):
                             result["transform"]["position"] = [0, 0, 0]

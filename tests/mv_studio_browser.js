@@ -97,8 +97,20 @@ async function registrationControls(page) {
 async function localAndGame(page, url) {
   await page.goto(url + '/#mv');
   await page.waitForFunction(() => MVStudio.getState().visible);
-  await chooseLocal(page, modded, modelName);
-  await page.waitForFunction(() => !!MVStudio.getState().project?.stage?.glb);
+  let releaseModel;
+  const waitingForModel = new Promise(resolve => { releaseModel = resolve; });
+  const delayedModel = async route => { await waitingForModel; await route.continue(); };
+  await page.route('**/api/mv-studio/media/*.glb', delayedModel);
+  try {
+    await chooseLocal(page, modded, modelName);
+    await page.waitForFunction(() => !!MVStudio.getState().project?.stage?.glb);
+    assert.equal(await page.locator('#mv-project-title').textContent(), 'stage-fixture');
+    assert(await page.locator('#mv-timeline-scroll').isVisible());
+    assert(await page.locator('#mv-save').isDisabled());
+    assert(!(await page.locator('#mv-camera-mode').isVisible()));
+  } finally { releaseModel(); }
+  await page.locator('#mv-camera-mode').waitFor();
+  await page.unroute('**/api/mv-studio/media/*.glb', delayedModel);
   const local = await page.evaluate(() => MVStudio.getState().project);
   assert(local.assets.find(asset => asset.kind === 'stage'));
   assert(await page.locator('#mv-scene canvas').isVisible());
@@ -119,20 +131,31 @@ async function localAndGame(page, url) {
     quality: { mode: 1, modes: [{ id: 1, label: 'Medium', values: { shadow: true } }],
       options: [{ key: 'shadow', label: 'Shadow', type: 'boolean' }], values: { shadow: true } },
   };
-  await page.route('**/api/mv-studio/catalog?*', route => route.fulfill({ json: { region: 'gl', platform: 'android',
-    regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
-    songs: [{ id: 12, title: 'MV Studio sample', mvOnly: true, variants: [{ id: 34, label: 'MV' }] }],
-  } }));
+  let catalogRequests = 0;
+  await page.route('**/api/mv-studio/catalog?*', route => {
+    catalogRequests++;
+    return route.fulfill({ json: { region: 'gl', platform: 'android',
+      regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
+      songs: [{ id: 12, title: 'MV Studio sample', mvOnly: true, variants: [{ id: 34, label: 'MV' }] },
+        { id: 13, title: '다른 노래', variants: [{ id: 35, label: '별빛 무대' }] }],
+    } });
+  });
   let request;
   await page.route('**/api/mv-studio/game?*', route => {
     request = route.request().postDataJSON();
     return route.fulfill({ json: gameProject });
   });
   await page.locator('#mv-import-game').click();
-  await page.locator('#mv-game-song option').waitFor({ state: 'attached' });
+  await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+  const search = page.locator('#mv-game-search');
+  await search.fill('별빛');
+  assert.equal(await page.locator('#mv-game-song').inputValue(), '13');
+  await search.fill('ｍｖ studio');
+  assert.equal(await page.locator('#mv-game-song').inputValue(), '12');
   assert.match(await page.locator('#mv-game-song option').textContent(), /MV 전용/);
   await page.locator('#mv-game-load').click();
   await page.locator('.mv-clip[data-event=sample-clip]').waitFor();
+  assert.equal(catalogRequests, 1);
   assert.deepEqual(request, { region: 'gl', platform: 'android', liveId: 12, assetId: 34, download: false });
   await page.locator('#mv-performers summary').click();
   const position = page.locator('[data-mv-performer-axis=X]');

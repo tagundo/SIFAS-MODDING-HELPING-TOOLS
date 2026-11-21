@@ -10,6 +10,30 @@
       time <= event.start + event.duration && (!current || event.start >= current.start) ? event : current, null);
   }
 
+  // Camera frames from the native importer are ordered. Continue to accept
+  // projects authored by older tools that saved frames in a different order.
+  function cameraSamples(event, time, ordered) {
+    const value = event.values || {};
+    const frames = value.keyframes;
+    if (!Array.isArray(frames) || !frames.length) return [value, value];
+    if (!ordered) {
+      let left = frames[0], right = left;
+      for (const sample of frames) {
+        right = sample;
+        if (sample.time > time) break;
+        left = sample;
+      }
+      return [left, right];
+    }
+    let lower = 0, upper = frames.length;
+    while (lower < upper) {
+      const mid = (lower + upper) >>> 1;
+      if (frames[mid].time <= time) lower = mid + 1;
+      else upper = mid;
+    }
+    return [frames[Math.max(0, lower - 1)], frames[Math.min(lower, frames.length - 1)]];
+  }
+
   function localURL(value) {
     return typeof value === "string" && /^\/api\/(?:mv-studio\/media\/[a-f0-9]{32}\.(?:glb|wav|mp3|ogg|m4a)|viewer\/model\/[a-f0-9]{32}\.glb)$/.test(value);
   }
@@ -17,7 +41,7 @@
   function create(mount, options) {
     const T = global.THREE;
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
-    const renderer = new T.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
     renderer.setClearColor(0x111522);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
@@ -38,21 +62,36 @@
     const rim = new T.DirectionalLight(0x8bb6ff, 1.0);
     rim.position.set(4, 4, -3);
     scene.add(stage, actors, effects, grid, ambient, key, rim);
+    // The scene's fixed roots otherwise dirty the world matrix of every
+    // descendant on each render. Dancers and both cameras still animate.
+    for (const node of [scene, stage, actors, effects, grid, ambient, key, rim]) {
+      node.updateMatrix();
+      node.matrixAutoUpdate = false;
+    }
     controls.target.set(0, 1.1, 0);
     editorCamera.position.set(5, 3.8, 8);
     controls.update();
 
     let disposed = false, visible = true, generation = 0, request = null, project = null;
-    let currentTime = 0, useLive = true, hasShot = false, records = [];
-    let renderHeight = null, trackSource = null;
-    const nativeEvents = new Map(), size = new T.Vector2();
+    let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0;
+    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
+    let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
+    const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap();
+    const size = new T.Vector2();
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
+    const gaze = { camera: [0, 0, 0], members: {} };
 
     function draw() {
+      if (queuedDraw) global.cancelAnimationFrame(queuedDraw);
+      queuedDraw = 0;
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
         renderer.render(scene, useLive && hasShot ? liveCamera : editorCamera);
       }
+    }
+
+    function requestDraw() {
+      if (!disposed && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
     }
 
     function resize() {
@@ -62,8 +101,10 @@
       const nativeHeight = values.rendering_resolution;
       const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
         ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
-      if (renderer.getPixelRatio() !== resolution) renderer.setPixelRatio(resolution);
+      const previewResolution = resolution * previewScale;
+      if (renderer.getPixelRatio() !== previewResolution) renderer.setPixelRatio(previewResolution);
       renderHeight = nativeHeight;
+      viewportDirty = false;
       renderer.getSize(size);
       if (size.x !== width || size.y !== height) renderer.setSize(width, height, false);
       for (const camera of [editorCamera, liveCamera]) {
@@ -98,13 +139,13 @@
       grid.visible = true;
     }
 
-    async function model(url, signal) {
+    async function modelBytes(url, signal) {
       if (!localURL(url)) throw new Error("The preview asset address is invalid.");
       const response = await fetch(url, { signal });
       if (!response.ok) throw new Error("The preview asset is unavailable. Load it again.");
       const bytes = await response.arrayBuffer();
       if (!bytes.byteLength || bytes.byteLength > 96 * 1024 * 1024) throw new Error("The 3D preview asset is too large.");
-      return new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
+      return bytes;
     }
 
     function actorPose(record, performer) {
@@ -115,35 +156,44 @@
     }
 
     function updateMotion(record) {
-      for (const segment of record.segments.concat(record.facialEvents)) {
+      let changed = false;
+      const assign = (object, key, value) => {
+        if (object[key] === value) return;
+        object[key] = value;
+        changed = true;
+      };
+      for (const segment of record.motionEvents) {
         const bound = nativeEvents.get(segment.nativeEventId);
         if (!bound) continue;
         const event = bound.event, values = event.values;
-        segment.start = event.start;
-        segment.duration = event.duration;
+        assign(segment, "start", event.start);
+        assign(segment, "duration", event.duration);
         const weight = segment.kind === "gaze" ? values.weightForDirection : values.weight;
-        segment.weight = bound.track.muted ? 0 : Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 1;
-        if (segment.kind === "gaze" && Number.isInteger(values.target)) segment.target = values.target;
-        if (Number.isFinite(values.clipIn)) segment.clipIn = values.clipIn;
-        if (Number.isFinite(values.timeScale) && values.timeScale > 0) segment.timeScale = values.timeScale;
+        assign(segment, "weight", bound.track.muted ? 0 : Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 1);
+        if (segment.kind === "gaze" && Number.isInteger(values.target)) assign(segment, "target", values.target);
+        if (Number.isFinite(values.clipIn)) assign(segment, "clipIn", values.clipIn);
+        if (Number.isFinite(values.timeScale) && values.timeScale > 0) assign(segment, "timeScale", values.timeScale);
         for (const key of ["easeIn", "easeOut", "blendIn", "blendOut"]) {
-          if (Number.isFinite(values[key])) segment.timing[key] = values[key];
+          if (Number.isFinite(values[key])) assign(segment.timing, key, values[key]);
         }
         for (const side of ["pre", "post"]) {
           for (const field of ["Time", "Mode"]) {
             const edited = values[side + "Extrapolation" + field];
-            if (Number.isFinite(edited)) segment.timing[side + field] = edited;
+            if (Number.isFinite(edited)) assign(segment.timing, side + field, edited);
           }
         }
       }
+      if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
     }
 
     function gazeContext() {
-      const members = {};
       for (const record of records) if (record.group === actors) {
-        members[record.position] = [record.root.position.x, record.root.position.y + 1.5, record.root.position.z];
+        const member = gaze.members[record.position] || (gaze.members[record.position] = [0, 0, 0]);
+        record.root.position.toArray(member);
+        member[1] += 1.5;
       }
-      return { camera: (useLive && hasShot ? liveCamera : editorCamera).position.toArray(), members };
+      (useLive && hasShot ? liveCamera : editorCamera).position.toArray(gaze.camera);
+      return gaze;
     }
 
     function frameAll() {
@@ -164,7 +214,10 @@
       request = new AbortController();
       const signal = request.signal, ticket = ++generation;
       clear();
+      gaze.members = {};
+      hasShot = false;
       if (!project || disposed) return;
+      applyProject();
       const entries = [];
       if (project.stage && project.stage.glb) entries.push({ spec: project.stage, group: stage });
       if (project.stage && project.stage.effectsGlb) entries.push({ spec: { glb: project.stage.effectsGlb }, group: effects });
@@ -177,15 +230,29 @@
       for (const performer of (project.performers || []).slice(0, 9)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
-      // Decode one bundle at a time on mobile and keep only the current scene.
-      for (const entry of entries) {
+      // Fetch the next GLB while the current one decodes. Only one model is
+      // decoded at a time so concurrent texture uploads stay bounded on mobile.
+      function fetchEntry(entry) {
+        return entry && modelBytes(entry.spec.glb, signal).then((bytes) => ({ bytes }), (error) => ({ error }));
+      }
+      let pending = fetchEntry(entries[0]);
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
         if (ticket !== generation || disposed) return;
         try {
-          const gltf = await model(entry.spec.glb, signal);
+          const download = await pending;
+          if (ticket !== generation || disposed) return;
+          pending = fetchEntry(entries[index + 1]);
+          if (download.error) throw download.error;
+          const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(download.bytes, "", resolve, reject));
           if (ticket !== generation || disposed) { release(gltf.scene); return; }
           const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
             visibility: [] };
           gltf.scene.traverse((node) => {
+            if (entry.group !== actors && node.matrixAutoUpdate) {
+              node.updateMatrix();
+              node.matrixAutoUpdate = false;
+            }
             if (!node.isMesh) return;
             node.castShadow = entry.group === actors;
             node.receiveShadow = true;
@@ -206,7 +273,7 @@
           if (entry.group === actors) {
             actorPose(record, entry.spec);
             if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
-              parser: gltf.parser, enabled: true, rimlight: true, onChange: draw,
+              parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
               mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
             });
             if (record.materials && record.materials.ready) await record.materials.ready;
@@ -222,10 +289,12 @@
               record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
                 ...event, timing: { ...event.timing }
               }));
+              record.motionEvents = record.segments.concat(record.facialEvents);
               record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
                 entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                   facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
-                { getGazeContext: gazeContext });
+                { getGazeContext: gazeContext, indexTiming: true });
+              updateMotion(record);
             } else if (gltf.animations.length) {
               record.mixer = new T.AnimationMixer(gltf.scene);
               record.mixer.clipAction(gltf.animations[0]).play();
@@ -233,6 +302,11 @@
           }
           entry.group.add(record.root);
           records.push(record);
+          if (entry.group === stage) {
+            grid.visible = false;
+            frameAll();
+            playbackFrame(currentTime);
+          }
         } catch (error) {
           if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
         }
@@ -245,14 +319,12 @@
 
     function poseCamera(event, time) {
       const value = event.values || {};
-      const frames = Array.isArray(value.keyframes) ? value.keyframes : [];
       const local = Math.max(0, time - event.start);
-      let left = frames[0] || value, right = left;
-      for (const sample of frames) {
-        right = sample;
-        if (sample.time > local) break;
-        left = sample;
+      const frames = value.keyframes;
+      if (Array.isArray(frames) && !sortedCameraFrames.has(frames)) {
+        sortedCameraFrames.set(frames, frames.every((frame, index) => !index || frame.time >= frames[index - 1].time));
       }
+      const [left, right] = cameraSamples(event, local, sortedCameraFrames.get(frames));
       if (!vector(left.position, 3) || !vector(left.rotation, 4)) return false;
       const fraction = left !== right && right.time > left.time ? Math.max(0, Math.min(1, (local - left.time) / (right.time - left.time))) : 0;
       position.fromArray(left.position);
@@ -266,8 +338,11 @@
       const fov = Number.isFinite(left.fov) ? left.fov : value.fov;
       if (Number.isFinite(fov)) {
         const next = Number.isFinite(right.fov) ? right.fov : fov;
-        liveCamera.fov = Math.min(170, Math.max(1, fov + (next - fov) * fraction));
-        liveCamera.updateProjectionMatrix();
+        const sampled = Math.min(170, Math.max(1, fov + (next - fov) * fraction));
+        if (liveCamera.fov !== sampled) {
+          liveCamera.fov = sampled;
+          liveCamera.updateProjectionMatrix();
+        }
       }
       return true;
     }
@@ -278,23 +353,64 @@
       return null;
     }
 
-    function color(value, fallback) {
-      if (vector(value, 3) || vector(value, 4)) return new T.Color(value[0], value[1], value[2]);
-      if (value && [value.r, value.g, value.b].every(Number.isFinite)) return new T.Color(value.r, value.g, value.b);
-      return new T.Color(fallback);
+    function setColor(target, value, fallback) {
+      if (vector(value, 3) || vector(value, 4)) target.setRGB(value[0], value[1], value[2]);
+      else if (value && Number.isFinite(value.r) && Number.isFinite(value.g) && Number.isFinite(value.b)) target.setRGB(value.r, value.g, value.b);
+      else target.setHex(fallback);
     }
 
-    function seek(time, value) {
-      if (disposed) return;
-      project = value || project;
-      currentTime = Number.isFinite(time) ? time : 0;
+    function applyProject() {
       const tracks = project && project.tracks || [];
-      const settings = project && project.quality && project.quality.values || {};
+      settings = project && project.quality && project.quality.values || {};
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
         for (const track of tracks) if (["dance", "mouth", "eyes", "gaze", "cheek"].includes(track.kind)) {
           for (const event of track.events) nativeEvents.set(event.id, { track, event });
+        }
+      }
+      performers.clear();
+      renderTracks = tracks.filter((track) => !track.muted && (track.kind === "lighting" ||
+        (track.kind === "camera" && (!track.binding || /MainCamera/i.test(track.binding)))));
+      for (const performer of project && project.performers || []) performers.set(performer.id, performer);
+      effects.visible = settings.stage_control !== false;
+      for (const record of records) {
+        for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
+        if (record.motion) updateMotion(record);
+      }
+    }
+
+    function seek(time, value) {
+      if (disposed) return;
+      project = value || project;
+      applyProject();
+      playbackFrame(time);
+    }
+
+    function setPlaying(value) {
+      if (playing === value) return;
+      playing = value;
+      lastPlaybackFrame = null;
+      slowFrames = 0;
+      if (!playing && previewScale !== 1) {
+        previewScale = 1;
+        viewportDirty = true;
+      }
+    }
+
+    function playbackFrame(time, frameTimestamp) {
+      if (disposed) return;
+      currentTime = Number.isFinite(time) ? time : 0;
+      // Reduce only the temporary playback buffer when the browser has
+      // missed several 30 fps frames. Pausing restores the selected quality.
+      if (playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
+        if (lastPlaybackFrame !== null && frameTimestamp - lastPlaybackFrame > 40) slowFrames++;
+        else slowFrames = 0;
+        lastPlaybackFrame = frameTimestamp;
+        if (slowFrames === 4) {
+          slowFrames = 0;
+          previewScale = Math.max(0.5, previewScale * 0.75);
+          viewportDirty = true;
         }
       }
       hasShot = false;
@@ -304,52 +420,47 @@
       key.intensity = 2.1;
       rim.color.setHex(0x8bb6ff);
       rim.intensity = 1.0;
-      for (const track of tracks) {
-        if (track.muted) continue;
-        if (track.kind === "camera" && (!track.binding || /MainCamera/i.test(track.binding))) {
-          const event = activeEvent(track, currentTime);
-          if (event) hasShot = poseCamera(event, currentTime) || hasShot;
-        } else if (track.kind === "lighting") {
-          const event = activeEvent(track, currentTime);
-          if (!event) continue;
+      for (const track of renderTracks) {
+        const event = activeEvent(track, currentTime);
+        if (!event) continue;
+        if (track.kind === "camera") {
+          hasShot = poseCamera(event, currentTime) || hasShot;
+        } else {
           const label = event.values.playableClass;
           if (label === "LiveBaseLightClip") {
-            ambient.color.copy(color(lightValue(event, ["ambientColor"]), 0xe4edff));
-            rim.color.copy(color(lightValue(event, ["rimlightColor"]), 0x8bb6ff));
+            setColor(ambient.color, lightValue(event, ["ambientColor"]), 0xe4edff);
+            setColor(rim.color, lightValue(event, ["rimlightColor"]), 0x8bb6ff);
             const strength = lightValue(event, ["rimlightIntensity"]);
             if (Number.isFinite(strength)) rim.intensity = Math.max(0, Math.min(10, strength));
           } else if (label === "LiveStageAmbientClip" && settings.stage_ambient !== false) {
-            key.color.copy(color(lightValue(event, ["color", "tintColor"]), 0xffffff));
+            setColor(key.color, lightValue(event, ["color", "tintColor"]), 0xffffff);
           } else if (label === "LiveRimlightClip" && settings.member_rim_light !== false) {
-            rim.color.copy(color(lightValue(event, ["color"]), 0x8bb6ff));
+            setColor(rim.color, lightValue(event, ["color"]), 0x8bb6ff);
           }
         }
       }
-      effects.visible = settings.stage_control !== false;
       if (settings.stage_ambient === false) ambient.intensity = 0.6;
       if (settings.base_light === false) key.intensity = 0.8;
       if (settings.member_rim_light === false) rim.intensity = 0;
       for (const record of records) {
-        for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         if (record.group !== actors) continue;
-        const performer = ((project && project.performers) || []).find((entry) => entry.id === record.id);
+        const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          updateMotion(record);
           record.motion.evaluate(currentTime);
           record.motion.applyVisibility(currentTime);
         } else if (record.mixer) record.mixer.setTime(currentTime);
       }
-      if (renderHeight !== settings.rendering_resolution) resize();
+      if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else draw();
     }
 
     const observer = global.ResizeObserver ? new global.ResizeObserver(resize) : null;
     if (observer) observer.observe(mount);
-    controls.addEventListener("change", draw);
+    controls.addEventListener("change", requestDraw);
     resize();
     return {
-      load, seek, resize,
+      load, seek, playbackFrame, setPlaying, resize,
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       frameAll,
       setVisible(value) { visible = Boolean(value); if (visible) resize(); },
@@ -357,6 +468,7 @@
         disposed = true;
         if (request) request.abort();
         if (observer) observer.disconnect();
+        if (queuedDraw) global.cancelAnimationFrame(queuedDraw);
         clear();
         release(grid);
         controls.dispose();

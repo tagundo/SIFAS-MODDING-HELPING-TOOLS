@@ -238,6 +238,30 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(metadata["rig"]["previewMotion"]["name"], "Neutral swing__2")
         self.assertEqual(metadata["rig"]["previewMotion"]["sourceName"], bundled.name)
 
+    def test_authored_mv_clips_skip_other_motion_discovery(self):
+        env = self.UnityPy.load(FIXTURE.read_bytes())
+        for obj in list(env.objects):
+            if obj.type.name == "AnimationClip":
+                del obj.assets_file.objects[obj.path_id]
+        body = self.root / "body.unity"
+        body.write_bytes(next(iter(env.files.values())).save())
+        authored = self.root / "authored.unity"
+        authored.write_bytes(self.plain)
+        from webtools.core import model_animation
+        with (
+            patch.object(motion, "KNOWN_PREVIEWS", {}),
+            patch.object(motion.MotionInputs, "bundled") as bundled,
+            patch.object(motion.MotionInputs, "automatic") as automatic,
+            patch.object(model_animation, "discover_animation_paths") as discovered,
+        ):
+            metadata = viewer.prepare([str(body)], rigged=True, motion_paths=[str(authored)],
+                                      face_context=dict(self.context, _mv_authored_motion=True))
+        bundled.assert_not_called()
+        automatic.assert_not_called()
+        discovered.assert_not_called()
+        self.assertEqual([clip["sourceName"] for clip in metadata["rig"]["clips"]], ["Neutral swing"])
+        self.assertTrue(metadata["rig"]["clips"][0]["bindingComplete"])
+
     def test_eight_selected_inputs_leave_a_separate_offline_preview_slot(self):
         bundled = self.root / "bundled.unity"; bundled.write_bytes(self.plain)
         selected = [FIXTURE]

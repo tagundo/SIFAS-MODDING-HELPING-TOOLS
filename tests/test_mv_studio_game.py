@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from webtools.core import model_viewer, mv_studio
 from webtools.core import mv_studio_game as studio
 
 try:
@@ -116,3 +117,37 @@ class MVGameCatalogTests(unittest.TestCase):
             self.assertEqual(metapack.read_bytes(), original)
         with self.assertRaisesRegex(ValueError, "asset descriptor"):
             studio.load_asset(self.root, dict(descriptor, pack_name="../../arbitrary"))
+
+    def test_exact_game_actor_reuses_only_verified_media_for_matching_inputs(self):
+        model = self.root / "model.unity"
+        companion = self.root / "face.unity"
+        motion = self.root / "dance.unity"
+        for file in (model, companion, motion):
+            file.write_bytes(file.name.encode())
+        meta = {"available": True, "clips": [{"bindingComplete": True, "sourceName": "Native"}]}
+        glb = model_viewer._Glb().finish()
+
+        def open_actor():
+            return mv_studio._preview(model, performer=True, motions=(motion,), companions=(companion,), reuse=True)
+
+        with (
+            patch.object(mv_studio, "_root", return_value=self.root),
+            patch.object(model_viewer, "prepare", return_value={"id": "actor", "rig": meta}) as prepare,
+            patch.object(model_viewer, "get_model", return_value=glb),
+        ):
+            url, _ = open_actor()
+            cached_url, cached_rig = open_actor()
+            self.assertEqual((cached_url, cached_rig), (url, meta))
+            self.assertEqual(prepare.call_count, 1)
+            cached_rig["clips"].clear()
+            self.assertEqual(open_actor()[1], meta)
+
+            media, _ = mv_studio.media(url.rsplit("/", 1)[-1])
+            media.write_bytes(glb[:-1] + bytes([glb[-1] ^ 1]))
+            self.assertEqual(open_actor()[0], url)
+            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(media.read_bytes(), glb)
+
+            motion.write_bytes(b"Different authored timeline clip data")
+            open_actor()
+            self.assertEqual(prepare.call_count, 3)

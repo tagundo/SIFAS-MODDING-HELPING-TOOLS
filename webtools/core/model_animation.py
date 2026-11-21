@@ -6,6 +6,7 @@ Unsupported visibility/material/humanoid channels are reported, never guessed.
 No clip, including SIFAS's eye_900, is implicitly selected as a neutral pose.
 """
 import bisect
+from hashlib import blake2b
 import math
 import os
 from pathlib import Path
@@ -479,16 +480,24 @@ def _quaternion(values, euler=False):
     return [x, -y, -z, w]
 
 
-def _attribute(glb, values, kind, bounds=False):
+def _attribute(glb, values, kind, cache, bounds=False):
     import numpy as np
     array = np.asarray(values, dtype=float)
     if array.size > MAX_VALUES or not np.isfinite(array).all() or (np.abs(array) > 3.4e38).any():
         raise AnimationError("The animation exceeds the preview value limit.")
     if kind == "SCALAR":
         array = array.reshape(-1, 1)
-    index = glb.attribute(array, kind, bounds=bounds)
-    view = glb.doc["accessors"][index]["bufferView"]
-    glb.doc["bufferViews"][view].pop("target", None)
+    array = np.ascontiguousarray(array, dtype="<f4")
+    raw = memoryview(array).cast("B")
+    key = (kind, bounds, array.shape, blake2b(raw, digest_size=16).digest())
+    index = cache.get(key)
+    if index is not None:
+        view = glb.doc["bufferViews"][glb.doc["accessors"][index]["bufferView"]]
+        start = view["byteOffset"]
+        if raw == memoryview(glb.data)[start:start + view["byteLength"]]:
+            return index
+    index = glb.attribute(array, kind, bounds=bounds, target=None)
+    cache[key] = index
     return index
 
 
@@ -584,6 +593,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
     morph_bindings = morph_bindings or {}
     visibility_bindings = visibility_bindings or {}
     used_names = {item.get("name", "") for item in glb.doc.get("animations", [])}
+    accessors = {}
     from .game_motion_selection import describe_clip_roles, _object_key
     source_roles = describe_clip_roles(scene, deadline)
 
@@ -700,7 +710,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                 warn("animation_unbound", name, "This clip has no supported channels bound to the displayed rig.")
                 continue
             relative_times = [stamp - clip["start"] for stamp in times]
-            input_accessor = _attribute(glb, relative_times, "SCALAR", bounds=True) if outputs else None
+            input_accessor = _attribute(glb, relative_times, "SCALAR", accessors, bounds=True) if outputs else None
             exported_name, suffix = clip["name"], 2
             while exported_name in used_names:
                 exported_name = clip["name"] + "__" + str(suffix)
@@ -709,7 +719,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                          "extras": {"loop": clip["loop"], "sourceSampling": clip["sampling"]}}
             for node, kind, rows in outputs:
                 accessor = _attribute(glb, [value for row in rows for value in row] if kind == "weights" else rows,
-                                      "SCALAR" if kind == "weights" else ("VEC4" if kind == "rotation" else "VEC3"))
+                                      "SCALAR" if kind == "weights" else ("VEC4" if kind == "rotation" else "VEC3"), accessors)
                 sampler = len(animation["samplers"])
                 animation["samplers"].append({"input": input_accessor, "output": accessor, "interpolation": "LINEAR"})
                 animation["channels"].append({"sampler": sampler, "target": {"node": node, "path": kind}})
@@ -748,5 +758,6 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             del glb.data[checkpoint[0]:]
             del glb.doc["accessors"][checkpoint[1]:]
             del glb.doc["bufferViews"][checkpoint[2]:]
+            accessors.clear()
             warn("animation_unavailable", name, str(error) if isinstance(error, AnimationError) else "This animation format could not be imported.")
     return {"clips": metadata, "warnings": warnings}
