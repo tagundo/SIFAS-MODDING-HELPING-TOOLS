@@ -630,6 +630,18 @@ def edit_timeline(raw: bytes, original: dict, revised: dict) -> bytes:
         return raw
     if parse_timeline(raw, "original") != original:
         raise ValueError("The native timeline changed after opening. Open it again before exporting.")
+    return _rewrite_timeline(raw, original, revised)
+
+
+def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
+    """Derive the base from these source bytes and export the submitted tracks."""
+    original = parse_timeline(raw, name)
+    if original["tracks"] == tracks:
+        return raw
+    return _rewrite_timeline(raw, original, {**original, "tracks": tracks})
+
+
+def _rewrite_timeline(raw, original, revised):
     changes = _changes(original, revised)
     if not changes:
         return raw

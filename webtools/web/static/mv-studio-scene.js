@@ -38,6 +38,171 @@
     return typeof value === "string" && /^\/api\/(?:mv-studio\/media\/[a-f0-9]{32}\.(?:glb|wav|mp3|ogg|m4a)|viewer\/model\/[a-f0-9]{32}\.glb)$/.test(value);
   }
 
+  function vertexShaders(source) {
+    return new Set([source, "centroid varying vec2 vSifasMouthClipZW;\n" +
+      source.replace(/\n}$/, "\n  vSifasMouthClipZW = gl_Position.zw;\n}")]);
+  }
+
+  function materials(mesh) {
+    return [mesh.material].flat();
+  }
+
+  function matchesOutline(mesh, outline) {
+    return outline.isSkinnedMesh && outline.userData.sifasOutline && !outline.children.length &&
+      outline.skeleton === mesh.skeleton && outline.geometry === mesh.geometry &&
+      outline.bindMode === mesh.bindMode && outline.bindMatrix.equals(mesh.bindMatrix) &&
+      !outline.position.lengthSq() && !outline.quaternion.x && !outline.quaternion.y &&
+      !outline.quaternion.z && Math.abs(outline.quaternion.w) === 1 &&
+      outline.scale.x === 1 && outline.scale.y === 1 && outline.scale.z === 1;
+  }
+
+  function boundsAttributeVersion(attribute) {
+    return attribute.data ? attribute.data.version : attribute.version;
+  }
+
+  function finiteAffine(matrix) {
+    const values = matrix.elements;
+    return values[3] === 0 && values[7] === 0 && values[11] === 0 && values[15] === 1 &&
+      values.every((value) => Number.isFinite(value) && Math.abs(value) <= 1024);
+  }
+
+  function skinBounds(T, root) {
+    const shader = global.SifasMaterial;
+    if (!shader || typeof shader.vertexShader !== "string" || typeof shader.outlineVertexShader !== "string") return [];
+    const mainShaders = vertexShaders(shader.vertexShader), outlineShaders = vertexShaders(shader.outlineVertexShader);
+    const entries = [], position = new T.Vector3(), joints = new T.Vector4(), weights = new T.Vector4();
+    // Imported rigs can contain many mesh/morph combinations. Keep the work
+    // per actor bounded and continue to draw meshes outside the supported set.
+    let budget = 300000;
+    root.traverse((mesh) => {
+      if (!mesh.isSkinnedMesh || !mesh.skeleton || mesh.userData.sifasOutline || !mesh.children.length ||
+          !mesh.children.every((outline) => matchesOutline(mesh, outline)) ||
+          !["attached", "detached"].includes(mesh.bindMode) || !finiteAffine(mesh.bindMatrix)) return;
+      const { skeleton, geometry } = mesh;
+      const count = skeleton.bones.length;
+      if (!count || count > 256 || skeleton.boneInverses.length !== count) return;
+      const main = materials(mesh), outlines = mesh.children.flatMap(materials);
+      if (!main.every((material) => mainShaders.has(material?.vertexShader)) ||
+          !outlines.every((material) => outlineShaders.has(material?.vertexShader) && material.uniforms?.uOutlineEdited)) return;
+      const { position: positions, skinIndex, skinWeight, _sifas_color: mask, _sifas_outline_width: editedWidth } = geometry.attributes;
+      const morphs = geometry.morphAttributes.position || [];
+      if (!positions || !skinIndex || !skinWeight || editedWidth || skinIndex.itemSize !== 4 || skinWeight.itemSize !== 4 ||
+          skinIndex.count !== positions.count || skinWeight.count !== positions.count ||
+          (morphs.length && !geometry.morphTargetsRelative) || morphs.some((morph) => morph.count !== positions.count)) return;
+      const attributes = [positions, skinIndex, skinWeight, ...morphs];
+      if (attributes.some((attribute) => attribute.normalized)) return;
+      const samples = positions.count * (morphs.length + 1);
+      if (samples > budget) return;
+      budget -= samples;
+      if (mask) {
+        if (mask.count !== positions.count) return;
+        const array = mask.array;
+        if (mask.normalized) {
+          if (!(array instanceof Uint8Array || array instanceof Uint16Array)) return;
+        } else {
+          for (let index = 0; index < mask.count; index++) {
+            const width = mask.getX(index);
+            if (!Number.isFinite(width) || width < 0 || width > 1) return;
+          }
+        }
+        attributes.push(mask);
+      }
+      const boxes = Array.from({ length: count }, () => new T.Box3());
+      const min = new T.Vector3(), max = new T.Vector3(), extent = new T.Vector3();
+      const bind = mesh.bindMatrix.elements;
+      let weightError = 0;
+      for (let index = 0; index < positions.count; index++) {
+        joints.fromBufferAttribute(skinIndex, index);
+        weights.fromBufferAttribute(skinWeight, index);
+        const error = Math.abs(1 - weights.x - weights.y - weights.z - weights.w);
+        if (!Number.isFinite(error) || error > 1e-5 || Math.min(weights.x, weights.y, weights.z, weights.w) < 0) return;
+        weightError = Math.max(error, weightError);
+        position.fromBufferAttribute(positions, index).applyMatrix4(mesh.bindMatrix);
+        let dx = 0, dy = 0, dz = 0;
+        for (const morph of morphs) {
+          dx += Math.abs(morph.getX(index)); dy += Math.abs(morph.getY(index)); dz += Math.abs(morph.getZ(index));
+        }
+        extent.set(
+          Math.abs(bind[0])*dx + Math.abs(bind[4])*dy + Math.abs(bind[8])*dz,
+          Math.abs(bind[1])*dx + Math.abs(bind[5])*dy + Math.abs(bind[9])*dz,
+          Math.abs(bind[2])*dx + Math.abs(bind[6])*dy + Math.abs(bind[10])*dz
+        );
+        min.copy(position).sub(extent); max.copy(position).add(extent);
+        if (Math.max(Math.abs(min.x), Math.abs(min.y), Math.abs(min.z), Math.abs(max.x), Math.abs(max.y), Math.abs(max.z)) > 1024 ||
+            !Number.isFinite(min.lengthSq() + max.lengthSq())) return;
+        for (let component = 0; component < 4; component++) if (weights.getComponent(component) > 0) {
+          const box = boxes[joints.getComponent(component)];
+          if (!box) return;
+          box.expandByPoint(min).expandByPoint(max);
+        }
+      }
+      const bones = boxes.flatMap((box, index) => box.isEmpty() ? [] : [{ index,
+        center: box.getCenter(new T.Vector3()), extent: box.getSize(new T.Vector3()).multiplyScalar(0.5) }]);
+      entries.push({ mesh, skeleton, geometry, morphs: morphs.slice(), main, outlines, mask, weightError, bones,
+        positions, skinIndex, skinWeight, bindMatrix: mesh.bindMatrix.clone(),
+        mainShaders: main.map((material) => material.vertexShader),
+        outlineShaders: outlines.map((material) => material.vertexShader),
+        versions: attributes.map((attribute) => [attribute, boundsAttributeVersion(attribute)]) });
+    });
+    return entries;
+  }
+
+  function outsideCamera(entry, camera, width, height, bounds, model, transform) {
+    const { mesh, skeleton, geometry, morphs } = entry;
+    const attributes = geometry.attributes;
+    const activeMorphs = geometry.morphAttributes.position || [];
+    if (!mesh.visible || mesh.geometry !== geometry || mesh.skeleton !== skeleton ||
+        !mesh.bindMatrix.equals(entry.bindMatrix) || attributes.position !== entry.positions ||
+        attributes.skinIndex !== entry.skinIndex || attributes.skinWeight !== entry.skinWeight ||
+        attributes._sifas_color !== entry.mask || attributes._sifas_outline_width ||
+        activeMorphs.length !== morphs.length || (morphs.length && !geometry.morphTargetsRelative) ||
+        morphs.some((morph, index) => morph !== activeMorphs[index]) ||
+        entry.versions.some(([attribute, version]) => boundsAttributeVersion(attribute) !== version) ||
+        mesh.morphTargetInfluences?.some((weight) => !Number.isFinite(weight) || Math.abs(weight) > 1) ||
+        !mesh.children.length || !mesh.children.every((outline) => matchesOutline(mesh, outline)) ||
+        !finiteAffine(mesh.bindMatrixInverse)) return false;
+    const shaders = materials(mesh), outlines = mesh.children.flatMap(materials);
+    if (shaders.length !== entry.main.length || shaders.some((material, index) =>
+        material !== entry.main[index] || material.vertexShader !== entry.mainShaders[index]) ||
+        outlines.length !== entry.outlines.length || outlines.some((material, index) =>
+          material !== entry.outlines[index] || material.vertexShader !== entry.outlineShaders[index] ||
+          material.uniforms.uOutlineEdited.value !== 0)) return false;
+    model.multiplyMatrices(camera.matrixWorldInverse, mesh.matrixWorld);
+    const translation = Math.max(Math.abs(model.elements[12]), Math.abs(model.elements[13]), Math.abs(model.elements[14]));
+    model.multiply(mesh.bindMatrixInverse);
+    if (!finiteAffine(model)) return false;
+    bounds.makeEmpty();
+    for (const bone of entry.bones) {
+      const world = skeleton.bones[bone.index]?.matrixWorld, inverse = skeleton.boneInverses[bone.index];
+      if (!world || !inverse || !finiteAffine(world) || !finiteAffine(inverse)) return false;
+      transform.multiplyMatrices(model, world).multiply(inverse);
+      if (!finiteAffine(transform)) return false;
+      const a = transform.elements, c = bone.center, r = bone.extent;
+      const x = a[0]*c.x + a[4]*c.y + a[8]*c.z + a[12];
+      const y = a[1]*c.x + a[5]*c.y + a[9]*c.z + a[13];
+      const z = a[2]*c.x + a[6]*c.y + a[10]*c.z + a[14];
+      const dx = Math.abs(a[0])*r.x + Math.abs(a[4])*r.y + Math.abs(a[8])*r.z;
+      const dy = Math.abs(a[1])*r.x + Math.abs(a[5])*r.y + Math.abs(a[9])*r.z;
+      const dz = Math.abs(a[2])*r.x + Math.abs(a[6])*r.y + Math.abs(a[10])*r.z;
+      bounds.min.set(Math.min(bounds.min.x, x-dx), Math.min(bounds.min.y, y-dy), Math.min(bounds.min.z, z-dz));
+      bounds.max.set(Math.max(bounds.max.x, x+dx), Math.max(bounds.max.y, y+dy), Math.max(bounds.max.z, z+dz));
+    }
+    if (bounds.isEmpty()) return false;
+    const { min, max } = bounds;
+    const magnitude = Math.max(Math.abs(min.x), Math.abs(min.y), Math.abs(min.z), Math.abs(max.x), Math.abs(max.y), Math.abs(max.z));
+    bounds.expandByScalar(0.02 + magnitude*0.0001 + (magnitude + translation)*entry.weightError);
+    if (min.z > 0) return true;
+    const depth = -min.z, projection = camera.projectionMatrix.elements;
+    const fx = projection[0], fy = projection[5];
+    // The outline shader expands its input in clip XY by at most this width.
+    // Keep a further two drawing-buffer pixels around the conservatively skinned box.
+    const z = depth / (fy * 0.267949194);
+    const factor = Math.max(z * 1.11111116, z * 0.555555582 + 0.5);
+    const margin = 4 * depth / Math.min(width, height);
+    const xLimit = depth + margin + fx * factor * 0.001, yLimit = depth + margin + fy * factor * 0.001;
+    return fx*max.x < -xLimit || fx*min.x > xLimit || fy*max.y < -yLimit || fy*min.y > yLimit;
+  }
+
   function create(mount, options) {
     const T = global.THREE;
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
@@ -73,25 +238,59 @@
     controls.update();
 
     let disposed = false, visible = true, generation = 0, request = null, project = null;
-    let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0;
+    let loadedProjectToken = null;
+    let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap();
+    const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
+    const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
+    const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} };
 
-    function draw() {
+    function cancelDraw() {
       if (queuedDraw) global.cancelAnimationFrame(queuedDraw);
       queuedDraw = 0;
+      seekDrawPending = false;
+    }
+
+    function draw() {
+      cancelDraw();
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
-        renderer.render(scene, useLive && hasShot ? liveCamera : editorCamera);
+        const camera = useLive && hasShot ? liveCamera : editorCamera;
+        const projection = camera.projectionMatrix.elements;
+        const { width, height } = renderer.domElement;
+        if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
+            projection[11] !== -1 || projection[15] !== 0 || !(projection[0] > 0.001 && projection[5] > 0.001) ||
+            !records.some((record) => record.skinBounds?.length)) {
+          renderer.render(scene, camera);
+          return;
+        }
+        const autoUpdate = scene.autoUpdate;
+        if (autoUpdate) scene.updateMatrixWorld();
+        camera.updateMatrixWorld();
+        scene.autoUpdate = false;
+        try {
+          for (const record of records) for (const entry of record.skinBounds || []) {
+            if (outsideCamera(entry, camera, width, height, bounds, skinMatrix, boneMatrix)) {
+              entry.mesh.visible = false;
+              culled.push(entry.mesh);
+            }
+          }
+          renderer.render(scene, camera);
+        } finally {
+          culled.forEach((mesh) => { mesh.visible = true; });
+          culled.length = 0;
+          scene.autoUpdate = autoUpdate;
+        }
       }
     }
 
     function requestDraw() {
-      if (!disposed && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
+      if (!disposed && visible && !queuedDraw) queuedDraw = global.requestAnimationFrame(draw);
     }
 
     function resize() {
@@ -115,9 +314,10 @@
     }
 
     function release(root) {
-      const geometries = new Set(), materials = new Set(), textures = new Set();
+      const geometries = new Set(), materials = new Set(), textures = new Set(), skeletons = new Set();
       root.traverse((node) => {
         if (node.geometry) geometries.add(node.geometry);
+        if (node.isSkinnedMesh && node.skeleton) skeletons.add(node.skeleton);
         (Array.isArray(node.material) ? node.material : [node.material]).filter(Boolean).forEach((material) => {
           materials.add(material);
           for (const value of Object.values(material)) if (value && value.isTexture) textures.add(value);
@@ -126,17 +326,54 @@
       textures.forEach((value) => value.dispose());
       materials.forEach((value) => value.dispose());
       geometries.forEach((value) => value.dispose());
+      if (skeletons.size) {
+        scene.traverse((node) => {
+          if (node.isSkinnedMesh && node.skeleton) skeletons.delete(node.skeleton);
+        });
+        // Main and outline meshes normally share one bone texture.
+        for (const skeleton of skeletons) if (!releasedSkeletons.has(skeleton)) {
+          releasedSkeletons.add(skeleton);
+          skeleton.dispose();
+        }
+      }
+    }
+
+    function releaseRecord(record) {
+      if (record.materials) record.materials.dispose();
+      if (record.mixer) record.mixer.stopAllAction();
+      if (record.root.parent) record.root.parent.remove(record.root);
+      release(record.root);
     }
 
     function clear() {
-      for (const record of records) {
-        if (record.materials) record.materials.dispose();
-        if (record.mixer) record.mixer.stopAllAction();
-        if (record.root.parent) record.root.parent.remove(record.root);
-        release(record.root);
-      }
+      for (const record of records) releaseRecord(record);
       records = [];
+      loadedProjectToken = null;
       grid.visible = true;
+    }
+
+    function captureActorPose(root) {
+      const pose = [];
+      root.traverse((node) => pose.push({
+        node, position: node.position.toArray(), rotation: node.quaternion.toArray(),
+        scale: node.scale.toArray(), visible: node.visible, morphs: node.morphTargetInfluences?.slice()
+      }));
+      return pose;
+    }
+
+    function restoreActorPose(pose) {
+      for (const saved of pose) {
+        const { node } = saved;
+        node.position.fromArray(saved.position);
+        node.quaternion.fromArray(saved.rotation);
+        node.scale.fromArray(saved.scale);
+        node.visible = saved.visible;
+        if (saved.morphs) {
+          for (let index = 0; index < saved.morphs.length; index++) {
+            node.morphTargetInfluences[index] = saved.morphs[index];
+          }
+        }
+      }
     }
 
     async function modelBytes(url, signal) {
@@ -208,28 +445,156 @@
       controls.update();
     }
 
-    async function load(value) {
+    function sceneEntries(value) {
+      const entries = [];
+      if (value.stage && value.stage.glb) entries.push({ spec: value.stage, group: stage });
+      if (value.stage && value.stage.effectsGlb) entries.push({ spec: { glb: value.stage.effectsGlb }, group: effects });
+      for (const asset of value.assets || []) {
+        if (["effect", "props", "background"].includes(asset.kind) && asset.previewUrl &&
+            (!value.stage || asset.previewUrl !== value.stage.effectsGlb)) {
+          entries.push({ spec: { glb: asset.previewUrl }, group: effects });
+        }
+      }
+      for (const performer of (value.performers || []).slice(0, 9)) {
+        if (performer.glb) entries.push({ spec: performer, group: actors });
+      }
+      return entries;
+    }
+
+    function entryIdentity(entry) {
+      const { spec } = entry;
+      if (entry.group !== actors) return spec.glb;
+      return JSON.stringify([spec.id, spec.position, spec.glb, spec.transform, spec.rig, spec.motion]);
+    }
+
+    function outfitReplacement(value, entries, actorId) {
+      if (typeof actorId !== "string" || !actorId || typeof value?.token !== "string" ||
+          value.token !== loadedProjectToken || entries.length !== records.length) return -1;
+      let replacement = -1;
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index], record = records[index];
+        if (entry.group !== record.group) return -1;
+        if (entry.group === actors && entry.spec.id === actorId) {
+          if (replacement !== -1 || record.id !== actorId) return -1;
+          replacement = index;
+        } else if (entry.identity !== record.identity || (entry.group === actors && !record.initialPose)) {
+          return -1;
+        }
+      }
+      return replacement;
+    }
+
+    async function buildRecord(entry, bytes, ticket) {
+      const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
+      const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
+        identity: entry.identity, visibility: [] };
+      let ready = false;
+      try {
+        if (ticket !== generation || disposed) return null;
+        gltf.scene.traverse((node) => {
+          if (entry.group !== actors && node.matrixAutoUpdate) {
+            node.updateMatrix();
+            node.matrixAutoUpdate = false;
+          }
+          if (!node.isMesh) return;
+          node.castShadow = entry.group === actors;
+          node.receiveShadow = true;
+          if (entry.group !== effects) return;
+          for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+            const name = material.name || "";
+            if (/(?:^|_)add(?:_|$)/i.test(name)) {
+              material.blending = T.AdditiveBlending;
+              material.transparent = true;
+              material.depthWrite = false;
+            }
+            const quality = /(?:^|_)aud(?:_|$)/i.test(name) ? "stage_audience" :
+              /(?:^|_)led(?:_|$)/i.test(name) ? "stage_emissive" :
+              /(?:^|_)dis(?:_|$)/i.test(name) ? "stage_display" : null;
+            if (quality) record.visibility.push({ node, quality });
+          }
+        });
+        if (entry.group === actors) {
+          actorPose(record, entry.spec);
+          if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
+            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
+            mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
+          });
+          if (record.materials && record.materials.ready) await record.materials.ready;
+          if (ticket !== generation || disposed) return null;
+          const authoredMotion = entry.spec.motion && global.ViewerMotionTimeline;
+          if (authoredMotion || !gltf.animations.length) record.initialPose = captureActorPose(record.root);
+          if (authoredMotion) {
+            record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
+              ...segment, timing: { ...segment.timing }
+            }));
+            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
+              ...event, timing: { ...event.timing }
+            }));
+            record.motionEvents = record.segments.concat(record.facialEvents);
+            record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
+              entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
+                facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
+              { getGazeContext: gazeContext, indexTiming: true });
+            updateMotion(record);
+          } else if (gltf.animations.length) {
+            record.mixer = new T.AnimationMixer(gltf.scene);
+            record.mixer.clipAction(gltf.animations[0]).play();
+          }
+        }
+        if (entry.group === actors && record.materials) record.skinBounds = skinBounds(T, record.root);
+        ready = true;
+        return record;
+      } finally {
+        if (!ready) releaseRecord(record);
+      }
+    }
+
+    async function swapOutfit(entry, index, signal, ticket) {
+      let replacement = null;
+      try {
+        const bytes = await modelBytes(entry.spec.glb, signal);
+        if (ticket !== generation || disposed) return;
+        replacement = await buildRecord(entry, bytes, ticket);
+      } catch (error) {
+        if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
+      }
+      if (ticket !== generation || disposed) {
+        if (replacement) releaseRecord(replacement);
+        return;
+      }
+      releaseRecord(records[index]);
+      if (replacement) records[index] = replacement;
+      else records.splice(index, 1);
+      // A fresh scene starts from the loaded pose in intervals with no keys.
+      // Restore that pose before seeking so earlier playback leaves no state.
+      for (const child of actors.children.slice()) actors.remove(child);
+      for (const record of records) {
+        if (record.group !== actors) continue;
+        if (record.initialPose) restoreActorPose(record.initialPose);
+        actors.add(record.root);
+      }
+      gaze.members = {};
+      frameAll();
+      seek(currentTime, project);
+    }
+
+    async function load(value, preferences) {
+      if (disposed) return;
+      cancelDraw();
+      const entries = value ? sceneEntries(value) : [];
+      for (const entry of entries) entry.identity = entryIdentity(entry);
+      const replacement = outfitReplacement(value, entries, preferences?.reuseOutfit);
       project = value;
       if (request) request.abort();
       request = new AbortController();
       const signal = request.signal, ticket = ++generation;
-      clear();
+      if (replacement < 0) clear();
       gaze.members = {};
       hasShot = false;
-      if (!project || disposed) return;
+      if (!project) return;
       applyProject();
-      const entries = [];
-      if (project.stage && project.stage.glb) entries.push({ spec: project.stage, group: stage });
-      if (project.stage && project.stage.effectsGlb) entries.push({ spec: { glb: project.stage.effectsGlb }, group: effects });
-      for (const asset of project.assets || []) {
-        if (["effect", "props", "background"].includes(asset.kind) && asset.previewUrl &&
-            (!project.stage || asset.previewUrl !== project.stage.effectsGlb)) {
-          entries.push({ spec: { glb: asset.previewUrl }, group: effects });
-        }
-      }
-      for (const performer of (project.performers || []).slice(0, 9)) {
-        if (performer.glb) entries.push({ spec: performer, group: actors });
-      }
+      if (replacement >= 0) return swapOutfit(entries[replacement], replacement, signal, ticket);
+
       // Fetch the next GLB while the current one decodes. Only one model is
       // decoded at a time so concurrent texture uploads stay bounded on mobile.
       function fetchEntry(entry) {
@@ -244,61 +609,10 @@
           if (ticket !== generation || disposed) return;
           pending = fetchEntry(entries[index + 1]);
           if (download.error) throw download.error;
-          const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(download.bytes, "", resolve, reject));
-          if (ticket !== generation || disposed) { release(gltf.scene); return; }
-          const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
-            visibility: [] };
-          gltf.scene.traverse((node) => {
-            if (entry.group !== actors && node.matrixAutoUpdate) {
-              node.updateMatrix();
-              node.matrixAutoUpdate = false;
-            }
-            if (!node.isMesh) return;
-            node.castShadow = entry.group === actors;
-            node.receiveShadow = true;
-            if (entry.group !== effects) return;
-            for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
-              const name = material.name || "";
-              if (/(?:^|_)add(?:_|$)/i.test(name)) {
-                material.blending = T.AdditiveBlending;
-                material.transparent = true;
-                material.depthWrite = false;
-              }
-              const quality = /(?:^|_)aud(?:_|$)/i.test(name) ? "stage_audience" :
-                /(?:^|_)led(?:_|$)/i.test(name) ? "stage_emissive" :
-                /(?:^|_)dis(?:_|$)/i.test(name) ? "stage_display" : null;
-              if (quality) record.visibility.push({ node, quality });
-            }
-          });
-          if (entry.group === actors) {
-            actorPose(record, entry.spec);
-            if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
-              parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
-              mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
-            });
-            if (record.materials && record.materials.ready) await record.materials.ready;
-            if (ticket !== generation || disposed) {
-              if (record.materials) record.materials.dispose();
-              release(gltf.scene);
-              return;
-            }
-            if (entry.spec.motion && global.ViewerMotionTimeline) {
-              record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
-                ...segment, timing: { ...segment.timing }
-              }));
-              record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
-                ...event, timing: { ...event.timing }
-              }));
-              record.motionEvents = record.segments.concat(record.facialEvents);
-              record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
-                entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
-                  facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
-                { getGazeContext: gazeContext, indexTiming: true });
-              updateMotion(record);
-            } else if (gltf.animations.length) {
-              record.mixer = new T.AnimationMixer(gltf.scene);
-              record.mixer.clipAction(gltf.animations[0]).play();
-            }
+          const record = await buildRecord(entry, download.bytes, ticket);
+          if (ticket !== generation || disposed) {
+            if (record) releaseRecord(record);
+            return;
           }
           entry.group.add(record.root);
           records.push(record);
@@ -312,6 +626,7 @@
         }
       }
       if (ticket !== generation || disposed) return;
+      loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
       seek(currentTime, project);
@@ -380,11 +695,11 @@
       }
     }
 
-    function seek(time, value) {
+    function seek(time, value, deferDraw = false) {
       if (disposed) return;
       project = value || project;
       applyProject();
-      playbackFrame(time);
+      playbackFrame(time, undefined, deferDraw);
     }
 
     function setPlaying(value) {
@@ -398,7 +713,7 @@
       }
     }
 
-    function playbackFrame(time, frameTimestamp) {
+    function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
@@ -452,7 +767,15 @@
         } else if (record.mixer) record.mixer.setTime(currentTime);
       }
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
-      else draw();
+      else if (deferDraw && visible) {
+        // Motion sampling is still synchronous. Preserve the world matrices
+        // the next facial/gaze evaluation would have seen after a render.
+        if (scene.autoUpdate) scene.updateMatrixWorld();
+        const camera = useLive && hasShot ? liveCamera : editorCamera;
+        if (camera.parent === null) camera.updateMatrixWorld();
+        seekDrawPending = true;
+        requestDraw();
+      } else draw();
     }
 
     const observer = global.ResizeObserver ? new global.ResizeObserver(resize) : null;
@@ -461,14 +784,15 @@
     resize();
     return {
       load, seek, playbackFrame, setPlaying, resize,
+      flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       frameAll,
-      setVisible(value) { visible = Boolean(value); if (visible) resize(); },
+      setVisible(value) { visible = Boolean(value); if (visible) resize(); else cancelDraw(); },
       dispose() {
         disposed = true;
         if (request) request.abort();
         if (observer) observer.disconnect();
-        if (queuedDraw) global.cancelAnimationFrame(queuedDraw);
+        cancelDraw();
         clear();
         release(grid);
         controls.dispose();

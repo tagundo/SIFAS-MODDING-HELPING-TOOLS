@@ -28,6 +28,7 @@ MAX_MEDIA = 48
 _MEDIA = {"glb": "model/gltf-binary", "wav": "audio/wav", "ogg": "audio/ogg", "mp3": "audio/mpeg", "m4a": "audio/mp4"}
 _MEDIA_NAME = re.compile(r"[a-f0-9]{32}\.(?:glb|wav|ogg|mp3|m4a)\Z")
 _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
+_NATIVE_DIGEST = re.compile(rb"[a-f0-9]{64}\Z")
 _MEDIA_URL = "/api/mv-studio/media/"
 _UNITY_SUFFIXES = {".unity", ".unity3d", ".assets", ".bundle", ".bytes"}
 _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"}
@@ -110,11 +111,36 @@ def _blank(name, source=None):
             "quality": {"modes": [], "options": [], "mode": None, "values": {}}, "warnings": []}
 
 
+def _read_native_file(path, maximum):
+    try:
+        if path.resolve() != path or not path.is_file() or not 0 < path.stat().st_size <= maximum:
+            return None
+        with path.open("rb") as source:
+            raw = source.read(maximum + 1)
+    except (OSError, RuntimeError):
+        return None
+    return raw if 0 < len(raw) <= maximum else None
+
+
 def _register(project, native=None):
     token = secrets.token_hex(16)
     if native is not None:
+        if not 0 < len(native) <= MEDIA_BYTES:
+            raise ValueError("The original MV timeline exceeds the supported size.")
         directory = game_models._safe_directory(_root() / "native")
-        _write(directory / (token + ".unity"), native)
+        blobs = game_models._safe_directory(directory / "blobs")
+        digest = hashlib.sha256(native).hexdigest()
+        blob = blobs / (digest + ".unity")
+        try:
+            current = (blob.resolve() == blob and blob.is_file() and blob.stat().st_size == len(native)
+                       and game_models._sha(blob) == digest)
+        except (OSError, RuntimeError):
+            current = False
+        if not current:
+            _write(blob, native)
+        # Each open still receives a separate token, while the original bytes
+        # are only written once. Publish the token after the source is ready.
+        _write(directory / (token + ".sha256"), digest.encode("ascii"))
     project["token"] = token
     project["nativeTimeline"] = native is not None
     return project
@@ -124,10 +150,15 @@ def _native(project):
     token = project.get("token")
     if not isinstance(token, str) or not _TOKEN.fullmatch(token):
         return None
-    path = _root() / "native" / (token + ".unity")
-    if path.resolve() != path or not path.is_file() or not 0 < path.stat().st_size <= MEDIA_BYTES:
+    directory = _root() / "native"
+    legacy = _read_native_file(directory / (token + ".unity"), MEDIA_BYTES)
+    if legacy is not None:
+        return legacy
+    digest = _read_native_file(directory / (token + ".sha256"), 64)
+    if digest is None or not _NATIVE_DIGEST.fullmatch(digest):
         return None
-    return path.read_bytes()
+    source = _read_native_file(directory / "blobs" / (digest.decode("ascii") + ".unity"), MEDIA_BYTES)
+    return source if source is not None and hashlib.sha256(source).hexdigest().encode("ascii") == digest else None
 
 
 def _path(value):
@@ -292,7 +323,7 @@ def _cast_in_timeline_order(performers, tracks):
 
 
 def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False):
-    from . import mv_studio_game, mv_studio_quality
+    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
@@ -386,6 +417,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 if path is not None and path != timeline:
                     motion_files.append(path)
             performers = _cast_in_timeline_order(selected.get("performers", [])[:9], project["tracks"])
+            actor_cache = mv_studio_actor_cache.open_cache((source["region"], source["platform"]), media)
+            motion_inputs = actor_cache.inputs(native, motion_files) if actor_cache else None
             for entry in performers:
                 number = entry["position"]
                 label = entry.get("memberName") or f"Member {number}"
@@ -396,7 +429,6 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                           "memberId": entry.get("memberId"), "costumeId": entry.get("costumeId"),
                           "transform": {"position": [0 if entry.get("isCenter") else ((-1 if number % 2 == 0 else 1) * ((number + 1) // 2)), 0, 0]}}
                 if model is not None:
-                    clips, motion = [], None
                     facial_files, companions = [], []
                     for descriptor in entry.get("companions", []):
                         _, companion = load(descriptor, "outfit", f"{label} face and model dependencies")
@@ -406,18 +438,27 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         _, facial_file = load(descriptor, "eyes", f"{label} facial clips")
                         if facial_file is not None:
                             facial_files.append(facial_file)
-                    try:
-                        clips, motion = _motion(timeline, motion_files, facial_files, directory / f"actor-{number}", number,
-                                                result["memberId"], project["tracks"], deadline)
-                    except (ValueError, OSError) as error:
-                        warnings.append(f"{label} choreography: {error}")
-                    try:
-                        result["glb"], result["rig"] = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
-                        result["motion"] = motion
-                        if motion and result["rig"].get("clips"):
-                            result["transform"]["position"] = [0, 0, 0]
-                    except (ValueError, OSError) as error:
-                        warnings.append(f"{label}: {error}")
+                    key = actor_cache.key(motion_inputs, number, result["memberId"], model, companions, facial_files) if actor_cache else None
+                    saved = actor_cache.get(key) if key is not None else None
+                    if saved is not None:
+                        name, rig, motion = saved
+                        result.update(glb=_MEDIA_URL + name, rig=rig, motion=motion)
+                    else:
+                        clips, motion = [], None
+                        try:
+                            clips, motion = _motion(timeline, motion_files, facial_files, directory / f"actor-{number}", number,
+                                                    result["memberId"], project["tracks"], deadline)
+                        except (ValueError, OSError) as error:
+                            warnings.append(f"{label} choreography: {error}")
+                        try:
+                            url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
+                            result.update(glb=url, rig=rig, motion=motion)
+                            if key is not None:
+                                actor_cache.put(key, url.removeprefix(_MEDIA_URL), rig, motion)
+                        except (ValueError, OSError) as error:
+                            warnings.append(f"{label}: {error}")
+                    if result.get("motion") and result["rig"].get("clips"):
+                        result["transform"]["position"] = [0, 0, 0]
                 project["performers"].append(result)
             audio = selected.get("audio") or {}
             for role in ("acb", "awb"):
@@ -517,6 +558,8 @@ def save(project, name=None):
     data = _document(project)
     files = [("media/" + token, media(token)[0]) for token in _references(project)]
     source = _native(project)
+    if source is None and project.get("nativeTimeline") is True:
+        raise ValueError("The original MV timeline is unavailable. Reopen the original timeline before saving.")
     if len(data) + sum(path.stat().st_size for _, path in files) + len(source or b"") > PACKAGE_BYTES:
         raise ValueError("The MV project and its preview assets exceed the ZIP size limit.")
     target = _destination(name or project["name"], ".mv-project.zip")
@@ -541,8 +584,7 @@ def export_timeline(project):
     source = _native(project)
     if source is None:
         raise ValueError("Open an original live timeline to export a native timeline copy.")
-    original = mv_studio_timeline.parse_timeline(source, project["name"])
-    output = mv_studio_timeline.edit_timeline(source, original, {**original, "tracks": project["tracks"]})
+    output = mv_studio_timeline.export_timeline(source, project["name"], project["tracks"])
     return _receipt(_write(_destination(project["name"], ".unity"), output))
 
 

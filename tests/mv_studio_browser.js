@@ -127,7 +127,9 @@ async function localAndGame(page, url) {
     soundtrack: soundtrack.soundtrack,
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 12, assetId: 34, mvOnly: true },
     tracks: [{ id: 'camera', label: 'Camera', kind: 'camera', binding: 'MainCamera', events: [{ id: 'sample-clip',
-      label: 'Opening camera', start: 2, duration: 8, values: { fov: 40, fixed: 1 }, editableValues: ['fov'] }] }],
+      label: 'Opening camera', start: 2, duration: 8, values: { fov: 40, fixed: 1 }, editableValues: ['fov'] }] },
+    { id: 'light', label: 'Light', kind: 'lighting', events: [{ id: 'light-clip', label: 'Opening light',
+      start: 0, duration: 4, values: {} }] }],
     quality: { mode: 1, modes: [{ id: 1, label: 'Medium', values: { shadow: true } }],
       options: [{ key: 'shadow', label: 'Shadow', type: 'boolean' }], values: { shadow: true } },
   };
@@ -165,13 +167,36 @@ async function localAndGame(page, url) {
   const soundtrackOffset = page.locator('#mv-soundtrack-offset');
   await soundtrackOffset.fill('0.75'); await soundtrackOffset.press('Tab');
   await page.locator('#mv-soundtrack summary').click();
-  await page.locator('.mv-clip[data-event=sample-clip]').click();
-  assert.equal(await page.evaluate(() => MVStudio.getState().time), 2);
+  const scrubbedTimes = await page.evaluate(async () => {
+    const range = document.getElementById('mv-seek');
+    const scrub = value => {
+      range.value = value;
+      range.dispatchEvent(new Event('input', { bubbles: true }));
+      return MVStudio.getState().time;
+    };
+    const inputs = [scrub(1.25), scrub(4.75)];
+    range.dispatchEvent(new Event('change', { bubbles: true }));
+    const committed = MVStudio.getState().time;
+    scrub(30);
+    document.querySelector('.mv-clip[data-event=sample-clip]').click();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    return { inputs, committed, selected: MVStudio.getState().time };
+  });
+  assert.deepEqual(scrubbedTimes, { inputs: [1.25, 4.75], committed: 4.75, selected: 2 });
   assert.equal(await page.locator('[data-mv-field=fixed]').count(), 0);
+  const untouched = await page.locator('.mv-clip[data-event=light-clip]').elementHandle();
+  const clip = page.locator('.mv-clip[data-event=sample-clip]');
+  const originalWidth = await clip.evaluate(element => element.style.width);
   const start = page.locator('[data-mv-field=start]');
   await start.fill('7.5');
   await start.press('Tab');
   assert.equal(await page.evaluate(() => MVStudio.getState().time), 7.5);
+  const duration = page.locator('[data-mv-field=duration]');
+  await duration.fill('11.5');
+  await duration.press('Tab');
+  assert(await untouched.evaluate(element => element.isConnected));
+  assert.notEqual(await clip.evaluate(element => element.style.width), originalWidth);
+  assert.equal(await clip.getAttribute('aria-pressed'), 'true');
   const fov = page.locator('[data-mv-field=fov]');
   await fov.fill('60');
   await fov.press('Tab');
@@ -198,6 +223,7 @@ async function localAndGame(page, url) {
   assert(await page.request.get(await link.getAttribute('href')).then(response => response.ok()));
   const restored = await page.request.post(url + '/api/mv-studio/open', { data: { path: saved } }).then(response => response.json());
   assert.equal(restored.tracks[0].events[0].start, 7.5);
+  assert.equal(restored.tracks[0].events[0].duration, 11.5);
   assert.equal(restored.tracks[0].events[0].values.fov, 60);
   assert.equal(restored.quality.values.shadow, false);
   assert.deepEqual(restored.performers[0].transform.position, [1.25, 0, 0]);

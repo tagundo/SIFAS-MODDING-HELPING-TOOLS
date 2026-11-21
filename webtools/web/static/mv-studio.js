@@ -34,6 +34,7 @@
   let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
+  const timelineLanes = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
 
@@ -117,10 +118,10 @@
     return finite(offset) ? offset : 0;
   }
 
-  function seek(seconds, changeAudio = true) {
+  function seek(seconds, changeAudio = true, deferDraw = false) {
     time = clamp(finite(seconds) ? seconds : 0, 0, project ? project.duration : 0);
     if (changeAudio && audio.hasAttribute("src")) audio.currentTime = Math.max(0, time + audioOffset());
-    if (scene && project) scene.seek(time, project);
+    if (scene && project) scene.seek(time, project, deferDraw);
     syncPosition();
   }
 
@@ -361,10 +362,16 @@
     box.append(make("strong", text(event.label || track.label)));
     if (editable) {
       const startControl = numberInput(event.start, { "data-mv-field": "start", min: 0, max: project.duration - event.duration }, (value) => {
-        event.start = value; renderTimeline(); seek(value); renderEvent();
+        event.start = value;
+        refreshTimelineLane(track);
+        seek(value);
+        renderEvent();
       });
       const durationControl = numberInput(event.duration, { "data-mv-field": "duration", min: 0, max: project.duration - event.start }, (value) => {
-        event.duration = value; renderTimeline(); seek(time, false); renderEvent();
+        event.duration = value;
+        refreshTimelineLane(track);
+        seek(time, false);
+        renderEvent();
       });
       box.append(field("Start time (s)", startControl), field("Duration (s)", durationControl));
     } else box.append(field("Start time (s)", make("output", start)), field("Duration (s)", make("output", duration)));
@@ -529,15 +536,51 @@
     renderEvent();
   }
 
-  function scrub(event) {
+  function scrub(event, deferDraw = false) {
     if (event.target.closest(".mv-clip")) return;
     const bar = event.currentTarget;
-    seek((event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond);
+    seek((event.clientX - bar.getBoundingClientRect().left) / pixelsPerSecond, true, deferDraw);
+  }
+
+  function flushScrub() {
+    scene?.flushSeekDraw();
+  }
+
+  function renderTimelineLane(track) {
+    const lane = make("div", null, { class: "mv-lane", "data-kind": text(track.kind) });
+    lane.addEventListener("click", scrub);
+    const rows = [];
+    for (const event of track.events.slice().sort((first, second) => first.start - second.start)) {
+      const title = text(event.label || track.label || kinds[track.kind]);
+      const isSelected = selected && selected.track === track.id && selected.event === event.id;
+      const clip = button(title, (click) => { click.stopPropagation(); chooseEvent(track, event); }, {
+        class: "mv-clip", title: `${title} · ${formatTime(event.start)}`,
+        "data-track": text(track.id), "data-event": text(event.id), "aria-pressed": String(!!isSelected),
+      });
+      const left = event.start * pixelsPerSecond, width = Math.max(13, event.duration * pixelsPerSecond);
+      const free = rows.findIndex((end) => end + 1 < left), row = free < 0 ? rows.length : free;
+      rows[row] = left + width;
+      clip.style.left = `${left}px`;
+      clip.style.width = `${width}px`;
+      clip.style.setProperty("--mv-clip-row", row);
+      lane.append(clip);
+    }
+    lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
+    return lane;
+  }
+
+  function refreshTimelineLane(track) {
+    const previous = timelineLanes.get(track);
+    if (!previous) return;
+    const lane = renderTimelineLane(track);
+    previous.replaceWith(lane);
+    timelineLanes.set(track, lane);
   }
 
   function renderTimeline() {
     const grid = byId("mv-timeline-grid"), scroll = byId("mv-timeline-scroll");
     grid.replaceChildren();
+    timelineLanes.clear();
     playheadNode = null;
     if (!project) return;
     const heading = make("p", t("Tracks"), { class: "mv-lane-label" });
@@ -554,30 +597,14 @@
       item.style.left = `${mark * pixelsPerSecond}px`;
       ruler.append(item);
     }
-    ruler.addEventListener("pointerdown", (event) => { ruler.setPointerCapture(event.pointerId); scrub(event); });
-    ruler.addEventListener("pointermove", (event) => { if (ruler.hasPointerCapture(event.pointerId)) scrub(event); });
+    ruler.addEventListener("pointerdown", (event) => { ruler.setPointerCapture(event.pointerId); scrub(event, true); });
+    ruler.addEventListener("pointermove", (event) => { if (ruler.hasPointerCapture(event.pointerId)) scrub(event, true); });
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) ruler.addEventListener(type, flushScrub);
     for (const track of project.tracks) {
       if (trackKind && track.kind !== trackKind) continue;
       const label = make("p", text(track.label || kinds[track.kind] || track.kind), { class: "mv-lane-label", title: text(track.binding || track.label) });
-      const lane = make("div", null, { class: "mv-lane", "data-kind": text(track.kind) });
-      lane.addEventListener("click", scrub);
-      const rows = [];
-      for (const event of track.events.slice().sort((first, second) => first.start - second.start)) {
-        const title = text(event.label || track.label || kinds[track.kind]);
-        const isSelected = selected && selected.track === track.id && selected.event === event.id;
-        const clip = button(title, (click) => { click.stopPropagation(); chooseEvent(track, event); }, {
-          class: "mv-clip", title: `${title} · ${formatTime(event.start)}`,
-          "data-track": text(track.id), "data-event": text(event.id), "aria-pressed": String(!!isSelected),
-        });
-        const left = event.start * pixelsPerSecond, width = Math.max(13, event.duration * pixelsPerSecond);
-        const free = rows.findIndex((end) => end + 1 < left), row = free < 0 ? rows.length : free;
-        rows[row] = left + width;
-        clip.style.left = `${left}px`;
-        clip.style.width = `${width}px`;
-        clip.style.setProperty("--mv-clip-row", row);
-        lane.append(clip);
-      }
-      lane.style.setProperty("--mv-lane-rows", Math.max(rows.length, 1));
+      const lane = renderTimelineLane(track);
+      timelineLanes.set(track, lane);
       grid.append(label, lane);
     }
     playheadNode = make("div", null, { class: "mv-playhead", "aria-hidden": "true" });
@@ -622,7 +649,7 @@
     return value;
   }
 
-  async function commit(value, preserveTime = false) {
+  async function commit(value, preserveTime = false, reuseOutfit = null) {
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
     pause();
@@ -643,7 +670,7 @@
     }
     previewLoading = !!scene;
     try {
-      const ready = scene && scene.load(next);
+      const ready = scene && scene.load(next, { reuseOutfit });
       if (scene) scene.setVisible(visible);
       render();
       seek(playhead);
@@ -709,7 +736,7 @@
             ? { ...response.performer, id: actor.id, transform: actor.transform || response.performer.transform } : actor);
         }
         if (response.soundtrack) next.soundtrack = response.soundtrack;
-        await commit(next, true);
+        await commit(next, true, kind === "outfit" && response.performer ? replaceActor : null);
         report("");
       });
     }, t(kind === "audio" ? "Import soundtrack" : "Import MV asset"), kind === "audio"
@@ -844,7 +871,8 @@
       scene.setCamera("orbit");
       scene.frameAll();
     });
-    byId("mv-seek").addEventListener("input", (event) => seek(event.target.valueAsNumber));
+    seekInput.addEventListener("input", (event) => seek(event.target.valueAsNumber, true, true));
+    seekInput.addEventListener("change", flushScrub);
     byId("mv-zoom").addEventListener("change", renderTimeline);
     byId("mv-game-region").addEventListener("change", loadCatalog);
     byId("mv-game-platform").addEventListener("change", loadCatalog);

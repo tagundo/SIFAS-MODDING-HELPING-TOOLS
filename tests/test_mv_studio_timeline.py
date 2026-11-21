@@ -1,6 +1,7 @@
 """Native MV descriptors and copy-only edits; original samples are optional."""
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 import json
 import os
 import unittest
@@ -86,6 +87,10 @@ class ActualTimelineTests(unittest.TestCase):
                 bloom["start"] += .01
                 bloom["values"]["intensity"] = .45
                 changed = studio.edit_timeline(self.raw[platform], old, revision)
+                with patch.object(studio, "parse_timeline", wraps=studio.parse_timeline) as parse:
+                    self.assertEqual(studio.export_timeline(self.raw[platform], platform, revision["tracks"]), changed)
+                    self.assertEqual(parse.call_count, 1)
+                self.assertIs(studio.export_timeline(self.raw[platform], platform, old["tracks"]), self.raw[platform])
                 current = studio.parse_timeline(changed, platform)
                 self.assertEqual({int(asset.target_platform) for asset in UnityPy.load(changed).assets}, {target})
                 actual = self.camera(current)["events"][0]
