@@ -1,6 +1,7 @@
 """Resolve supported native stage-control particle prefabs for MV preview."""
 
 import base64
+from collections import Counter
 import math
 
 from . import decode, model_viewer as viewer, mv_studio_stage_title as title
@@ -10,6 +11,26 @@ from .model_materials import _original_mips
 
 SCHEMA = 2
 _MAX_EMITTERS = 12
+
+
+def _coverage(descriptor):
+    try:
+        textures = [tuple(level["png"] for level in chain) for chain in descriptor["textures"]]
+        templates = [Counter((textures[emitter["texture"]], emitter["birth"]) for emitter in template)
+                     for template in descriptor["templates"]]
+        return {(cue["trackId"], cue["eventId"]): templates[cue["template"]] for cue in descriptor["cues"]}
+    except (KeyError, IndexError, TypeError):
+        return {}
+
+
+def preserves(saved, restored):
+    # A local decoder can rebuild only part of an effect. Compare by authored
+    # cue and embedded mip data because a successful rebuild can reindex both.
+    required = _coverage(saved)
+    if not required:
+        return True
+    rebuilt = _coverage(restored)
+    return all(cue in rebuilt and emitters <= rebuilt[cue] for cue, emitters in required.items())
 
 
 def _source(objects, owner, tree, event):

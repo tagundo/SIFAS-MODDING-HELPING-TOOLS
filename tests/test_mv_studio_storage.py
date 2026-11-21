@@ -104,6 +104,62 @@ class MVStudioStorageTests(unittest.TestCase):
         parse.assert_not_called()
         self.assertEqual(current["stageParticles"], restored)
 
+    def test_saved_particle_upgrade_preserves_existing_cue_and_emitter_coverage(self):
+        project = mv_studio._blank("Edited effects")
+        project["duration"] = 62
+        project["tracks"] = [{
+            "id": "effect", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/par_15_foot_wave",
+            "events": [{"id": event, "label": event, "start": time, "duration": 1.6,
+                        "values": {"playableClass": "CustomControlClip"}}
+                       for event, time in (("first", 44), ("second", 59))],
+        }]
+        wave, umbrella, added = ([{"png": value, "width": 1, "height": 1}] for value in (
+            "d2F2ZQ==", "dW1icmVsbGE=", "YWRkZWQ=",
+        ))
+        waves = [{"texture": 0, "birth": time} for time in (0, .15)]
+        center = {"texture": 1, "birth": 0}
+        first = {"trackId": "effect", "eventId": "first", "template": 0}
+        second = {"trackId": "effect", "eventId": "second", "template": 1}
+        legacy = {"cues": [first, second], "textures": [wave, umbrella], "templates": [waves, [center]]}
+        project["stageParticles"] = legacy
+        upgraded_waves = [{**emitter, "texture": 1} for emitter in waves]
+        upgraded_center = {**center, "texture": 2}
+        new_emitter = {"texture": 0, "birth": 0}
+        upgraded = {
+            "schema": 2,
+            "cues": [{**second, "template": 0}, {**first, "template": 1}],
+            "textures": [added, wave, umbrella],
+            "templates": [[upgraded_center, new_emitter], [*upgraded_waves, new_emitter]],
+        }
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        incomplete = {
+            "missing cue": {**upgraded, "cues": upgraded["cues"][:1]},
+            "missing emitter": {**upgraded, "templates": [upgraded["templates"][0], upgraded_waves[:1]]},
+            "changed emitter texture": {**upgraded, "templates": [[new_emitter], upgraded["templates"][1]]},
+            "changed emitter birth": {**upgraded, "templates": [
+                upgraded["templates"][0], [upgraded_waves[0], {**upgraded_waves[1], "birth": .85}, new_emitter],
+            ]},
+        }
+        cases = [(reason, {"return_value": {"stageParticles": partial}}, legacy)
+                 for reason, partial in incomplete.items()]
+        cases += [
+            ("absent output", {"return_value": {}}, legacy),
+            ("failed parse", {"side_effect": ValueError("Original preview could not be regenerated.")}, legacy),
+            ("complete upgrade", {"return_value": {"stageParticles": upgraded}}, upgraded),
+        ]
+        for reason, parse_result, expected in cases:
+            with self.subTest(reason=reason):
+                with ZipFile(saved["path"]) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", **parse_result,
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                parse.assert_called_once_with(self.original, "Edited effects", preview_split=False,
+                                              preview_stage_title=False, preview_stage_particles=True)
+                self.assertEqual(reopened["tracks"], project["tracks"])
+                self.assertEqual(reopened["stageParticles"], expected)
+                self.assertEqual(mv_studio._native(reopened), self.original)
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")

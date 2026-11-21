@@ -44,14 +44,6 @@
     return [x, y, z].every(value => inRange(value, -1000, 1000)) ? [-x, y, z] : null;
   }
 
-  function validMipChain(levels, validTexture) {
-    const size = levels?.[0]?.width;
-    return Array.isArray(levels) && (size === 256 || size === 512) &&
-      levels.length === (size === 512 ? 10 : 9) &&
-      levels.every((bitmap, index) => bitmap?.width === (size >> index) &&
-        bitmap.height === bitmap.width && validTexture(bitmap));
-  }
-
   function validNativeColor(source) {
     const {start, keys} = source || {};
     const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
@@ -81,7 +73,7 @@
   function checked(source, curve, particle) {
     const { textures, templates, cues } = source || {};
     if (!Array.isArray(textures) || textures.length < 1 || textures.length > 4 ||
-        !textures.every(levels => validMipChain(levels, particle.validTexture)) ||
+        !textures.every(particle.validMipChain) ||
         !Array.isArray(templates) || templates.length < 1 || templates.length > 8 ||
         !Array.isArray(cues) || cues.length < 1 || cues.length > 32 ||
         !cues.every(cue => id(cue?.trackId) && id(cue.eventId) &&
@@ -107,7 +99,7 @@
 
   async function apply(T, root, descriptor) {
     const curve = global.MVStudioStageMotion, particle = global.MVStudioTitle;
-    if (!root?.isObject3D || !descriptor || !curve?.evaluate || !particle?.validTexture ||
+    if (!root?.isObject3D || !descriptor || !curve?.evaluate || !particle?.validMipChain || !particle?.loadTexture ||
         !checked(descriptor, curve, particle)) return null;
     const textures = [], geometry = new Map(), groups = [], loader = new T.TextureLoader();
     const vertical = new T.Vector3(0, 1, 0), turn = new T.Quaternion();
@@ -123,31 +115,7 @@
       for (const shape of geometry.values()) shape.dispose();
     }
     try {
-      for (const levels of descriptor.textures) {
-        const images = [];
-        let native;
-        for (const { png, width, height } of levels) {
-          const bitmap = await loader.loadAsync("data:image/png;base64," + png);
-          if (bitmap.image.width !== width || bitmap.image.height !== height) {
-            bitmap.dispose();
-            throw Error("The native stage particle texture has invalid dimensions.");
-          }
-          images.push(bitmap.image);
-          if (native) bitmap.dispose();
-          else {
-            native = bitmap;
-            textures.push(native);
-          }
-        }
-        native.mipmaps = images;
-        native.generateMipmaps = false;
-        native.flipY = false;
-        native.encoding = T.LinearEncoding;
-        native.wrapS = native.wrapT = T.RepeatWrapping;
-        native.magFilter = T.LinearFilter;
-        native.minFilter = T.LinearMipmapNearestFilter;
-        native.needsUpdate = true;
-      }
+      for (const levels of descriptor.textures) textures.push(await particle.loadTexture(T, loader, levels));
       for (const cue of descriptor.cues) {
         const group = new T.Group(), meshes = [];
         group.name = "Native stage particles";

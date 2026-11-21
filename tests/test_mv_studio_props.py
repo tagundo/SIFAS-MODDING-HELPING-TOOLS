@@ -77,6 +77,20 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                             self.fail(track["label"])
                     self.assertEqual(waves, [42.85, 46, 49.333333, 50.933333])
                     self.assertEqual(umbrellas, [58.933333, 62.183333, 75.016667, 78.016667])
+                    ribbons = project["stageRibbons"]
+                    self.assertEqual(len(ribbons["geometry"]["positions"]), 9)
+                    self.assertEqual(len(ribbons["geometry"]["indices"]), 24)
+                    self.assertEqual([len(levels) for levels in ribbons["textures"]], [10, 10])
+                    ribbon_times = []
+                    for cue in ribbons["cues"]:
+                        track = tracks[cue["trackId"]]
+                        clip, = [event for event in track["events"] if event["id"] == cue["eventId"]]
+                        ribbon_times.append((round(clip["start"], 6), round(clip["duration"], 6)))
+                        self.assertEqual([mesh["name"] for mesh in cue["meshes"]], [f"obi_0{i}" for i in range(4)])
+                        self.assertEqual({mesh["material"]["cull"] for mesh in cue["meshes"]}, {2})
+                        self.assertEqual({channel["kind"] for channel in cue["animation"]["channels"]},
+                                         {"translation", "overlayUV", "overlayTint", "visibility"})
+                    self.assertEqual(ribbon_times, [(10.35, 48.933333), (59.283333, 38.6)])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

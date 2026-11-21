@@ -303,4 +303,128 @@ async function runSeededParticles() {
   console.log("Native title pair: independent life, colors and looped sheets, rewind, and cue/quality gating.");
 }
 
-run().then(runParticles).then(runSeededParticles).catch(error => { console.error(error); process.exitCode = 1; });
+async function runRibbons() {
+  const root = new T.Scene();
+  const levels = Array.from({length: 10}, (_, index) => {
+    const width = 512 >> index;
+    const header = Buffer.from(png, "base64").subarray(0, 24);
+    header.writeUInt32BE(width, 16);
+    header.writeUInt32BE(width, 20);
+    return {png: header.toString("base64"), width, height: width};
+  });
+  const events = [{id: "ribbon:first", start: 10, duration: 2.75}, {id: "ribbon:second", start: 12.75, duration: 2.25}]
+    .map(event => ({...event, values: {...track.events[0].values, offset: {x: 0, y: 0, z: 0}}}));
+  const ribbonTrack = {id: "ribbon:track", nativeClass: "CustomControlTrack", events};
+  const project = {tracks: [ribbonTrack], quality: {values: {stage_display: true}}};
+  const material = {queue: 2900, cull: 2, tint: [.8, 1, 1, .9], uv: [.5, .25, .125, .5]};
+  const rotation = [0, 0, 0, 1], unit = [1, 1, 1];
+  const source = {
+    textures: [levels],
+    geometry: {
+      positions: Array.from({length: 9}, (_, index) => [index % 3 - 1, 1 - Math.floor(index / 3), 0]),
+      uv: Array.from({length: 9}, (_, index) => [index % 3 / 2, Math.floor(index / 3) / 2]),
+      indices: [0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5, 3, 6, 4, 4, 6, 7, 4, 7, 5, 5, 7, 8]
+    },
+    cues: [{
+      trackId: ribbonTrack.id, eventId: events[0].id,
+      parent: {position: [10, 2, -3], rotation, scale: [2, 1, 1]},
+      meshes: [
+        {path: 11, name: "ribbon_top", position: [5, 1, 0], rotation, scale: unit, active: false, texture: 0, material},
+        {path: 12, name: "ribbon_bottom", position: [-1, 4, 2], rotation, scale: unit, active: true, texture: 0, material}
+      ],
+      animation: {start: .25, duration: 1, loop: true, channels: [
+        {kind: "translation", path: 11, curves: [["linear", [[0, 0], [1, -4]]], constant(2), constant(6)]},
+        {kind: "visibility", path: 11, curves: [["cubic", [[0, [0, 0, 0, 0]], [.5, [0, 0, 0, 1]]]]]},
+        {kind: "overlayUV", path: 11, curves: [constant(.5), constant(.25), ["linear", [[0, 0], [1, .5]]], constant(.125)]},
+        {kind: "overlayTint", path: 11, curves: [["linear", [[0, 0], [1, 1]]], constant(.75), constant(1), constant(.625)]}
+      ]}
+    }, {
+      trackId: ribbonTrack.id, eventId: events[1].id,
+      parent: {position: [-4, 3, 1], rotation, scale: unit},
+      meshes: [{path: 11, name: "ribbon_other", position: [1, 2, 3], rotation, scale: unit, active: true, texture: 0, material}],
+      animation: {start: 0, duration: 1, loop: true, channels: []}
+    }]
+  };
+  const loaded = [], disposed = [];
+  const local = {...T, TextureLoader: class {
+    async loadAsync(url) {
+      const level = levels[loaded.length];
+      assert.equal(url, "data:image/png;base64," + level.png);
+      const texture = new T.Texture({width: level.width, height: level.height});
+      texture.addEventListener("dispose", () => disposed.push(level.width));
+      loaded.push(texture);
+      return texture;
+    }
+  }};
+  const invalid = structuredClone(source);
+  invalid.textures[0][5].png = invalid.textures[0][4].png;
+  assert.equal(await MVStudioTitle.apply(local, root, invalid, {ribbons: true}), null);
+  assert.equal(loaded.length, 0, "invalid authored mip is rejected before image loading");
+
+  const ribbons = await MVStudioTitle.apply(local, root, source, {ribbons: true});
+  assert.ok(ribbons);
+  const [first, second] = root.children;
+  const [top, bottom] = first.children, [other] = second.children;
+  assert.equal(root.children.length, 2);
+  assert.deepEqual([first.visible, second.visible, top.visible, bottom.visible, other.visible], [false, false, false, true, true]);
+  assert.equal(top.geometry, bottom.geometry);
+  assert.equal(top.geometry, other.geometry);
+  assert.equal(top.geometry.getAttribute("position").count, 9);
+  assert.equal(top.geometry.index.count, 24);
+  assert.equal(top.material.side, T.FrontSide);
+  assert.equal(top.material.stencilRef, 2);
+  assert.equal(top.renderOrder, 2900);
+  for (const mesh of [top, bottom, other]) assert.equal(mesh.material.uniforms.uTexture.value, loaded[0]);
+  assert.deepEqual(loaded[0].mipmaps.map(image => image.width), levels.map(level => level.width));
+  assert.equal(loaded[0].generateMipmaps, false);
+  assert.equal(loaded[0].minFilter, T.LinearMipmapNearestFilter);
+  assert.deepEqual(disposed, levels.slice(1).map(level => level.width), "temporary mip wrappers are released");
+
+  ribbons.update(10, project);
+  assert.equal(first.visible, true);
+  assert.equal(top.visible, false);
+  ribbons.update(10.5, project);
+  assert.equal(top.visible, true);
+  compare(top.position.toArray(), [3, 2, 6]);
+  compare(top.getWorldPosition(new T.Vector3()).toArray(), [16, 4, 3]);
+  compare(bottom.getWorldPosition(new T.Vector3()).toArray(), [8, 6, -1]);
+  compare(top.material.uniforms.uTextureST.value.toArray(), [.5, .25, .375, .625]);
+  compare(top.material.uniforms.uTint.value.toArray(), [.75, .75, 1, .625]);
+  compare(bottom.material.uniforms.uTextureST.value.toArray(), [.5, .25, .125, .25]);
+  compare(bottom.material.uniforms.uTint.value.toArray(), material.tint);
+  ribbons.update(11, project);
+  assert.equal(top.visible, false, "the authored animation loops within the cue window");
+  compare(top.position.toArray(), [1, 2, 6]);
+  ribbons.update(12.75, project);
+  assert.deepEqual([first.visible, second.visible], [false, true]);
+  compare(other.getWorldPosition(new T.Vector3()).toArray(), [-3, 5, 4]);
+  ribbons.update(15, project);
+  assert.deepEqual([first.visible, second.visible], [false, false]);
+  ribbons.update(10.5, project);
+  assert.deepEqual([first.visible, second.visible, top.visible], [true, false, true]);
+  compare(top.material.uniforms.uTint.value.toArray(), [.75, .75, 1, .625]);
+  project.quality.values.stage_display = false;
+  ribbons.update(10.5, project);
+  assert.equal(first.visible, false);
+  project.quality.values.stage_display = true;
+  ribbonTrack.muted = true;
+  ribbons.update(12.75, project);
+  assert.equal(second.visible, false);
+  ribbonTrack.muted = false;
+  ribbons.update(12.75, project);
+  assert.equal(second.visible, true);
+
+  let materials = 0, geometries = 0;
+  for (const mesh of [top, bottom, other]) mesh.material.addEventListener("dispose", () => materials++);
+  top.geometry.addEventListener("dispose", () => geometries++);
+  ribbons.dispose();
+  ribbons.dispose();
+  assert.equal(root.children.length, 0);
+  assert.equal(materials, 3);
+  assert.equal(geometries, 1);
+  assert.deepEqual(disposed, [...levels.slice(1).map(level => level.width), 512]);
+  console.log("Native stage ribbons: authored mips, parent and leaf transforms, looped animation, cue transitions and cleanup.");
+}
+
+run().then(runParticles).then(runSeededParticles).then(runRibbons)
+  .catch(error => { console.error(error); process.exitCode = 1; });

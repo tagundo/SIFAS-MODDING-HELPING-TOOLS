@@ -19,7 +19,7 @@
   const vector = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
   const dimension = value => Number.isInteger(value) && value > 0 && value <= 1024 && (value & (value - 1)) === 0;
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
-  const channelWidth = { translation: 3, overlayTint: 4, overlayUV: 4 };
+  const channelWidth = { translation: 3, overlayTint: 4, overlayUV: 4, visibility: 1 };
 
   function validTexture(source) {
     const { png, width, height } = source || {};
@@ -38,33 +38,53 @@
       (Array.isArray(curve[1]) && curve[1].length <= 512)) && validCurve(curve);
   }
 
-  function checkedCues(source, validCurve) {
+  function validMipChain(levels) {
+    const size = levels?.[0]?.width;
+    return Array.isArray(levels) && (size === 256 || size === 512) &&
+      levels.length === (size === 512 ? 10 : 9) &&
+      levels.every((bitmap, index) => bitmap?.width === (size >> index) &&
+        bitmap.height === bitmap.width && validTexture(bitmap));
+  }
+
+  function validTransform(value) {
+    return vector(value?.position, 3) && vector(value.rotation, 4) && vector(value.scale, 3);
+  }
+
+  function validSurface(value) {
+    return value?.queue === 2900 && vector(value.tint, 4) && vector(value.uv, 4);
+  }
+
+  function checkedCues(source, validCurve, ribbons) {
     const { geometry, textures, cues } = source;
-    if (!Array.isArray(geometry?.positions) || geometry.positions.length !== 4 ||
+    const vertices = ribbons ? 9 : 4;
+    if (!Array.isArray(geometry?.positions) || geometry.positions.length !== vertices ||
         !geometry.positions.every(position => vector(position, 3)) ||
-        !Array.isArray(geometry.uv) || geometry.uv.length !== 4 || !geometry.uv.every(uv => vector(uv, 2)) ||
-        !Array.isArray(geometry.indices) || geometry.indices.length !== 6 ||
-        !geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 4) ||
-        !Array.isArray(textures) || !textures.length || textures.length > 8 || !textures.every(validTexture) ||
+        !Array.isArray(geometry.uv) || geometry.uv.length !== vertices || !geometry.uv.every(uv => vector(uv, 2)) ||
+        !Array.isArray(geometry.indices) || geometry.indices.length !== (ribbons ? 24 : 6) ||
+        !geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < vertices) ||
+        !Array.isArray(textures) || !textures.length || textures.length > 8 ||
+        !textures.every(ribbons ? validMipChain : validTexture) ||
         !Array.isArray(cues) || !cues.length || cues.length > 24) return null;
     const records = new Map();
     for (const cue of cues) {
-      const { trackId, eventId, texture, material, meshes, animation } = cue || {};
-      if (!id(trackId) || !id(eventId) || !textures[texture] || !Number.isInteger(texture) ||
-          material?.queue !== 2900 || !vector(material.tint, 4) || !vector(material.uv, 4) ||
+      const { trackId, eventId, texture, material, meshes, animation, parent } = cue || {};
+      if (!id(trackId) || !id(eventId) ||
+          (ribbons ? !validTransform(parent) : !Number.isInteger(texture) || !textures[texture] || !validSurface(material)) ||
           !Array.isArray(meshes) || !meshes.length || meshes.length > 8 || !Array.isArray(animation?.channels) ||
           !Number.isFinite(animation.start) || !Number.isFinite(animation.duration) || !(animation.duration > 0) ||
-          animation.loop !== false || animation.channels.length > meshes.length * 3) return null;
+          animation.loop !== ribbons || animation.channels.length > meshes.length * (ribbons ? 4 : 3)) return null;
       const curves = new Map();
       for (const mesh of meshes) {
-        if (!Number.isInteger(mesh?.path) || curves.has(mesh.path) || !id(mesh.name) ||
-            !vector(mesh.position, 3) || !vector(mesh.rotation, 4) || !vector(mesh.scale, 3)) return null;
+        if (!Number.isInteger(mesh?.path) || curves.has(mesh.path) || !id(mesh.name) || !validTransform(mesh) ||
+            (ribbons && (typeof mesh.active !== "boolean" || !Number.isInteger(mesh.texture) ||
+              !textures[mesh.texture] || !validSurface(mesh.material) || mesh.material.cull !== 2))) return null;
         curves.set(mesh.path, {});
       }
       for (const channel of animation.channels) {
         const { kind, path, curves: values } = channel || {};
         const fields = curves.get(path);
         if (!fields || !Object.hasOwn(channelWidth, kind) || Object.hasOwn(fields, kind) ||
+            (kind === "visibility" && !ribbons) ||
             !Array.isArray(values) || values.length !== channelWidth[kind] ||
             !values.every(curve => boundedCurve(curve, validCurve))) return null;
         fields[kind] = values;
@@ -152,7 +172,7 @@
   }
 
   function updateMesh({ mesh, uv, tint, channels }, time, evaluate) {
-    const { translation, overlayTint, overlayUV } = channels;
+    const { translation, overlayTint, overlayUV, visibility } = channels;
     if (translation) {
       const [x, y, z] = translation;
       mesh.position.set(-evaluate(x, time), evaluate(y, time), evaluate(z, time));
@@ -166,6 +186,7 @@
       const verticalScale = evaluate(sy, time);
       uv.set(evaluate(sx, time), verticalScale, evaluate(x, time), 1 - verticalScale - evaluate(y, time));
     }
+    if (visibility) mesh.visible = evaluate(visibility[0], time) > .5;
   }
 
   function neutralClip(event) {
@@ -177,10 +198,10 @@
         value.preExtrapolationMode || value.postExtrapolationMode);
   }
 
-  function materialFor(T, texture, fields) {
+  function materialFor(T, texture, fields, ribbons = false) {
     const [sx, sy, x, y] = fields.uv;
     const material = new T.ShaderMaterial({
-      vertexShader, fragmentShader, transparent: true, toneMapped: false, side: T.DoubleSide,
+      vertexShader, fragmentShader, transparent: true, toneMapped: false, side: ribbons ? T.FrontSide : T.DoubleSide,
       depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false, blending: T.CustomBlending,
       blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor,
@@ -192,16 +213,51 @@
       uniforms: { uTexture: { value: texture }, uTint: { value: new T.Vector4().fromArray(fields.tint) },
         uTextureST: { value: new T.Vector4(sx, sy, x, 1 - sy - y) } }
     });
-    material.name = "Native stage title";
+    material.name = ribbons ? "Native stage ribbon" : "Native stage title";
     return material;
   }
 
-  async function apply(T, root, descriptor) {
+  async function loadTexture(T, loader, source) {
+    const authoredMips = Array.isArray(source), images = [];
+    let texture;
+    try {
+      for (const {png, width, height} of authoredMips ? source : [source]) {
+        const level = await loader.loadAsync("data:image/png;base64," + png);
+        if (level.image.width !== width || level.image.height !== height) {
+          level.dispose();
+          throw new Error("The stage texture has invalid dimensions.");
+        }
+        if (authoredMips) images.push(level.image);
+        if (texture) level.dispose();
+        else texture = level;
+      }
+    } catch (error) {
+      texture?.dispose();
+      throw error;
+    }
+    if (authoredMips) texture.mipmaps = images;
+    texture.flipY = false;
+    texture.encoding = T.LinearEncoding;
+    texture.wrapS = texture.wrapT = T.RepeatWrapping;
+    texture.magFilter = T.LinearFilter;
+    texture.minFilter = T.LinearMipmapNearestFilter;
+    texture.generateMipmaps = !authoredMips;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  function setTransform(object, value) {
+    object.position.fromArray(value.position);
+    object.quaternion.fromArray(value.rotation);
+    object.scale.fromArray(value.scale);
+  }
+
+  async function apply(T, root, descriptor, {ribbons = false} = {}) {
     const curves = global.MVStudioStageMotion;
     if (!descriptor || !root?.isObject3D || !curves?.evaluate || !curves?.validCurve) return null;
-    const source = checkedCues(descriptor, curves.validCurve);
+    const source = checkedCues(descriptor, curves.validCurve, ribbons);
     if (!source) return null;
-    const particles = checkedParticles(descriptor, curves.validCurve);
+    const particles = ribbons ? [] : checkedParticles(descriptor, curves.validCurve);
     const { geometry: fields } = descriptor;
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(fields.positions.flat(), 3));
@@ -221,33 +277,20 @@
       geometry.dispose();
     }
     try {
-      for (const { png, width, height } of descriptor.textures) {
-        const texture = await loader.loadAsync("data:image/png;base64," + png);
-        textures.push(texture);
-        if (texture.image.width !== width || texture.image.height !== height) {
-          throw new Error("The stage title texture has invalid dimensions.");
-        }
-        texture.flipY = false;
-        texture.encoding = T.LinearEncoding;
-        texture.wrapS = T.RepeatWrapping;
-        texture.wrapT = T.RepeatWrapping;
-        texture.magFilter = T.LinearFilter;
-        texture.minFilter = T.LinearMipmapNearestFilter;
-        texture.generateMipmaps = true;
-        texture.needsUpdate = true;
-      }
+      for (const texture of descriptor.textures) textures.push(await loadTexture(T, loader, texture));
       for (const cue of source) {
         const group = new T.Group(), meshes = [];
-        group.name = "Native stage title";
+        group.name = ribbons ? "Native stage ribbons" : "Native stage title";
         group.visible = false;
+        if (ribbons) setTransform(group, cue.parent);
         groups.push({ cue, group, meshes });
         for (const authored of cue.meshes) {
-          const mesh = new T.Mesh(geometry, materialFor(T, textures[cue.texture], cue.material));
+          const {texture, material} = ribbons ? authored : cue;
+          const mesh = new T.Mesh(geometry, materialFor(T, textures[texture], material, ribbons));
           mesh.name = authored.name;
-          mesh.position.fromArray(authored.position);
-          mesh.quaternion.fromArray(authored.rotation);
-          mesh.scale.fromArray(authored.scale);
-          mesh.renderOrder = cue.material.queue;
+          setTransform(mesh, authored);
+          if (ribbons) mesh.visible = authored.active;
+          mesh.renderOrder = material.queue;
           group.add(mesh);
           const uniforms = mesh.material.uniforms;
           meshes.push({ mesh, uv: uniforms.uTextureST.value, tint: uniforms.uTint.value,
@@ -302,13 +345,13 @@
             for (const particle of meshes) updateParticle(particle, elapsed, curves.evaluate);
             continue;
           }
-          const { start, duration } = cue.animation;
-          const local = start + Math.min(duration, elapsed);
+          const { start, duration, loop } = cue.animation;
+          const local = start + (loop ? elapsed % duration : Math.min(duration, elapsed));
           for (const mesh of meshes) updateMesh(mesh, local, curves.evaluate);
         }
       },
       dispose
     };
   }
-  global.MVStudioTitle = { apply, validTexture, boundedCurve, gradientKeys, gradient };
+  global.MVStudioTitle = { apply, validTexture, validMipChain, loadTexture, boundedCurve, gradientKeys, gradient };
 })(typeof window !== "undefined" ? window : globalThis);

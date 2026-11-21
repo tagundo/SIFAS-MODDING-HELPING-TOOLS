@@ -284,7 +284,7 @@ def _timeline(path):
     raw = path.read_bytes()
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
-                                               preview_stage_particles=True)
+                                               preview_stage_particles=True, preview_stage_ribbons=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -456,7 +456,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
             native, parsed = _timeline(timeline)
             project.update({field: parsed[field] for field in
-                            ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles")
+                            ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles", "stageRibbons")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -741,7 +741,7 @@ def _archive_entries(archive):
 
 
 def _open_saved(archive, entries):
-    from .mv_studio_stage_particles import SCHEMA as particle_schema
+    from . import mv_studio_stage_particles
 
     entry = entries["project.json"]
     if entry.file_size > PROJECT_BYTES:
@@ -770,22 +770,32 @@ def _open_saved(archive, entries):
         for track in project["tracks"])
     particles = project.get("stageParticles")
     schema = particles.get("schema") if isinstance(particles, dict) else None
-    restore_particles = (type(schema) is not int or schema < particle_schema) and any(
+    restore_particles = (type(schema) is not int or schema < mv_studio_stage_particles.SCHEMA) and any(
         track.get("nativeClass") == "CustomControlTrack" and "/Control/" in str(track.get("label", ""))
         for track in project["tracks"])
-    if source is not None and (restore_split or restore_title or restore_particles):
+    restore_ribbons = "stageRibbons" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Display/dis_par_01-02_obi")
+        for track in project["tracks"])
+    if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons):
         from . import mv_studio_timeline
 
         try:
-            particle_options = {"preview_stage_particles": True} if restore_particles else {}
+            options = {}
+            if restore_particles:
+                options["preview_stage_particles"] = True
+            if restore_ribbons:
+                options["preview_stage_ribbons"] = True
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
-                                                         preview_stage_title=restore_title, **particle_options)
+                                                         preview_stage_title=restore_title, **options)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageParticles"):
+            for field in ("splitScreen", "stageTitle", "stageRibbons"):
                 if field in original:
                     project[field] = original[field]
+            rebuilt = original.get("stageParticles")
+            if rebuilt is not None and mv_studio_stage_particles.preserves(particles, rebuilt):
+                project["stageParticles"] = rebuilt
     return _register(project, source)
 
 
@@ -805,7 +815,7 @@ def _mod_files(project, files):
                     continue
                 native = raw
                 project.update({field: parsed[field] for field in
-                                ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles")
+                                ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles", "stageRibbons")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,
