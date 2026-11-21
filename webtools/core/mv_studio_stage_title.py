@@ -44,7 +44,8 @@ def _group(objects, owner, tree):
         if owner is None:
             return False
         tree = owner.read_typetree()
-        if (not _declared(objects, owner, tree, ("UnityEngine.Timeline.dll", "UnityEngine.Timeline", "GroupTrack"))
+        if (tree.get("m_Muted") or
+                not _declared(objects, owner, tree, ("UnityEngine.Timeline.dll", "UnityEngine.Timeline", "GroupTrack"))
                 or all(_local(objects, owner, ref, "MonoBehaviour") is not child for ref in tree.get("m_Children", []))):
             return False
         groups.append(tree["m_Name"].replace(" ", "").lower())
