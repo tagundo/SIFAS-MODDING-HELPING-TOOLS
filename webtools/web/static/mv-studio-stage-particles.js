@@ -279,7 +279,7 @@
   }
 
   global.MVStudioStageParticles = {
-    apply, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
+    apply, activeOffset, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
     nativeFrame, nativeStep, nativeStepRate,
   };
 })(typeof window !== "undefined" ? window : globalThis);

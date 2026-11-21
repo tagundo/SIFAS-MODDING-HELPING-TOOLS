@@ -336,7 +336,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_member_shafts=False, preview_stage_title=False, preview_stage_particles=False,
                    preview_stage_ribbons=False, preview_stage_spotlight=False, preview_stage_speed_back=False,
                    preview_stage_display_lights=False, preview_stage_falling_effects=False,
-                   preview_stage_break=False) -> dict:
+                   preview_stage_break=False, preview_stage_finale_floor=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -483,7 +483,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         stage_spotlight = mv_studio_stage_spotlight.read(objects, mono, tracks, deadline)
         if stage_spotlight:
             result["stageSpotlight"] = stage_spotlight
-    atlas_refs = {} if preview_stage_falling_effects or preview_stage_break else None
+    atlas_refs = {} if preview_stage_falling_effects or preview_stage_break or preview_stage_finale_floor else None
     if preview_stage_speed_back:
         from . import mv_studio_speed_back
 
@@ -508,6 +508,12 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         stage_break = mv_studio_stage_break.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if stage_break:
             result["stageBreak"] = stage_break
+    if preview_stage_finale_floor:
+        from . import mv_studio_finale_floor
+
+        finale_floor = mv_studio_finale_floor.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
+        if finale_floor:
+            result["stageFinaleFloor"] = finale_floor
     return result
 
 

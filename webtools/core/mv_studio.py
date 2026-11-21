@@ -287,7 +287,7 @@ def _timeline(path):
                                                preview_stage_particles=True, preview_stage_ribbons=True,
                                                preview_stage_spotlight=True, preview_stage_speed_back=True,
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
-                                               preview_stage_break=True)
+                                               preview_stage_break=True, preview_stage_finale_floor=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -461,7 +461,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                              "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
-                             "stageBreak")
+                             "stageBreak", "stageFinaleFloor")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -834,9 +834,14 @@ def _open_saved(archive, entries):
         and any(event.get("label") == "fx_dis_so2056_08" or event["values"].get("prefabGameObject") == {
             "m_FileID": 0, "m_PathID": "-277186095147178148",
         } for event in track["events"]) for track in project["tracks"])
+    restore_finale_floor = "stageFinaleFloor" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/flo")
+        and any(event.get("label") == "fx_flo_so2056_01" or event["values"].get("prefabGameObject") == {
+            "m_FileID": 0, "m_PathID": "-1916851570489530364",
+        } for event in track["events"]) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_speed_back or restore_display_lights or restore_falling
-                               or restore_break):
+                               or restore_break or restore_finale_floor):
         from . import mv_studio_timeline
 
         try:
@@ -855,6 +860,8 @@ def _open_saved(archive, entries):
                 options["preview_stage_falling_effects"] = True
             if restore_break:
                 options["preview_stage_break"] = True
+            if restore_finale_floor:
+                options["preview_stage_finale_floor"] = True
             original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=restore_split,
                                                          preview_stage_title=restore_title, **options)
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
@@ -880,6 +887,7 @@ def _open_saved(archive, entries):
                 project["stageSpeedBack"] = restored
             _restore_display_atlases(project, original, "stageFallingEffects", ("displayLights", "speedBackCenterStars"))
             _restore_display_atlases(project, original, "stageBreak", (None, "displayLights", "speedBackCenterStars"))
+            _restore_display_atlases(project, original, "stageFinaleFloor", ("speedBackCenterStars",))
             rebuilt_ribbons = original.get("stageRibbons")
             if rebuilt_ribbons and not isinstance(ribbons, dict):
                 project["stageRibbons"] = rebuilt_ribbons
@@ -909,7 +917,7 @@ def _mod_files(project, files):
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                                  "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
-                                 "stageBreak")
+                                 "stageBreak", "stageFinaleFloor")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

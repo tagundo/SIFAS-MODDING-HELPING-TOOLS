@@ -340,6 +340,30 @@ class ActualTimelineTests(unittest.TestCase):
                 descriptors.append(effect)
         self.assertEqual(*descriptors)
 
+    def test_native_finale_floor_matches_the_paired_source_and_shares_the_star_atlas(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            with self.subTest(platform=platform):
+                parsed = studio.parse_timeline(raw, platform, preview_stage_speed_back=True,
+                                               preview_stage_finale_floor=True)
+                floor = parsed.pop("stageFinaleFloor")
+                stars = parsed.pop("stageSpeedBack")["centerStars"]
+                self.assertEqual(floor["textures"], ["speedBackCenterStars"])
+                self.assertEqual(len(stars["texture"]), 10)
+                self.assertEqual(parsed, self.original[platform])
+                self.assertEqual((floor["seed"], floor["rate"], floor["cycle"], floor["lifetime"]), (0, 150, 5, .5))
+                self.assertEqual(floor["box"], [20, 0, 1])
+                self.assertEqual(tuple(floor["speedRange"]), (15, 25))
+                self.assertEqual(floor["uv"], [.25, .25, .75, 0])
+                track, = [row for row in parsed["tracks"] if row["id"] == floor["trackId"]]
+                event, = [row for row in track["events"] if row["id"] == floor["eventId"]]
+                self.assertEqual(track["label"], "StageEffect/Expert/Control/flo")
+                self.assertAlmostEqual(event["start"], 114.5)
+                self.assertAlmostEqual(event["start"] + event["duration"], 118.6166666667)
+                descriptors.append(floor)
+        self.assertEqual(len(descriptors), 2)
+        self.assertEqual(*descriptors)
+
     def test_native_title_pair_with_forced_seed_keeps_other_title_cues(self):
         from UnityPy.files.ObjectReader import ObjectReader
 

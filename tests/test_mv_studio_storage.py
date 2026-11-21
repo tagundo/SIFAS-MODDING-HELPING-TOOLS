@@ -333,6 +333,30 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
         self.assertEqual(reopened["stageBreak"], {**descriptor, "textures": [crack, "displayLights", original_stars]})
 
+    def test_saved_finale_floor_preserves_shifted_cue_and_display_atlas(self):
+        project = mv_studio._blank("Edited floor")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{
+            "id": "flo", "kind": "effects", "nativeClass": "CustomControlTrack",
+            "label": "StageEffect/Expert/Control/flo",
+            "events": [{"id": "floor", "label": "Retimed floor", "start": 110, "duration": 3,
+                        "values": {"prefabGameObject": {"m_FileID": 0, "m_PathID": "-1916851570489530364"},
+                                   "offset": {"x": 1, "y": 2, "z": -1}}}],
+        }]
+        texture = [{"png": "native stars"}]
+        project["stageSpeedBack"] = {"centerStars": {"texture": texture}, "movingCompanions": []}
+        descriptor = {"trackId": "flo", "eventId": "floor", "textures": [texture]}
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageFinaleFloor": descriptor},
+        ) as parse:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Edited floor", preview_split=False,
+                                      preview_stage_title=False, preview_stage_finale_floor=True)
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
+        self.assertEqual(reopened["stageFinaleFloor"], {**descriptor, "textures": ["speedBackCenterStars"]})
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")
