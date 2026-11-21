@@ -12,8 +12,9 @@ function latch() {
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
-function fixture() {
+function fixture(visible = true) {
   const frames = [], samples = [], models = new Map(), holds = new Map(), queued = new Map();
+  const fetched = [], parsing = new Map();
   let world, renderer, serial = 0;
   THREE.WebGLRenderer = class {
     constructor() {
@@ -44,7 +45,7 @@ function fixture() {
     dispose() {}
   };
   THREE.GLTFLoader = class {
-    parse(bytes, _base, onLoad) {
+    parse(bytes, _base, onLoad, onError) {
       const id = new Uint8Array(bytes)[0];
       const root = new THREE.Group();
       root.userData.id = id;
@@ -62,7 +63,14 @@ function fixture() {
       const info = { mesh, rig, releases: 0, materialsReleased: 0 };
       rig.dispose = () => { info.releases++; };
       models.set(id, info);
-      onLoad({ scene: root, animations: [] });
+      const hold = parsing.get(id);
+      if (hold) {
+        hold.started.resolve();
+        hold.finish.promise.then((error) => {
+          if (error) onError(error);
+          else onLoad({ scene: root, animations: [] });
+        });
+      } else onLoad({ scene: root, animations: [] });
     }
   };
   const window = {
@@ -88,19 +96,122 @@ function fixture() {
   };
   async function fetch(url) {
     const id = Number.parseInt(url.split('/').at(-1), 16);
+    fetched.push(id);
     return { ok: true, async arrayBuffer() { return Uint8Array.of(id).buffer; } };
   }
   vm.runInNewContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'),
     { window, fetch, AbortController, Uint8Array, Uint16Array });
   const app = window.MVStudioScene.create({ clientWidth: 1280, clientHeight: 720, appendChild() {} },
-    { onError(message) { throw new Error(message); } });
-  return { app, frames, samples, models, holds, queued, renderer, get world() { return world; } };
+    { visible, onError(message) { throw new Error(message); } });
+  return { app, frames, samples, models, holds, queued, fetched, parsing, renderer, get world() { return world; } };
 }
 
 function project(id) {
   return { token: `project-${id}`, performers: [{ id: 'solo', position: 1, glb: address(id), motion: {}, transform: { position: [0,0,0] } }],
     tracks: [{ kind: 'camera', binding: '/MainCamera', events: [{ start: 0, duration: 10,
       values: { position: [0,0,10], rotation: [0,0,0,1], fov: 45 } }] }] };
+}
+
+async function checkStagePreparation() {
+  const f = fixture(), previous = project(11);
+  previous.quality = { values: { rendering_resolution: 360 } };
+  await f.app.load(previous);
+  const priorWorld = f.world, priorActor = f.models.get(11);
+  const preview = {
+    stage: { glb: address(21), effectsGlb: address(22) },
+    assets: [{ kind: 'props', previewUrl: address(23) }, { kind: 'audio', previewUrl: address(90) }],
+    performers: project(91).performers,
+    quality: { values: { rendering_resolution: 480, stage_control: false } },
+    tracks: [{ kind: 'lighting', events: [{ start: 0, duration: 1,
+      values: { playableClass: 'LiveBaseLightClip', ambientColor: [.2,.4,.6] } }] }]
+  };
+  const effect = { started: latch(), finish: latch() };
+  f.parsing.set(22, effect);
+  const preparing = f.app.prepareStage(preview);
+  await effect.started.promise;
+  assert.deepEqual(f.fetched, [11,21,22]);
+  assert.deepEqual(f.frames.at(-1), ['model-21'], 'the base is drawn while the optional effects asset is still decoding');
+  assert.notEqual(f.world, priorWorld);
+  const overviewLight = f.world.children.find(node => node.isHemisphereLight);
+  assert.deepEqual(overviewLight.color.toArray(), [.2,.4,.6]);
+  assert.equal(f.renderer.getPixelRatio(), 480 / 720);
+  assert.equal(priorActor.releases, 0, 'preview must retain the prior canonical scene');
+  const firstStage = f.models.get(21);
+  const next = { ...project(25), stage: preview.stage,
+    assets: [...preview.assets, { kind: 'background', previewUrl: address(24) }], quality: previous.quality };
+  const committing = f.app.load(next, { reuseStage: true });
+  assert.deepEqual(f.fetched, [11,21,22]);
+  effect.finish.resolve();
+  assert.equal(await preparing, true);
+  await committing;
+  assert.deepEqual(f.fetched, [11,21,22,23,24,25], 'an in-flight matching preview and its effects are fetched exactly once');
+  assert.equal(priorActor.releases, 1);
+  assert.equal(f.models.get(21), firstStage, 'the stage reused the same parsed root');
+  assert.equal(firstStage.releases, 0);
+  assert.equal(overviewLight.parent, null, 'reusable lights must not hold the retired preview scene');
+  assert.deepEqual(f.frames.at(-1), ['model-21','model-25','outline-25','model-22','model-23','model-24']);
+  assert.equal(f.world, priorWorld);
+  assert.equal(f.renderer.getPixelRatio(), 360 / 720);
+  const changedOutfit = structuredClone(next);
+  changedOutfit.performers[0].glb = address(26);
+  const beforeOutfit = f.fetched.length;
+  await f.app.load(changedOutfit, { reuseOutfit: 'solo' });
+  assert.deepEqual(f.fetched.slice(beforeOutfit), [26], 'outfit replacement still reuses the adopted stage and effects');
+  assert.equal(f.models.get(21), firstStage);
+
+  const transient = { stage: { glb: address(31) }, quality: preview.quality };
+  assert.equal(await f.app.prepareStage(transient), true);
+  assert.deepEqual(f.frames.at(-1), ['model-31']);
+  f.app.cancelStagePreparation();
+  assert.equal(f.models.get(31).releases, 1);
+  assert.equal(f.world, priorWorld);
+  assert.equal(f.renderer.getPixelRatio(), 360 / 720);
+  assert.equal(firstStage.releases, 0);
+
+  const late = { started: latch(), finish: latch() };
+  f.parsing.set(32, late);
+  const canceled = f.app.prepareStage({ stage: { glb: address(32) } });
+  await late.started.promise;
+  f.app.cancelStagePreparation();
+  late.finish.resolve();
+  assert.equal(await canceled, false);
+  assert.equal(f.models.get(32).releases, 1, 'decoded resources from a canceled stage are released');
+  assert.equal(f.world, priorWorld);
+
+  const differentRole = { stage: { glb: address(34) }, assets: [{ kind: 'props', previewUrl: address(35) }] };
+  await f.app.prepareStage(differentRole);
+  const mismatched = f.models.get(34);
+  const afterMismatch = f.fetched.length;
+  await f.app.load({ ...differentRole, assets: [{ kind: 'effect', previewUrl: address(35) }] }, { reuseStage: true });
+  assert.deepEqual(f.fetched.slice(afterMismatch), [34,35], 'a role mismatch falls back to the complete model load');
+  assert.equal(mismatched.releases, 1);
+
+  const failure = { started: latch(), finish: latch() };
+  f.parsing.set(42, failure);
+  const failed = f.app.prepareStage({ stage: { glb: address(41), effectsGlb: address(42) } });
+  const rejected = assert.rejects(failed, /broken preview asset/);
+  await failure.started.promise;
+  const failedStage = f.models.get(41);
+  const afterFailure = f.fetched.length;
+  const recovered = f.app.load({ stage: { glb: address(41), effectsGlb: address(42) } }, { reuseStage: true });
+  f.parsing.delete(42);
+  failure.finish.resolve(new Error('broken preview asset'));
+  await rejected;
+  await recovered;
+  assert.deepEqual(f.fetched.slice(afterFailure), [41,42]);
+  assert.equal(failedStage.releases, 1, 'a preview failure releases its earlier finished assets');
+  assert.deepEqual(f.frames.at(-1), ['model-41','model-42']);
+  f.app.dispose();
+
+  const hidden = fixture(false);
+  const hiddenStage = { stage: { glb: address(51) }, assets: [] };
+  await hidden.app.prepareStage(hiddenStage);
+  await hidden.app.load({ ...hiddenStage, ...project(52) }, { reuseStage: true });
+  assert.deepEqual(hidden.fetched, [51,52]);
+  assert.deepEqual(hidden.frames, [], 'hidden stage preparation and canonical commit do not draw');
+  hidden.app.setVisible(true);
+  assert.deepEqual(hidden.frames.at(-1), ['model-51','model-52','outline-52']);
+  hidden.app.dispose();
 }
 
 (async () => {
@@ -158,5 +269,6 @@ function project(id) {
   f.app.dispose();
   assert.equal(f.models.get(3).releases, 1);
   assert.equal(f.queued.size, 0);
-  console.log('MV Studio render-only scrubbing, conservative culling and skeleton lifecycle passed');
+  await checkStagePreparation();
+  console.log('MV Studio render-only scrubbing, conservative culling, skeleton lifecycle and stage reuse passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

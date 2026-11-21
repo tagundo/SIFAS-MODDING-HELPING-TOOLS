@@ -216,6 +216,7 @@
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
+    const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
     const stage = new T.Group(), actors = new T.Group(), effects = new T.Group();
     const grid = new T.GridHelper(30, 30, 0x53728c, 0x27354c);
@@ -226,6 +227,9 @@
     key.shadow.mapSize.set(1024, 1024);
     const rim = new T.DirectionalLight(0x8bb6ff, 1.0);
     rim.position.set(4, 4, -3);
+    const lights = [ambient, key, rim];
+    const stageLights = lights.map((light) => light.clone());
+    stageLights[1].castShadow = false;
     scene.add(stage, actors, effects, grid, ambient, key, rim);
     // The scene's fixed roots otherwise dirty the world matrix of every
     // descendant on each render. Dancers and both cameras still animate.
@@ -235,9 +239,12 @@
     }
     controls.target.set(0, 1.1, 0);
     editorCamera.position.set(5, 3.8, 8);
+    stageCamera.position.copy(editorCamera.position);
+    stageCamera.lookAt(controls.target);
     controls.update();
 
-    let disposed = false, visible = true, generation = 0, request = null, project = null;
+    let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
+    let preparation = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
@@ -260,6 +267,10 @@
     function draw() {
       cancelDraw();
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
+        if (preparation?.shown) {
+          renderer.render(preparation.scene, stageCamera);
+          return;
+        }
         const camera = useLive && hasShot ? liveCamera : editorCamera;
         const projection = camera.projectionMatrix.elements;
         const { width, height } = renderer.domElement;
@@ -296,17 +307,18 @@
     function resize() {
       const width = mount.clientWidth, height = mount.clientHeight;
       if (disposed || !width || !height) return;
-      const values = project && project.quality && project.quality.values || {};
+      const displayed = preparation?.shown ? preparation.preview : project;
+      const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
       const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
         ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
-      const previewResolution = resolution * previewScale;
+      const previewResolution = resolution * (preparation?.shown ? 1 : previewScale);
       if (renderer.getPixelRatio() !== previewResolution) renderer.setPixelRatio(previewResolution);
       renderHeight = nativeHeight;
       viewportDirty = false;
       renderer.getSize(size);
       if (size.x !== width || size.y !== height) renderer.setSize(width, height, false);
-      for (const camera of [editorCamera, liveCamera]) {
+      for (const camera of [editorCamera, liveCamera, stageCamera]) {
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
       }
@@ -433,28 +445,35 @@
       return gaze;
     }
 
-    function frameAll() {
+    function frameGroup(group, camera, target) {
       const bounds = new T.Box3();
-      const framed = actors.children.length ? actors : stage;
-      bounds.setFromObject(framed);
-      if (bounds.isEmpty()) return;
+      bounds.setFromObject(group);
+      if (bounds.isEmpty()) return false;
       const center = bounds.getCenter(new T.Vector3());
       const radius = Math.max(1.5, bounds.getSize(new T.Vector3()).length() * 0.5);
-      controls.target.copy(center);
-      editorCamera.position.copy(center).add(new T.Vector3(0.45, 0.35, 1.25).multiplyScalar(radius * 2));
-      controls.update();
+      camera.position.copy(center).add(new T.Vector3(0.45, 0.35, 1.25).multiplyScalar(radius * 2));
+      if (target) target.copy(center);
+      else camera.lookAt(center);
+      return true;
     }
 
-    function sceneEntries(value) {
+    function frameAll() {
+      if (frameGroup(actors.children.length ? actors : stage, editorCamera, controls.target)) controls.update();
+    }
+
+    function sceneEntries(value, stageOnly = false) {
       const entries = [];
-      if (value.stage && value.stage.glb) entries.push({ spec: value.stage, group: stage });
-      if (value.stage && value.stage.effectsGlb) entries.push({ spec: { glb: value.stage.effectsGlb }, group: effects });
+      if (value.stage && value.stage.glb) entries.push({ spec: { ...value.stage }, group: stage, role: "stage" });
+      if (value.stage && value.stage.effectsGlb) {
+        entries.push({ spec: { glb: value.stage.effectsGlb }, group: effects, role: "stage-effects" });
+      }
       for (const asset of value.assets || []) {
         if (["effect", "props", "background"].includes(asset.kind) && asset.previewUrl &&
             (!value.stage || asset.previewUrl !== value.stage.effectsGlb)) {
-          entries.push({ spec: { glb: asset.previewUrl }, group: effects });
+          entries.push({ spec: { glb: asset.previewUrl }, group: effects, role: asset.kind });
         }
       }
+      if (stageOnly) return entries;
       for (const performer of (value.performers || []).slice(0, 9)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
@@ -484,13 +503,13 @@
       return replacement;
     }
 
-    async function buildRecord(entry, bytes, ticket) {
+    async function buildRecord(entry, bytes, active) {
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [] };
       let ready = false;
       try {
-        if (ticket !== generation || disposed) return null;
+        if (!active()) return null;
         gltf.scene.traverse((node) => {
           if (entry.group !== actors && node.matrixAutoUpdate) {
             node.updateMatrix();
@@ -517,10 +536,10 @@
           actorPose(record, entry.spec);
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
-            mouthCentroidDepth: renderer.capabilities.isWebGL2 === true
+            mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, releaseParserAfterLoad: true
           });
           if (record.materials && record.materials.ready) await record.materials.ready;
-          if (ticket !== generation || disposed) return null;
+          if (!active()) return null;
           const authoredMotion = entry.spec.motion && global.ViewerMotionTimeline;
           if (authoredMotion || !gltf.animations.length) record.initialPose = captureActorPose(record.root);
           if (authoredMotion) {
@@ -549,16 +568,16 @@
       }
     }
 
-    async function swapOutfit(entry, index, signal, ticket) {
+    async function swapOutfit(entry, index, signal, active) {
       let replacement = null;
       try {
         const bytes = await modelBytes(entry.spec.glb, signal);
-        if (ticket !== generation || disposed) return;
-        replacement = await buildRecord(entry, bytes, ticket);
+        if (!active()) return;
+        replacement = await buildRecord(entry, bytes, active);
       } catch (error) {
         if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
       }
-      if (ticket !== generation || disposed) {
+      if (!active()) {
         if (replacement) releaseRecord(replacement);
         return;
       }
@@ -578,39 +597,135 @@
       seek(currentTime, project);
     }
 
+    function cancelStagePreparation(redraw = true) {
+      const pending = preparation;
+      if (!pending) return;
+      preparation = null;
+      pending.controller.abort();
+      for (const record of pending.records) releaseRecord(record);
+      pending.scene.remove(...stageLights);
+      if (pending.shown) {
+        viewportDirty = true;
+        if (redraw) resize();
+      }
+    }
+
+    // This transient scene shares the renderer, while the current project
+    // keeps its resources, playhead, and camera until a final project arrives.
+    // Report false on supersession and throw a current asset failure.
+    async function prepareStage(preview) {
+      if (disposed) return false;
+      cancelStagePreparation();
+      const entries = preview ? sceneEntries(preview, true) : [];
+      if (entries[0]?.group !== stage) return false;
+      for (const entry of entries) entry.identity = entryIdentity(entry);
+      const overviewEffects = new T.Group();
+      const quality = preview.quality?.values || {};
+      overviewEffects.visible = quality.stage_control !== false;
+      const pending = { preview, entries, scene: new T.Scene(), records: [], controller: new AbortController(), shown: false };
+      pending.scene.add(overviewEffects, ...stageLights);
+      frameTracks(0, (preview.tracks || []).filter((track) => track.kind === "lighting" && !track.muted), quality, stageLights);
+      preparation = pending;
+      const active = () => !disposed && preparation === pending;
+      pending.ready = (async () => {
+        const { signal } = pending.controller;
+        for (const entry of entries) {
+          const bytes = await modelBytes(entry.spec.glb, signal);
+          if (!active()) return false;
+          const record = await buildRecord(entry, bytes, active);
+          if (!active()) {
+            if (record) releaseRecord(record);
+            return false;
+          }
+          for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
+          pending.records.push(record);
+          if (entry.group === stage) {
+            pending.scene.add(record.root);
+            frameGroup(record.root, stageCamera);
+            pending.shown = true;
+            resize();
+          } else {
+            overviewEffects.add(record.root);
+            draw();
+          }
+        }
+        return true;
+      })();
+      try {
+        return await pending.ready;
+      } catch (error) {
+        if (!active()) return false;
+        cancelStagePreparation();
+        throw error;
+      }
+    }
+
+    function reusableStage(entries, wanted) {
+      if (!wanted || !preparation || preparation.entries.length > entries.length) return null;
+      // URLs identify immutable GLB contents. Check their ordered scene roles
+      // as well, since stage, stage effects, and props have separate inputs.
+      return preparation.entries.every((entry, index) => entry.role === entries[index].role &&
+        entry.identity === entries[index].identity) ? preparation : null;
+    }
+
     async function load(value, preferences) {
       if (disposed) return;
       cancelDraw();
       const entries = value ? sceneEntries(value) : [];
       for (const entry of entries) entry.identity = entryIdentity(entry);
       const replacement = outfitReplacement(value, entries, preferences?.reuseOutfit);
+      const pendingStage = reusableStage(entries, replacement < 0 && preferences?.reuseStage);
+      if (!pendingStage) cancelStagePreparation(false);
       project = value;
       if (request) request.abort();
       request = new AbortController();
       const signal = request.signal, ticket = ++generation;
+      const active = () => ticket === generation && !disposed;
       if (replacement < 0) clear();
       gaze.members = {};
       hasShot = false;
       if (!project) return;
       applyProject();
-      if (replacement >= 0) return swapOutfit(entries[replacement], replacement, signal, ticket);
+      if (replacement >= 0) return swapOutfit(entries[replacement], replacement, signal, active);
+
+      let start = 0;
+      if (pendingStage) {
+        // Join an exact stage preparation already in flight. Keep the same
+        // GLB requests and parsed roots even if completion raced the stage.
+        const ready = await pendingStage.ready.catch(() => false);
+        if (!active()) return;
+        if (ready && preparation === pendingStage) {
+          preparation = null;
+          viewportDirty = true;
+          pendingStage.scene.remove(...stageLights);
+          for (const record of pendingStage.records) {
+            record.group.add(record.root);
+            records.push(record);
+          }
+          start = records.length;
+          grid.visible = false;
+          frameAll();
+          applyProject();
+          playbackFrame(currentTime);
+        }
+      }
 
       // Fetch the next GLB while the current one decodes. Only one model is
       // decoded at a time so concurrent texture uploads stay bounded on mobile.
       function fetchEntry(entry) {
         return entry && modelBytes(entry.spec.glb, signal).then((bytes) => ({ bytes }), (error) => ({ error }));
       }
-      let pending = fetchEntry(entries[0]);
-      for (let index = 0; index < entries.length; index++) {
+      let pending = fetchEntry(entries[start]);
+      for (let index = start; index < entries.length; index++) {
         const entry = entries[index];
-        if (ticket !== generation || disposed) return;
+        if (!active()) return;
         try {
           const download = await pending;
-          if (ticket !== generation || disposed) return;
+          if (!active()) return;
           pending = fetchEntry(entries[index + 1]);
           if (download.error) throw download.error;
-          const record = await buildRecord(entry, download.bytes, ticket);
-          if (ticket !== generation || disposed) {
+          const record = await buildRecord(entry, download.bytes, active);
+          if (!active()) {
             if (record) releaseRecord(record);
             return;
           }
@@ -625,7 +740,7 @@
           if (!signal.aborted && !disposed && options && options.onError) options.onError(error.message);
         }
       }
-      if (ticket !== generation || disposed) return;
+      if (!active()) return;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -672,6 +787,41 @@
       if (vector(value, 3) || vector(value, 4)) target.setRGB(value[0], value[1], value[2]);
       else if (value && Number.isFinite(value.r) && Number.isFinite(value.g) && Number.isFinite(value.b)) target.setRGB(value.r, value.g, value.b);
       else target.setHex(fallback);
+    }
+
+    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera) {
+      ambient.color.setHex(0xe4edff);
+      ambient.intensity = 1.2;
+      key.color.setHex(0xffffff);
+      key.intensity = 2.1;
+      rim.color.setHex(0x8bb6ff);
+      rim.intensity = 1.0;
+      for (const track of tracks) {
+        const event = activeEvent(track, time);
+        if (!event) continue;
+        if (track.kind === "camera") {
+          onCamera?.(event, time);
+        } else {
+          const label = event.values.playableClass;
+          if (label === "LiveBaseLightClip") {
+            setColor(ambient.color, lightValue(event, ["ambientColor"]), 0xe4edff);
+            setColor(rim.color, lightValue(event, ["rimlightColor"]), 0x8bb6ff);
+            const strength = lightValue(event, ["rimlightIntensity"]);
+            if (Number.isFinite(strength)) rim.intensity = Math.max(0, Math.min(10, strength));
+          } else if (label === "LiveStageAmbientClip" && quality.stage_ambient !== false) {
+            setColor(key.color, lightValue(event, ["color", "tintColor"]), 0xffffff);
+          } else if (label === "LiveRimlightClip" && quality.member_rim_light !== false) {
+            setColor(rim.color, lightValue(event, ["color"]), 0x8bb6ff);
+          }
+        }
+      }
+      if (quality.stage_ambient === false) ambient.intensity = 0.6;
+      if (quality.base_light === false) key.intensity = 0.8;
+      if (quality.member_rim_light === false) rim.intensity = 0;
+    }
+
+    function useCameraEvent(event, time) {
+      hasShot = poseCamera(event, time) || hasShot;
     }
 
     function applyProject() {
@@ -729,34 +879,7 @@
         }
       }
       hasShot = false;
-      ambient.color.setHex(0xe4edff);
-      ambient.intensity = 1.2;
-      key.color.setHex(0xffffff);
-      key.intensity = 2.1;
-      rim.color.setHex(0x8bb6ff);
-      rim.intensity = 1.0;
-      for (const track of renderTracks) {
-        const event = activeEvent(track, currentTime);
-        if (!event) continue;
-        if (track.kind === "camera") {
-          hasShot = poseCamera(event, currentTime) || hasShot;
-        } else {
-          const label = event.values.playableClass;
-          if (label === "LiveBaseLightClip") {
-            setColor(ambient.color, lightValue(event, ["ambientColor"]), 0xe4edff);
-            setColor(rim.color, lightValue(event, ["rimlightColor"]), 0x8bb6ff);
-            const strength = lightValue(event, ["rimlightIntensity"]);
-            if (Number.isFinite(strength)) rim.intensity = Math.max(0, Math.min(10, strength));
-          } else if (label === "LiveStageAmbientClip" && settings.stage_ambient !== false) {
-            setColor(key.color, lightValue(event, ["color", "tintColor"]), 0xffffff);
-          } else if (label === "LiveRimlightClip" && settings.member_rim_light !== false) {
-            setColor(rim.color, lightValue(event, ["color"]), 0x8bb6ff);
-          }
-        }
-      }
-      if (settings.stage_ambient === false) ambient.intensity = 0.6;
-      if (settings.base_light === false) key.intensity = 0.8;
-      if (settings.member_rim_light === false) rim.intensity = 0;
+      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
       for (const record of records) {
         if (record.group !== actors) continue;
         const performer = performers.get(record.id);
@@ -783,7 +906,7 @@
     controls.addEventListener("change", requestDraw);
     resize();
     return {
-      load, seek, playbackFrame, setPlaying, resize,
+      load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       frameAll,
@@ -791,6 +914,7 @@
       dispose() {
         disposed = true;
         if (request) request.abort();
+        cancelStagePreparation(false);
         if (observer) observer.disconnect();
         cancelDraw();
         clear();

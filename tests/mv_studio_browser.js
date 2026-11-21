@@ -143,6 +143,7 @@ async function localAndGame(page, url) {
     } });
   });
   let request;
+  await page.route('**/api/mv-studio/game-stream?*', route => route.fulfill({ status: 404 }));
   await page.route('**/api/mv-studio/game?*', route => {
     request = route.request().postDataJSON();
     return route.fulfill({ json: gameProject });
@@ -232,6 +233,56 @@ async function localAndGame(page, url) {
   await registrationControls(page);
 }
 
+async function timelineResize(page) {
+  const grip = page.getByRole('separator', { name: '타임라인 높이' });
+  const scroll = page.locator('#mv-timeline-scroll');
+  const timeline = page.locator('#mv-timeline-grid');
+  const clip = await timeline.locator('.mv-clip').first().elementHandle();
+  const height = () => scroll.evaluate(element => element.clientHeight);
+  const initial = await height();
+  assert(initial > 62);
+  assert.equal(await grip.getAttribute('aria-orientation'), 'horizontal');
+  await grip.scrollIntoViewIfNeeded();
+  const rect = await grip.boundingBox();
+  const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y - 24, { steps: 8 });
+  await page.mouse.up();
+  const dragged = Math.max(62, initial - 24);
+  assert.equal(await height(), dragged);
+  assert.equal(await grip.getAttribute('aria-valuenow'), String(dragged));
+  assert(await clip.evaluate(element => element.isConnected));
+  await grip.press('ArrowDown');
+  assert.equal(await height(), dragged + 16);
+  await grip.press('Shift+ArrowUp');
+  assert.equal(await height(), 62);
+  assert(await clip.evaluate(element => element.isConnected));
+
+  await page.locator('#mv-zoom').selectOption('96');
+  await scroll.hover();
+  await page.mouse.wheel(120, 120);
+  await page.waitForFunction(() => {
+    const pane = document.getElementById('mv-timeline-scroll');
+    return pane.scrollTop > 0 && pane.scrollLeft > 0;
+  });
+  await grip.press('End');
+  const wide = Number(await grip.getAttribute('aria-valuemax'));
+  assert.equal(await height(), wide);
+  await page.reload();
+  await grip.waitFor();
+  assert.equal(await height(), wide);
+
+  await page.setViewportSize({ width: 408, height: 600 });
+  await page.waitForFunction(() => document.getElementById('mv-timeline-scroll').clientHeight === 360 &&
+    document.getElementById('mv-timeline-resizer').getAttribute('aria-valuenow') === '360');
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await page.waitForFunction(expected => document.getElementById('mv-timeline-scroll').clientHeight === expected, wide);
+  await grip.press('Home');
+  assert.equal(await height(), 62);
+  assert.equal(await scroll.evaluate(element => element.style.getPropertyValue('--mv-timeline-height')), '');
+}
+
 async function run() {
   const server = await startServer();
   let browser;
@@ -249,6 +300,7 @@ async function run() {
         timeline.left === stage.left && timeline.right === inspector.right;
     });
     assert(layout, 'The timeline spans the preview and inspector columns');
+    await timelineResize(page);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: 'PASS', evidence }));
   } finally {

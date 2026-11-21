@@ -2600,6 +2600,11 @@ _MV_STUDIO_TRANSLATIONS = {
     "Chart attached.": ("채보를 연결했습니다.", "譜面を追加しました。"),
     "Import notes": ("불러오기 결과", "読み込み結果"),
     "MV timeline": ("MV 타임라인", "MVタイムライン"),
+    "Timeline height": ("타임라인 높이", "タイムラインの高さ"),
+    "Drag or use the up and down arrows to change the timeline height. Home restores the default. End sets the maximum.": (
+        "드래그하거나 위아래 화살표 키를 눌러 타임라인 높이를 조절합니다. Home 키는 기본 높이로, End 키는 최대 높이로 바꿉니다.",
+        "ドラッグまたは上下の矢印キーでタイムラインの高さを変更できます。Homeキーで標準の高さに戻し、Endキーで最大にします。",
+    ),
     "Go to start": ("처음으로", "先頭へ"),
     "Playhead": ("재생 위치", "再生位置"),
     "Timeline scale": ("타임라인 배율", "タイムライン倍率"),

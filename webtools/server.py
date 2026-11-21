@@ -21,6 +21,12 @@ from webtools.jobs import MANAGER
 from webtools.tools import registry
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+_MV_STREAM_WRITE_TIMEOUT = 20
+_MV_STREAM_FIRST_RECORD_BYTES = 4096
+
+
+class _MVStreamClosed(Exception):
+    """Stop the import when the stream can no longer deliver its preview."""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -246,12 +252,14 @@ class Handler(BaseHTTPRequestHandler):
         from sqlite3 import Error as SQLiteError
         from webtools.core import mv_studio
         try:
-            if action == "game":
+            if action in {"game", "game-stream"}:
                 data = self._viewer_feature_request({"region", "platform", "liveId", "assetId"}, token=False,
                                                     optional_fields={"download"})
-                return self._send_json(mv_studio.load_game(Path.cwd(), language=self._lang(),
-                    region=data["region"], platform=data["platform"], live_id=data["liveId"],
-                    asset_id=data["assetId"], download=data.get("download", False)))
+                options = {"language": self._lang(), "region": data["region"], "platform": data["platform"],
+                           "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False)}
+                if action == "game-stream":
+                    return self._stream_mv_game(mv_studio.load_game, **options)
+                return self._send_json(mv_studio.load_game(Path.cwd(), **options))
             if action == "open":
                 data = self._viewer_feature_request({"path"}, token=False)
                 return self._send_json(mv_studio.open_project(data["path"]))
@@ -270,6 +278,45 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(error)}, status=403)
         except (OSError, ValueError, TypeError, OverflowError, SQLiteError) as error:
             return self._send_json({"error": str(error)}, status=400)
+
+    def _stream_mv_game(self, load_game, **options):
+        started = False
+
+        def send(event):
+            nonlocal started
+            line = json.dumps(event, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            if event["type"] == "stage":
+                # Let even small previews pass browser response buffering before the cast is ready.
+                line = line.ljust(_MV_STREAM_FIRST_RECORD_BYTES - 1, b" ")
+            try:
+                if not started:
+                    started = True
+                    self.close_connection = True
+                    self.connection.settimeout(_MV_STREAM_WRITE_TIMEOUT)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                self.wfile.write(line + b"\n")
+                self.wfile.flush()
+            except OSError as error:
+                raise _MVStreamClosed() from error
+
+        try:
+            project = load_game(Path.cwd(), **options,
+                                on_stage=lambda preview: send({"type": "stage", "preview": preview}))
+            send({"type": "complete", "project": project})
+        except _MVStreamClosed:
+            return
+        except Exception as error:
+            if not started:
+                raise
+            try:
+                send({"type": "error", "error": str(error)})
+            except _MVStreamClosed:
+                return
 
     def _api_mv_chart_templates(self):
         from sqlite3 import Error as SQLiteError

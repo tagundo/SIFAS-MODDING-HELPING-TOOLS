@@ -1,5 +1,6 @@
 """Shared MV workbench project, preview assets, and native timeline copies."""
 from collections import OrderedDict
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -322,11 +323,35 @@ def _cast_in_timeline_order(performers, tracks):
     return [{**latest[assigned[slot]], "position": slot} for slot in sorted(assigned)]
 
 
-def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False):
+def _stage_snapshot(project, assets):
+    # The overview uses its own camera and lights the stage at time zero.
+    # Keep every light event active at zero in order so overlapping events
+    # resolve as they do in the full renderer.
+    lights = []
+    for track in project["tracks"]:
+        if track["kind"] != "lighting" or track.get("muted"):
+            continue
+        events = [event for event in track["events"] if event["start"] <= 0 <= event["start"] + event["duration"]]
+        if events:
+            lights.append(dict(track, events=events))
+    # The preview consumer can retain this copy without sharing edit state.
+    return deepcopy({
+        "stage": project["stage"],
+        "duration": project["duration"],
+        "quality": project["quality"],
+        "assets": [asset for asset in assets if asset["kind"] in {"effect", "props", "background"} and asset.get("previewUrl")],
+        "tracks": lights,
+    })
+
+
+def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None):
+    """Import the complete project, optionally publishing its renderable stage first."""
     from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
+    if on_stage is not None and not callable(on_stage):
+        raise TypeError("The stage preview callback must be callable.")
     if not _IMPORT.acquire(blocking=False):
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
     try:
@@ -402,6 +427,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     prop_row["previewUrl"], _ = _preview(prop_file)
                 except (ValueError, OSError) as error:
                     warnings.append(f"{prop_row['label']}: {error}")
+            if on_stage is not None and project["stage"] is not None:
+                on_stage(_stage_snapshot(project, rows.values()))
             describe(selected.get("songBackground"), "background", "Song background")
             movie = selected.get("movie") or {}
             describe(movie.get("source"), "display", "MV screen video")

@@ -218,6 +218,10 @@
     var limitations = new Set();
     var pending = [];
     var parser = options.parser;
+    var releaseParserAfterLoad = options.releaseParserAfterLoad === true;
+    // In the MV preview the material outlives the loader, whose parser caches
+    // the original GLB and all buffer views. Track texture bindings separately.
+    if (releaseParserAfterLoad) options = Object.assign({}, options, { parser: null });
     var textureBindings = [], textureOverrides = new Map();
     var animated = false;
     var state = { recognizedMaterials: 0, meshes: 0, outlines: 0, gpuInvalidations: 0, pipeline: "gamma",
@@ -503,6 +507,7 @@
     state.meshes = entries.length;
     state.outlines = entries.length;
     var ready = Promise.all(pending).then(function () {
+      if (releaseParserAfterLoad) parser = null;
       loading = false;
       if (!disposed && options.onChange) options.onChange();
       return controller;

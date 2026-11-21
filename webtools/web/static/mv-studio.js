@@ -28,10 +28,10 @@
   const text = (value) => String(value == null ? "" : value);
   const finite = Number.isFinite;
   const basename = (path) => text(path).split(/[\\/]/).pop();
-  let settings, scene, project, selected, pending, catalogRequest, catalogIndex = [], songs = [];
+  let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
-  let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver;
+  let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, refreshTimelineHeight;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
   const timelineLanes = new Map();
@@ -84,9 +84,13 @@
     if (error && error.name !== "AbortError") report(t(error.message || "The MV could not be loaded."), true);
   }
 
-  async function request(path, payload, signal) {
+  function requestURL(path) {
     const delimiter = path.includes("?") ? "&" : "?";
-    const url = route + path + delimiter + "lang=" + encodeURIComponent(settings.language());
+    return route + path + delimiter + "lang=" + encodeURIComponent(settings.language());
+  }
+
+  async function request(path, payload, signal) {
+    const url = requestURL(path);
     if (global.ElichikaPlatform && ElichikaPlatform.requestJSON) {
       return ElichikaPlatform.requestJSON(url, payload, { signal, maxRequestBytes: 16 * 1024 * 1024, operation: "3D MV" });
     }
@@ -96,6 +100,72 @@
     const data = await response.json();
     if (!response.ok || data.error) throw new Error(data.error || "The MV request failed.");
     return data;
+  }
+
+  async function requestGameStream(payload, signal, onStage) {
+    if (typeof global.TextDecoder !== "function" || typeof global.ReadableStream !== "function" ||
+        typeof global.ReadableStream.prototype.getReader !== "function" ||
+        typeof global.Response !== "function" || !("body" in global.Response.prototype)) return null;
+    const response = await global.fetch(requestURL("game-stream"), {
+      method: "POST", credentials: "same-origin", signal,
+      headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+      body: JSON.stringify(payload),
+    });
+    if ([404, 405, 501].includes(response.status)) {
+      response.body?.cancel?.().catch(() => {});
+      return null;
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new Error(data && typeof data.error === "string" && data.error || "The MV request failed.");
+    }
+
+    const invalid = () => new Error("The imported MV project is invalid.");
+    if (!/^application\/x-ndjson(?:\s*;|$)/i.test(response.headers.get("Content-Type") || "") ||
+        !response.body || typeof response.body.getReader !== "function") {
+      response.body?.cancel?.().catch(() => {});
+      throw invalid();
+    }
+    const reader = response.body.getReader(), decoder = new global.TextDecoder("utf-8", { fatal: true });
+    let buffer = "", received = 0, stageSeen = false, terminal = null, ended = false;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) {
+          ended = true;
+          buffer += decoder.decode();
+          break;
+        }
+        received += value.byteLength;
+        if (received > 64 * 1024 * 1024) throw invalid();
+        buffer += decoder.decode(value, { stream: true });
+        for (let newline; (newline = buffer.indexOf("\n")) !== -1;) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          if (terminal) throw invalid();
+          let event;
+          try { event = JSON.parse(line); } catch (_) { throw invalid(); }
+          if (event?.type === "stage" && !stageSeen) {
+            const preview = event.preview;
+            if (!preview || !Array.isArray(preview.assets) || !Array.isArray(preview.tracks) ||
+                !finite(preview.duration) || preview.duration < 0) throw invalid();
+            stageSeen = true;
+            onStage(preview);
+          } else if (event?.type === "complete") {
+            terminal = { project: checkedProject(event.project) };
+          } else if (event?.type === "error" && typeof event.error === "string" && event.error) {
+            terminal = { error: event.error };
+          } else throw invalid();
+        }
+      }
+      if (!terminal || buffer.trim()) throw invalid();
+      if (terminal.error) throw new Error(terminal.error);
+      return terminal.project;
+    } finally {
+      if (!ended) reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
   }
 
   function resource(path) {
@@ -130,9 +200,9 @@
     control.textContent = t(playing ? "Pause" : "Play");
     control.setAttribute("aria-pressed", String(playing));
     const empty = !project || !project.duration;
-    control.disabled = empty || previewLoading;
-    byId("mv-rewind").disabled = empty;
-    seekInput.disabled = empty;
+    control.disabled = empty || previewLoading || !!gameImport;
+    byId("mv-rewind").disabled = empty || !!gameImport;
+    seekInput.disabled = empty || !!gameImport;
     seekInput.max = project ? project.duration : 0;
   }
 
@@ -162,7 +232,7 @@
 
   function togglePlayback() {
     if (playing) return pause();
-    if (!project || !project.duration || !visible || previewLoading) return;
+    if (!project || !project.duration || !visible || previewLoading || gameImport) return;
     if (time >= project.duration) seek(0);
     playing = true;
     lastFrame = performance.now();
@@ -616,9 +686,10 @@
     const hint = byId("mv-empty-preview");
     const hasModels = !!(scene && project && (project.stage?.glb || (project.performers || []).some((actor) => actor.glb) ||
       (project.assets || []).some((asset) => ["effect", "props", "background"].includes(asset.kind) && asset.previewUrl)));
-    hint.textContent = t(previewLoading ? "Loading 3D model…" : project ? "This MV has no visual assets available for preview." : "Open an MV to preview its stage and timeline.");
-    hint.hidden = hasModels && !previewLoading;
-    byId("mv-preview-controls").hidden = !hasModels || previewLoading;
+    const loading = previewLoading || !!gameImport;
+    hint.textContent = t(loading ? "Loading 3D model…" : project ? "This MV has no visual assets available for preview." : "Open an MV to preview its stage and timeline.");
+    hint.hidden = !!gameImport?.stageReady || hasModels && !loading;
+    byId("mv-preview-controls").hidden = !hasModels || loading;
   }
 
   function render() {
@@ -649,11 +720,19 @@
     return value;
   }
 
-  async function commit(value, preserveTime = false, reuseOutfit = null) {
+  function ensureScene() {
+    if (!scene && global.MVStudioScene) {
+      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden });
+      scene.setVisible(visible && !document.hidden);
+    }
+    return scene;
+  }
+
+  async function commit(value, preserveTime = false, reuseOutfit = null, reuseStage = false) {
     const next = checkedProject(value);
     const playhead = preserveTime ? time : 0;
     pause();
-    if (!scene && global.MVStudioScene) scene = MVStudioScene.create(byId("mv-scene"), { onError: showError });
+    ensureScene();
     const source = resource(next.soundtrack && next.soundtrack.url);
     if (source) {
       if (audio.src !== source) audio.src = source;
@@ -670,8 +749,8 @@
     }
     previewLoading = !!scene;
     try {
-      const ready = scene && scene.load(next, { reuseOutfit });
-      if (scene) scene.setVisible(visible);
+      const ready = scene && scene.load(next, { reuseOutfit, reuseStage });
+      if (scene) scene.setVisible(visible && !document.hidden);
       render();
       seek(playhead);
       await ready;
@@ -823,6 +902,58 @@
     loadCatalog();
   }
 
+  function blockImportEdit(event) {
+    if (event.type === "keydown" && event.key === "Tab") return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function lockGameEditing(locked) {
+    for (const id of ["mv-inspector", "mv-timeline-scroll"]) {
+      const panel = byId(id);
+      if ("inert" in panel) panel.inert = locked;
+      else {
+        if (locked && panel.contains(document.activeElement)) document.activeElement.blur();
+        const method = locked ? "addEventListener" : "removeEventListener";
+        for (const type of ["click", "pointerdown", "keydown", "beforeinput", "input", "change"]) {
+          panel[method](type, blockImportEdit, true);
+        }
+      }
+    }
+  }
+
+  function isCurrentGameImport(load) {
+    return gameImport === load && !load.controller.signal.aborted;
+  }
+
+  function discardStage(load) {
+    if (load.stageRequested) scene?.cancelStagePreparation?.();
+    load.stageRequested = load.stageReady = false;
+  }
+
+  function cancelGameImport() {
+    if (!gameImport || gameImport.finishing) return;
+    gameImport.controller.abort();
+    discardStage(gameImport);
+    renderPreviewStatus();
+  }
+
+  async function showGameStage(load, preview) {
+    if (!isCurrentGameImport(load) || load.finishing || !visible || document.hidden) return;
+    try {
+      const target = ensureScene();
+      if (!target?.prepareStage) return;
+      load.stageRequested = true;
+      const ready = await target.prepareStage(preview);
+      if (isCurrentGameImport(load) && !load.finishing && ready) {
+        load.stageReady = true;
+        renderPreviewStatus();
+      }
+    } catch (_) {
+      if (isCurrentGameImport(load) && !load.finishing) discardStage(load);
+    }
+  }
+
   function importGame() {
     const song = byId("mv-game-song"), variant = byId("mv-game-variant");
     if (!song.value || !variant.value || catalogRequest) return;
@@ -833,20 +964,127 @@
       liveId: choice.id, assetId: version.id ?? version.value, download: byId("mv-game-download").checked };
     byId("mv-game-picker").close();
     operation("Preparing MV from game…", async (signal) => {
-      await commit(await request("game", payload, signal));
-      report("");
+      const load = { controller: pending, stageRequested: false, stageReady: false, finishing: false };
+      gameImport = load;
+      pause();
+      lockGameEditing(true);
+      renderPreviewStatus();
+      let committed = false;
+      const requireCurrent = () => {
+        if (!isCurrentGameImport(load)) throw new DOMException("The MV import was cancelled.", "AbortError");
+      };
+      try {
+        requireCurrent();
+        let imported = await requestGameStream(payload, signal, (preview) => showGameStage(load, preview));
+        requireCurrent();
+        if (imported === null) imported = checkedProject(await request("game", payload, signal));
+        requireCurrent();
+        load.finishing = true;
+        await commit(imported, false, null, load.stageRequested);
+        committed = true;
+        report("");
+      } catch (error) {
+        if (!load.finishing) requireCurrent();
+        throw error;
+      } finally {
+        if (!committed) discardStage(load);
+        gameImport = null;
+        lockGameEditing(false);
+        renderPreviewStatus();
+        updatePlayButton();
+      }
     });
+  }
+
+  function setupTimelineResizer(scroll) {
+    const grip = byId("mv-timeline-resizer"), key = "elichika.mv.timelineHeight.v1", minimum = 62;
+    const portrait = global.matchMedia("(max-width: 640px) and (orientation: portrait)");
+    let preferred = null, drag = null, resizeFrame = 0, nextHeight, maximum = minimum;
+    try {
+      const saved = Number(localStorage.getItem(key));
+      if (finite(saved) && saved >= minimum) preferred = saved;
+    } catch (_) {}
+
+    function refresh() {
+      maximum = Math.max(minimum, Math.floor(global.innerHeight * (portrait.matches ? .60 : .72)));
+      const height = preferred === null ? null : clamp(preferred, minimum, maximum);
+      const size = height === null ? "" : `${height}px`;
+      if (scroll.style.getPropertyValue("--mv-timeline-height") !== size) {
+        if (size) scroll.style.setProperty("--mv-timeline-height", size);
+        else scroll.style.removeProperty("--mv-timeline-height");
+      }
+      grip.setAttribute("aria-valuemax", maximum);
+      grip.setAttribute("aria-valuenow", height ?? Math.max(minimum, scroll.clientHeight));
+    }
+
+    function saveHeight() {
+      try {
+        if (preferred === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(preferred));
+      } catch (_) {}
+    }
+
+    function applyDrag() {
+      resizeFrame = 0;
+      preferred = clamp(Math.round(nextHeight), minimum, maximum);
+      refresh();
+    }
+
+    grip.setAttribute("aria-valuemin", minimum);
+    grip.addEventListener("pointerdown", (event) => {
+      if (drag || event.button !== 0) return;
+      event.preventDefault();
+      grip.focus({ preventScroll: true });
+      drag = { id: event.pointerId, y: event.clientY, height: scroll.clientHeight, moved: false };
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add("mv-dragging");
+    });
+    grip.addEventListener("pointermove", (event) => {
+      if (drag?.id !== event.pointerId) return;
+      nextHeight = drag.height + event.clientY - drag.y;
+      drag.moved ||= event.clientY !== drag.y;
+      if (drag.moved && !resizeFrame) resizeFrame = requestAnimationFrame(applyDrag);
+    });
+    function finishDrag(event) {
+      if (drag?.id !== event.pointerId) return;
+      if (resizeFrame) {
+        cancelAnimationFrame(resizeFrame);
+        applyDrag();
+      }
+      if (drag.moved) saveHeight();
+      drag = null;
+      grip.classList.remove("mv-dragging");
+    }
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) grip.addEventListener(type, finishDrag);
+    grip.addEventListener("keydown", (event) => {
+      if (drag) return;
+      const step = event.shiftKey ? 48 : 16;
+      if (event.key === "Home") preferred = null;
+      else if (event.key === "End") preferred = maximum;
+      else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        preferred = clamp(scroll.clientHeight + (event.key === "ArrowDown" ? step : -step), minimum, maximum);
+      } else return;
+      event.preventDefault();
+      refresh();
+      saveHeight();
+    });
+    global.addEventListener("resize", refresh);
+    refresh();
+    return refresh;
   }
 
   function setVisible(value) {
     if (!settings) return;
     visible = value;
+    if (scene) scene.setVisible(visible && !document.hidden);
     if (!visible) {
       pause();
       if (byId("mv-game-picker").open) byId("mv-game-picker").close();
     }
-    if (scene) scene.setVisible(visible);
-    if (visible) renderTimeline();
+    if (visible) {
+      refreshTimelineHeight();
+      renderTimeline();
+    }
   }
 
   function mount(options) {
@@ -854,6 +1092,8 @@
     settings = options;
     seekInput = byId("mv-seek");
     timeOutput = byId("mv-time");
+    const timelineScroll = byId("mv-timeline-scroll");
+    refreshTimelineHeight = setupTimelineResizer(timelineScroll);
     try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelKeys.includes(key)); } catch (_) {}
     byId("mv-import-game").addEventListener("click", showCatalog);
     byId("mv-game-close").addEventListener("click", () => byId("mv-game-picker").close());
@@ -885,10 +1125,14 @@
       catalogRequest = null;
       catalogIndex = [];
     });
-    document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); });
+    document.addEventListener("visibilitychange", () => {
+      if (scene) scene.setVisible(visible && !document.hidden);
+      if (document.hidden) pause();
+    });
     global.addEventListener("pagehide", (event) => {
       pause();
       if (event.persisted) return;
+      cancelGameImport();
       if (pending) pending.abort();
       if (catalogRequest) catalogRequest.abort();
       if (scene) scene.dispose();
@@ -896,14 +1140,11 @@
     let width = -1;
     resizeObserver = global.ResizeObserver && new ResizeObserver(() => {
       if (!visible) return;
-      if (scene) scene.resize();
-      const next = byId("mv-timeline-scroll").clientWidth;
+      const next = timelineScroll.clientWidth;
       if (next !== width) { width = next; renderTimeline(); }
+      refreshTimelineHeight();
     });
-    if (resizeObserver) {
-      resizeObserver.observe(byId("mv-scene"));
-      resizeObserver.observe(byId("mv-timeline-scroll"));
-    }
+    if (resizeObserver) resizeObserver.observe(timelineScroll);
     render();
   }
 
