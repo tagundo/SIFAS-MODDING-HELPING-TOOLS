@@ -6,6 +6,7 @@ baked into exported geometry. Component identity includes source, serialized
 file and Unity PathID.
 """
 import copy
+import hashlib
 import math
 import struct
 
@@ -395,6 +396,32 @@ def catalog_sources(sources, bones):
         managers.extend(native_managers(info, index, bones))
         if len(records) > MAX_COMPONENTS:
             raise ValueError("The selected models have too many physics components.")
+    return make_catalog(records, managers)
+
+
+def catalogue_preview(paths, bones):
+    """Bind an existing rig to SwingBone components from the same bytes."""
+    from .model_edits import _inspect
+
+    records, managers = [], []
+    for index, path in enumerate(paths):
+        selected = [bone for bone in bones if bone.get("sourceIndex") == index and "transformId" in bone]
+        if not selected:
+            continue
+        raw = path.read_bytes()
+        checksum = hashlib.sha256(raw).hexdigest()
+        if any(bone.get("sourceHash") != checksum for bone in selected):
+            raise ValueError("The performer changed while its physics data was being read.")
+        info = _inspect(raw, saved_scaling=False)
+        serialized = {}
+        for file_index, path_id in info["transforms"]:
+            serialized.setdefault(str(path_id), []).append(file_index)
+        bound = [{**bone, "serializedFile": matches[0]}
+                 for bone in selected if len(matches := serialized.get(str(bone["transformId"]), ())) == 1]
+        records.extend(inspect_info(info, index, bound))
+        managers.extend(native_managers(info, index, bound))
+        if len(records) > MAX_COMPONENTS or len(managers) > MAX_COMPONENTS:
+            raise ValueError("The selected models have too many physics components or managers.")
     return make_catalog(records, managers)
 
 

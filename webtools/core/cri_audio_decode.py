@@ -5,6 +5,7 @@ is never assumed to equal its cue ID. The bundled ISC decoder keeps Android
 and macOS independent of an installed FFmpeg executable.
 """
 import ctypes
+import math
 import os
 from pathlib import Path
 import shutil
@@ -119,6 +120,33 @@ def _acb(raw):
             _fail("An audio cue references a missing CRI table row.")
         return rows[index]
     return root, table, row
+
+
+def inspect_beat_sync(acb, cue):
+    """Read the BeatSync timing for an unambiguous single-cue CRI song."""
+    _, table, _ = _acb(acb)
+    names = table("CueNameTable")
+    cues = table("CueTable")
+    if (len(cues) != 1 or len(names) != 1 or names[0].get("CueName") != cue
+            or names[0].get("CueIndex") != 0 or cues[0].get("ReferenceType") != 3):
+        return None
+    rows = table("BeatSyncInfoTable")
+    if len(rows) != 1:
+        return None
+    item = rows[0]
+    bpm = item.get("Bpm")
+    beats, denominator, rate, start, end, flags = (
+        item.get(field) for field in ("NumBeats", "BeatDenominator", "BaseRate",
+                                      "StartSample", "EndSample", "SyncBeatFlags")
+    )
+    if (type(bpm) not in (int, float) or not math.isfinite(bpm) or not 0 < bpm <= 1000
+            or any(type(value) is not int for value in (beats, denominator, rate, start, end, flags))
+            or not 1 <= beats <= 32 or denominator not in (1, 2, 4, 8, 16, 32)
+            or not 8_000 <= rate <= 192_000 or not 0 <= start < end <= rate * 3600
+            or flags & ((1 << beats) - 1) != (1 << beats) - 1):
+        return None
+    return {"bpm": bpm, "numBeats": beats, "beatDenominator": denominator, "baseRate": rate,
+            "startSample": start, "endSample": end}
 
 
 def inspect_cues(acb):

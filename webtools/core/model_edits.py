@@ -166,7 +166,7 @@ def _class_name(obj, tree):
     return script.read_typetree().get("m_ClassName")
 
 
-def _inspect(raw):
+def _inspect(raw, *, saved_scaling=True):
     import UnityPy
 
     class EditingEnvironment(UnityPy.Environment):
@@ -211,6 +211,8 @@ def _inspect(raw):
         game_transforms[(file_index, tree.get("m_GameObject", {}).get("m_PathID"))] = key
     if len(transforms) > MAX_EDITS:
         _fail("This model has too many transforms for persistent editing.")
+    if not saved_scaling:
+        return {"objects": objects, "transforms": transforms, "names": names, "parents": parents}
     effective = copy.deepcopy(authored)
     conflicts = set()
     for obj in all_objects:

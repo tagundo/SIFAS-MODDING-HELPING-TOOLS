@@ -239,24 +239,43 @@ async function timelineResize(page) {
   const timeline = page.locator('#mv-timeline-grid');
   const clip = await timeline.locator('.mv-clip').first().elementHandle();
   const height = () => scroll.evaluate(element => element.clientHeight);
+  const positions = () => page.evaluate(() => {
+    const bounds = selector => document.querySelector(selector).getBoundingClientRect();
+    return { top: bounds('.mv-timeline').top, bottom: bounds('.mv-timeline').bottom,
+      grip: bounds('#mv-timeline-resizer').top, tools: bounds('.mv-timeline-toolbar').top,
+      preview: bounds('.mv-preview').height, workspaceBottom: bounds('#mv-workspace').bottom,
+      viewportBottom: innerHeight - parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom) };
+  });
+  const near = (actual, expected) => assert(Math.abs(actual - expected) <= 1, `${actual} differs from ${expected}`);
+  const before = await positions();
   const initial = await height();
   assert(initial > 62);
+  near(before.bottom, before.workspaceBottom);
+  near(before.bottom, before.viewportBottom);
+  assert(before.grip < before.tools);
   assert.equal(await grip.getAttribute('aria-orientation'), 'horizontal');
-  await grip.scrollIntoViewIfNeeded();
   const rect = await grip.boundingBox();
   const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x, y - 24, { steps: 8 });
   await page.mouse.up();
-  const dragged = Math.max(62, initial - 24);
+  const dragged = initial + 24;
   assert.equal(await height(), dragged);
+  const afterDrag = await positions();
+  near(afterDrag.bottom, before.bottom);
+  near(afterDrag.top, before.top - 24);
+  near(afterDrag.grip, before.grip - 24);
+  near(afterDrag.preview, before.preview - 24);
   assert.equal(await grip.getAttribute('aria-valuenow'), String(dragged));
   assert(await clip.evaluate(element => element.isConnected));
-  await grip.press('ArrowDown');
+  await grip.press('ArrowUp');
   assert.equal(await height(), dragged + 16);
-  await grip.press('Shift+ArrowUp');
+  await grip.press('Shift+ArrowDown');
+  assert.equal(await height(), Math.max(62, dragged + 16 - 48));
+  await grip.press('Shift+ArrowDown');
   assert.equal(await height(), 62);
+  near((await positions()).bottom, before.bottom);
   assert(await clip.evaluate(element => element.isConnected));
 
   await page.locator('#mv-zoom').selectOption('96');
@@ -269,13 +288,24 @@ async function timelineResize(page) {
   await grip.press('End');
   const wide = Number(await grip.getAttribute('aria-valuemax'));
   assert.equal(await height(), wide);
+  const expanded = await positions();
+  near(expanded.bottom, before.bottom);
+  assert(expanded.preview >= 143);
   await page.reload();
   await grip.waitFor();
   assert.equal(await height(), wide);
 
   await page.setViewportSize({ width: 408, height: 600 });
-  await page.waitForFunction(() => document.getElementById('mv-timeline-scroll').clientHeight === 360 &&
-    document.getElementById('mv-timeline-resizer').getAttribute('aria-valuenow') === '360');
+  await page.waitForFunction(wideHeight => {
+    const grip = document.getElementById('mv-timeline-resizer');
+    const height = document.getElementById('mv-timeline-scroll').clientHeight;
+    return height < wideHeight && height === Number(grip.getAttribute('aria-valuemax')) &&
+      height === Number(grip.getAttribute('aria-valuenow'));
+  }, wide);
+  const portrait = await positions();
+  near(portrait.bottom, portrait.workspaceBottom);
+  near(portrait.bottom, portrait.viewportBottom);
+  assert(portrait.preview >= 107);
   await page.setViewportSize({ width: 1180, height: 820 });
   await page.waitForFunction(expected => document.getElementById('mv-timeline-scroll').clientHeight === expected, wide);
   await grip.press('Home');

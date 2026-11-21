@@ -502,6 +502,13 @@
           </details>
         </aside>
         <section class="mv-timeline" aria-labelledby="mv-timeline-label">
+          <div id="mv-timeline-resizer" class="mv-timeline-resizer" role="separator" tabindex="0"
+               aria-orientation="horizontal" aria-controls="mv-timeline-scroll"
+               aria-labelledby="mv-timeline-height-label" aria-describedby="mv-timeline-resize-help">
+            <span aria-hidden="true"></span>
+          </div>
+          <span id="mv-timeline-height-label" class="sr-only" data-i18n="Timeline height">Timeline height</span>
+          <span id="mv-timeline-resize-help" class="sr-only" data-i18n="Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.">Drag upward or press the Up arrow to make the timeline taller. Home restores the default. End sets the maximum.</span>
           <div class="mv-timeline-toolbar">
             <h3 id="mv-timeline-label" data-i18n="MV timeline">MV timeline</h3>
             <div class="mv-controls">
@@ -518,13 +525,6 @@
           <div class="mv-timeline-scroll" id="mv-timeline-scroll">
             <div class="mv-timeline-grid" id="mv-timeline-grid"></div>
           </div>
-          <div id="mv-timeline-resizer" class="mv-timeline-resizer" role="separator" tabindex="0"
-               aria-orientation="horizontal" aria-controls="mv-timeline-scroll"
-               aria-labelledby="mv-timeline-height-label" aria-describedby="mv-timeline-resize-help">
-            <span aria-hidden="true"></span>
-          </div>
-          <span id="mv-timeline-height-label" class="sr-only" data-i18n="Timeline height">Timeline height</span>
-          <span id="mv-timeline-resize-help" class="sr-only" data-i18n="Drag or use the up and down arrows to change the timeline height. Home restores the default. End sets the maximum.">Drag or use the up and down arrows to change the timeline height. Home restores the default. End sets the maximum.</span>
         </section>
       </div>
     </section>
@@ -616,7 +616,14 @@
   <script src="/static/texture-uv-selection.js"></script>
   <script src="/static/viewer-texture-tools.js"></script>
   <script src="/static/viewer-interaction-tools.js"></script>
+  <script src="/static/mv-studio-props.js"></script>
   <script src="/static/model-viewer.js"></script>
+  <script src="/static/mv-studio-lighting.js"></script>
+  <script src="/static/mv-studio-penlight.js"></script>
+  <script src="/static/mv-studio-stage-material.js"></script>
+  <script src="/static/mv-studio-stage-coloring.js"></script>
+  <script src="/static/mv-studio-split.js"></script>
+  <script src="/static/mv-studio-physics.js"></script>
   <script src="/static/mv-studio-scene.js"></script>
   <script src="/static/mv-studio.js"></script>
   <script src="/static/app.js"></script>

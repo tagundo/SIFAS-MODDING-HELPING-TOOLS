@@ -60,9 +60,10 @@ function harness() {
       const bone = root.children[0];
       const mesh = bone.children[0];
       return {
-        evaluate(time) {
+        evaluatePose(time) {
           if (time >= 2) { bone.position.x = 4; mesh.morphTargetInfluences[0] = .75; }
         },
+        evaluateGaze() {}, eyePosition() {},
         applyVisibility(time) { if (time >= 2) mesh.visible = false; }
       };
     }}

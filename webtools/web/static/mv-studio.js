@@ -31,7 +31,7 @@
   let settings, scene, project, selected, pending, gameImport, catalogRequest, catalogIndex = [], songs = [];
   let visible = false, playing = false, time = 0, frame = 0, lastFrame = 0, pixelsPerSecond = 1;
   let previewLoading = false, playheadNode, seekInput, timeOutput, lastReadout = -Infinity;
-  let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, refreshTimelineHeight;
+  let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
   const timelineLanes = new Map();
@@ -257,7 +257,10 @@
     for (const key of panelKeys) byId("mv-" + key).hidden = !active.includes(key) || hidden.includes(key);
     const allHidden = active.every((key) => hidden.includes(key));
     byId("mv-inspector").hidden = allHidden;
-    byId("mv-workspace").classList.toggle("mv-hide-inspector", allHidden);
+    const workspace = byId("mv-workspace");
+    const changed = workspace.classList.contains("mv-hide-inspector") !== allHidden;
+    workspace.classList.toggle("mv-hide-inspector", allHidden);
+    if (changed) timelineResizer?.syncBounds();
     if (visible && scene) scene.resize();
   }
 
@@ -812,7 +815,8 @@
         if (response.performer) {
           if (replaceActor == null) next.performers = (next.performers || []).concat(response.performer);
           else next.performers = next.performers.map((actor) => actor.id === replaceActor
-            ? { ...response.performer, id: actor.id, transform: actor.transform || response.performer.transform } : actor);
+            ? { ...response.performer, id: actor.id, position: actor.position, themeColor: actor.themeColor,
+                transform: actor.transform || response.performer.transform } : actor);
         }
         if (response.soundtrack) next.soundtrack = response.soundtrack;
         await commit(next, true, kind === "outfit" && response.performer ? replaceActor : null);
@@ -998,6 +1002,8 @@
 
   function setupTimelineResizer(scroll) {
     const grip = byId("mv-timeline-resizer"), key = "elichika.mv.timelineHeight.v1", minimum = 62;
+    const workspace = byId("mv-workspace"), inspector = byId("mv-inspector"), timeline = scroll.parentElement;
+    const toolbar = timeline.querySelector(".mv-timeline-toolbar");
     const portrait = global.matchMedia("(max-width: 640px) and (orientation: portrait)");
     let preferred = null, drag = null, resizeFrame = 0, nextHeight, maximum = minimum;
     try {
@@ -1005,16 +1011,35 @@
       if (finite(saved) && saved >= minimum) preferred = saved;
     } catch (_) {}
 
-    function refresh() {
-      maximum = Math.max(minimum, Math.floor(global.innerHeight * (portrait.matches ? .60 : .72)));
+    function syncValue() {
+      grip.setAttribute("aria-valuenow", Math.max(minimum, scroll.clientHeight));
+    }
+
+    function reflectHeight() {
       const height = preferred === null ? null : clamp(preferred, minimum, maximum);
       const size = height === null ? "" : `${height}px`;
       if (scroll.style.getPropertyValue("--mv-timeline-height") !== size) {
         if (size) scroll.style.setProperty("--mv-timeline-height", size);
         else scroll.style.removeProperty("--mv-timeline-height");
       }
+      if (height === null) syncValue();
+      else grip.setAttribute("aria-valuenow", height);
+    }
+
+    function syncBounds() {
+      const available = workspace.clientHeight;
+      if (!available) return;
+      const style = global.getComputedStyle(workspace);
+      const gap = parseFloat(style.rowGap);
+      const previewMinimum = parseFloat(style.getPropertyValue("--mv-preview-min"));
+      const inspectorHeight = portrait.matches && !inspector.hidden ? inspector.offsetHeight + gap : 0;
+      const borders = timeline.offsetHeight - timeline.clientHeight;
+      maximum = Math.max(minimum, Math.floor(available - gap - previewMinimum - inspectorHeight -
+        toolbar.offsetHeight - grip.offsetHeight - borders));
+      const limit = `${maximum}px`;
+      if (scroll.style.getPropertyValue("--mv-timeline-limit") !== limit) scroll.style.setProperty("--mv-timeline-limit", limit);
       grip.setAttribute("aria-valuemax", maximum);
-      grip.setAttribute("aria-valuenow", height ?? Math.max(minimum, scroll.clientHeight));
+      reflectHeight();
     }
 
     function saveHeight() {
@@ -1027,7 +1052,7 @@
     function applyDrag() {
       resizeFrame = 0;
       preferred = clamp(Math.round(nextHeight), minimum, maximum);
-      refresh();
+      reflectHeight();
     }
 
     grip.setAttribute("aria-valuemin", minimum);
@@ -1041,7 +1066,7 @@
     });
     grip.addEventListener("pointermove", (event) => {
       if (drag?.id !== event.pointerId) return;
-      nextHeight = drag.height + event.clientY - drag.y;
+      nextHeight = drag.height + drag.y - event.clientY;
       drag.moved ||= event.clientY !== drag.y;
       if (drag.moved && !resizeFrame) resizeFrame = requestAnimationFrame(applyDrag);
     });
@@ -1062,15 +1087,19 @@
       if (event.key === "Home") preferred = null;
       else if (event.key === "End") preferred = maximum;
       else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        preferred = clamp(scroll.clientHeight + (event.key === "ArrowDown" ? step : -step), minimum, maximum);
+        preferred = clamp(scroll.clientHeight + (event.key === "ArrowUp" ? step : -step), minimum, maximum);
       } else return;
       event.preventDefault();
-      refresh();
+      reflectHeight();
       saveHeight();
     });
-    global.addEventListener("resize", refresh);
-    refresh();
-    return refresh;
+    if (global.ResizeObserver) {
+      const boundsObserver = new ResizeObserver(syncBounds);
+      for (const element of [workspace, toolbar, grip]) boundsObserver.observe(element);
+    }
+    global.addEventListener("resize", syncBounds);
+    syncBounds();
+    return { syncBounds, syncValue };
   }
 
   function setVisible(value) {
@@ -1082,7 +1111,7 @@
       if (byId("mv-game-picker").open) byId("mv-game-picker").close();
     }
     if (visible) {
-      refreshTimelineHeight();
+      timelineResizer.syncBounds();
       renderTimeline();
     }
   }
@@ -1093,7 +1122,7 @@
     seekInput = byId("mv-seek");
     timeOutput = byId("mv-time");
     const timelineScroll = byId("mv-timeline-scroll");
-    refreshTimelineHeight = setupTimelineResizer(timelineScroll);
+    timelineResizer = setupTimelineResizer(timelineScroll);
     try { hidden = (JSON.parse(localStorage.getItem("elichika.mv.panels.v1")) || []).filter((key) => panelKeys.includes(key)); } catch (_) {}
     byId("mv-import-game").addEventListener("click", showCatalog);
     byId("mv-game-close").addEventListener("click", () => byId("mv-game-picker").close());
@@ -1142,7 +1171,7 @@
       if (!visible) return;
       const next = timelineScroll.clientWidth;
       if (next !== width) { width = next; renderTimeline(); }
-      refreshTimelineHeight();
+      timelineResizer.syncValue();
     });
     if (resizeObserver) resizeObserver.observe(timelineScroll);
     render();

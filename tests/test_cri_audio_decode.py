@@ -24,7 +24,7 @@ def utf_table(name, columns, rows):
     name_index = string(name)
     declarations = b"".join(struct.pack(">BI", 0x50 | kind, string(key)) for key, kind in columns)
     payload = bytearray()
-    widths = {0: 1, 2: 2, 4: 4, 10: 4, 11: 8}
+    widths = {0: 1, 2: 2, 4: 4, 8: 4, 10: 4, 11: 8}
     for row in rows:
         for key, kind in columns:
             value = row[key]
@@ -33,7 +33,7 @@ def utf_table(name, columns, rows):
             elif kind == 11:
                 payload.extend(struct.pack(">II", len(blobs), len(value))); blobs.extend(value)
             else:
-                payload.extend(struct.pack({0: ">B", 2: ">H", 4: ">I"}[kind], value))
+                payload.extend(struct.pack({0: ">B", 2: ">H", 4: ">I", 8: ">f"}[kind], value))
     row_at = 32 + len(declarations)
     string_at = row_at + len(payload)
     data_at = string_at + len(strings)
@@ -60,6 +60,27 @@ def original_awb(stream, ident=17):
 
 
 class CriTableTests(unittest.TestCase):
+    def test_beat_sync_uses_only_unambiguous_cue_and_complete_subdivision(self):
+        beat_columns = [("Bpm", 8), ("NumBeats", 0), ("BeatDenominator", 0),
+                        ("BaseRate", 4), ("StartSample", 4), ("EndSample", 4), ("SyncBeatFlags", 4)]
+        source = {"Bpm": 125.0, "NumBeats": 4, "BeatDenominator": 4, "BaseRate": 48000,
+                  "StartSample": 12345, "EndSample": 480000, "SyncBeatFlags": 0xffffffff}
+        original = cri.utf_rows(original_acb(reference_type=3))["rows"][0]
+        fields = [("CueTable", 11), ("CueNameTable", 11), ("BeatSyncInfoTable", 11)]
+
+        def cue_bank(rows):
+            return utf_table("Header", fields, [dict(original, BeatSyncInfoTable=utf_table("Beats", beat_columns, rows))])
+
+        raw = cue_bank([source])
+        self.assertEqual(cri.inspect_beat_sync(raw, "original-tone"), {
+            "bpm": 125.0, "numBeats": 4, "beatDenominator": 4, "baseRate": 48000,
+            "startSample": 12345, "endSample": 480000,
+        })
+        self.assertIsNone(cri.inspect_beat_sync(raw, "another-cue"))
+        self.assertIsNone(cri.inspect_beat_sync(cue_bank([source, source]), "original-tone"))
+        self.assertIsNone(cri.inspect_beat_sync(cue_bank([dict(source, SyncBeatFlags=1)]), "original-tone"))
+        self.assertIsNone(cri.inspect_beat_sync(original_acb(), "original-tone"))
+
     def test_exact_cue_name_and_id_follow_synth_to_distinct_awb_id(self):
         result = cri.inspect_cues(original_acb())
         self.assertEqual(result["sheet"], "original-sheet")

@@ -5,9 +5,106 @@
     return Array.isArray(value) && value.length === length && value.every(Number.isFinite);
   }
 
+  const offsetMixIn = [{ time: 0, value: 0 }, { time: 1, value: 1 }];
+  const offsetMixOut = [{ time: 0, value: 1 }, { time: 1, value: 0 }];
+
+  function heightScale(performer) {
+    const components = performer?.rig?.scaling?.components;
+    if (!Array.isArray(components)) return 1;
+    const body = components.filter((component) => /(?:^|_)body$/i.test(component?.targetName));
+    const scale = body[0]?.heightScale;
+    return body.length === 1 && Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
+  function savedNodeScaling(T, root, rig) {
+    const components = rig?.scaling?.components;
+    if (rig?.available !== true || !Array.isArray(components) || !components.length) return null;
+    const nodes = new Map(), operations = new Map(), conflicts = new Set();
+    root.traverse((node) => {
+      const index = node.userData?.elichika_node;
+      if (!Number.isInteger(index) || node.userData.viewerHelper) return;
+      nodes.set(index, nodes.has(index) ? null : node);
+    });
+    for (const component of components) for (const entry of Array.isArray(component?.entries) ? component.entries : []) {
+      if (!entry || !["scale", "position", "rotation"].includes(entry.kind)) continue;
+      const node = nodes.get(entry.node), rotation = entry.kind === "rotation";
+      const property = rotation ? "quaternion" : entry.kind;
+      const values = rotation ? entry.scaledQuaternion : entry.scaled;
+      if (!node || entry.supported !== true || entry.application !== `absolute_local_${property}` || !vector(values, rotation ? 4 : 3) ||
+          (rotation && Math.abs(values.reduce((sum, value) => sum + value * value, 0) - 1) > 1e-3) ||
+          (property === "scale" && values.some((value) => Math.abs(value) < 1e-8))) continue;
+      const key = `${entry.node}:${property}`;
+      const previous = operations.get(key);
+      if (previous) {
+        const sign = rotation && previous.values.reduce((sum, value, axis) => sum + value * values[axis], 0) < 0 ? -1 : 1;
+        if (values.some((value, axis) => Math.abs(previous.values[axis] - value * sign) > 1e-6)) conflicts.add(key);
+        continue;
+      }
+      operations.set(key, { node, property, values, entry });
+    }
+    const moves = [], euler = new T.Euler(0, 0, 0, "YXZ"), scratch = new T.Vector3();
+    for (const [key, { node, property, values, entry }] of operations) {
+      if (conflicts.has(key)) continue;
+      // The saved settings are absolute local endpoints, including models whose
+      // authored transforms already match the endpoints.
+      node[property].fromArray(values);
+      if (entry.name !== "Move" || (node.userData.originalName || node.name) !== "Move") continue;
+      const rotation = property === "quaternion";
+      const from = rotation ? entry.unityEulerOrigin : entry.origin;
+      const to = rotation ? entry.unityEulerScaled : entry.scaled;
+      if (!vector(from, 3) || !vector(to, 3) || (rotation && (entry.interpolation !== "unity_euler_lerp" || entry.rotationOrder !== "ZXY")) ||
+          (property === "scale" && from.some((value, axis) => Math.abs(value) < 1e-8 || value * to[axis] < 0))) continue;
+      moves.push({ node, property, values, from: new T.Vector3().fromArray(from), to: new T.Vector3().fromArray(to) });
+    }
+    if (!moves.length) return null;
+    let applied = false;
+    return {
+      resetHeight() {
+        if (!applied) return;
+        for (const { node, property, values } of moves) node[property].fromArray(values);
+        applied = false;
+      },
+      applyHeight(clips, time) {
+        if (!clips?.length) return;
+        let amount = 1;
+        for (const clip of clips) {
+          const influence = global.ViewerMotionTimeline.weight(clip, time);
+          if (influence > 0) amount = Math.min(1, Math.max(0, 1 - clip.intensity * influence));
+        }
+        // The game's override affects only the saved Move properties. The
+        // mixer restores the fully scaled endpoint outside its active clips.
+        for (const { node, property, values, from, to } of moves) {
+          if (amount === 1) node[property].fromArray(values);
+          else if (property === "quaternion") {
+            scratch.lerpVectors(from, to, amount);
+            node.quaternion.setFromEuler(euler.set(scratch.x * Math.PI / 180, -scratch.y * Math.PI / 180, -scratch.z * Math.PI / 180));
+          } else node[property].lerpVectors(from, to, amount);
+        }
+        applied = true;
+      }
+    };
+  }
+
   function activeEvent(track, time) {
     return track.events.reduce((current, event) => event.start <= time &&
       time <= event.start + event.duration && (!current || event.start >= current.start) ? event : current, null);
+  }
+
+  function activeCameraEvent(track, time) {
+    const active = activeEvent(track, time);
+    if (active) return active;
+    let previous = null, next = null;
+    // Stock Timeline often gives one authored frame to post-extrapolation
+    // Hold between camera clips. Preserve the shot until the real cut.
+    for (const event of track.events) {
+      const values = event.values || {};
+      const end = event.start + event.duration;
+      if (time > end && values.postExtrapolationMode === 1 && time <= end + values.postExtrapolationTime &&
+          (!previous || event.start > previous.start)) previous = event;
+      if (time < event.start && values.preExtrapolationMode === 1 && time >= event.start - values.preExtrapolationTime &&
+          (!next || event.start < next.start)) next = event;
+    }
+    return previous || next;
   }
 
   // Camera frames from the native importer are ordered. Continue to accept
@@ -212,6 +309,8 @@
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.domElement.setAttribute("aria-label", "MV stage preview");
     mount.appendChild(renderer.domElement);
+    const split = global.MVStudioSplit?.create(T, renderer);
+    const physicsClock = global.MVStudioPhysics?.createClock();
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -245,18 +344,21 @@
 
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
+    let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
-    const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap();
+    let nativeMainLens = false, authoredMainFov = liveCamera.fov;
+    const cameraOffsets = new Map();
+    const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
-    const gaze = { camera: [0, 0, 0], members: {} };
+    const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
 
     function cancelDraw() {
       if (queuedDraw) global.cancelAnimationFrame(queuedDraw);
@@ -271,33 +373,42 @@
           renderer.render(preparation.scene, stageCamera);
           return;
         }
-        const camera = useLive && hasShot ? liveCamera : editorCamera;
-        const projection = camera.projectionMatrix.elements;
-        const { width, height } = renderer.domElement;
-        if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
-            projection[11] !== -1 || projection[15] !== 0 || !(projection[0] > 0.001 && projection[5] > 0.001) ||
-            !records.some((record) => record.skinBounds?.length)) {
-          renderer.render(scene, camera);
-          return;
-        }
-        const autoUpdate = scene.autoUpdate;
-        if (autoUpdate) scene.updateMatrixWorld();
-        camera.updateMatrixWorld();
-        scene.autoUpdate = false;
-        try {
-          for (const record of records) for (const entry of record.skinBounds || []) {
-            if (outsideCamera(entry, camera, width, height, bounds, skinMatrix, boneMatrix)) {
-              entry.mesh.visible = false;
-              culled.push(entry.mesh);
-            }
-          }
-          renderer.render(scene, camera);
-        } finally {
-          culled.forEach((mesh) => { mesh.visible = true; });
-          culled.length = 0;
-          scene.autoUpdate = autoUpdate;
-        }
+        if (useLive && split?.draw(renderScene, hasShot ? liveCamera : null)) return;
+        renderScene(useLive && hasShot ? liveCamera : editorCamera);
       }
+    }
+
+    function renderScene(camera) {
+      const projection = camera.projectionMatrix.elements;
+      const { width, height } = renderer.domElement;
+      if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
+          projection[11] !== -1 || projection[15] !== 0 || !(projection[0] > 0.001 && projection[5] > 0.001) ||
+          !records.some((record) => record.skinBounds?.length)) {
+        renderer.render(scene, camera);
+        return;
+      }
+      const autoUpdate = scene.autoUpdate;
+      if (autoUpdate) scene.updateMatrixWorld();
+      camera.updateMatrixWorld();
+      scene.autoUpdate = false;
+      try {
+        for (const record of records) for (const entry of record.skinBounds || []) {
+          if (outsideCamera(entry, camera, width, height, bounds, skinMatrix, boneMatrix)) {
+            entry.mesh.visible = false;
+            culled.push(entry.mesh);
+          }
+        }
+        renderer.render(scene, camera);
+      } finally {
+        culled.forEach((mesh) => { mesh.visible = true; });
+        culled.length = 0;
+        scene.autoUpdate = autoUpdate;
+      }
+    }
+
+    function liveFov() {
+      const correction = nativeMainLens ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+      return Math.min(170, authoredMainFov / correction);
     }
 
     function requestDraw() {
@@ -325,6 +436,7 @@
       for (const camera of [editorCamera, liveCamera, stageCamera]) {
         if (camera.aspect !== aspect) {
           camera.aspect = aspect;
+          if (camera === liveCamera) camera.fov = liveFov();
           camera.updateProjectionMatrix();
         }
       }
@@ -357,13 +469,22 @@
     }
 
     function releaseRecord(record) {
+      if (record.group === actors) {
+        for (const item of records) if (item.prop) item.prop.detach(record);
+      }
+      if (record.prop) record.prop.detach();
       if (record.materials) record.materials.dispose();
+      record.penlight?.dispose();
+      record.stageMaterial?.dispose();
+      record.stageColoring?.dispose();
+      record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
       release(record.root);
     }
 
     function clear() {
+      physicsClock?.reset();
       for (const record of records) releaseRecord(record);
       records = [];
       loadedProjectToken = null;
@@ -425,7 +546,14 @@
         assign(segment, "duration", event.duration);
         const weight = segment.kind === "gaze" ? values.weightForDirection : values.weight;
         assign(segment, "weight", bound.track.muted ? 0 : Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 1);
-        if (segment.kind === "gaze" && Number.isInteger(values.target)) assign(segment, "target", values.target);
+        if (segment.kind === "gaze") {
+          if (Number.isInteger(values.target)) assign(segment, "target", values.target);
+          const alternate = values.splitScreenSetting;
+          const usesAlternate = (alternate?.UseSetting === 1 || alternate?.UseSetting === true) &&
+            Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
+          assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
+          assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        }
         if (Number.isFinite(values.clipIn)) assign(segment, "clipIn", values.clipIn);
         if (Number.isFinite(values.timeScale) && values.timeScale > 0) assign(segment, "timeScale", values.timeScale);
         for (const key of ["easeIn", "easeOut", "blendIn", "blendOut"]) {
@@ -442,12 +570,20 @@
     }
 
     function gazeContext() {
+      gaze.audience = records.find((record) => record.group === stage)?.audience;
+      gaze.cameras = activeSplitGazeCameras;
+      gaze.split = activeSplitGazeCameras !== null;
       for (const record of records) if (record.group === actors) {
-        const member = gaze.members[record.position] || (gaze.members[record.position] = [0, 0, 0]);
-        record.root.position.toArray(member);
-        member[1] += 1.5;
+        if (record.motion?.eyePosition(gazeEyePosition)) {
+          const member = gaze.members[record.position] || (gaze.members[record.position] = [0, 0, 0]);
+          gazeEyePosition.toArray(member);
+        } else delete gaze.members[record.position];
       }
-      (useLive && hasShot ? liveCamera : editorCamera).position.toArray(gaze.camera);
+      // Game gaze binds to the authored MainCamera even while editing in orbit view.
+      const camera = project?.source?.kind === "game"
+        ? (hasShot ? liveCamera : null)
+        : (useLive && hasShot ? liveCamera : editorCamera);
+      gaze.camera = camera ? camera.position.toArray(gaze.camera || []) : null;
       return gaze;
     }
 
@@ -468,12 +604,18 @@
     }
 
     function sceneEntries(value, stageOnly = false) {
-      const entries = [];
+      const entries = [], attachments = [];
       if (value.stage && value.stage.glb) entries.push({ spec: { ...value.stage }, group: stage, role: "stage" });
       if (value.stage && value.stage.effectsGlb) {
         entries.push({ spec: { glb: value.stage.effectsGlb }, group: effects, role: "stage-effects" });
       }
       for (const asset of value.assets || []) {
+        if (asset.kind === "props" && asset.attachment) {
+          if (!stageOnly && asset.previewUrl) attachments.push({
+            spec: { glb: asset.previewUrl, attachment: asset.attachment }, group: effects, role: "performer-prop"
+          });
+          continue;
+        }
         if (["effect", "props", "background"].includes(asset.kind) && asset.previewUrl &&
             (!value.stage || asset.previewUrl !== value.stage.effectsGlb)) {
           entries.push({ spec: { glb: asset.previewUrl }, group: effects, role: asset.kind });
@@ -483,11 +625,13 @@
       for (const performer of (value.performers || []).slice(0, 9)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
+      entries.push(...attachments);
       return entries;
     }
 
     function entryIdentity(entry) {
       const { spec } = entry;
+      if (spec.attachment) return JSON.stringify([spec.glb, spec.attachment]);
       if (entry.group !== actors) return spec.glb;
       return JSON.stringify([spec.id, spec.position, spec.glb, spec.transform, spec.rig, spec.motion]);
     }
@@ -512,10 +656,17 @@
     async function buildRecord(entry, bytes, active) {
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
-        identity: entry.identity, visibility: [] };
+        identity: entry.identity, visibility: [], rig: entry.spec.rig };
+      const audience = gltf.scene.userData?.mvAudiencePoint;
+      if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
       try {
         if (!active()) return null;
+        if (entry.spec.attachment) {
+          record.prop = global.MVStudioProps?.create(gltf.scene, entry.spec.attachment);
+          if (!record.prop) throw new Error("The animated prop preview could not be opened.");
+          record.propMember = entry.spec.attachment.member;
+        }
         gltf.scene.traverse((node) => {
           if (entry.group !== actors && node.matrixAutoUpdate) {
             node.updateMatrix();
@@ -524,6 +675,9 @@
           if (!node.isMesh) return;
           node.castShadow = entry.group === actors;
           node.receiveShadow = true;
+          // Three's static geometry bounds do not cover a skinned dance pose.
+          // The renderer uses updated bone bounds for supported actor meshes.
+          if (entry.group === actors && node.isSkinnedMesh) node.frustumCulled = false;
           if (entry.group !== effects) return;
           for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
             const name = material.name || "";
@@ -538,8 +692,16 @@
             if (quality) record.visibility.push({ node, quality });
           }
         });
+        if (entry.group !== actors) {
+          record.stageMaterial = await global.MVStudioStageMaterial?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
+          record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
+          record.penlight = global.MVStudioPenlight?.apply(T, record.root);
+        }
         if (entry.group === actors) {
           actorPose(record, entry.spec);
+          record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
             mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, releaseParserAfterLoad: true
@@ -559,12 +721,14 @@
             record.motion = global.ViewerMotionTimeline.create(gltf.scene, gltf.animations,
               entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                 facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
-              { getGazeContext: gazeContext, indexTiming: true });
+              { indexTiming: true });
             updateMotion(record);
           } else if (gltf.animations.length) {
             record.mixer = new T.AnimationMixer(gltf.scene);
             record.mixer.clipAction(gltf.animations[0]).play();
           }
+          record.physics = global.MVStudioPhysics?.create(record.root, entry.spec.rig?.physics,
+            entry.spec.motion?.physics ?? project?.motionPhysics);
         }
         if (entry.group === actors && record.materials) record.skinBounds = skinBounds(T, record.root);
         ready = true;
@@ -592,9 +756,11 @@
       else records.splice(index, 1);
       // A fresh scene starts from the loaded pose in intervals with no keys.
       // Restore that pose before seeking so earlier playback leaves no state.
+      resetPhysics("costume-change");
       for (const child of actors.children.slice()) actors.remove(child);
       for (const record of records) {
         if (record.group !== actors) continue;
+        record.physics?.restorePose();
         if (record.initialPose) restoreActorPose(record.initialPose);
         actors.add(record.root);
       }
@@ -627,10 +793,11 @@
       for (const entry of entries) entry.identity = entryIdentity(entry);
       const overviewEffects = new T.Group();
       const quality = preview.quality?.values || {};
-      overviewEffects.visible = quality.stage_control !== false;
+      overviewEffects.visible = preview.source?.kind === "game" || quality.stage_control !== false;
       const pending = { preview, entries, scene: new T.Scene(), records: [], controller: new AbortController(), shown: false };
       pending.scene.add(overviewEffects, ...stageLights);
       frameTracks(0, (preview.tracks || []).filter((track) => track.kind === "lighting" && !track.muted), quality, stageLights);
+      const lighting = global.MVStudioLighting?.sample(preview, 0);
       preparation = pending;
       const active = () => !disposed && preparation === pending;
       pending.ready = (async () => {
@@ -644,6 +811,9 @@
             return false;
           }
           for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
+          record.penlight?.update(0, preview);
+          record.stageMaterial?.update(0, preview, lighting);
+          record.stageColoring?.update(0, preview);
           pending.records.push(record);
           if (entry.group === stage) {
             pending.scene.add(record.root);
@@ -690,7 +860,10 @@
       if (replacement < 0) clear();
       gaze.members = {};
       hasShot = false;
-      if (!project) return;
+      if (!project) {
+        split?.setProject(null);
+        return;
+      }
       applyProject();
       if (replacement >= 0) return swapOutfit(entries[replacement], replacement, signal, active);
 
@@ -735,7 +908,7 @@
             if (record) releaseRecord(record);
             return;
           }
-          entry.group.add(record.root);
+          if (!record.prop) entry.group.add(record.root);
           records.push(record);
           if (entry.group === stage) {
             grid.visible = false;
@@ -753,9 +926,9 @@
       seek(currentTime, project);
     }
 
-    function poseCamera(event, time) {
+    function poseCamera(event, time, track, camera = liveCamera) {
       const value = event.values || {};
-      const local = Math.max(0, time - event.start);
+      const local = Math.min(event.duration, Math.max(0, time - event.start));
       const frames = value.keyframes;
       if (Array.isArray(frames) && !sortedCameraFrames.has(frames)) {
         sortedCameraFrames.set(frames, frames.every((frame, index) => !index || frame.time >= frames[index - 1].time));
@@ -765,20 +938,30 @@
       const fraction = left !== right && right.time > left.time ? Math.max(0, Math.min(1, (local - left.time) / (right.time - left.time))) : 0;
       position.fromArray(left.position);
       if (vector(right.position, 3)) position.lerp(otherPosition.fromArray(right.position), fraction);
-      liveCamera.position.set(-position.x, position.y, position.z);
+      camera.position.set(-position.x, position.y, position.z);
       rotation.fromArray(left.rotation).normalize();
       if (vector(right.rotation, 4)) rotation.slerp(otherRotation.fromArray(right.rotation).normalize(), fraction);
-      // The live camera rig already stores a backwards-facing view relative
-      // to the camera clip rotation. Mirror X to match the exported meshes.
-      liveCamera.quaternion.set(rotation.x, -rotation.y, -rotation.z, rotation.w);
-      const fov = Number.isFinite(left.fov) ? left.fov : value.fov;
+      // The native camera child faces -Z through its 180-degree Y turn.
+      // Three already looks down -Z. Mirror X to match the exported meshes.
+      camera.quaternion.set(rotation.x, -rotation.y, -rotation.z, rotation.w);
+      const native = track.nativeClass === "AnimationTrack" && /(?:^|\/)MainCamera$/i.test(track.binding || "");
+      const near = native || camera !== liveCamera ? 0.1 : 0.02;
+      let fov = Number.isFinite(left.fov) ? left.fov : value.fov;
+      if (!Number.isFinite(fov) && (native || camera !== liveCamera)) fov = 30;
+      let sampled = camera === liveCamera ? authoredMainFov : camera.fov;
       if (Number.isFinite(fov)) {
         const next = Number.isFinite(right.fov) ? right.fov : fov;
-        const sampled = Math.min(170, Math.max(1, fov + (next - fov) * fraction));
-        if (liveCamera.fov !== sampled) {
-          liveCamera.fov = sampled;
-          liveCamera.updateProjectionMatrix();
-        }
+        sampled = Math.min(170, Math.max(1, fov + (next - fov) * fraction));
+      }
+      if (camera === liveCamera) {
+        nativeMainLens = native;
+        authoredMainFov = sampled;
+        sampled = liveFov();
+      }
+      if (camera.fov !== sampled || camera.near !== near) {
+        camera.fov = sampled;
+        camera.near = near;
+        camera.updateProjectionMatrix();
       }
       return true;
     }
@@ -803,10 +986,10 @@
       rim.color.setHex(0x8bb6ff);
       rim.intensity = 1.0;
       for (const track of tracks) {
-        const event = activeEvent(track, time);
+        const event = track.kind === "camera" ? activeCameraEvent(track, time) : activeEvent(track, time);
         if (!event) continue;
         if (track.kind === "camera") {
-          onCamera?.(event, time);
+          onCamera?.(event, time, track);
         } else {
           const label = event.values.playableClass;
           if (label === "LiveBaseLightClip") {
@@ -826,8 +1009,29 @@
       if (quality.member_rim_light === false) rim.intensity = 0;
     }
 
-    function useCameraEvent(event, time) {
-      hasShot = poseCamera(event, time) || hasShot;
+    function useCameraEvent(event, time, track) {
+      if (!poseCamera(event, time, track)) return;
+      hasShot = true;
+      applyCameraOffsets(liveCamera, track.binding, time);
+    }
+
+    function sampleSplitCamera(camera, track, time) {
+      const event = activeCameraEvent(track, time);
+      if (!event || !poseCamera(event, time, track, camera)) return false;
+      applyCameraOffsets(camera, track.binding, time);
+      return true;
+    }
+
+    function applyCameraOffsets(camera, binding, time) {
+      const weight = global.ViewerMotionTimeline?.weight, clips = cameraOffsets.get(binding);
+      if (!weight || !clips) return;
+      let offset = 0;
+      for (const clip of clips) {
+        if (time >= clip.start && time < clip.start + clip.duration) offset += clip.offset * weight(clip, time);
+      }
+      // LiveCameraOffset writes the animated rig's child local Y, so pitched
+      // and rolled shots must rotate this correction with the rig.
+      if (offset) camera.position.add(otherPosition.set(0, offset, 0).applyQuaternion(camera.quaternion));
     }
 
     function applyProject() {
@@ -842,17 +1046,61 @@
       }
       performers.clear();
       renderTracks = tracks.filter((track) => !track.muted && (track.kind === "lighting" ||
-        (track.kind === "camera" && (!track.binding || /MainCamera/i.test(track.binding)))));
-      for (const performer of project && project.performers || []) performers.set(performer.id, performer);
-      effects.visible = settings.stage_control !== false;
+        (track.kind === "camera" && track.nativeClass !== "LiveCameraOffsetTrack" &&
+          (!track.binding || /MainCamera/i.test(track.binding)))));
+      const cast = project && project.performers || [];
+      for (const performer of cast) performers.set(performer.id, performer);
+      const heights = new Map(cast.map((performer) => [performer.position, heightScale(performer)]));
+      memberScaleTracks.clear();
+      cameraOffsets.clear();
+      for (const track of tracks) {
+        if (!track.muted && track.nativeClass === "LiveMemberScalingTrack") {
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])\/Model$/.exec(track.binding || "");
+          if (!bound) continue;
+          const slot = Number(bound[1]);
+          const clips = memberScaleTracks.get(slot) || [];
+          for (const event of track.events) {
+            const values = event.values || {};
+            if (values.playableClass !== "LiveMemberScalingClip" || !Number.isFinite(values.intensity)) continue;
+            clips.push({ start: event.start, duration: event.duration, intensity: values.intensity,
+              timing: { ...values, mixIn: values.mixIn?.length ? values.mixIn : offsetMixIn,
+                mixOut: values.mixOut?.length ? values.mixOut : offsetMixOut } });
+          }
+          if (clips.length) memberScaleTracks.set(slot, clips);
+          continue;
+        }
+        if (track.muted || track.kind !== "camera" || track.nativeClass !== "LiveCameraOffsetTrack" || !track.binding) continue;
+        const clips = cameraOffsets.get(track.binding) || [];
+        for (const event of track.events) {
+          const values = event.values || {};
+          if (values.playableClass !== "LiveCameraOffsetClip" || !Number.isFinite(values.intensity)) continue;
+          const offset = ((heights.get(values.memberPosition) ?? 1) - 1) * values.intensity;
+          if (!offset) continue;
+          clips.push({ start: event.start, duration: event.duration, offset,
+            timing: { ...values, mixIn: offsetMixIn, mixOut: offsetMixOut } });
+        }
+        if (clips.length) cameraOffsets.set(track.binding, clips);
+      }
+      split?.setProject(project);
+      effects.visible = project?.source?.kind === "game" || settings.stage_control !== false;
       for (const record of records) {
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
+        record.penlight?.invalidate();
+        record.stageColoring?.invalidate();
         if (record.motion) updateMotion(record);
+        record.materials?.setRimlight?.(settings.member_rim_light !== false);
+        if (record.prop) record.prop.setTracks(tracks);
       }
+    }
+
+    function resetPhysics(reason) {
+      physicsClock?.reset();
+      for (const record of records) record.physics?.reset(reason);
     }
 
     function seek(time, value, deferDraw = false) {
       if (disposed) return;
+      if ((value && value !== project) || (Number.isFinite(time) && Math.abs(time - currentTime) > 1e-9)) resetPhysics("seek");
       project = value || project;
       applyProject();
       playbackFrame(time, undefined, deferDraw);
@@ -861,6 +1109,7 @@
     function setPlaying(value) {
       if (playing === value) return;
       playing = value;
+      physicsClock?.reset();
       lastPlaybackFrame = null;
       slowFrames = 0;
       if (!playing && previewScale !== 1) {
@@ -871,6 +1120,7 @@
 
     function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
+      if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
@@ -886,14 +1136,34 @@
       }
       hasShot = false;
       frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
+      activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
+      const lighting = global.MVStudioLighting?.sample(project, currentTime);
+      for (const record of records) record.penlight?.update(currentTime, project);
+      for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
+      for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) {
         if (record.group !== actors) continue;
+        record.materials?.setLiveLighting?.(lighting?.member(record.position));
+        record.physics?.restorePose();
+        record.nodeScaling?.resetHeight();
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          record.motion.evaluate(currentTime);
+          record.motion.evaluatePose(currentTime);
           record.motion.applyVisibility(currentTime);
         } else if (record.mixer) record.mixer.setTime(currentTime);
+        record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
+      }
+      // Native performers look at the other actor's animated Eye_Root, so
+      // prepare every actor at this timestamp before resolving any gaze.
+      const targets = gazeContext();
+      for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
+      const physicsStep = playing && visible && records.some((record) => record.physics)
+        ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
+      for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
+      for (const record of records) if (record.prop) {
+        record.prop.bind(records.find((actor) => actor.group === actors && actor.position === record.propMember) || null);
+        record.prop.evaluate(currentTime);
       }
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
@@ -929,6 +1199,7 @@
         if (observer) observer.disconnect();
         cancelDraw();
         clear();
+        split?.dispose();
         release(grid);
         controls.dispose();
         renderer.dispose();

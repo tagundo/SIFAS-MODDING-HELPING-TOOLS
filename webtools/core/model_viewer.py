@@ -979,7 +979,8 @@ def _validate_mesh_allocations(mesh):
             raise ModelViewerError("The model has too many triangles for the mobile viewer.")
 
 
-def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None):
+def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data=None, morph_weights=None, deadline=None,
+              penlight_data=None, stage_data=None):
     import numpy as np
     from .model_mesh import PreviewMeshHandler
 
@@ -1026,6 +1027,18 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data
         rig_data.update(mesh=mesh, positions=positions, normals=normals,
                         indices=handler.m_BoneIndices, weights=handler.m_BoneWeights,
                         colors=handler.m_Colors)
+    if penlight_data is not None:
+        # AS/Penlight stores each billboard's pivot in UV1 and four random
+        # inputs in COLOR0. Neither channel is a conventional UV or color.
+        pivots = np.asarray(handler.m_UV1, dtype=np.float32)
+        colors = np.asarray(handler.m_Colors, dtype=np.float32)
+        if (pivots.shape == positions.shape and colors.shape == (len(positions), 4)
+                and np.isfinite(pivots).all() and np.isfinite(colors).all()):
+            penlight_data.update(_PENLIGHT_CENTER=pivots, _PENLIGHT_COLOR=colors,
+                                 _PENLIGHT_CORNER=positions - pivots)
+    if stage_data is not None:
+        from .mv_studio_stage_materials import read_vertex_inputs
+        read_vertex_inputs(handler, stage_data, len(positions))
     if morph_weights:
         from .model_rig import apply_default_morphs
         positions, normals = apply_default_morphs(mesh, positions, normals, morph_weights, deadline=deadline)
@@ -1067,6 +1080,96 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data
     return str(mesh.m_Name), positions, normals, uv, result
 
 
+def _stage_audience_point(scene, component, tree):
+    pointer = tree.get("audiencesPoint")
+    script_pointer = tree.get("m_Script")
+    if not isinstance(pointer, dict) or pointer.get("m_FileID", 0) or not isinstance(script_pointer, dict):
+        return None
+    script = _ref(component, script_pointer)
+    if script is None or script.type.name != "MonoScript":
+        return None
+    script_tree = scene.tree(script)
+    if (script_tree.get("m_ClassName"), script_tree.get("m_Namespace"), script_tree.get("m_AssemblyName")) != (
+            "LiveCoreStageModel", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll"):
+        return None
+    game = _ref(component, pointer)
+    if game is None or game.type.name != "GameObject":
+        return None
+    transform = scene.transforms.get(_key(game))
+    if transform is None:
+        return None
+    # Static preview geometry is flattened in world space and mirrors Unity X.
+    x, y, z = scene.world(transform)[:3, 3]
+    return (-float(x), float(y), float(z)) if all(map(math.isfinite, (x, y, z))) else None
+
+
+def _penlight_binding(scene, component, tree):
+    pointers = tree.get("materials")
+    if not tree.get("m_Enabled", True) or not isinstance(pointers, list) or not 0 < len(pointers) <= MAX_MESHES:
+        return None
+    script = _ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return None
+    script_tree = scene.tree(script)
+    if (script_tree.get("m_ClassName"), script_tree.get("m_Namespace"), script_tree.get("m_AssemblyName")) != (
+            "LiveCoreStagePenlight", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll"):
+        return None
+    game = _ref(component, tree.get("m_GameObject"))
+    transform = scene.transforms.get(_key(game)) if game is not None else None
+    if transform is None:
+        return None
+
+    names = []
+    current = transform
+    seen = set()
+    while current is not None and len(names) < 32 and _key(current) not in seen:
+        seen.add(_key(current))
+        node = scene.tree(current)
+        owner = _ref(current, node.get("m_GameObject"))
+        name = scene.name(owner) if owner is not None else ""
+        if not name or "/" in name:
+            return None
+        names.append(name)
+        current = _ref(current, node.get("m_Father"))
+    if current is not None or len(names) < 2:
+        return None
+    # The effect prefab is inserted under Stages/*/Effect by the game.
+    # The prefab root name itself does not appear in the timeline binding.
+    suffix = "/".join(reversed(names[:-1]))
+
+    materials = set()
+    for pointer in pointers:
+        if not isinstance(pointer, dict):
+            continue
+        material = _ref(component, pointer)
+        if material is not None and material.type.name == "Material":
+            materials.add(_key(material))
+    return (_key(game), materials, suffix) if materials else None
+
+
+def _penlight_material(tree):
+    floats = _properties(tree, "m_Floats")
+    if "_SWING_MODE" not in floats:
+        return None
+    selected = {name: value for name, value in floats.items()
+                if (name in {"_FogIntensity", "_RandomBrightness", "_SWING_MODE", "_BeatLength", "_BeatOffset",
+                            "_RandomSwingIntensity", "_CullMode"}
+                    or name.startswith(("_BasicYZ_", "_GrowthYZ_", "_BasicX_", "_SimpleXZ_")))}
+    colors = _properties(tree, "m_Colors")
+    vectors = {}
+    for name in ("_TintColor", "_RandomDelay", "_RandomUp"):
+        color = colors.get(name)
+        if isinstance(color, dict) and set(color) == set("rgba"):
+            vectors[name] = [color[axis] for axis in "rgba"]
+    values = [*selected.values(), *(value for vector in vectors.values() for value in vector)]
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+        return None
+    mode = next((keyword for keyword in str(tree.get("m_ShaderKeywords", "")).split()
+                 if keyword in {"_SWING_MODE_STOP", "_SWING_MODE_BASIC_YZ", "_SWING_MODE_GROWTH_YZ",
+                                "_SWING_MODE_BASIC_X", "_SWING_MODE_SIMPLE_XZ"}), None)
+    return {"floats": selected, "vectors": vectors, "keyword": mode}
+
+
 def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=None, rig=None):
     # SIFAS downloads its facial prefab separately from the outfit. The base
     # Face mesh alone does not contain iris/mouth geometry. Do not invent it or
@@ -1093,18 +1196,45 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         for path in faces.auto_paths:
             if path not in rig.source_indices:
                 rig.source_indices[path] = len(rig.source_indices)
+    penlights, audience_points = {}, set()
+    stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
+    if stage_materials:
+        from . import mv_studio_stage_coloring, mv_studio_stage_materials
+        ambient_materials, lightmap_settings, stage_metadata = {}, {}, {}
+        stage_coloring, stage_palettes = {}, {}
     for obj in scene.env.objects:
         if auto_only and _source_path(obj) not in faces.auto_paths:
             continue
+        if stage_materials and obj.type.name == "LightmapSettings":
+            lightmap_settings[id(obj.assets_file)] = obj
         if obj.type.name != "MonoBehaviour":
             continue
         try:
             tree = scene.tree(obj)
         except Exception:
             continue
+        if getattr(scene, "preview_stage", False) and not auto_only:
+            try:
+                point = _stage_audience_point(scene, obj, tree)
+            except ValueError:
+                point = None  # An invalid optional locator must not hide the stage.
+            if point is not None:
+                audience_points.add(point)
+            binding = _penlight_binding(scene, obj, tree)
+            if binding is not None:
+                owner, linked_materials, suffix = binding
+                penlights[owner] = linked_materials, suffix
+        if stage_materials:
+            ambient_materials.update(mv_studio_stage_materials.ambient_materials(scene, obj, tree))
+            coloring = mv_studio_stage_coloring.binding(scene, obj, tree)
+            if coloring is not None:
+                identity, entry = coloring
+                stage_coloring.setdefault(identity, []).append(entry)
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
+    if len(audience_points) == 1:
+        glb.doc["scenes"][0].setdefault("extras", {})["mvAudiencePoint"] = next(iter(audience_points))
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
     # Match the serialized-file ordinals used by the editor's _inspect(raw).
@@ -1142,6 +1272,24 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             continue
         auto_face = _source_path(renderer) in faces.auto_paths
         raw = {} if rig is not None else None
+        penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
+        native_attributes = {} if penlight is not None else None
+        stage_inputs, coloring_for_renderer = None, {}
+        if stage_materials and renderer.type.name == "MeshRenderer":
+            for pointer in tree.get("m_Materials", ()):
+                candidate = _ref(renderer, pointer)
+                if candidate is None:
+                    continue
+                identity = _key(candidate)
+                if identity not in stage_metadata:
+                    stage_metadata[identity] = mv_studio_stage_materials.read_material(scene, candidate, ambient_materials)
+                description = stage_metadata[identity]
+                if description and description.get("vertexColor"):
+                    stage_inputs = {}
+                coloring = mv_studio_stage_coloring.renderer_binding(scene, game_object, stage_coloring.get(identity))
+                if coloring is not None:
+                    coloring_for_renderer[identity] = coloring
+                    stage_inputs = {}
         bones, skin_warnings = None, []
         try:
             if renderer.type.name == "SkinnedMeshRenderer":
@@ -1154,6 +1302,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
             arguments = (mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))), bones, skin_warnings)
             keywords = {"rig_data": raw} if raw is not None else {}
+            if native_attributes is not None:
+                keywords["penlight_data"] = native_attributes
+            if stage_inputs is not None:
+                keywords["stage_data"] = stage_inputs
             if any(tree.get("m_BlendShapeWeights", [])):
                 keywords["morph_weights"] = tree["m_BlendShapeWeights"]
                 keywords["deadline"] = deadline
@@ -1215,13 +1367,20 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 position_matrix = position_matrix @ arguments[1]
         mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_obj.assets_file), 0),
                          "id": str(mesh_obj.path_id)}
+        penlight_attributes, penlight_transform = None, None
+        if native_attributes:
+            penlight_transform = {"bindingSuffix": penlight[1],
+                                  "localToPreview": position_matrix.T.reshape(-1).tolist()}
+        stage_color, stage_lightmap, stage_uv, coloring_uv = None, None, None, None
         primitives, refs, first_face = [], tree.get("m_Materials", []), 0
         for index, triangles in enumerate(submeshes):
             if not len(triangles):
                 continue
             ref = refs[min(index, len(refs) - 1)] if refs else None
+            material_obj = None
             try:
-                material = materials.material(faces.material(renderer, _ref(renderer, ref)))
+                material_obj = faces.material(renderer, _ref(renderer, ref))
+                material = materials.material(material_obj)
             except Exception:
                 if not auto_face:
                     raise
@@ -1240,6 +1399,60 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                    "vertexCount": len(positions), "vertexOrder": "identity",
                                    "positionMatrix": position_matrix.T.reshape(-1).tolist(),
                                    "boneOrder": "identity", "writable": writable}}})
+            if penlight_transform and material_obj is not None and _key(material_obj) in penlight[0]:
+                native_material = _penlight_material(scene.tree(material_obj))
+                if native_material is not None:
+                    if penlight_attributes is None:
+                        penlight_attributes = dict(attributes)
+                        penlight_attributes.update({
+                            name: glb.attribute(values, "VEC4" if name == "_PENLIGHT_COLOR" else "VEC3")
+                            for name, values in native_attributes.items()
+                        })
+                    primitives[-1]["attributes"] = penlight_attributes
+                    primitives[-1]["extras"]["mvPenlight"] = {**penlight_transform, "material": native_material}
+            descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None else None
+            if descriptor:
+                descriptor = dict(descriptor)
+                if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
+                    descriptor = None
+                if descriptor and descriptor["shader"] == "stage":
+                    if stage_uv is None and "lightUV" in stage_inputs:
+                        info = mv_studio_stage_materials.lightmap_for(scene, renderer, tree, lightmap_settings)
+                        if info:
+                            texture, transform = info
+                            try:
+                                stage_lightmap = materials.texture(texture)
+                            except ValueError:
+                                stage_lightmap = None
+                            if stage_lightmap is not None:
+                                coords = stage_inputs["lightUV"] * transform[:2] + transform[2:]
+                                coords[:, 1] = 1 - coords[:, 1]
+                                stage_uv = glb.attribute(coords, "VEC2")
+                    if stage_uv is not None:
+                        descriptor["lightmap"] = stage_lightmap
+                    else:
+                        descriptor = None
+                if descriptor:
+                    custom = {}
+                    if descriptor.get("vertexColor"):
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        custom["_STAGE_COLOR"] = stage_color
+                    if descriptor["shader"] == "stage":
+                        custom["_STAGE_LIGHT_UV"] = stage_uv
+                    primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
+                    primitives[-1]["extras"]["mvStageMaterial"] = descriptor
+            coloring = coloring_for_renderer.get(_key(material_obj)) if material_obj is not None else None
+            if coloring and uv is not None and "lightUV" in stage_inputs:
+                try:
+                    descriptor = mv_studio_stage_coloring.export(glb, materials, coloring, stage_palettes)
+                except ValueError:
+                    descriptor = None
+                if descriptor is not None:
+                    if coloring_uv is None:
+                        coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
+                    primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
+                    primitives[-1]["extras"]["mvStageColoring"] = descriptor
             first_face += len(triangles)
             if targets:
                 primitives[-1]["targets"] = targets

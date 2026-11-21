@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import sqlite3
 import struct
 import tempfile
 import threading
@@ -18,6 +19,7 @@ import zipfile
 
 from webtools import filebrowser
 from . import game_models, model_viewer, viewer_archive
+from .member_identity import member_from_native
 from .sukusta import default_sukusta_dir
 from .viewer_cache import game_models_dir, viewer_cache_root
 
@@ -201,6 +203,16 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
     if payload is None:
         raise ValueError("The 3D preview expired. Reopen the asset.")
     url, rig = _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
+    if rig.get("bones"):
+        from . import viewer_physics
+
+        try:
+            physics = viewer_physics.catalogue_preview(models, rig["bones"])
+            if physics.get("available"):
+                rig = {**rig, "physics": physics}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Optional source physics is independent of the usable body model.
+            pass
     if key is not None:
         if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
             model_viewer._conversion_put(
@@ -266,7 +278,7 @@ def import_asset(path, kind):
 def _timeline(path):
     from . import mv_studio_timeline
     raw = path.read_bytes()
-    parsed = mv_studio_timeline.parse_timeline(raw, path.name)
+    parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -318,7 +330,7 @@ def _cast_in_timeline_order(performers, tracks):
         for event in track["events"]:
             identity = re.match(r"ch(\d{4})(?:_|$)", event["values"].get("animationName") or event["label"])
             if identity:
-                members.setdefault(int(slot[1]), set()).add(int(identity[1]))
+                members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
     latest = {performer["memberId"]: performer for performer in performers}
     positions = {performer["position"] for performer in performers}
     if set(members) != positions or any(len(ids) != 1 for ids in members.values()):
@@ -329,24 +341,29 @@ def _cast_in_timeline_order(performers, tracks):
     return [{**latest[assigned[slot]], "position": slot} for slot in sorted(assigned)]
 
 
-def _stage_snapshot(project, assets):
-    # The overview uses its own camera and lights the stage at time zero.
-    # Keep every light event active at zero in order so overlapping events
-    # resolve as they do in the full renderer.
-    lights = []
+def _stage_snapshot(project, assets, performers):
+    # The overview uses its own camera and shows stage effects at time zero.
+    # Keep active events in order so overlaps resolve as in the full renderer.
+    effects_at_start = []
     for track in project["tracks"]:
-        if track["kind"] != "lighting" or track.get("muted"):
+        coloring = track.get("nativeClass") == "LiveColoringTrack"
+        if track.get("muted") or (track["kind"] not in {"lighting", "crowd"} and not coloring):
             continue
         events = [event for event in track["events"] if event["start"] <= 0 <= event["start"] + event["duration"]]
-        if events:
-            lights.append(dict(track, events=events))
+        if events or coloring:
+            effects_at_start.append(dict(track, events=events))
     # The preview consumer can retain this copy without sharing edit state.
+    stage = dict(project["stage"])
+    colors = {str(entry["position"]): entry["themeColor"] for entry in performers if "themeColor" in entry}
+    if colors:
+        stage["memberThemeColors"] = colors
     return deepcopy({
-        "stage": project["stage"],
+        "stage": stage,
+        "source": {"kind": project["source"]["kind"]},
         "duration": project["duration"],
         "quality": project["quality"],
         "assets": [asset for asset in assets if asset["kind"] in {"effect", "props", "background"} and asset.get("previewUrl")],
-        "tracks": lights,
+        "tracks": effects_at_start,
     })
 
 
@@ -409,8 +426,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
             native, parsed = _timeline(timeline)
-            project.update(duration=parsed["duration"], tracks=parsed["tracks"])
+            project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen") if field in parsed})
             warnings.extend(parsed.get("warnings", []))
+            original_cast = selected.get("performers", [])[:9]
+            performers = _cast_in_timeline_order(original_cast, project["tracks"])
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
@@ -423,18 +442,36 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):
                 project["stage"] = {"glb": stage_row["previewUrl"], "label": stage_row["label"], "sceneName": stage.get("sceneName")}
+                colors = {str(entry["position"]): entry["themeColor"] for entry in original_cast if "themeColor" in entry}
+                if colors:
+                    project["stage"]["originalMemberThemeColors"] = colors
             else:
                 warnings.append("The original stage model is unavailable for preview.")
             describe(stage.get("background"), "background", "2D stage background")
             describe(stage.get("thumbnail"), "other", "Stage thumbnail")
-            prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
-            if prop_file is not None:
-                try:
-                    prop_row["previewUrl"], _ = _preview(prop_file, reuse=True)
-                except (ValueError, OSError) as error:
-                    warnings.append(f"{prop_row['label']}: {error}")
+            from . import mv_studio_props
+            prop_bindings = mv_studio_props.bindings(project["tracks"]) if stage.get("props") else []
+            performer_prop = prop_bindings[0] if len(prop_bindings) == 1 else None
+            if performer_prop is None:
+                prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
+                if prop_file is not None:
+                    try:
+                        prop_row["previewUrl"], _ = _preview(prop_file, reuse=True)
+                    except (ValueError, OSError) as error:
+                        warnings.append(f"{prop_row['label']}: {error}")
             if on_stage is not None and project["stage"] is not None:
-                on_stage(_stage_snapshot(project, rows.values()))
+                on_stage(_stage_snapshot(project, rows.values(), performers))
+            if performer_prop is not None:
+                prop_row, prop_file = load(stage.get("props"), "props", "Performer prop")
+                if prop_file is not None:
+                    try:
+                        glb, attachment = mv_studio_props.preview(
+                            prop_file, native, timeline.name, performer_prop, deadline,
+                        )
+                        prop_row.update(previewUrl=_media(glb, "glb"), attachment=attachment)
+                    except (ValueError, OSError) as error:
+                        prop_row["status"] = "unavailable"
+                        warnings.append(f"{prop_row['label']}: {error}")
             describe(selected.get("songBackground"), "background", "Song background")
             movie = selected.get("movie") or {}
             describe(movie.get("source"), "display", "MV screen video")
@@ -449,9 +486,13 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 _, path = load(item, "dance")
                 if path is not None and path != timeline:
                     motion_files.append(path)
-            performers = _cast_in_timeline_order(selected.get("performers", [])[:9], project["tracks"])
+            from . import viewer_physics_runtime
+
             actor_cache = mv_studio_actor_cache.open_cache((source["region"], source["platform"]), media)
             motion_inputs = actor_cache.inputs(native, motion_files) if actor_cache else None
+            motion_physics = viewer_physics_runtime.motion_settings(repo_root=repo_root,
+                record={"category": "mv", "region": source["region"], "live_id": source["liveId"]})
+            project["motionPhysics"] = motion_physics
             for entry in performers:
                 number = entry["position"]
                 label = entry.get("memberName") or f"Member {number}"
@@ -461,6 +502,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 result = {"id": f"member-{number}", "position": number, "label": label,
                           "memberId": entry.get("memberId"), "costumeId": entry.get("costumeId"),
                           "transform": {"position": [0 if entry.get("isCenter") else ((-1 if number % 2 == 0 else 1) * ((number + 1) // 2)), 0, 0]}}
+                if "themeColor" in entry:
+                    result["themeColor"] = entry["themeColor"]
                 if model is not None:
                     facial_files, companions = [], []
                     for descriptor in entry.get("companions", []):
@@ -492,6 +535,23 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             warnings.append(f"{label}: {error}")
                     if result.get("motion") and result["rig"].get("clips"):
                         result["transform"]["position"] = [0, 0, 0]
+                    catalog = result.get("rig", {}).get("physics")
+                    if catalog:
+                        if result.get("motion") is not None:
+                            result["motion"] = {**result["motion"], "physics": motion_physics}
+                        if catalog.get("native", {}).get("available") and type(result["costumeId"]) is int:
+                            try:
+                                flags = viewer_physics_runtime._source_settings(
+                                    {"region": source["region"], "suit_id": result["costumeId"]}, repo_root)
+                            except (OSError, ValueError, TypeError, sqlite3.Error):
+                                flags = None
+                            if flags:
+                                sources = sorted({manager["sourceIndex"] for manager in catalog["managers"]})
+                                runtime = {"profile": "sifas-3.12.0", "sources": [
+                                    {"sourceIndex": index, "known": True, "skirtsafeDisable": flags["default"],
+                                     "suitId": result["costumeId"], "region": source["region"]} for index in sources]}
+                                result["rig"] = {**result["rig"], "physics": {**catalog, "native": {
+                                    **catalog["native"], "runtime": runtime}}}
                 project["performers"].append(result)
             audio = selected.get("audio") or {}
             for role in ("acb", "awb"):
@@ -501,9 +561,20 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     from . import cri_audio_decode
                     _, acb = load(audio["acb"], "audio", "Soundtrack cue bank")
                     _, awb = load(audio.get("awb"), "audio", "Soundtrack wave bank")
+                    cue_bank = acb.read_bytes() if acb else None
+                    if cue_bank is not None and project["stage"] is not None and any(
+                            track.get("nativeClass") == "LivePenlightTrack" for track in project["tracks"]):
+                        try:
+                            beat = cri_audio_decode.inspect_beat_sync(cue_bank, audio["cue"])
+                            if beat is not None:
+                                project["stage"]["beatSync"] = beat
+                        except cri_audio_decode.AudioDecodeError:
+                            # An unreadable optional timing table does not
+                            # prevent decoding the same cue's waveform.
+                            pass
                     if acb and (awb or not audio.get("awb")):
                         decoded = directory / "soundtrack.wav"
-                        cri_audio_decode.decode_cue(acb.read_bytes(), awb.read_bytes() if awb else None, audio["cue"], decoded)
+                        cri_audio_decode.decode_cue(cue_bank, awb.read_bytes() if awb else None, audio["cue"], decoded)
                         project["soundtrack"] = _song_audio(decoded)
                         project["duration"] = max(project["duration"], project["soundtrack"]["duration"])
                 except (ValueError, OSError) as error:
@@ -654,7 +725,19 @@ def _open_saved(archive, entries):
     timeline = entries.get("source-timeline.unity")
     if timeline is not None and not 0 < timeline.file_size <= MEDIA_BYTES:
         raise ValueError("The saved project contains an invalid original timeline.")
-    return _register(project, archive.read(timeline) if timeline is not None else None)
+    source = archive.read(timeline) if timeline is not None else None
+    if source is not None and "splitScreen" not in project and any(
+            track.get("nativeClass") == "LiveSplitScreenTrack" for track in project["tracks"]):
+        from . import mv_studio_timeline
+
+        try:
+            original = mv_studio_timeline.parse_timeline(source, project["name"], preview_split=True)
+        except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
+            pass
+        else:
+            if "splitScreen" in original:
+                project["splitScreen"] = original["splitScreen"]
+    return _register(project, source)
 
 
 def _mod_files(project, files):
@@ -671,7 +754,7 @@ def _mod_files(project, files):
                     project["warnings"].append(f"{label}: open this timeline separately to edit this variant.")
                     continue
                 native = raw
-                project.update(duration=parsed["duration"], tracks=parsed["tracks"])
+                project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen") if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,
                                           "path": label, "status": "loaded"})

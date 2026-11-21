@@ -32,13 +32,17 @@ function setup(indexTiming) {
     const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(.1 * i, .02, -.05 * i));
     const identity = clip('body' + i, [
       new THREE.VectorKeyframeTrack('hips.position', [0, 1], [0, 0, 0, i + 1, 0, 0]),
+      new THREE.VectorKeyframeTrack('LeftEye1.position', [0, 1], [0, 0, 0, i / 10, 0, 0]),
       new THREE.QuaternionKeyframeTrack('hips.quaternion', [0, 1], [0, 0, 0, 1, ...rotation.toArray()])
     ]);
     descriptor.bodySegments.push(timed({ ...identity, start: (12 - i) / 10, duration: .65,
       clipIn: .1, timeScale: 1.3 }, { easeIn: .12, blendOut: .22,
       m_PreExtrapolationMode: 2, m_PreExtrapolationTime: .12, postMode: 3, postTime: .2 }));
   }
-  const falseMouth = clip('mouth-a', [new THREE.NumberKeyframeTrack('face.morphTargetInfluences', [0, 1], [.2, .8])],
+  const falseMouth = clip('mouth-a', [
+    new THREE.NumberKeyframeTrack('face.morphTargetInfluences', [0, 1], [.2, .8]),
+    new THREE.VectorKeyframeTrack('LeftEye1.position', [0, 1], [0, 0, 0, .1, .2, .3]),
+  ],
     [{ node: 3, values: [false] }]);
   const trueMouth = clip('mouth-b', [new THREE.NumberKeyframeTrack('face.morphTargetInfluences', [0, 1], [.2, .1])],
     [{ node: 3, values: [true] }]);
@@ -61,6 +65,9 @@ function setup(indexTiming) {
     eye.position.set(0, 0, 0);
     face.morphTargetInfluences[0] = .2;
     face.visible = true;
+    return sample(time);
+  }
+  function sample(time) {
     const before = JSON.stringify(player.animatedProperties(time));
     player.evaluate(time);
     player.applyVisibility(time);
@@ -76,7 +83,7 @@ function setup(indexTiming) {
     descriptor.facial.events.push(timed({ kind: 'mouth', index: 1, start: 8.2, duration: 2, weight: .75 }));
     player.invalidateTiming();
   }
-  return { frame, edit, reads: () => timingReads };
+  return { frame, sample, edit, reads: () => timingReads };
 }
 
 const legacy = setup(false), indexed = setup(true);
@@ -100,4 +107,14 @@ assert.notDeepStrictEqual(updated, old, 'rebuild observes edited intervals and n
 for (const time of [6.9, 7.1, 8.5, 8.53, 9.005, 9.006, 0, .7, 42]) {
   assert.deepStrictEqual(indexed.frame(time), legacy.frame(time), 'edited playhead ' + time);
 }
-console.log('PASS: indexed timeline matches authored order, extrapolation, random seeks and same-time edits');
+const uninterrupted = setup(true), freshGap = setup(true).frame(1.6);
+const altered = uninterrupted.sample(1.1);
+assert.strictEqual(altered.visible, false, 'native facial pose previously hid the mesh');
+assert.notStrictEqual(altered.shape, freshGap.shape, 'native facial pose previously changed the morph');
+assert.notDeepStrictEqual(altered.eye, freshGap.eye, 'previous facial pose and gaze moved the eye');
+assert.deepStrictEqual(uninterrupted.sample(1.6), freshGap,
+  'a seek into a facial gap restores morphs, clip pose, gaze and visibility before applying the body');
+const externallyRestored = setup(false);
+externallyRestored.sample(1.1);
+assert.strictEqual(externallyRestored.sample(1.6).visible, false, 'the default engine still leaves pose ownership to its caller');
+console.log('PASS: indexed timeline matches authored order, extrapolation, seeks, edits and neutral faces between clips');

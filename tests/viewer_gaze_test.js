@@ -83,4 +83,37 @@ const rebound = window.ViewerMotionTimeline.create(s.root,s.animations,s.metadat
  facial:{events:[{kind:'gaze',target:34,start:0,duration:1,weight:1}]}});
 rebound.evaluate(.5);close(s.left.position.x,-1,'cross-character library uses this face201 original endpoints, not old absolute iris positions');
 assert.equal(rebound.getGazeState().sourceOwner,201);assert.equal(rebound.getGazeState().retargeted,true);
+
+const looker = setup(), partner = setup();
+const partnerEye = new THREE.Bone(); partnerEye.name = 'Eye_Root'; partner.face.add(partnerEye);
+const approaching = new THREE.AnimationClip('approach', 1, [
+  new THREE.VectorKeyframeTrack('Eye_Root.position', [0, 1], [1, 0, 1, -1, 0, 1]),
+]);
+partner.animations.push(approaching);
+partner.metadata.clips.push({name: 'approach', sourceHash: 'approach', sourceName: 'approach'});
+const partnerMotion = window.ViewerMotionTimeline.create(partner.root, partner.animations, partner.metadata, {
+  category: 'mv', bodySegments: [{sourceHash: 'approach', sourceName: 'approach', start: 0, duration: 1}],
+}, {indexTiming: true});
+const looking = window.ViewerMotionTimeline.create(looker.root, looker.animations, looker.metadata, {
+  category: 'mv', facialClips: looker.aliases,
+  facial: {events: [{kind: 'gaze', target: 2, start: 0, duration: 1, weight: 1,
+    splitTarget: 37, splitWeight: .5, timing: {easeIn: .5}}]},
+}, {indexTiming: true});
+const point = new THREE.Vector3();
+assert.equal(looking.eyePosition(point), null, 'the standalone editor fallback bone is not a native eye target');
+const partial = Math.atan(.5) / (Math.PI / 4) * .5;
+for (const [time, expected] of [[.25, partial], [1, -1], [.25, partial]]) {
+  looking.evaluatePose(time);
+  partnerMotion.evaluatePose(time);
+  looking.evaluateGaze(time, {members: {2: partnerMotion.eyePosition(point).toArray()}});
+  close(looker.left.position.x, expected, 'member gaze follows the other actor’s eye at the sampled timestamp');
+}
+looking.evaluatePose(.25);
+partnerMotion.evaluatePose(.25);
+const oppositeCameras = {members: {2: partnerMotion.eyePosition(point).toArray()}, cameras: {37: [-1, 0, 1]}};
+looking.evaluateGaze(.25, {...oppositeCameras, split: true});
+close(looker.left.position.x, -.25, 'active split uses the authored alternate camera and weight with the same timeline ramp');
+looking.evaluatePose(.25);
+looking.evaluateGaze(.25, {...oppositeCameras, split: false});
+assert(looker.left.position.x > 0, 'inactive split uses the normal other-member gaze');
 console.log('PASS: original gaze enums45/30-degree axes, source iris poses, moving camera/face, authored weights, target availability and active property ownership');

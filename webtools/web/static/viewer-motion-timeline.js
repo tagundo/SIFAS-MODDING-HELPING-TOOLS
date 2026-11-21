@@ -26,13 +26,12 @@
       preMode: read("preMode", "m_PreExtrapolationMode", 0), postMode: read("postMode", "m_PostExtrapolationMode", 0),
       preTime: read("preTime", "m_PreExtrapolationTime", 0), postTime: read("postTime", "m_PostExtrapolationTime", 0) };
   }
-  function weightWithTiming(segment, time, spec) {
-    var local = time - segment.start, span = segment.duration;
-    if (local < 0) return spec.preMode && local >= -spec.preTime ? number(segment.weight, 1) : 0;
-    if (local > span) return spec.postMode && local <= span + spec.postTime ? number(segment.weight, 1) : 0;
+  function weightWithTiming(segment, time, spec, sourceWeight) {
+    var local = time - segment.start, span = segment.duration, value = number(sourceWeight, number(segment.weight, 1));
+    if (local < 0) return spec.preMode && local >= -spec.preTime ? value : 0;
+    if (local > span) return spec.postMode && local <= span + spec.postTime ? value : 0;
     var incoming = spec.blendIn >= 0 ? spec.blendIn : spec.easeIn;
     var outgoing = spec.blendOut >= 0 ? spec.blendOut : spec.easeOut;
-    var value = number(segment.weight, 1);
     if (incoming > 0 && local < incoming) value *= curve(spec.mixIn, local / incoming, local / incoming);
     if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
     return clamp(value, 0, 1);
@@ -94,6 +93,7 @@
   function createGaze(root, animations, metadata, options) {
     options = options || {};
     var T = global.THREE, info = metadata || {}, byName = {}, groups = {}, poses = {}, warnings = [], lastWeights = {}, missingTargets = [];
+    var gazeWrites = options.restorePose ? [] : null;
     var face = null, eyeCandidates = [], faceCandidates = [], headCandidates = [];
     function name(node) { return node.userData && node.userData.originalName || node.name.replace(/__\d+$/, ""); }
     root.traverse(function (node) {
@@ -105,7 +105,8 @@
     // LiveMemberEyeContact.Initialize finds original Eye_Root (metadata
     // literal7617). Head_Face is a90degree bone-axis reference on real faces;
     // Eye_Root/Face_Root cancel it. Neutral/custom rigs may only have Head_Face.
-    if (eyeCandidates.length === 1) face = eyeCandidates[0];
+    var nativeEye = eyeCandidates.length === 1 ? eyeCandidates[0] : null;
+    if (nativeEye) face = nativeEye;
     else if (!eyeCandidates.length && faceCandidates.length === 1) face = faceCandidates[0];
     else if (!eyeCandidates.length && !faceCandidates.length && headCandidates.length === 1) face = headCandidates[0];
     (animations || []).forEach(function (clip) { byName[clip.name] = clip; });
@@ -184,6 +185,7 @@
       Object.keys(groups).forEach(function (key) {
         var group = groups[key], entries = contributions[key] || [], total = entries.reduce(function (sum, entry) { return sum + entry.weight; }, 0);
         if (!entries.length && !neutral) return;
+        if (gazeWrites) gazeWrites.push(group);
         var remainder = Math.max(0, 1 - total), result = group.base.slice();
         if (group.property === "quaternion") {
           var q = new T.Quaternion().fromArray(group.base), accumulated = remainder;
@@ -197,6 +199,12 @@
       return requested && Object.keys(contributions).length > 0 || neutral && Object.keys(groups).length > 0;
     }
     return { warnings: warnings, targetWeights: targetWeights, axes: gazeAxes, apply: apply,
+      eyePosition: function (result) { return nativeEye && nativeEye.getWorldPosition(result); },
+      restorePose: function () {
+        if (!gazeWrites) return;
+        gazeWrites.forEach(function (group) { group.node[group.property].fromArray(group.base); });
+        gazeWrites.length = 0;
+      },
       evaluate: function (requests, context) {
         missingTargets = []; var combined = {};
         (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
@@ -218,6 +226,11 @@
     var clipIdentities = new Map(), bindingsByName = new Map(), staticSamples = new WeakMap(), facialMatches = new Map();
     var sampledSegments = new WeakMap(), sampleTime = null, sampleRevision = 0;
     var indexTiming = options.indexTiming === true;
+    // Studio samples a standalone model. The shared rig viewer restores its
+    // own pose before evaluating, including properties controlled elsewhere.
+    var restoreFace = indexTiming && descriptor.category === "mv";
+    var faceWrites = restoreFace ? [] : null, morphWrites = restoreFace ? [] : null;
+    var visibilityWrites = restoreFace ? new Map() : null;
     var timingSpecs = indexTiming ? new WeakMap() : null, timingIndexes = indexTiming ? new WeakMap() : null;
     function getTiming(segment) {
       if (!indexTiming) return timing(segment.timing);
@@ -346,7 +359,9 @@
     // Direction indices are the game's common six-pose semantics. When a
     // retained motion belongs to another character, use this face's verified
     // endpoints instead of writing the old character's absolute iris positions.
-    var gaze = createGaze(root, animations, info, { aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [] });
+    var gaze = createGaze(root, animations, info, {
+      aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [], restorePose: restoreFace
+    });
     events.slice(0, 12000).forEach(function (event) {
       if (event.kind === "gaze") {
         gazeEvents.push(event);
@@ -382,7 +397,7 @@
     var faceGroups = Object.keys(facialGroups).map(function (key) { return facialGroups[key]; });
     var gazeTrackGroups = Object.keys(gazeGroups).map(function (key) { return gazeGroups[key]; });
     var shapeGroups = Object.keys(morphGroups).map(function (key) { return morphGroups[key]; });
-    function evaluateGroups(collection, time) {
+    function evaluateGroups(collection, time, writes) {
       collection.forEach(function (group) {
         var values = group.values, total = 0; values.length = 0;
         timedRecords(group.tracks, time, trackSegment).forEach(function (record) {
@@ -420,6 +435,7 @@
           }
         }
         group.binding.setValue(result, 0);
+        if (writes) writes.push(group);
       });
     }
     var fallbackTargets = {};
@@ -483,9 +499,37 @@
         contributions[key].forEach(function (entry) { total += entry.weight; value += entry.value * entry.weight; });
         var remainder = Math.max(0, 1 - total);
         group.node.morphTargetInfluences[group.index] = (group.base * remainder + value) / Math.max(1, total);
+        if (morphWrites) morphWrites.push(group);
       });
     }
+    function evaluatePose(time) {
+      beginSample(time, true);
+      if (restoreFace) {
+        faceWrites.forEach(function (group) { group.binding.setValue(group.base, 0); });
+        morphWrites.forEach(function (group) { group.node.morphTargetInfluences[group.index] = group.base; });
+        faceWrites.length = morphWrites.length = 0;
+        gaze.restorePose();
+      }
+      // Reapply dance first because some body clips bind the same properties.
+      evaluateGroups(bodyGroups, time);
+      evaluateGroups(faceGroups, time, faceWrites);
+      applyShapes(time);
+    }
+    function evaluateGaze(time, context) {
+      context = context || (options.getGazeContext ? options.getGazeContext() : {});
+      var requests = [];
+      timedRecords(gazeEvents, time).forEach(function (event) {
+        var alternate = context && context.split && Number.isInteger(event.splitTarget);
+        var amount = alternate ? weightWithTiming(event, time, getTiming(event), event.splitWeight) : sampleWeight(event, time);
+        if (amount > 0) requests.push({ target: alternate ? event.splitTarget : event.target, weight: amount });
+      });
+      gaze.evaluate(requests, context);
+      gaze.warnings.forEach(warn);
+      if (gaze.getState().missingTargets.length) warn(restoreFace ? "The original gaze target is unavailable in this preview." :
+        "An original gaze target is unavailable in this single-model preview.");
+    }
     return { warnings: warnings, compatibleSegments: used, compatibilityDetails: compatibilityDetails, invalidateTiming: invalidateTiming,
+      evaluatePose: evaluatePose, evaluateGaze: evaluateGaze, eyePosition: gaze.eyePosition,
       animatedProperties: function (time) {
         beginSample(time, false);
         var owned = {};
@@ -508,25 +552,30 @@
       duration: Math.max(number(descriptor.facial && descriptor.facial.duration, 0), number(descriptor.audio && descriptor.audio.duration, 0),
         (descriptor.audio && descriptor.audio.tracks || []).reduce(function (end, track) { return Math.max(end, number(track.startTime, 0) + Math.max(0, number(track.duration, 0))); }, 0),
         (descriptor.bodySegments || []).reduce(function (end, segment) { return Math.max(end, segment.start + segment.duration); }, 0)),
-      evaluate: function (time) { beginSample(time, true); evaluateGroups(bodyGroups, time); evaluateGroups(faceGroups, time); applyShapes(time);
-        var requests = [];
-        timedRecords(gazeEvents, time).forEach(function (event) {
-          var amount = sampleWeight(event, time);
-          if (amount > 0) requests.push({ target: event.target, weight: amount });
-        });
-        gaze.evaluate(requests, options.getGazeContext ? options.getGazeContext() : {});
-        gaze.warnings.forEach(warn);
-        if (gaze.getState().missingTargets.length) warn("An original gaze target is unavailable in this single-model preview.");
+      evaluate: function (time) {
+        evaluatePose(time);
+        evaluateGaze(time);
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },
-      applyVisibility: function (time) { beginSample(time, false); timedRecords(visibility, time, visibilitySegment).forEach(function (record) {
-        if (sampleWeight(record.event, time) <= .5) return;
-        var track = record.track, node = nodeByIndex[String(track.node)];
-        if (!node || !track.values || !track.values.length) return;
-        var value = track.values[track.values.length - 1];
-        node.traverse(function (child) { if (child.isMesh) child.visible = value; });
-      }); }
+      applyVisibility: function (time) {
+        beginSample(time, false);
+        if (visibilityWrites) {
+          visibilityWrites.forEach(function (shown, mesh) { mesh.visible = shown; });
+          visibilityWrites.clear();
+        }
+        timedRecords(visibility, time, visibilitySegment).forEach(function (record) {
+          if (sampleWeight(record.event, time) <= .5) return;
+          var track = record.track, node = nodeByIndex[String(track.node)];
+          if (!node || !track.values || !track.values.length) return;
+          var value = track.values[track.values.length - 1];
+          node.traverse(function (child) {
+            if (!child.isMesh) return;
+            if (visibilityWrites && !visibilityWrites.has(child)) visibilityWrites.set(child, child.visible);
+            child.visible = value;
+          });
+        });
+      }
     };
   }
   global.ViewerGaze = { create: createGaze, axes: gazeAxes };

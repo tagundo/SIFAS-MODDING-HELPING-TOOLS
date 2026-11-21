@@ -439,7 +439,10 @@
       outline.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
-      var pair = { main: main, outline: outline, uniforms: uniforms, features: features };
+      var pair = { main: main, outline: outline, uniforms: uniforms, features: features,
+        ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
+        rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
+          intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
       materialCache.set(key, pair);
       if (features.emissive) {
         animated = true;
@@ -602,6 +605,23 @@
       clearTextureOverrides: function () {
         Array.from(textureOverrides.keys()).forEach(clearTextureOverride);
         if (options.onChange) options.onChange();
+      },
+      setLiveLighting: function (value) {
+        if (disposed) return;
+        materialCache.forEach(function (pair) {
+          var ambient = pair.uniforms.uAmbientColor.value, tint = pair.uniforms.uTintColor.value;
+          if (value?.ambient) ambient.fromArray(value.ambient);
+          else ambient.copy(pair.ambient);
+          if (value?.tint) tint.fromArray(value.tint);
+          else tint.copy(pair.tint);
+          var rim = value?.rim, uniforms = pair.uniforms;
+          if (rim?.color) uniforms.uRimlightColor.value.fromArray(rim.color);
+          else uniforms.uRimlightColor.value.copy(pair.rim.color);
+          if (rim?.direction) uniforms.uRimlightDirection.value.fromArray(rim.direction);
+          else uniforms.uRimlightDirection.value.copy(pair.rim.direction);
+          uniforms.uRimglightIntensity.value = rim?.intensity ?? pair.rim.intensity;
+          uniforms.uRimglightPower.value = rim?.power ?? pair.rim.power;
+        });
       },
       setRimlight: function (value) {
         if (disposed || rimlightEnabled === !!value) return;

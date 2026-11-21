@@ -16,6 +16,26 @@ except ImportError:
     extractor = None
 
 
+class MVTimelineCastTests(unittest.TestCase):
+    def test_matches_native_character_codes_to_runtime_member_ids(self):
+        performers = [
+            {"position": 1, "memberId": 212, "outfit": "Lanzhu"},
+            {"position": 2, "memberId": 210, "outfit": "Shioriko"},
+            {"position": 3, "memberId": 211, "outfit": "Mia"},
+        ]
+        tracks = [
+            {"kind": "dance", "binding": f"/EntryPoint/Live/Members/Member{slot}/Model",
+             "events": [{"label": "Dance", "values": {"animationName": f"ch{owner:04}_so2056"}}]}
+            for slot, owner in enumerate((210, 211, 212), start=1)
+        ]
+        self.assertEqual(
+            [(actor["position"], actor["memberId"], actor["outfit"])
+             for actor in mv_studio._cast_in_timeline_order(performers, tracks)],
+            [(1, 210, "Shioriko"), (2, 212, "Lanzhu"), (3, 211, "Mia")],
+        )
+        self.assertIs(mv_studio._cast_in_timeline_order(performers, tracks[:2]), performers)
+
+
 @unittest.skipUnless(extractor, "The shared Elichika pack reader is required")
 class MVGameCatalogTests(unittest.TestCase):
     def setUp(self):
@@ -42,6 +62,7 @@ class MVGameCatalogTests(unittest.TestCase):
                 CREATE TABLE m_live_difficulty (live_id INTEGER, live_3d_asset_master_id INTEGER);
                 CREATE TABLE m_live_member_mapping (mapping_id INTEGER, position INTEGER, member_master_id INTEGER,
                     is_center INTEGER, suit_master_id INTEGER);
+                CREATE TABLE m_member (id INTEGER PRIMARY KEY, theme_color INTEGER);
                 CREATE TABLE m_suit (id INTEGER, member_m_id INTEGER, name TEXT, model_asset_path TEXT);
                 INSERT INTO m_live VALUES (12, 'k.song', 4, 'song', NULL, 9, NULL), (13, 'k.second', 5, NULL, NULL, 9, NULL);
                 INSERT INTO m_live_3d_asset VALUES (31, 'timeline', 7, NULL, NULL, 3, NULL);
@@ -49,6 +70,7 @@ class MVGameCatalogTests(unittest.TestCase):
                 INSERT INTO m_live_mv VALUES (12, 7, 1, 31);
                 INSERT INTO m_live_difficulty VALUES (13, 31);
                 INSERT INTO m_live_member_mapping VALUES (9, 1, 101, 1, 51);
+                INSERT INTO m_member VALUES (101, -690631937);
                 INSERT INTO m_suit VALUES (51, 101, 'k.costume', 'costume');
             """)
         with closing(sqlite3.connect(database / "dictionary_en_k.db")) as db, db:
@@ -101,6 +123,7 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual([r["asset"] for r in ios["choreography"]], ["dance"])
         self.assertEqual([r["asset"] for r in ios["shaderDependencies"]], ["stageShader"])
         self.assertEqual(ios["performers"][0]["costumeName"], "Default costume")
+        self.assertEqual(ios["performers"][0]["themeColor"], [214 / 255, 213 / 255, 202 / 255, 1.0])
         self.assertEqual(ios["audio"]["acb"]["pack_name"], "acbpack")
         self.assertEqual(ios["missing"][0]["asset"], "unavailable")
 

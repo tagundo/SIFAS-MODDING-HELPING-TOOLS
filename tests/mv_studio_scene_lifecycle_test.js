@@ -14,6 +14,7 @@ function latch() {
 }
 function fixture(visible = true) {
   const frames = [], samples = [], models = new Map(), holds = new Map(), queued = new Map();
+  const cameras = [];
   const fetched = [], parsing = new Map();
   let world, renderer, onResize, serial = 0;
   THREE.WebGLRenderer = class {
@@ -32,6 +33,8 @@ function fixture(visible = true) {
       world = scene;
       if (scene.autoUpdate) scene.updateMatrixWorld();
       camera.updateMatrixWorld();
+      cameras.push({ position: camera.position.toArray(), rotation: camera.quaternion.toArray(),
+        fov: camera.fov, near: camera.near, far: camera.far });
       const visible = [];
       scene.traverseVisible((node) => { if (node.isSkinnedMesh) visible.push(node.name); });
       frames.push(visible);
@@ -56,11 +59,17 @@ function fixture(visible = true) {
       geometry.morphTargetsRelative = true;
       geometry.morphAttributes.position = [new THREE.Float32BufferAttribute([0,0,0, 0.25,0,0, 0,0,0], 3)];
       const bone = new THREE.Bone(), rig = new THREE.Skeleton([bone]);
+      bone.name = 'Move';
+      bone.userData.elichika_node = 1;
+      if (id === 62) bone.scale.setScalar(1.2);
+      const auxiliary = new THREE.Object3D();
+      auxiliary.name = 'SavedShape';
+      auxiliary.userData.elichika_node = 2;
       const mesh = new THREE.SkinnedMesh(geometry, new THREE.ShaderMaterial({ vertexShader: shader.vertexShader }));
       mesh.name = `model-${id}`;
       mesh.bind(rig, new THREE.Matrix4());
-      root.add(bone, mesh);
-      const info = { mesh, rig, releases: 0, materialsReleased: 0 };
+      root.add(bone, mesh, auxiliary);
+      const info = { mesh, rig, bone, auxiliary, releases: 0, materialsReleased: 0 };
       rig.dispose = () => { info.releases++; };
       models.set(id, info);
       const hold = parsing.get(id);
@@ -96,7 +105,8 @@ function fixture(visible = true) {
       return { ready: hold?.finish.promise || Promise.resolve(), dispose() { info.materialsReleased++; } };
     } },
     ViewerMotionTimeline: { create(root) {
-      return { evaluate(time) { samples.push([root.userData.id, time]); }, applyVisibility() {} };
+      return { evaluatePose(time) { samples.push([root.userData.id, time]); },
+        evaluateGaze() {}, eyePosition() {}, applyVisibility() {} };
     } }
   };
   async function fetch(url) {
@@ -104,12 +114,16 @@ function fixture(visible = true) {
     fetched.push(id);
     return { ok: true, async arrayBuffer() { return Uint8Array.of(id).buffer; } };
   }
-  vm.runInNewContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'),
-    { window, fetch, AbortController, Uint8Array, Uint16Array });
+  const context = vm.createContext({ window, fetch, AbortController, Uint8Array, Uint16Array });
+  const motion = window.ViewerMotionTimeline;
+  vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/viewer-motion-timeline.js'), 'utf8'), context);
+  window.ViewerMotionTimeline = { ...window.ViewerMotionTimeline, ...motion };
+  vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-split.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
     { visible, onError(message) { throw new Error(message); } });
-  return { app, frames, samples, models, holds, queued, fetched, parsing, renderer, mount, window,
+  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window,
     checkResize: onResize, get world() { return world; } };
 }
 
@@ -146,6 +160,52 @@ function checkResizeDraws() {
   assert.equal(f.frames.length, 5);
   assert.equal(f.renderer.size.x, 640);
   assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.dispose();
+}
+
+async function checkNativeCamera() {
+  const f = fixture();
+  const track = { kind: 'camera', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera', events: [
+    { start: 1, duration: 1, values: { preExtrapolationMode: 1, preExtrapolationTime: .25,
+      postExtrapolationMode: 1, postExtrapolationTime: .25, keyframes: [
+        { time: 0, position: [0,2,10], rotation: [0,0,0,1], fov: 34 },
+        { time: 1, position: [0,3,8], rotation: [0,0,0,1], fov: 23 },
+        { time: 1.5, position: [0,4,6], rotation: [0,0,0,1], fov: 20 }
+      ] } },
+    { start: 2.25, duration: 1, values: { position: [2,2,4], rotation: [0,0,-Math.SQRT1_2,Math.SQRT1_2] } }
+  ] };
+  const offsets = { kind: 'camera', nativeClass: 'LiveCameraOffsetTrack', binding: track.binding, events: [
+    { start: 2.25, duration: 1, values: { playableClass: 'LiveCameraOffsetClip', memberPosition: 1,
+      intensity: 2, blendOut: .5 } },
+    { start: 2.75, duration: .5, values: { playableClass: 'LiveCameraOffsetClip', memberPosition: 2,
+      intensity: 1, blendIn: .5 } }
+  ] };
+  const cast = [
+    { id: 'member-1', position: 1, rig: { scaling: { components: [{ targetName: 'ch0210_co0001_body', heightScale: 1.1 }] } } },
+    { id: 'member-2', position: 2, rig: { scaling: { components: [{ targetName: 'ch0212_co0001_body', heightScale: .95 }] } } }
+  ];
+  const value = { tracks: [track, offsets], performers: cast };
+  await f.app.load(value);
+  const shot = (time) => { f.app.seek(time, value); return f.cameras.at(-1); };
+  assert.equal(shot(.5).near, .02);
+  assert.deepEqual(shot(.875).position, [-0,2,10]);
+  assert.equal(shot(.875).fov, 34);
+  assert.deepEqual(shot(2.125).position, [-0,3,8], 'post-Hold follows the active clip endpoint even when stored samples extend past the edited duration');
+  assert.equal(shot(2.125).fov, 23);
+  const cut = shot(2.25);
+  assert.equal(cut.near, .1);
+  assert.equal(cut.far, 1000);
+  assert.equal(cut.fov, 30, 'native fallback is independent of the previous shot FOV');
+  assert(Math.abs(cut.position[0] - (-2.2)) < 1e-12, 'offset uses the rolled local Y direction and native intensity');
+  assert(Math.abs(cut.position[1] - 2) < 1e-12);
+  const mixed = shot(2.875), smooth = .25 ** 2 * (3 - 2 * .25), mixedOffset = .2 * (1 - smooth) - .05 * smooth;
+  assert(Math.abs(mixed.position[0] - (-2 - mixedOffset)) < 1e-12, 'overlapping native offsets sum their smoothstep input weights');
+  offsets.muted = true;
+  assert.deepEqual(shot(2.875).position, [-2,2,4]);
+  f.mount.clientWidth = 960;
+  f.checkResize();
+  assert.equal(f.cameras.at(-1).fov, 40, 'a resize applies stock native aspect correction without requiring another seek');
+  assert.equal(shot(3.3).near, .02, 'gaps beyond the authored Hold keep the editor view');
   f.app.dispose();
 }
 
@@ -251,8 +311,59 @@ async function checkStagePreparation() {
   hidden.app.dispose();
 }
 
+async function checkSavedNodeScaling() {
+  const f = fixture();
+  const spec = { available: true, scaling: { components: [{ entries: [
+    { node: 1, name: 'Move', kind: 'scale', supported: true, application: 'absolute_local_scale',
+      origin: [1, 1, 1], scaled: [1.2, 1.2, 1.2] },
+    { node: 1, name: 'Move', kind: 'position', supported: true, application: 'absolute_local_position',
+      origin: [0, 0, 0], scaled: [2, 0, 0] },
+    { node: 1, name: 'Move', kind: 'rotation', supported: true, application: 'absolute_local_quaternion',
+      interpolation: 'unity_euler_lerp', rotationOrder: 'ZXY', unityEulerOrigin: [0, 0, 0], unityEulerScaled: [0, 90, 0],
+      scaledQuaternion: [0, -Math.SQRT1_2, 0, Math.SQRT1_2] },
+    { node: 2, name: 'SavedShape', kind: 'scale', supported: true, application: 'absolute_local_scale',
+      origin: [1, 1, 1], scaled: [1.3, 1.3, 1.3] },
+  ] }] } };
+  const value = project(61);
+  value.performers[0].rig = spec;
+  value.performers.push({ ...project(62).performers[0], id: 'another', position: 2, rig: spec });
+  const track = { kind: 'dance', nativeClass: 'LiveMemberScalingTrack',
+    binding: '/EntryPoint/Live/Members/Member1/Model', events: [
+      { id: 'scale', start: 1, duration: 2, values: { playableClass: 'LiveMemberScalingClip', intensity: 1, easeIn: 1 } },
+    ] };
+  value.tracks.push(track);
+  await f.app.load(value);
+  const first = f.models.get(61), baked = f.models.get(62);
+  const expectMove = (node, scale, position, rotation) => {
+    assert(Math.abs(node.scale.x - scale) < 1e-10);
+    assert(Math.abs(node.position.x - position) < 1e-10);
+    assert(Math.abs(node.quaternion.y - rotation) < 1e-10);
+  };
+  expectMove(first.bone, 1.2, 2, -Math.SQRT1_2);
+  expectMove(baked.bone, 1.2, 2, -Math.SQRT1_2);
+  f.app.seek(1.5, value);
+  expectMove(first.bone, 1.1, 1, -Math.sin(Math.PI / 8));
+  f.app.seek(2.5, value);
+  expectMove(first.bone, 1, 0, 0);
+  expectMove(baked.bone, 1.2, 2, -Math.SQRT1_2);
+  assert.equal(first.auxiliary.scale.x, 1.3, 'the authored override affects Move only');
+  f.app.seek(4, value);
+  expectMove(first.bone, 1.2, 2, -Math.SQRT1_2);
+  f.app.seek(2.5, value);
+  track.muted = true;
+  f.app.seek(2.5, value);
+  expectMove(first.bone, 1.2, 2, -Math.SQRT1_2);
+  track.muted = false;
+  track.binding = '/EntryPoint/Live/Members/Member1/NotModel';
+  f.app.seek(2.5, value);
+  expectMove(first.bone, 1.2, 2, -Math.SQRT1_2);
+  f.app.dispose();
+}
+
 (async () => {
   checkResizeDraws();
+  await checkNativeCamera();
+  await checkSavedNodeScaling();
   const f = fixture(), first = project(1);
   await f.app.load(first);
   assert.deepEqual(f.frames.at(-1), ['model-1', 'outline-1']);
@@ -276,6 +387,7 @@ async function checkStagePreparation() {
   f.app.seek(5, first);
   assert.deepEqual(f.frames.at(-1), [], 'an offscreen skinned body and its outline should both be culled');
   const info = f.models.get(1);
+  assert.equal(info.mesh.frustumCulled, false, 'animated faces must bypass static glTF bounds');
   assert.equal(info.mesh.visible, true, 'culling must not change visibility outside the renderer');
   f.renderer.shadowMap.enabled = true;
   f.app.seek(5, first);

@@ -97,6 +97,28 @@ def lzma_bundle(payload, *, declared_size=None, version=6, info_at_end=False, in
     return prefix + struct.pack(">QIII", length, len(packed_info), len(info), flags) + padding + body
 
 
+class StageAudienceTests(unittest.TestCase):
+    def test_uses_typed_stage_point_with_world_transform_and_x_mirror(self):
+        import numpy as np
+
+        script = SimpleNamespace(type=SimpleNamespace(name="MonoScript"))
+        audience = SimpleNamespace(type=SimpleNamespace(name="GameObject"), assets_file=object(), path_id=42)
+        world = np.eye(4)
+        world[:3, 3] = [2, 1, 30]
+        transform = object()
+        script_metadata = {"m_ClassName": "LiveCoreStageModel", "m_Namespace": "LLAS.Scene.Live.Components",
+                           "m_AssemblyName": "Assembly-CSharp.dll"}
+        scene = SimpleNamespace(tree=lambda _: script_metadata, transforms={viewer._key(audience): transform},
+                                world=Mock(return_value=world))
+        native = {"m_Script": {"m_PathID": 41}, "audiencesPoint": {"m_PathID": 42}}
+        with patch.object(viewer, "_ref", side_effect=lambda owner, pointer: {41: script, 42: audience}[pointer["m_PathID"]]):
+            self.assertEqual(viewer._stage_audience_point(scene, None, native), (-2, 1, 30))
+            scene.world.assert_called_once_with(transform)
+            self.assertIsNone(viewer._stage_audience_point(scene, None, dict(native, audiencesPoint={"m_FileID": 1, "m_PathID": 42})))
+            script_metadata["m_ClassName"] = "Unrelated"
+            self.assertIsNone(viewer._stage_audience_point(scene, None, native))
+
+
 class SessionTests(unittest.TestCase):
     def setUp(self):
         viewer._SESSIONS.clear()

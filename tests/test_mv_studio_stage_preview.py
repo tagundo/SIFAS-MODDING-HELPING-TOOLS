@@ -32,6 +32,8 @@ class StagePreviewTests(unittest.TestCase):
             self.track("unbound", "camera"),
             self.track("other-camera", "camera", binding="/EntryPoint/Live/Other"),
             light,
+            self.track("audience", "crowd", nativeClass="LivePenlightTrack",
+                       binding="/EntryPoint/Live/Stages/MainStage/Effect/aud_root/aud_01"),
             late_light,
             self.track("muted-light", "lighting", muted=True),
             self.track("mouth", "mouth"),
@@ -108,8 +110,9 @@ class StagePreviewTests(unittest.TestCase):
 
         def on_stage(snapshot):
             self.assertEqual(self.history, original_history[:original_history.index(("load", "actor"))])
-            self.assertEqual(set(snapshot), {"duration", "stage", "assets", "tracks", "quality"})
-            self.assertEqual([track["id"] for track in snapshot["tracks"]], ["light"])
+            self.assertEqual(set(snapshot), {"duration", "stage", "assets", "tracks", "quality", "source"})
+            self.assertEqual(snapshot["source"], {"kind": "game"})
+            self.assertEqual([track["id"] for track in snapshot["tracks"]], ["light", "audience"])
             self.assertEqual([event["id"] for event in snapshot["tracks"][0]["events"]], ["light-event", "held-light"])
             self.assertEqual([asset["kind"] for asset in snapshot["assets"]], ["effect", "props"])
             self.assertEqual(snapshot["duration"], 12.0)
@@ -138,6 +141,26 @@ class StagePreviewTests(unittest.TestCase):
                 self.assertIsNone(project["stage"])
                 self.assertTrue(project["performers"][0]["glb"])
                 self.assertIn("The original stage model is unavailable for preview.", project["warnings"])
+
+    def test_audience_uses_original_palette_and_preview_cast_positions(self):
+        first, second = {"position": 1, "memberId": 201, "themeColor": [.1, .2, .3, 1]}, {
+            "position": 2, "memberId": 210, "themeColor": [.4, .5, .6, 1],
+        }
+        self.selection["performers"] = [first, second]
+        for position, member in ((1, 210), (2, 201)):
+            track = self.track("dance-" + str(position), "dance",
+                               binding=f"/EntryPoint/Live/Members/Member{position}/Model")
+            track["events"][0]["values"]["animationName"] = f"ch{member:04d}_dance"
+            self.tracks.append(track)
+        callback = Mock()
+        project = self.import_game(on_stage=callback)
+        partial, = callback.call_args.args
+        original = {"1": first["themeColor"], "2": second["themeColor"]}
+        self.assertEqual(project["stage"]["originalMemberThemeColors"], original)
+        self.assertEqual(partial["stage"]["originalMemberThemeColors"], original)
+        self.assertEqual(partial["stage"]["memberThemeColors"], {"1": second["themeColor"], "2": first["themeColor"]})
+        self.assertEqual([entry["themeColor"] for entry in project["performers"]],
+                         [second["themeColor"], first["themeColor"]])
 
     def test_valid_stage_is_published_when_effect_preview_fails(self):
         self.failed = {"effect"}

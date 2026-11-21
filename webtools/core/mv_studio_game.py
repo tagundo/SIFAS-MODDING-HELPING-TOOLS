@@ -265,9 +265,23 @@ def _performers(master, db, mapping, dictionary, extractor, missing):
     fields = "position,member_master_id,is_center,suit_master_id"
     args = (mapping,)
     source = _rows(master, f"SELECT {fields} FROM m_live_member_mapping WHERE mapping_id=? ORDER BY position", args)
+    non_playable = {}
     if not source:
         source = _rows(master, f"SELECT {fields} FROM m_live_override_member_mapping WHERE mapping_id=? ORDER BY position", args)
+        non_playable = dict(_rows(master, "SELECT position,member_non_playable_master_id FROM m_live_override_member_mapping "
+                                          "WHERE mapping_id=? AND member_master_id IS NULL AND position BETWEEN 1 AND 64", args))
     names = game._names(extractor)
+
+    def themes_for(table, ids):
+        keys = tuple(sorted({value for value in ids if type(value) is int and value > 0}))
+        if not keys:
+            return {}
+        slots = ",".join("?" for _ in keys)
+        return dict(_rows(master, f"SELECT id,theme_color FROM {table} WHERE id IN ({slots})", keys))
+
+    themes = themes_for("m_member", (member for position, member, _, _ in source
+                                     if type(position) is int and 1 <= position <= 64))
+    non_playable_themes = themes_for("m_member_non_playable", non_playable.values())
     performers = []
     for position, member, center, suit in source:
         if type(position) is not int or not 1 <= position <= 64:
@@ -288,6 +302,10 @@ def _performers(master, db, mapping, dictionary, extractor, missing):
         performers.append({"position": position, "memberId": member, "memberName": names.get(member, str(member or "")),
                            "isCenter": bool(center), "costumeId": chosen["id"] if chosen else None,
                            "costumeName": chosen["name"] if chosen else None, "costumes": choices, "model": model})
+        color = themes.get(member) if member is not None else non_playable_themes.get(non_playable.get(position))
+        if type(color) is int and -(1 << 31) <= color < 1 << 32:
+            # ColorVO stores signed SQLite integers as packed RGBA bytes.
+            performers[-1]["themeColor"] = [((color >> shift) & 255) / 255 for shift in (24, 16, 8, 0)]
     return performers
 
 

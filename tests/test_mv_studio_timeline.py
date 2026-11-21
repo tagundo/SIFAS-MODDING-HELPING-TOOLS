@@ -2,9 +2,11 @@
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+import io
 import json
 import os
 import unittest
+import zipfile
 
 from webtools.core import mv_studio_timeline as studio
 
@@ -70,6 +72,46 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertTrue(all(a["time"] < b["time"] for a, b in zip(points, points[1:])))
         self.assertIn("exact companion asset packs", " ".join(before["warnings"]))
         json.dumps(before, allow_nan=False)
+
+    def test_original_split_masks_and_clip_pointers_match_both_platforms(self):
+        split = []
+        for platform, raw in self.raw.items():
+            parsed = studio.parse_timeline(raw, platform, preview_split=True)
+            composition = parsed.pop("splitScreen")
+            self.assertEqual(parsed, self.original[platform], "preview-only data leaves the native revision schema intact")
+            self.assertEqual(len(composition["masks"]), 9)
+            self.assertEqual(len(composition["events"]), 8)
+            track = next(track for track in parsed["tracks"] if track["nativeClass"] == "LiveSplitScreenTrack")
+            first = track["events"][0]
+            self.assertAlmostEqual(first["start"], 242 / 60)
+            self.assertEqual([first["values"][key] for key in ("mainCamera", "subCamera1", "subCamera2", "subCamera3")], [0, 1, 0, 0])
+            mask, _, _, fourth = composition["events"][first["id"]]
+            self.assertIsNone(fourth)
+            self.assertEqual(mask["pointer"], first["values"]["mask1"])
+            geometry = composition["masks"][mask["key"]]
+            self.assertEqual(len(geometry["positions"]), 12)
+            self.assertEqual(geometry["indices"], [0, 1, 2, 0, 2, 3])
+            self.assertAlmostEqual(geometry["bounds"][0], 3.5, places=5)
+            self.assertAlmostEqual(geometry["bounds"][1], 2.0, places=5)
+            self.assertIs(studio.export_timeline(raw, platform, parsed["tracks"]), raw)
+            split.append(composition)
+        self.assertEqual(*split)
+
+    def test_saved_project_without_split_metadata_recovers_original_mask_bindings(self):
+        from webtools.core import mv_studio
+
+        project = mv_studio._blank("Older project")
+        project.update(duration=self.original["a"]["duration"], tracks=deepcopy(self.original["a"]["tracks"]))
+        split_track = next(track for track in project["tracks"] if track["nativeClass"] == "LiveSplitScreenTrack")
+        split_track["events"][0]["start"] = 4.1
+        with io.BytesIO() as handle:
+            with zipfile.ZipFile(handle, "w") as archive:
+                archive.writestr("project.json", json.dumps(project))
+                archive.writestr("source-timeline.unity", self.raw["a"])
+            with zipfile.ZipFile(handle, "r") as archive, patch.object(mv_studio, "_register", side_effect=lambda value, source: value):
+                reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        self.assertEqual(reopened["tracks"], project["tracks"])
+        self.assertEqual(len(reopened["splitScreen"]["masks"]), 9)
 
     def test_native_existing_point_and_bloom_edit_reopen_with_original_platform(self):
         import UnityPy

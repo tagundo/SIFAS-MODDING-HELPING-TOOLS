@@ -274,6 +274,11 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
     duration = _time(clip.get("m_Duration", 0), "clip duration", minimum=0)
     values = {label: _public(clip[field], warnings) for field, label in _CLIP_TIMING.items() if field in clip}
     editable = list(values)
+    if kind in {"crowd", "lighting"} or mono[key][2] in {"LiveColoringTrack", "LiveMemberScalingTrack"}:
+        for field, label in (("m_MixInCurve", "mixIn"), ("m_MixOutCurve", "mixOut")):
+            curve = clip.get(field)
+            if isinstance(curve, dict) and curve.get("m_Curve"):
+                values[label] = _public(curve["m_Curve"], warnings)
     asset = _pointer(track_obj, clip.get("m_Asset"))
     label = _label(clip.get("m_DisplayName"), "Clip " + str(index + 1))
     if asset is not None:
@@ -316,7 +321,7 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
             "values": values, "editableValues": editable}
 
 
-def parse_timeline(raw: bytes, name: str) -> dict:
+def parse_timeline(raw: bytes, name: str, *, preview_split=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -422,7 +427,14 @@ def parse_timeline(raw: bytes, name: str) -> dict:
             append(key)
     if not tracks:
         raise ValueError("The native TimelineAsset has no readable tracks.")
-    return {"duration": duration, "tracks": tracks, "warnings": warnings.result()}
+    result = {"duration": duration, "tracks": tracks, "warnings": warnings.result()}
+    if preview_split:
+        from . import mv_studio_split
+
+        split = mv_studio_split.read(objects, mono, tracks, deadline)
+        if split:
+            result["splitScreen"] = split
+    return result
 
 
 # Only values verified in the native track and playable schemas are writable.
