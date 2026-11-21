@@ -19,6 +19,7 @@
   const vector = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
   const dimension = value => Number.isInteger(value) && value > 0 && value <= 1024 && (value & (value - 1)) === 0;
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
+  const channelWidth = { translation: 3, overlayTint: 4, overlayUV: 4 };
 
   function validTexture(source) {
     const { png, width, height } = source || {};
@@ -53,19 +54,21 @@
           material?.queue !== 2900 || !vector(material.tint, 4) || !vector(material.uv, 4) ||
           !Array.isArray(meshes) || !meshes.length || meshes.length > 8 || !Array.isArray(animation?.channels) ||
           !Number.isFinite(animation.start) || !Number.isFinite(animation.duration) || !(animation.duration > 0) ||
-          animation.loop !== false || animation.channels.length !== meshes.length) return null;
+          animation.loop !== false || animation.channels.length > meshes.length * 3) return null;
       const curves = new Map();
+      for (const mesh of meshes) {
+        if (!Number.isInteger(mesh?.path) || curves.has(mesh.path) || !id(mesh.name) ||
+            !vector(mesh.position, 3) || !vector(mesh.rotation, 4) || !vector(mesh.scale, 3)) return null;
+        curves.set(mesh.path, {});
+      }
       for (const channel of animation.channels) {
         const { kind, path, curves: values } = channel || {};
-        if (kind !== "overlayUV" || !Number.isInteger(path) || curves.has(path) || !Array.isArray(values) ||
-            values.length !== 4 || !values.every(curve => boundedCurve(curve, validCurve))) return null;
-        curves.set(path, values);
+        const fields = curves.get(path);
+        if (!fields || !Object.hasOwn(channelWidth, kind) || Object.hasOwn(fields, kind) ||
+            !Array.isArray(values) || values.length !== channelWidth[kind] ||
+            !values.every(curve => boundedCurve(curve, validCurve))) return null;
+        fields[kind] = values;
       }
-      for (const mesh of meshes) {
-        if (!curves.has(mesh?.path) || !id(mesh.name) || !vector(mesh.position, 3) ||
-            !vector(mesh.rotation, 4) || !vector(mesh.scale, 3)) return null;
-      }
-      if (new Set(meshes.map(mesh => mesh.path)).size !== meshes.length) return null;
       const key = JSON.stringify([trackId, eventId]);
       if (records.has(key)) return null;
       records.set(key, { ...cue, curves });
@@ -138,6 +141,23 @@
     const textureRow = row === null ? Math.floor(index / columns) : row;
     const x = uOffset + uScale * column / columns, y = vOffset + vScale * (rows - 1 - textureRow) / rows;
     uv.set(uScale / columns, vScale / rows, x, 1 - vScale / rows - y);
+  }
+
+  function updateMesh({ mesh, uv, tint, channels }, time, evaluate) {
+    const { translation, overlayTint, overlayUV } = channels;
+    if (translation) {
+      const [x, y, z] = translation;
+      mesh.position.set(-evaluate(x, time), evaluate(y, time), evaluate(z, time));
+    }
+    if (overlayTint) {
+      const [r, g, b, a] = overlayTint;
+      tint.set(evaluate(r, time), evaluate(g, time), evaluate(b, time), evaluate(a, time));
+    }
+    if (overlayUV) {
+      const [sx, sy, x, y] = overlayUV;
+      const verticalScale = evaluate(sy, time);
+      uv.set(evaluate(sx, time), verticalScale, evaluate(x, time), 1 - verticalScale - evaluate(y, time));
+    }
   }
 
   function neutralClip(event) {
@@ -221,7 +241,9 @@
           mesh.scale.fromArray(authored.scale);
           mesh.renderOrder = cue.material.queue;
           group.add(mesh);
-          meshes.push({ mesh, uv: mesh.material.uniforms.uTextureST.value, values: cue.curves.get(authored.path) });
+          const uniforms = mesh.material.uniforms;
+          meshes.push({ mesh, uv: uniforms.uTextureST.value, tint: uniforms.uTint.value,
+            channels: cue.curves.get(authored.path) });
         }
         root.add(group);
       }
@@ -274,11 +296,7 @@
           }
           const { start, duration } = cue.animation;
           const local = start + Math.min(duration, elapsed);
-          for (const { uv, values } of meshes) {
-            const sx = curves.evaluate(values[0], local), sy = curves.evaluate(values[1], local);
-            const x = curves.evaluate(values[2], local), y = curves.evaluate(values[3], local);
-            uv.set(sx, sy, x, 1 - sy - y);
-          }
+          for (const mesh of meshes) updateMesh(mesh, local, curves.evaluate);
         }
       },
       dispose

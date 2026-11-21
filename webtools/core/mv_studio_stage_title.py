@@ -164,17 +164,26 @@ def _prefab(objects, game, deadline):
     if row is None:
         return None
     tr, fields = row[1]["Transform"]
-    if _authored_trs(fields) != _IDENTITY or len(fields["m_Children"]) != 2:
+    children = fields["m_Children"]
+    if _authored_trs(fields) != _IDENTITY or len(children) not in (2, 3):
         return None
     meshes, materials = [], []
-    for ref in fields["m_Children"]:
+    has_particle = False
+    for ref in children:
         go = _transform_child(objects, tr, ref)
-        mesh = _mesh(objects, go) if go is not None else None
-        if mesh is None:
+        if go is None:
             return None
+        mesh = _mesh(objects, go)
+        if mesh is None:
+            sibling = _components(objects, go, {"Transform", "ParticleSystem", "ParticleSystemRenderer"})
+            if (has_particle or sibling is None or sibling[1]["Transform"][1]["m_Children"]
+                    or not sibling[1]["ParticleSystemRenderer"][1]["m_Enabled"]):
+                return None
+            has_particle = True
+            continue
         meshes.append(mesh[0])
         materials.append(mesh[1])
-    if materials[0] is not materials[1]:
+    if len(meshes) != 2 or materials[0] is not materials[1]:
         return None
     result = _animator(objects, *row[1]["Animator"], deadline)
     paths = {mesh["path"] for mesh in meshes}
@@ -182,11 +191,14 @@ def _prefab(objects, game, deadline):
         return None
     animation, cost = result
     channels = animation["channels"]
+    # The mixed prefab animates only its two mesh children. Its billboard is
+    # simulated separately and shares the same timeline event identity.
+    kinds = {"overlayUV", "overlayTint", "translation"} if has_particle else {"overlayUV"}
+    expected = {(path, kind) for path in paths for kind in kinds}
     if (animation["start"] != 0 or not 0 < animation["duration"] <= 15 or animation["loop"] or cost > 2048
-            or len(channels) != 2 or {(row["path"], row["kind"]) for row in channels} !=
-            {(path, "overlayUV") for path in paths}):
+            or len(channels) != len(expected) or {(row["path"], row["kind"]) for row in channels} != expected):
         return None
-    return meshes, materials[0], animation
+    return meshes, materials[0], animation, has_particle
 
 
 def _material(objects, item):
@@ -256,11 +268,10 @@ def _playable(objects, owner, tree, event):
     return _local(objects, asset, fields.get("prefabGameObject"), "GameObject")
 
 
-def _attach_particles(result, candidates, mesh_texture, deadline):
+def _attach_particles(result, candidates, indexed, deadline):
     if not 0 < len(candidates) <= 4:
         return
     textures = result["textures"]
-    indexed = {viewer._key(mesh_texture): 0}
     particle_cues = []
     for track_id, event_id, sources in candidates:
         pending, emitters, indices = [], [], dict(indexed)
@@ -268,8 +279,10 @@ def _attach_particles(result, candidates, mesh_texture, deadline):
             for emitter, reader in sources:
                 key = viewer._key(reader)
                 if key not in indices:
+                    if len(textures) + len(pending) >= 8:
+                        break
                     image = _texture(reader, deadline)
-                    if image is None or len(textures) + len(pending) >= 8:
+                    if image is None:
                         break
                     indices[key] = len(textures) + len(pending)
                     pending.append(image)
@@ -285,12 +298,12 @@ def _attach_particles(result, candidates, mesh_texture, deadline):
 
 
 def read(objects, mono, tracks, deadline):
-    """Resolve a native mesh title and any supported deterministic companion particle cues."""
+    """Resolve native mesh titles and any supported deterministic companion particle cues."""
     from . import mv_studio_stage_title_particles as particles
 
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
-    cue, texture, particle_cues = None, None, []
+    mesh_candidates, particle_cues = {}, []
     for track in tracks:
         source = controls.get(track["id"])
         if source is None or track.get("binding") or track.get("bindings") or motion._quality(track["label"]) != "stage_display":
@@ -307,20 +320,22 @@ def read(objects, mono, tracks, deadline):
             viewer._remaining(deadline)
             try:
                 game = _playable(objects, owner, tree, event)
-                if game is None:
-                    continue
-                mesh = _prefab(objects, game, deadline)
-                if mesh is not None:
-                    meshes, original, animation = mesh
-                    material = _material(objects, original)
-                    if material is not None:
-                        if cue is not None:
-                            return None
-                        fields, texture = material
-                        cue = {"trackId": track["id"], "eventId": event["id"], "texture": 0, "material": fields,
-                               "meshes": meshes, "animation": animation}
             except _UNSUPPORTED:
                 continue
+            if game is None:
+                continue
+            try:
+                mesh = _prefab(objects, game, deadline)
+                if mesh is not None:
+                    meshes, original, animation, has_particle = mesh
+                    material = _material(objects, original)
+                    if material is not None:
+                        fields, texture = material
+                        cue = {"trackId": track["id"], "eventId": event["id"], "material": fields,
+                               "meshes": meshes, "animation": animation}
+                        mesh_candidates[has_particle] = None if has_particle in mesh_candidates else (cue, texture)
+            except _UNSUPPORTED:
+                pass
             if len(particle_cues) > 4:
                 continue
             try:
@@ -329,14 +344,25 @@ def read(objects, mono, tracks, deadline):
                 continue
             if sources is not None:
                 particle_cues.append((track["id"], event["id"], sources))
-    if cue is None:
+    cues, textures, indexed = [], [], {}
+    for has_particle in (False, True):
+        candidate = mesh_candidates.get(has_particle)
+        if candidate is None:
+            continue
+        cue, texture = candidate
+        key = viewer._key(texture)
+        if key not in indexed:
+            try:
+                image = _texture(texture, deadline)
+            except _UNSUPPORTED:
+                continue
+            if image is None:
+                continue
+            indexed[key] = len(textures)
+            textures.append(image)
+        cues.append({**cue, "texture": indexed[key]})
+    if not cues:
         return None
-    try:
-        image = _texture(texture, deadline)
-    except _UNSUPPORTED:
-        return None
-    if image is None:
-        return None
-    result = {"geometry": _QUAD, "textures": [image], "cues": [cue]}
-    _attach_particles(result, particle_cues, texture, deadline)
+    result = {"geometry": _QUAD, "textures": textures, "cues": cues}
+    _attach_particles(result, particle_cues, indexed, deadline)
     return result

@@ -160,10 +160,23 @@ async function runParticles() {
   const vanish = { ...emitter, name: "title_vanish", active: [1.5, null],
     atlas: { tiles: [2, 4], row: null, frame: ["linear", [[0, 0], [1, 1]]] } };
   const unsupported = { ...emitter, name: "unsupported", atlas: { ...emitter.atlas, row: 4 } };
+  const eventId = particleTrack.events[0].id;
   source.particles = [
-    { trackId: particleTrack.id, eventId: particleTrack.events[0].id, emitters: [emitter, vanish] },
-    { trackId: particleTrack.id, eventId: particleTrack.events[0].id, emitters: [unsupported] }
+    { trackId: particleTrack.id, eventId, emitters: [emitter, vanish] },
+    { trackId: particleTrack.id, eventId, emitters: [unsupported] }
   ];
+  const secondCue = {
+    ...structuredClone(source.cues[0]), trackId: particleTrack.id, eventId,
+    animation: { start: 0, duration: 2, loop: false, channels: [
+      { kind: "translation", path: 123, curves: [["linear", [[0, -8], [1, 0]]], constant(.47), constant(-7)] },
+      { kind: "overlayTint", path: 123, curves: [["linear", [[0, 1], [1, 0]]], constant(.75), constant(1), constant(1)] },
+      { kind: "overlayUV", path: 123, curves: [constant(1), constant(.25), constant(0), constant(.62)] },
+      { kind: "overlayUV", path: 456, curves: [constant(1), constant(.25), constant(0), constant(.87)] }
+    ] }
+  };
+  secondCue.meshes[0].name = "title_up";
+  secondCue.meshes[1].name = "title_doun";
+  source.cues.push(secondCue);
   const project = { tracks: [track, particleTrack], quality: { values: { stage_display: true } } };
   let loads = 0;
   const local = { ...T, TextureLoader: class {
@@ -172,11 +185,15 @@ async function runParticles() {
       return new T.Texture({ width: 1, height: 1 });
     }
   } };
+  const invalid = structuredClone(source);
+  invalid.cues[1].animation.channels.push(invalid.cues[1].animation.channels[0]);
+  assert.equal(await MVStudioTitle.apply(local, root, invalid), null, "reject duplicate writes to a single mesh channel");
   const title = await MVStudioTitle.apply(local, root, source);
   assert.ok(title);
   assert.equal(loads, 1, "mesh titles and particles share their texture");
-  assert.equal(root.children.length, 2, "an unsupported optional emitter leaves valid groups intact");
-  const [quads, group] = root.children;
+  assert.equal(root.children.length, 3, "two mesh cues coexist with one supported particle group");
+  const [quads, animated, group] = root.children;
+  const [top, bottom] = animated.children;
   const [mesh, second] = group.children;
   assert.equal(mesh.geometry, quads.children[0].geometry);
   assert.equal(mesh.material.name, "Native stage title particle");
@@ -190,6 +207,13 @@ async function runParticles() {
   assert.equal(group.visible, true);
   assert.equal(mesh.visible, true);
   assert.equal(second.visible, false);
+  assert.equal(animated.visible, true, "mesh and particle groups can share one track/event");
+  compare(top.position.toArray(), [4, .47, -7]);
+  compare(top.material.uniforms.uTint.value.toArray(), [.5, .75, 1, 1]);
+  compare(top.material.uniforms.uTextureST.value.toArray(), [1, .25, 0, .13]);
+  compare(bottom.position.toArray(), secondCue.meshes[1].position);
+  compare(bottom.material.uniforms.uTint.value.toArray(), [1, 1, 1, 1]);
+  compare(bottom.material.uniforms.uTextureST.value.toArray(), [1, .25, 0, -.12]);
   compare(mesh.scale.toArray(), [7 * 4.65, 8 * 2.25 * 1.25, 1]);
   compare(mesh.material.uniforms.uTint.value.toArray(), [.5, 1, 1, .75]);
   compare(mesh.material.uniforms.uTextureST.value.toArray(), [1, .25, 0, 0]);
@@ -207,9 +231,12 @@ async function runParticles() {
   title.update(20.5, project);
   assert.equal(mesh.visible, true, "rewind reconstructs deterministic life and gradient");
   compare(mesh.material.uniforms.uTint.value.toArray(), [.5, 1, 1, .75]);
+  compare(top.position.toArray(), [4, .47, -7]);
+  compare(top.material.uniforms.uTint.value.toArray(), [.5, .75, 1, 1]);
   particleTrack.muted = true;
   title.update(20.5, project);
   assert.equal(group.visible, false);
+  assert.equal(animated.visible, false);
 
   let disposed = 0;
   mesh.material.addEventListener("dispose", () => disposed++);
@@ -217,7 +244,7 @@ async function runParticles() {
   title.dispose();
   assert.equal(disposed, 2);
   assert.equal(root.children.length, 0);
-  console.log("Native title particles: fixed bursts, atlas rows and whole sheets, size/color, scrub and shared cleanup.");
+  console.log("Native title cues: shared texture, absolute mesh translation and tint, fixed particle bursts, atlas, scrub and cleanup.");
 }
 
 run().then(runParticles).catch(error => { console.error(error); process.exitCode = 1; });

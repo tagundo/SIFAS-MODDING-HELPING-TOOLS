@@ -184,8 +184,12 @@ class ActualTimelineTests(unittest.TestCase):
             parsed = studio.parse_timeline(raw, platform, preview_stage_title=True)
             title = parsed.pop("stageTitle")
             self.assertEqual(parsed, self.original[platform])
-            cue, = title["cues"]
+            cue, main = title["cues"]
             self.assertEqual({mesh["name"] for mesh in cue["meshes"]}, {"title_L", "title_R"})
+            self.assertEqual({mesh["name"] for mesh in main["meshes"]}, {"title_up", "title_doun"})
+            self.assertEqual({row["kind"] for row in main["animation"]["channels"]},
+                             {"overlayUV", "overlayTint", "translation"})
+            self.assertEqual(main["texture"], cue["texture"])
             self.assertEqual(len(title["textures"]), 3)
             self.assertTrue(all((texture["width"], texture["height"]) == (512, 512)
                                 for texture in title["textures"]))
@@ -194,6 +198,7 @@ class ActualTimelineTests(unittest.TestCase):
             self.assertAlmostEqual(event["start"], 350 / 60)
             self.assertAlmostEqual(event["start"] + event["duration"], 670 / 60)
             first, last = title["particles"]
+            self.assertEqual((main["trackId"], main["eventId"]), (first["trackId"], first["eventId"]))
             self.assertEqual([emitter["name"] for emitter in first["emitters"]], ["title_main"])
             self.assertEqual({emitter["name"] for emitter in last["emitters"]},
                              {"title_main", "title_sub", "title_main_vanish", "square", "block"})
