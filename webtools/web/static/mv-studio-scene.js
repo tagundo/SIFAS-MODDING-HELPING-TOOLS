@@ -346,6 +346,7 @@
 
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
+    let stageTitle = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -514,6 +515,8 @@
 
     function clear() {
       physicsClock?.reset();
+      stageTitle?.dispose();
+      stageTitle = null;
       lastShaftFrame = null;
       resetShafts = true;
       // Actors borrow stage geometries. Detach the instances before clearing the stage.
@@ -975,6 +978,12 @@
         }
       }
       if (!active()) return;
+      const title = await global.MVStudioTitle?.apply(T, scene, value.stageTitle);
+      if (!active()) {
+        title?.dispose();
+        return;
+      }
+      stageTitle = title;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1219,6 +1228,7 @@
       post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
+      stageTitle?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);

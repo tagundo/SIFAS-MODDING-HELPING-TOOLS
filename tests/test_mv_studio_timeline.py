@@ -178,6 +178,24 @@ class ActualTimelineTests(unittest.TestCase):
         self.assertEqual(reopened["tracks"], project["tracks"])
         self.assertEqual(len(reopened["splitScreen"]["masks"]), 9)
 
+    def test_native_world_display_title_uses_same_assets_on_both_platforms(self):
+        descriptors = []
+        for platform, raw in self.raw.items():
+            parsed = studio.parse_timeline(raw, platform, preview_stage_title=True)
+            title = parsed.pop("stageTitle")
+            self.assertEqual(parsed, self.original[platform])
+            cue, = title["cues"]
+            self.assertEqual({mesh["name"] for mesh in cue["meshes"]}, {"title_L", "title_R"})
+            texture, = title["textures"]
+            self.assertEqual((texture["width"], texture["height"]), (512, 512))
+            track = next(track for track in parsed["tracks"] if track["id"] == cue["trackId"])
+            event = next(event for event in track["events"] if event["id"] == cue["eventId"])
+            self.assertAlmostEqual(event["start"], 350 / 60)
+            self.assertAlmostEqual(event["start"] + event["duration"], 670 / 60)
+            self.assertIs(studio.export_timeline(raw, platform, parsed["tracks"]), raw)
+            descriptors.append(title)
+        self.assertEqual(*descriptors)
+
     def test_native_existing_point_and_bloom_edit_reopen_with_original_platform(self):
         import UnityPy
 

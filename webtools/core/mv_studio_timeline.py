@@ -332,7 +332,7 @@ def _shaft_slot(track):
 
 
 def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_motion=False,
-                   preview_member_shafts=False) -> dict:
+                   preview_member_shafts=False, preview_stage_title=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -455,6 +455,12 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         stage_motion = mv_studio_stage_motion.read(objects, mono, tracks, deadline)
         if stage_motion:
             result["stageMotion"] = stage_motion
+    if preview_stage_title:
+        from . import mv_studio_stage_title
+
+        stage_title = mv_studio_stage_title.read(objects, mono, tracks, deadline)
+        if stage_title:
+            result["stageTitle"] = stage_title
     return result
 
 

@@ -209,5 +209,5 @@
     return { update };
   }
 
-  global.MVStudioStageMotion = { apply, clipTime };
+  global.MVStudioStageMotion = { apply, clipTime, evaluate, validCurve };
 })(typeof window !== "undefined" ? window : globalThis);
