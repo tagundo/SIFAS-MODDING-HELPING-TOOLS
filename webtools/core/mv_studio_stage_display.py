@@ -1,0 +1,107 @@
+"""Read the screen materials referenced by the native stage display component."""
+
+import math
+
+from . import model_viewer as viewer
+from .mv_studio_stage_coloring import _path
+
+
+_STAGE = "/EntryPoint/Live/Stages/MainStage/Effect/"
+_SHADERS = {
+    "AS/General/Opaque": (8330475765356442367, "cab-618a998abe328b9a2b05b370a5907b3e"),
+    "AS/General/Transparent": (7151384334892346267, "cab-adf9ba7b61bd035c754bf74ae44927cb"),
+}
+
+
+def _shader_matches(material, tree, name):
+    pointer = tree.get("m_Shader", {})
+    shader = viewer._ref(material, pointer)
+    if shader is not None:
+        return shader.type.name == "Shader" and shader.read_typetree().get("m_ParsedForm", {}).get("m_Name") == name
+    path_id, serialized_file = _SHADERS[name]
+    file_id = pointer.get("m_FileID", 0)
+    references = material.assets_file.externals
+    if pointer.get("m_PathID") != path_id or not 0 < file_id <= len(references):
+        return False
+    return references[file_id - 1].path.replace("\\", "/").rsplit("/", 1)[-1].lower() == serialized_file
+
+
+def binding(scene, component, tree):
+    if not tree.get("m_Enabled"):
+        return None
+    script = viewer._ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return None
+    identity = scene.tree(script)
+    if tuple(identity.get(key) for key in ("m_AssemblyName", "m_Namespace", "m_ClassName")) != (
+            "Assembly-CSharp.dll", "LLAS.Scene.Live.Components", "LiveCoreStageDisplay"):
+        return None
+    game = viewer._ref(component, tree.get("m_GameObject"))
+    renderer = viewer._ref(component, tree.get("renderer"))
+    fallback = viewer._ref(component, tree.get("material2DReference"))
+    references = tree.get("materialReferences", [])
+    names = _path(scene, game)
+    if (len(names) < 2 or renderer is None or renderer.type.name != "MeshRenderer" or
+            fallback is None or not isinstance(references, list) or not 0 < len(references) <= 16):
+        return None
+    source_game = viewer._ref(renderer, scene.tree(renderer).get("m_GameObject"))
+    if source_game is None or _path(scene, source_game)[:len(names)] != names:
+        return None
+    variants = [(viewer._ref(component, row.get("bgMaterial")), viewer._ref(component, row.get("logoMaterial")))
+                for row in references]
+    return viewer._key(renderer), (_STAGE + "/".join(names[1:]), fallback, variants)
+
+
+def _material(scene, materials, material, transparent):
+    if material is None or material.type.name != "Material":
+        return None
+    tree = scene.tree(material)
+    if tree.get("m_ShaderKeywords") or not _shader_matches(
+            material, tree, "AS/General/Transparent" if transparent else "AS/General/Opaque"):
+        return None
+    floats = viewer._properties(tree, "m_Floats")
+    if floats.get("_VERTEX_COLOR") or floats.get("_SATURATE"):
+        return None
+    cull, queue = floats.get("_CullMode", 0), tree.get("m_CustomRenderQueue", -1)
+    stencil = (floats.get("_StencilComp", 8), floats.get("_StencilRef", 2),
+               floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0))
+    if (cull not in (0, 1, 2) or type(queue) is not int or
+            stencil != (8, 2, 0 if transparent else 2, 0)):
+        return None
+    if transparent and (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1),
+                        floats.get("_ZTestMode", 4), floats.get("_ZWriteParam", 0)) != (5, 10, 4, 0):
+        return None
+    if not transparent and floats.get("_ZWrite", 1) != 1:
+        return None
+    colors = viewer._properties(tree, "m_Colors")
+    tint = [colors.get("_TintColor", {}).get(axis, 1) for axis in "rgba"]
+    ambient = [colors.get("_AmbientColor", {}).get(axis, 1 if axis != "a" else 0) for axis in "rgba"]
+    env = viewer._properties(tree, "m_TexEnvs").get("_MainTex", {})
+    tex_st = [env.get("m_Scale", {}).get(axis, 1) for axis in "xy"] + [
+        env.get("m_Offset", {}).get(axis, 0) for axis in "xy"]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in [*tint, *ambient, *tex_st]):
+        return None
+    texture = None
+    pointer = env.get("m_Texture", {})
+    if pointer.get("m_PathID"):
+        original = viewer._ref(material, pointer)
+        if original is None or original.type.name != "Texture2D":
+            return None
+        texture = materials.texture(original)
+    return {"texture": texture, "uv": tex_st, "tint": tint, "ambient": ambient, "cull": cull,
+            "stencil": int(stencil[1]), "queue": (3000 if transparent else 2000) if queue == -1 else queue}
+
+
+def export(scene, materials, binding):
+    target, original, references = binding
+    fallback = _material(scene, materials, original, False)
+    if fallback is None:
+        return None
+    variants = []
+    for background, logo in references:
+        bg = _material(scene, materials, background, False)
+        fg = _material(scene, materials, logo, True) if logo is not None else None
+        if bg is None or (logo is not None and fg is None):
+            return None
+        variants.append({"background": bg, "logo": fg})
+    return {"target": target, "fallback": fallback, "variants": variants}

@@ -1,6 +1,7 @@
 """Native MV descriptors and copy-only edits; original samples are optional."""
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 import io
 import json
@@ -37,6 +38,26 @@ class TimelineContractTests(unittest.TestCase):
                 amended["m_ClipBindingConstant"]["genericBindings"][1].update(wrong)
                 with self.assertRaisesRegex(ValueError, "camera bindings"):
                     studio._camera_sample_order(amended)
+
+    def test_stage_motion_rejects_partial_native_clip_playback(self):
+        from webtools.core import mv_studio_stage_motion as stage
+
+        reader = SimpleNamespace(read_typetree=lambda: {})
+        data = {"start": 0, "duration": 0, "loop": False, "unsupported": 0, "tracks": [
+            {"path": 17, "kind": "visibility", "visibilityType": "gameObject", "curves": [("constant", 1)]},
+        ]}
+        with patch.object(stage.animation, "decode_clip", return_value=data):
+            self.assertEqual(stage._read_clip(reader, None)[0]["channels"], data["tracks"])
+            for unsupported in (
+                {"path": 17, "kind": "visibility", "visibilityType": "renderer", "curves": [("constant", 1)]},
+                {"path": 0, "kind": "translation", "curves": [("constant", 1)] * 3},
+            ):
+                with self.subTest(unsupported=unsupported):
+                    data["tracks"].append(unsupported)
+                    self.assertIsNone(stage._read_clip(reader, None))
+                    data["tracks"].pop()
+            data["unsupported"] = 1
+            self.assertIsNone(stage._read_clip(reader, None))
 
 
 @unittest.skipUnless((SAMPLES / "a-1205603-live_timeline.unity").is_file() and
@@ -96,6 +117,29 @@ class ActualTimelineTests(unittest.TestCase):
             self.assertIs(studio.export_timeline(raw, platform, parsed["tracks"]), raw)
             split.append(composition)
         self.assertEqual(*split)
+
+    def test_original_stage_animator_curves_and_infinite_holds_match_both_platforms(self):
+        motion = []
+        for platform, raw in self.raw.items():
+            parsed = studio.parse_timeline(raw, platform, preview_stage_motion=True)
+            stage = parsed.pop("stageMotion")
+            self.assertEqual(parsed, self.original[platform], "stage playback must not change the native revision")
+            roots = [f"/EntryPoint/Live/Stages/MainStage/Effect/lit_01/lit{group}_All" for group in "ABCD"]
+            self.assertEqual(stage["bindings"], roots)
+            self.assertEqual(len(stage["clips"]), 14)
+            self.assertEqual(len(stage["mix"]), 24)
+            tracks = [track for track in parsed["tracks"] if stage["quality"].get(track["id"]) == "stage_animation"]
+            self.assertEqual([track["binding"] for track in tracks], roots)
+            for track in tracks:
+                event = track["events"][-1]
+                self.assertIsNone(event["values"]["postExtrapolationTime"])
+                self.assertTrue(stage["mix"][event["id"]]["postInfinite"])
+            self.assertEqual({channel["kind"] for clip in stage["clips"].values()
+                              for channel in clip["channels"]}, {"euler", "scale", "visibility"})
+            self.assertTrue(any(clip["duration"] == 0 for clip in stage["clips"].values()))
+            json.dumps(stage, allow_nan=False)
+            motion.append(stage)
+        self.assertEqual(*motion)
 
     def test_saved_project_without_split_metadata_recovers_original_mask_bindings(self):
         from webtools.core import mv_studio

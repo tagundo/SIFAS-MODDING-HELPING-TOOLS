@@ -1,9 +1,10 @@
 """Retain supported native stage shader inputs in the MV preview GLB."""
 import math
+import subprocess
 
 import numpy as np
 
-from .model_viewer import _key, _properties, _ref
+from .model_viewer import MAX_TEXTURE_PIXELS, _key, _properties, _ref
 
 
 _SHADERS = {
@@ -13,6 +14,13 @@ _SHADERS = {
 }
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _COLOR_FIELDS = ("_AmbientColor", "_TintColor", "_BlendColor")
+_PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_ON"}
+_REFLECTION_BLENDS = {
+    ("_CUBEMAP_BLEND_OP_ALPHA_BLEND", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "vertex-alpha",
+    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA"): "add-texture-alpha",
+}
+_CUBE_FORMATS = {34: "etc1", 32: "pvrtc4"}
+_MAX_CUBE_SIZE = 256
 
 
 def _numbers(value, axes):
@@ -112,6 +120,91 @@ def lightmap_for(scene, renderer, tree, lightmap_settings):
     if value.m_TextureFormat != 3 or value.m_LightmapFormat != 1:
         return None
     return texture, transform
+
+
+def _cube_levels(size, format_name):
+    for mip in range(size.bit_length()):
+        side = size >> mip
+        if format_name == "etc1":
+            extent = side
+            length = ((side + 3) // 4) ** 2 * 8
+        else:
+            # PVRTC stores at least two blocks in each dimension.
+            extent = max(8, side)
+            length = extent * extent // 2
+        yield side, extent, length
+
+
+def _cube_pixels(cube, remaining_pixels, deadline):
+    from .decode import _stage_block_image
+
+    side = cube.m_Width
+    format_name = _CUBE_FORMATS.get(cube.m_TextureFormat)
+    sampler = cube.m_TextureSettings
+    if (format_name is None or type(side) is not int or not 8 <= side <= _MAX_CUBE_SIZE or side & (side - 1)
+            or cube.m_Height != side or cube.m_ImageCount != 6 or cube.m_MipCount != side.bit_length()
+            or cube.m_TextureDimension != 2 or cube.m_ColorSpace != 1 or cube.m_LightmapFormat != 0
+            or sampler.m_FilterMode != 2 or sampler.m_MipBias != 0 or sampler.m_Aniso not in (0, 1)
+            or any(getattr(sampler, "m_Wrap" + axis, None) != 1 for axis in "UVW")):
+        return None
+    levels = list(_cube_levels(side, format_name))
+    face_length = sum(level[2] for level in levels)
+    pixels = 6 * sum(extent * extent for extent, _, _ in levels)
+    if (face_length != cube.m_CompleteImageSize or pixels > remaining_pixels
+            or getattr(cube.m_StreamData, "size", 0) not in (0, face_length * 6)):
+        return None
+    source = cube.get_image_data()
+    if len(source) != 6 * face_length:
+        return None
+
+    # Keep Unity's face-major +X,-X,+Y,-Y,+Z,-Z order and exact stored mip
+    # rows. WebGL uploads these bytes directly, without a PNG Y flip.
+    data = bytearray()
+    cursor = 0
+    for _ in range(6):
+        for mip_side, extent, length in levels:
+            raw = source[cursor:cursor + length]
+            cursor += length
+            with _stage_block_image(format_name, raw, extent, extent, deadline) as image:
+                if extent == mip_side:
+                    data.extend(image.tobytes())
+                else:
+                    with image.crop((0, 0, mip_side, mip_side)) as cropped:
+                        data.extend(cropped.tobytes())
+    return data, side, pixels
+
+
+def export_reflection(scene, glb, materials, material, cube_cache):
+    tree = scene.tree(material)
+    keywords = set(tree.get("m_ShaderKeywords", "").split())
+    if not _PARALLAX_REFLECTION <= keywords or "_FRESNEL_ON" in keywords:
+        return None
+    blends = {name for name in keywords if name.startswith(("_CUBEMAP_BLEND_OP_", "_CUBEMAP_REFLECTIVITY_"))}
+    blend = _REFLECTION_BLENDS.get(tuple(sorted(blends)))
+    if blend is None:
+        return None
+    colors = _properties(tree, "m_Colors")
+    vectors = {field: _numbers(colors.get(source), "rgb") for field, source in
+               (("boxMin", "_BoxMin"), ("boxMax", "_BoxMax"), ("origin", "_CubemapPos"))}
+    if any(value is None for value in vectors.values()):
+        return None
+    cube_ref = _properties(tree, "m_TexEnvs").get("_Cube", {}).get("m_Texture")
+    cube = _ref(material, cube_ref)
+    if cube is None or cube.type.name != "Cubemap":
+        return None
+    key = _key(cube)
+    if key not in cube_cache:
+        try:
+            result = _cube_pixels(cube.read(), MAX_TEXTURE_PIXELS - materials.pixels, scene.deadline)
+        except (ValueError, OSError, subprocess.TimeoutExpired):
+            result = None
+        cube_cache[key] = None
+        if result is not None:
+            data, size, pixels = result
+            cube_cache[key] = {"bufferView": glb.view(data), "size": size}
+            materials.pixels += pixels
+    data = cube_cache[key]
+    return {**vectors, **data, "blend": blend} if data is not None else None
 
 
 def read_vertex_inputs(handler, output, count):

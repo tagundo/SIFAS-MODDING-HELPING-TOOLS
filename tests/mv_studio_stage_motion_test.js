@@ -1,0 +1,95 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
+require("../webtools/web/static/mv-studio-lighting.js");
+require("../webtools/web/static/mv-studio-stage-motion.js");
+
+const { apply, clipTime } = globalThis.MVStudioStageMotion;
+const binding = "/EntryPoint/Live/Stages/MainStage/Effect/LightRig";
+const fixture = new T.Group();
+const rig = new T.Group(), pivot = new T.Group(), lens = new T.Group();
+fixture.add(rig); rig.add(pivot); pivot.add(lens);
+rig.userData.mvStageNode = { active: true, binding, path: 0 };
+pivot.userData.mvStageNode = { active: true, binding, path: 10 };
+lens.userData.mvStageNode = { active: false, binding, path: 20 };
+pivot.matrixAutoUpdate = false;
+pivot.position.set(0, 1, 0);
+pivot.updateMatrix();
+
+const clip = (id, animation, start, duration, values) => ({ id, start, duration, values: { animation, ...values } });
+const track = { id: "light", nativeClass: "AnimationTrack", binding, events: [
+  clip("move", "moving", 0, 4, { postExtrapolationMode: 1, postExtrapolationTime: 2 }),
+  clip("stop", "constant", 6, 2, { postExtrapolationMode: 1, postExtrapolationTime: null }),
+] };
+const zero = ["constant", 0];
+const project = { tracks: [track], quality: { values: {} }, stageMotion: {
+  mix: { move: {}, stop: { postInfinite: true } },
+  quality: { light: "stage_animation" },
+  clips: {
+    moving: { start: 0, duration: 2, channels: [
+      { path: 10, kind: "euler", curves: [zero, zero, ["cubic", [[0, [0, 0, 30, 0]], [2, [0, 0, 0, 60]]]]] },
+      { path: 20, kind: "visibility", curves: [["constant", 1]] },
+    ] },
+    constant: { start: 0, duration: 0, channels: [
+      { path: 10, kind: "scale", curves: [["constant", 3], ["constant", 2], ["constant", 1]] },
+      { path: 20, kind: "visibility", curves: [zero] },
+    ] },
+  },
+} };
+const controller = apply(T, fixture);
+const nearAngle = (angle) => {
+  const original = new T.Quaternion().setFromAxisAngle(new T.Vector3(0, 0, 1), -angle * Math.PI / 180);
+  assert(Math.abs(original.dot(pivot.quaternion)) > 1 - 1e-10, `expected mirrored Euler Z ${angle}`);
+};
+
+assert.equal(lens.visible, false);
+controller.update(1, project);
+nearAngle(30);
+assert.equal(lens.visible, true);
+controller.update(5, project);
+nearAngle(60);
+assert.equal(lens.visible, true);
+controller.update(6.5, project);
+nearAngle(0);
+assert.deepEqual(pivot.scale.toArray(), [3, 2, 1]);
+assert.equal(lens.visible, false);
+controller.update(9, project);
+assert.deepEqual(pivot.scale.toArray(), [3, 2, 1], "source duration zero and infinite authored Hold");
+controller.update(1, project);
+nearAngle(30);
+assert.deepEqual(pivot.scale.toArray(), [1, 1, 1], "backwards seek restores other channels");
+track.muted = true;
+controller.update(1, project);
+nearAngle(0);
+assert.equal(lens.visible, false);
+track.muted = false;
+project.quality.values.stage_animation = false;
+controller.update(1, project);
+nearAngle(0);
+assert.equal(lens.visible, false);
+assert.equal(rig.visible, false, "native quality handling also disables the bound animation object");
+project.quality.values.stage_animation = true;
+
+const loop = clip("loop", "moving", 3, 4, { timeScale: 2, clipIn: 1, postExtrapolationMode: 2, postExtrapolationTime: 10 });
+assert.equal(clipTime(loop, {}, 8), 3, "looping uses timeline duration before source time scale and offset");
+loop.values.postExtrapolationMode = 3;
+assert.equal(clipTime(loop, {}, 8), 7, "ping-pong uses timeline duration before source time scale and offset");
+assert.equal(clipTime(loop, {}, 18), null);
+assert.equal(clipTime(track.events[1], {}, 9), null, "JSON null does not authorize infinite holds");
+const activation = { id: "activation", binding, nativeClass: "ActivationTrack",
+  label: "StageEffect/Expert/Display/LightRig", events: [clip("on", undefined, 2, 1, {})] };
+project.tracks = [activation];
+project.stageMotion = { activations: { activation: ["on"] } };
+project.quality.values.stage_display = false;
+controller.update(0, project);
+assert.equal(rig.visible, false);
+controller.update(2.5, project);
+assert.equal(rig.visible, true, "native ActivationTrack ignores category quality mute");
+controller.update(3, project);
+assert.equal(rig.visible, false);
+activation.muted = true;
+controller.update(3, project);
+assert.equal(rig.visible, true, "a muted track restores its authored prefab state");
+
+console.log("Native stage motion: packed curves, handedness, visibility, zero-length assets and extrapolation.");

@@ -3,7 +3,7 @@
 
   // The original mobile player renders these surfaces in gamma space.
   // GlTF keeps the maps and shader inputs in the asset, while this pass
-  // applies the original non-reflective stage equations during playback.
+  // applies the original stage equations during playback.
   const vertexShader = `
     #ifdef TEXTURED
       uniform vec4 mainUVTransform;
@@ -17,6 +17,10 @@
       attribute vec2 _stage_light_uv;
       varying vec2 vStageLightUV;
     #endif
+    #ifdef CUBEMAP
+      varying vec3 vReflectionPosition;
+      varying vec3 vReflectionNormal;
+    #endif
     void main() {
       #ifdef TEXTURED
         vStageUV = uv * mainUVTransform.xy + mainUVTransform.zw;
@@ -26,6 +30,12 @@
       #endif
       #ifdef LIGHTMAPPED
         vStageLightUV = _stage_light_uv;
+      #endif
+      #ifdef CUBEMAP
+        const vec3 unityAxes = vec3(-1.0, 1.0, 1.0);
+        vReflectionPosition = (modelMatrix * vec4(position, 1.0)).xyz * unityAxes;
+        vec3 worldNormal = (vec4(normalMatrix * normal, 0.0) * viewMatrix).xyz;
+        vReflectionNormal = normalize(worldNormal) * unityAxes;
       #endif
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
@@ -47,11 +57,34 @@
       uniform vec4 blendColor;
       varying vec2 vStageLightUV;
     #endif
+    #ifdef CUBEMAP
+      uniform bool useReflection;
+      uniform samplerCube reflectionCube;
+      uniform vec3 reflectionBoxMin, reflectionBoxMax, reflectionOrigin;
+      varying vec3 vReflectionPosition;
+      varying vec3 vReflectionNormal;
+    #endif
     void main() {
       #ifdef LIGHTMAPPED
         vec4 surface = texture2D(mainMap, vStageUV, mipBias);
         vec3 baked = 2.0 * texture2D(lightMap, vStageLightUV).rgb;
-        vec3 lit = mix(surface.rgb, ambient.rgb, ambient.a) * baked * vStageColor.rgb * tint.rgb;
+        vec3 lit = mix(surface.rgb, ambient.rgb, ambient.a) * baked * vStageColor.rgb;
+        #ifdef CUBEMAP
+          if (useReflection) {
+            vec3 nativeCamera = cameraPosition * vec3(-1.0, 1.0, 1.0);
+            vec3 ray = reflect(normalize(vReflectionPosition - nativeCamera), normalize(vReflectionNormal));
+            vec3 walls = max((reflectionBoxMax - vReflectionPosition) / ray, (reflectionBoxMin - vReflectionPosition) / ray);
+            float distance = min(min(walls.x, walls.y), walls.z);
+            vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
+            vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
+            #ifdef CUBEMAP_ADD
+              lit += reflected * clamp(surface.a, 0.0, 1.0);
+            #else
+              lit = mix(lit, reflected, clamp(vStageColor.a, 0.0, 1.0));
+            #endif
+          }
+        #endif
+        lit *= tint.rgb;
         gl_FragColor = vec4(mix(lit, blendColor.rgb, blendColor.a), surface.a * tint.a);
       #elif defined(TEXTURED)
         vec4 surface = texture2D(mainMap, vStageUV);
@@ -71,6 +104,41 @@
 
   function isColor(value) {
     return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite);
+  }
+
+  function reflectionSource(value) {
+    return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
+      Number.isSafeInteger(value.size) && value.size >= 8 && value.size <= 256 &&
+      (value.size & (value.size - 1)) === 0 &&
+      ["vertex-alpha", "add-texture-alpha"].includes(value.blend) &&
+      [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite));
+  }
+
+  async function loadCube(T, parser, source) {
+    let data;
+    try { data = await parser.getDependency("bufferView", source.bufferView); }
+    catch { return null; }
+    const levels = [];
+    let faceBytes = 0;
+    for (let size = source.size; size > 0; size >>= 1) {
+      const length = size * size * 4;
+      levels.push({size, length, offset: faceBytes});
+      faceBytes += length;
+    }
+    if (!(data instanceof ArrayBuffer) || data.byteLength !== 6 * faceBytes) return null;
+    const faces = levels.map(level => Array.from({length: 6}, (_, face) => new T.DataTexture(
+      new Uint8Array(data, face * faceBytes + level.offset, level.length), level.size, level.size, T.RGBAFormat,
+    )));
+    const cube = new T.CubeTexture(faces[0]);
+    cube.format = T.RGBAFormat;
+    cube.encoding = T.LinearEncoding;
+    cube.minFilter = T.LinearMipmapLinearFilter;
+    cube.magFilter = T.LinearFilter;
+    cube.generateMipmaps = false;
+    cube.mipmaps = faces.slice(1).map(image => ({image}));
+    cube.flipY = false;
+    cube.needsUpdate = true;
+    return cube;
   }
 
   function stageAmbient(project, seconds, track) {
@@ -94,7 +162,7 @@
   }
 
   async function apply(T, root, parser) {
-    const candidates = [], textures = new Map(), nativeLightmaps = new Set(), records = [];
+    const candidates = [], textures = new Map(), nativeLightmaps = new Set(), cubes = new Map(), records = [];
     root.traverse((node) => {
       const meta = node.geometry?.userData?.mvStageMaterial;
       if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
@@ -122,6 +190,7 @@
       const {node, original, meta} = entry;
       const uniforms = { tint: {value: new T.Vector4().fromArray(meta.colors._TintColor)} };
       const defines = {};
+      let reflectionCube = null;
       if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
         uniforms.mainMap = {value: gammaTexture(original.map)};
@@ -139,13 +208,27 @@
         uniforms.lightMap = {value: gammaTexture(lightMap)};
         uniforms.mipBias = {value: meta.mipBias};
         uniforms.blendColor = {value: new T.Vector4().fromArray(meta.colors._BlendColor)};
+        const source = meta.reflection;
+        if (meta.reflectionToggle && reflectionSource(source)) {
+          if (!cubes.has(source.bufferView)) cubes.set(source.bufferView, await loadCube(T, parser, source));
+          reflectionCube = cubes.get(source.bufferView);
+          if (reflectionCube) {
+            defines.CUBEMAP = 1;
+            if (source.blend === "add-texture-alpha") defines.CUBEMAP_ADD = 1;
+            uniforms.useReflection = {value: false};
+            uniforms.reflectionCube = {value: null};
+            uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
+            uniforms.reflectionBoxMax = {value: new T.Vector3().fromArray(source.boxMax)};
+            uniforms.reflectionOrigin = {value: new T.Vector3().fromArray(source.origin)};
+          }
+        }
       }
       const material = new T.ShaderMaterial({
         name: original.name, defines, uniforms, vertexShader, fragmentShader, toneMapped: false,
         side: meta.cull === 0 ? T.DoubleSide : meta.cull === 1 ? T.BackSide : T.FrontSide,
       });
-      if (!meta.reflectionToggle) node.material = material;
-      records.push({...entry, material});
+      if (!meta.reflectionToggle || uniforms.useReflection) node.material = material;
+      records.push({...entry, material, reflectionCube});
     }
 
     let sourceTracks, ambientTrack;
@@ -158,11 +241,16 @@
           ambientTrack = matches?.length === 1 ? matches[0] : null;
         }
         const active = stageAmbient(project, seconds, ambientTrack);
-        for (const {node, original, meta, material} of records) {
+        for (const {node, original, meta, material, reflectionCube} of records) {
           if (meta.reflectionToggle) {
             const enable = project?.quality?.values?.stage_cubemap !== false;
-            node.material = enable ? original : material;
-            if (enable) continue;
+            const reflection = material.uniforms.useReflection;
+            if (reflection) {
+              reflection.value = enable;
+              material.uniforms.reflectionCube.value = enable ? reflectionCube : null;
+            }
+            node.material = enable && !reflection ? original : material;
+            if (node.material === original) continue;
           }
           if (!meta.ambientDefaults) continue;
           const property = ["ambient", "tint", "blendColor"];
@@ -186,6 +274,7 @@
         }
         for (const copy of textures.values()) copy.dispose();
         for (const original of nativeLightmaps) original.dispose();
+        for (const cube of cubes.values()) cube?.dispose();
       },
     };
   }

@@ -146,7 +146,7 @@
         for (let index = 0; index < frame.views.length; index++) {
           const { layer, mask } = frame.views[index], [rawWidth, rawHeight] = sizes[index];
           if (!layer.target) {
-            layer.target = new T.WebGLRenderTarget(1, 1, { minFilter: T.LinearFilter, magFilter: T.LinearFilter });
+            layer.target = new T.WebGLRenderTarget(1, 1, { minFilter: T.LinearFilter, magFilter: T.LinearFilter, stencilBuffer: true });
             layer.mesh = new T.Mesh(mask.geometry, new T.MeshBasicMaterial({ map: layer.target.texture, toneMapped: false }));
             layer.mesh.frustumCulled = false;
             layer.mesh.renderOrder = layer.slot;

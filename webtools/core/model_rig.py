@@ -90,12 +90,13 @@ def _trs(matrix):
     return {"translation": value[:3, 3].tolist(), "rotation": _quat(rotation, np), "scale": scale.tolist()}
 
 
-def _authored_trs(tree):
+def _authored_trs(tree, *, allow_zero_scale=False):
     """Keep the authored local basis so absolute scale/animation keys stay valid."""
     position = [float(tree.get("m_LocalPosition", {}).get(axis, 0)) for axis in "xyz"]
     scale = [float(tree.get("m_LocalScale", {}).get(axis, 1)) for axis in "xyz"]
     rotation = [float(tree.get("m_LocalRotation", {}).get(axis, 1 if axis == "w" else 0)) for axis in "xyzw"]
-    if not all(math.isfinite(value) for value in position + scale + rotation) or any(abs(value) < 1e-9 for value in scale):
+    if (not all(math.isfinite(value) for value in position + scale + rotation)
+            or (not allow_zero_scale and any(abs(value) < 1e-9 for value in scale))):
         raise RigError("A rig contains invalid authored TRS values.")
     length = math.sqrt(sum(value * value for value in rotation))
     if length < 1e-12:

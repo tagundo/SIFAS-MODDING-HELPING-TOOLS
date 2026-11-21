@@ -177,7 +177,7 @@ def _path(value):
     return path
 
 
-def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
+def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=()):
     models = [path, *companions]
     key = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
@@ -185,7 +185,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
         # Game stage previews depend on one exact input. Performer previews
         # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
-               tuple((item.name, game_models._sha(item)) for item in motions))
+               tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings))
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
@@ -197,7 +197,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
                 pass
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
-                      "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions)},
+                      "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
+                      "_mv_stage_motion_bindings": stage_bindings},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
@@ -225,10 +226,10 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False):
     return url, rig
 
 
-def _preview_file(path, kind):
+def _preview_file(path, kind, *, stage_bindings=()):
     if path.suffix.lower() == ".glb":
         return _media(path.read_bytes(), "glb"), {}
-    return _preview(path, performer=kind in {"performer", "outfit"})
+    return _preview(path, performer=kind in {"performer", "outfit"}, stage_bindings=stage_bindings)
 
 
 def _song_audio(path, offset=0):
@@ -245,7 +246,7 @@ def _song_audio(path, offset=0):
     return info
 
 
-def _asset(path, kind):
+def _asset(path, kind, *, stage_bindings=()):
     if path.stat().st_size > MEDIA_BYTES:
         raise ValueError("The file exceeds the individual MV asset size limit.")
     label = path.name
@@ -255,7 +256,7 @@ def _asset(path, kind):
         result["soundtrack"] = _song_audio(path)
         row["previewUrl"] = result["soundtrack"]["url"]
     elif kind in _PREVIEW_KIND:
-        url, rig = _preview_file(path, kind)
+        url, rig = _preview_file(path, kind, stage_bindings=stage_bindings)
         row["previewUrl"] = url
         if kind == "stage":
             result["stage"] = {"glb": url, "label": label}
@@ -278,7 +279,7 @@ def import_asset(path, kind):
 def _timeline(path):
     from . import mv_studio_timeline
     raw = path.read_bytes()
-    parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True)
+    parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -345,13 +346,35 @@ def _stage_snapshot(project, assets, performers):
     # The overview uses its own camera and shows stage effects at time zero.
     # Keep active events in order so overlaps resolve as in the full renderer.
     effects_at_start = []
+    stage_motion = project.get("stageMotion") or {}
+    motion_at_start = {"clips": {}, "mix": {}, "activations": {}, "quality": {}}
     for track in project["tracks"]:
-        coloring = track.get("nativeClass") == "LiveColoringTrack"
-        if track.get("muted") or (track["kind"] not in {"lighting", "crowd"} and not coloring):
+        screen = track.get("nativeClass") in {"LiveColoringTrack", "LiveDisplayTrack"}
+        motion = track.get("nativeClass") == "AnimationTrack" and track.get("binding") in stage_motion.get("bindings", ())
+        activation_ids = stage_motion.get("activations", {}).get(track.get("id"))
+        if track.get("muted") or (track["kind"] not in {"lighting", "crowd"} and not screen and not motion and activation_ids is None):
             continue
-        events = [event for event in track["events"] if event["start"] <= 0 <= event["start"] + event["duration"]]
-        if events or coloring:
+        events = []
+        for event in track["events"]:
+            start, end = event["start"], event["start"] + event["duration"]
+            timing = stage_motion["mix"].get(event["id"]) if motion else None
+            if start <= 0 <= end or (timing is not None and start > 0
+                    and event["values"].get("preExtrapolationMode") in (1, 2, 3, 4)
+                    and (timing.get("preInfinite") or (event["values"].get("preExtrapolationTime") or 0) >= start)):
+                events.append(event)
+        if events or screen or motion or activation_ids is not None:
             effects_at_start.append(dict(track, events=events))
+        if activation_ids is not None:
+            motion_at_start["activations"][track["id"]] = [event["id"] for event in events if event["id"] in activation_ids]
+        if motion:
+            gate = stage_motion.get("quality", {}).get(track["id"])
+            if gate is not None:
+                motion_at_start["quality"][track["id"]] = gate
+            for event in events:
+                asset = event["values"].get("animation")
+                if asset in stage_motion["clips"] and event["id"] in stage_motion["mix"]:
+                    motion_at_start["clips"][asset] = stage_motion["clips"][asset]
+                    motion_at_start["mix"][event["id"]] = stage_motion["mix"][event["id"]]
     # The preview consumer can retain this copy without sharing edit state.
     stage = dict(project["stage"])
     colors = {str(entry["position"]): entry["themeColor"] for entry in performers if "themeColor" in entry}
@@ -364,6 +387,7 @@ def _stage_snapshot(project, assets, performers):
         "quality": project["quality"],
         "assets": [asset for asset in assets if asset["kind"] in {"effect", "props", "background"} and asset.get("previewUrl")],
         "tracks": effects_at_start,
+        **({"stageMotion": motion_at_start} if any(motion_at_start.values()) else {}),
     })
 
 
@@ -426,7 +450,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             if timeline is None:
                 raise ValueError("The original MV timeline pack is missing. Download its missing assets or choose a local mod file.")
             native, parsed = _timeline(timeline)
-            project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen") if field in parsed})
+            project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen", "stageMotion") if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
             performers = _cast_in_timeline_order(original_cast, project["tracks"])
@@ -437,7 +461,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 if preview_path is None:
                     continue
                 try:
-                    row["previewUrl"], _ = _preview(preview_path, reuse=True)
+                    bindings = project.get("stageMotion", {}).get("bindings", ()) if row is effect_row else ()
+                    row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings)
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):
@@ -742,6 +767,7 @@ def _open_saved(archive, entries):
 
 def _mod_files(project, files):
     native = None
+    media_files = []
     for path, label, kind in files:
         if kind in {"timeline", "other"} and path.suffix.lower() in _UNITY_SUFFIXES:
             try:
@@ -754,11 +780,14 @@ def _mod_files(project, files):
                     project["warnings"].append(f"{label}: open this timeline separately to edit this variant.")
                     continue
                 native = raw
-                project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen") if field in parsed})
+                project.update({field: parsed[field] for field in ("duration", "tracks", "splitScreen", "stageMotion") if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,
                                           "path": label, "status": "loaded"})
                 continue
+        media_files.append((path, label, kind))
+    stage_bindings = project.get("stageMotion", {}).get("bindings", ())
+    for path, label, kind in media_files:
         if kind == "other" and len(files) == 1:
             kind = "stage"
         if kind not in _PREVIEW_KIND | {"audio"}:
@@ -766,7 +795,7 @@ def _mod_files(project, files):
                                       "path": label, "status": "reference"})
             continue
         try:
-            result = _asset(path, kind)
+            result = _asset(path, kind, stage_bindings=stage_bindings if kind in {"effect", "stage"} else ())
         except (ValueError, OSError) as error:
             project["warnings"].append(f"{label}: {error}")
             continue

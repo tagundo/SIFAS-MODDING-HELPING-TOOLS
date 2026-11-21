@@ -303,7 +303,7 @@
   function create(mount, options) {
     const T = global.THREE;
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
-    const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+    const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, stencil: true, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
     renderer.setClearColor(0x111522);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
@@ -311,6 +311,7 @@
     mount.appendChild(renderer.domElement);
     const split = global.MVStudioSplit?.create(T, renderer);
     const physicsClock = global.MVStudioPhysics?.createClock();
+    const post = global.MVStudioPost?.create(T, renderer);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -352,6 +353,7 @@
     let nativeMainLens = false, authoredMainFov = liveCamera.fov;
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
+    const memberCullingTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
@@ -373,9 +375,14 @@
           renderer.render(preparation.scene, stageCamera);
           return;
         }
-        if (useLive && split?.draw(renderScene, hasShot ? liveCamera : null)) return;
-        renderScene(useLive && hasShot ? liveCamera : editorCamera);
+        if (useLive && split?.draw(renderView, hasShot ? liveCamera : null)) return;
+        renderView(useLive && hasShot ? liveCamera : editorCamera);
       }
+    }
+
+    function renderView(camera) {
+      if (camera === liveCamera && post?.draw(() => renderScene(camera))) return;
+      renderScene(camera);
     }
 
     function renderScene(camera) {
@@ -477,6 +484,7 @@
       record.penlight?.dispose();
       record.stageMaterial?.dispose();
       record.stageColoring?.dispose();
+      record.stageDisplay?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -689,7 +697,7 @@
             const quality = /(?:^|_)aud(?:_|$)/i.test(name) ? "stage_audience" :
               /(?:^|_)led(?:_|$)/i.test(name) ? "stage_emissive" :
               /(?:^|_)dis(?:_|$)/i.test(name) ? "stage_display" : null;
-            if (quality) record.visibility.push({ node, quality });
+            if (quality && !node.geometry.userData?.mvStageDisplay) record.visibility.push({ node, quality });
           }
         });
         if (entry.group !== actors) {
@@ -697,9 +705,13 @@
           if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
+          record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
+          record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
         }
         if (entry.group === actors) {
+          record.actorVisible = record.root.visible;
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
@@ -811,9 +823,11 @@
             return false;
           }
           for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
+          record.stageMotion?.update(0, preview);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
           record.stageColoring?.update(0, preview);
+          record.stageDisplay?.update(0, preview);
           pending.records.push(record);
           if (entry.group === stage) {
             pending.scene.add(record.root);
@@ -1052,8 +1066,18 @@
       for (const performer of cast) performers.set(performer.id, performer);
       const heights = new Map(cast.map((performer) => [performer.position, heightScale(performer)]));
       memberScaleTracks.clear();
+      memberCullingTracks.clear();
       cameraOffsets.clear();
       for (const track of tracks) {
+        if (!track.muted && track.nativeClass === "LiveMemberCullerTrack") {
+          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          if (slot) {
+            const position = Number(slot[1]);
+            const events = track.events.filter(event => event.values?.playableClass === "LiveMemberCullerClip" && event.duration > 0);
+            if (events.length) memberCullingTracks.set(position, (memberCullingTracks.get(position) || []).concat(events));
+          }
+          continue;
+        }
         if (!track.muted && track.nativeClass === "LiveMemberScalingTrack") {
           const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])\/Model$/.exec(track.binding || "");
           if (!bound) continue;
@@ -1087,6 +1111,7 @@
         for (const entry of record.visibility) entry.node.visible = settings[entry.quality] !== false;
         record.penlight?.invalidate();
         record.stageColoring?.invalidate();
+        record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
         record.materials?.setRimlight?.(settings.member_rim_light !== false);
         if (record.prop) record.prop.setTracks(tracks);
@@ -1136,13 +1161,21 @@
       }
       hasShot = false;
       frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
+      post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
+      for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
       for (const record of records) record.stageColoring?.update(currentTime, project);
+      for (const record of records) record.stageDisplay?.update(currentTime, project);
       for (const record of records) {
         if (record.group !== actors) continue;
+        // Both native camera paths exclude the member's Invisible layer.
+        // Keep sampling its transforms so other actors can still track it.
+        const culled = memberCullingTracks.get(record.position)?.some(event =>
+          currentTime >= event.start && currentTime < event.start + event.duration);
+        record.root.visible = record.actorVisible && !culled;
         record.materials?.setLiveLighting?.(lighting?.member(record.position));
         record.physics?.restorePose();
         record.nodeScaling?.resetHeight();
@@ -1200,6 +1233,7 @@
         cancelDraw();
         clear();
         split?.dispose();
+        post?.dispose();
         release(grid);
         controls.dispose();
         renderer.dispose();

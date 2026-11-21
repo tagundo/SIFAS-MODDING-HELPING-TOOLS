@@ -1198,10 +1198,15 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 rig.source_indices[path] = len(rig.source_indices)
     penlights, audience_points = {}, set()
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
+    stage_nodes = None
+    if stage_materials and getattr(scene, "stage_motion_bindings", ()):
+        from .mv_studio_stage_nodes import StageNodes
+
+        stage_nodes = StageNodes(scene, glb, scene.stage_motion_bindings)
     if stage_materials:
-        from . import mv_studio_stage_coloring, mv_studio_stage_materials
-        ambient_materials, lightmap_settings, stage_metadata = {}, {}, {}
-        stage_coloring, stage_palettes = {}, {}
+        from . import mv_studio_stage_coloring, mv_studio_stage_display, mv_studio_stage_materials
+        ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
+        stage_coloring, stage_palettes, stage_displays = {}, {}, {}
     for obj in scene.env.objects:
         if auto_only and _source_path(obj) not in faces.auto_paths:
             continue
@@ -1230,6 +1235,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if coloring is not None:
                 identity, entry = coloring
                 stage_coloring.setdefault(identity, []).append(entry)
+            display = mv_studio_stage_display.binding(scene, obj, tree)
+            if display is not None:
+                identity, entry = display
+                stage_displays[identity] = None if identity in stage_displays else entry
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
@@ -1251,7 +1260,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if auto_only and _source_path(renderer) not in faces.auto_paths:
             continue
         _remaining(deadline)
-        if not tree.get("m_Enabled", True) or not scene.active(game_object):
+        stage_motion = stage_nodes.binding(game_object) if stage_nodes is not None and renderer.type.name == "MeshRenderer" else None
+        if not tree.get("m_Enabled", True) or (stage_motion is None and not scene.active(game_object)):
             continue
         game_name = scene.name(game_object)
         if renderer.type.name == "Mesh":
@@ -1300,7 +1310,14 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 for ref in refs:
                     transform = _ref(renderer, ref)
                     bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
-            arguments = (mesh_obj, faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object)))), bones, skin_warnings)
+            if stage_motion is None:
+                world = faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object))))
+            else:
+                import numpy as np
+
+                # The native parent hierarchy supplies the transforms for these meshes.
+                world = np.eye(4)
+            arguments = (mesh_obj, world, bones, skin_warnings)
             keywords = {"rig_data": raw} if raw is not None else {}
             if native_attributes is not None:
                 keywords["penlight_data"] = native_attributes
@@ -1410,7 +1427,15 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         })
                     primitives[-1]["attributes"] = penlight_attributes
                     primitives[-1]["extras"]["mvPenlight"] = {**penlight_transform, "material": native_material}
-            descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None else None
+            display = stage_displays.get(_key(renderer)) if stage_materials and uv is not None and len(submeshes) == 1 else None
+            if display:
+                try:
+                    display = mv_studio_stage_display.export(scene, materials, display)
+                except ValueError:
+                    display = None
+                if display is not None:
+                    primitives[-1]["extras"]["mvStageDisplay"] = display
+            descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None and display is None else None
             if descriptor:
                 descriptor = dict(descriptor)
                 if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
@@ -1430,6 +1455,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                 stage_uv = glb.attribute(coords, "VEC2")
                     if stage_uv is not None:
                         descriptor["lightmap"] = stage_lightmap
+                        if descriptor.get("reflectionToggle"):
+                            reflection = mv_studio_stage_materials.export_reflection(
+                                scene, glb, materials, material_obj, stage_cubes,
+                            )
+                            if reflection is not None:
+                                descriptor["reflection"] = reflection
                     else:
                         descriptor = None
                 if descriptor:
@@ -1468,7 +1499,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             glb.doc["nodes"][-1]["extras"]["viewerFacialRole"] = "mouth"
         if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
             glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
-        glb.doc["scenes"][0]["nodes"].append(node_index)
+        if stage_motion is None:
+            glb.doc["scenes"][0]["nodes"].append(node_index)
+        else:
+            stage_nodes.attach(game_object, node_index)
         if rig is not None and skin is not None:
             rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
         if auto_face:
@@ -1535,6 +1569,7 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     env = _environment(paths, deadline)
     scene, glb = _Scene(env, deadline), _Glb()
     scene.preview_stage = bool((face_context or {}).get("_mv_stage"))
+    scene.stage_motion_bindings = (face_context or {}).get("_mv_stage_motion_bindings", ())
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:

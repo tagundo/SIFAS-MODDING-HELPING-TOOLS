@@ -360,10 +360,33 @@ async function checkSavedNodeScaling() {
   f.app.dispose();
 }
 
+async function checkNativeMemberCulling() {
+  const f = fixture(), value = project(55);
+  const culling = { nativeClass: 'LiveMemberCullerTrack', binding: '/EntryPoint/Live/Members/Member1', events: [
+    { start: 1, duration: 0, values: { playableClass: 'LiveMemberCullerClip' } },
+    { start: 2, duration: 1, values: { playableClass: 'LiveMemberCullerClip' } },
+  ] };
+  value.tracks.push(culling);
+  await f.app.load(value);
+  f.app.seek(1, value);
+  assert.deepEqual(f.frames.at(-1), ['model-55', 'outline-55']);
+  f.app.seek(2.5, value);
+  assert.deepEqual(f.frames.at(-1), []);
+  assert.deepEqual(f.samples.at(-1), [55, 2.5], 'authored culling continues pose sampling');
+  assert.equal(f.models.get(55).mesh.visible, true, 'the renderer branch is hidden without changing face/mesh flags');
+  f.app.seek(3, value);
+  assert.deepEqual(f.frames.at(-1), ['model-55', 'outline-55']);
+  culling.muted = true;
+  f.app.seek(2.5, value);
+  assert.deepEqual(f.frames.at(-1), ['model-55', 'outline-55']);
+  f.app.dispose();
+}
+
 (async () => {
   checkResizeDraws();
   await checkNativeCamera();
   await checkSavedNodeScaling();
+  await checkNativeMemberCulling();
   const f = fixture(), first = project(1);
   await f.app.load(first);
   assert.deepEqual(f.frames.at(-1), ['model-1', 'outline-1']);
