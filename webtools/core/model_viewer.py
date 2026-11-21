@@ -1103,6 +1103,46 @@ def _stage_audience_point(scene, component, tree):
     return (-float(x), float(y), float(z)) if all(map(math.isfinite, (x, y, z))) else None
 
 
+def _stage_shaft_templates(scene, component, tree):
+    pointers = tree.get("spotLightShaftPrefabs")
+    if not isinstance(pointers, list) or not pointers:
+        return set()
+    script = _ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return set()
+    if tuple(scene.tree(script).get(field) for field in ("m_AssemblyName", "m_Namespace", "m_ClassName")) != (
+            "Assembly-CSharp.dll", "LLAS.Scene.Live.Components", "LiveCoreStageEffect"):
+        return set()
+    owner = _ref(component, tree.get("m_GameObject"))
+    if owner is None or owner.type.name != "GameObject":
+        return set()
+    # The live runtime instantiates separate copies below each performer.
+    # These disjoint prefab roots cannot appear in the static stage itself.
+    templates = set()
+    for pointer in pointers:
+        if not isinstance(pointer, dict) or pointer.get("m_FileID") != 0:
+            continue
+        game = _ref(component, pointer)
+        if game is None or game.type.name != "GameObject":
+            continue
+        transform = scene.transforms.get(_key(game))
+        if transform is None or (scene.tree(transform).get("m_Father") or {}).get("m_PathID"):
+            continue
+        pending, members = [transform], set()
+        while pending:
+            current = pending.pop()
+            values = scene.tree(current)
+            child_game = _ref(current, values.get("m_GameObject"))
+            if child_game is None or child_game.type.name != "GameObject" or _key(child_game) in members:
+                continue
+            members.add(_key(child_game))
+            pending.extend(child for ref in values.get("m_Children", []) if ref.get("m_FileID") == 0
+                           if (child := _ref(current, ref)) is not None and child.type.name == "Transform")
+        if _key(owner) not in members:
+            templates.update(members)
+    return templates
+
+
 def _penlight_binding(scene, component, tree):
     pointers = tree.get("materials")
     if not tree.get("m_Enabled", True) or not isinstance(pointers, list) or not 0 < len(pointers) <= MAX_MESHES:
@@ -1196,7 +1236,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         for path in faces.auto_paths:
             if path not in rig.source_indices:
                 rig.source_indices[path] = len(rig.source_indices)
-    penlights, audience_points = {}, set()
+    penlights, audience_points, shaft_templates = {}, set(), set()
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
     stage_nodes = None
     if stage_materials and getattr(scene, "stage_motion_bindings", ()):
@@ -1204,7 +1244,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
 
         stage_nodes = StageNodes(scene, glb, scene.stage_motion_bindings)
     if stage_materials:
-        from . import mv_studio_stage_coloring, mv_studio_stage_display, mv_studio_stage_materials
+        from . import mv_studio_stage_coloring, mv_studio_stage_display, mv_studio_stage_materials, mv_studio_stage_overlay
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
     for obj in scene.env.objects:
@@ -1230,6 +1270,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 owner, linked_materials, suffix = binding
                 penlights[owner] = linked_materials, suffix
         if stage_materials:
+            shaft_templates.update(_stage_shaft_templates(scene, obj, tree))
             ambient_materials.update(mv_studio_stage_materials.ambient_materials(scene, obj, tree))
             coloring = mv_studio_stage_coloring.binding(scene, obj, tree)
             if coloring is not None:
@@ -1260,7 +1301,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if auto_only and _source_path(renderer) not in faces.auto_paths:
             continue
         _remaining(deadline)
+        if shaft_templates and _key(game_object) in shaft_templates:
+            continue
         stage_motion = stage_nodes.binding(game_object) if stage_nodes is not None and renderer.type.name == "MeshRenderer" else None
+        overlay = stage_motion is not None and mv_studio_stage_overlay.layer(scene, game_object)
         if not tree.get("m_Enabled", True) or (stage_motion is None and not scene.active(game_object)):
             continue
         game_name = scene.name(game_object)
@@ -1270,12 +1314,14 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             mesh_obj = _ref(renderer, tree.get("m_Mesh"))
         else:
             mesh_obj = scene.filters.get(_key(game_object))
-        if mesh_obj is None or mesh_obj.type.name != "Mesh":
+        builtin_plane = overlay and mesh_obj is None and mv_studio_stage_overlay.builtin_plane(scene, game_object)
+        if not builtin_plane and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
             scene.warn("linked_mesh_missing", game_name)
             continue
-        if not faces.include(scene, renderer, game_object, mesh_obj):
+        if not builtin_plane and not faces.include(scene, renderer, game_object, mesh_obj):
             continue
-        mesh_name = scene.name(mesh_obj)
+        mesh_source = renderer if builtin_plane else mesh_obj
+        mesh_name = "Plane" if builtin_plane else scene.name(mesh_obj)
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
@@ -1284,7 +1330,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         raw = {} if rig is not None else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
-        stage_inputs, coloring_for_renderer = None, {}
+        stage_inputs, coloring_for_renderer = {} if overlay else None, {}
         if stage_materials and renderer.type.name == "MeshRenderer":
             for pointer in tree.get("m_Materials", ()):
                 candidate = _ref(renderer, pointer)
@@ -1326,7 +1372,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if any(tree.get("m_BlendShapeWeights", [])):
                 keywords["morph_weights"] = tree["m_BlendShapeWeights"]
                 keywords["deadline"] = deadline
-            name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
+            if builtin_plane:
+                name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
+            else:
+                name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
         except Exception as error:
             if auto_face:
                 faces.failed()
@@ -1372,7 +1421,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
-        source = _source_path(mesh_obj)
+        source = _source_path(mesh_source)
         source_index = rig.source_indices.get(source) if rig is not None else None
         writable = source_index is not None and not auto_face
         import numpy as np
@@ -1382,8 +1431,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 writable = False  # Rest-skin baking is not one invertible affine map.
             else:
                 position_matrix = position_matrix @ arguments[1]
-        mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_obj.assets_file), 0),
-                         "id": str(mesh_obj.path_id)}
+        mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_source.assets_file), 0),
+                         "id": "10209" if builtin_plane else str(mesh_obj.path_id)}
         penlight_attributes, penlight_transform = None, None
         if native_attributes:
             penlight_transform = {"bindingSuffix": penlight[1],
@@ -1435,7 +1484,19 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     display = None
                 if display is not None:
                     primitives[-1]["extras"]["mvStageDisplay"] = display
-            descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None and display is None else None
+            overlay_material = None
+            if overlay and uv is not None:
+                try:
+                    overlay_material = mv_studio_stage_overlay.material(scene, materials, material_obj)
+                except ValueError:
+                    pass
+                if overlay_material is not None:
+                    if overlay_material["vertexColor"] and "color" in stage_inputs:
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"] = {**attributes, "_STAGE_COLOR": stage_color}
+                    primitives[-1]["extras"]["mvStageOverlay"] = overlay_material
+            descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None and display is None and overlay_material is None else None
             if descriptor:
                 descriptor = dict(descriptor)
                 if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
@@ -1493,7 +1554,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             glb.doc["meshes"][-1].update(weights=target_weights, extras={"targetNames": target_names})
         node_index = len(glb.doc["nodes"])
         glb.doc["nodes"].append({"name": name or game_name, "mesh": mesh_index,
-                                 "extras": {"sourceName": _source_name(mesh_obj)}})
+                                 "extras": {"sourceName": _source_name(mesh_source)}})
         if _source_path(renderer) in facial_sources and renderer_role(
                 scene, renderer, game_object, mesh_obj, dynamic=True) == "mouth":
             glb.doc["nodes"][-1]["extras"]["viewerFacialRole"] = "mouth"

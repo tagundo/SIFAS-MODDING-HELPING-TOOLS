@@ -274,7 +274,7 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
     duration = _time(clip.get("m_Duration", 0), "clip duration", minimum=0)
     values = {label: _public(clip[field], warnings) for field, label in _CLIP_TIMING.items() if field in clip}
     editable = list(values)
-    if kind in {"crowd", "lighting"} or mono[key][2] in {"LiveColoringTrack", "LiveDisplayTrack", "LiveMemberScalingTrack"}:
+    if kind in {"crowd", "lighting", "dof"} or mono[key][2] in {"LiveColoringTrack", "LiveDisplayTrack", "LiveMemberScalingTrack"}:
         for field, label in (("m_MixInCurve", "mixIn"), ("m_MixOutCurve", "mixOut")):
             curve = clip.get(field)
             if isinstance(curve, dict) and curve.get("m_Curve"):

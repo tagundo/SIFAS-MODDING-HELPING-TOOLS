@@ -198,7 +198,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
     prepared = model_viewer.prepare(list(map(str, models)), rigged=performer,
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
-                      "_mv_stage_motion_bindings": stage_bindings},
+                      "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:

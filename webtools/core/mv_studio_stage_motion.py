@@ -13,7 +13,7 @@ _ASSEMBLY = "UnityEngine.Timeline.dll"
 _NAMESPACE = "UnityEngine.Timeline"
 _MAX_SCALARS = 300_000
 _MAX_MIX_KEYS = 128
-_WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1}
+_WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1, "overlayTint": 4, "overlayUV": 4}
 _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation": "stage_animation",
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
@@ -49,7 +49,7 @@ def _track_supported(obj, tree, mono):
         (tree.get(field) or {}).get("m_PathID") for field in ("m_AvatarMask", "m_AnimClip", "m_InfiniteClip"))
 
 
-def _read_clip(reader, deadline):
+def _read_clip(reader, deadline, *, overlay=False):
     tree = reader.read_typetree()
     if any(tree.get(field) for field in ("m_Legacy", "m_Compressed", "m_HasGenericRootTransform", "m_HasMotionFloatCurves",
                                           "m_Events", "m_PPtrCurves", "m_CompressedRotationCurves")):
@@ -62,6 +62,12 @@ def _read_clip(reader, deadline):
                             for item in tree.get("m_FloatCurves", [])):
         return None
     data = animation.decode_clip(tree, deadline)
+    if overlay and data["unsupported"]:
+        from .mv_studio_stage_overlay import material_channels
+        channels, described = material_channels(bindings, animation._packed_curves(tree, deadline), animation._width)
+        if described == data["unsupported"]:
+            data["tracks"].extend(channels)
+            data["unsupported"] = 0
     if data["unsupported"] or not data["tracks"]:
         return None
 
@@ -172,7 +178,9 @@ def read(objects, mono, tracks, deadline):
             continue
         if not _track_supported(obj, tree, mono):
             continue
-        setting = _quality(track["label"])
+        branch = binding.removeprefix(_BINDING_ROOT).split("/")
+        overlay = len(branch) == 2 and branch[0].startswith("fx_ove_") and branch[1] == "Effect_root"
+        setting = "stage_overlay_effect" if overlay else _quality(track["label"])
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]
@@ -199,7 +207,7 @@ def read(objects, mono, tracks, deadline):
                 declaration, cost = clips[identity], 0
             else:
                 try:
-                    clip = _read_clip(reader, deadline)
+                    clip = _read_clip(reader, deadline, overlay=overlay)
                 except (KeyError, TypeError, ValueError, IndexError, OverflowError, struct.error):
                     clip = None
                 if clip is None or clip[1] > remaining:

@@ -312,6 +312,7 @@
     const split = global.MVStudioSplit?.create(T, renderer);
     const physicsClock = global.MVStudioPhysics?.createClock();
     const post = global.MVStudioPost?.create(T, renderer);
+    const overlay = global.MVStudioStageOverlay?.create(T, renderer);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -359,6 +360,7 @@
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
+    const mainCameraPosition = new T.Vector3(), focusPosition = new T.Vector3();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
 
@@ -375,14 +377,26 @@
           renderer.render(preparation.scene, stageCamera);
           return;
         }
-        if (useLive && split?.draw(renderView, hasShot ? liveCamera : null)) return;
-        renderView(useLive && hasShot ? liveCamera : editorCamera);
+        if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
+          renderView(useLive && hasShot ? liveCamera : editorCamera);
+        }
+        if (useLive && settings.stage_overlay_effect !== false && records.some((record) => record.stageOverlay?.hasVisible())) {
+          overlay?.draw(scene);
+        }
       }
     }
 
     function renderView(camera) {
-      if (camera === liveCamera && post?.draw(() => renderScene(camera))) return;
+      if (camera === liveCamera && post) {
+        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, focusDistance);
+        if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera)) return;
+      }
       renderScene(camera);
+    }
+
+    function focusDistance(slot, part) {
+      const point = records.find(record => record.group === actors && record.position === slot)?.focusParts?.[part];
+      return point?.getWorldPosition(focusPosition).distanceTo(mainCameraPosition);
     }
 
     function renderScene(camera) {
@@ -485,6 +499,7 @@
       record.stageMaterial?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
+      record.stageOverlay?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -707,6 +722,8 @@
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
+          record.stageOverlay = await global.MVStudioStageOverlay?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
         }
@@ -714,6 +731,15 @@
           record.actorVisible = record.root.visible;
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
+          const parts = entry.spec.rig?.focusParts;
+          if (Number.isInteger(parts?.head) && Number.isInteger(parts?.hips)) {
+            const nodes = new Map();
+            gltf.scene.traverse(node => {
+              const id = node.userData.elichika_node;
+              if (id === parts.head || id === parts.hips) nodes.set(id, nodes.has(id) ? null : node);
+            });
+            record.focusParts = { 0: nodes.get(parts.head), 3: nodes.get(parts.hips) };
+          }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
             mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, releaseParserAfterLoad: true
@@ -1026,6 +1052,7 @@
     function useCameraEvent(event, time, track) {
       if (!poseCamera(event, time, track)) return;
       hasShot = true;
+      mainCameraPosition.copy(liveCamera.position);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
 

@@ -1,7 +1,8 @@
 (function (global) {
   "use strict";
 
-  const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible" };
+  const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible",
+    overlayTint: "overlayTint", overlayUV: "overlayUV" };
   const clamp = (x, low, high) => Math.min(high, Math.max(low, x));
   const number = (value, fallback) => Number.isFinite(value) ? value : fallback;
   const modulo = (x, divisor) => ((x % divisor) + divisor) % divisor;
@@ -83,11 +84,11 @@
     const radians = Math.PI / 180;
     let stageMotion, sourceTracks;
     function restore(channel) {
-      const { node, kind, base } = channel;
+      const { node, kind, base, value, material } = channel;
       if (kind === "visible") node.visible = base;
       else {
-        node[kind].copy(base);
-        node.updateMatrix();
+        value.copy(base);
+        if (!material) node.updateMatrix();
       }
     }
 
@@ -115,12 +116,15 @@
           for (const source of clip.channels) {
             if (!Object.hasOwn(kinds, source.kind)) continue;
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
+            const material = kind === "overlayTint" || kind === "overlayUV";
+            const value = material ? node?.userData.mvStageOverlayChannels?.[kind] : node?.[kind];
             if (!node || !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
-                source.curves.length !== (kind === "visible" ? 1 : source.kind === "rotation" ? 4 : 3)) continue;
+                (material && !value) ||
+                source.curves.length !== (kind === "visible" ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
             const id = `${source.path}:${kind}`;
             if (!group.channels.has(id)) group.channels.set(id, {
-              node, kind, base: kind === "visible" ? node.visible : node[kind].clone(),
-              sum: kind === "visible" ? 0 : node[kind].clone(), weight: 0, changed: false,
+              node, kind, value, material, base: kind === "visible" ? value : value.clone(),
+              sum: kind === "visible" ? 0 : value.clone(), weight: 0, changed: false,
             });
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });
           }
@@ -145,6 +149,7 @@
         target.sum.x += values[0] * weight * (source.kind === "translation" ? -1 : 1);
         target.sum.y += values[1] * weight;
         target.sum.z += values[2] * weight;
+        if (target.material) target.sum.w += values[3] * weight;
       }
       target.weight += weight;
     }
@@ -162,7 +167,7 @@
         for (const channel of group.channels.values()) {
           channel.weight = 0;
           if (channel.kind === "visible") channel.sum = 0;
-          else if (channel.kind !== "quaternion") channel.sum.set(0, 0, 0);
+          else if (channel.kind !== "quaternion") channel.sum.set(0, 0, 0, 0);
         }
         if (enabled) for (const input of group.events) {
           const { track, event, clip, mix, samples } = input;
@@ -183,12 +188,12 @@
             channel.changed = false;
             continue;
           }
-          const { node, kind, base, sum, weight } = channel, remainder = Math.max(0, 1 - weight);
+          const { node, kind, base, sum, weight, value, material } = channel, remainder = Math.max(0, 1 - weight);
           if (kind === "visible") node.visible = (sum + Number(base) * remainder) / (weight + remainder) > .5;
           else {
-            if (kind === "quaternion") node[kind].copy(base).slerp(sum, weight / (weight + remainder));
-            else node[kind].copy(sum).addScaledVector(base, remainder).multiplyScalar(1 / (weight + remainder));
-            node.updateMatrix();
+            if (kind === "quaternion") value.copy(base).slerp(sum, weight / (weight + remainder));
+            else value.copy(sum).addScaledVector(base, remainder).multiplyScalar(1 / (weight + remainder));
+            if (!material) node.updateMatrix();
           }
           channel.changed = true;
         }

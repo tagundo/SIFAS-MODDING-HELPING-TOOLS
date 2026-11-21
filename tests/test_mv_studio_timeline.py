@@ -125,17 +125,23 @@ class ActualTimelineTests(unittest.TestCase):
             stage = parsed.pop("stageMotion")
             self.assertEqual(parsed, self.original[platform], "stage playback must not change the native revision")
             roots = [f"/EntryPoint/Live/Stages/MainStage/Effect/lit_01/lit{group}_All" for group in "ABCD"]
-            self.assertEqual(stage["bindings"], roots)
-            self.assertEqual(len(stage["clips"]), 14)
-            self.assertEqual(len(stage["mix"]), 24)
+            overlay = "/EntryPoint/Live/Stages/MainStage/Effect/fx_ove_so2056_01/Effect_root"
+            self.assertEqual(stage["bindings"], [*roots, overlay])
+            self.assertEqual(len(stage["clips"]), 15)
+            self.assertEqual(len(stage["mix"]), 25)
             tracks = [track for track in parsed["tracks"] if stage["quality"].get(track["id"]) == "stage_animation"]
             self.assertEqual([track["binding"] for track in tracks], roots)
-            for track in tracks:
+            overlay_tracks = [track for track in parsed["tracks"]
+                              if stage["quality"].get(track["id"]) == "stage_overlay_effect"]
+            self.assertEqual([track["binding"] for track in overlay_tracks], [overlay])
+            self.assertEqual(len(overlay_tracks[0]["events"]), 1)
+            for track in [*tracks, *overlay_tracks]:
                 event = track["events"][-1]
                 self.assertIsNone(event["values"]["postExtrapolationTime"])
                 self.assertTrue(stage["mix"][event["id"]]["postInfinite"])
             self.assertEqual({channel["kind"] for clip in stage["clips"].values()
-                              for channel in clip["channels"]}, {"euler", "scale", "visibility"})
+                              for channel in clip["channels"]},
+                             {"euler", "overlayTint", "overlayUV", "scale", "translation", "visibility"})
             self.assertTrue(any(clip["duration"] == 0 for clip in stage["clips"].values()))
             json.dumps(stage, allow_nan=False)
             motion.append(stage)

@@ -413,6 +413,39 @@ class RigBuilder:
             for key in (path, zlib.crc32(path.encode())):
                 self.morph_bindings[key] = record
 
+    def _focus_parts(self):
+        from .model_viewer import _key, _ref, _source_path
+
+        selected = self.selected - self.facial_sources
+        candidates = set()
+        for obj in self.scene.env.objects:
+            if obj.type.name != "MonoBehaviour" or _source_path(obj) not in selected:
+                continue
+            try:
+                tree = self.scene.tree(obj)
+                if "head" not in tree or "hips" not in tree:
+                    continue
+                script = _ref(obj, tree.get("m_Script"))
+                if script is None or script.type.name != "MonoScript":
+                    continue
+                source = self.scene.tree(script)
+                if tuple(source.get(key) for key in ("m_ClassName", "m_Namespace", "m_AssemblyName")) != (
+                        "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+                    continue
+                parts = []
+                for name in ("head", "hips"):
+                    game = _ref(obj, tree[name])
+                    transform = self.scene.transforms.get(_key(game)) if game is not None and game.type.name == "GameObject" else None
+                    parts.append(self.nodes.get(_key(transform)) if transform is not None else None)
+                if all(part is not None for part in parts):
+                    candidates.add(tuple(parts))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+        if len(candidates) == 1:
+            head, hips = candidates.pop()
+            return {"head": head, "hips": hips}
+        return {}
+
     def metadata(self):
         import copy
         from .model_expressions import describe_expressions
@@ -428,6 +461,10 @@ class RigBuilder:
                                                           clips=self.clips),
                 "scaling": self.scaling, "warnings": list(dict.fromkeys(self.warnings))}
         result["readOnlySkinJoints"] = sorted(self.read_only_skin_joints)
+        if self.faces.context.get("_mv_performer"):
+            focus = self._focus_parts()
+            if focus:
+                result["focusParts"] = focus
         # Ordinary auto-faces must be rendered. A saved, digest-bound face also
         # stays in the editing session when a complete native face is shown.
         from .model_viewer import _source_path, _source_hash
