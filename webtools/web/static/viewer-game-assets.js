@@ -16,7 +16,7 @@
     function defaultPlatform() {
       // The native Mac bridge identifies PlayCover's iOS assets. Browser and APK sessions use Android by default.
       var host = window.ElichikaPlatform && window.ElichikaPlatform.info();
-      return host && host.platform === "macos" ? "ios" : "android";
+      return host && host.native && host.platform === "macos" ? "ios" : "android";
     }
     function element(tag, attributes, children) {
       var node = document.createElement(tag);
@@ -38,7 +38,6 @@
     function setBusy(value) {
       busy = value;
       [region, platform, character, search, costume, variant, download, reimport].forEach(function (node) { if (node) node.disabled = value; });
-      if (platform && consumer.lockPlatform) platform.disabled = true;
       submit.disabled = value || !costume.value;
       cancel.textContent = t(value ? "Cancel" : "Close");
       dialog.setAttribute("aria-busy", String(value));
@@ -116,10 +115,16 @@
       fill(character, [], "Choose a character"); fill(costume, [], "Choose a costume");
       var fields = element("div", { className: "viewer-game-assets-fields" }, [label("Game region", region), label("Character", character), label("Search costumes", search), label("Costume", costume), label("Costume variant", variant)]);
       variant.parentNode.hidden = true;
-      platform = element("select", { id: "viewer-game-platform" });
-      fill(platform, [{ value: "android", label: "Android" }, { value: "ios", label: "iOS" }], null, consumer.platform);
-      platform.disabled = consumer.lockPlatform;
-      fields.insertBefore(label("Bundle platform", platform), character.parentNode);
+      platform = null;
+      if (consumer.lockPlatform) {
+        fields.insertBefore(element("span", { className: "viewer-game-assets-platform",
+          text: t("Bundle platform") + " · " + (consumer.platform === "ios" ? "iOS" : "Android") }), character.parentNode);
+      } else {
+        var alternate = consumer.platform === "ios" ? "android" : "ios";
+        platform = element("input", { id: "viewer-game-platform", type: "checkbox", value: alternate });
+        var alternativeLabel = element("span", { text: t(alternate === "ios" ? "Use iOS bundles" : "Use Android bundles") });
+        fields.insertBefore(element("label", { className: "viewer-game-assets-platform" }, [platform, alternativeLabel]), character.parentNode);
+      }
       download = element("input", { id: "viewer-game-download", type: "checkbox" }); download.checked = consumer.downloadByDefault;
       var downloadLabel = element("label", { className: "viewer-game-assets-download" }, [download, element("span", { text: t("Download missing assets") })]);
       reimport = element("input", { id: "viewer-game-reimport", type: "checkbox" });
@@ -159,10 +164,9 @@
       if (!current(selection)) { invalidate(); return; }
       var token = ++generation;
       var importedVariant = variant.value || "primary";
-      var importedPlatform = platform.value;
+      var importedPlatform = platform && platform.checked ? platform.value : selection.platform;
       var importedReimport = reimport.checked;
       if (["android", "ios"].indexOf(importedPlatform) < 0) return;
-      // Omitting the platform from viewer imports uses the legacy Android route.
       var payload = { region: region.value, suit: costume.value, variant: importedVariant, download: download.checked,
         purpose: selection.purpose, platform: importedPlatform };
       if (importedReimport) payload.reimport = true;

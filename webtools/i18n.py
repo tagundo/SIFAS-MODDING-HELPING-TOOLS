@@ -2138,6 +2138,8 @@ _VIEWER_TRANSLATIONS.update({
         "모델 불러오기",
         "モデルを読み込む"
     ],
+    "Use Android bundles": ["Android 번들 사용", "Android版バンドルを使う"],
+    "Use iOS bundles": ["iOS 번들 사용", "iOS版バンドルを使う"],
     "Bundle platform": [
         "번들 플랫폼",
         "バンドルのプラットフォーム"
