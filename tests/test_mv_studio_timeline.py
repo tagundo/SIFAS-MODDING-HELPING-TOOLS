@@ -186,12 +186,21 @@ class ActualTimelineTests(unittest.TestCase):
             self.assertEqual(parsed, self.original[platform])
             cue, = title["cues"]
             self.assertEqual({mesh["name"] for mesh in cue["meshes"]}, {"title_L", "title_R"})
-            texture, = title["textures"]
-            self.assertEqual((texture["width"], texture["height"]), (512, 512))
+            self.assertEqual(len(title["textures"]), 3)
+            self.assertTrue(all((texture["width"], texture["height"]) == (512, 512)
+                                for texture in title["textures"]))
             track = next(track for track in parsed["tracks"] if track["id"] == cue["trackId"])
             event = next(event for event in track["events"] if event["id"] == cue["eventId"])
             self.assertAlmostEqual(event["start"], 350 / 60)
             self.assertAlmostEqual(event["start"] + event["duration"], 670 / 60)
+            first, last = title["particles"]
+            self.assertEqual([emitter["name"] for emitter in first["emitters"]], ["title_main"])
+            self.assertEqual({emitter["name"] for emitter in last["emitters"]},
+                             {"title_main", "title_sub", "title_main_vanish", "square", "block"})
+            for group, start in ((first, 350 / 60), (last, 580 / 60)):
+                track = next(track for track in parsed["tracks"] if track["id"] == group["trackId"])
+                event = next(event for event in track["events"] if event["id"] == group["eventId"])
+                self.assertAlmostEqual(event["start"], start)
             self.assertIs(studio.export_timeline(raw, platform, parsed["tracks"]), raw)
             descriptors.append(title)
         self.assertEqual(*descriptors)

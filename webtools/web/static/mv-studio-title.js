@@ -32,6 +32,11 @@
       int32(16) === width && int32(20) === height;
   }
 
+  function boundedCurve(curve, validCurve) {
+    return Array.isArray(curve) && (curve[0] === "constant" ||
+      (Array.isArray(curve[1]) && curve[1].length <= 512)) && validCurve(curve);
+  }
+
   function checkedCues(source, validCurve) {
     const { geometry, textures, cues } = source;
     if (!Array.isArray(geometry?.positions) || geometry.positions.length !== 4 ||
@@ -53,9 +58,7 @@
       for (const channel of animation.channels) {
         const { kind, path, curves: values } = channel || {};
         if (kind !== "overlayUV" || !Number.isInteger(path) || curves.has(path) || !Array.isArray(values) ||
-            values.length !== 4 || !values.every(curve =>
-              Array.isArray(curve) && (curve[0] === "constant" ||
-                (Array.isArray(curve[1]) && curve[1].length <= 512)) && validCurve(curve))) return null;
+            values.length !== 4 || !values.every(curve => boundedCurve(curve, validCurve))) return null;
         curves.set(path, values);
       }
       for (const mesh of meshes) {
@@ -68,6 +71,73 @@
       records.set(key, { ...cue, curves });
     }
     return records.values();
+  }
+
+  function gradientKeys(keys, axes) {
+    return Array.isArray(keys) && keys.length > 0 && keys.length <= 8 && keys.every((row, index) =>
+      vector(row, axes + 1) && row[0] >= 0 && row[0] <= 1 && (index === 0 || row[0] > keys[index - 1][0]));
+  }
+
+  function validEmitter(emitter, textures, validCurve) {
+    if (!emitter || !id(emitter.name) || !Number.isInteger(emitter.texture) || !textures[emitter.texture] ||
+        !vector(emitter.position, 3) || !vector(emitter.rotation, 4) || !vector(emitter.scale, 3) ||
+        !vector(emitter.size, 2) || !emitter.size.every(value => value > 0) ||
+        !Number.isFinite(emitter.lifetime) || !(emitter.lifetime > 0) || emitter.lifetime > 15 ||
+        emitter.material?.queue !== 2900 || !vector(emitter.material.tint, 4) || !vector(emitter.material.uv, 4) ||
+        !Array.isArray(emitter.active) || emitter.active.length !== 2 ||
+        !Array.isArray(emitter.sizeCurves) || emitter.sizeCurves.length !== 2 ||
+        !emitter.sizeCurves.every(curve => boundedCurve(curve, validCurve)) ||
+        !gradientKeys(emitter.color?.rgb, 3) || !gradientKeys(emitter.color?.alpha, 1)) return false;
+    const [from, to] = emitter.active;
+    if (!Number.isFinite(from) || from < 0 || (to !== null && (!Number.isFinite(to) || to <= from))) return false;
+    const { tiles, row, frame } = emitter.atlas || {};
+    return Array.isArray(tiles) && tiles.length === 2 &&
+      tiles.every(value => Number.isInteger(value) && value >= 1 && value <= 16) &&
+      (row === null || (Number.isInteger(row) && row >= 0 && row < tiles[1])) &&
+      boundedCurve(frame, validCurve);
+  }
+
+  function checkedParticles(descriptor, validCurve) {
+    const { particles, textures } = descriptor;
+    if (!Array.isArray(particles) || particles.length > 8) return [];
+    return particles.filter(cue => id(cue?.trackId) && id(cue.eventId) && Array.isArray(cue.emitters) &&
+      cue.emitters.length > 0 && cue.emitters.length <= 8 &&
+      cue.emitters.every(emitter => validEmitter(emitter, textures, validCurve)));
+  }
+
+  function gradient(keys, time, channel) {
+    if (time <= keys[0][0]) return keys[0][channel];
+    for (let i = 1; i < keys.length; i++) {
+      const before = keys[i - 1], after = keys[i];
+      if (time > after[0]) continue;
+      const weight = (time - before[0]) / (after[0] - before[0]);
+      return before[channel] + weight * (after[channel] - before[channel]);
+    }
+    return keys[keys.length - 1][channel];
+  }
+
+  function updateParticle({ emitter, mesh, uv }, elapsed, evaluate) {
+    const [from, to] = emitter.active, age = elapsed - from;
+    mesh.visible = age >= 0 && age < emitter.lifetime && (to === null || elapsed < to);
+    if (!mesh.visible) return;
+    const time = age / emitter.lifetime;
+    const [sx, sy, sz] = emitter.scale;
+    mesh.scale.set(sx * emitter.size[0] * evaluate(emitter.sizeCurves[0], time),
+      sy * emitter.size[1] * evaluate(emitter.sizeCurves[1], time), sz);
+
+    const { tint, uv: [uScale, vScale, uOffset, vOffset] } = emitter.material;
+    const { rgb, alpha } = emitter.color;
+    // Every vertex of this single quad has the same authored particle color.
+    mesh.material.uniforms.uTint.value.set(tint[0] * gradient(rgb, time, 1),
+      tint[1] * gradient(rgb, time, 2), tint[2] * gradient(rgb, time, 3), tint[3] * gradient(alpha, time, 1));
+
+    const { tiles: [columns, rows], row, frame } = emitter.atlas;
+    const count = row === null ? columns * rows : columns;
+    const index = Math.max(0, Math.min(count - 1, Math.floor(evaluate(frame, time) * count)));
+    const column = index % columns;
+    const textureRow = row === null ? Math.floor(index / columns) : row;
+    const x = uOffset + uScale * column / columns, y = vOffset + vScale * (rows - 1 - textureRow) / rows;
+    uv.set(uScale / columns, vScale / rows, x, 1 - vScale / rows - y);
   }
 
   function neutralClip(event) {
@@ -103,6 +173,7 @@
     if (!descriptor || !root?.isObject3D || !curves?.evaluate || !curves?.validCurve) return null;
     const source = checkedCues(descriptor, curves.validCurve);
     if (!source) return null;
+    const particles = checkedParticles(descriptor, curves.validCurve);
     const { geometry: fields } = descriptor;
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(fields.positions.flat(), 3));
@@ -154,6 +225,24 @@
         }
         root.add(group);
       }
+      for (const cue of particles) {
+        const group = new T.Group(), meshes = [];
+        group.name = "Native stage title particles";
+        group.visible = false;
+        groups.push({ cue, group, meshes, isParticle: true });
+        for (const emitter of cue.emitters) {
+          const mesh = new T.Mesh(geometry, materialFor(T, textures[emitter.texture], emitter.material));
+          mesh.material.name = "Native stage title particle";
+          mesh.name = emitter.name;
+          mesh.position.fromArray(emitter.position);
+          mesh.quaternion.fromArray(emitter.rotation);
+          mesh.visible = false;
+          mesh.renderOrder = emitter.material.queue;
+          group.add(mesh);
+          meshes.push({ emitter, mesh, uv: mesh.material.uniforms.uTextureST.value });
+        }
+        root.add(group);
+      }
     } catch {
       dispose();
       return null;
@@ -174,12 +263,17 @@
           }
         }
         const enabled = project?.quality?.values?.stage_display !== false;
-        for (const { cue, track, event, group, meshes } of groups) {
+        for (const { cue, track, event, group, meshes, isParticle } of groups) {
           group.visible = Boolean(enabled && !track?.muted && neutralClip(event) &&
             time >= event.start && time < event.start + event.duration);
           if (!group.visible) continue;
+          const elapsed = time - event.start;
+          if (isParticle) {
+            for (const particle of meshes) updateParticle(particle, elapsed, curves.evaluate);
+            continue;
+          }
           const { start, duration } = cue.animation;
-          const local = start + Math.min(duration, Math.max(0, time - event.start));
+          const local = start + Math.min(duration, elapsed);
           for (const { uv, values } of meshes) {
             const sx = curves.evaluate(values[0], local), sy = curves.evaluate(values[1], local);
             const x = curves.evaluate(values[2], local), y = curves.evaluate(values[3], local);

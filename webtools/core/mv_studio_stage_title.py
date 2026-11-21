@@ -13,6 +13,8 @@ from .mv_studio_stage_display import _SHADERS
 _NAMESPACE = ("Assembly-CSharp.dll", "LLAS.Components.Timeline")
 _IDENTITY = {"translation": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}
 _MAX_IMAGE_BYTES = 512 * 1024
+_UNSUPPORTED = (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError, OSError, EOFError,
+                struct.error, subprocess.SubprocessError)
 # The vertices and UVs of built-in mesh 10210 match in Android and iOS.
 # Use the same reflected basis, triangle winding and V coordinate as the GLB exporter.
 _QUAD = {
@@ -57,10 +59,10 @@ def _group(objects, owner, tree):
             and any(_local(objects, root, ref, "MonoBehaviour") is owner for ref in tree.get("m_Tracks", [])))
 
 
-def _components(objects, game, types):
+def _components(objects, game, types, *, require_active=True):
     tree = game.read_typetree()
     refs = tree.get("m_Component", [])
-    if tree.get("m_Layer") != 26 or not tree.get("m_IsActive") or len(refs) != len(types):
+    if tree.get("m_Layer") != 26 or (require_active and not tree.get("m_IsActive")) or len(refs) != len(types):
         return None
     components = {}
     for entry in refs:
@@ -237,7 +239,7 @@ def _texture(reader, deadline):
     return None
 
 
-def _cue(objects, owner, tree, event, deadline):
+def _playable(objects, owner, tree, event):
     values = event["values"]
     if (values.get("playableClass") != "CustomControlClip" or values.get("timeScale") != 1
             or any(values.get(key) for key in ("clipIn", "easeIn", "easeOut", "blendIn", "blendOut",
@@ -251,17 +253,44 @@ def _cue(objects, owner, tree, event, deadline):
     if (not _declared(objects, asset, fields, (*_NAMESPACE, "CustomControlClip")) or not fields.get("m_Enabled")
             or fields.get("weight") != 1 or fields.get("offset") != dict(x=0, y=0, z=0)):
         return None
-    game = _local(objects, asset, fields.get("prefabGameObject"), "GameObject")
-    return _prefab(objects, game, deadline) if game is not None else None
+    return _local(objects, asset, fields.get("prefabGameObject"), "GameObject")
+
+
+def _attach_particles(result, candidates, mesh_texture, deadline):
+    if not 0 < len(candidates) <= 4:
+        return
+    textures = result["textures"]
+    indexed = {viewer._key(mesh_texture): 0}
+    particle_cues = []
+    for track_id, event_id, sources in candidates:
+        pending, emitters, indices = [], [], dict(indexed)
+        try:
+            for emitter, reader in sources:
+                key = viewer._key(reader)
+                if key not in indices:
+                    image = _texture(reader, deadline)
+                    if image is None or len(textures) + len(pending) >= 8:
+                        break
+                    indices[key] = len(textures) + len(pending)
+                    pending.append(image)
+                emitters.append({**emitter, "texture": indices[key]})
+            else:
+                textures.extend(pending)
+                indexed = indices
+                particle_cues.append({"trackId": track_id, "eventId": event_id, "emitters": emitters})
+        except _UNSUPPORTED:
+            continue
+    if particle_cues:
+        result["particles"] = particle_cues
 
 
 def read(objects, mono, tracks, deadline):
-    """Resolve one bounded title whose native renderer and animator are fully supported."""
+    """Resolve a native mesh title and any supported deterministic companion particle cues."""
+    from . import mv_studio_stage_title_particles as particles
+
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
-    unsupported = (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError, OSError, EOFError,
-                   struct.error, subprocess.SubprocessError)
-    cue, texture = None, None
+    cue, texture, particle_cues = None, None, []
     for track in tracks:
         source = controls.get(track["id"])
         if source is None or track.get("binding") or track.get("bindings") or motion._quality(track["label"]) != "stage_display":
@@ -272,29 +301,42 @@ def read(objects, mono, tracks, deadline):
             if (not tree.get("m_Enabled") or not _declared(objects, owner, tree, (*_NAMESPACE, "CustomControlTrack"))
                     or not _group(objects, owner, tree)):
                 continue
-        except unsupported:
+        except _UNSUPPORTED:
             continue
         for event in track["events"]:
             viewer._remaining(deadline)
             try:
-                result = _cue(objects, owner, tree, event, deadline)
-                if result is None:
+                game = _playable(objects, owner, tree, event)
+                if game is None:
                     continue
-                meshes, original, animation = result
-                result = _material(objects, original)
-                if result is None:
-                    continue
-            except unsupported:
+                mesh = _prefab(objects, game, deadline)
+                if mesh is not None:
+                    meshes, original, animation = mesh
+                    material = _material(objects, original)
+                    if material is not None:
+                        if cue is not None:
+                            return None
+                        fields, texture = material
+                        cue = {"trackId": track["id"], "eventId": event["id"], "texture": 0, "material": fields,
+                               "meshes": meshes, "animation": animation}
+            except _UNSUPPORTED:
                 continue
-            if cue is not None:
-                return None
-            material, texture = result
-            cue = {"trackId": track["id"], "eventId": event["id"], "texture": 0, "material": material,
-                   "meshes": meshes, "animation": animation}
+            if len(particle_cues) > 4:
+                continue
+            try:
+                sources = particles.read(objects, game, deadline)
+            except _UNSUPPORTED:
+                continue
+            if sources is not None:
+                particle_cues.append((track["id"], event["id"], sources))
     if cue is None:
         return None
     try:
         image = _texture(texture, deadline)
-    except unsupported:
+    except _UNSUPPORTED:
         return None
-    return {"geometry": _QUAD, "textures": [image], "cues": [cue]} if image is not None else None
+    if image is None:
+        return None
+    result = {"geometry": _QUAD, "textures": [image], "cues": [cue]}
+    _attach_particles(result, particle_cues, texture, deadline)
+    return result

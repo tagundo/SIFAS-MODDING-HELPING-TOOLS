@@ -145,4 +145,79 @@ async function run() {
   console.log("Native stage title: bounded texture and quad, stencil reader, authored UV motion, timeline edits and scene cleanup.");
 }
 
-run().catch(error => { console.error(error); process.exitCode = 1; });
+async function runParticles() {
+  const root = new T.Scene(), source = structuredClone(descriptor);
+  const particleTrack = { id: "main:track", nativeClass: "CustomControlTrack", events: [{
+    id: "main:event", start: 20, duration: 4, values: { playableClass: "CustomControlClip", clipIn: 0,
+      timeScale: 1, weight: 1, offset: { x: 0, y: 0, z: 0 } }
+  }] };
+  const emitter = { ...source.cues[0].meshes[0], name: "title_main", texture: 0,
+    material: { ...source.cues[0].material, tint: [.5, 1, 1, 1] },
+    size: [4.65, 2.25], lifetime: 2, active: [0, 1.5], atlas: { tiles: [1, 4], row: 0, frame: constant(0) },
+    sizeCurves: [constant(1), ["linear", [[0, 1], [1, 2]]]],
+    color: { rgb: [[0, 1, 1, 1]], alpha: [[0, 1], [.5, .5], [1, 0]] }
+  };
+  const vanish = { ...emitter, name: "title_vanish", active: [1.5, null],
+    atlas: { tiles: [2, 4], row: null, frame: ["linear", [[0, 0], [1, 1]]] } };
+  const unsupported = { ...emitter, name: "unsupported", atlas: { ...emitter.atlas, row: 4 } };
+  source.particles = [
+    { trackId: particleTrack.id, eventId: particleTrack.events[0].id, emitters: [emitter, vanish] },
+    { trackId: particleTrack.id, eventId: particleTrack.events[0].id, emitters: [unsupported] }
+  ];
+  const project = { tracks: [track, particleTrack], quality: { values: { stage_display: true } } };
+  let loads = 0;
+  const local = { ...T, TextureLoader: class {
+    async loadAsync() {
+      loads++;
+      return new T.Texture({ width: 1, height: 1 });
+    }
+  } };
+  const title = await MVStudioTitle.apply(local, root, source);
+  assert.ok(title);
+  assert.equal(loads, 1, "mesh titles and particles share their texture");
+  assert.equal(root.children.length, 2, "an unsupported optional emitter leaves valid groups intact");
+  const [quads, group] = root.children;
+  const [mesh, second] = group.children;
+  assert.equal(mesh.geometry, quads.children[0].geometry);
+  assert.equal(mesh.material.name, "Native stage title particle");
+  assert.equal(mesh.material.stencilFunc, T.EqualStencilFunc);
+  assert.equal(mesh.material.stencilRef, 2);
+  assert.equal(mesh.renderOrder, 2900);
+
+  title.update(19.99, project);
+  assert.equal(group.visible, false);
+  title.update(20.5, project);
+  assert.equal(group.visible, true);
+  assert.equal(mesh.visible, true);
+  assert.equal(second.visible, false);
+  compare(mesh.scale.toArray(), [7 * 4.65, 8 * 2.25 * 1.25, 1]);
+  compare(mesh.material.uniforms.uTint.value.toArray(), [.5, 1, 1, .75]);
+  compare(mesh.material.uniforms.uTextureST.value.toArray(), [1, .25, 0, 0]);
+
+  title.update(21.5, project);
+  assert.equal(mesh.visible, false);
+  assert.equal(second.visible, true);
+  compare(second.material.uniforms.uTextureST.value.toArray(), [.5, .25, 0, 0]);
+  title.update(22.8, project);
+  compare(second.material.uniforms.uTextureST.value.toArray(), [.5, .25, .5, .5]);
+  title.update(23.5, project);
+  assert.equal(second.visible, false);
+  title.update(24, project);
+  assert.equal(group.visible, false);
+  title.update(20.5, project);
+  assert.equal(mesh.visible, true, "rewind reconstructs deterministic life and gradient");
+  compare(mesh.material.uniforms.uTint.value.toArray(), [.5, 1, 1, .75]);
+  particleTrack.muted = true;
+  title.update(20.5, project);
+  assert.equal(group.visible, false);
+
+  let disposed = 0;
+  mesh.material.addEventListener("dispose", () => disposed++);
+  second.material.addEventListener("dispose", () => disposed++);
+  title.dispose();
+  assert.equal(disposed, 2);
+  assert.equal(root.children.length, 0);
+  console.log("Native title particles: fixed bursts, atlas rows and whole sheets, size/color, scrub and shared cleanup.");
+}
+
+run().then(runParticles).catch(error => { console.error(error); process.exitCode = 1; });
