@@ -1,5 +1,6 @@
 """Exercise native stage shader inputs and ownership metadata."""
 from io import BytesIO
+import json
 import time
 from types import SimpleNamespace
 import unittest
@@ -10,7 +11,7 @@ from PIL import Image
 from webtools.core import decode, model_viewer, mv_studio_stage_materials as stage
 
 
-class StageMainSamplerTests(unittest.TestCase):
+class StageTextureSamplerTests(unittest.TestCase):
     @staticmethod
     def source():
         settings = SimpleNamespace(m_FilterMode=1, m_Aniso=8, m_MipBias=0, m_WrapU=2, m_WrapV=1)
@@ -22,7 +23,7 @@ class StageMainSamplerTests(unittest.TestCase):
         return SimpleNamespace(read=lambda: texture, path_id=11, assets_file=object(),
                                type=SimpleNamespace(name="Texture2D"))
 
-    def test_shared_main_texture_retains_complete_original_chain_without_level_zero_duplicate(self):
+    def test_shared_native_texture_retains_one_chain_across_roles(self):
         deadline = time.monotonic() + 5
         source, material = self.source(), object()
         glb = model_viewer._Glb()
@@ -33,13 +34,17 @@ class StageMainSamplerTests(unittest.TestCase):
         materials = model_viewer._Materials(scene, glb)
         base = materials.texture(source)
         first, second = {"mipBias": -1.25}, {}
+        emissive = {"texture": base}
         with patch.object(stage, "_ref", return_value=source):
             stage.collect_main_sampler(scene, materials, material, first)
-            stage.collect_main_sampler(scene, materials, material, second)
-        self.assertTrue(stage.attach_main_samplers(materials, deadline))
+        stage.collect_texture_sampler(materials, source, second, "lightmapSampler")
+        stage.collect_texture_sampler(materials, source, emissive, "sampler")
+        self.assertTrue(stage.attach_texture_samplers(materials, deadline, main=True))
+        self.assertFalse(stage.attach_texture_samplers(materials, deadline, main=False))
         expected = {"mipmaps": [1, 2, 3], "filterMode": 1, "anisotropy": 8}
         self.assertEqual(first, {"mipBias": -1.25, "mainSampler": expected})
-        self.assertEqual(second, {"mainSampler": expected})
+        self.assertEqual(second, {"lightmapSampler": expected})
+        self.assertEqual(emissive, {"texture": 0, "sampler": expected})
         self.assertEqual(base, 0)
         self.assertEqual(scene.stats["textures"], 4)
         for level, image in enumerate(glb.doc["images"]):
@@ -60,19 +65,54 @@ class StageMainSamplerTests(unittest.TestCase):
         materials.texture(source)
         baseline = glb.finish()
         descriptor = {}
-        materials.stage_main_samplers[stage._key(source)] = source, [descriptor]
+        stage.collect_texture_sampler(materials, source, descriptor, "lightmapSampler")
 
         def fail(levels):
             materials.texture(levels[0])
             raise ValueError("missing authored mip")
 
         with patch.object(materials, "mip_textures", side_effect=fail):
-            self.assertFalse(stage.attach_main_samplers(materials, deadline))
+            self.assertFalse(stage.attach_texture_samplers(materials, deadline, main=False))
         self.assertEqual(glb.finish(), baseline)
         self.assertFalse(descriptor)
         self.assertEqual(materials.textures, {stage._key(source): 0})
         self.assertEqual(materials.pixels, 32)
         self.assertEqual(scene.stats["textures"], 1)
+
+    def test_expired_auxiliary_pass_retains_completed_main_glb(self):
+        deadline = time.monotonic() + 5
+        main, lightmap = self.source(), self.source()
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=deadline, preview_stage=True, stats={"textures": 0})
+        materials = model_viewer._Materials(scene, glb)
+        materials.texture(main)
+        lightmap_index = materials.texture(lightmap)
+        descriptor = {"lightmap": lightmap_index}
+        glb.doc["nodes"].append({"extras": {"mvStageMaterial": descriptor}})
+        stage.collect_texture_sampler(materials, lightmap, descriptor, "lightmapSampler")
+        stage.collect_texture_sampler(materials, main, descriptor, "mainSampler")
+        baseline = glb.finish(), dict(scene.stats), [], {}
+        clock = [deadline - 1]
+        decoder = stage._texture_sampler
+
+        def expires_after_decoding_auxiliary(materials, source):
+            sampler = decoder(materials, source)
+            if source is lightmap:
+                clock[0] = deadline
+            return sampler
+
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(stage, "_texture_sampler", side_effect=expires_after_decoding_auxiliary):
+            result = model_viewer._finish_stage_samplers(materials, deadline, baseline)
+
+        size = int.from_bytes(result[0][12:16], "little")
+        doc = json.loads(result[0][20:20 + size])
+        self.assertEqual(doc["nodes"][0]["extras"]["mvStageMaterial"], {
+            "lightmap": lightmap_index,
+            "mainSampler": {"mipmaps": [2, 3, 4], "filterMode": 1, "anisotropy": 8},
+        })
+        self.assertEqual(len(doc["textures"]), 5)
+        self.assertEqual(result[1], {"textures": 5})
 
 
 class StageCubemapTests(unittest.TestCase):

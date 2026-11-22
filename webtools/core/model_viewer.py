@@ -772,7 +772,7 @@ class _Materials:
         self.predecoded = {}
         self.pixels = 0
         self.source_indices, self.source_files = {}, {}
-        self.stage_main_samplers = {}
+        self.stage_texture_samplers = {}
 
     def mip_textures(self, objects):
         """Decode at most two immutable mip slices concurrently; append in order.
@@ -1500,7 +1500,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if native_attributes:
             penlight_transform = {"bindingSuffix": penlight[1],
                                   "localToPreview": position_matrix.T.reshape(-1).tolist()}
-        stage_color = stage_lightmap = stage_uv = stage_emissive_uv = coloring_uv = None
+        stage_color = stage_lightmap = stage_lightmap_source = stage_uv = stage_emissive_uv = coloring_uv = None
         primitives, refs, first_face = [], tree.get("m_Materials", []), 0
         for index, triangles in enumerate(submeshes):
             if not len(triangles):
@@ -1579,6 +1579,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             except ValueError:
                                 stage_lightmap = None
                             if stage_lightmap is not None:
+                                stage_lightmap_source = texture
                                 coords = stage_inputs["lightUV"] * transform[:2] + transform[2:]
                                 coords[:, 1] = 1 - coords[:, 1]
                                 stage_uv = glb.attribute(coords, "VEC2")
@@ -1622,6 +1623,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
                     if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_main_sampler(scene, materials, material_obj, descriptor)
+                        mv_studio_stage_materials.collect_texture_sampler(
+                            materials, stage_lightmap_source, descriptor, "lightmapSampler",
+                        )
             coloring = coloring_for_renderer.get(_key(material_obj)) if material_obj is not None else None
             if coloring and uv is not None and "lightUV" in stage_inputs:
                 try:
@@ -1707,6 +1711,24 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
     return result + (base_rig,)
 
 
+def _finish_stage_samplers(materials, deadline, base):
+    from .mv_studio_stage_materials import attach_texture_samplers
+
+    # Commit MainTex before adding auxiliary maps. If either pass runs out of
+    # time or GLB space, the previous complete preview can still be returned.
+    for main in (True, False):
+        if not attach_texture_samplers(materials, deadline, main=main):
+            continue
+        try:
+            _remaining(deadline)
+            data = bytes(materials.glb.finish())
+            _remaining(deadline)
+        except ModelViewerError:
+            break
+        base = (data, dict(materials.scene.stats), *base[2:])
+    return base
+
+
 def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadline=None, _geometry_deadline=None):
     """Keep geometry and mandatory finishing work within separate fixed caps.
 
@@ -1740,19 +1762,8 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         if shadow is not None:
             glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadow"] = shadow
     base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
-    if materials.stage_main_samplers:
-        from .mv_studio_stage_materials import attach_main_samplers
-
-        # Serialize the baseline first so an optional mip timeout or the GLB
-        # size limit cannot remove a stage that would otherwise be usable.
-        if attach_main_samplers(materials, deadline):
-            try:
-                _remaining(deadline)
-                sampled_stage = bytes(glb.finish())
-                _remaining(deadline)
-                base = (sampled_stage, dict(scene.stats), *base[2:])
-            except ModelViewerError:
-                pass
+    if materials.stage_texture_samplers:
+        base = _finish_stage_samplers(materials, deadline, base)
     face_enabled = bool(face_context and face_context.get("enabled", True))
     playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
     authored_motion = bool(face_context and face_context.get("_mv_authored_motion"))

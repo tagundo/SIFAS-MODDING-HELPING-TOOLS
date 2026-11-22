@@ -187,6 +187,7 @@ def export_emissive(scene, materials, material, controlled=False):
                   "uvTransform": [*scale, offset[0], 1 - scale[1] - offset[1]]}
         if controlled:
             result["binding"] = _MAIN_STAGE + "/Model"
+        collect_texture_sampler(materials, texture, result, "sampler")
         return result
     return None
 
@@ -195,14 +196,18 @@ def collect_main_sampler(scene, materials, material, descriptor):
     """Record the actual texture PPtr for each rendered stage primitive."""
     source = _properties(scene.tree(material), "m_TexEnvs").get("_MainTex", {})
     texture = _ref(material, source.get("m_Texture"))
+    collect_texture_sampler(materials, texture, descriptor, "mainSampler")
+
+
+def collect_texture_sampler(materials, texture, descriptor, field):
     if texture is None or texture.type.name != "Texture2D":
         return
     key = _key(texture)
     if materials.textures.get(key) is not None:
-        materials.stage_main_samplers.setdefault(key, (texture, []))[1].append(descriptor)
+        materials.stage_texture_samplers.setdefault(key, (texture, []))[1].append((descriptor, field))
 
 
-def _main_sampler(materials, obj):
+def _texture_sampler(materials, obj):
     texture = obj.read()
     settings = texture.m_TextureSettings
     filter_mode, anisotropy = settings.m_FilterMode, settings.m_Aniso
@@ -224,18 +229,20 @@ def _main_sampler(materials, obj):
     return {"mipmaps": materials.mip_textures(mips), "filterMode": filter_mode, "anisotropy": anisotropy}
 
 
-def attach_main_samplers(materials, deadline):
-    """Add complete optional chains after essential stage textures and geometry."""
+def attach_texture_samplers(materials, deadline, *, main):
+    """Add complete chains for one priority group, including any shared roles."""
     glb, scene = materials.glb, materials.scene
     changed = False
-    for source, descriptors in materials.stage_main_samplers.values():
+    for source, bindings in materials.stage_texture_samplers.values():
+        if any(field == "mainSampler" for _, field in bindings) != main:
+            continue
         if time.monotonic() >= deadline:
             break
         data_size, pixels, count = len(glb.data), materials.pixels, scene.stats["textures"]
         lengths = {name: len(glb.doc[name]) for name in ("bufferViews", "images", "samplers", "textures")}
         texture_indices = materials.textures.copy()
         try:
-            sampler = _main_sampler(materials, source)
+            sampler = _texture_sampler(materials, source)
         except (AttributeError, OSError, TypeError, ValueError, subprocess.SubprocessError):
             # A missing or failed level must neither expose a partial chain nor
             # reserve texture budget needed by the next native source.
@@ -246,8 +253,8 @@ def attach_main_samplers(materials, deadline):
             scene.stats["textures"] = count
             continue
         if sampler is not None:
-            for descriptor in descriptors:
-                descriptor["mainSampler"] = sampler
+            for descriptor, field in bindings:
+                descriptor[field] = sampler
             changed = True
     return changed
 

@@ -218,8 +218,9 @@
   }
 
   async function apply(T, root, parser, {active = () => true, maxTextureSize = 4096} = {}) {
-    const candidates = [], textures = new Map(), nativeMaps = new Set(), cubes = new Map(), records = [];
-    const mainSamplers = new Map(), mipRequests = new Map(), mipTextures = new Set();
+    const candidates = [], textures = new Map(), cubes = new Map(), records = [];
+    const authoredTextures = new Map(), textureRequests = new Map(), mipTextures = new Set();
+    const nativeBaseIndices = new Set(), nativeBaseMaps = new Set();
     const originalMaps = new Set(), originalImages = new Set();
     root.traverse((node) => {
       for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
@@ -245,6 +246,10 @@
           !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
           meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
           !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
+      if (meta.shader === "stage") {
+        nativeBaseIndices.add(meta.lightmap);
+        if (meta.emissive) nativeBaseIndices.add(meta.emissive.texture);
+      }
       candidates.push({node, original: node.material, meta});
     });
     if (!candidates.length) return null;
@@ -259,19 +264,24 @@
       return textures.get(texture);
     }
 
-    function mipTexture(index) {
-      if (!mipRequests.has(index)) {
-        const request = Promise.resolve().then(() => parser.getDependency("texture", index)).then((texture) => {
-          if (!texture?.isTexture || originalMaps.has(texture) || originalImages.has(texture.image)) return null;
-          mipTextures.add(texture);
-          return texture;
-        }).catch(() => null);
-        mipRequests.set(index, request);
+    function textureFromParser(index) {
+      if (!textureRequests.has(index)) {
+        const request = Promise.resolve().then(() => parser.getDependency("texture", index))
+          .then(texture => texture?.isTexture ? texture : null).catch(() => null);
+        textureRequests.set(index, request);
       }
-      return mipRequests.get(index);
+      return textureRequests.get(index);
     }
 
-    async function mainTexture(base, source) {
+    async function mipTexture(index) {
+      if (nativeBaseIndices.has(index)) return null;
+      const texture = await textureFromParser(index);
+      if (!texture || originalMaps.has(texture) || originalImages.has(texture.image)) return null;
+      mipTextures.add(texture);
+      return texture;
+    }
+
+    async function sampledTexture(base, source) {
       const {mipmaps, filterMode, anisotropy = 1} = source || {};
       const {width, height} = base.image || {};
       if (!Array.isArray(mipmaps) || mipmaps.length > 12 ||
@@ -282,8 +292,8 @@
           (mipmaps.length && (!T.MathUtils.isPowerOfTwo(width) || !T.MathUtils.isPowerOfTwo(height) ||
             mipmaps.length !== Math.log2(Math.max(width, height))))) return gammaTexture(base);
 
-      let samplers = mainSamplers.get(base);
-      if (!samplers) mainSamplers.set(base, samplers = new Map());
+      let samplers = authoredTextures.get(base);
+      if (!samplers) authoredTextures.set(base, samplers = new Map());
       const key = [filterMode, anisotropy, ...mipmaps].join(",");
       if (samplers.has(key)) return samplers.get(key);
       // Observe every request before deciding whether the authored chain is usable.
@@ -309,6 +319,14 @@
       return copy;
     }
 
+    async function sampledNativeTexture(index, sampler) {
+      const texture = await textureFromParser(index);
+      if (!texture) return null;
+      if (!originalMaps.has(texture)) nativeBaseMaps.add(texture);
+      if (!active()) return null;
+      return sampler ? sampledTexture(texture, sampler) : gammaTexture(texture);
+    }
+
     for (const entry of candidates) {
       if (!active()) break;
       const {node, original, meta} = entry;
@@ -318,7 +336,7 @@
       if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
         const map = meta.shader === "stage" && meta.mainSampler
-          ? await mainTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
+          ? await sampledTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
         if (!map || !active()) break;
         uniforms.mainMap = {value: map};
         uniforms.mainUVTransform = {value: new T.Vector4().fromArray(meta.uvTransform)};
@@ -326,14 +344,11 @@
       }
       if (meta.vertexColor) defines.VERTEX_COLOR = 1;
       if (meta.shader === "stage") {
-        let lightMap;
-        try { lightMap = await parser.getDependency("texture", meta.lightmap); }
-        catch { continue; }
-        if (!lightMap?.isTexture) continue;
-        nativeMaps.add(lightMap);
+        const lightMap = await sampledNativeTexture(meta.lightmap, meta.lightmapSampler);
         if (!active()) break;
+        if (!lightMap) continue;
         defines.LIGHTMAPPED = 1;
-        uniforms.lightMap = {value: gammaTexture(lightMap)};
+        uniforms.lightMap = {value: lightMap};
         uniforms.mipBias = {value: meta.mipBias};
         uniforms.blendColor = {value: new T.Vector4().fromArray(meta.colors._BlendColor)};
         if (meta.alphaCutoff !== undefined) {
@@ -341,14 +356,11 @@
           uniforms.alphaCutoff = {value: meta.alphaCutoff};
         }
         if (meta.emissive) {
-          let emissive;
-          try { emissive = await parser.getDependency("texture", meta.emissive.texture); }
-          catch { continue; }
-          if (!emissive?.isTexture) continue;
-          nativeMaps.add(emissive);
+          const emissive = await sampledNativeTexture(meta.emissive.texture, meta.emissive.sampler);
           if (!active()) break;
+          if (!emissive) continue;
           defines.EMISSIVE = 1;
-          uniforms.emissiveMap = {value: gammaTexture(emissive)};
+          uniforms.emissiveMap = {value: emissive};
           uniforms.emissiveUVTransform = {value: new T.Vector4().fromArray(meta.emissive.uvTransform)};
           uniforms.emissiveColor = {value: new T.Vector4().fromArray(meta.emissive.color)};
           uniforms.emissiveIntensity = {value: meta.emissive.intensity};
@@ -448,14 +460,14 @@
           material.dispose();
         }
         const copies = new Set(textures.values()), images = new Set();
-        for (const samplers of mainSamplers.values()) for (const copy of samplers.values()) copies.add(copy);
+        for (const samplers of authoredTextures.values()) for (const copy of samplers.values()) copies.add(copy);
         for (const copy of copies) copy.dispose();
         for (const texture of mipTextures) {
-          if (nativeMaps.has(texture)) continue;
+          if (nativeBaseMaps.has(texture)) continue;
           texture.dispose();
           if (texture.image) images.add(texture.image);
         }
-        for (const texture of nativeMaps) {
+        for (const texture of nativeBaseMaps) {
           images.delete(texture.image);
           texture.dispose();
         }

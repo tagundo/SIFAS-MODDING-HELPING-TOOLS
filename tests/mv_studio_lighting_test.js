@@ -266,33 +266,135 @@ async function testStageMainSampler() {
   assert.deepEqual(closed.sort(), ["mip1", "mip2", "mip3", "wrong-size"]);
 
   const limitedRoot = new T.Group(), limited = addSurface(limitedRoot, authored);
+  const limitedRequests = [];
   const limitedController = await MVStudioStageMaterial.apply(T, limitedRoot, {
     async getDependency(type, index) {
-      assert.equal(index, 0, "an over-limit base uses the existing fallback without requesting extra levels");
+      limitedRequests.push(index);
       return lightmap;
     },
   }, {maxTextureSize: 4});
+  assert.deepEqual(limitedRequests, [0], "an over-limit base uses fallback without requesting extra levels");
   assert.deepEqual(map(limited).mipmaps, []);
   limitedController.dispose();
 
   const staleRoot = new T.Group(), stale = addSurface(staleRoot, authored), staleMaterial = stale.material;
+  const staleRequests = [];
   const staleLevels = [texture("stale1", 4, 2), texture("stale2", 2, 1), texture("stale3", 1, 1)];
   let active = true;
   const staleController = await MVStudioStageMaterial.apply(T, staleRoot, {
     async getDependency(type, index) {
       assert.equal(type, "texture");
-      assert(index > 0, "a stale stage does not start further resource loads");
+      staleRequests.push(index);
       if (index === 3) active = false;
       return staleLevels[index - 1];
     },
   }, {active: () => active});
+  assert.deepEqual(staleRequests, [1, 2, 3], "a stale stage does not start further resource loads");
   assert.equal(stale.material, staleMaterial);
   staleController.dispose();
   assert.deepEqual(closed.slice(-3), ["stale1", "stale2", "stale3"]);
   console.log("Native stage MainTex mip dimensions, filter selection, sharing, fallback and canceled cleanup passed");
 }
 
-testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).catch(error => {
+async function testStageAuxiliarySamplers() {
+  const disposed = [], closed = [];
+  const texture = (name, size, wrap = T.RepeatWrapping) => {
+    const value = new T.Texture({width: size, height: size, close: () => closed.push(name)});
+    value.wrapS = value.wrapT = wrap;
+    value.minFilter = T.LinearFilter;
+    value.encoding = T.sRGBEncoding;
+    value.flipY = false;
+    value.addEventListener("dispose", () => disposed.push(name));
+    return value;
+  };
+  const original = texture("original", 4);
+  const packed = [
+    original, texture("light", 4, T.ClampToEdgeWrapping), texture("emissive", 4),
+    texture("light1", 2), texture("light2", 1), texture("emissive1", 2), texture("emissive2", 1),
+    texture("other-base", 1),
+  ];
+  const addSurface = (root, lightmap, lightmapSampler, sampler) => {
+    const geometry = new T.PlaneGeometry();
+    const uv = geometry.getAttribute("uv");
+    geometry.setAttribute("_stage_light_uv", uv);
+    geometry.setAttribute("_stage_emissive_uv", uv);
+    geometry.userData.mvStageMaterial = {
+      shader: "stage", lightmap, lightmapSampler, mipBias: .125, uvTransform: [1, 1, 0, 0],
+      emissive: {texture: 2, color: [.75, .5, 1, 1], intensity: .75, uvTransform: [1, 1, 0, 0], sampler},
+      colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
+    };
+    const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: original}));
+    root.add(node);
+    return node;
+  };
+  const lightSampler = {mipmaps: [3, 4], filterMode: 1, anisotropy: 3};
+  const maskSampler = {mipmaps: [5, 6], filterMode: 1, anisotropy: 8};
+  const root = new T.Group();
+  const sampled = addSurface(root, 1, lightSampler, maskSampler);
+  const shared = addSurface(root, 1, {...lightSampler}, {...maskSampler});
+  const legacy = addSurface(root, 1);
+  const malformed = addSurface(root, 1, {...lightSampler, mipmaps: [3, 7]}, {...maskSampler, mipmaps: [5, 8]});
+  addSurface(root, 7);
+  const borrowed = addSurface(root, 0);
+  const requests = [];
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    async getDependency(type, index) {
+      assert.equal(type, "texture");
+      requests.push(index);
+      if (index === 8) throw new Error("missing mask mip");
+      return packed[index];
+    },
+  });
+  const uniform = (node, name) => node.material.uniforms[name].value;
+  for (const [name, indices, aniso, wrap] of [
+    ["lightMap", [1, 3, 4], 3, T.ClampToEdgeWrapping],
+    ["emissiveMap", [2, 5, 6], 8, T.RepeatWrapping],
+  ]) {
+    const map = uniform(sampled, name);
+    assert.equal(map, uniform(shared, name));
+    assert.notEqual(map, uniform(legacy, name));
+    assert.equal(uniform(malformed, name), uniform(legacy, name));
+    assert.deepEqual(uniform(legacy, name).mipmaps, []);
+    assert.deepEqual(map.mipmaps, indices.map(index => packed[index].image));
+    assert.equal(map.minFilter, T.LinearMipmapNearestFilter);
+    assert.equal(map.magFilter, T.LinearFilter);
+    assert.equal(map.encoding, T.LinearEncoding);
+    assert.equal(map.generateMipmaps, false);
+    assert.equal(map.anisotropy, aniso);
+    assert.equal(map.flipY, false);
+    assert.equal(map.wrapS, wrap);
+    assert.equal(map.wrapT, wrap);
+    assert.equal(packed[indices[0]].minFilter, T.LinearFilter);
+  }
+  assert.equal(uniform(sampled, "mipBias"), .125);
+  assert.equal(uniform(sampled, "emissiveIntensity"), .75);
+  assert.equal(uniform(borrowed, "mainMap"), uniform(borrowed, "lightMap"));
+  assert.deepEqual(requests.slice().sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  controller.dispose();
+  assert.deepEqual(disposed.slice().sort(), ["emissive", "emissive1", "emissive2", "light", "light1", "light2", "other-base"]);
+  assert.deepEqual(closed.slice().sort(), ["emissive1", "emissive2", "light1", "light2"]);
+
+  const staleRoot = new T.Group();
+  const stale = addSurface(staleRoot, 1, lightSampler, maskSampler), staleMaterial = stale.material;
+  const staleRequests = [];
+  let active = true;
+  const late = {1: texture("late-light", 4), 3: texture("late-mip1", 2), 4: texture("late-mip2", 1)};
+  const staleController = await MVStudioStageMaterial.apply(T, staleRoot, {
+    async getDependency(type, index) {
+      staleRequests.push(index);
+      if (index === 4) active = false;
+      return late[index];
+    },
+  }, {active: () => active});
+  assert.deepEqual(staleRequests, [1, 3, 4], "cancellation stops before the emissive branch");
+  assert.equal(stale.material, staleMaterial);
+  staleController.dispose();
+  assert.deepEqual(disposed.slice(-3).sort(), ["late-light", "late-mip1", "late-mip2"]);
+  assert.deepEqual(closed.slice(-2).sort(), ["late-mip1", "late-mip2"]);
+  console.log("Native stage lightmap and emissive mip routing, sharing, legacy fallback and cancellation passed");
+}
+
+testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers).catch(error => {
   console.error(error);
   process.exitCode = 1;
 });
