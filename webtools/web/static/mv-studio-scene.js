@@ -468,6 +468,7 @@
       stageButterfly?.sort(camera);
       sortControlParticles(camera);
       for (const record of records) record.stageOverlay?.sort?.(camera);
+      for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
@@ -578,6 +579,7 @@
       record.stageOverlay?.dispose();
       record.stageBeam?.dispose();
       record.stageLaserCores?.dispose();
+      record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
@@ -867,6 +869,10 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stageStationaryBursts = await global.MVStudioStationaryBursts?.apply(T, record.root, gltf.parser, {
+            active, maxTextureSize: renderer.capabilities.maxTextureSize,
+          });
+          if (!active()) return null;
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
           record.stageFlash = await global.MVStudioStageFlash?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
@@ -1010,6 +1016,7 @@
           record.stageFlash?.update(0, preview);
           record.stageMotion?.update(0, preview);
           record.stageLaserCores?.update(0, preview, record.stageMotion);
+          record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
           record.stageColoring?.update(0, preview);
@@ -1543,6 +1550,7 @@
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
+      for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
       for (const record of records) record.stageColoring?.update(currentTime, project);

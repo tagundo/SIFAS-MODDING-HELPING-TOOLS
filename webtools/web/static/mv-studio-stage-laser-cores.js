@@ -232,14 +232,18 @@
     return chain.reverse();
   }
 
-  function residentSchedule(source, entries) {
+  function residentSchedule(binding, chains, activationPaths) {
     const motion = global.MVStudioStageMotion, lighting = global.MVStudioLighting;
-    let tracks, track, events, event, signature, cache;
+    const animatedColors = activationPaths === undefined;
+    let tracks, track, activationTracks, events, event, signature, cache;
     return function schedule(project, fps, stageMotion) {
+      if (fps !== 30 && fps !== 60) return null;
       if (tracks !== project?.tracks) {
         tracks = project?.tracks;
-        const matches = tracks?.filter(row => row.binding === source.binding && row.nativeClass === "AnimationTrack");
+        const bound = tracks?.filter(row => row.binding === binding);
+        const matches = bound?.filter(row => row.nativeClass === "AnimationTrack");
         track = matches?.length === 1 ? matches[0] : null;
+        activationTracks = bound?.filter(row => row.nativeClass === "ActivationTrack");
         events = undefined;
       }
       if (events !== track?.events) {
@@ -249,19 +253,33 @@
       const values = event?.values;
       const clip = project?.stageMotion?.clips?.[values?.animation], mix = project?.stageMotion?.mix?.[event?.id];
       const accepted = stageMotion?.accepts?.(event) === true;
+      const enabled = animatedColors || project?.quality?.values?.[project?.stageMotion?.quality?.[track?.id]] !== false;
+      const hasActivationTrack = !animatedColors && activationTracks?.some(row =>
+        Object.hasOwn(project?.stageMotion?.activations || {}, row.id));
       const state = [event, mix, clip, fps, accepted, track?.muted, event?.start, event?.duration,
+        enabled, hasActivationTrack,
         ...clockFields.map(field => values?.[field])];
       if (same(signature, state)) return cache;
       signature = state;
       cache = null;
-      if (!accepted || mix?.materialScope !== "world" || clip?.sampleTimeF32 !== true ||
-          !Array.isArray(clip.particleStartColors)) return null;
+      if (!accepted || !enabled || hasActivationTrack || !mix || clip?.sampleTimeF32 !== true) return null;
+      if (animatedColors) {
+        if (mix.materialScope !== "world" || !Array.isArray(clip.particleStartColors)) return null;
+      } else if (clip.particleStartColors !== undefined || !Array.isArray(clip.channels) ||
+          !clip.channels.length || clip.channels.some(channel =>
+            channel?.kind !== "visibility" || channel.visibilityType !== "gameObject" ||
+            !Number.isInteger(channel.path) || channel.path < 0 || channel.path > 0xffffffff ||
+            !Array.isArray(channel.curves) || channel.curves.length !== 1 || !motion.validCurve(channel.curves[0]))) return null;
       const visibility = new Map(clip.channels.filter(channel => channel.kind === "visibility")
         .map(channel => [channel.path, channel.curves[0]]));
-      const colors = new Map(clip.particleStartColors.map(row => [row.path, row.curves]));
+      if (!animatedColors && (visibility.size !== clip.channels.length ||
+          !activationPaths.every(path => visibility.has(path)))) return null;
+      const colors = animatedColors ? new Map(clip.particleStartColors.map(row => [row.path, row.curves])) : null;
       const weighted = motion.weightedEvent(event, mix);
       const muted = track.muted;
-      const edges = entries.map(() => []);
+      // Keep activation edges from the display clock's origin so forward and
+      // backward seeks recover the same current particle epoch.
+      const edges = chains.map(() => []);
       let through = -1;
       function phase(time) {
         const local = muted ? null : motion.clipTime(weighted, mix, time);
@@ -274,9 +292,11 @@
       }
       cache = {
         activeSince(frame, index) {
+          if (!Number.isInteger(frame) || frame < 0 || frame > 3600 * fps ||
+              !Number.isInteger(index) || index < 0 || index >= chains.length) return null;
           while (through < frame) {
             const tick = ++through, sample = phase(tick / fps);
-            entries.forEach(({chain}, i) => {
+            chains.forEach((chain, i) => {
               const active = chain.every(({active, path}) => motion.nativeActive(mixValue(Number(active), visibility.get(path), sample)));
               if (active !== Boolean(edges[i].length % 2)) edges[i].push(tick);
             });
@@ -290,16 +310,27 @@
           }
           return left % 2 ? ticks[left - 1] : null;
         },
-        colorAt(row, time) {
+      };
+      if (colors) {
+        cache.colorAt = function colorAt(row, time) {
           const curves = colors.get(row.path), sample = phase(time);
           return row.color.map((base, index) => {
             const value = Math.min(1, Math.max(0, mixValue(base, curves?.[index], sample)));
             return Math.round(f32(f32(value) * 255));
           });
-        },
-      };
+        };
+      }
       return cache;
     };
+  }
+
+  function residentActivation(binding, chains, activationPaths) {
+    if (typeof binding !== "string" || !Array.isArray(chains) || !chains.length ||
+        !Array.isArray(activationPaths) || activationPaths.length !== chains.length ||
+        !chains.every((chain, index) => Array.isArray(chain) && Number.isInteger(activationPaths[index]) &&
+          chain.some(node => node?.path === activationPaths[index] && node.active === false)) ||
+        !global.MVStudioStageMotion || !global.MVStudioLighting) return null;
+    return residentSchedule(binding, chains, activationPaths);
   }
 
   async function applyResident(T, root, parser, options = {}) {
@@ -363,7 +394,7 @@
         root.add(mesh);
         residentEmitters.add(carrier);
       }
-      groups.push({entries, schedule: residentSchedule(source, entries)});
+      groups.push({entries, schedule: residentSchedule(source.binding, entries.map(({chain}) => chain))});
     }
     if (!groups.length) {
       sampler.dispose();
@@ -443,5 +474,5 @@
     };
   }
 
-  global.MVStudioStageLaserCores = {apply, hasEmitter: node => residentEmitters.has(node)};
+  global.MVStudioStageLaserCores = {apply, hasEmitter: node => residentEmitters.has(node), residentChain, residentActivation};
 })(typeof window !== "undefined" ? window : globalThis);

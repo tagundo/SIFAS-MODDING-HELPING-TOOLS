@@ -1299,7 +1299,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
     if animated_effect:
-        from . import mv_studio_stage_laser_cores
+        from . import mv_studio_stage_laser_cores, mv_studio_stationary_bursts
 
         cores = mv_studio_stage_laser_cores.read(scene, stage_nodes, deadline)
         if cores is not None:
@@ -1313,6 +1313,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         bound_cores = mv_studio_stage_laser_cores.read_bound(scene, stage_nodes, materials, deadline)
         if bound_cores:
             glb.doc["scenes"][0].setdefault("extras", {})["mvStageResidentCores"] = bound_cores
+        bursts = mv_studio_stationary_bursts.read_bound(scene, stage_nodes, materials, deadline)
+        if bursts:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvStageStationaryBursts"] = bursts
     if len(shaft_sources) == 1:
         retained = mv_studio_shaft.export(scene, glb, materials, shaft_sources[0], deadline)
         if retained:

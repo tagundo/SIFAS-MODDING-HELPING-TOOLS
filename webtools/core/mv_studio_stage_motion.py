@@ -350,6 +350,10 @@ def read(objects, mono, tracks, deadline):
                 declaration, cost = clip
                 if binding == _AION_OVERLAY and key[1] == _AION_OVERLAY_CLIP:
                     declaration["sampleTimeF32"] = True
+            if setting == "stage_display" and all(channel["kind"] == "visibility" for channel in declaration["channels"]):
+                # Unity samples the activation clock in float32 before a
+                # newly enabled ParticleSystem advances this display frame.
+                declaration["sampleTimeF32"] = True
             material_channels = [channel for channel in declaration["channels"]
                                  if channel["kind"] in {"overlayTint", "overlayUV"}]
             requires_material = False

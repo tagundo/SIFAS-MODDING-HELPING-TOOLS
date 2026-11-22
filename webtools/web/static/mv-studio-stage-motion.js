@@ -166,7 +166,8 @@
             if (!group.channels.has(id)) group.channels.set(id, {
               node, kind, value, material, base: kind === "visible" ? value : value.clone(),
               nativeVisibility: clip.sampleTimeF32 === true &&
-                (requiresMaterial || binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"),
+                (requiresMaterial || group.animation.quality === "stage_display" && source.visibilityType === "gameObject" ||
+                  binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"),
               sum: kind === "visible" ? 0 : value.clone(), weight: 0, changed: false,
             });
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });

@@ -92,4 +92,21 @@ activation.muted = true;
 controller.update(3, project);
 assert.equal(rig.visible, true, "a muted track restores its authored prefab state");
 
+const display = { id: "display", nativeClass: "AnimationTrack", binding, events: [clip("show", "display", 0, 2, {})] };
+project.tracks = [display];
+project.quality.values.stage_display = true;
+project.stageMotion = {
+  quality: { display: "stage_display" },
+  mix: { show: {} },
+  clips: { display: { start: 0, duration: 2, sampleTimeF32: true, channels: [
+    { path: 20, kind: "visibility", visibilityType: "gameObject", curves: [["constant", .002]] },
+  ] } },
+};
+controller.update(1, project);
+assert.equal(lens.visible, true, "typed Display curves use Unity's float-to-GameObject threshold");
+project.quality.values.stage_display = false;
+controller.update(1, project);
+assert.equal(lens.visible, false);
+assert.equal(rig.visible, false);
+
 console.log("Native stage motion: packed curves, handedness, visibility, zero-length assets and extrapolation.");
