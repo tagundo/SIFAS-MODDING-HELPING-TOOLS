@@ -62,10 +62,15 @@
     const extras = node.geometry?.userData;
     const depth = extras?.mvStageCameraDepth;
     const kind = depth?.kind;
-    if (kind === "member") {
+    if (kind === "member" || kind === "memberFace") {
       const {position, normal, _sifas_color: color, skinIndex, skinWeight} = node.geometry.attributes;
       const matching = (attribute, size) => attribute?.itemSize === size && attribute.count === position?.count;
       const skinned = node.isSkinnedMesh === true;
+      if (kind === "memberFace") {
+        const {bones, boneInverses} = node.skeleton || {};
+        if (!skinned || bones?.length !== 1 || !bones[0]?.isBone ||
+            boneInverses?.length !== 1 || !boneInverses[0]?.isMatrix4) return null;
+      }
       return material.isShaderMaterial && material.userData.sifas?.shader === "AS/Member" &&
         !material.userData.viewerHelper && !material.transparent && material.depthWrite &&
         Number.isInteger(depth.queue) && depth.queue >= 0 && depth.queue <= 2500 &&
@@ -126,14 +131,15 @@
       if (!node.isMesh || node.isInstancedMesh || !source?.visible || !node.layers.test(camera.layers)) return false;
       const kind = depthKind(node, source);
       if (!kind) return false;
-      const members = kind === "member", skinning = node.isSkinnedMesh === true;
+      const rigidFace = kind === "memberFace", members = rigidFace || kind === "member";
+      const skinning = node.isSkinnedMesh === true && !rigidFace;
       const morphed = Boolean(node.morphTargetInfluences?.length);
       if (!members && (skinning || morphed)) return false;
       const morphTargets = morphed && source.morphTargets === true;
       const morphNormals = morphTargets && source.morphNormals === true;
-      const depthMaterial = pass(kind, skinning, morphTargets, morphNormals);
+      const depthMaterial = pass(rigidFace ? "member" : kind, skinning, morphTargets, morphNormals);
       let surrogate = proxies.get(node);
-      if (!surrogate) {
+      if (!surrogate || Boolean(surrogate.isSkinnedMesh) !== skinning) {
         surrogate = skinning ? new T.SkinnedMesh(node.geometry, depthMaterial) : new T.Mesh(node.geometry, depthMaterial);
         proxies.set(node, surrogate);
       }
@@ -143,7 +149,13 @@
       surrogate.layers.mask = node.layers.mask;
       surrogate.matrixWorld.copy(node.matrixWorld);
       if (members) {
-        if (skinning) {
+        if (rigidFace) {
+          // MergeFace is rigid in game. Use the carrier in the model matrix
+          // so the depth shader inverse-transposes the entire posed basis.
+          const {bones, boneInverses} = node.skeleton;
+          surrogate.matrixWorld.multiply(node.bindMatrixInverse).multiply(bones[0].matrixWorld)
+            .multiply(boneInverses[0]).multiply(node.bindMatrix);
+        } else if (skinning) {
           surrogate.skeleton = node.skeleton;
           surrogate.bindMatrix.copy(node.bindMatrix);
           surrogate.bindMatrixInverse.copy(node.bindMatrixInverse);

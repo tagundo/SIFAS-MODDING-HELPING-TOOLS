@@ -273,7 +273,7 @@ class RigBuilder:
         from .model_viewer import _ref
         return _ref(transform, self.scene.tree(transform).get("m_GameObject"))
 
-    def attributes(self, renderer, tree, game_object, raw, rest_positions):
+    def attributes(self, renderer, tree, game_object, raw, rest_positions, *, rigid_bind=None):
         import numpy as np
         from .model_viewer import _key, _ref
         from .model_skinning import _matrix
@@ -308,13 +308,19 @@ class RigBuilder:
                     joints.append(self.ensure(bone, renderer))
                 inverse.append(mirror @ _matrix(pose, np) @ mirror)
         else:
-            joint = self._anchor(renderer, game_object)
+            if rigid_bind is None:
+                joint = self._anchor(renderer, game_object)
+                world = None
+            else:
+                carrier, world = rigid_bind
+                joint = self.ensure(carrier, renderer)
             if joint is None:
                 raise RigError("This mesh has no usable rig anchor.")
             # Bake ordinary renderer placement into this one inverse bind so
             # zero-bind face pieces follow the selected costume's head bones.
-            world = self.scene.world(self.scene.transforms.get(_key(game_object)))
-            world = self.faces.world(self.scene, renderer, world)
+            if world is None:
+                world = self.scene.world(self.scene.transforms.get(_key(game_object)))
+                world = self.faces.world(self.scene, renderer, world)
             joints = [joint]
             inverse = [mirror @ (np.linalg.inv(self.worlds[joint]) @ world) @ mirror]
             indices = np.zeros((len(positions), 4), dtype=np.int64)

@@ -1233,6 +1233,157 @@ class FacePlan:
             return self.head_material
         return material
 
+    def native_merge_bindings(self, scene, selected, facial_sources):
+        """Return the exact costume carrier and head material for merged face surfaces."""
+        import numpy as np
+        from .model_viewer import _key, _member_depth_material, _ref, _remaining, _source_path
+
+        if not facial_sources:
+            return {}
+
+        def typed(owner, pointer, kind, *, local=True):
+            target = _ref(owner, pointer)
+            if target is None or target.type.name != kind or (local and owner.assets_file is not target.assets_file):
+                return None
+            return target
+
+        def declares(component, tree, name):
+            script = typed(component, tree.get("m_Script"), "MonoScript", local=False)
+            if script is None:
+                return False
+            definition = scene.tree(script)
+            return (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) == (
+                name, "LLAS.Components.Members", "Assembly-CSharp.dll")
+
+        def children(transform):
+            if transform is None:
+                return {}
+            refs = scene.tree(transform).get("m_Children", ())
+            if len(refs) > 256:
+                return {}
+            result = {}
+            for pointer in refs:
+                descendant = typed(transform, pointer, "Transform")
+                child = game(descendant)
+                if child is None:
+                    continue
+                name = scene.name(child)
+                result[name] = descendant if name not in result else None
+            return result
+
+        def game(transform):
+            return typed(transform, scene.tree(transform).get("m_GameObject"), "GameObject") if transform is not None else None
+
+        renderers = {}
+        for renderer, tree, owner in scene.renderers:
+            renderers.setdefault(_key(owner), []).append((renderer, tree))
+
+        def surface(transform):
+            owner = game(transform)
+            if owner is None or not scene.active(owner) or scene.tree(owner).get("m_Layer") != 16:
+                return None
+            rows = renderers.get(_key(owner), ())
+            if len(rows) != 1:
+                return None
+            renderer, tree = rows[0]
+            refs = tree.get("m_Materials", ())
+            if (renderer.type.name != "SkinnedMeshRenderer" or renderer.assets_file is not owner.assets_file
+                    or tree.get("m_Enabled") is not True or tree.get("m_CastShadows") not in (0, 1, 2)
+                    or tree.get("m_ForceRenderingOff") or len(refs) != 1):
+                return None
+            material = typed(renderer, refs[0], "Material")
+            return (renderer, material) if material is not None else None
+
+        def merged_surfaces(root):
+            pending, visited, result = [root], set(), []
+            while pending:
+                transform = pending.pop()
+                if transform is None or _key(transform) in visited or len(visited) >= 64:
+                    return None
+                visited.add(_key(transform))
+                owner = game(transform)
+                if owner is None:
+                    return None
+                if scene.name(owner) != "Eye" and any(
+                    renderer.type.name == "SkinnedMeshRenderer" for renderer, _ in renderers.get(_key(owner), ())
+                ):
+                    row = surface(transform)
+                    if row is None:
+                        return None
+                    result.append((transform, *row))
+                pending.extend(children(transform).values())
+            return result
+
+        def stock_placeholder(material):
+            reference = scene.tree(material).get("m_Shader") or {}
+            return (reference.get("m_FileID") == 0 and reference.get("m_PathID") == 952725256833404699
+                    and typed(material, reference, "Shader") is not None)
+
+        bindings = {}
+        for component in scene.env.objects:
+            if component.type.name != "MonoBehaviour" or _source_path(component) not in selected:
+                continue
+            _remaining(scene.deadline)
+            try:
+                tree = scene.tree(component)
+                if not all(field in tree for field in ("head", "headAll", "face", "headMaterial")):
+                    continue
+                if not declares(component, tree, "BodyPartManager"):
+                    continue
+                owner = typed(component, tree.get("m_GameObject"), "GameObject")
+                head = typed(component, tree.get("head"), "GameObject")
+                head_all = typed(component, tree.get("headAll"), "GameObject")
+                face = typed(component, tree.get("face"), "MonoBehaviour", local=False)
+                material = typed(component, tree.get("headMaterial"), "Material")
+                if (any(value is None for value in (owner, head, head_all, face, material))
+                        or _source_path(face) not in facial_sources
+                        or face.assets_file.target_platform != component.assets_file.target_platform
+                        or not scene.active(owner) or not _member_depth_material(scene, material)):
+                    continue
+                face_tree = scene.tree(face)
+                if not declares(face, face_tree, "MemberFace"):
+                    continue
+                # MemberFaceData is an inline field of this typed component.
+                face_data = face_tree.get("memberFaceData")
+                merge = face_data.get("needsMergingFace") if isinstance(face_data, dict) else None
+                if type(merge) not in (bool, int) or merge != 1:
+                    continue
+                prefab = typed(face, face_tree.get("m_GameObject"), "GameObject")
+                if prefab is None:
+                    continue
+                head_children = children(scene.transforms.get(_key(head)))
+                head_all_tr = scene.transforms.get(_key(head_all))
+                if head_all_tr is None or head_children.get("Head_All") is not head_all_tr:
+                    continue
+                costume_nodes = children(head_all_tr)
+                carrier = costume_nodes.get("mesh_face")
+                if (carrier is None or costume_nodes.get("Head_Face") is None
+                        or "mesh_facedots" in children(costume_nodes["Head_Face"])):
+                    continue
+                donor = children(scene.transforms.get(_key(prefab))).get("mesh_face")
+                costume_parts = merged_surfaces(carrier)
+                donor_parts = merged_surfaces(donor)
+                if (not costume_parts or not donor_parts
+                        or any(_key(source) != _key(material) for _, _, source in costume_parts)
+                        or any(not stock_placeholder(source) or self.material_bindings.get(_key(renderer)) is not material
+                               for _, renderer, source in donor_parts)):
+                    continue
+                carrier_world = scene.world(carrier)
+                mounting = carrier_world @ np.linalg.inv(scene.world(donor))
+                worlds = [scene.world(transform) for transform, _, _ in costume_parts]
+                worlds.extend(mounting @ scene.world(transform) for transform, _, _ in donor_parts)
+                # CombineFace bakes original vertex transforms but copies morph deltas
+                # verbatim. Support the stock-compatible identity linear rest basis.
+                if any(not np.isfinite(world).all() or not np.allclose(world[:3, :3], np.eye(3), atol=1e-6, rtol=0)
+                       for world in worlds):
+                    continue
+                for (_, renderer, _), world in zip([*costume_parts, *donor_parts], worlds, strict=True):
+                    key = _key(renderer)
+                    bindings[key] = None if key in bindings else (carrier, world, material)
+            except (AttributeError, KeyError, TypeError, ValueError, np.linalg.LinAlgError, OSError):
+                continue
+        return bindings
+
     def metadata(self):
         return {"enabled": self.enabled, "status": self.status, "added": self.added,
                 "characters": [self.owner] if self.owner is not None else []}

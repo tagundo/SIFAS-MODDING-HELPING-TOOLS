@@ -151,3 +151,79 @@ assert.equal(renderer.getRenderTarget(), original);
 depth.dispose();
 assert.equal(depth.capture(source, camera), null);
 console.log("Native member depth shares evaluated skin and morphs with the visible renderer and preserves stage capture state.");
+
+function testRigidFace() {
+  const renderer = rendererStub(), source = new T.Scene(), camera = new T.PerspectiveCamera();
+  const parent = new T.Group(), face = makeMember(), carrier = face.skeleton.bones[0];
+  face.geometry.userData.mvStageCameraDepth.kind = "memberFace";
+  source.add(parent, carrier);
+  parent.add(face);
+  parent.scale.set(-2, .6, 1.4);
+  parent.rotation.set(.17, -.31, .46);
+  face.bindMode = "detached";
+  face.bindMatrix.makeRotationY(.36).setPosition(.3, -.8, .4);
+  face.skeleton.boneInverses[0].makeRotationX(-.18).setPosition(-.2, .35, .1);
+  carrier.rotation.set(.6, .21, -.4);
+  carrier.scale.set(.8, 1.3, .5);
+  carrier.position.set(.3, .4, -.7);
+  let skeletonUpdates = 0, cachedProxy;
+  face.skeleton.update = () => { skeletonUpdates++; };
+
+  function world(point) {
+    return point.clone().applyMatrix4(face.bindMatrix).applyMatrix4(face.skeleton.boneInverses[0])
+      .applyMatrix4(carrier.matrixWorld).applyMatrix4(face.bindMatrixInverse).applyMatrix4(face.matrixWorld);
+  }
+  renderer.inspectDraw = scene => {
+    assert.equal(renderer.info.autoReset, true);
+    assert.equal(scene.children.length, 1);
+    const [proxy] = scene.children;
+    cachedProxy ||= proxy;
+    assert.equal(proxy, cachedProxy);
+    assert.equal(proxy.isMesh, true);
+    assert.equal(proxy.isSkinnedMesh, undefined);
+    assert.equal(proxy.material.skinning, false);
+    assert.equal(proxy.material.morphTargets, true);
+    assert.equal(proxy.material.morphNormals, true);
+    assert.equal(proxy.geometry, face.geometry);
+    assert.equal(proxy.morphTargetInfluences, face.morphTargetInfluences);
+    const weight = face.morphTargetInfluences[0];
+    const morphed = new T.Vector3(.2, .7, -.4).addScaledVector(new T.Vector3(.01, -.03, .06), weight);
+    assert.ok(world(morphed).distanceTo(morphed.clone().applyMatrix4(proxy.matrixWorld)) < 1e-10);
+
+    const origin = world(new T.Vector3());
+    const x = world(new T.Vector3(1, 0, 0)).sub(origin);
+    const y = world(new T.Vector3(0, 1, 0)).sub(origin);
+    const z = world(new T.Vector3(0, 0, 1)).sub(origin);
+    assert.ok(Math.abs(x.dot(y)) > .1, "effective basis has shear");
+    const normal = new T.Vector3(.2, -.45, .75);
+    const yz = new T.Vector3().crossVectors(y, z), zx = new T.Vector3().crossVectors(z, x);
+    const xy = new T.Vector3().crossVectors(x, y), det = x.dot(yz);
+    assert.ok(det < 0, "fixture also covers a reflected carrier");
+    const expectedNormal = yz.multiplyScalar(normal.x).addScaledVector(zx, normal.y).addScaledVector(xy, normal.z)
+      .multiplyScalar(1 / det).normalize();
+    const actualNormal = normal.clone().applyMatrix3(new T.Matrix3().getNormalMatrix(proxy.matrixWorld)).normalize();
+    assert.ok(actualNormal.distanceTo(expectedNormal) < 1e-10);
+    proxy.onBeforeRender();
+    assert.equal(proxy.material.uniforms.memberRimIntensity.value, face.material.userData.mvStageMemberDepthRim.value);
+  };
+
+  const depth = MVStudioCameraDepth.create(T, renderer);
+  assert.ok(depth.capture(source, camera));
+  face.morphTargetInfluences[0] = .1;
+  face.material.userData.mvStageMemberDepthRim.value = 2;
+  carrier.position.z = .65;
+  assert.ok(depth.capture(source, camera));
+  assert.equal(skeletonUpdates, 0, "the rigid native face never submits a second GPU skin");
+
+  renderer.inspectDraw = scene => assert.equal(scene.children.length, 0);
+  const inverses = face.skeleton.boneInverses;
+  face.skeleton.boneInverses = [];
+  assert.ok(depth.capture(source, camera));
+  face.skeleton.boneInverses = inverses;
+  face.skeleton.bones.push(new T.Bone());
+  assert.ok(depth.capture(source, camera));
+  depth.dispose();
+  console.log("Native merged-face depth uses the full rigid carrier matrix with live morphs and rejects unsupported skins.");
+}
+
+testRigidFace();
