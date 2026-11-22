@@ -843,8 +843,13 @@ def _open_saved(archive, entries):
     restore_spotlight = "stageSpotlight" not in project and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_12_spot")
         for track in project["tracks"])
-    restore_butterfly = "stageButterfly" not in project and any(
-        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_13_butterfly")
+    butterfly = project.get("stageButterfly")
+    butterfly = butterfly if isinstance(butterfly, dict) else {}
+    missing_butterflies = tuple(suffix for key, suffix in (
+        ("trackId", "/Control/par_13_butterfly"), ("finale", "/Control/par_14_butterfly"),
+    ) if key not in butterfly)
+    restore_butterfly = bool(missing_butterflies) and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith(missing_butterflies)
         for track in project["tracks"])
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
@@ -937,9 +942,11 @@ def _open_saved(archive, entries):
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageButterfly", "stageDisplayLights"):
+            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageDisplayLights"):
                 if field in original:
                     project[field] = original[field]
+            if "stageButterfly" in original:
+                project["stageButterfly"] = {**original["stageButterfly"], **butterfly}
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background

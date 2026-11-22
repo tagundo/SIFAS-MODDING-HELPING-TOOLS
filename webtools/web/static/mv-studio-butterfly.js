@@ -58,10 +58,12 @@
   const vector = (values, count, bound) => Array.isArray(values) && values.length === count &&
     values.every(value => Number.isFinite(value) && Math.abs(value) <= bound);
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
-  function checked(source, title, motion) {
+  const timelineTick = time => Math.trunc(time / 1e-12 + .5);
+  function checked(source, title, motion, finale) {
     if (source?.schema !== 1 || !id(source.trackId) || !id(source.eventId) || !title.validMipChain(source.texture) ||
         source.texture[0].width !== 512) return false;
     const {geometry, animation, particle, material} = source;
+    const bounded = curve => title.boundedCurve(curve, motion.validCurve);
     return Array.isArray(geometry?.positions) && geometry.positions.length === 6 &&
       geometry.positions.every(row => vector(row, 3, .01)) && Array.isArray(geometry.uv) && geometry.uv.length === 6 &&
       geometry.uv.every(row => vector(row, 2, 1) && row.every(value => value >= 0)) &&
@@ -69,19 +71,18 @@
       geometry.indices.every(value => Number.isInteger(value) && value >= 0 && value < 6) &&
       Number.isFinite(animation?.duration) && animation.duration > 0 && animation.duration <= 15 &&
       Array.isArray(animation.curves) && animation.curves.length === 3 &&
-      animation.curves.every(curve => title.boundedCurve(curve, motion.validCurve)) &&
-      particle?.birth === 0 && particle.lifetime === 30 && particle.size === 6 &&
+      animation.curves.every(bounded) &&
+      (!finale || (Array.isArray(animation.tintCurves) && animation.tintCurves.length === 4 && animation.tintCurves.every(bounded))) &&
+      particle?.birth === 0 && particle.lifetime === (finale ? Math.fround(5.55) : 30) && particle.size === (finale ? 9 : 6) &&
       vector(particle.velocity, 3, .01) && Math.hypot(...particle.velocity) > .0001 && vector(particle.color, 4, 1) &&
       vector(material?.randomMove, 4, 16) && vector(material.randomUp, 4, 16) &&
       vector(material.ambient, 4, 1) && vector(material.tint, 4, 8) &&
       vector([material.flapSpeed, material.flapIntensity, material.randomFlapIntensity, material.randomFlapDelay], 4, 64);
   }
 
-  async function apply(T, root, source) {
-    const title = global.MVStudioTitle, motion = global.MVStudioStageMotion, particles = global.MVStudioStageParticles;
-    const simulation = global.MVStudioButterflySimulation;
-    if (!source || !title || !motion || !particles || !simulation || !checked(source, title, motion)) return null;
-    const stream = simulation.create(previewSeed);
+  async function prepare(T, source, finale, title, motion, simulation) {
+    if (!checked(source, title, motion, finale)) return null;
+    const stream = simulation.create(previewSeed, finale ? "finale" : undefined);
     if (!stream) return null;
     let texture;
     try {
@@ -100,50 +101,89 @@
       uColor: {value: new T.Vector4().fromArray(particle.color)}, uAmbient: {value: new T.Vector4().fromArray(fields.ambient)},
       uTint: {value: new T.Vector4().fromArray(fields.tint)},
     };
+    const name = finale ? "Native Aion finale butterfly" : "Native Aion butterfly";
     const material = new T.ShaderMaterial({
-      name: "Native Aion butterfly", vertexShader, fragmentShader, uniforms, transparent: true,
+      name, vertexShader, fragmentShader, uniforms, transparent: true,
       toneMapped: false, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false, side: T.DoubleSide,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor,
     });
     const mesh = new T.Mesh(geometry, material);
-    mesh.name = "Native Aion butterfly";
+    mesh.name = name;
     mesh.renderOrder = 3000;
     mesh.frustumCulled = false; // The vertex shader places the wing in the animated world position.
     mesh.visible = false;
-    root.add(mesh);
     const clip = {start: 0, duration: animation.duration, loop: false, sampleTimeF32: true};
-    let tracks, track, disposed = false;
+    return {mesh, uniforms, stream, source, clip, finale};
+  }
+
+  async function apply(T, root, source) {
+    const title = global.MVStudioTitle, motion = global.MVStudioStageMotion, particles = global.MVStudioStageParticles;
+    const simulation = global.MVStudioButterflySimulation;
+    if (!source || !title || !motion || !particles || !simulation) return null;
+    const prepared = await Promise.all([
+      prepare(T, source, false, title, motion, simulation),
+      prepare(T, source.finale, true, title, motion, simulation),
+    ]);
+    const entries = prepared.filter(Boolean);
+    if (!entries.length) return null;
+    for (const {mesh} of entries) root.add(mesh);
+    let tracks, disposed = false;
     return {
       invalidate() { tracks = null; },
       update(time, project) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
-          track = tracks?.find(row => row.id === source.trackId && row.nativeClass === "CustomControlTrack");
+          for (const entry of entries) {
+            entry.track = tracks?.find(row => row.id === entry.source.trackId && row.nativeClass === "CustomControlTrack");
+          }
         }
-        const event = !track?.muted && track?.events.find(row => row.id === source.eventId);
-        const offset = project?.quality?.values?.stage_control !== false && particles.activeOffset(event, time);
-        mesh.visible = false;
-        if (!offset) return;
-        const fps = project?.quality?.values?.frame_rate_60fps === true ? 60 : 30;
-        const frame = Math.floor(time * fps + 1e-9), start = Math.ceil(event.start * fps - 1e-9);
-        const drift = stream.sample((frame - start + 1) / fps, fps);
-        if (!drift) return;
-        const stamp = motion.sampleTime(clip, time - event.start);
-        const [x, y, z] = animation.curves.map(curve => motion.evaluate(curve, stamp));
-        uniforms.uCenter.value.set(x - offset[0] - drift[0], y + offset[1] + drift[1], z + offset[2] + drift[2]);
-        // _AUTO_PLAY_ON uses the scene clock in the original shader.
-        uniforms.uTime.value = time;
-        mesh.visible = true;
+        const quality = project?.quality?.values;
+        const enabled = quality?.stage_control !== false;
+        const fps = quality?.frame_rate_60fps === true ? 60 : 30;
+        const frame = Math.floor(time * fps + 1e-9), tick = timelineTick(time);
+        for (const {mesh, uniforms, stream, source, track, clip, finale} of entries) {
+          mesh.visible = false;
+          const event = enabled && !track?.muted && track?.events.find(row => row.id === source.eventId);
+          if (!event) continue;
+          // Unity Timeline queries its half-open clip intervals in 1 ps
+          // ticks. Preserve the cue edge even when its serialized double is
+          // slightly later than the matching display timestamp.
+          const firstTick = timelineTick(event.start);
+          if (tick < firstTick || tick >= timelineTick(event.start + event.duration)) continue;
+          const stageTime = Math.max(time, event.start);
+          const offset = particles.activeOffset(event, stageTime);
+          if (!offset) continue;
+          const firstFrame = Math.ceil(event.start * fps);
+          const start = timelineTick((firstFrame - 1) / fps) === firstTick ? firstFrame - 1 : firstFrame;
+          const elapsed = (frame - start + 1) / fps;
+          const drift = stream.sample(elapsed, fps);
+          if (!drift) continue;
+          const stamp = motion.sampleTime(clip, stageTime - event.start);
+          const [x, y, z] = source.animation.curves.map(curve => motion.evaluate(curve, stamp));
+          uniforms.uCenter.value.set(x - offset[0] - drift[0], y + offset[1] + drift[1], z + offset[2] + drift[2]);
+          if (finale) {
+            const appearance = stream.appearance(elapsed, fps);
+            if (!appearance || !appearance.alpha) continue;
+            uniforms.uSize.value = appearance.size;
+            uniforms.uColor.value.w = source.particle.color[3] * appearance.alpha / 255;
+            uniforms.uTint.value.fromArray(source.animation.tintCurves.map(curve => motion.evaluate(curve, stamp)));
+          }
+          // _AUTO_PLAY_ON uses the scene clock in the original shader.
+          uniforms.uTime.value = time;
+          mesh.visible = true;
+        }
       },
       dispose() {
         if (disposed) return;
         disposed = true;
-        root.remove(mesh);
-        geometry.dispose();
-        material.dispose();
-        texture.dispose();
+        for (const {mesh, uniforms} of entries) {
+          root.remove(mesh);
+          mesh.geometry.dispose();
+          mesh.material.dispose();
+          uniforms.uTexture.value.dispose();
+        }
       },
     };
   }

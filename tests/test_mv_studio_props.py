@@ -130,6 +130,19 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual([level["width"] for level in butterfly["texture"]], [512 >> i for i in range(10)])
                     self.assertEqual(butterfly["particle"]["size"], 6)
                     self.assertEqual(butterfly["material"]["tint"], [2, 2, 2, 1])
+                    finale = butterfly["finale"]
+                    finale_track = tracks[finale["trackId"]]
+                    finale_cue, = finale_track["events"]
+                    self.assertEqual(finale_track["label"], "StageEffect/Expert/Control/par_14_butterfly")
+                    self.assertEqual(finale_cue["id"], finale["eventId"])
+                    self.assertAlmostEqual(finale_cue["start"], 5341 / 60)
+                    self.assertAlmostEqual(finale_cue["duration"], 531 / 60)
+                    self.assertEqual(finale["geometry"], butterfly["geometry"])
+                    self.assertEqual([level["width"] for level in finale["texture"]], [512 >> i for i in range(10)])
+                    self.assertNotEqual(finale["texture"][0], butterfly["texture"][0])
+                    self.assertEqual(finale["particle"]["size"], 9)
+                    self.assertAlmostEqual(finale["particle"]["lifetime"], 5.55, places=6)
+                    self.assertEqual(len(finale["animation"]["tintCurves"]), 4)
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")
