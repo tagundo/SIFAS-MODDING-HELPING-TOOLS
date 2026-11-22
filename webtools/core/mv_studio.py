@@ -286,7 +286,8 @@ def _timeline(path):
     parsed = mv_studio_timeline.parse_timeline(raw, path.name, preview_split=True, preview_stage_motion=True,
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
-                                               preview_stage_spotlight=True, preview_stage_speed_back=True,
+                                               preview_stage_spotlight=True, preview_stage_butterfly=True,
+                                               preview_stage_speed_back=True,
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
@@ -463,8 +464,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             native, parsed = _timeline(timeline)
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                             "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
-                             "stageBreak", "stageFinaleFloor", "stageSparksA", "stageSparksB", "stageSparksRoop")
+                             "stageRibbons", "stageSpotlight", "stageButterfly", "stageSpeedBack",
+                             "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
+                             "stageSparksA", "stageSparksB", "stageSparksRoop")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -841,6 +843,9 @@ def _open_saved(archive, entries):
     restore_spotlight = "stageSpotlight" not in project and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_12_spot")
         for track in project["tracks"])
+    restore_butterfly = "stageButterfly" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith("/Control/par_13_butterfly")
+        for track in project["tracks"])
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
@@ -895,7 +900,8 @@ def _open_saved(archive, entries):
             "m_FileID": 0, "m_PathID": "1069439206166195116",
         } for event in track["events"]) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
-                               or restore_spotlight or restore_speed_back or restore_display_lights or restore_falling
+                               or restore_spotlight or restore_butterfly or restore_speed_back
+                               or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
                                or restore_sparks_roop):
         from . import mv_studio_timeline
@@ -908,6 +914,8 @@ def _open_saved(archive, entries):
                 options["preview_stage_ribbons"] = True
             if restore_spotlight:
                 options["preview_stage_spotlight"] = True
+            if restore_butterfly:
+                options["preview_stage_butterfly"] = True
             if restore_speed_back:
                 options["preview_stage_speed_back"] = True
             if restore_display_lights:
@@ -929,7 +937,7 @@ def _open_saved(archive, entries):
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
-            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageDisplayLights"):
+            for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageButterfly", "stageDisplayLights"):
                 if field in original:
                     project[field] = original[field]
             rebuilt_background = original.get("stageSpeedBack")
@@ -982,8 +990,9 @@ def _mod_files(project, files):
                 native = raw
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                                 "stageRibbons", "stageSpotlight", "stageSpeedBack", "stageDisplayLights", "stageFallingEffects",
-                                 "stageBreak", "stageFinaleFloor", "stageSparksA", "stageSparksB", "stageSparksRoop")
+                                 "stageRibbons", "stageSpotlight", "stageButterfly", "stageSpeedBack",
+                                 "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
+                                 "stageSparksA", "stageSparksB", "stageSparksRoop")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,
