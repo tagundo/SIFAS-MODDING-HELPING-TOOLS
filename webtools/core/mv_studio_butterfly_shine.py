@@ -44,9 +44,9 @@ def _stepped(source, count):
     return rows
 
 
-def _gradient(source, prefix, count, channels):
+def _gradient(source, prefix, count, channels, *, mode=0):
     key_count = "m_NumColorKeys" if prefix == "ctime" else "m_NumAlphaKeys"
-    if source["m_Mode"] != 0 or source[key_count] != count:
+    if source["m_Mode"] != mode or source[key_count] != count:
         return None
     rows = []
     for index in range(count):

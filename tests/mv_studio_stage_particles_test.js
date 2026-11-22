@@ -14,6 +14,7 @@ require("../webtools/web/static/mv-studio-autumn-floor-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-burst-simulation.js");
 require("../webtools/web/static/mv-studio-momiji-leaves-simulation.js");
 require("../webtools/web/static/mv-studio-momiji-fan-simulation.js");
+require("../webtools/web/static/mv-studio-stage-glow-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -739,6 +740,70 @@ function testAionAirConfetti() {
   assert.deepEqual(sample(1581, 60), finale);
 }
 
+function testAionStageGlow() {
+  const create = globalThis.MVStudioStageGlowSimulation.create;
+  const source = {
+    rate: 5,
+    startColor: {
+      rgb: [[10285, .9686275124549866, .9803922176361084, .8980392813682556],
+        [38503, .7839410901069641, .9433962106704712, .35154858231544495],
+        [56568, .5843137502670288, .772208034992218, .9607843160629272],
+        [65535, .2216981053352356, .7385380268096924, .8867924213409424]],
+      alpha: [[0, 0], [16132, .0784313753247261], [27691, .19607843458652496],
+        [46679, .364705890417099], [65535, .45098039507865906]],
+    },
+    alphaKeys: [
+      [[0, .11764705926179886], [3277, 1], [12543, 0], [23413, 1], [32088, 0], [39823, 1], [45875, 1], [65535, 0]],
+      [[0, .11764705926179886], [3277, 1], [20904, 1], [26758, .2862745225429535], [32402, 1], [49151, 1], [65535, 0]],
+    ],
+  };
+  const sample = (stream, frame, fps = 60) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  assert.equal(create(source, -1), null);
+  assert.equal(create(source, 0x100000000), null);
+  assert.equal(create({...source, alphaKeys: {length: 2}}, 6433), null);
+  const early = create(source, 6433), late = create(source, 2559958440);
+  const edited = create(source, 0xffffffff);
+  assert.deepEqual(sample(edited, 0), sample(create(source, 0xffffffff), 0));
+
+  // Original ARM particle worker, ordered by its remaining-life renderer key.
+  const earlyWarm = sample(early, 0);
+  assert.equal(earlyWarm.length, 32);
+  assert.deepEqual(earlyWarm[0], [3.0362699031829834, -1.5822529792785645, 1.439910650253296,
+    1.9767752885818481, 2.0564067363739014, 1.3819570541381836, 247, 250, 229, 6]);
+  const earlyStart = sample(early, 1);
+  assert.equal(earlyStart.length, 33);
+  assert.deepEqual(earlyStart[0], [3.0355772972106934, -1.585967779159546, 1.439910650253296,
+    1.9792481660842896, 2.0589792728424072, 1.3819570541381836, 247, 250, 229, 6]);
+  const earlyEnd = sample(early, 190);
+  assert.equal(earlyEnd.length, 35);
+  assert.deepEqual(earlyEnd[12], [-.4204167425632477, .261248379945755, -.9658350348472595,
+    2.283529758453369, 2.7225539684295654, 3.8980400562286377, 57, 188, 226, 115]);
+  assert.deepEqual(sample(early, 0, 30), earlyWarm);
+  assert.deepEqual(sample(early, 1), earlyStart);
+  assert.deepEqual(sample(early, 190), earlyEnd);
+
+  const lateWarm = sample(late, 0);
+  assert.equal(lateWarm.length, 36);
+  assert.deepEqual(lateWarm[0], [-2.5127274990081787, 1.4900875091552734, -.009928747080266476,
+    1.5139130353927612, 2.932960271835327, 3.9979774951934814, 200, 241, 90, 0]);
+  const lateStart = sample(late, 1, 30);
+  assert.equal(lateStart.length, 36);
+  assert.deepEqual(lateStart[0], [-6.506486415863037, -.18772010505199432, .047560133039951324,
+    1.6294132471084595, 1.7803311347961426, .8874926567077637, 200, 241, 90, 2]);
+  assert.deepEqual(lateStart, sample(late, 2));
+  const lateEnd = sample(late, 180);
+  assert.equal(lateEnd.length, 35);
+  assert.deepEqual(lateEnd[15], [2.3684041500091553, 1.204420804977417, -.807766318321228,
+    2.1516404151916504, 2.420987606048584, 5.484918594360352, 247, 250, 229, 20]);
+  assert.deepEqual(sample(late, 90, 30), lateEnd);
+  assert.deepEqual(sample(late, 0), lateWarm);
+  assert.deepEqual(sample(late, 180), lateEnd);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
@@ -748,4 +813,5 @@ testAionLeafBursts();
 testAionAirConfetti();
 testAionMomijiDisplayLeaves();
 testAionMomijiFan();
+testAionStageGlow();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

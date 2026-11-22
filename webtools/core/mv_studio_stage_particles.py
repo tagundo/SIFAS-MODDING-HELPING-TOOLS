@@ -61,8 +61,8 @@ def _source(objects, owner, tree, event, *, overwrite_seed=False):
     return (prefab, seed) if prefab is not None else None
 
 
-def _texture(reader, deadline, *, sizes=(256, 512)):
-    base = title._texture(reader, deadline, sizes=sizes)
+def _texture(reader, deadline, *, sizes=(256, 512), dimensions=None):
+    base = title._texture(reader, deadline, sizes=sizes, dimensions=dimensions)
     if base is None:
         return None
     levels = [base]
@@ -74,7 +74,7 @@ def _texture(reader, deadline, *, sizes=(256, 512)):
             return None
         levels.append({"png": base64.b64encode(png).decode("ascii"),
                        "width": native.m_Width, "height": native.m_Height})
-    return levels if len(levels) == base["width"].bit_length() else None
+    return levels if len(levels) == max(base["width"], base["height"]).bit_length() else None
 
 
 def read(objects, mono, tracks, deadline):

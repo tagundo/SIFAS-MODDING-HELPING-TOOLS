@@ -52,7 +52,7 @@
       float c = cos(angle), s = sin(angle);
       local = mat2(c, s, -s, c) * local;
       #endif
-      #ifdef VIEW_ALIGNED
+      #if defined(VIEW_ALIGNED) || defined(NATIVE_VIEW_AXES)
       vec3 offset = vec3(local * scale, 0.0);
       #else
       vec3 offset = mat3(modelViewMatrix) * ((uAxisX * local.x + uAxisY * local.y) * scale);
@@ -126,7 +126,7 @@
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
     additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1], minViewportWidth = 0,
-    saturateRGB = false, pivot = null, side = T.DoubleSide}) {
+    saturateRGB = false, pivot = null, side = T.DoubleSide, nativeViewAxes = false, stencilEqual = true}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -143,13 +143,14 @@
     const destination = additive ? T.OneFactor : T.OneMinusSrcAlphaFactor;
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader, transparent: true,
-      defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {}),
+      defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}),
+        ...(viewAligned ? {[nativeViewAxes ? "NATIVE_VIEW_AXES" : "VIEW_ALIGNED"]: 1} : {}),
         ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {}), ...(saturateRGB ? {SATURATE_RGB: 1} : {}),
         ...(pivot ? {PARTICLE_PIVOT: 1} : {})},
       toneMapped: false, side, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
-      stencilWrite: true, stencilFunc: T.EqualStencilFunc, stencilRef: 2,
+      stencilWrite: true, stencilFunc: stencilEqual ? T.EqualStencilFunc : T.AlwaysStencilFunc, stencilRef: 2,
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},

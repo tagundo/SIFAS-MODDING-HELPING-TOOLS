@@ -632,6 +632,45 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened.get("stageConfetti"), expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_stage_glow_restores_source_for_only_existing_edited_cues(self):
+        from webtools.core import mv_studio_stage_glow
+
+        project = mv_studio._blank("Edited stage glow")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        track = {"id": "stageGlow", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": mv_studio_stage_glow.TRACK}
+        event = {"id": "stageGlow:0", "label": "Edited glow", "start": 18, "duration": 2,
+                 "values": {"clipIn": 9, "offset": {"x": 2, "y": 1, "z": 5},
+                            "overwriteRandomSeed": 1, "particleRandomSeed": 246}}
+        rows = [{"trackId": track["id"], "eventId": event["id"], "seed": 6433, "overwriteRandomSeed": True},
+                {"trackId": track["id"], "eventId": "stageGlow:1", "seed": 2559958440,
+                 "overwriteRandomSeed": False}]
+        original = {"schema": 1, "seed": 2559958440, "cues": rows}
+        edited = {**original, "uv": [.25, 1, 0, 0]}
+        for saved, events, source, expected, reparses in (
+                (None, [event], self.original, {**original, "cues": rows[:1]}, True),
+                (None, [{**event, "id": "added"}], self.original, None, True),
+                (None, [], self.original, None, False),
+                (None, [event], None, None, False),
+                (edited, [event], self.original, edited, False)):
+            with self.subTest(saved=saved, events=events, source=source):
+                tracks = [{**track, "events": events}]
+                document = {**project, "tracks": tracks}
+                if saved is not None:
+                    document["stageGlow"] = saved
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageGlow": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited stage glow", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_glow=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageGlow"), expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

@@ -336,7 +336,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_member_shafts=False, preview_stage_title=False, preview_stage_particles=False,
                    preview_stage_ribbons=False, preview_stage_spotlight=False, preview_stage_butterfly=False,
                    preview_stage_rain=False, preview_stage_leaves=False, preview_stage_momiji=False, preview_stage_confetti=False,
-                   preview_stage_speed_back=False,
+                   preview_stage_glow=False, preview_stage_speed_back=False,
                    preview_stage_display_lights=False, preview_stage_falling_effects=False,
                    preview_stage_break=False, preview_stage_finale_floor=False,
                    preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False) -> dict:
@@ -516,6 +516,12 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         confetti = mv_studio_confetti.read(objects, mono, tracks, deadline)
         if confetti:
             result["stageConfetti"] = confetti
+    if preview_stage_glow:
+        from . import mv_studio_stage_glow
+
+        glow = mv_studio_stage_glow.read(objects, mono, tracks, deadline)
+        if glow:
+            result["stageGlow"] = glow
     atlas_refs = {} if (preview_stage_falling_effects or preview_stage_break or preview_stage_finale_floor
                         or preview_stage_sparks_a or preview_stage_sparks_b or preview_stage_sparks_roop) else None
     if preview_stage_speed_back:

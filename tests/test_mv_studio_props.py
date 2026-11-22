@@ -257,6 +257,19 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                      [("air", 1425677110, 70), ("floor", 3279275062, 3)])
                     self.assertEqual((confetti["material"]["queue"], confetti["material"]["blend"],
                                       confetti["material"]["stencil"]), (3010, "add", "always"))
+                    stage_glow = project["stageGlow"]
+                    glow_track = tracks[stage_glow["cues"][0]["trackId"]]
+                    self.assertEqual(glow_track["label"], "StageEffect/Expert/Control/par_09_glow")
+                    self.assertEqual([cue["eventId"] for cue in stage_glow["cues"]],
+                                     [event["id"] for event in glow_track["events"]])
+                    self.assertEqual([(cue["seed"], cue["overwriteRandomSeed"]) for cue in stage_glow["cues"]],
+                                     [(6433, True), (2559958440, False)])
+                    self.assertEqual(stage_glow["position"], [-2.7699999809265137, 2.4800000190734863, .5])
+                    self.assertEqual(stage_glow["uv"], [.25, 1, .5, 0])
+                    self.assertEqual([(row["width"], row["height"]) for row in stage_glow["texture"]],
+                                     [(256 >> i, max(1, 128 >> i)) for i in range(9)])
+                    self.assertEqual((stage_glow["material"]["queue"], stage_glow["material"]["blend"],
+                                      stage_glow["material"]["stencil"]), (3010, "add", "always"))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

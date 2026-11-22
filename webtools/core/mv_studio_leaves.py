@@ -53,11 +53,12 @@ def _minmax(source, scale, minimum, maximum):
             and _curve_matches(source["minCurve"], minimum) and _curve_matches(source["maxCurve"], maximum))
 
 
-def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radius=1, arc_mode=0):
+def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radius=1, arc_mode=0, random_direction=0):
     if (not billboard._matches(source, {"type": shape_type, "placementMode": 0, "radiusThickness": 1, "alignToDirection": False,
                                        "m_Position": billboard._ZERO, "m_Rotation": dict(zip("xyz", rotation)),
                                        "m_Scale": dict(zip("xyz", scale)), "boxThickness": billboard._ZERO})
-            or any(source[name] for name in ("randomDirectionAmount", "sphericalDirectionAmount", "randomPositionAmount"))
+            or source["randomDirectionAmount"] != random_direction
+            or any(source[name] for name in ("sphericalDirectionAmount", "randomPositionAmount"))
             or any(source[name] != billboard._NULL for name in ("m_Mesh", "m_MeshRenderer", "m_SkinnedMeshRenderer",
                                                                  "m_Sprite", "m_SpriteRenderer", "m_Texture"))):
         return False
