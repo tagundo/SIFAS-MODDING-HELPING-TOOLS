@@ -399,7 +399,9 @@
     function renderView(camera) {
       if (camera === liveCamera && post) {
         const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, focusDistance);
-        if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera)) return;
+        const preserveDepth = useLive && settings.stage_overlay_effect !== false &&
+          records.some(record => record.stageOverlay?.hasDepthTest());
+        if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera, preserveDepth)) return;
       }
       renderScene(camera);
     }

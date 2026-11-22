@@ -156,6 +156,8 @@ def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
         channel = {"path": path, "kind": kind, "curves": curves}
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
+        if track.get("rendererClass") == 137:
+            channel["rendererClass"] = 137
         channels.append(channel)
     clip = {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}
     if tint is not None:
@@ -294,8 +296,9 @@ def read(objects, mono, tracks, deadline):
                     declaration["sampleTimeF32"] = True
             if cost + timing_cost > remaining:
                 continue
-            if allow_overlay_material and not overlay and any(
-                    channel["kind"] in {"overlayTint", "overlayUV"} for channel in declaration["channels"]):
+            if allow_overlay_material and any(
+                    channel["kind"] in {"overlayTint", "overlayUV"} and
+                    (not overlay or channel.get("rendererClass") == 137) for channel in declaration["channels"]):
                 declaration["requiresOverlayMaterial"] = True
                 declaration["sampleTimeF32"] = True
             remaining -= cost + timing_cost

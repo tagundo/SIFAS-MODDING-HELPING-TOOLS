@@ -140,9 +140,10 @@
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
             const material = kind === "overlayTint" || kind === "overlayUV";
             const value = !material ? node?.[kind] : requiresOverlay
-              ? global.MVStudioStageOverlay?.materialChannel?.(node, kind)
+              ? global.MVStudioStageOverlay?.materialChannel?.(node, kind, source.rendererClass)
               : node?.userData.mvStageOverlayChannels?.[kind];
-            if (!node || !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
+            if (!node || (material && !requiresOverlay && source.rendererClass !== undefined) ||
+                !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
                 (material && !value) ||
                 source.curves.length !== (kind === "visible" ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
             targets.push({source, kind, node, material, value});
@@ -151,7 +152,7 @@
           // only part of the authored animation applied.
           if (requiresOverlay && (targets.length !== clip.channels.length || !targets.some(target => target.material))) continue;
           for (const {source, kind, node, material, value} of targets) {
-            const id = `${source.path}:${kind}`;
+            const id = material ? value : `${source.path}:${kind}`;
             if (!group.channels.has(id)) group.channels.set(id, {
               node, kind, value, material, base: kind === "visible" ? value : value.clone(),
               nativeVisibility: clip.sampleTimeF32 === true &&

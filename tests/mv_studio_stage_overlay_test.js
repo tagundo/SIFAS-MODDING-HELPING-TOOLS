@@ -43,6 +43,7 @@ async function run() {
   assert.equal(overlay.hasVisible(), false);
   motion.update(.5, controls);
   assert.equal(overlay.hasVisible(), true);
+  assert.equal(overlay.hasDepthTest(), false);
   assert.deepEqual(mesh.material.uniforms.uTint.value.toArray(), [1, 1, .5, .3]);
   assert.deepEqual(mesh.material.uniforms.uTextureST.value.toArray(), [1, 2, .25, .8]);
 
@@ -71,6 +72,22 @@ async function run() {
     assert.equal(mesh.material.side, side);
     sidedOverlay.dispose();
   }
+  mesh.geometry.userData.mvStageOverlay.depthTest = true;
+  marker.visible = true;
+  const depthOverlay = await MVStudioStageOverlay.apply(T, root);
+  assert.equal(mesh.material.depthTest, true);
+  assert.equal(mesh.material.depthFunc, T.LessEqualDepth);
+  assert.equal(mesh.material.depthWrite, false);
+  assert.equal(depthOverlay.hasDepthTest(), true);
+  marker.visible = false;
+  assert.equal(depthOverlay.hasDepthTest(), false);
+  marker.visible = true;
+  mesh.material.uniforms.uTint.value.w = 0;
+  assert.equal(depthOverlay.hasDepthTest(), false);
+  mesh.material.uniforms.uTint.value.w = 1;
+  assert.equal(depthOverlay.hasDepthTest(), true);
+  depthOverlay.dispose();
+  assert.equal(depthOverlay.hasDepthTest(), false);
   console.log("Native screen overlay: layer and camera, per-renderer material curves, blending and no clear.");
 }
 
@@ -150,4 +167,93 @@ async function testRequiredMaterial() {
   console.log("Required native overlay channels are atomic, float32-sampled and independently quality-gated.");
 }
 
-run().then(testRequiredMaterial).catch(error => { console.error(error); process.exitCode = 1; });
+async function testSkinnedOverlayMaterial() {
+  const binding = "/EntryPoint/Live/Stages/MainStage/Effect/fx_ove_stock/Effect_root";
+  const root = new T.Group(), owner = new T.Group(), partition = new T.Group();
+  root.add(owner);
+  owner.add(partition);
+  owner.userData.mvStageNode = {active: true, path: 0, binding};
+  partition.userData.mvStageSkin = true;
+  const staticGeometry = new T.PlaneGeometry(), skinGeometry = new T.PlaneGeometry();
+  const fields = {texture: null, tint: [1, 1, 1, .25], uv: [1, 1, 0, 0], vertexColor: false, queue: 3000};
+  staticGeometry.userData.mvStageOverlay = {...fields};
+  skinGeometry.userData.mvStageOverlay = {...fields, rendererClass: 137};
+  skinGeometry.setAttribute("skinIndex", new T.Uint16BufferAttribute(Array(4).fill([0, 1, 0, 0]).flat(), 4));
+  skinGeometry.setAttribute("skinWeight", new T.Float32BufferAttribute(Array(4).fill([.75, .25, 0, 0]).flat(), 4));
+  const original = new T.MeshBasicMaterial();
+  const plane = new T.Mesh(staticGeometry, original);
+  const skin = new T.SkinnedMesh(skinGeometry, original);
+  const firstJoint = new T.Bone(), secondJoint = new T.Bone();
+  root.add(firstJoint);
+  firstJoint.add(secondJoint);
+  owner.add(plane);
+  partition.add(skin);
+  skin.bind(new T.Skeleton([firstJoint, secondJoint]), new T.Matrix4());
+
+  const worldMotion = (rendererClasses) => {
+    const scalar = (value) => ["constant", value];
+    const channels = [
+      {path: 0, kind: "translation", curves: [3, 0, 0].map(scalar)},
+      ...rendererClasses.map((rendererClass, index) =>
+        ({path: 0, rendererClass, kind: "overlayTint", curves: [1, 1, 1, .5 + index * .25].map(scalar)})),
+    ];
+    return {
+      tracks: [{id: "motion", nativeClass: "AnimationTrack", binding, events: [
+        {id: "event", start: 1, duration: 1, values: {animation: "clip"}},
+      ]}],
+      stageMotion: {clips: {clip: {start: 0, duration: 1, requiresOverlayMaterial: true, channels}}, mix: {event: {}}},
+    };
+  };
+
+  const overlay = await MVStudioStageOverlay.apply(T, root);
+  assert.equal(plane.material.skinning, false);
+  assert.equal(skin.material.skinning, true);
+  assert.equal(skin.frustumCulled, false);
+  assert.equal(skin.layers.mask, 1 << 20);
+  assert.equal(skin.material.depthTest, false);
+  assert.equal(skin.material.depthWrite, false);
+  assert.equal(skin.material.blendDst, T.OneFactor);
+  assert.match(skin.material.vertexShader, /#include <skinbase_vertex>\s+#include <skinning_vertex>/);
+  const stageMotion = MVStudioStageMotion.apply(T, root), both = worldMotion([undefined, 137]);
+  stageMotion.update(1.5, both);
+  assert.equal(plane.material.uniforms.uTint.value.w, .5);
+  assert.equal(skin.material.uniforms.uTint.value.w, .75);
+  assert.equal(owner.position.x, -3);
+  stageMotion.update(.5, both);
+  assert.equal(plane.material.uniforms.uTint.value.w, .25);
+  assert.equal(skin.material.uniforms.uTint.value.w, .25);
+  assert.equal(owner.position.x, 0);
+
+  secondJoint.position.x = 4;
+  root.updateMatrixWorld(true);
+  const point = new T.Vector3().fromBufferAttribute(skinGeometry.getAttribute("position"), 0);
+  assert.deepEqual(skin.boneTransform(0, point.clone()).toArray(), [point.x + 1, point.y, point.z]);
+  overlay.dispose();
+  overlay.dispose();
+  assert.equal(skin.material, original);
+  assert.equal(skin.frustumCulled, true);
+  assert.equal(skin.layers.mask, 1);
+
+  delete skinGeometry.userData.mvStageOverlay.rendererClass;
+  const legacyOnly = await MVStudioStageOverlay.apply(T, root);
+  assert.equal(skin.material, original, "a skinned mesh needs authenticated class 137 metadata");
+  const bad = worldMotion([23, 137]);
+  stageMotion.update(1.5, bad);
+  assert.equal(owner.position.x, 0, "missing class 137 cannot use the static holder or move the root");
+  assert.equal(plane.material.uniforms.uTint.value.w, .25);
+  legacyOnly.dispose();
+
+  owner.remove(plane);
+  skinGeometry.userData.mvStageOverlay.rendererClass = 137;
+  const skinnedOnly = await MVStudioStageOverlay.apply(T, root);
+  stageMotion.update(1.5, worldMotion([undefined]));
+  assert.equal(skin.material.uniforms.uTint.value.w, .25, "a legacy classless required channel targets static only");
+  assert.equal(owner.position.x, 0);
+  skinnedOnly.dispose();
+  console.log("Weighted overlay deforms on layer 20 and isolates both native renderer classes.");
+}
+
+run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

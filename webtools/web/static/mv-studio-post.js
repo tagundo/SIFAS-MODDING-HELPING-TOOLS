@@ -142,6 +142,7 @@ ${name === "combine" ? combine : ""}
 void main() {${source}}`, uniforms,
         depthTest: false, depthWrite: false, toneMapped: false })]));
     let source = null, reduced = null, prefilter = null, effect = null, flare = null, sourceReady = null;
+    let depthMaterial = null;
     const down = [], up = [];
 
     function target(width, height, options, multisample = false) {
@@ -192,6 +193,31 @@ void main() {${source}}`, uniforms,
       renderer.render(scene, camera);
     }
 
+    function copyDepth() {
+      depthMaterial ||= new T.RawShaderMaterial({
+        glslVersion: T.GLSL3,
+        vertexShader: `
+          in vec3 position;
+          in vec2 uv;
+          out vec2 vUv;
+          void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+        fragmentShader: `
+          precision highp float;
+          in vec2 vUv;
+          uniform highp sampler2D sceneDepth;
+          void main() { gl_FragDepth = texture(sceneDepth, vUv).r; }`,
+        uniforms: { sceneDepth: { value: null } },
+        depthTest: true, depthFunc: T.AlwaysDepth, depthWrite: true,
+        colorWrite: false, stencilWrite: false, toneMapped: false,
+      });
+      // The main composite is already on this target. Restore only its depth
+      // so the following overlay camera can depth-test without another clear.
+      renderer.autoClear = false;
+      mesh.material = depthMaterial;
+      depthMaterial.uniforms.sceneDepth.value = source.depthTexture;
+      renderer.render(scene, camera);
+    }
+
     function renderBloom(setup) {
       uniforms.threshold.value = setup.threshold;
       uniforms.curve.value.fromArray(setup.curve);
@@ -217,7 +243,7 @@ void main() {${source}}`, uniforms,
       return image;
     }
 
-    function draw(renderScene, needsDepth = false, lens = null, viewCamera = null) {
+    function draw(renderScene, needsDepth = false, lens = null, viewCamera = null, preserveDepth = false) {
       if (!dof) lens = null;
       if (!effect && !lens && !flare) return false;
       const { width, height } = renderer.domElement;
@@ -225,7 +251,9 @@ void main() {${source}}`, uniforms,
       const dimensions = effect ? plan(width, height, effect) : null;
       const setup = dimensions?.levels.length && dimensions.reduced[0] <= renderer.capabilities.maxTextureSize ? dimensions : null;
       if (!setup && !lens && !flare) return false;
-      if (!source || (needsDepth && !source.depthTexture)) makeSource(width, height, needsDepth);
+      const sampleDepth = needsDepth || preserveDepth;
+      if (!source || (sampleDepth && !source.depthTexture) ||
+          (!sampleDepth && source.depthTexture && sourceReady === false)) makeSource(width, height, sampleDepth);
       if (setup) {
         if (!reduced) makeReduced(setup.reduced);
         if (!prefilter) prefilter = target(...setup.prefilter);
@@ -246,7 +274,7 @@ void main() {${source}}`, uniforms,
           // color or its multisample resolve is unavailable on this device.
           hdr = null;
           renderer.setRenderTarget(previousTarget);
-          makeSource(width, height, needsDepth || Boolean(source.depthTexture));
+          makeSource(width, height, sampleDepth || Boolean(source.depthTexture));
           if (setup) makeReduced(setup.reduced);
           renderer.setRenderTarget(source);
         }
@@ -260,6 +288,7 @@ void main() {${source}}`, uniforms,
         uniforms.bloomEnabled.value = Boolean(bloomImage);
         if (focus || flare || bloomImage) blit("combine", bloomImage || source, previousTarget, source);
         else blit("reduce", source, previousTarget);
+        if (preserveDepth) copyDepth();
       } finally {
         renderer.setRenderTarget(previousTarget);
         renderer.autoClear = previousClear;
@@ -274,6 +303,7 @@ void main() {${source}}`, uniforms,
       dof?.dispose();
       for (const item of [source, reduced, prefilter, ...down, ...up]) item?.dispose();
       for (const material of Object.values(materials)) material.dispose();
+      depthMaterial?.dispose();
       geometry.dispose();
     } };
   }

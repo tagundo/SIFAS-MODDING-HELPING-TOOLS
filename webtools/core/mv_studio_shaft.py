@@ -82,7 +82,7 @@ def _template(scene, glb, materials, component, slot, index, deadline):
     if envs.get("_MainTex", {}).get("m_Texture", {}).get("m_PathID"):
         return None  # This retained shader profile uses Unity's white texture.
     native = transparent_material(scene, materials, material)
-    if native is None or not native["vertexColor"]:
+    if native is None or native.get("depthTest") or not native["vertexColor"]:
         return None
 
     nodes = [{"pathId": str(node.path_id), "name": scene.name(node), **_authored_trs(scene.local_tree(transform))}

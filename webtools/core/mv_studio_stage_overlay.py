@@ -14,17 +14,21 @@ _MATERIAL_PROPERTIES = {
 
 
 def material_channels(bindings, curves, width_of):
-    """Decode MeshRenderer material bindings with Unity's component nibble."""
-    outputs, count, offset = {}, 0, 0
+    """Decode built-in renderer material bindings with Unity's component nibble."""
+    outputs, renderer_classes, count, offset = {}, {}, 0, 0
     for binding in bindings:
         width = width_of(binding)
-        if (binding.get("typeID"), binding.get("customType"), binding.get("isPPtrCurve")) == (23, 22, 0):
+        renderer_class = binding.get("typeID")
+        if renderer_class in (23, 137) and (binding.get("customType"), binding.get("isPPtrCurve")) == (22, 0):
             attribute = binding["attribute"]
             kind = _MATERIAL_PROPERTIES.get(attribute & 0x0FFFFFFF)
             family, channel = divmod(attribute >> 28, 4)
             path = binding.get("path")
             if (kind is None or width != 1 or not path or family not in (0, 1)
-                    or family == 1 and kind != "overlayTint"):
+                    or family == 1 and kind != "overlayTint"
+                    or renderer_class == 137 and binding.get("script") != {"m_FileID": 0, "m_PathID": 0}):
+                return [], 0
+            if renderer_classes.setdefault(path, renderer_class) != renderer_class:
                 return [], 0
             # Unity identifies both a four-channel vector and an animated
             # material color. Keep the families separate until all lanes exist.
@@ -37,8 +41,13 @@ def material_channels(bindings, curves, width_of):
     if (any(len(components) != 4 for components in outputs.values())
             or len({(path, kind) for path, kind, _ in outputs}) != len(outputs)):
         return [], 0
-    return [{"path": path, "kind": kind, "curves": [components[index] for index in range(4)]}
-            for (path, kind, _), components in outputs.items()], count
+    channels = []
+    for (path, kind, _), components in outputs.items():
+        channel = {"path": path, "kind": kind, "curves": [components[index] for index in range(4)]}
+        if renderer_classes[path] == 137:
+            channel["rendererClass"] = 137
+        channels.append(channel)
+    return channels, count
 
 
 def layer(scene, game_object):
@@ -75,7 +84,7 @@ def plane_geometry():
     return "Plane", vertices, normals, uv, [np.asarray(triangles, dtype=np.int64)]
 
 
-def material(scene, materials, original):
+def read_material(scene, original):
     if original is None or original.type.name != "Material":
         return None
     tree = scene.tree(original)
@@ -83,11 +92,11 @@ def material(scene, materials, original):
         return None
     floats = viewer._properties(tree, "m_Floats")
     flags = set(str(tree.get("m_ShaderKeywords", "")).split())
-    cull = floats.get("_CullMode", 0)
-    if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2) or
-            (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1), floats.get("_ZTestMode", 4),
-             floats.get("_ZWriteParam", 0), floats.get("_StencilComp", 8), floats.get("_StencilPassOp", 0),
-             floats.get("_StencilZFailOp", 0)) != (5, 1, 8, 0, 8, 0, 0)):
+    cull, depth = floats.get("_CullMode", 0), floats.get("_ZTestMode", 4)
+    if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2) or depth not in (4, 8) or
+            (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1), floats.get("_ZWriteParam", 0),
+             floats.get("_StencilComp", 8), floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0))
+            != (5, 1, 0, 8, 0, 0)):
         return None
     values = viewer._properties(tree, "m_Colors")
     tint = [values.get("_TintColor", {}).get(axis, 1) for axis in "rgba"]
@@ -100,9 +109,22 @@ def material(scene, materials, original):
     texture = None
     pointer = main.get("m_Texture", {})
     if pointer.get("m_PathID"):
-        item = viewer._ref(original, pointer)
-        if item is None or item.type.name != "Texture2D":
+        texture = viewer._ref(original, pointer)
+        if texture is None or texture.type.name != "Texture2D":
             return None
-        texture = materials.texture(item)
-    return {"texture": texture, "tint": tint, "uv": uv, "vertexColor": "_VERTEX_COLOR_ON" in flags,
-            "cull": int(cull), "queue": 3000 if queue == -1 else queue}
+    fields = {"texture": texture, "tint": tint, "uv": uv, "vertexColor": "_VERTEX_COLOR_ON" in flags,
+              "cull": int(cull), "queue": 3000 if queue == -1 else queue}
+    if depth == 4:
+        fields["depthTest"] = True
+    return fields
+
+
+def export_material(materials, fields):
+    if fields is None:
+        return None
+    texture = fields["texture"]
+    return {**fields, "texture": materials.texture(texture) if texture is not None else None}
+
+
+def material(scene, materials, original):
+    return export_material(materials, read_material(scene, original))

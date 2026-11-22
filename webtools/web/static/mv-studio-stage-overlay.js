@@ -4,6 +4,8 @@
   const layer = 20;
   const materialOwners = new WeakMap();
   const vertexShader = [
+    "#include <common>",
+    "#include <skinning_pars_vertex>",
     "attribute vec4 _stage_color;",
     "uniform vec4 uTextureST;",
     "uniform bool uVertexColor;",
@@ -12,7 +14,10 @@
     "void main() {",
     "  vTexture = uv * uTextureST.xy + vec2(uTextureST.z, 1.0 - uTextureST.y - uTextureST.w);",
     "  vColor = uVertexColor ? _stage_color : vec4(1.0);",
-    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "  #include <begin_vertex>",
+    "  #include <skinbase_vertex>",
+    "  #include <skinning_vertex>",
+    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);",
     "}"
   ].join("\n");
   const fragmentShader = [
@@ -38,13 +43,21 @@
     root.traverse((node) => {
       const fields = node.geometry?.userData?.mvStageOverlay;
       if (!node.isMesh || !fields || Array.isArray(node.material)) return;
+      const rendererClass = fields.rendererClass === undefined ? 23 : fields.rendererClass;
+      const skinned = node.isSkinnedMesh === true;
+      if (rendererClass !== (skinned ? 137 : 23)) return;
+      if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
+          !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
       let owner = node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner) return;
-      owners.set(owner, 1 + (owners.get(owner) || 0));
-      meshes.push({ node, owner, fields, original: node.material, order: node.renderOrder, layer: node.layers.mask });
+      let classes = owners.get(owner);
+      if (!classes) owners.set(owner, classes = new Map());
+      classes.set(rendererClass, 1 + (classes.get(rendererClass) || 0));
+      meshes.push({ node, owner, fields, rendererClass, skinned, original: node.material,
+        order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
-    const ready = [], usable = meshes.filter(({ owner }) => owners.get(owner) === 1);
+    const ready = [], usable = meshes.filter(({ owner, rendererClass }) => owners.get(owner).get(rendererClass) === 1);
     if (!usable.length) return null;
     const white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
     white.needsUpdate = true;
@@ -58,13 +71,19 @@
       }));
       return textures.get(index);
     }
+    let disposed = false;
     function dispose() {
-      for (const { node, owner, order, layer, original, material } of ready) {
-        materialOwners.delete(owner);
-        delete owner.userData.mvStageOverlayChannels;
+      if (disposed) return;
+      disposed = true;
+      for (const { node, owner, rendererClass, order, layer, frustumCulled, original, material } of ready) {
+        const classes = materialOwners.get(owner);
+        classes.delete(rendererClass);
+        if (!classes.size) materialOwners.delete(owner);
+        if (rendererClass === 23) delete owner.userData.mvStageOverlayChannels;
         node.material = original;
         node.renderOrder = order;
         node.layers.mask = layer;
+        if (rendererClass === 137) node.frustumCulled = frustumCulled;
         material.dispose();
       }
       for (const task of textures.values()) task.then((copy) => copy.dispose(), () => {});
@@ -72,13 +91,14 @@
     }
     try {
       for (const mesh of usable) {
-        const { node, owner, fields } = mesh;
+        const { node, owner, fields, rendererClass, skinned } = mesh;
         const tint = new T.Vector4().fromArray(fields.tint), uv = new T.Vector4().fromArray(fields.uv);
         // Unity's CullMode values specify the side to discard. Three's side
         // specifies the faces to retain. Old previews are double-sided.
         const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
         const material = new T.ShaderMaterial({
-          vertexShader, fragmentShader, transparent: true, depthTest: false, depthWrite: false,
+          vertexShader, fragmentShader, transparent: true, skinning: skinned,
+          depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite: false,
           toneMapped: false, side, blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
           uniforms: { uTexture: { value: await texture(fields.texture) }, uTint: { value: tint },
@@ -90,16 +110,23 @@
         node.material = material;
         node.renderOrder = fields.queue;
         node.layers.set(layer);
+        if (skinned) node.frustumCulled = false;
         const channels = { overlayTint: tint, overlayUV: uv };
-        materialOwners.set(owner, channels);
-        owner.userData.mvStageOverlayChannels = channels;
+        let classes = materialOwners.get(owner);
+        if (!classes) materialOwners.set(owner, classes = new Map());
+        classes.set(rendererClass, channels);
+        if (rendererClass === 23) owner.userData.mvStageOverlayChannels = channels;
         ready.push({ ...mesh, material });
       }
     } catch (error) {
       dispose();
       throw error;
     }
-    return { hasVisible: () => ready.some(hasVisible), dispose };
+    return {
+      hasVisible: () => !disposed && ready.some(hasVisible),
+      hasDepthTest: () => !disposed && ready.some(entry => entry.material.depthTest && hasVisible(entry)),
+      dispose,
+    };
   }
 
   function create(T, renderer) {
@@ -135,5 +162,7 @@
       }
     };
   }
-  global.MVStudioStageOverlay = { apply, create, materialChannel: (owner, kind) => materialOwners.get(owner)?.[kind] };
+  global.MVStudioStageOverlay = {
+    apply, create, materialChannel: (owner, kind, rendererClass = 23) => materialOwners.get(owner)?.get(rendererClass)?.[kind],
+  };
 })(typeof window !== "undefined" ? window : globalThis);
