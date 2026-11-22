@@ -415,6 +415,6 @@
   global.MVStudioStageParticles = {
     apply, activeOffset, activeControlFrame, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
     nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition, nativeHemispherePosition, nativeCurve,
-    nativePackedGradient, nativeInverseLifetime,
+    nativePackedGradient, nativeInverseLifetime, nativeCosine: sphereCos,
   };
 })(typeof window !== "undefined" ? window : globalThis);

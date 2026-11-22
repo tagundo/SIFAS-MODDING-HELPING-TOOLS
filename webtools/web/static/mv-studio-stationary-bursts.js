@@ -6,6 +6,7 @@
   const validPath = value => Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
   const within = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
   const vector = (row, length) => Array.isArray(row) && row.length === length && row.every(Number.isFinite);
+  const moving = row => row.mode === "movingBillboard";
   const vertexShader = `
     uniform vec4 uTextureST;
     varying highp vec2 vTexture;
@@ -46,13 +47,18 @@
     const {material} = row;
     if (!validPath(row.path) || !row.path || !validPath(row.activationPath) ||
         !Number.isSafeInteger(row.texture) || row.texture < 0 ||
-        !vector(row.size, 3) || !row.size.every(size => within(size, .001, 100)) ||
+        !vector(row.size, moving(row) ? 2 : 3) || !row.size.every(size => within(size, .001, 100)) ||
         !vector(row.uv, 4) || !row.uv.every(value => within(value, -64, 64)) ||
         !vector(material?.tint, 4) || material.queue !== queue || material.depthTest !== true ||
         material.stencilRef !== 2 || material.alphaBlend !== true || ![0, 2].includes(material.cull)) return null;
-    if (row.mode === "mesh" ? !validMesh(row.geometry) : row.mode !== "billboard" || row.geometry !== undefined ||
-        !within(row.maxViewportWidth, .001, 8)) return null;
-    if (row.flipX !== undefined && (row.flipX !== true || row.mode !== "billboard" || material.cull !== 0)) return null;
+    if (row.mode === "mesh" ? !validMesh(row.geometry) :
+        (row.mode !== "billboard" && !moving(row)) || row.geometry !== undefined || !within(row.maxViewportWidth, .001, 8)) return null;
+    if (row.flipX !== undefined && (row.flipX !== true || row.mode === "mesh" || material.cull !== 0)) return null;
+    if (moving(row)) {
+      if (!Number.isInteger(row.count) || !within(row.count, 1, 16) ||
+          !Number.isInteger(row.sortOrder) || !within(row.sortOrder, -32768, 32767)) return null;
+      return global.MVStudioMovingBurstSimulation?.create(row);
+    }
     const keys = row.sizeKeys === undefined ? [[0, 1, 0, 0], [1, 1, 0, 0]] : row.sizeKeys;
     if (!Array.isArray(keys) || keys.length < 2 || keys.length > 16 ||
         !keys.every(key => Array.isArray(key) && key.length === 4)) return null;
@@ -71,9 +77,10 @@
 
   function makeDraw(T, row, texture, billboards) {
     const side = row.material.cull === 2 ? T.FrontSide : T.DoubleSide;
-    const name = `Native stationary stage burst ${row.path}`;
-    if (row.mode === "billboard") {
-      const batch = billboards(T, {texture, rotation: new T.Quaternion(), capacity: 1,
+    const name = `Native ${moving(row) ? "moving" : "stationary"} stage burst ${row.path}`;
+    if (row.mode !== "mesh") {
+      const batch = billboards(T, {texture, rotation: new T.Quaternion(),
+        capacity: moving(row) ? row.count : 1, rolling: moving(row),
         maxViewportWidth: row.maxViewportWidth, atlas: row.uv, name, side, tint: row.material.tint});
       batch.mesh.name = name;
       batch.mesh.material.fragmentShader = billboardFragmentShader;
@@ -83,6 +90,7 @@
       }
       batch.centers.setXYZW(0, 0, 0, 0, 0);
       batch.centers.needsUpdate = true;
+      if (moving(row)) batch.sortCenter = new T.Vector3();
       return batch;
     }
     const shape = row.geometry, geometry = new T.BufferGeometry();
@@ -155,15 +163,18 @@
     for (const [binding, rows] of groups) {
       const paths = nodes.get(binding);
       if (!paths?.get(0) || new Set(rows.map(row => row.path)).size !== rows.length) continue;
-      const entries = rows.map(row => {
-        const stream = createStream(row, simulation), carrier = paths.get(row.path);
-        const chain = residentChain(root, carrier, paths.get(0), binding);
-        if (!stream || !chain?.some(({path, active}) => path === row.activationPath && !active)) return null;
-        return {row, stream, carrier, chain};
-      });
-      if (entries.some(entry => !entry)) continue;
-      for (const {row} of entries) sampler.reserveBase(row.texture);
-      pending.push({binding, entries});
+      for (const cohort of [rows.filter(row => !moving(row)), rows.filter(moving)]) {
+        if (!cohort.length) continue;
+        const entries = cohort.map(row => {
+          const stream = createStream(row, simulation), carrier = paths.get(row.path);
+          const chain = residentChain(root, carrier, paths.get(0), binding);
+          if (!stream || !chain?.some(({path, active}) => path === row.activationPath && !active)) return null;
+          return {row, stream, carrier, chain};
+        });
+        if (entries.some(entry => !entry)) continue;
+        for (const {row} of entries) sampler.reserveBase(row.texture);
+        pending.push({binding, entries});
+      }
     }
     try {
       for (const {binding, entries} of pending) {
@@ -196,7 +207,65 @@
     }
 
     const rotation = new T.Quaternion(), matrix = new T.Matrix4(), local = new T.Matrix4();
-    const eye = new T.Vector3(), center = new T.Vector3();
+    const eye = new T.Vector3(), center = new T.Vector3(), offset = new T.Vector3(), bounds = new T.Box3();
+
+    function updatePose(chain, mesh) {
+      // Local scaling uses the emitter's own dimensions. Ancestor TRS
+      // still positions the center and contributes its source rotation.
+      matrix.identity();
+      rotation.identity();
+      for (const {node} of chain) {
+        matrix.multiply(local.compose(node.position, node.quaternion, node.scale));
+        rotation.multiply(node.quaternion);
+      }
+      mesh.position.setFromMatrixPosition(matrix);
+    }
+
+    function updateAxes(mesh) {
+      const uniforms = mesh.material.uniforms;
+      uniforms.uAxisX.value.set(1, 0, 0).applyQuaternion(rotation);
+      uniforms.uAxisY.value.set(0, 1, 0).applyQuaternion(rotation);
+    }
+
+    function show(mesh, sortOrder = 0, sortCenter = null) {
+      mesh.updateMatrix();
+      mesh.visible = true;
+      mesh.renderOrder = queue;
+      visible.push({mesh, sortOrder, sortCenter, order: visible.length, distance: 0});
+    }
+
+    function updateMoving({row, chain, carrier, stream, draw}, elapsed, fps) {
+      const {mesh, centers, sizes, colors, rolls} = draw, scale = carrier.scale;
+      if (!(scale.x > 0 && scale.y > 0 && scale.z > 0)) return;
+      let count = 0;
+      bounds.makeEmpty();
+      stream.sample(elapsed, fps, (x, y, z, width, height, roll, r, g, b, a) => {
+        offset.set(-x * scale.x, y * scale.y, z * scale.z);
+        // The native sort center uses local particle centers before rotation,
+        // including live particles whose current color is transparent.
+        bounds.expandByPoint(offset);
+        if (count >= row.count || !a || !(width > 0 && height > 0)) return;
+        if (!count) {
+          updatePose(chain, mesh);
+          updateAxes(mesh);
+        }
+        offset.applyQuaternion(rotation);
+        centers.setXYZW(count, offset.x, offset.y, offset.z, 0);
+        sizes.setXY(count, width * scale.x, height * scale.y);
+        rolls.setX(count, roll);
+        colors.setXYZW(count, r, g, b, a);
+        count++;
+      });
+      if (!count) return;
+      centers.updateRange.count = colors.updateRange.count = count * 4;
+      sizes.updateRange.count = count * 2;
+      rolls.updateRange.count = count;
+      centers.needsUpdate = sizes.needsUpdate = rolls.needsUpdate = colors.needsUpdate = true;
+      mesh.geometry.instanceCount = count;
+      bounds.getCenter(draw.sortCenter).applyQuaternion(rotation);
+      show(mesh, row.sortOrder, draw.sortCenter);
+    }
+
     return {
       update(seconds, project, stageMotion) {
         if (disposed) return;
@@ -214,24 +283,18 @@
             const rise = playback?.activeSince(frame, index);
             if (rise == null) continue;
             const elapsed = (frame - rise + 1) / fps;
+            if (moving(row)) {
+              updateMoving(entry, elapsed, fps);
+              continue;
+            }
             stream.sample(elapsed, fps, (_x, _y, _z, size, r, g, b, a) => {
               const scale = carrier.scale;
               if (!(size > 0) || !a || !(scale.x > 0 && scale.y > 0 && scale.z > 0)) return;
-              // Local scaling uses the emitter's own dimensions. Ancestor TRS
-              // still positions the center and contributes its source rotation.
-              matrix.identity();
-              rotation.identity();
-              for (const {node} of chain) {
-                matrix.multiply(local.compose(node.position, node.quaternion, node.scale));
-                rotation.multiply(node.quaternion);
-              }
-              mesh.position.setFromMatrixPosition(matrix);
+              updatePose(chain, mesh);
               const width = Math.fround(size * row.size[0]) * scale.x;
               const height = Math.fround(size * row.size[1]) * scale.y;
               if (sizes) {
-                const uniforms = mesh.material.uniforms;
-                uniforms.uAxisX.value.set(1, 0, 0).applyQuaternion(rotation);
-                uniforms.uAxisY.value.set(0, 1, 0).applyQuaternion(rotation);
+                updateAxes(mesh);
                 sizes.setXY(0, width, height);
                 colors.setXYZW(0, r, g, b, a);
                 sizes.updateRange.count = 2;
@@ -243,10 +306,7 @@
                 mesh.scale.set(width, height, Math.fround(size * row.size[2]) * scale.z);
                 mesh.material.uniforms.uParticleColor.value.set(r / 255, g / 255, b / 255, a / 255);
               }
-              mesh.updateMatrix();
-              mesh.visible = true;
-              mesh.renderOrder = queue;
-              visible.push({mesh, order: visible.length, distance: 0});
+              show(mesh);
             });
           }
         }
@@ -257,11 +317,12 @@
         eye.setFromMatrixPosition(camera.matrixWorld);
         for (const entry of visible) {
           entry.mesh.updateWorldMatrix(true, false);
-          center.setFromMatrixPosition(entry.mesh.matrixWorld);
+          if (entry.sortCenter) center.copy(entry.sortCenter).applyMatrix4(entry.mesh.matrixWorld);
+          else center.setFromMatrixPosition(entry.mesh.matrixWorld);
           entry.distance = Math.fround(camera.isOrthographicCamera ?
             -center.applyMatrix4(camera.matrixWorldInverse).z : eye.distanceToSquared(center));
         }
-        visible.sort((a, b) => b.distance - a.distance || a.order - b.order);
+        visible.sort((a, b) => a.sortOrder - b.sortOrder || b.distance - a.distance || a.order - b.order);
         visible.forEach(({mesh}, i) => { mesh.renderOrder = queue + i / visible.length; });
       },
       dispose,

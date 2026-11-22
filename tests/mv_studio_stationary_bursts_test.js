@@ -26,6 +26,7 @@ async function run() {
   carrier(2, 3);
   const glyph = carrier(3, 5);
   glyph.scale.set(1, 2, 1);
+  carrier(4, 1);
   const phase = {binding, activationPath: 1, delay: 0, duration: 5, lifetime: .5, size: [1, 1, 1], texture: 0,
     mainSampler: {mipmaps: [1], filterMode: 1, anisotropy: 8}, startColor: [1, .5, .25, 1],
     material: {tint: [1, 1, 1, 1], queue: 2900, alphaBlend: true, depthTest: true, cull: 2, stencilRef: 2}};
@@ -35,11 +36,15 @@ async function run() {
     {...phase, mode: "billboard", path: 3, uv: [.25, .125, .5, .375], delay: .1, size: [2, 1, 1],
       flipX: true, material: {...phase.material, cull: 0},
       maxViewportWidth: .5, sizeKeys: [[0, 1, 0, 0], [.2, 1, 0, 0]], sizeMultiplier: 1},
+    {...phase, mode: "movingBillboard", path: 4, uv: [.25, .25, .5, .75],
+      count: 2, sortOrder: -1, size: [.2, 1], maxViewportWidth: .5,
+      flipX: true, material: {...phase.material, cull: 0}},
   ];
   const base = new T.Texture({width: 2, height: 2}), mip = new T.Texture({width: 1, height: 1});
   const parser = {getDependency: async (_type, index) => [base, mip][index]};
   const controller = await MVStudioStationaryBursts.apply(T, root, parser);
   const [mesh, billboard] = [2, 3].map(path => root.getObjectByName(`Native stationary stage burst ${path}`));
+  assert.equal(root.getObjectByName("Native moving stage burst 4"), undefined);
   for (const object of [mesh, billboard]) {
     const material = object.material;
     assert.equal(material.depthTest, true);
@@ -100,6 +105,31 @@ async function run() {
   controller.update(1.2, project, {accepts: () => false});
   assert.equal(mesh.visible, false);
   controller.dispose();
+  assert.equal(root.children.length, 1);
+
+  global.MVStudioMovingBurstSimulation = {create: row => {
+    assert.equal(row.path, 4);
+    return {sample(_time, _fps, emit) {
+      emit(2, 3, 0, 1, 2, .25, 255, 128, 64, 255);
+      emit(4, 1, 0, .5, .5, -.5, 255, 200, 160, 0);
+    }};
+  }};
+  const combined = await MVStudioStationaryBursts.apply(T, root, parser);
+  motion.update(1.2, project);
+  combined.update(1.2, project, motion);
+  const moving = root.getObjectByName("Native moving stage burst 4");
+  const fixed = root.getObjectByName("Native stationary stage burst 3");
+  assert.equal(moving.geometry.instanceCount, 1);
+  assert.deepEqual(moving.position.toArray(), [4, 10, 6]);
+  assert.deepEqual(Array.from(moving.geometry.getAttribute("centerAndTile").array.slice(0, 4)), [-2, 3, 0, 0]);
+  assert.deepEqual(Array.from(moving.geometry.getAttribute("particleSize").array.slice(0, 2)), [1, 2]);
+  assert.equal(moving.geometry.getAttribute("particleRoll").getX(0), .25);
+  assert.equal(moving.material.uniforms.uTexture.value, fixed.material.uniforms.uTexture.value);
+  combined.sort(new T.PerspectiveCamera());
+  assert.equal(moving.renderOrder, 2900, "authored sorting order precedes camera distance");
+  assert(fixed.renderOrder > moving.renderOrder);
+  combined.dispose();
+  delete global.MVStudioMovingBurstSimulation;
   assert.equal(root.children.length, 1);
 
   let active = true;

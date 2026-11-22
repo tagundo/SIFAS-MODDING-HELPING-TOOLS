@@ -34,3 +34,36 @@ class StationaryBurstSourceTests(unittest.TestCase):
         self.assertIsNone(bursts._atlas({
             **fields, "sprites": [{"sprite": {"m_FileID": 1, "m_PathID": 2}}],
         }))
+
+    def test_moving_drag_uses_one_multiplier_and_preserves_short_curves(self):
+        def curve(end, value):
+            return {
+                "m_PreInfinity": 2, "m_PostInfinity": 2, "m_Curve": [
+                    {"time": 0, "value": 0, "inSlope": 0, "outSlope": 12, "weightedMode": 0},
+                    {"time": end, "value": value, "inSlope": 0, "outSlope": 0, "weightedMode": 0},
+                ],
+            }
+
+        fields = {
+            "separateAxis": False, "inWorldSpace": False, "multiplyDragByParticleSize": True,
+            "multiplyDragByParticleVelocity": True, "dampen": .15,
+            "magnitude": {"minMaxState": 0, "scalar": 1},
+            "drag": {"minMaxState": 2, "scalar": 10, "minScalar": 1.72,
+                     "minCurve": curve(.03, .5), "maxCurve": curve(.02, 1)},
+        }
+        self.assertEqual(bursts._moving_clamp(fields), {
+            "limit": 1, "dampen": .15, "drag": {
+                "minKeys": [[0, 0, 0, 12], [.03, .5, 0, 0]],
+                "maxKeys": [[0, 0, 0, 12], [.02, 1, 0, 0]],
+                "multiplier": 10,
+            },
+        })
+        self.assertIsNone(bursts._moving_clamp({**fields, "multiplyDragByParticleSize": False}))
+
+    def test_moving_emission_admits_one_time_zero_burst(self):
+        zero = {"minMaxState": 0, "scalar": 0}
+        schedule = {"time": 0, "cycleCount": 1, "probability": 1,
+                    "countCurve": {"minMaxState": 0, "scalar": 10}}
+        fields = {"rateOverTime": zero, "rateOverDistance": zero, "m_BurstCount": 1, "m_Bursts": [schedule]}
+        self.assertEqual(bursts._moving_count(fields), 10)
+        self.assertIsNone(bursts._moving_count({**fields, "m_Bursts": [{**schedule, "cycleCount": 2}]}))

@@ -1,5 +1,6 @@
-"""Read resident, activation-driven stationary particles drawn in the display pass."""
+"""Read resident, activation-driven particle bursts drawn in the display pass."""
 
+from . import mv_studio_leaves as leaves
 from . import model_viewer as viewer
 from . import mv_studio_butterfly_glow as source
 from . import mv_studio_stage_burst as burst
@@ -17,6 +18,7 @@ _UNIT = dict.fromkeys("xyz", 1)
 _IDENTITY = {**source._ZERO, "w": 1}
 _PARTS = {"Transform", "ParticleSystem", "ParticleSystemRenderer"}
 _BASE_MODULES = {"InitialModule", "EmissionModule"}
+_MOVING_MODULES = _BASE_MODULES | {"ShapeModule", "SizeModule", "RotationModule", "UVModule", "ClampVelocityModule"}
 _SETTINGS = {key: value for key, value in source._SETTINGS.items() if key != "lengthInSec"}
 _RENDERER = {**source._RENDERER, "m_Flip": source._ZERO}
 
@@ -39,14 +41,10 @@ def _parts(scene, game):
     return parts
 
 
-def _size_keys(fields):
-    curve = fields["curve"]
-    maximum = curve["maxCurve"]
-    keys = maximum["m_Curve"]
-    if (fields["separateAxes"] or curve["minMaxState"] != 1 or not dust._number(curve["scalar"], 0, 16)
-            or curve["minCurve"]["m_Curve"] or (maximum["m_PreInfinity"], maximum["m_PostInfinity"]) != (2, 2)
-            or not 4 <= len(keys) <= 16 or keys[0]["time"] != 0
-            or len(keys) == 16 and keys[-1]["time"] != 1):
+def _curve_keys(curve, minimum, maximum):
+    keys = curve["m_Curve"]
+    if ((curve["m_PreInfinity"], curve["m_PostInfinity"]) != (2, 2)
+            or not minimum <= len(keys) <= maximum or keys[0]["time"] != 0):
         return None
     rows = []
     for key in keys:
@@ -56,7 +54,18 @@ def _size_keys(fields):
                 or any(not dust._number(slope, -4096, 4096) for slope in (enter, exit))):
             return None
         rows.append([stamp, size, enter, exit])
-    # Unity's clamp post-wrap uses the final authored key. It may precede normalized age one.
+    return rows
+
+
+def _size_keys(fields, *, moving=False):
+    curve = fields["curve"]
+    if fields["separateAxes"] or curve["minMaxState"] != 1 or not dust._number(curve["scalar"], 0, 16) \
+            or curve["minCurve"]["m_Curve"]:
+        return None
+    rows = _curve_keys(curve["maxCurve"], 3 if moving else 4, 3 if moving else 16)
+    if rows is None or (moving or len(rows) == 16) and rows[-1][0] != 1:
+        return None
+    # A clamped stationary curve may reach its final authored key before normalized age one.
     return rows, curve["scalar"]
 
 
@@ -75,10 +84,7 @@ def _atlas(fields):
     return [1 / columns, 1 / rows, (index % columns) / columns, (index // columns) / rows]
 
 
-def _color_over_life(fields):
-    if fields["minMaxState"] != 1:
-        return None
-    gradient = fields["maxGradient"]
+def _color_gradient(gradient, *, hold_end=False):
     result = {}
     for field, prefix, channels in (("m_NumColorKeys", "ctime", "rgb"), ("m_NumAlphaKeys", "atime", "a")):
         count = gradient[field]
@@ -87,21 +93,32 @@ def _color_over_life(fields):
             return None
         # Unity holds the last authored value across the remainder of the gradient.
         if rows[-1][0] != 65535:
-            if len(rows) == 8:
+            if not hold_end or len(rows) == 8:
                 return None
             rows.append([65535, *rows[-1][1:]])
         result["alpha" if channels == "a" else "rgb"] = rows
     return result
 
 
+def _color_over_life(fields):
+    return _color_gradient(fields["maxGradient"], hold_end=True) if fields["minMaxState"] == 1 else None
+
+
+def _duration(system):
+    duration, delay = system["lengthInSec"], _constant(system["startDelay"])
+    if (not source._matches(system, _SETTINGS) or system["ringBufferLoopRange"] != {"x": 0, "y": 1}
+            or not dust._number(duration, .01, 120) or not dust._number(delay, 0, duration)):
+        return None
+    return duration, delay
+
+
 def _profile(system, mode):
     active = {name for name, fields in system.items() if name.endswith("Module") and fields.get("enabled")}
     required = _BASE_MODULES | ({"ColorModule"} if mode == "mesh" else {"SizeModule", "UVModule"})
-    duration, delay = system["lengthInSec"], _constant(system["startDelay"])
-    if (not required <= active <= required | {"ColorModule"} or not source._matches(system, _SETTINGS)
-            or system["ringBufferLoopRange"] != {"x": 0, "y": 1}
-            or not dust._number(duration, .01, 120) or not dust._number(delay, 0, duration)):
+    timing = _duration(system)
+    if not required <= active <= required | {"ColorModule"} or timing is None:
         return None
+    duration, delay = timing
     initial = system["InitialModule"]
     lifetime = _constant(initial["startLifetime"])
     sized = mode == "billboard"
@@ -131,6 +148,74 @@ def _profile(system, mode):
             return None
         result.update(sizeKeys=sizes[0], sizeMultiplier=sizes[1], uv=uv)
     return result
+
+
+def _moving_count(fields):
+    bursts = fields["m_Bursts"]
+    if (fields["m_BurstCount"] != 1 or len(bursts) != 1
+            or any(_constant(fields[name]) != 0 for name in ("rateOverTime", "rateOverDistance"))):
+        return None
+    row, = bursts
+    count = _constant(row["countCurve"])
+    if (not source._matches(row, {"time": 0, "cycleCount": 1, "probability": 1})
+            or not dust._number(count, 1, 16) or count != int(count)):
+        return None
+    return int(count)
+
+
+def _moving_clamp(fields):
+    limit, dampen = _constant(fields["magnitude"]), fields["dampen"]
+    drag = fields["drag"]
+    if (not source._matches(fields, {"separateAxis": False, "inWorldSpace": False,
+                                    "multiplyDragByParticleSize": True, "multiplyDragByParticleVelocity": True})
+            or not dust._number(limit, .01, 20) or not dust._number(dampen, .001, 1)
+            or drag["minMaxState"] != 2 or not dust._number(drag["scalar"], .001, 16)):
+        return None
+    minimum, maximum = (_curve_keys(drag[field], 2, 2) for field in ("minCurve", "maxCurve"))
+    if minimum is None or maximum is None:
+        return None
+    # Both native curve lanes use the multiplier stored on the maximum curve.
+    return {"limit": limit, "dampen": dampen,
+            "drag": {"minKeys": minimum, "maxKeys": maximum, "multiplier": drag["scalar"]}}
+
+
+def _moving_profile(system):
+    active = {name for name, fields in system.items() if name.endswith("Module") and fields.get("enabled")}
+    timing, seed = _duration(system), system["randomSeed"]
+    if (active != _MOVING_MODULES or timing is None or system["autoRandomSeed"]
+            or type(seed) is not int or not -0x80000000 <= seed <= 0xFFFFFFFF):
+        return None
+    initial = system["InitialModule"]
+    lifetime = dust._range(initial["startLifetime"], .01, 5)
+    size = dust._range(initial["startSize"], .001, 10)
+    speed, roll = (_constant(initial[name]) for name in ("startSpeed", "startRotation"))
+    color = initial["startColor"]
+    if (not source._matches(initial, {"size3D": False, "rotation3D": False, "randomizeRotationDirection": 0})
+            or lifetime is None or size is None or not dust._number(speed, .001, 16)
+            or not dust._number(roll, -7, 7) or _constant(initial["gravityModifier"]) != 0
+            or color["minMaxState"] != 4):
+        return None
+    count = _moving_count(system["EmissionModule"])
+    capacity = initial["maxNumParticles"]
+    if count is None or type(capacity) is not int or capacity < count:
+        return None
+    shape, rotation = system["ShapeModule"], system["RotationModule"]
+    radius = shape["radius"]["value"]
+    if (shape["angle"] != 90 or shape["length"] != 5 or not dust._number(radius, .001, 4)
+            or not leaves._shape(shape, shape_type=4, scale=(1, 1, 1), radius=radius, arc_mode=3)
+            or rotation["separateAxes"]):
+        return None
+    sizes, uv = _size_keys(system["SizeModule"], moving=True), _atlas(system["UVModule"])
+    spin, clamp = dust._range(rotation["curve"], -7, 7), _moving_clamp(system["ClampVelocityModule"])
+    start_color = _color_gradient(color["maxGradient"])
+    if (any(value is None for value in (sizes, uv, spin, clamp, start_color))
+            or any(len(keys) != 2 for keys in start_color.values())):
+        return None
+    duration, delay = timing
+    return {"mode": "movingBillboard", "duration": duration, "delay": delay, "seed": seed & 0xFFFFFFFF,
+            "count": count, "lifetime": lifetime, "size": size, "startSpeed": speed, "startRoll": roll,
+            "startColor": start_color, "sizeKeys": sizes[0], "sizeMultiplier": sizes[1], "spin": spin,
+            "shape": {"angle": shape["angle"], "radius": radius}, "clamp": clamp, "uv": uv}
 
 
 def _geometry(obj, deadline):
@@ -165,7 +250,7 @@ def _paint(scene, renderer, fields, mode):
             or scene.tree(material)["disabledShaderPasses"] or scene.tree(material)["stringTagMap"]):
         return None
     texture, uv = details.pop("texture"), details.pop("uv")
-    if mode == "billboard" and uv != [1, 1, 0, 0]:
+    if mode != "mesh" and uv != [1, 1, 0, 0]:
         return None
     native = texture.read()
     sampler = native.m_TextureSettings
@@ -179,6 +264,7 @@ def _paint(scene, renderer, fields, mode):
 
 def _emitter(scene, parts, deadline):
     renderer, fields = parts["ParticleSystemRenderer"]
+    system = parts["ParticleSystem"][1]
     pointer = fields["m_Mesh"]
     maximum = fields["m_MaxParticleSize"]
     if (fields["m_RenderMode"], fields["m_RenderAlignment"], fields["m_SortMode"]) == (4, 1, 1):
@@ -187,21 +273,27 @@ def _emitter(scene, parts, deadline):
         expected = {"m_Mesh": pointer, "m_RenderMode": 4, "m_RenderAlignment": 1, "m_SortMode": 1,
                     "m_MaxParticleSize": maximum, "m_EnableGPUInstancing": False}
     elif (fields["m_RenderMode"], fields["m_RenderAlignment"], fields["m_SortMode"]) == (0, 2, 0):
-        mode = "billboard"
+        moving = system["ShapeModule"]["enabled"]
+        mode = "movingBillboard" if moving else "billboard"
+        order = fields["m_SortingOrder"] if moving else 0
+        if type(order) is not int or not -32768 <= order <= 32767:
+            return None
         flip = fields["m_Flip"]
         if flip["x"] not in (0, 1) or flip["y"] or flip["z"]:
             return None
         flip_x = flip["x"] == 1
-        expected = {"m_RenderAlignment": 2, "m_MaxParticleSize": maximum, "m_Flip": flip}
+        expected = {"m_RenderAlignment": 2, "m_MaxParticleSize": maximum, "m_Flip": flip, "m_SortingOrder": order}
     else:
         return None
     if not dust._number(maximum, .001, 5) or not source._matches(fields, {**_RENDERER, **expected}):
         return None
-    row = _profile(parts["ParticleSystem"][1], mode)
+    row = _moving_profile(system) if mode == "movingBillboard" else _profile(system, mode)
     paint = _paint(scene, renderer, fields, mode) if row is not None else None
     if paint is None:
         return None
     texture, material, uv = paint
+    if mode == "movingBillboard":
+        row["sortOrder"] = order
     if flip_x:
         if material["cull"] != 0:
             return None
