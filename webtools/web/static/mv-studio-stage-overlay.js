@@ -4,29 +4,62 @@
   const layer = 20;
   const materialOwners = new WeakMap();
   const materialKey = (scope, rendererClass) => `${scope}:${rendererClass}`;
+  const varyings = [
+    "#ifdef MATCAP",
+    "  varying highp vec2 vTexture;",
+    "  varying mediump vec4 vColor;",
+    "#else",
+    "  varying vec2 vTexture;",
+    "  varying vec4 vColor;",
+    "#endif",
+  ];
   const vertexShader = [
     "#include <common>",
     "#include <skinning_pars_vertex>",
-    "attribute vec4 _stage_color;",
-    "uniform vec4 uTextureST;",
-    "uniform bool uVertexColor;",
-    "varying vec2 vTexture;",
-    "varying vec4 vColor;",
+    "#ifdef MATCAP",
+    "  attribute mediump vec4 _stage_color;",
+    "#else",
+    "  attribute vec4 _stage_color;",
+    "  uniform vec4 uTextureST;",
+    "  uniform bool uVertexColor;",
+    "#endif",
+    ...varyings,
     "void main() {",
-    "  vTexture = uv * uTextureST.xy + vec2(uTextureST.z, 1.0 - uTextureST.y - uTextureST.w);",
-    "  vColor = uVertexColor ? _stage_color : vec4(1.0);",
     "  #include <begin_vertex>",
     "  #include <skinbase_vertex>",
     "  #include <skinning_vertex>",
+    "  #ifdef MATCAP",
+    "    #include <beginnormal_vertex>",
+    "    #include <skinnormal_vertex>",
+    "    vec3 viewNormal = normalize(normalMatrix * objectNormal);",
+    "    vTexture = vec2(0.5) + vec2(0.5, -0.5) * viewNormal.xy;",
+    "    vColor = _stage_color;",
+    "  #else",
+    "    vTexture = uv * uTextureST.xy + vec2(uTextureST.z, 1.0 - uTextureST.y - uTextureST.w);",
+    "    vColor = uVertexColor ? _stage_color : vec4(1.0);",
+    "  #endif",
     "  gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);",
     "}"
   ].join("\n");
   const fragmentShader = [
-    "uniform sampler2D uTexture;",
-    "uniform vec4 uTint;",
-    "varying vec2 vTexture;",
-    "varying vec4 vColor;",
-    "void main() { gl_FragColor = texture2D(uTexture, vTexture) * vColor * uTint; }"
+    "#ifdef MATCAP",
+    "  uniform mediump sampler2D uTexture;",
+    "  uniform mediump vec4 uTint;",
+    "  uniform mediump vec3 uAddColor;",
+    "#else",
+    "  uniform sampler2D uTexture;",
+    "  uniform vec4 uTint;",
+    "#endif",
+    ...varyings,
+    "void main() {",
+    "  #ifdef MATCAP",
+    "    mediump vec4 surface = texture2D(uTexture, vTexture);",
+    "    surface.rgb += uAddColor;",
+    "  #else",
+    "    vec4 surface = texture2D(uTexture, vTexture);",
+    "  #endif",
+    "  gl_FragColor = surface * vColor * uTint;",
+    "}"
   ].join("\n");
 
   function hasVisible({ node, material }) {
@@ -37,6 +70,19 @@
       current = current.parent;
     }
     return true;
+  }
+
+  function validMatcap(geometry, fields) {
+    const count = geometry.getAttribute("position")?.count;
+    const normal = geometry.getAttribute("normal"), color = geometry.getAttribute("_stage_color");
+    const isVector = (row, length) => Array.isArray(row) && row.length === length && row.every(Number.isFinite);
+    return fields.world === true && fields.alphaBlend === true && fields.stencilRef === undefined &&
+      Number.isInteger(fields.queue) && fields.queue >= 2501 && fields.queue <= 5000 &&
+      fields.cull === 2 && fields.vertexColor === true &&
+      (fields.texture === null || Number.isSafeInteger(fields.texture) && fields.texture >= 0) &&
+      isVector(fields.addColor, 3) && isVector(fields.tint, 4) &&
+      count > 0 && normal?.itemSize === 3 && normal.count === count && color?.itemSize === 4 && color.count === count &&
+      (color.normalized === true || color.array instanceof Float32Array);
   }
 
   async function apply(T, root, parser, options = {}) {
@@ -50,7 +96,10 @@
       const skinned = node.isSkinnedMesh === true;
       if (rendererClass !== (skinned ? 137 : 23) || (scope === "world" && fields.depthTest !== true)) return;
       const alphaBlend = fields.alphaBlend === true, stencilRef = fields.stencilRef;
-      if ((alphaBlend || stencilRef !== undefined) &&
+      const matcap = fields.matcap === true;
+      if (matcap) {
+        if (!validMatcap(node.geometry, fields)) return;
+      } else if ((alphaBlend || stencilRef !== undefined) &&
           (scope !== "world" || !alphaBlend || !Number.isInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) return;
       if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
           !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
@@ -74,7 +123,7 @@
       if (!classes) owners.set(owner, classes = new Map());
       const key = materialKey(scope, rendererClass);
       classes.set(key, 1 + (classes.get(key) || 0));
-      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, alphaBlend, stencilRef, sortAnchor, original: node.material,
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, stencilRef, sortAnchor, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
     const ready = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
@@ -119,26 +168,34 @@
     try {
       for (const mesh of usable) {
         if (!active()) break;
-        const { node, owner, fields, rendererClass, scope, key, skinned, alphaBlend, stencilRef } = mesh;
+        const { node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, stencilRef } = mesh;
         const map = sampler && scope === "world" && fields.texture !== null && fields.mainSampler
           ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
         if (!active()) break;
         if (!map) continue;
-        const tint = new T.Vector4().fromArray(fields.tint), uv = new T.Vector4().fromArray(fields.uv);
+        const tint = new T.Vector4().fromArray(fields.tint), channels = { overlayTint: tint };
+        const uniforms = { uTexture: { value: map }, uTint: { value: tint } };
+        if (matcap) {
+          uniforms.uAddColor = { value: new T.Vector3().fromArray(fields.addColor) };
+        } else {
+          channels.overlayUV = new T.Vector4().fromArray(fields.uv);
+          uniforms.uTextureST = { value: channels.overlayUV };
+          uniforms.uVertexColor = { value: fields.vertexColor };
+        }
         // Unity's CullMode values specify the side to discard. Three's side
         // specifies the faces to retain. Old previews are double-sided.
         const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
         const blendDst = alphaBlend ? T.OneMinusSrcAlphaFactor : T.OneFactor;
+        const stencilTest = stencilRef !== undefined;
         const material = new T.ShaderMaterial({
-          vertexShader, fragmentShader, transparent: true, skinning: skinned,
+          vertexShader, fragmentShader, defines: matcap ? { MATCAP: 1 } : {}, transparent: true, skinning: skinned,
           depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite: false,
           toneMapped: false, side, blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: blendDst,
-          stencilWrite: alphaBlend, stencilFunc: alphaBlend ? T.EqualStencilFunc : T.AlwaysStencilFunc,
+          stencilWrite: stencilTest, stencilFunc: stencilTest ? T.EqualStencilFunc : T.AlwaysStencilFunc,
           stencilRef: stencilRef ?? 0, stencilFuncMask: 255, stencilWriteMask: 255,
           stencilFail: T.KeepStencilOp, stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
-          uniforms: { uTexture: { value: map }, uTint: { value: tint },
-            uTextureST: { value: uv }, uVertexColor: { value: fields.vertexColor } }
+          uniforms
         });
         material.name = scope === "world" ? "Native stage transparent" : "Native stage overlay";
         // Unity's built-in Plane has no authored vertex color.
@@ -147,7 +204,6 @@
         node.renderOrder = fields.queue;
         if (scope === "overlay") node.layers.set(layer);
         if (skinned) node.frustumCulled = false;
-        const channels = { overlayTint: tint, overlayUV: uv };
         let classes = materialOwners.get(owner);
         if (!classes) materialOwners.set(owner, classes = new Map());
         classes.set(key, channels);

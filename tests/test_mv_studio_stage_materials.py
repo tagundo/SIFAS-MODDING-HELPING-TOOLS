@@ -10,6 +10,7 @@ from PIL import Image
 
 from webtools.core import decode, model_materials, model_viewer, mv_studio_stage_materials as stage
 from webtools.core import mv_studio_stage_display as displays
+from webtools.core import mv_studio_stage_overlay as overlay
 
 
 class StageDisplayMaterialTests(unittest.TestCase):
@@ -32,6 +33,43 @@ class StageDisplayMaterialTests(unittest.TestCase):
             fallback = displays._material(scene, None, original, False)
             self.assertNotIn("vertexColor", fallback)
             self.assertEqual({k: v for k, v in variant.items() if k != "vertexColor"}, fallback)
+
+
+class StageMatCapMaterialTests(unittest.TestCase):
+    def test_world_matcap_uses_compiled_state_and_keeps_exact_queued_sort(self):
+        original = SimpleNamespace(type=SimpleNamespace(name="Material"), assets_file=SimpleNamespace(
+            externals=[SimpleNamespace(path="archive:/CAB-2700399fc9d3cc42e6ceeda597765088")]))
+        texture = SimpleNamespace(type=SimpleNamespace(name="Texture2D"))
+        tree = {"m_Shader": {"m_FileID": 1, "m_PathID": 4078992641913009367},
+                "m_ShaderKeywords": "_VERTEX_COLOR_OFF _VERTEX_COLOR_ON", "m_CustomRenderQueue": -1,
+                "m_SavedProperties": {
+                    "m_Floats": [("_BlendDst", 1), ("_StencilComp", 3), ("_StencilRef", 2), ("_CullMode", 0)],
+                    "m_Colors": [("_TintColor", {"r": 7.5, "g": 13, "b": 32, "a": .2}),
+                                 ("_AddColor", {"r": 1, "g": .6, "b": .7, "a": 5})],
+                    "m_TexEnvs": [("_MainTex", {"m_Texture": {"m_FileID": 0, "m_PathID": 91}})],
+                }}
+        scene = SimpleNamespace(tree=lambda _: tree)
+        materials = SimpleNamespace(texture=Mock(return_value=17))
+        root = {"m_FileID": 0, "m_PathID": 21}
+        skin = {"m_RootBone": root, "m_Bones": [root], "m_AABB": {"m_Center": {"x": 2, "y": 4, "z": -3}}}
+        with patch.object(model_viewer, "_ref", return_value=texture):
+            self.assertIsNone(overlay.read_material(scene, original))
+            admitted = overlay.read_material(scene, original, world=True)
+            exported = overlay.export_material(materials, admitted, renderer_tree=skin, skinned=True)
+            self.assertEqual(exported, {
+                "matcap": True, "alphaBlend": True, "depthTest": True, "vertexColor": True,
+                "texture": 17, "cull": 2, "queue": 3000, "tint": [7.5, 13, 32, .2],
+                "addColor": [1, .6, .7], "sortJoint": 0, "sortCenter": [-2, 4, -3],
+            })
+            tree["m_CustomRenderQueue"] = 2000
+            self.assertIsNone(overlay.read_material(scene, original, world=True))
+            tree["m_CustomRenderQueue"] = 3010
+            tree["m_SavedProperties"] = {}
+            default = overlay.read_material(scene, original, world=True)
+            self.assertEqual((default["queue"], default["texture"], default["addColor"], default["tint"]),
+                             (3010, None, [0, 0, 0], [1, 1, 1, 1]))
+            original.assets_file.externals[0].path = "archive:/CAB-unverified"
+            self.assertIsNone(overlay.read_material(scene, original, world=True))
 
 
 class StageOpaqueMaterialTests(unittest.TestCase):

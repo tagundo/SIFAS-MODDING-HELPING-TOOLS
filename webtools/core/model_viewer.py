@@ -1019,7 +1019,10 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data
         candidate = np.asarray(handler.m_Normals, dtype=float)
         if candidate.ndim == 2 and candidate.shape[0] == len(positions) and candidate.shape[1] >= 3:
             normals = candidate[:, :3]
-    if normals is None or not np.isfinite(normals).all():
+    has_source_normals = normals is not None and np.isfinite(normals).all()
+    if stage_data is not None and stage_data.get("needsAuthoredNormals"):
+        stage_data["authoredNormals"] = has_source_normals and (np.abs(normals).max(axis=1) >= 1e-12).all()
+    if not has_source_normals:
         normals = np.zeros_like(positions)
         for indices in result:
             if not len(indices):
@@ -1403,6 +1406,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         native_attributes = {} if penlight is not None else None
         display_binding = stage_displays.get(_key(renderer)) if stage_materials else None
         stage_inputs = {} if overlay or stage_transparent or flash_binding or display_binding else None
+        if stage_transparent and stage_transparent.get("matcap"):
+            stage_inputs["needsAuthoredNormals"] = True
         coloring_for_renderer = {}
         if stage_opaque and stage_opaque.get("vertexColor") and stage_inputs is None:
             stage_inputs = {}
@@ -1459,12 +1464,18 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
                 else:
                     name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
+                overlay_inputs_ready = uv is not None
+                if stage_transparent and stage_transparent.get("matcap"):
+                    # MatCap projects authored normals into camera space and
+                    # reads COLOR0. Mesh UV0 does not enter this shader.
+                    overlay_inputs_ready = (stage_inputs["authoredNormals"] and "color" in stage_inputs
+                                            and len(submeshes) == 1)
                 if not use_skin or not any(map(len, submeshes)):
                     break
                 merge_submeshes = (stage_transparent is not None and not overlay
                                    and not stage_transparent.get("alphaBlend")
                                    and len(submeshes) > 1 and len(material_refs) == len(submeshes))
-                if (uv is not None
+                if (overlay_inputs_ready
                         and (stage_beam is None and stage_transparent is None or len(submeshes) == 1 or merge_submeshes)
                         and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
                     if stage_transparent is not None:
@@ -1615,7 +1626,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
                     primitives[-1]["extras"]["mvStageDisplay"] = display
             overlay_material = None
-            if uv is not None and (overlay or stage_transparent is not None):
+            if overlay_inputs_ready and (overlay or stage_transparent is not None):
                 if transparent_skin_material is not None:
                     overlay_material = {**transparent_skin_material, "rendererClass": 137}
                 else:

@@ -432,8 +432,98 @@ async function testTransparentBoundsOrder() {
   console.log("Native transparent readers are sorted per camera from authored renderer bounds.");
 }
 
+async function testWorldMatcap() {
+  const scene = new T.Group();
+  const binding = "/EntryPoint/Live/Stages/MainStage/Effect/Matcap";
+  const original = new T.MeshBasicMaterial();
+  const fields = {matcap: true, world: true, alphaBlend: true, depthTest: true, cull: 2, queue: 3000,
+    texture: 0, mainSampler: {mipmaps: [1], filterMode: 1, anisotropy: 8}, sortCenter: [0, 0, 0],
+    tint: [.4, .8, .9, .6], addColor: [.2, .3, -.1], vertexColor: true};
+  const make = (path, overrides = {}, skinned = false) => {
+    const owner = new T.Group(), geometry = new T.PlaneGeometry();
+    scene.add(owner);
+    owner.userData.mvStageNode = {active: true, binding, path};
+    geometry.deleteAttribute("uv");
+    geometry.setAttribute("_stage_color", new T.Uint8BufferAttribute(Array(4).fill([255, 128, 64, 192]).flat(), 4, true));
+    geometry.userData.mvStageOverlay = {...fields, ...overrides};
+    const mesh = skinned ? new T.SkinnedMesh(geometry, original) : new T.Mesh(geometry, original);
+    owner.add(mesh);
+    if (skinned) {
+      mesh.userData.mvStageSkin = true;
+      geometry.setAttribute("skinIndex", new T.Uint16BufferAttribute(new Uint16Array(16), 4));
+      geometry.setAttribute("skinWeight", new T.Float32BufferAttribute(Array(4).fill([1, 0, 0, 0]).flat(), 4));
+      const joint = new T.Bone();
+      owner.add(joint);
+      mesh.bind(new T.Skeleton([joint]), new T.Matrix4());
+    }
+    return {owner, mesh, geometry};
+  };
+  const rigid = make(1), skin = make(2, {rendererClass: 137, sortJoint: 0}, true);
+  const white = make(3, {texture: null, queue: 3001});
+  const noNormal = make(4);
+  noNormal.geometry.deleteAttribute("normal");
+  const noColor = make(5);
+  noColor.geometry.deleteAttribute("_stage_color");
+  const badStencil = make(6, {stencilRef: 2}), wrongScope = make(7, {world: false});
+  const opaqueQueue = make(8, {queue: 2000}), badAdd = make(9, {addColor: [0, Infinity, 0]});
+  const base = new T.Texture({width: 2, height: 2}), mip = new T.Texture({width: 1, height: 1});
+  const controller = await MVStudioStageOverlay.apply(T, scene, {
+    async getDependency(type, index) { return [base, mip][index]; },
+  });
+  for (const {mesh} of [rigid, skin, white]) {
+    const material = mesh.material;
+    assert.equal(material.defines.MATCAP, 1);
+    assert.equal(material.side, T.FrontSide);
+    assert.equal(material.depthFunc, T.LessEqualDepth);
+    assert.equal(material.depthTest, true);
+    assert.equal(material.depthWrite, false);
+    assert.equal(material.blendSrc, T.SrcAlphaFactor);
+    assert.equal(material.blendSrcAlpha, T.SrcAlphaFactor);
+    assert.equal(material.blendDst, T.OneMinusSrcAlphaFactor);
+    assert.equal(material.blendDstAlpha, T.OneMinusSrcAlphaFactor);
+    assert.equal(material.stencilWrite, false);
+    assert.equal(material.uniforms.uTextureST, undefined);
+    assert.deepEqual(material.uniforms.uAddColor.value.toArray(), fields.addColor);
+    assert.equal(mesh.layers.mask, 1);
+  }
+  assert.equal(rigid.mesh.material.uniforms.uTexture.value, skin.mesh.material.uniforms.uTexture.value);
+  assert.deepEqual(skin.mesh.material.uniforms.uTexture.value.mipmaps, [base.image, mip.image]);
+  assert.equal(white.mesh.material.uniforms.uTexture.value.isDataTexture, true);
+  assert.equal(controller.hasVisible(), false);
+  assert.equal(controller.hasDepthTest(), false);
+  assert.equal(skin.mesh.material.skinning, true);
+  assert.equal(skin.mesh.frustumCulled, false);
+  assert.match(skin.mesh.material.vertexShader, /#include <skinnormal_vertex>\s+vec3 viewNormal = normalize\(normalMatrix \* objectNormal\)/);
+  assert.match(skin.mesh.material.vertexShader, /vec2\(0\.5, -0\.5\) \* viewNormal\.xy/);
+  assert.match(skin.mesh.material.fragmentShader, /surface\.rgb \+= uAddColor;[\s\S]+surface \* vColor \* uTint/);
+  for (const {mesh} of [noNormal, noColor, badStencil, wrongScope, opaqueQueue, badAdd]) assert.equal(mesh.material, original);
+  assert.equal(MVStudioStageOverlay.materialChannel(skin.owner, "overlayUV", 137, "world"), undefined);
+
+  const event = {id: "ev", start: 1, duration: 1, values: {animation: "clip"}};
+  const project = {
+    tracks: [{id: "track", nativeClass: "AnimationTrack", binding, events: [event]}],
+    stageMotion: {mix: {ev: {materialScope: "world"}}, clips: {
+      clip: {start: 0, duration: 1, requiresOverlayMaterial: true, channels: [
+        {path: 2, rendererClass: 137, kind: "overlayTint", curves: [1, .5, 0, .25].map(value => ["constant", value])},
+      ]},
+    }},
+  };
+  const motion = MVStudioStageMotion.apply(T, scene);
+  motion.update(1.5, project);
+  assert.equal(motion.accepts(event), true);
+  assert.deepEqual(skin.mesh.material.uniforms.uTint.value.toArray(), [1, .5, 0, .25]);
+  assert.deepEqual(rigid.mesh.material.uniforms.uTint.value.toArray(), fields.tint);
+  motion.update(.5, project);
+  assert.deepEqual(skin.mesh.material.uniforms.uTint.value.toArray(), fields.tint);
+  controller.dispose();
+  assert.equal(skin.mesh.material, original);
+  assert.equal(skin.mesh.frustumCulled, true);
+  assert.equal(MVStudioStageOverlay.materialChannel(skin.owner, "overlayTint", 137, "world"), undefined);
+  console.log("Native MatCap uses camera-space normals and vertex RGBA with the authored world pass.");
+}
+
 run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope)
-  .then(testTransparentBoundsOrder).catch(error => {
+  .then(testTransparentBoundsOrder).then(testWorldMatcap).catch(error => {
     console.error(error);
     process.exitCode = 1;
   });

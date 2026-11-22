@@ -9,6 +9,7 @@ from .mv_studio_stage_display import _shader_matches
 
 # Authored MainCamera culling mask in the native live scene (level35).
 _MAIN_CAMERA_MASK = 0x0C0BC013
+_MATCAP_SHADER = (4078992641913009367, "cab-2700399fc9d3cc42e6ceeda597765088")
 
 _MATERIAL_PROPERTIES = {
     crc32(b"_TintColor") & 0x0FFFFFFF: "overlayTint",
@@ -92,10 +93,48 @@ def plane_geometry():
     return "Plane", vertices, normals, uv, [np.asarray(triangles, dtype=np.int64)]
 
 
+def _is_matcap(material, tree):
+    pointer = tree.get("m_Shader", {})
+    if pointer.get("m_PathID") != _MATCAP_SHADER[0]:
+        return False
+    file_id = pointer.get("m_FileID")
+    serialized = material.assets_file
+    if type(file_id) is not int or not 0 <= file_id <= len(serialized.externals):
+        return False
+    path = serialized.externals[file_id - 1].path if file_id else serialized.name
+    return path.replace("\\", "/").rsplit("/", 1)[-1].casefold() == _MATCAP_SHADER[1]
+
+
+def _read_matcap(material, tree):
+    """Read the inputs consumed by the fixed original MatCap pass."""
+    queue = tree.get("m_CustomRenderQueue", -1)
+    if (type(queue) is not int or queue != -1 and not 2501 <= queue <= 5000
+            or tree.get("disabledShaderPasses") or tree.get("stringTagMap")):
+        return None
+    colors = viewer._properties(tree, "m_Colors")
+    tint = [colors.get("_TintColor", {}).get(axis, 1) for axis in "rgba"]
+    add_color = [colors.get("_AddColor", {}).get(axis, 0) for axis in "rgb"]
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in tint + add_color):
+        return None
+    pointer = viewer._properties(tree, "m_TexEnvs").get("_MainTex", {}).get("m_Texture", {})
+    texture = None
+    if pointer.get("m_PathID"):
+        texture = viewer._ref(material, pointer)
+        if texture is None or texture.type.name != "Texture2D":
+            return None
+    # The normal supplies UV, and old serialized blend/stencil keywords may
+    # survive a shader change. The compiled MatCap pass fixes those states.
+    return {"matcap": True, "texture": texture, "tint": tint, "addColor": add_color,
+            "vertexColor": True, "cull": 2, "queue": 3000 if queue == -1 else queue,
+            "depthTest": True, "alphaBlend": True}
+
+
 def read_material(scene, original, *, world=False):
     if original is None or original.type.name != "Material":
         return None
     tree = scene.tree(original)
+    if _is_matcap(original, tree):
+        return _read_matcap(original, tree) if world else None
     if not _shader_matches(original, tree, "AS/General/Transparent"):
         return None
     floats = viewer._properties(tree, "m_Floats")
