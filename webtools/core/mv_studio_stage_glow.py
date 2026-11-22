@@ -86,34 +86,44 @@ def _system(source):
     return _color(source, initial)
 
 
-def _texture(objects, renderer, fields):
-    material = title._local(objects, renderer, {"m_FileID": 0, "m_PathID": _MATERIAL_ID}, "Material")
-    if material is None or fields["m_Materials"] != [{"m_FileID": 0, "m_PathID": _MATERIAL_ID}] * 2:
+def read_additive_atlas(objects, renderer, fields, *, surface=None, atlas=None):
+    refs = fields["m_Materials"]
+    count = 2 if surface is not None else len(refs)
+    if count not in (1, 2) or len(refs) != count or any(ref != refs[0] for ref in refs):
+        return None
+    material = title._local(objects, renderer, refs[0], "Material")
+    if material is None:
         return None
     tree = material.read_typetree()
-    if (not billboard._matches(tree, {"m_Name": "mat_par_gen_add_24", "m_CustomRenderQueue": 3010,
-                                      "m_ShaderKeywords": "_VERTEX_COLOR_ON", "stringTagMap": [], "disabledShaderPasses": []})
+    keywords = set(tree["m_ShaderKeywords"].split())
+    if (surface is not None and (material.path_id, tree["m_Name"], tree["m_ShaderKeywords"]) != surface
+            or keywords not in ({"_VERTEX_COLOR_ON"}, {"_VERTEX_COLOR_ON", "_VERTEX_COLOR_OFF"})
+            or not billboard._matches(tree, {"m_CustomRenderQueue": 3010, "stringTagMap": [], "disabledShaderPasses": []})
             or not _shader_matches(material, tree, "AS/General/Transparent")
             or not billboard._matches(viewer._properties(tree, "m_Floats"), _SURFACE)
             or viewer._properties(tree, "m_Colors").get("_TintColor") != billboard._WHITE):
         return None
     textures = viewer._properties(tree, "m_TexEnvs")
     main = textures["_MainTex"]
-    if (not billboard._matches(main, {"m_Texture": {"m_FileID": 0, "m_PathID": _TEXTURE_ID},
-                                       "m_Scale": dict.fromkeys("xy", 1), "m_Offset": dict.fromkeys("xy", 0)})
+    if (not billboard._matches(main, {"m_Scale": dict.fromkeys("xy", 1), "m_Offset": dict.fromkeys("xy", 0)})
             or any(name != "_MainTex" and env["m_Texture"]["m_PathID"] for name, env in textures.items())):
         return None
     texture = title._local(objects, material, main["m_Texture"], "Texture2D")
     if texture is None:
         return None
     native = texture.read()
+    width, height = native.m_Width, native.m_Height
     settings = native.m_TextureSettings
-    if ((native.m_Name, native.m_Width, native.m_Height, native.m_TextureFormat, native.m_MipCount, native.m_ColorSpace,
-         native.m_ImageCount, native.m_TextureDimension, native.m_StreamingMipmaps) != ("tex_par_gen_15", *_DIMENSIONS, 65, 9, 1, 1, 2, False)
+    if (atlas is not None and (texture.path_id, native.m_Name, width, height) != atlas
+            or any(side not in (2, 4, 8, 16, 32, 64, 128, 256, 512) for side in (width, height))
+            or (atlas is None and max(width, height) > 256)
+            or (native.m_TextureFormat, native.m_MipCount, native.m_ColorSpace, native.m_ImageCount,
+                native.m_TextureDimension, native.m_StreamingMipmaps)
+            != (65, max(width, height).bit_length(), 1, 1, 2, False)
             or (settings.m_FilterMode, settings.m_Aniso, settings.m_MipBias, settings.m_WrapU,
                 settings.m_WrapV, settings.m_WrapW) != (1, 1, 0, 0, 0, 0)):
         return None
-    return texture
+    return texture, (width, height)
 
 
 def _prefab(objects, game, deadline):
@@ -145,8 +155,10 @@ def _prefab(objects, game, deadline):
     system = _system(parts["ParticleSystem"][1])
     if system is None:
         return None
-    source = _texture(objects, renderer, fields)
-    levels = particles._texture(source, deadline, dimensions=_DIMENSIONS) if source is not None else None
+    source = read_additive_atlas(objects, renderer, fields,
+                                 surface=(_MATERIAL_ID, "mat_par_gen_add_24", "_VERTEX_COLOR_ON"),
+                                 atlas=(_TEXTURE_ID, "tex_par_gen_15", *_DIMENSIONS))
+    levels = particles._texture(source[0], deadline, dimensions=source[1]) if source is not None else None
     if not levels:
         return None
     return {**system, "texture": levels, "material": _MATERIAL, "uv": [.25, 1, .5, 0], "rate": 5,

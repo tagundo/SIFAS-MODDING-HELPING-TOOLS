@@ -270,6 +270,25 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                      [(256 >> i, max(1, 128 >> i)) for i in range(9)])
                     self.assertEqual((stage_glow["material"]["queue"], stage_glow["material"]["blend"],
                                       stage_glow["material"]["stencil"]), (3010, "add", "always"))
+                    lens = project["stageLensFlare"]
+                    lens_track = tracks[lens["cues"][0]["trackId"]]
+                    self.assertEqual(lens_track["label"], "StageEffect/Expert/Control/par_10-11_lensflare")
+                    self.assertEqual([cue["eventId"] for cue in lens["cues"]],
+                                     [event["id"] for event in lens_track["events"]])
+                    emitters = {row["id"]: row for row in lens["emitters"]}
+                    self.assertTrue(all(cue["emitterId"].split(":")[0] == cue["trackId"].split(":")[0]
+                                        for cue in lens["cues"]))
+                    self.assertEqual([emitters[cue["emitterId"]]["rate"] for cue in lens["cues"]], [10, 15, 15])
+                    self.assertEqual({cue["quality"] for cue in lens["cues"]}, {"stage_control"})
+                    self.assertEqual([(row["autoSeed"], row["seed"], row["rate"]) for row in lens["emitters"]],
+                                     [(True, 0, 10), (False, 0, 15)])
+                    self.assertEqual(len(lens["textures"]), 1)
+                    self.assertEqual([(row["width"], row["height"]) for row in lens["textures"][0]],
+                                     [(128 >> i, max(1, 64 >> i)) for i in range(8)])
+                    for emitter in lens["emitters"]:
+                        self.assertGreater(emitter["sortCenter"][1], emitter["position"][1])
+                    self.assertEqual((lens["material"]["queue"], lens["material"]["blend"],
+                                      lens["material"]["stencil"], lens["tiles"]), (3010, "add", "always", [2, 1]))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

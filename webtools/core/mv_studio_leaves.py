@@ -53,7 +53,8 @@ def _minmax(source, scale, minimum, maximum):
             and _curve_matches(source["minCurve"], minimum) and _curve_matches(source["maxCurve"], maximum))
 
 
-def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radius=1, arc_mode=0, random_direction=0):
+def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radius=1, arc_mode=0, arc_value=360,
+           random_direction=0):
     if (not billboard._matches(source, {"type": shape_type, "placementMode": 0, "radiusThickness": 1, "alignToDirection": False,
                                        "m_Position": billboard._ZERO, "m_Rotation": dict(zip("xyz", rotation)),
                                        "m_Scale": dict(zip("xyz", scale)), "boxThickness": billboard._ZERO})
@@ -63,7 +64,7 @@ def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radiu
                                                                  "m_Sprite", "m_SpriteRenderer", "m_Texture"))):
         return False
     return all(billboard._matches(source[name], {"value": value, "mode": mode, "spread": 0})
-               and _constant(source[name]["speed"]) == 1 for name, value, mode in (("radius", radius, 0), ("arc", 360, arc_mode)))
+               and _constant(source[name]["speed"]) == 1 for name, value, mode in (("radius", radius, 0), ("arc", arc_value, arc_mode)))
 
 
 def _motion(source, velocity_curves=_VELOCITY_CURVES):

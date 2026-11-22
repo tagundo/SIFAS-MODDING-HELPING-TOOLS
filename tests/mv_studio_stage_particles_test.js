@@ -15,6 +15,7 @@ require("../webtools/web/static/mv-studio-autumn-burst-simulation.js");
 require("../webtools/web/static/mv-studio-momiji-leaves-simulation.js");
 require("../webtools/web/static/mv-studio-momiji-fan-simulation.js");
 require("../webtools/web/static/mv-studio-stage-glow-simulation.js");
+require("../webtools/web/static/mv-studio-stage-lens-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -804,6 +805,77 @@ function testAionStageGlow() {
   assert.deepEqual(sample(late, 180), lateEnd);
 }
 
+function testStationaryLensParticles() {
+  const create = globalThis.MVStudioStageLensSimulation.create;
+  const source = {
+    cycle: 5, lifetime: 5, rate: 10, size: [.2, .7], arcDegrees: 360, shapeScale: [11.6, 5, 3],
+    startColor: {
+      rgb: [[0, .6933962106704712, 1, .9634166359901428],
+        [22745, 1, .49528300762176514, .8938154578208923],
+        [44911, .9938510656356812, 1, .6556603908538818],
+        [65535, .9905660152435303, .6655070781707764, .6494749188423157]],
+      alpha: [[0, .615686297416687], [65535, .6274510025978088]],
+    },
+    alphaKeys: [
+      [[0, 0], [15324, 1], [32960, 1], [34791, 0], [36815, 1], [42116, 1], [65535, 0]],
+      [[0, 0], [11276, 1], [19468, 1], [21492, 0], [23130, 1], [49537, 1], [65535, 0]],
+    ],
+  };
+  const sample = (stream, frame, fps = 60) => {
+    const packets = [];
+    stream.sample(frame / fps, fps, (...packet) => packets.push(packet));
+    return packets;
+  };
+  assert.equal(create(source, -1), null);
+  assert.equal(create({...source, rate: 31}, 0), null);
+  assert.equal(create({...source, lifetime: 4}, 0), null);
+  assert.equal(create({...source, shapeScale: [Infinity, 1, 1]}, 0), null);
+  assert.equal(create({...source, alphaKeys: [[null, [65535, 0]], source.alphaKeys[1]]}, 0), null);
+
+  const automatic = create(source, 2914);
+  const automaticWarm = sample(automatic, 0);
+  assert.equal(automaticWarm.length, 50);
+  assert.deepEqual(automaticWarm[0], [-3.6047251224517822, 1.0461267232894897, -2.4191083908081055,
+    .5496174097061157, 254, 213, 187, 10, 0]);
+  const automaticLate = sample(automatic, 440);
+  assert.equal(automaticLate.length, 50);
+  assert.deepEqual(automaticLate[8], [-.07256521284580231, .7197547554969788, 3.4986319541931152,
+    .4000195860862732, 196, 224, 241, 127, 0]);
+  assert.deepEqual(sample(automatic, 220, 30), automaticLate);
+  assert.deepEqual(sample(automatic, 0), automaticWarm);
+  assert.deepEqual(sample(automatic, 440), automaticLate);
+
+  const fixed = create({...source, rate: 15, size: [.5, 1.2], arcDegrees: 112, shapeScale: [23, 3, 2]}, 0);
+  const fixedWarm = sample(fixed, 0);
+  assert.equal(fixedWarm.length, 75);
+  assert.deepEqual(fixedWarm[0], [-5.369136810302734, .8077806234359741, -1.531305193901062,
+    .9715248942375183, 246, 142, 230, 9, 0]);
+  const fixedLate = sample(fixed, 95, 30);
+  assert.deepEqual(fixedLate[19], [-2.564384937286377, 1.105032205581665, -.44242343306541443,
+    .6763148307800293, 253, 244, 167, 159, 1]);
+  assert.deepEqual(sample(fixed, 190), fixedLate);
+
+  // Same original worker with different authored inputs and no stock profile IDs.
+  const alpha = [[0, 0], [16000, 1], [51000, .4], [65535, 0]];
+  const alternate = {...source, rate: 12.5, size: [.39, .88], arcDegrees: 167.5, shapeScale: [10.25, 0, 2.125],
+    startColor: {...source.startColor,
+      rgb: [source.startColor.rgb[0], [16384, ...source.startColor.rgb[1].slice(1)],
+        [65535, ...source.startColor.rgb[2].slice(1)]]},
+    alphaKeys: [alpha, alpha]};
+  const customized = create(alternate, 41983);
+  const customizedWarm = sample(customized, 0);
+  assert.equal(customizedWarm.length, 63);
+  assert.deepEqual(customizedWarm[0], [1.1711034774780273, 1.7386456727981567, 1.0363136482283153e-7,
+    .5851251482963562, 254, 200, 193, 2, 0]);
+  const afterWrap = sample(customized, 40, 30);
+  assert.equal(afterWrap.length, 62);
+  assert.deepEqual(afterWrap[25], [8.83835220336914, .4700142443180084, 2.8015035624662232e-8,
+    .49925804138183594, 255, 134, 224, 40, 1]);
+  assert.deepEqual(sample(customized, 80), afterWrap);
+  assert.equal(sample(create({...alternate, rate: 30}, 41983), 1, 30).length, 150);
+  assert.deepEqual(sample(customized, 0, 30), customizedWarm);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
@@ -814,4 +886,5 @@ testAionAirConfetti();
 testAionMomijiDisplayLeaves();
 testAionMomijiFan();
 testAionStageGlow();
+testStationaryLensParticles();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null;
+    let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null, stageLens = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
@@ -427,14 +427,15 @@
     }
 
     function sortControlParticles(camera) {
-      if (!stageLeaves && !stageConfetti && !stageGlow) return;
+      if (!stageLeaves && !stageConfetti && !stageGlow && !stageLens) return;
       const leaves = stageLeaves?.sortEntries() || [], confetti = stageConfetti?.sortEntries() || [];
-      const glow = stageGlow?.sortEntries() || [], rain = stageRain?.sortEntries() || [];
-      if (!leaves.length && !confetti.length && !glow.length) {
+      const glow = stageGlow?.sortEntries() || [], lens = stageLens?.sortEntries() || [];
+      const rain = stageRain?.sortEntries() || [];
+      if (!leaves.length && !confetti.length && !glow.length && !lens.length) {
         for (const {mesh} of rain) mesh.renderOrder = 3010;
         return;
       }
-      const entries = [...rain, ...(stageButterfly?.sortEntries() || []), ...leaves, ...confetti, ...glow];
+      const entries = [...rain, ...(stageButterfly?.sortEntries() || []), ...leaves, ...confetti, ...glow, ...lens];
       camera.updateMatrixWorld();
       displayEye.setFromMatrixPosition(camera.matrixWorld);
       const visible = entries.map(({mesh, center}, order) => {
@@ -593,6 +594,8 @@
       stageConfetti = null;
       stageGlow?.dispose();
       stageGlow = null;
+      stageLens?.dispose();
+      stageLens = null;
       stageMomiji?.dispose();
       stageMomiji = null;
       stageRain?.dispose();
@@ -1153,6 +1156,12 @@
         return;
       }
       stageGlow = glow;
+      const lens = await global.MVStudioStageLens?.apply(T, scene, value.stageLensFlare);
+      if (!active()) {
+        lens?.dispose();
+        return;
+      }
+      stageLens = lens;
       const momiji = await global.MVStudioMomiji?.apply(T, scene, value.stageMomiji, butterfly?.billboardAtlas);
       if (!active()) {
         momiji?.dispose();
@@ -1417,6 +1426,7 @@
       stageLeaves?.invalidate();
       stageConfetti?.invalidate();
       stageGlow?.invalidate();
+      stageLens?.invalidate();
       stageMomiji?.invalidate();
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
@@ -1501,6 +1511,7 @@
       stageLeaves?.update(currentTime, project);
       stageConfetti?.update(currentTime, project);
       stageGlow?.update(currentTime, project);
+      stageLens?.update(currentTime, project);
       stageMomiji?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);

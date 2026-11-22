@@ -671,6 +671,74 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened.get("stageGlow"), expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_stage_lens_flare_recovers_missing_emitters_without_replacing_edits(self):
+        project = mv_studio._blank("Edited stage lens")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        track = {"id": "lens", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": "StageEffect/Foo/Control/renamed flare"}
+        late = {"id": "lens:2", "label": "Shifted late flare", "start": 76, "duration": 3,
+                "values": {"offset": {"x": 2, "y": 1, "z": 5}, "playableClass": "CustomControlClip",
+                           "prefabGameObject": {"m_FileID": 0, "m_PathID": "1234"}}}
+        opening = {**late, "id": "lens:0", "start": 1, "duration": 6}
+        cues = [{"trackId": "lens", "eventId": f"lens:{i}", "emitterId": identity, "quality": "stage_control"}
+                for i, identity in enumerate(("A", "B", "B"))]
+        emitters = [{"id": "A", "rate": 10, "texture": 0}, {"id": "B", "rate": 15, "texture": 0}]
+        original = {"schema": 1, "cues": cues, "emitters": emitters,
+                    "textures": [[{"png": "source"}]], "material": {"blend": "add"},
+                    "tiles": [2, 1], "maxViewportWidth": .5, "sortMode": 0}
+        edited_early = {**emitters[0], "position": [2, 1, 0]}
+        partial = {**original, "cues": cues[:1], "emitters": [edited_early]}
+        recovered = {**original, "cues": [cues[0], cues[2]], "emitters": [edited_early, emitters[1]]}
+        custom_asset = {**partial, "material": {"blend": "alpha"}}
+        for saved, events, source, expected, reparses in (
+                (None, [late], self.original, {**original, "cues": cues[2:], "emitters": emitters[1:]}, True),
+                (partial, [opening, late], self.original, recovered, True),
+                (partial, [opening], self.original, partial, False),
+                (partial, [opening, late], None, partial, False),
+                (custom_asset, [opening, late], self.original, custom_asset, True),
+                (recovered, [opening, late], self.original, recovered, False)):
+            with self.subTest(saved=saved, events=events, source=source):
+                tracks = [{**track, "events": events}]
+                document = {**project, "tracks": tracks}
+                if saved is not None:
+                    document["stageLensFlare"] = saved
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLensFlare": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited stage lens", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_lens=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageLensFlare"), expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
+    def test_saved_stage_lens_does_not_repeat_a_completed_empty_scan(self):
+        project = mv_studio._blank("Examined control track")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        project["tracks"] = [{"id": "effect", "kind": "effects", "nativeClass": "CustomControlTrack",
+                              "label": "StageEffect/Hard/Control/other effect", "events": [{
+                                  "id": "cue", "start": 0, "duration": 2,
+                                  "values": {"playableClass": "CustomControlClip",
+                                             "prefabGameObject": {"m_FileID": 0, "m_PathID": "123"}},
+                              }]}]
+        checked = {"schema": 1, "scanComplete": True, "textures": [], "emitters": [], "cues": []}
+        archive_path = mv_studio.save(mv_studio._register(project, self.original))["path"]
+        with ZipFile(archive_path) as archive, patch(
+            "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLensFlare": checked},
+        ) as parse:
+            reopen = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, project["name"], preview_split=False, preview_stage_title=False,
+                                      preview_stage_lens=True)
+        self.assertEqual(reopen["stageLensFlare"], checked)
+        reopened_path = mv_studio.save(reopen)["path"]
+        with ZipFile(reopened_path) as archive, patch("webtools.core.mv_studio_timeline.parse_timeline") as parse:
+            restored = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_not_called()
+        self.assertEqual(restored["stageLensFlare"], checked)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

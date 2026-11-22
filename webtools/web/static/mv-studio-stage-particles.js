@@ -140,11 +140,12 @@
       f32(first + f32(fourth * last))));
   }
 
-  function sphereRadius(u) {
+  function sphereRadius(u, minimumVolume = 0) {
     // Full-thickness source spheres use the native log2/exp2 polynomials
     // to form an approximately uniform volume from cbrt(1-u).
     const f32 = Math.fround;
-    const value = f32(1 - u);
+    const volume = f32(1 - u);
+    const value = volume === 0 ? minimumVolume : volume;
     if (value === 0) return 0;
     const exponent = Math.floor(Math.log2(value));
     const m = f32(f32(value * 2 ** -exponent) - 1);
@@ -163,6 +164,33 @@
     const position = [f32(sphereCos(turns) * xy), f32(sphereCos(f32(turns - .25)) * xy), z];
     const length = f32(radius * sphereRadius(radial));
     return position.map((value, i) => f32(f32(value * length) * scale[i]));
+  }
+
+  function nativeShapeSqrt(value) {
+    if (value === 0) return 0;
+    const f32 = Math.fround;
+    const scale = 2 ** -Math.floor(Math.log2(value) / 2);
+    const mantissa = value * scale * scale;
+    const bins = mantissa < 2 ? 128 : 64;
+    const midpoint = (Math.floor(mantissa * bins) + .5) / bins;
+    let reciprocal = Math.floor(512 / Math.sqrt(midpoint) + .5) * (scale / 512);
+    // Match the pair of ARM reciprocal square root refinements before multiplying back.
+    for (let i = 0; i < 2; i++) {
+      reciprocal = f32(reciprocal * f32((3 - f32(value * reciprocal) * reciprocal) / 2));
+    }
+    return f32(value * reciprocal);
+  }
+
+  function nativeHemispherePosition(turns, polar, radial, radius, scale) {
+    const f32 = Math.fround;
+    const halfPolar = f32(f32(polar * .5) + .5);
+    const z = f32(f32(halfPolar * 2) - 1);
+    const xy = nativeShapeSqrt(f32(1 - f32(z * z)));
+    const x = f32(sphereCos(turns) * xy);
+    const y = f32(sphereCos(f32(turns - .25)) * xy);
+    // At the RNG's inclusive endpoint the native SIMD log extracts a zero mantissa and exponent -127.
+    const length = f32(radius * sphereRadius(radial, 2 ** -127));
+    return [x, y, z].map((value, i) => f32(f32(value * length) * scale[i]));
   }
 
   function nativeRoll([min, max]) {
@@ -331,6 +359,6 @@
 
   global.MVStudioStageParticles = {
     apply, activeOffset, activeControlFrame, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
-    nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition,
+    nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition, nativeHemispherePosition,
   };
 })(typeof window !== "undefined" ? window : globalThis);
