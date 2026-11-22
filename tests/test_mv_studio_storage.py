@@ -365,6 +365,45 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageRain"], expected)
                 self.assertEqual(reopened["tracks"], document["tracks"])
 
+    def test_saved_leaves_only_restore_cues_still_in_the_edited_project(self):
+        from webtools.core import mv_studio_leaves
+
+        project = mv_studio._blank("Edited leaves")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        labels = tuple(mv_studio_leaves.PROFILES)
+        green = {"id": "green:0", "label": "Edited green", "start": 43, "duration": 14,
+                 "values": {"offset": {"x": 1, "y": 2, "z": -1}, "clipIn": 1}}
+        yellow = {"id": "yellow:0", "label": "Edited yellow", "start": 48, "duration": 9,
+                  "values": {"clipIn": 3}}
+        tracks = [{"id": track_id, "kind": "effects", "nativeClass": "CustomControlTrack", "label": label, "events": [cue]}
+                  for (track_id, cue), label in zip((("green", green), ("yellow", yellow)), labels)]
+        cues = [{"profile": profile, "trackId": track["id"], "eventId": track["events"][0]["id"]}
+                for profile, track in zip(("03", "04"), tracks)]
+        native = {"schema": 1, "cues": cues, "texture": [{"png": "authentic"}]}
+        custom = {**native, "texture": [{"png": "custom"}]}
+        for saved_tracks, source, existing, expected in (
+                (tracks, self.original, None, native),
+                (tracks[1:], self.original, None, {**native, "cues": cues[1:]}),
+                (tracks, None, None, None),
+                (tracks, self.original, custom, custom),
+                ([{**tracks[0], "events": []}], self.original, None, None)):
+            with self.subTest(tracks=saved_tracks, source=source, existing=existing):
+                document = {**project, "tracks": saved_tracks}
+                if existing is not None:
+                    document["stageLeaves"] = existing
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLeaves": native},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if source and existing is None and any(track["events"] for track in saved_tracks):
+                    parse.assert_called_once_with(self.original, "Edited leaves", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_leaves=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageLeaves"), expected)
+                self.assertEqual(reopened["tracks"], saved_tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

@@ -181,7 +181,7 @@
       for (let left = minLife; left >= fixedStep; left = f32(left - fixedStep)) step(fixedStep);
     }
 
-    return {sample(elapsed, fps, emit) {
+    return {sample(elapsed, fps, emit, includeBounds) {
       const target = nativeFrame(elapsed, fps);
       if (target < 0 || elapsed > (opening ? 60 : 4.5)) return;
       if (!checkpoints.length) {
@@ -207,9 +207,10 @@
         const phase = f32(particle.age * ageScale);
         const size = Math.max(0, lerp(lowSize(phase), highSize(phase), sizeMix));
         const rgba = nativeColorAtTime(color, phase).map(value => Math.round(value * 255));
-        emit(f32(px - particle.x), f32(py - particle.z), f32(pz + particle.y),
-          -drift[0], -f32(particle.vz + drift[2]), drift[1],
-          f32(width * size), f32(length * size), ...rgba);
+        const x = f32(px - particle.x), y = f32(py - particle.z), z = f32(pz + particle.y);
+        const vx = -drift[0], vy = -f32(particle.vz + drift[2]), vz = drift[1];
+        includeBounds?.(x, y, z, vx, vy, vz, width);
+        emit(x, y, z, vx, vy, vz, f32(width * size), f32(length * size), ...rgba);
       }
     }};
   }

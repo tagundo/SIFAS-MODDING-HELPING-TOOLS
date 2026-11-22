@@ -7,6 +7,7 @@ require("../webtools/web/static/mv-studio-title.js");
 require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-rain-simulation.js");
 require("../webtools/web/static/mv-studio-rain-floor-simulation.js");
+require("../webtools/web/static/mv-studio-autumn-leaves-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -353,6 +354,74 @@ function testAionRainFloor() {
   assert.deepEqual(at(opening, 2562, 60), last);
 }
 
+function testAionAutumnLeaves() {
+  const source = {
+    position: [Math.fround(.65), 5, Math.fround(-.46)],
+    rotation: [Math.SQRT1_2, 0, 0, Math.SQRT1_2],
+    alphaKeys: [[0, 0], [6554, 1], [58982, 1], [65535, 0]],
+  };
+  const green = {...source, profile: "03", rate: 12, startColor: {
+    rgb: [[0, .7924528121948242, .7491843700408936, .5494837760925293], [29141, 1, 1, 1],
+      [65535, 1, .9386792182922363, .9645374417304993]],
+    alpha: [[0, 1], [65535, 1]],
+  }};
+  const yellow = {...source, profile: "04", rate: 10, startColor: [1, 1, 1, 1]};
+  const createLeaves = globalThis.MVStudioAutumnLeavesSimulation.create;
+  assert.equal(createLeaves({...green, rate: 11}), null);
+  assert.equal(createLeaves({...yellow, alphaKeys: {length: 4}}), null);
+  const g = createLeaves(green), y = createLeaves(yellow);
+  const sample = (stream, frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  const matchesNative = (packet, native) => {
+    assert.ok(Math.abs(packet[1] - native[1]) <= 2e-6);
+    assert.deepEqual([packet[0], ...packet.slice(2)], [native[0], ...native.slice(2)]);
+  };
+  assert.deepEqual(sample(g, 0, 60), []);
+  assert.deepEqual(sample(g, 4, 60), []);
+  const birth = sample(g, 5, 60);
+  assert.equal(birth.length, 1);
+  matchesNative(birth[0], [-2.0827956199645996, 4.8440704345703125, -3.954949378967285,
+    .6733894348144531, 1.2100321633568001e-8, 2.3756719258472003e-8, .6410994529724121, 203, 192, 142, 0]);
+  const next = sample(g, 6, 60);
+  assert.deepEqual(sample(g, 3, 30), next);
+  matchesNative(next[0], [-2.0789833068847656, 4.832780838012695, -3.940342664718628,
+    .6733894348144531, .012100333347916603, .023756742477416992, .651531994342804, 203, 192, 142, 6]);
+  // The third source birth occupies most of its 60 Hz substep.
+  const withPartialBirth = sample(g, 16, 60);
+  assert.equal(withPartialBirth.length, 3);
+  matchesNative(withPartialBirth[2], [-2.337169647216797, 5.311887741088867, .3666634261608124,
+    .6703197956085205, -.015979524701833725, -.015322314575314522, -.3291763365268707, 205, 195, 147, 6]);
+  assert.equal(sample(g, 599, 60).length, 80);
+  const wrap = sample(g, 600, 60);
+  assert.equal(wrap.length, 81);
+  assert.deepEqual(sample(g, 300, 30), wrap);
+  matchesNative(wrap[20], [-1.1150826215744019, 4.056926250457764, -5.795388698577881,
+    .6968000531196594, .7486633658409119, 1.7617182731628418, 2.4434900283813477, 255, 245, 249, 255]);
+  const tail = sample(g, 482, 30);
+  assert.equal(tail.length, 79);
+  matchesNative(tail[54], [-5.408440589904785, 2.3767902851104736, .844658613204956,
+    .7736560106277466, 4.006777763366699, 15.496355056762695, 14.351055145263672, 217, 209, 172, 255]);
+  assert.deepEqual(sample(g, 5, 60), birth);
+  assert.deepEqual(sample(g, 964, 60), tail);
+  assert.deepEqual(sample(g, 1, 120), []);
+
+  assert.deepEqual(sample(y, 6, 60), []);
+  const firstYellow = sample(y, 7, 60);
+  assert.equal(firstYellow.length, 1);
+  matchesNative(firstYellow[0], [-2.0789833068847656, 4.8327813148498535, -3.940342664718628,
+    .6733894348144531, .012100310996174812, .02375669591128826, .651531994342804, 255, 255, 255, 6]);
+  assert.deepEqual(sample(y, 4, 30), sample(y, 8, 60));
+  const lastYellow = sample(y, 630, 60);
+  assert.equal(lastYellow.length, 66);
+  matchesNative(lastYellow[45], [-1.1643598079681396, .20392990112304688, -.13010355830192566,
+    .6534518599510193, 6.48788595199585, 11.209589958190918, 1.3245729207992554, 255, 255, 255, 176]);
+  assert.deepEqual(sample(y, 7, 60), firstYellow);
+}
+
 testAionRain();
 testAionRainFloor();
+testAionAutumnLeaves();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

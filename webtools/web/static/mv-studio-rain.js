@@ -6,7 +6,7 @@
   const capacities = new Map([["01", 600], ["02", 300]]);
   const impactRoles = ["wave", "glow"];
   const stretch = {lengthScale: 1, velocityScale: 0};
-  const tick = time => Math.trunc(time / 1e-12 + .5);
+  const f32 = Math.fround;
 
   function checked(source, title) {
     const material = source?.material;
@@ -64,6 +64,8 @@
         draw.mesh.renderOrder = material.queue;
         draw.mesh.material.stencilFunc = T.AlwaysStencilFunc;
         draw.mesh.material.side = material.cull === 2 ? T.FrontSide : T.DoubleSide;
+        draw.bounds = new T.Box3();
+        draw.center = new T.Vector3();
         draws[role] = draw;
       }
       entry.impact = {stream, draws};
@@ -84,10 +86,12 @@
     }
   }
 
-  function updateImpact({stream, draws}, elapsed, fps) {
+  function updateImpact({stream, draws}, elapsed, fps, point) {
     const counts = {wave: 0, glow: 0};
+    for (const role of impactRoles) draws[role].bounds.makeEmpty();
     stream.sample(elapsed, fps, (role, x, y, z, size, roll, r, g, b, a, tile) => {
       const draw = draws[role], index = counts[role];
+      draw.bounds.expandByPoint(point.set(x, y, z));
       if (!(size > 0) || !a || index >= draw.centers.count) return;
       draw.centers.setXYZW(index, x, y, z, tile);
       // Unity's horizontal billboard stores the size along its diagonal.
@@ -99,6 +103,7 @@
     });
     for (const role of impactRoles) {
       const draw = draws[role], count = counts[role];
+      draw.bounds.getCenter(draw.center);
       setVisible(draw, count);
       upload([draw.centers, draw.sizes, draw.rolls, draw.colors], count);
     }
@@ -110,14 +115,10 @@
     if (!root?.isObject3D || !title || !particles || !simulation || !velocityBillboards || !checked(source, title)) return null;
     const streams = source.cues.map(cue => ({cue, stream: simulation.create({...source, ...cue})})).filter(entry => entry.stream);
     if (!streams.length) return null;
-    const borrowed = sharedAtlas?.texture?.isTexture && source.texture.length === sharedAtlas.levels?.length &&
-      source.texture.every((level, index) => {
-        const shared = sharedAtlas.levels[index];
-        return level.png === shared?.png && level.width === shared.width && level.height === shared.height;
-      });
+    const borrowed = title.sharedMipTexture(source.texture, sharedAtlas);
     let texture;
     try {
-      texture = borrowed ? sharedAtlas.texture : await title.loadTexture(T, new T.TextureLoader(), source.texture);
+      texture = borrowed || await title.loadTexture(T, new T.TextureLoader(), source.texture);
     } catch {
       return null;
     }
@@ -132,12 +133,27 @@
       draw.mesh.material.stencilFunc = T.AlwaysStencilFunc;
       const meshes = [draw.mesh, ...Object.values(impact?.draws || {}).map(layer => layer.mesh)];
       root.add(...meshes);
-      return {cue, stream, impact, meshes, capacity, ...draw, frame: -1, fps: 0};
+      return {cue, stream, impact, meshes, capacity, ...draw, frame: -1, fps: 0, center: new T.Vector3()};
     });
+    const renderers = entries.flatMap(entry => [entry, ...Object.values(entry.impact?.draws || {})]);
+    const point = new T.Vector3(), bounds = new T.Box3();
+    function includeBounds(x, y, z, vx, vy, vz, startSize) {
+      bounds.expandByPoint(point.set(x, y, z));
+      const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (speed <= 1e-15) return;
+      // Unity includes the stretched tail using the start X size when
+      // sorting the renderer, independently of its current draw size.
+      const lengthPerSpeed = f32(startSize / speed);
+      bounds.expandByPoint(point.set(f32(x - f32(vx * lengthPerSpeed)), f32(y - f32(vy * lengthPerSpeed)),
+        f32(z - f32(vz * lengthPerSpeed))));
+    }
 
     let tracks, disposed = false;
     return {
       invalidate() { tracks = null; },
+      sortEntries() {
+        return disposed ? [] : renderers.filter(draw => draw.mesh.visible);
+      },
       update(time, project) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
@@ -148,44 +164,40 @@
         }
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
-        const displayFrame = Math.floor(time * fps + 1e-9), timeline = tick(time);
         for (const entry of entries) {
           const {mesh, meshes, track, cue, stream, impact, centers, colors, velocities, lengths, capacity} = entry;
           const event = quality?.stage_control !== false && !track?.muted && track?.events.find(row => row.id === cue.eventId);
-          const start = event && tick(event.start);
-          const offset = event && timeline >= start && timeline < tick(event.start + event.duration) &&
-            particles.activeOffset(event, Math.max(time, event.start));
-          if (!offset) {
+          const timing = particles.activeControlFrame(event, time, fps);
+          if (!timing) {
             setVisible(entry, 0);
             if (impact) for (const draw of Object.values(impact.draws)) setVisible(draw, 0);
             entry.frame = -1;
             continue;
           }
+          const {offset, frame} = timing;
           if (mesh.position.x !== offset[0] || mesh.position.y !== offset[1] || mesh.position.z !== offset[2]) {
             for (const layer of meshes) {
               layer.position.fromArray(offset);
               layer.updateMatrix();
             }
           }
-          const first = Math.ceil(event.start * fps);
-          const activated = tick((first - 1) / fps) === start ? first - 1 : first;
-          // The first active display update advances past the wake state.
-          const frame = Math.max(0, displayFrame - activated + 1);
           if (entry.frame === frame && entry.fps === fps) continue;
           entry.frame = frame;
           entry.fps = fps;
           const elapsed = frame / fps;
           let count = 0;
+          bounds.makeEmpty();
           stream.sample(elapsed, fps, (x, y, z, vx, vy, vz, width, length, r, g, b, a) => {
             if (!(width > 0) || !(length > 0) || !a || count >= capacity) return;
             centers.setXYZW(count, x, y, z, width);
             velocities.setXYZ(count, vx, vy, vz);
             lengths.setX(count, length);
             colors.setXYZW(count++, r, g, b, a);
-          });
+          }, includeBounds);
+          bounds.getCenter(entry.center);
           setVisible(entry, count);
           upload([centers, colors, velocities, lengths], count);
-          if (impact) updateImpact(impact, elapsed, fps);
+          if (impact) updateImpact(impact, elapsed, fps, point);
         }
       },
       dispose() {

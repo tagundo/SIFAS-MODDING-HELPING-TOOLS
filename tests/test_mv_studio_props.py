@@ -195,6 +195,16 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                         self.assertEqual(glow["material"]["cull"], 0)
                         self.assertFalse(glow["material"]["saturate"])
                         self.assertEqual(glow["uv"], [.5] * 4)
+                    leaves = project["stageLeaves"]
+                    self.assertEqual(leaves["texture"], rain["texture"])
+                    self.assertEqual(leaves["material"]["blend"], "alpha")
+                    self.assertEqual({key: len(values) for key, values in leaves["geometry"].items()},
+                                     {"positions": 22, "uv": 22, "indices": 60})
+                    self.assertEqual(leaves["alphaKeys"], [[0, 0], [6554, 1], [58982, 1], [65535, 0]])
+                    self.assertEqual([(cue["profile"], cue["rate"], cue["uv"]) for cue in leaves["cues"]],
+                                     [("03", 12, [.25, .25, 0, .25]), ("04", 10, [.25, .25, .5, .25])])
+                    for cue in leaves["cues"]:
+                        self.assertEqual(tracks[cue["trackId"]]["events"][0]["id"], cue["eventId"])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

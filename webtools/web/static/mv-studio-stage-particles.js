@@ -51,6 +51,21 @@
     return [x, y, z].every(value => inRange(value, -1000, 1000)) ? [-x, y, z] : null;
   }
 
+  const timelineTick = time => Math.trunc(time / 1e-12 + .5);
+
+  function activeControlFrame(event, time, fps) {
+    if (!event) return null;
+    const start = timelineTick(event.start), current = timelineTick(time);
+    if (current < start || current >= timelineTick(event.start + event.duration)) return null;
+    const offset = activeOffset(event, Math.max(time, event.start));
+    if (!offset) return null;
+    const first = Math.ceil(event.start * fps);
+    const activated = timelineTick((first - 1) / fps) === start ? first - 1 : first;
+    const displayFrame = Math.floor(time * fps + 1e-9);
+    // The original prefab's first active update advances past the wake state.
+    return {offset, frame: Math.max(0, displayFrame - activated + 1)};
+  }
+
   function validNativeColor(source) {
     const {start, keys} = source || {};
     const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
@@ -315,7 +330,7 @@
   }
 
   global.MVStudioStageParticles = {
-    apply, activeOffset, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
+    apply, activeOffset, activeControlFrame, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
     nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -49,6 +49,14 @@
         bitmap.height === bitmap.width && validTexture(bitmap));
   }
 
+  function sharedMipTexture(levels, atlas) {
+    if (!atlas?.texture?.isTexture || levels.length !== atlas.levels?.length) return null;
+    return levels.every(({png, width, height}, index) => {
+      const shared = atlas.levels[index];
+      return shared?.png === png && shared.width === width && shared.height === height;
+    }) ? atlas.texture : null;
+  }
+
   function validTransform(value) {
     return vector(value?.position, 3) && vector(value.rotation, 4) && vector(value.scale, 3);
   }
@@ -406,5 +414,7 @@
       dispose
     };
   }
-  global.MVStudioTitle = { apply, validTexture, validMipChain, loadTexture, boundedCurve, gradientKeys, gradient, neutralClip };
+  global.MVStudioTitle = {
+    apply, validTexture, validMipChain, sharedMipTexture, loadTexture, boundedCurve, gradientKeys, gradient, neutralClip,
+  };
 })(typeof window !== "undefined" ? window : globalThis);
