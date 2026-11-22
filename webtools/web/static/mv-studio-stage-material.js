@@ -375,7 +375,7 @@
       let reflectionCube = null;
       if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
-        const map = (meta.shader === "stage" || skinning && meta.shader === "general") && meta.mainSampler
+        const map = meta.mainSampler
           ? await sampledTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
         if (!map || !active()) break;
         uniforms.mainMap = {value: map};

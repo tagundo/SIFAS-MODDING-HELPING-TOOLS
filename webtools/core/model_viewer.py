@@ -1694,8 +1694,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
-                    if descriptor["shader"] == "stage" or stage_opaque is not None:
-                        mv_studio_stage_materials.collect_main_sampler(scene, materials, material_obj, descriptor)
+                    if descriptor["shader"] in {"stage", "general"}:
+                        mv_studio_stage_materials.collect_main_sampler(
+                            scene, materials, material_obj, descriptor,
+                            static_opaque=descriptor["shader"] == "general" and stage_opaque is None,
+                        )
                     if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_texture_sampler(
                             materials, stage_lightmap_source, descriptor, "lightmapSampler",
@@ -1788,12 +1791,14 @@ def _to_glb(scene, glb, faces, deadline, rig=None, *, require_existing_clips=Fal
 
 
 def _finish_stage_samplers(materials, deadline, base):
-    from .mv_studio_stage_materials import attach_texture_samplers
+    from .mv_studio_stage_materials import (
+        AUXILIARY_SAMPLERS, MAIN_SAMPLERS, STATIC_OPAQUE_SAMPLERS, attach_texture_samplers,
+    )
 
-    # Commit MainTex before adding auxiliary maps. If either pass runs out of
-    # time or GLB space, the previous complete preview can still be returned.
-    for main in (True, False):
-        if not attach_texture_samplers(materials, deadline, main=main):
+    # Preserve the completed lightmap and effect chains if the extra static
+    # surfaces run out of conversion time or texture space.
+    for priority in (MAIN_SAMPLERS, AUXILIARY_SAMPLERS, STATIC_OPAQUE_SAMPLERS):
+        if not attach_texture_samplers(materials, deadline, priority=priority):
             continue
         try:
             _remaining(deadline)

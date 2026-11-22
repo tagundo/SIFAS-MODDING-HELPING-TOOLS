@@ -199,11 +199,11 @@ async function testStageMainSampler() {
   const lightmap = texture("light", 4, 4);
   const levels = [texture("mip1", 4, 2), texture("mip2", 2, 1), texture("mip3", 1, 1)];
   const invalid = texture("wrong-size", 4, 1);
-  const addSurface = (target, mainSampler) => {
+  const addSurface = (target, mainSampler, shader = "stage") => {
     const geometry = new T.PlaneGeometry();
     geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
     geometry.userData.mvStageMaterial = {
-      shader: "stage", lightmap: 0, mipBias: .25, uvTransform: [1, 1, 0, 0], mainSampler,
+      shader, lightmap: 0, mipBias: .25, uvTransform: [1, 1, 0, 0], mainSampler,
       colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
     };
     const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: base}));
@@ -221,6 +221,8 @@ async function testStageMainSampler() {
   const borrowed = addSurface(root, {...authored, mipmaps: [1, 2, 6]});
   const incomplete = addSurface(root, {...authored, mipmaps: [7]});
   const legacy = addSurface(root);
+  const general = addSurface(root, authored, "general");
+  const generalLegacy = addSurface(root, undefined, "general");
   const original = bilinear.material;
   const controller = await MVStudioStageMaterial.apply(T, root, {
     getDependency(type, index) {
@@ -234,6 +236,10 @@ async function testStageMainSampler() {
   assert.equal(bilinear.material.uniforms.mipBias.value, .25);
   assert.notEqual(map(bilinear), base);
   assert.equal(map(bilinear), map(shared));
+  assert.equal(map(general), map(bilinear));
+  assert.equal(map(generalLegacy), map(legacy));
+  assert.equal(general.material.defines.LIGHTMAPPED, undefined);
+  assert.equal(general.material.uniforms.mipBias, undefined);
   assert.equal(map(bilinear).image, base.image);
   assert.deepEqual(map(bilinear).mipmaps, [base.image, ...levels.map(item => item.image)]);
   assert.equal(map(bilinear).magFilter, T.LinearFilter);
@@ -495,7 +501,7 @@ async function testWeightedStageMaterial() {
   partition.add(mesh);
   mesh.bind(new T.Skeleton([rootJoint, leafJoint]), new T.Matrix4());
   const baseline = new T.Mesh(new T.PlaneGeometry(), material);
-  baseline.geometry.userData.mvStageMaterial = description;
+  baseline.geometry.userData.mvStageMaterial = {...description, mainSampler: undefined};
   root.add(baseline);
   const controller = await MVStudioStageMaterial.apply(T, root, {
     getDependency: (type, index) => mips[index],

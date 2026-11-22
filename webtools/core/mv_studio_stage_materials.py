@@ -28,6 +28,7 @@ _REFLECTION_BLENDS = {
 }
 _CUBE_FORMATS = {34: "etc1", 32: "pvrtc4"}
 _MAX_CUBE_SIZE = 256
+MAIN_SAMPLERS, AUXILIARY_SAMPLERS, STATIC_OPAQUE_SAMPLERS = range(3)
 
 
 def _numbers(value, axes):
@@ -220,19 +221,22 @@ def export_emissive(scene, materials, material, controlled=False):
     return None
 
 
-def collect_main_sampler(scene, materials, material, descriptor):
+def collect_main_sampler(scene, materials, material, descriptor, *, static_opaque=False):
     """Record the actual texture PPtr for each rendered stage primitive."""
     source = _properties(scene.tree(material), "m_TexEnvs").get("_MainTex", {})
     texture = _ref(material, source.get("m_Texture"))
-    collect_texture_sampler(materials, texture, descriptor, "mainSampler")
+    priority = STATIC_OPAQUE_SAMPLERS if static_opaque else MAIN_SAMPLERS
+    collect_texture_sampler(materials, texture, descriptor, "mainSampler", priority=priority)
 
 
-def collect_texture_sampler(materials, texture, descriptor, field):
+def collect_texture_sampler(materials, texture, descriptor, field, *, priority=None):
     if texture is None or texture.type.name != "Texture2D":
         return
     key = _key(texture)
     if materials.textures.get(key) is not None:
-        materials.stage_texture_samplers.setdefault(key, (texture, []))[1].append((descriptor, field))
+        if priority is None:
+            priority = MAIN_SAMPLERS if field == "mainSampler" else AUXILIARY_SAMPLERS
+        materials.stage_texture_samplers.setdefault(key, (texture, []))[1].append((descriptor, field, priority))
 
 
 def _texture_sampler(materials, obj):
@@ -257,12 +261,12 @@ def _texture_sampler(materials, obj):
     return {"mipmaps": materials.mip_textures(mips), "filterMode": filter_mode, "anisotropy": anisotropy}
 
 
-def attach_texture_samplers(materials, deadline, *, main):
+def attach_texture_samplers(materials, deadline, *, priority):
     """Add complete chains for one priority group, including any shared roles."""
     glb, scene = materials.glb, materials.scene
     changed = False
     for source, bindings in materials.stage_texture_samplers.values():
-        if any(field == "mainSampler" for _, field in bindings) != main:
+        if min(level for _, _, level in bindings) != priority:
             continue
         if time.monotonic() >= deadline:
             break
@@ -281,7 +285,7 @@ def attach_texture_samplers(materials, deadline, *, main):
             scene.stats["textures"] = count
             continue
         if sampler is not None:
-            for descriptor, field in bindings:
+            for descriptor, field, _ in bindings:
                 descriptor[field] = sampler
             changed = True
     return changed

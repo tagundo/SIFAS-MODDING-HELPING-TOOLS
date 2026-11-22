@@ -105,14 +105,18 @@ class StageTextureSamplerTests(unittest.TestCase):
         base = materials.texture(source)
         first, second = {"mipBias": -1.25}, {}
         emissive = {"texture": base}
+        static = {}
         with patch.object(stage, "_ref", return_value=source):
+            stage.collect_main_sampler(scene, materials, material, static, static_opaque=True)
             stage.collect_main_sampler(scene, materials, material, first)
         stage.collect_texture_sampler(materials, source, second, "lightmapSampler")
         stage.collect_texture_sampler(materials, source, emissive, "sampler")
-        self.assertTrue(stage.attach_texture_samplers(materials, deadline, main=True))
-        self.assertFalse(stage.attach_texture_samplers(materials, deadline, main=False))
+        self.assertTrue(stage.attach_texture_samplers(materials, deadline, priority=stage.MAIN_SAMPLERS))
+        self.assertFalse(stage.attach_texture_samplers(materials, deadline, priority=stage.AUXILIARY_SAMPLERS))
+        self.assertFalse(stage.attach_texture_samplers(materials, deadline, priority=stage.STATIC_OPAQUE_SAMPLERS))
         expected = {"mipmaps": [1, 2, 3], "filterMode": 1, "anisotropy": 8}
         self.assertEqual(first, {"mipBias": -1.25, "mainSampler": expected})
+        self.assertEqual(static, {"mainSampler": expected})
         self.assertEqual(second, {"lightmapSampler": expected})
         self.assertEqual(emissive, {"texture": 0, "sampler": expected})
         self.assertEqual(base, 0)
@@ -142,7 +146,7 @@ class StageTextureSamplerTests(unittest.TestCase):
             raise ValueError("missing authored mip")
 
         with patch.object(materials, "mip_textures", side_effect=fail):
-            self.assertFalse(stage.attach_texture_samplers(materials, deadline, main=False))
+            self.assertFalse(stage.attach_texture_samplers(materials, deadline, priority=stage.AUXILIARY_SAMPLERS))
         self.assertEqual(glb.finish(), baseline)
         self.assertFalse(descriptor)
         self.assertEqual(materials.textures, {stage._key(source): 0})
@@ -183,6 +187,30 @@ class StageTextureSamplerTests(unittest.TestCase):
         })
         self.assertEqual(len(doc["textures"]), 5)
         self.assertEqual(result[1], {"textures": 5})
+
+    def test_static_opaque_sampler_uses_only_remaining_texture_budget(self):
+        deadline = time.monotonic() + 5
+        static, lightmap, main = self.source(), self.source(), self.source()
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=deadline, preview_stage=True, stats={"textures": 0})
+        materials = model_viewer._Materials(scene, glb)
+        for source in (static, lightmap, main):
+            materials.texture(source)
+        descriptor, surface = {}, {}
+        glb.doc["nodes"].append({"extras": {"stage": descriptor, "surface": surface}})
+        stage.collect_texture_sampler(materials, static, surface, "mainSampler", priority=stage.STATIC_OPAQUE_SAMPLERS)
+        stage.collect_texture_sampler(materials, lightmap, descriptor, "lightmapSampler")
+        stage.collect_texture_sampler(materials, main, descriptor, "mainSampler")
+        base = glb.finish(), dict(scene.stats), [], {}
+        with patch.object(stage, "MAX_TEXTURE_PIXELS", 118):
+            result = model_viewer._finish_stage_samplers(materials, deadline, base)
+        size = int.from_bytes(result[0][12:16], "little")
+        doc = json.loads(result[0][20:20 + size])
+        extras = doc["nodes"][0]["extras"]
+        self.assertEqual(len(doc["textures"]), 9)
+        self.assertEqual(extras["stage"]["mainSampler"]["mipmaps"], [3, 4, 5])
+        self.assertEqual(extras["stage"]["lightmapSampler"]["mipmaps"], [6, 7, 8])
+        self.assertEqual(extras["surface"], {})
 
     def test_stage_block_mips_keep_padded_blocks_and_crop_before_flip(self):
         deadline = time.monotonic() + 5
