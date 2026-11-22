@@ -180,6 +180,21 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     for index, cue in enumerate(rain["cues"]):
                         self.assertEqual(tracks[cue["trackId"]]["label"], "StageEffect/Expert/Control/par_01-02_rain")
                         self.assertEqual(tracks[cue["trackId"]]["events"][index]["id"], cue["eventId"])
+                    floor_textures = rain["impactTextures"]
+                    self.assertEqual(set(floor_textures), {"wave", "glow"})
+                    self.assertEqual([[level["width"] for level in chain] for chain in floor_textures.values()],
+                                     [[256 >> i for i in range(9)]] * 2)
+                    self.assertNotEqual(floor_textures["wave"], floor_textures["glow"])
+                    for index, cue in enumerate(rain["cues"]):
+                        wave, glow = (cue["impact"][name] for name in ("wave", "glow"))
+                        self.assertAlmostEqual(wave["position"][1], .02)
+                        self.assertEqual(wave["position"][2], index)
+                        self.assertEqual(wave["startColor"]["mode"], (1, 4)[index])
+                        self.assertEqual(wave["material"]["cull"], 2)
+                        self.assertTrue(wave["material"]["saturate"])
+                        self.assertEqual(glow["material"]["cull"], 0)
+                        self.assertFalse(glow["material"]["saturate"])
+                        self.assertEqual(glow["uv"], [.5] * 4)
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

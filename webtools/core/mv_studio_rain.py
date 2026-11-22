@@ -3,6 +3,7 @@
 import math
 
 from . import model_viewer as viewer, mv_studio_butterfly_glow as glow, mv_studio_butterfly_shine as shine
+from . import mv_studio_rain_impact
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_rig import _authored_trs
 from .mv_studio_stage_title_particles import _constant, _float32
@@ -147,6 +148,7 @@ def _prefab(objects, game, deadline):
         if _authored_trs(fields) != expected or index == 0 and fields["m_Father"] != glow._NULL:
             return None
         if node == "all":
+            floor_parent = (transform, fields)
             game = glow._child(objects, transform, fields, "rain")
         else:
             child, = fields["m_Children"]
@@ -168,7 +170,8 @@ def _prefab(objects, game, deadline):
     if source is None or texture is None:
         return None
     position[1] = _float32(position[1] + _PARENT_Y)
-    return {"profile": profile[0], "position": position, "rotation": pose["rotation"]}, source, texture
+    impact = mv_studio_rain_impact.read(objects, *floor_parent, profile[0], deadline)
+    return {"profile": profile[0], "position": position, "rotation": pose["rotation"]}, source, texture, impact
 
 
 def read(objects, mono, tracks, deadline):
@@ -192,6 +195,7 @@ def read(objects, mono, tracks, deadline):
     except title._UNSUPPORTED:
         return None
     cues, shared, atlas = [], None, None
+    impacts, impact_atlases = [], None
     for cue in track["events"]:
         try:
             control = particles._source(objects, owner, fields, cue)
@@ -200,11 +204,18 @@ def read(objects, mono, tracks, deadline):
             continue
         if effect is None:
             continue
-        info, source, texture = effect
+        info, source, texture, impact = effect
         if (shared is not None and shared != source or atlas is not None and viewer._key(atlas) != viewer._key(texture)):
             continue
-        cues.append({**info, "trackId": track["id"], "eventId": cue["id"]})
+        row = {**info, "trackId": track["id"], "eventId": cue["id"]}
+        cues.append(row)
         shared, atlas = source, texture
+        if impact is not None:
+            details, readers = impact
+            if impact_atlases is None or all(viewer._key(impact_atlases[name]) == viewer._key(reader)
+                                            for name, reader in readers.items()):
+                impact_atlases = readers
+                impacts.append((row, details))
     if not cues:
         return None
     try:
@@ -213,5 +224,15 @@ def read(objects, mono, tracks, deadline):
         return None
     if not levels:
         return None
-    return {"schema": 1, **shared, "cues": cues, "texture": levels, "uv": [.25, .25, .5, 0], "maxViewportWidth": .5,
-            "material": {"tint": [1, 1, 1, 1], "queue": 3010, "cull": 0, "blend": "add", "premultiply": False}}
+    result = {"schema": 1, **shared, "cues": cues, "texture": levels, "uv": [.25, .25, .5, 0], "maxViewportWidth": .5,
+              "material": {"tint": [1, 1, 1, 1], "queue": 3010, "cull": 0, "blend": "add", "premultiply": False}}
+    if impact_atlases is not None:
+        try:
+            floor = {name: particles._texture(reader, deadline) for name, reader in impact_atlases.items()}
+        except title._UNSUPPORTED:
+            floor = {}
+        if floor and all(floor.values()):
+            result["impactTextures"] = floor
+            for row, details in impacts:
+                row["impact"] = details
+    return result

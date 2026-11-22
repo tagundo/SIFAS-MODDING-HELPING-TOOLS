@@ -6,6 +6,7 @@ require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-title.js");
 require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-rain-simulation.js");
+require("../webtools/web/static/mv-studio-rain-floor-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -257,5 +258,101 @@ function testAionRain() {
   assert.deepEqual(at(fading, 1, 30), first);
 }
 
+function testAionRainFloor() {
+  const color02 = [
+    [0, .5, .5387755632400513, 1], [22359, .5, .7534246444702148, 1],
+    [50597, .7557470798492432, .5, 1], [65535, .5, 1, .5176470279693604],
+  ];
+  const start02 = [
+    [0, .5801886916160583, .877376139163971, 1], [28045, .989980936050415, 1, .6596245765686035],
+    [65535, .6745283007621765, 1, .8095535635948181],
+  ];
+  const size02 = [[0, .5, 1.405066967010498, 1.405066967010498], [1, 1, 0, 0]];
+  const f32 = Math.fround;
+  const second = {
+    wave: {
+      position: [0, f32(.02), 1], sizeKeys: size02, frameKeys: [[0, 0, 0, 1], [1, 1, 1, 0]],
+      startColor: {mode: 4, rgb: start02, alpha: [[0, 1], [65535, 1]]},
+      colorKeys: {rgb: color02, alpha: [[0, 0], [7806, 1], [22166, 1], [65535, 0]]},
+    },
+    glow: {
+      sizeKeys: size02, startColor: [1, 1, 1, f32(.4)],
+      colorKeys: {rgb: color02, alpha: [[0, 0], [13203, 1], [65535, 0]]},
+    },
+  };
+  const first = {
+    wave: {
+      position: [0, f32(.02), 0], frameKeys: [[0, 0, 1, 1], [1, 1, 1, 1]],
+      sizeKeys: [[0, .15517425537109375, 2.1027917861938477, 2.1027917861938477], [1, 1, 0, 0]],
+      startColor: {mode: 1, rgb: [
+        [0, .8349056243896484, .9521689414978027, 1], [28045, .9946324229240417, 1, .8443396091461182],
+        [65535, .8443396091461182, 1, .9081041216850281],
+      ], alpha: [[0, f32(.8)], [65535, .501960813999176]]},
+      colorKeys: {rgb: [
+        [0, .6247774958610535, .9504353404045105, .9811320900917053], [65535, .501960813999176, .8025936484336853, 1],
+      ], alpha: [[0, 0], [7806, 1], [28334, .7058823704719543], [65535, 0]]},
+    },
+    glow: {...second.glow, startColor: [1, 1, 1, .14901961386203766]},
+  };
+  const createFloor = globalThis.MVStudioRainFloorSimulation.create;
+  const at = (stream, frame, fps) => {
+    const rows = {wave: [], glow: []};
+    stream.sample(frame / fps, fps, (role, ...packet) => rows[role].push(packet));
+    return rows;
+  };
+  assert.equal(createFloor("02", {...second, glow: null}), null);
+  assert.equal(createFloor("01", second), null);
+  const ending = createFloor("02", second);
+  assert.deepEqual(at(ending, 1, 60), {wave: [], glow: []});
+  const birth = at(ending, 2, 60);
+  assert.equal(birth.wave.length, 1);
+  assert.deepEqual(birth.wave[0], [-7.994955062866211, .019999999552965164, 2.80983829498291,
+    .1340492069721222, -.12423050403594971, 115, 137, 179, 0, 0]);
+  assert.equal(birth.glow.length, 1);
+  assert.deepEqual(birth.glow[0], [-7.994955062866211, .019999999552965164, 2.80983829498291,
+    .20729269087314606, -.12423050403594971, 128, 145, 255, 24, 3]);
+  const groupedBirth = at(ending, 1, 30);
+  assert.deepEqual(groupedBirth.wave, birth.wave);
+  assert.deepEqual(groupedBirth.glow[0], [-7.994955062866211, .019999999552965164, 2.80983829498291,
+    .22850120067596436, -.12423050403594971, 128, 152, 255, 47, 3]);
+  // A parent born in the first 30 Hz substep also gives its child an inline .02 update.
+  const groupedLater = at(ending, 4, 30);
+  assert.deepEqual(groupedLater.wave, at(ending, 8, 60).wave);
+  assert.deepEqual(groupedLater.glow[2], [-6.63014030456543, .019999999552965164, -1.4310824871063232,
+    .2534416615962982, -1.0620362758636475, 128, 170, 255, 101, 3]);
+  const later = at(ending, 30, 60);
+  assert.equal(later.wave.length, 15);
+  assert.deepEqual(later.wave[5], [-5.39581298828125, .019999999552965164, 4.264213562011719,
+    .2514597475528717, -1.1507439613342285, 119, 157, 213, 191, 8]);
+  assert.deepEqual(at(ending, 186, 60), {wave: [], glow: []});
+  assert.deepEqual(at(ending, 2, 60), birth);
+
+  const opening = createFloor("01", first);
+  const warm = at(opening, 0, 60);
+  assert.equal(warm.wave.length, 60);
+  assert.equal(warm.glow.length, 24);
+  assert.deepEqual(warm.wave[0], [-6.584455490112305, .019999999552965164, 2.817981243133545,
+    .3434379994869232, .7300889492034912, 120, 217, 227, 56, 10]);
+  assert.deepEqual(warm.glow[0], [2.170072078704834, .019999999552965164, -.12683212757110596,
+    .35785460472106934, .862252950668335, 146, 220, 166, 3, 3]);
+  const last = at(opening, 2562, 60);
+  assert.equal(last.wave.length, 60);
+  assert.equal(last.glow.length, 28);
+  assert.deepEqual(last.wave[0], [-1.4188928604125977, .019999999552965164, -1.3924572467803955,
+    .30205437541007996, -.525391697883606, 130, 209, 214, 21, 14]);
+  assert.deepEqual(last.glow[0], [-4.052278518676758, .019999999552965164, 3.970980644226074,
+    .3477473855018616, .43382763862609863, 177, 144, 255, 16, 3]);
+  assert.deepEqual(at(opening, 0, 30), warm);
+  const groupedLast = at(opening, 1281, 30);
+  assert.deepEqual(groupedLast.wave, last.wave);
+  assert.equal(groupedLast.glow.length, 26);
+  assert.deepEqual(groupedLast.glow[0], [2.883307933807373, .019999999552965164, 3.9993906021118164,
+    .29809996485710144, -.38672399520874023, 153, 167, 255, 23, 3]);
+  assert.deepEqual(at(opening, 0, 60), warm);
+  assert.deepEqual(at(opening, 1281, 30), groupedLast);
+  assert.deepEqual(at(opening, 2562, 60), last);
+}
+
 testAionRain();
+testAionRainFloor();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

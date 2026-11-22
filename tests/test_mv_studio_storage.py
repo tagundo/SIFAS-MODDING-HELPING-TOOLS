@@ -311,12 +311,58 @@ class MVStudioStorageTests(unittest.TestCase):
                     "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageRain": rain},
                 ) as parse:
                     reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
-                if source and events and previous is None:
+                if source and events:
                     parse.assert_called_once_with(self.original, "Edited rain", preview_split=False,
                                                   preview_stage_title=False, preview_stage_rain=True)
                 else:
                     parse.assert_not_called()
                 self.assertEqual(reopened.get("stageRain"), expected)
+                self.assertEqual(reopened["tracks"], document["tracks"])
+
+    def test_saved_rain_adds_floor_effects_only_for_compatible_original_cues(self):
+        from webtools.core import mv_studio_rain
+
+        project = mv_studio._blank("Edited rain floor")
+        project["duration"] = 52
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        first = {"id": "rain:0", "label": "Edited cue", "start": 3, "duration": 39,
+                 "values": {"offset": {"x": -.125, "y": .5, "z": 2}, "clipIn": 1}}
+        second = {"id": "rain:1", "label": "Second rain", "start": 42, "duration": 6, "values": {}}
+        track = {"id": "rain", "kind": "effects", "nativeClass": "CustomControlTrack", "label": mv_studio_rain.TRACK}
+        cues = [{"trackId": track["id"], "eventId": cue["id"], "profile": profile, "position": [0, 1, 2]}
+                for cue, profile in ((first, "01"), (second, "02"))]
+        atlas = {"wave": [{"png": "original wave"}], "glow": [{"png": "original glow"}]}
+        native_impact = {"wave": {"tiles": [4, 4]}, "glow": {"uv": [.5] * 4}}
+        original = {"schema": 1, "cues": [{**cue, "impact": native_impact} for cue in cues],
+                    "texture": [{"png": "original rain"}], "impactTextures": atlas}
+        saved = {"schema": 1, "texture": [{"png": "custom rain"}], "cues": cues}
+        upgraded = {**saved, "impactTextures": atlas, "cues": original["cues"]}
+        partial = {**saved, "impactTextures": atlas, "cues": [original["cues"][0], cues[1]]}
+        wrong_profile = {**saved, "cues": [{**cues[0], "profile": "02"}, cues[1]]}
+        incompatible = {**partial, "impactTextures": {**atlas, "glow": [{"png": "custom floor glow"}]}}
+        custom_impact_without_atlas = {**saved, "cues": [{**cues[0], "impact": {"wave": {}}}, cues[1]]}
+        for loaded, events, source, expected, reparses in (
+                (saved, [first, second], self.original, upgraded, True),
+                (saved, [first], self.original, partial, True),
+                (partial, [first, second], self.original, upgraded, True),
+                (wrong_profile, [first], self.original, wrong_profile, True),
+                (incompatible, [first, second], self.original, incompatible, True),
+                (custom_impact_without_atlas, [first, second], self.original, custom_impact_without_atlas, True),
+                (saved, [first, second], None, saved, False),
+                (upgraded, [first, second], self.original, upgraded, False)):
+            with self.subTest(loaded=loaded, events=events, source=source):
+                document = {**project, "tracks": [{**track, "events": events}], "stageRain": loaded}
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageRain": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited rain floor", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_rain=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageRain"], expected)
                 self.assertEqual(reopened["tracks"], document["tracks"])
 
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):

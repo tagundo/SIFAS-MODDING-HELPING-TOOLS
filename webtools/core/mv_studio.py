@@ -816,6 +816,39 @@ def _restore_butterfly_companion(saved, rebuilt, field, tracks, authentic_atlas)
     return recovered
 
 
+def _rain_cues(saved):
+    if isinstance(saved, dict) and type(saved.get("schema")) is int and saved["schema"] == 1:
+        cues = saved.get("cues")
+        if isinstance(cues, list) and 1 <= len(cues) <= 2 and all(
+                isinstance(row, dict) and all(isinstance(row.get(key), str) for key in ("trackId", "eventId", "profile"))
+                for row in cues):
+            return cues
+    return ()
+
+
+def _restore_rain_impacts(project, rebuilt, existing):
+    cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in existing]
+    if not cues:
+        return
+    if "stageRain" not in project:
+        project["stageRain"] = {**rebuilt, "cues": cues}
+        return
+    saved = project["stageRain"]
+    atlas = rebuilt.get("impactTextures")
+    if not atlas or saved.get("impactTextures", atlas) != atlas:
+        return
+    impacts = {(cue["trackId"], cue["eventId"], cue["profile"]): cue["impact"] for cue in cues if "impact" in cue}
+    restored = []
+    for cue in _rain_cues(saved):
+        identity = cue["trackId"], cue["eventId"], cue["profile"]
+        impact = impacts.get(identity)
+        if "impact" in cue and "impactTextures" not in saved and cue["impact"] != impact:
+            return
+        restored.append({**cue, "impact": impact} if impact is not None and "impact" not in cue else cue)
+    if restored and restored != saved["cues"]:
+        project["stageRain"] = {**saved, "cues": restored, "impactTextures": atlas}
+
+
 def _open_saved(archive, entries):
     from . import mv_studio_rain, mv_studio_stage_particles
 
@@ -866,9 +899,12 @@ def _open_saved(archive, entries):
     restore_butterfly = bool(missing_butterflies) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith(missing_butterflies)
         for track in project["tracks"])
-    restore_rain = "stageRain" not in project and any(
-        track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_rain.TRACK and track["events"]
-        for track in project["tracks"])
+    rain_cues = {(track["id"], event["id"]) for track in project["tracks"]
+                 if track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_rain.TRACK
+                 for event in track["events"]}
+    restore_rain = bool(rain_cues) and ("stageRain" not in project or any(
+        (cue["trackId"], cue["eventId"]) in rain_cues and "impact" not in cue
+        for cue in _rain_cues(project["stageRain"])))
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
@@ -976,11 +1012,7 @@ def _open_saved(archive, entries):
                     )
                 project["stageButterfly"] = recovered
             if restore_rain and "stageRain" in original:
-                rebuilt = original["stageRain"]
-                existing = {(track["id"], event["id"]) for track in project["tracks"] for event in track["events"]}
-                cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in existing]
-                if cues:
-                    project["stageRain"] = {**rebuilt, "cues": cues}
+                _restore_rain_impacts(project, original["stageRain"], rain_cues)
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background

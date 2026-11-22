@@ -60,7 +60,15 @@
     uniform vec4 uTint;
     varying vec2 vParticleUV;
     varying vec4 vParticleColor;
-    void main() { gl_FragColor = texture2D(uTexture, vParticleUV) * vParticleColor * uTint; }
+    void main() {
+      vec4 texel = texture2D(uTexture, vParticleUV);
+      vec4 color = texel * vParticleColor * uTint;
+      #ifdef SATURATE_RGB
+      vec3 squareRGB = texel.rgb * texel.rgb;
+      color.rgb += squareRGB * squareRGB;
+      #endif
+      gl_FragColor = color;
+    }
   `;
 
   const names = new Set(["light_up", "light_down", "light_left", "light_right", "light_L", "light_R"]);
@@ -109,7 +117,8 @@
   }
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
-    additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1], minViewportWidth = 0}) {
+    additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1], minViewportWidth = 0,
+    saturateRGB = false}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -127,7 +136,7 @@
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader, transparent: true,
       defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {}),
-        ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {})},
+        ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {}), ...(saturateRGB ? {SATURATE_RGB: 1} : {})},
       toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
