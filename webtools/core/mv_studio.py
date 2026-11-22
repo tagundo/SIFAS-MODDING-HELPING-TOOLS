@@ -364,6 +364,7 @@ def _stage_snapshot(project, assets, performers):
     motion_at_start = {"clips": {}, "mix": {}, "activations": {}, "quality": {}}
     for track in project["tracks"]:
         screen = track.get("nativeClass") in {"LiveColoringTrack", "LiveDisplayTrack"}
+        emissive = track.get("nativeClass") == "LiveStageEmissiveTrack"
         motion = track.get("nativeClass") == "AnimationTrack" and track.get("binding") in stage_motion.get("bindings", ())
         activation_ids = stage_motion.get("activations", {}).get(track.get("id"))
         if track.get("muted") or (track["kind"] not in {"lighting", "crowd"} and not screen and not motion and activation_ids is None):
@@ -372,11 +373,12 @@ def _stage_snapshot(project, assets, performers):
         for event in track["events"]:
             start, end = event["start"], event["start"] + event["duration"]
             timing = stage_motion["mix"].get(event["id"]) if motion else None
-            if start <= 0 <= end or (timing is not None and start > 0
+            if start <= 0 <= end or ((timing is not None or emissive) and start > 0
                     and event["values"].get("preExtrapolationMode") in (1, 2, 3, 4)
-                    and (timing.get("preInfinite") or (event["values"].get("preExtrapolationTime") or 0) >= start)):
+                    and ((timing or {}).get("preInfinite") or (event["values"].get("preExtrapolationTime") or 0) >= start)):
                 events.append(event)
-        if events or screen or motion or activation_ids is not None:
+        # An enabled emissive mixer writes zero even while no clips are active.
+        if events or emissive or screen or motion or activation_ids is not None:
             effects_at_start.append(dict(track, events=events))
         if activation_ids is not None:
             motion_at_start["activations"][track["id"]] = [event["id"] for event in events if event["id"] in activation_ids]
@@ -935,6 +937,7 @@ def _restore_momiji(project, rebuilt, active):
 def _open_saved(archive, entries):
     from . import mv_studio_confetti, mv_studio_leaves, mv_studio_momiji, mv_studio_rain
     from . import mv_studio_stage_glow, mv_studio_stage_lens, mv_studio_stage_particles
+    from . import mv_studio_timeline
 
     entry = entries["project.json"]
     if entry.file_size > PROJECT_BYTES:
@@ -1085,14 +1088,13 @@ def _open_saved(archive, entries):
         and any(event.get("label") == "fx_par_so2056_03" or event["values"].get("prefabGameObject") == {
             "m_FileID": 0, "m_PathID": "1069439206166195116",
         } for event in track["events"]) for track in project["tracks"])
+    restore_emissive_tracks = any(mv_studio_timeline.needs_emissive_track_metadata(track) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
                                or restore_confetti or restore_glow or restore_lens or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
-                               or restore_sparks_roop):
-        from . import mv_studio_timeline
-
+                               or restore_sparks_roop or restore_emissive_tracks):
         try:
             options = {}
             if restore_particles:
@@ -1136,6 +1138,8 @@ def _open_saved(archive, entries):
         except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
             pass
         else:
+            if restore_emissive_tracks:
+                project["tracks"] = mv_studio_timeline.restore_emissive_track_metadata(project["tracks"], original["tracks"])
             for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageDisplayLights"):
                 if field in original:
                     project[field] = original[field]

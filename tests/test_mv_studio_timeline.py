@@ -24,6 +24,29 @@ class TimelineContractTests(unittest.TestCase):
         original = {"duration": 0, "tracks": [], "warnings": []}
         self.assertIs(studio.edit_timeline(raw, original, deepcopy(original)), raw)
 
+    def test_legacy_emissive_track_preserves_clip_edits_and_restores_mix_metadata(self):
+        original_event = {
+            "id": "stage:0", "start": 0, "duration": 6, "label": "Emissive",
+            "values": {"asset": "bundle:2", "playableClass": "LiveStageEmissiveClip",
+                       "color": {"r": 1, "g": 1, "b": 1, "a": 1}, "intensity": 1.,
+                       "mixIn": [{"time": 0., "value": 0.}, {"time": 1., "value": 1.}]},
+            "editableValues": ["color", "intensity"],
+        }
+        track = {"id": "stage", "nativeClass": "LiveStageEmissiveTrack", "kind": "lighting",
+                 "binding": "/EntryPoint/Live/Stages/MainStage/Model", "events": [original_event]}
+        old = deepcopy(track)
+        old["kind"] = "effects"
+        old_event = old["events"][0]
+        old_event["start"] = 1.25
+        old_event["values"].pop("mixIn")
+        old_event["editableValues"] = []
+
+        restored, = studio.restore_emissive_track_metadata([old], [track])
+        self.assertEqual(restored, {**track, "events": [{**original_event, "start": 1.25}]})
+        self.assertEqual(old["kind"], "effects")
+        self.assertEqual(old_event["editableValues"], [])
+        self.assertNotIn("mixIn", old_event["values"])
+
     def test_fov_uses_the_camera_monoscript_property_binding(self):
         rows = [
             {"path": 0, "typeID": 4, "attribute": 4},

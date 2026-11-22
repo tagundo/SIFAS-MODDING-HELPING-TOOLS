@@ -832,7 +832,6 @@
               material.depthWrite = false;
             }
             const quality = /(?:^|_)aud(?:_|$)/i.test(name) ? "stage_audience" :
-              /(?:^|_)led(?:_|$)/i.test(name) ? "stage_emissive" :
               /(?:^|_)dis(?:_|$)/i.test(name) ? "stage_display" : null;
             if (quality && !node.geometry.userData?.mvStageDisplay) record.visibility.push({ node, quality });
           }

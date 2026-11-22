@@ -14,6 +14,8 @@ _SHADERS = {
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
 }
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
+_MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
+_EMISSIVE_SCRIPT = ("LiveCoreStageEmissive", *_AMBIENT_SCRIPT[1:])
 _MAIN_STAGE = "/EntryPoint/Live/Stages/MainStage"
 _COLOR_FIELDS = ("_AmbientColor", "_TintColor", "_BlendColor")
 _PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_ON"}
@@ -59,6 +61,48 @@ def ambient_materials(scene, component, tree):
     elif len(path) == 3 and path[1] == "Ambient":
         binding = _MAIN_STAGE + "/Model/" + "/".join(path[1:])
     return defaults, binding
+
+
+def _component_identity(scene, component, tree):
+    script = _ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return None
+    declaration = scene.tree(script)
+    return tuple(declaration.get(field) for field in ("m_ClassName", "m_Namespace", "m_AssemblyName"))
+
+
+def emissive_materials(scene, component, tree):
+    """Resolve the unique root receiver targeted by the stage model binding."""
+    sources = tree.get("emissives")
+    if (not isinstance(sources, list) or not 0 < len(sources) <= 128 or getattr(scene, "native_stage_effect", False)
+            or _component_identity(scene, component, tree) != _MODEL_SCRIPT):
+        return ()
+    root = _ref(component, tree.get("m_GameObject"))
+    if len(_object_path(scene, root)) != 1:
+        return ()
+    models, receivers = [], []
+    for entry in scene.tree(root).get("m_Component", ()):
+        node = _ref(root, entry.get("component"))
+        if node is None or node.type.name != "MonoBehaviour":
+            continue
+        data = scene.tree(node)
+        if _ref(node, data.get("m_GameObject")) is not root:
+            continue
+        identity = _component_identity(scene, node, data)
+        if identity == _MODEL_SCRIPT:
+            models.append(node)
+        elif identity == _EMISSIVE_SCRIPT:
+            receivers.append(node)
+    if len(models) != 1 or models[0] is not component or len(receivers) != 1:
+        return ()
+    receiver = receivers[0]
+    if not any(_ref(component, pointer) is receiver for pointer in sources):
+        return ()
+    materials = scene.tree(receiver).get("materials")
+    if not isinstance(materials, list) or not 0 < len(materials) <= 128:
+        return ()
+    return {_key(material) for ref in materials
+            if (material := _ref(receiver, ref)) is not None and material.type.name == "Material"}
 
 
 def _shader(material, tree):
@@ -124,7 +168,7 @@ def read_material(scene, material, ambient, single_ambient):
     return dict(meta, vertexColor=True, mipBias=bias, reflectionToggle=reflection, usesEmissive=emissive)
 
 
-def export_emissive(scene, materials, material):
+def export_emissive(scene, materials, material, controlled=False):
     tree = scene.tree(material)
     env = _properties(tree, "m_TexEnvs").get("_EmissiveTex", {})
     scale = _numbers(env.get("m_Scale"), "xy")
@@ -137,8 +181,11 @@ def export_emissive(scene, materials, material):
         return None
     index = materials.texture(texture)
     if index is not None:
-        return {"texture": index, "color": color, "intensity": intensity,
-                "uvTransform": [*scale, offset[0], 1 - scale[1] - offset[1]]}
+        result = {"texture": index, "color": color, "intensity": intensity,
+                  "uvTransform": [*scale, offset[0], 1 - scale[1] - offset[1]]}
+        if controlled:
+            result["binding"] = _MAIN_STAGE + "/Model"
+        return result
     return None
 
 

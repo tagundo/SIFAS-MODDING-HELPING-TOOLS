@@ -40,6 +40,7 @@ _KINDS = {
     "LiveMemberAmbientTrack": "lighting",
     "LiveStageAmbientTrack": "lighting",
     "LiveStageSingleAmbientTrack": "lighting",
+    "LiveStageEmissiveTrack": "lighting",
     "LiveMemberSpotLightAreaTrack": "lighting",
     "LiveMemberSpotLightShaftTrack": "lighting",
     "LiveRimlightTrack": "lighting",
@@ -596,6 +597,7 @@ _EDITABLE_VALUES = {
     "LiveMemberAmbientClip": {"color", "tintColor"},
     "LiveStageAmbientClip": {"color", "tintColor", "blendColor"},
     "LiveStageSingleAmbientClip": {"color", "tintColor", "blendColor"},
+    "LiveStageEmissiveClip": {"color", "intensity"},
     "LiveMemberSpotLightAreaClip": {"color"},
     "LiveMemberSpotLightShaftClip": {"color", "scale", "offsetHeight", "smoothTime"},
     "LiveRimlightClip": {"color", "intensity", "sharpness", "direction"},
@@ -790,10 +792,49 @@ def edit_timeline(raw: bytes, original: dict, revised: dict) -> bytes:
     return _rewrite_timeline(raw, original, revised)
 
 
+def needs_emissive_track_metadata(track):
+    return (isinstance(track, dict) and track.get("kind") == "effects"
+            and track.get("nativeClass") == "LiveStageEmissiveTrack")
+
+
+def restore_emissive_track_metadata(tracks, originals):
+    """Add native lighting metadata to older projects without changing edits."""
+    if not any(needs_emissive_track_metadata(track) for track in tracks):
+        return tracks
+    native_tracks = {track["id"]: track for track in originals
+                     if track.get("nativeClass") == "LiveStageEmissiveTrack"}
+    restored = []
+    for track in tracks:
+        identity = track.get("id") if needs_emissive_track_metadata(track) else None
+        native = native_tracks.get(identity) if isinstance(identity, str) else None
+        if native is None or not isinstance(track.get("events"), list):
+            restored.append(track)
+            continue
+        native_events = _index_rows(native["events"], "event")
+        events = []
+        for event in track["events"]:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            source = native_events.get(event_id) if isinstance(event_id, str) else None
+            values = event.get("values") if source is not None else None
+            if (not isinstance(values, dict) or values.get("asset") != source["values"].get("asset")
+                    or values.get("playableClass") != source["values"].get("playableClass")):
+                events.append(event)
+                continue
+            mixes = {key: source["values"][key] for key in ("mixIn", "mixOut") if key in source["values"]}
+            editable = source["editableValues"]
+            old_editable = [field for field in editable if field not in _EDITABLE_VALUES["LiveStageEmissiveClip"]]
+            if event.get("editableValues") == old_editable:
+                event = {**event, "editableValues": editable}
+            events.append({**event, "values": {**mixes, **values}})
+        restored.append({**track, "kind": native["kind"], "events": events})
+    return restored
+
+
 def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
     """Derive the base from these source bytes and export the submitted tracks."""
     original = parse_timeline(raw, name)
     if isinstance(tracks, list):
+        tracks = restore_emissive_track_metadata(tracks, original["tracks"])
         # Shaft targets are derived preview metadata, independent of any clip's
         # member color selector. The original track identity remains read-only.
         tracks = [

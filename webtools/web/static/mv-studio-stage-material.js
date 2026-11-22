@@ -129,6 +129,7 @@
   // LiveCoreStageAmbient initializes these defaults independently of the material.
   const singleDefaults = [[1, 1, 1, 0], [1, 1, 1, 1], [1, 1, 1, 0]];
   const mainStage = "/EntryPoint/Live/Stages/MainStage";
+  const stageModel = mainStage + "/Model";
 
   function isColor(value) {
     return Array.isArray(value) && value.length === 4 && value.every(Number.isFinite);
@@ -189,6 +190,31 @@
       });
     }
     return present ? colors : null;
+  }
+
+  function stageEmissive(project, seconds, track) {
+    const api = global.MVStudioLighting;
+    if (!track || track.muted || project?.quality?.values?.stage_emissive === false ||
+        !api?.nativeWeight || !api?.memberColor) return null;
+
+    // The bound native mixer clears both properties even when its clip weights are zero.
+    const color = [0, 0, 0, 0];
+    let intensity = 0;
+    const f32 = Math.fround;
+    for (const event of track.events) {
+      const values = event.values;
+      if (values?.playableClass !== "LiveStageEmissiveClip" || !Number.isFinite(values.intensity)) continue;
+      const weight = f32(api.nativeWeight(event, seconds));
+      if (!(weight > 0)) continue;
+      const paint = api.memberColor(project, values.colorSpecifiedType, values.memberPosition, values.color);
+      if (isColor(paint)) {
+        for (let channel = 0; channel < 4; channel++) {
+          color[channel] = f32(color[channel] + f32(f32(paint[channel]) * weight));
+        }
+      }
+      intensity = f32(intensity + f32(f32(values.intensity) * weight));
+    }
+    return {color, intensity};
   }
 
   async function apply(T, root, parser) {
@@ -284,8 +310,9 @@
     }
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
+    const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
     const singleTracks = new Map(), samples = new Map();
-    let sourceTracks, ambientTrack;
+    let sourceTracks, ambientTrack, emissiveTrack;
     return {
       update(seconds, project, lighting) {
         if (sourceTracks !== project?.tracks) {
@@ -293,6 +320,11 @@
           const matches = sourceTracks?.filter(track => track.nativeClass === "LiveStageAmbientTrack" &&
             track.binding === mainStage);
           ambientTrack = matches?.length === 1 ? matches[0] : null;
+          if (hasEmissiveBinding) {
+            const emissiveMatches = sourceTracks?.filter(track => track.nativeClass === "LiveStageEmissiveTrack" &&
+              track.binding === stageModel);
+            emissiveTrack = emissiveMatches?.length === 1 ? emissiveMatches[0] : null;
+          }
           singleTracks.clear();
           for (const track of sourceTracks || []) {
             if (track.nativeClass !== "LiveStageSingleAmbientTrack" || !singleBindings.has(track.binding)) continue;
@@ -300,6 +332,7 @@
           }
         }
         const active = stageAmbient(project, seconds, ambientTrack);
+        const emissive = stageEmissive(project, seconds, emissiveTrack);
         samples.clear();
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube} of records) {
@@ -312,6 +345,11 @@
             }
             node.material = enable && !reflection ? original : material;
             if (node.material === original) continue;
+          }
+          if (meta.emissive?.binding === stageModel) {
+            const {color, intensity} = emissive || meta.emissive;
+            material.uniforms.emissiveColor.value.fromArray(color);
+            material.uniforms.emissiveIntensity.value = intensity;
           }
           if (!meta.ambientDefaults) continue;
           const singleTrack = singleTracks.get(meta.singleAmbientBinding);

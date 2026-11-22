@@ -1212,7 +1212,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
-        single_ambient = {}
+        single_ambient, stage_emissive = {}, set()
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
     shadow_stages = None
@@ -1257,6 +1257,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 area_sources.append(area)
             defaults, ambient_binding = mv_studio_stage_materials.ambient_materials(scene, obj, tree)
             ambient_materials.update(defaults)
+            try:
+                stage_emissive.update(mv_studio_stage_materials.emissive_materials(scene, obj, tree))
+            except (TypeError, ValueError, KeyError, EOFError, struct.error):
+                pass
             if ambient_binding:
                 for identity in defaults:
                     single_ambient[identity] = None if identity in single_ambient else ambient_binding
@@ -1591,7 +1595,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     emissive = None
                     if "emissiveUV" in stage_inputs:
                         try:
-                            emissive = mv_studio_stage_materials.export_emissive(scene, materials, material_obj)
+                            emissive = mv_studio_stage_materials.export_emissive(
+                                scene, materials, material_obj, controlled=_key(material_obj) in stage_emissive)
                         except ValueError:
                             pass
                     if emissive is None:
