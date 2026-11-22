@@ -3,7 +3,7 @@
 import math
 
 from . import model_animation as animation, model_viewer as viewer
-from . import mv_studio_butterfly_glow, mv_studio_butterfly_shine
+from . import mv_studio_butterfly_dust, mv_studio_butterfly_glow, mv_studio_butterfly_shine
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title
 from . import mv_studio_timeline as timeline
 from .model_rig import _authored_trs
@@ -289,8 +289,18 @@ def _prefab(objects, game, deadline, *, finale=False):
     if any(value is None for value in (particle, pose, geometry, surface)):
         return None
     material, reader = surface
-    companions = {"glow": mv_studio_butterfly_glow.read(objects, *hierarchy["ctrl"]["Transform"], deadline, finale=finale)}
-    if not finale:
+    ctrl = hierarchy["ctrl"]["Transform"]
+    if finale:
+        try:
+            activations = mv_studio_butterfly_glow._activations(objects, *ctrl, deadline)
+        except title._UNSUPPORTED:
+            activations = {}
+        companions = {
+            "glow": mv_studio_butterfly_glow.read(objects, *ctrl, deadline, finale=True, activations=activations),
+            "dust": mv_studio_butterfly_dust.read(objects, *ctrl, deadline, activations=activations),
+        }
+    else:
+        companions = {"glow": mv_studio_butterfly_glow.read(objects, *ctrl, deadline)}
         companions["shine"] = mv_studio_butterfly_shine.read(objects, *hierarchy["butterfly"]["Transform"], deadline)
     return {"schema": 1, "geometry": geometry, "animation": pose, "particle": particle,
             "material": material}, reader, companions

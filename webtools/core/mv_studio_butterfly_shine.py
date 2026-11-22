@@ -18,7 +18,7 @@ def _range(source, first, last):
     return (source["minMaxState"], source["minScalar"], source["scalar"]) == (3, _float32(first), _float32(last))
 
 
-def _sphere(source):
+def _sphere(source, radius=.03):
     if (not glow._matches(source, {"type": 0, "radiusThickness": 1, "placementMode": 0, "alignToDirection": False,
                                   "m_Position": glow._ZERO, "m_Rotation": glow._ZERO, "m_Scale": dict.fromkeys("xyz", 1)})
             or any(source[name] for name in ("randomDirectionAmount", "sphericalDirectionAmount", "randomPositionAmount"))
@@ -26,7 +26,7 @@ def _sphere(source):
                                                             "m_Sprite", "m_SpriteRenderer", "m_Texture"))):
         return False
     return all(glow._matches(source[name], {"mode": 0, "spread": 0, "value": value})
-               and _constant(source[name]["speed"]) == 1 for name, value in (("radius", _float32(.03)), ("arc", 360)))
+               and _constant(source[name]["speed"]) == 1 for name, value in (("radius", _float32(radius)), ("arc", 360)))
 
 
 def _stepped(source, count):

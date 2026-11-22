@@ -20,8 +20,11 @@ _SETTINGS = {
 }
 _LAYER = 1
 _MATERIAL = -3459241494953612992
+_ALPHA_MATERIAL = 648833837626327585
 _TEXTURE = 6455981386118614978
 _ACTIVATION = _float32(5 + 5 / 60)
+_DUST_ACTIVATION = _float32(5 + 25 / 60)
+_FINALE_ACTIVATIONS = {"out_glow": _ACTIVATION, "out_par_dust_add": _DUST_ACTIVATION, "out_par_dust": _DUST_ACTIVATION}
 _RENDERER = {
     "m_Enabled": True, "m_RenderMode": 0, "m_RenderAlignment": 0, "m_AllowRoll": True,
     "m_UseCustomVertexStreams": False, "m_EnableGPUInstancing": True, "m_ApplyActiveColorSpace": True,
@@ -73,41 +76,44 @@ def _child(objects, transform, fields, name):
     return matches[0] if len(matches) == 1 else None
 
 
-def _activation(objects, transform, fields, deadline):
+def _activations(objects, transform, fields, deadline):
     parent = title._local(objects, transform, fields["m_Father"], "Transform")
     if parent is None:
-        return None
+        return {}
     game = title._local(objects, parent, parent.read_typetree()["m_GameObject"], "GameObject")
     parts = title._components(objects, game, {"Transform", "Animator"}, layer=_LAYER) if game is not None else None
     if parts is None or parts[0]["m_Name"] != "root":
-        return None
+        return {}
     original = _clip(objects, *parts[1]["Animator"])
     if original is None or original.peek_name() != "clip_par_so2028_14" or not 0 < original.byte_size <= 8192:
-        return None
+        return {}
     tree = original.read_typetree()
     # The principal butterfly checks this same controller and its clip. Read
-    # the separate, typed sibling's active flag before enabling its emitter.
+    # the typed sibling flags before enabling their separate emitters.
     bindings = tree["m_ClipBindingConstant"]["genericBindings"]
     if len(bindings) != 10:
-        return None
+        return {}
     curves = animation._packed_curves(tree, deadline)
-    path, attribute = animation.path_hash("ctrl/out_glow"), animation.path_hash("m_IsActive")
-    offset, matching = 0, []
+    paths = {animation.path_hash(f"ctrl/{name}"): name for name in _FINALE_ACTIVATIONS}
+    attribute = animation.path_hash("m_IsActive")
+    offset, matching, seen = 0, {}, set()
     for binding in bindings:
         width = animation._width(binding)
-        if binding["path"] == path:
-            if width != 1 or not _matches(binding, {"attribute": attribute, "typeID": 1, "customType": 0,
-                                                    "isPPtrCurve": 0, "script": _NULL}):
-                return None
-            matching.append(curves[offset])
+        name = paths.get(binding["path"])
+        if name is not None:
+            if name in seen:
+                return {}
+            seen.add(name)
+            if width == 1 and _matches(binding, {"attribute": attribute, "typeID": 1, "customType": 0,
+                                                "isPPtrCurve": 0, "script": _NULL}):
+                activation = _FINALE_ACTIVATIONS[name]
+                mode, keys = curves[offset]
+                expected = [(-_float32(3.4028234663852886e38), (0, 0, 0, 0)),
+                            (0, (0, 0, 0, 0)), (activation, (0, 0, 0, 1))]
+                if mode == "cubic" and keys == expected:
+                    matching[name] = activation
         offset += width
-    if offset != len(curves) or len(matching) != 1:
-        return None
-    mode, keys = matching[0]
-    if (mode != "cubic" or len(keys) != 3 or keys[0][0] != -_float32(3.4028234663852886e38)
-            or keys[0][1] != (0, 0, 0, 0) or keys[1:] != [(0, (0, 0, 0, 0)), (_ACTIVATION, (0, 0, 0, 1))]):
-        return None
-    return keys[-1][0]
+    return matching if offset == len(curves) else {}
 
 
 def _gradient(source, colors, alpha):
@@ -176,18 +182,20 @@ def _texture(objects, renderer, fields, *, finale):
     return _material_texture(objects, renderer, fields)
 
 
-def _material_texture(objects, renderer, fields):
+def _material_texture(objects, renderer, fields, *, alpha=False):
+    material_id, name = (_ALPHA_MATERIAL, "mat_par_so2028_alb_01") if alpha else (_MATERIAL, "mat_par_so2028_add_01")
+    surface = {**_SURFACE, "_BlendDst": 10} if alpha else _SURFACE
     refs = fields["m_Materials"]
-    if refs != [{"m_FileID": 0, "m_PathID": _MATERIAL}] * 2:
+    if refs != [{"m_FileID": 0, "m_PathID": material_id}] * 2:
         return None
     material = title._local(objects, renderer, refs[0], "Material")
     if material is None:
         return None
     tree = material.read_typetree()
-    if (not _matches(tree, {"m_Name": "mat_par_so2028_add_01", "m_CustomRenderQueue": 3010,
+    if (not _matches(tree, {"m_Name": name, "m_CustomRenderQueue": 3010,
                             "m_ShaderKeywords": "_VERTEX_COLOR_ON", "stringTagMap": [], "disabledShaderPasses": []})
             or not _shader_matches(material, tree, "AS/General/Transparent")
-            or viewer._properties(tree, "m_Floats") != _SURFACE
+            or viewer._properties(tree, "m_Floats") != surface
             or viewer._properties(tree, "m_Colors") != {"_TintColor": _WHITE}):
         return None
     env = viewer._properties(tree, "m_TexEnvs")
@@ -210,12 +218,14 @@ def _material_texture(objects, renderer, fields):
     return reader
 
 
-def read(objects, ctrl, fields, deadline, *, finale=False):
+def read(objects, ctrl, fields, deadline, *, finale=False, activations=None):
     """Return one validated glow descriptor and its undecoded shared atlas."""
     try:
         viewer._remaining(deadline)
         if finale:
-            activation = _activation(objects, ctrl, fields, deadline)
+            if activations is None:
+                activations = _activations(objects, ctrl, fields, deadline)
+            activation = activations.get("out_glow")
             game = _child(objects, ctrl, fields, "out_glow")
         else:
             activation = 0

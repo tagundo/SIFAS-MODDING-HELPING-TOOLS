@@ -115,102 +115,141 @@
     mesh.frustumCulled = false; // The vertex shader places the wing in the animated world position.
     mesh.visible = false;
     const clip = {start: 0, duration: animation.duration, loop: false, sampleTimeF32: true};
-    return {mesh, uniforms, stream, source, clip, finale};
+    return {mesh, uniforms, stream, source, clip, finale, billboards: []};
+  }
+
+  function checkedMaterial(material, blend) {
+    return material?.queue === 3010 && material.cull === 0 && material.blend === blend &&
+      material.premultiply === false && vector(material.tint, 4, 8);
   }
 
   function checkedBillboard(row) {
-    const material = row?.material;
-    return vector(row?.position, 3, 1) && vector(row.uv, 4, 1) && material?.queue === 3010 &&
-      material.cull === 0 && material.blend === "add" && material.premultiply === false && vector(material.tint, 4, 8);
+    return vector(row?.position, 3, 1) && vector(row.uv, 4, 1);
   }
 
   function checkedGlow({source, finale}) {
     const glow = source.glow;
     return glow?.profile === (finale ? "finale" : "opening") &&
       glow.activation === (finale ? Math.fround(5 + 5 / 60) : 0) && glow.activation <= source.animation.duration &&
-      glow.maxViewportWidth === (finale ? 1 : .5) && checkedBillboard(glow) && glow.uv.every(value => value === .5);
+      glow.maxViewportWidth === (finale ? 1 : .5) && checkedBillboard(glow) &&
+      checkedMaterial(glow.material, "add") && glow.uv.every(value => value === .5);
   }
 
   function checkedShine({source, finale}) {
     const row = source.shine;
     return !finale && row?.profile === "opening" && row.maxViewportWidth === .5 && checkedBillboard(row) &&
+      checkedMaterial(row.material, "add") &&
       row.uv[0] === .25 && row.uv[1] === .25 && row.uv[2] === .75 && row.uv[3] === 0;
+  }
+
+  function checkedDust({source, finale}) {
+    const row = source.dust;
+    return finale && row?.profile === "finale" && row.activation === f32(5 + 25 / 60) &&
+      row.activation <= source.animation.duration && row.maxViewportWidth === f32(.12) && checkedBillboard(row) &&
+      row.uv[0] === .25 && row.uv[1] === .25 && row.uv[2] === 0 && row.uv[3] === 0 &&
+      Array.isArray(row.emitters) && row.emitters.length === 2 &&
+      ["add", "alpha"].every(role => checkedMaterial(row.emitters.find(emitter => emitter?.role === role)?.material, role));
   }
 
   async function prepareBillboards(T, entries, levels, title) {
     const renderer = global.MVStudioDisplayLights, glowSimulation = global.MVStudioButterflyGlowSimulation;
     const shineSimulation = global.MVStudioButterflyShineSimulation;
+    const dustSimulation = global.MVStudioButterflyDustSimulation;
     if (!renderer || !title.validMipChain(levels) || levels[0].width !== 256) return null;
     const glows = glowSimulation ? entries.filter(checkedGlow) : [];
     const shine = shineSimulation && entries.find(checkedShine);
-    if (!glows.length && !shine) return null;
+    const dust = dustSimulation && entries.find(checkedDust);
+    if (!glows.length && !shine && !dust) return null;
     let texture;
     try {
       texture = await title.loadTexture(T, new T.TextureLoader(), levels);
     } catch { return null; }
-    function make(entry, kind, capacity) {
-      const row = entry.source[kind], name = `${entry.mesh.name} ${kind}`;
+    function make(entry, name, row, capacity, material = row.material, columns = 1) {
+      name = `${entry.mesh.name} ${name}`;
       const draw = renderer.localBillboards(T, {texture, rotation: new T.Quaternion(), capacity,
-        maxViewportWidth: row.maxViewportWidth, atlas: row.uv, additive: true, viewAligned: true,
-        tint: row.material.tint, name});
+        maxViewportWidth: row.maxViewportWidth, atlas: row.uv, additive: material.blend === "add", viewAligned: true,
+        tint: material.tint, columns, name});
       draw.mesh.name = name;
-      draw.mesh.renderOrder = row.material.queue;
+      draw.mesh.renderOrder = material.queue;
       draw.mesh.material.stencilFunc = T.AlwaysStencilFunc;
-      return {...draw, row};
+      const billboard = {...draw, row};
+      entry.billboards.push(billboard);
+      return billboard;
     }
     for (const entry of glows) {
-      const stream = glowSimulation.create(entry.source.glow.profile);
-      if (stream) entry.glow = {...make(entry, "glow", 1), stream};
+      const row = entry.source.glow;
+      const stream = glowSimulation.create(row.profile);
+      if (stream) {
+        entry.glow = make(entry, "glow", row, 1);
+        entry.glow.stream = stream;
+      }
     }
     if (shine) {
       // The short initial burst overlaps up to fifteen continuously emitted particles.
-      shine.shine = make(shine, "shine", 32);
+      const row = shine.source.shine;
+      const draw = make(shine, "shine", row, 32);
+      draw.createStream = positionAt => shineSimulation.create(row.profile, positionAt, row);
+    }
+    if (dust) {
+      const row = dust.source.dust;
+      const activationClock = {row};
+      for (const {role, material} of row.emitters) {
+        const draw = make(dust, `dust ${role}`, row, 60, material, 4);
+        draw.activationClock = activationClock;
+        draw.bounds = new T.Box3();
+        draw.sortCenter = new T.Vector3();
+        draw.createStream = positionAt => dustSimulation.create(role, positionAt, row);
+      }
+      if (dust.glow) dust.glow.sortCenter = new T.Vector3();
     }
     return texture;
   }
 
-  function updateShine(shine, animation, clip, motion, cueStart, start, fps, elapsed, offset) {
-    if (shine.cueStart !== cueStart || shine.fps !== fps ||
-        offset.some((value, axis) => value !== shine.offset?.[axis])) {
-      shine.cueStart = cueStart;
-      shine.fps = fps;
-      shine.offset = offset;
-      const [sx, sy, sz] = shine.row.position;
-      shine.stream = global.MVStudioButterflyShineSimulation.create(shine.row.profile, index => {
+  function updateWorldBillboard(draw, animation, clip, motion, cueStart, start, fps, elapsed, offset) {
+    if (draw.cueStart !== cueStart || draw.fps !== fps ||
+        offset.some((value, axis) => value !== draw.offset?.[axis])) {
+      draw.cueStart = cueStart;
+      draw.fps = fps;
+      draw.offset = offset;
+      const [sx, sy, sz] = draw.row.position;
+      draw.stream = draw.createStream(index => {
         const stamp = motion.sampleTime(clip, (start + index) / fps - cueStart);
         const [x, y, z] = animation.curves.map(curve => motion.evaluate(curve, stamp));
         // The decoder already reflects the emitter's local X. Record the
         // Animator pose at birth so the emitted particles stay in world space.
         return [f32(f32(offset[0] - f32(x)) + sx), f32(f32(offset[1] + f32(y)) + sy),
           f32(f32(offset[2] + f32(z)) + sz)];
-      }, shine.row);
+      });
     }
     let count = 0;
-    shine.stream?.sample(elapsed, fps, (x, y, z, size, r, g, b, a) => {
-      if (!(size > 0) || !a || count >= shine.centers.count) return;
-      shine.centers.setXYZW(count, x, y, z, 0);
-      shine.sizes.setXY(count, size, size);
-      shine.colors.setXYZW(count++, r, g, b, a);
+    draw.bounds?.makeEmpty();
+    draw.stream?.sample(elapsed, fps, (x, y, z, size, r, g, b, a, tile = 0) => {
+      draw.bounds?.expandByPoint(draw.sortCenter.set(x, y, z));
+      if (!(size > 0) || !a || count >= draw.centers.count) return;
+      draw.centers.setXYZW(count, x, y, z, tile);
+      draw.sizes.setXY(count, size, size);
+      draw.colors.setXYZW(count++, r, g, b, a);
     });
-    if (count) shine.centers.needsUpdate = shine.sizes.needsUpdate = shine.colors.needsUpdate = true;
-    shine.mesh.geometry.instanceCount = count;
-    shine.mesh.visible = count > 0;
+    draw.bounds?.getCenter(draw.sortCenter);
+    if (count) draw.centers.needsUpdate = draw.sizes.needsUpdate = draw.colors.needsUpdate = true;
+    draw.mesh.geometry.instanceCount = count;
+    draw.mesh.visible = count > 0;
   }
 
-  function glowBirth(glow, clip, motion, cueStart, firstFrame, fps) {
-    if (!glow.row.activation) return firstFrame;
-    if (glow.cueStart !== cueStart || glow.fps !== fps) {
-      glow.cueStart = cueStart;
-      glow.fps = fps;
+  function activationFrame(clock, clip, motion, cueStart, firstFrame, fps) {
+    if (!clock.row.activation) return firstFrame;
+    if (clock.cueStart !== cueStart || clock.fps !== fps) {
+      clock.cueStart = cueStart;
+      clock.fps = fps;
       let left = firstFrame, right = Math.ceil((cueStart + clip.duration) * fps);
       while (left < right) {
         const frame = (left + right) >>> 1;
-        if (motion.sampleTime(clip, frame / fps - cueStart) >= glow.row.activation) right = frame;
+        if (motion.sampleTime(clip, frame / fps - cueStart) >= clock.row.activation) right = frame;
         else left = frame + 1;
       }
-      glow.firstFrame = left;
+      clock.firstFrame = left;
     }
-    return glow.firstFrame;
+    return clock.firstFrame;
   }
 
   async function apply(T, root, source) {
@@ -224,11 +263,14 @@
     const entries = prepared.filter(Boolean);
     if (!entries.length) return null;
     const billboardTexture = await prepareBillboards(T, entries, source.glowTexture, title);
-    for (const {mesh, glow, shine} of entries) {
+    for (const {mesh, billboards} of entries) {
       root.add(mesh);
-      if (glow) root.add(glow.mesh);
-      if (shine) root.add(shine.mesh);
+      for (const draw of billboards) root.add(draw.mesh);
     }
+    const sortable = entries.find(entry => entry.finale)?.billboards.filter(draw => draw.sortCenter) || [];
+    const eye = new T.Vector3(), scratch = new T.Vector3();
+    // Equal-distance dust lanes use the order of their authored children.
+    sortable.forEach((draw, index) => { draw.order = draw.bounds ? index : sortable.length; });
     let tracks, disposed = false;
     return {
       invalidate() { tracks = null; },
@@ -244,15 +286,11 @@
         const enabled = quality?.stage_control !== false;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const frame = Math.floor(time * fps + 1e-9), tick = timelineTick(time);
-        for (const {mesh, uniforms, stream, source, track, clip, finale, glow, shine} of entries) {
+        for (const {mesh, uniforms, stream, source, track, clip, finale, glow, billboards} of entries) {
           mesh.visible = false;
-          if (glow) {
-            glow.mesh.visible = false;
-            glow.mesh.geometry.instanceCount = 0;
-          }
-          if (shine) {
-            shine.mesh.visible = false;
-            shine.mesh.geometry.instanceCount = 0;
+          for (const draw of billboards) {
+            draw.mesh.visible = false;
+            draw.mesh.geometry.instanceCount = 0;
           }
           const event = enabled && !track?.muted && track?.events.find(row => row.id === source.eventId);
           if (!event) continue;
@@ -267,9 +305,13 @@
           const firstFrame = Math.ceil(event.start * fps);
           const start = timelineTick((firstFrame - 1) / fps) === firstTick ? firstFrame - 1 : firstFrame;
           const elapsed = (frame - start + 1) / fps;
-          if (shine) updateShine(shine, source.animation, clip, motion, event.start, start, fps, elapsed, offset);
+          for (const draw of billboards) {
+            if (!draw.createStream) continue;
+            const epoch = draw.activationClock ? activationFrame(draw.activationClock, clip, motion, event.start, start, fps) : start;
+            if (frame >= epoch) updateWorldBillboard(draw, source.animation, clip, motion, event.start, epoch, fps, (frame - epoch + 1) / fps, offset);
+          }
           const drift = stream.sample(elapsed, fps);
-          const light = glow && glow.stream.sample((frame - glowBirth(glow, clip, motion, event.start, start, fps) + 1) / fps, fps);
+          const light = glow && glow.stream.sample((frame - activationFrame(glow, clip, motion, event.start, start, fps) + 1) / fps, fps);
           if (!drift && !light) continue;
           const stamp = motion.sampleTime(clip, stageTime - event.start);
           const [x, y, z] = source.animation.curves.map(curve => motion.evaluate(curve, stamp));
@@ -278,6 +320,7 @@
             // The principal particle's drift and shader motion are independent.
             const [gx, gy, gz] = glow.row.position;
             glow.centers.setXYZW(0, -x + offset[0] - gx, y + offset[1] + gy, z + offset[2] + gz, 0);
+            glow.sortCenter?.fromArray(glow.centers.array);
             glow.sizes.setXY(0, light.size, light.size);
             glow.colors.setXYZW(0, ...light.rgba);
             glow.centers.needsUpdate = glow.sizes.needsUpdate = glow.colors.needsUpdate = true;
@@ -298,23 +341,35 @@
           mesh.visible = true;
         }
       },
+      sort(camera) {
+        if (disposed || !sortable.length) return;
+        const visible = sortable.filter(draw => draw.mesh.visible);
+        if (!visible.length) return;
+        camera.updateMatrixWorld();
+        root.updateWorldMatrix(true, false);
+        eye.setFromMatrixPosition(camera.matrixWorld);
+        for (const draw of visible) {
+          scratch.copy(draw.sortCenter).applyMatrix4(root.matrixWorld);
+          draw.distance = camera.isOrthographicCamera ? f32(-scratch.applyMatrix4(camera.matrixWorldInverse).z) :
+            f32(eye.distanceToSquared(scratch));
+        }
+        // The world-space dust sorts by the center of its particle bounds.
+        // The attached glow sorts by its own center within that same queue.
+        visible.sort((a, b) => b.distance - a.distance || a.order - b.order);
+        visible.forEach(({mesh}, rank) => { mesh.renderOrder = 3010 + rank * .01; });
+      },
       dispose() {
         if (disposed) return;
         disposed = true;
-        for (const {mesh, uniforms, glow, shine} of entries) {
+        for (const {mesh, uniforms, billboards} of entries) {
           root.remove(mesh);
           mesh.geometry.dispose();
           mesh.material.dispose();
           uniforms.uTexture.value.dispose();
-          if (glow) {
-            root.remove(glow.mesh);
-            glow.mesh.geometry.dispose();
-            glow.mesh.material.dispose();
-          }
-          if (shine) {
-            root.remove(shine.mesh);
-            shine.mesh.geometry.dispose();
-            shine.mesh.material.dispose();
+          for (const draw of billboards) {
+            root.remove(draw.mesh);
+            draw.mesh.geometry.dispose();
+            draw.mesh.material.dispose();
           }
         }
         billboardTexture?.dispose();

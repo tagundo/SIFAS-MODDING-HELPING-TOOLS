@@ -5,6 +5,7 @@ require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-butterfly-simulation.js");
 require("../webtools/web/static/mv-studio-butterfly-glow-simulation.js");
 require("../webtools/web/static/mv-studio-butterfly-shine-simulation.js");
+require("../webtools/web/static/mv-studio-butterfly-dust-simulation.js");
 
 const {create} = MVStudioButterflySimulation;
 assert.equal(create(-1), null);
@@ -249,5 +250,100 @@ function checkShineSimulation() {
   assert.deepEqual(sample(moving, 1000, 60), []);
 }
 
+function checkTerminalDust() {
+  // Original Aion Expert cue .14 tracks. Null is Unity's positive infinite step tangent.
+  const stepped = rows => rows.map(([time, value, slope = 0]) => [time, value, slope, null]);
+  const cubic = rows => rows.map(([time, value, slope = 0]) => [time, value, slope, slope]);
+  const source = {
+    profile: "finale",
+    sizeKeys: [
+      [[0, 0, 0, 0], ...stepped([
+        [.07092845439910889, .99871826171875], [.08488550037145615, .5823833346366882],
+        [.2837209403514862, .8923704028129578], [.38720932602882385, .3696727156639099],
+        [.4872093200683594, .7432135343551636], [.575581431388855, .05838865041732788],
+        [.6720680594444275, .7159703969955444], [.8337240815162659, .12453973293304443, -1.8227180242538452],
+        [.94537353515625, 0],
+      ])],
+      [[0, 0, 14.061713218688965, 14.061713218688965], ...stepped([
+        [.07093019783496857, .9974001049995422], [.1360969841480255, .4648019075393677],
+        [.22637861967086792, .8279175758361816], [.3290593922138214, .5685369968414307, -2.9959564208984375],
+        [.4372093081474304, .19627803564071655], [.5175036191940308, .8752418756484985],
+        [.6212199926376343, .12713623046875], [.699932336807251, .42780134081840515],
+        [.7810105085372925, 0], [.882636547088623, .22521525621414185], [.9988372325897217, 0],
+      ])],
+    ],
+    velocity: [
+      {min: cubic([[0, -.06557464599609375, 3.3360631465911865], [.35082143545150757, .41491127014160156],
+        [.6757609844207764, .32975369691848755, 1.1653300523757935], [1, .42529296875]]),
+      max: cubic([[0, -.00601959228515625, -2.2723231315612793], [.3628977835178375, -.38587719202041626],
+        [.6899983882904053, -.35462987422943115, -.6594409942626953], [1, -.7930992841720581, .4548633098602295]]),
+      scale: [-Math.fround(.2), .5]},
+      {min: cubic([[Math.fround(.01), .05303030461072922], [1, .05303030461072922]]),
+      max: cubic([[0, .997406005859375], [1, .33333396911621094]]), scale: [Math.fround(.1), Math.fround(.6)]},
+      {min: cubic([[0, 1], [1, .1212158203125]]), max: cubic([[0, -1], [1, .05303001403808594]]), scale: [-.5, .5]},
+    ],
+    alphaKeys: [[0, 0], [9445, 255], [65535, 255]],
+    emitters: [
+      {role: "add", startColor: {rgb: [
+        [[0, 1, .5209566354751587, .2971698045730591], [27274, .47641509771347046, 1, .5943034291267395],
+          [52139, .39150941371917725, .7363207340240479, 1], [65535, .9905660152435303, .6655070781707764, .6494749188423157]],
+        [[0, .8057403564453125, 0, 1], [9638, .9938510656356812, 1, .6556603908538818],
+          [24768, .47641509771347046, 1, .5943034291267395], [48380, .9905660152435303, .6655070781707764, .6494749188423157],
+          [63029, 1, .5869981646537781, .39150941371917725]],
+      ], alpha: [
+        [[0, .6784313917160034], [7421, .5960784554481506], [65535, .5960784554481506]],
+        [[0, Math.fround(.8)], [65535, Math.fround(.8)]],
+      ]}},
+      {role: "alpha", startColor: [.011172260157763958, 0, .1320754885673523, Math.fround(.4)]},
+    ],
+  };
+  const createDust = MVStudioButterflyDustSimulation.create;
+  const origin = () => [0, 0, 0];
+  assert.equal(createDust("opening", origin, source), null);
+  assert.equal(createDust("alpha", origin, {...source, velocity: {length: 3}}), null);
+  assert.equal(createDust("add", origin, {...source, emitters: source.emitters.slice(1)}), null);
+  const alpha = createDust("alpha", origin, source);
+  const add = createDust("add", origin, source);
+  const sample = (stream, frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...row) => rows.push(row));
+    return rows;
+  };
+  const matchNative = (row, expected) => {
+    assert.ok(row);
+    for (let axis = 0; axis < 3; axis++) {
+      assert.ok(Math.abs(row[axis] - expected[axis]) <= 2e-8, `position export axis ${axis}`);
+    }
+    assert.deepEqual(row.slice(3), expected.slice(3));
+  };
+  assert.deepEqual(sample(add, 0, 60), []);
+  assert.deepEqual(sample(add, 1, 120), []);
+  const first = sample(add, 1, 60);
+  assert.equal(first.length, 40);
+  matchNative(first[0], [.0401667095720768, .025382693856954575, .012935043312609196,
+    2.151601563582517e-9, 218, 44, 214, 0, 0]);
+  const grouped = sample(add, 1, 30);
+  assert.deepEqual(grouped, sample(add, 2, 60));
+  matchNative(grouped[4], [-.002966873114928603, .024780267849564552, .018527839332818985,
+    .0037842944730073214, 231, 80, 163, 17, 1]);
+  matchNative(sample(alpha, 1, 30)[0], [.040275100618600845, .026696721091866493, .014043327420949936,
+    .0034054333809763193, 3, 0, 34, 7, 0]);
+  assert.equal(sample(add, 17, 60).length, 40);
+  const secondBurst = sample(add, 18, 60);
+  assert.equal(secondBurst.length, 60);
+  assert.deepEqual(sample(add, 9, 30), secondBurst);
+  matchNative(secondBurst[40], [.0007994604529812932, -.013364840298891068, .01431858167052269,
+    7.735687646004408e-9, 189, 219, 133, 0, 1]);
+  const tail = sample(add, 110, 60);
+  assert.equal(tail.length, 9);
+  matchNative(tail[0], [-.01795092597603798, .07271098345518112, -.0911276713013649,
+    .005893088411539793, 189, 219, 133, 169, 0]);
+  assert.deepEqual(sample(add, 126, 60), []);
+  assert.deepEqual(sample(add, 1, 60), first);
+  assert.deepEqual(sample(add, 18, 60), secondBurst);
+  assert.deepEqual(sample(createDust("add", origin, source), 110, 60), tail);
+}
+
 checkShineSimulation();
+checkTerminalDust();
 checkCuePlayback().catch(error => { console.error(error); process.exitCode = 1; });

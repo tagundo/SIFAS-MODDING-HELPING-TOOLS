@@ -243,6 +243,45 @@ class MVStudioStorageTests(unittest.TestCase):
         parse.assert_not_called()
         self.assertEqual(reopened["stageButterfly"], rebuilt)
 
+    def test_saved_butterfly_finale_carries_original_dust_without_replacing_edits(self):
+        project = mv_studio._blank("Edited finale")
+        project["duration"] = 110
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        cue = {"id": "finale-cue", "label": "Edited cue", "start": 93, "duration": 8,
+               "values": {"offset": {"x": -2, "y": .5, "z": 0}, "clipIn": 1}}
+        track = {"id": "finale-track", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": "StageEffect/Expert/Control/par_14_butterfly", "events": [cue]}
+        finale = {"schema": 1, "trackId": track["id"], "eventId": cue["id"], "glow": {"profile": "finale"}}
+        legacy = {"schema": 1, "finale": finale, "glowTexture": [{"png": "authentic atlas"}],
+                  "shine": {"profile": "opening"}}
+        dust = {"profile": "finale", "emitters": [{"role": "add"}, {"role": "alpha"}]}
+        rebuilt = {**legacy, "finale": {**finale, "dust": dust}}
+        wrong_cue = {**legacy, "finale": {**finale, "eventId": "different"}}
+        wrong_atlas = {**legacy, "glowTexture": [{"png": "custom atlas"}]}
+        edited = {**legacy, "finale": {**finale, "dust": {"profile": "custom"}}}
+        for previous, events, source, expected, reparses in (
+                (legacy, [cue], self.original, rebuilt, True),
+                (wrong_cue, [cue], self.original, wrong_cue, True),
+                (wrong_atlas, [cue], self.original, wrong_atlas, True),
+                (legacy, [], self.original, legacy, True),
+                (legacy, [cue], None, legacy, False),
+                (edited, [cue], self.original, edited, False),
+                (rebuilt, [cue], self.original, rebuilt, False)):
+            with self.subTest(previous=previous, events=events, source=source):
+                document = {**project, "tracks": [{**track, "events": events}], "stageButterfly": previous}
+                saved = mv_studio.save(mv_studio._register(document, source))
+                with ZipFile(saved["path"]) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageButterfly": rebuilt},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited finale", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_butterfly=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageButterfly"], expected)
+                self.assertEqual(reopened["tracks"], document["tracks"])
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}
