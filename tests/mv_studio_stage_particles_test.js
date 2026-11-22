@@ -945,6 +945,82 @@ function testStageBoxDust() {
   }
 }
 
+function testStageAtlasDust() {
+  const create = globalThis.MVStudioStageDustSimulation.create;
+  const source = {
+    duration: 3, rate: 80, lifetime: [2.8, 2], size: [.03, .02], shapeScale: [16, 12, 5],
+    maxParticles: 300, gravityRange: [0, .01], startColor: [1, 1, 1, .6], sizeMultiplier: 1,
+    velocity: [[1, -1, -1, 1, .1], [-1, 1, 1, -1, .1], [-1, -1, 1, 1, .1]],
+    sizeKeys: [[0, 1, 0, 0], [1, 0, -2, -2]],
+    atlas: {start: [.25, .25], frame: [.25, .75]},
+    colorOverLife: {rgb: [[0, 1, 1, 1], [65535, 1, 1, 1]],
+      alpha: [[0, .7215686440467834], [35279, .9411764740943909], [65535, 0]]},
+  };
+  const sample = (stream, frame, fps = 60) => {
+    const packets = [];
+    stream.sample(frame / fps, fps, (...packet) => packets.push(packet));
+    return packets;
+  };
+  const sharedSeed = 1267627416;
+  assert.equal(create({...source, atlas: {start: [.25], frame: [.25, .75]}}, sharedSeed), null);
+  assert.equal(create({...source, gravity: 0}, sharedSeed), null);
+  assert.equal(create({...source, rate: 181}, sharedSeed), null);
+
+  const standard = create(source, sharedSeed);
+  assert.deepEqual(sample(standard, 1), [[4.31528902053833, -5.369493007659912, -1.5795609951019287,
+    .02815932035446167, 255, 255, 255, 110, 2]]);
+  const cycle = sample(standard, 180);
+  assert.equal(cycle.length, 195);
+  assert.deepEqual(cycle[34], [2.6029906272888184, 3.8732285499572754, -2.4193453788757324,
+    .024261904880404472, 255, 255, 255, 125, 3]);
+  const beforeEnd = sample(standard, 1266);
+  assert.equal(beforeEnd.length, 190);
+  assert.deepEqual(beforeEnd[119], [7.217055320739746, -4.038926601409912, -.4769347608089447,
+    .0008044834830798209, 255, 255, 255, 7, 3]);
+  assert.deepEqual(sample(standard, 90, 30), cycle);
+  assert.deepEqual(sample(standard, 633, 30), beforeEnd);
+
+  const taller = create({...source, lifetime: [2.8, 2.2], size: [.05, .02], shapeScale: [18, 16, 6],
+    maxParticles: 200}, 2241961487);
+  const later = sample(taller, 2040);
+  assert.equal(later.length, 196);
+  assert.deepEqual(later[153], [-3.4165546894073486, -5.339996337890625, 1.9378974437713623,
+    .022080082446336746, 255, 255, 255, 115, 2]);
+  assert.deepEqual(sample(taller, 1020, 30), later);
+
+  const highDensity = create({...source, rate: 180, shapeScale: [10, 12, 5], lifetime: [2.2, 1.8], size: [.04, .02],
+    gravityRange: [0, 0], atlas: {start: [.25, .9998999834060669], frame: [.25, .9998999834060669]},
+    sizeKeys: [[0, 1, 0], [.37204399704933167, .33298635482788086, -.4544394016265869],
+      [.43445178866386414, .5571844577789307, -.031563933938741684],
+      [.611199676990509, .3320189416408539, 1.1569761037826538],
+      [.6345545053482056, .7291455864906311, .35878387093544006],
+      [.661544919013977, .22481954097747803, -1.1114962100982666],
+      [.8157604932785034, .5138044357299805, -.20779933035373688], [1, 0, -2]]
+      .map(([time, size, slope]) => [time, size, slope, slope])}, sharedSeed);
+  assert.deepEqual(sample(highDensity, 1).map(packet => packet[8]), [1, 0, 2]);
+  assert.equal(sample(highDensity, 90).length, 269);
+  const saturated = sample(highDensity, 120);
+  assert.equal(saturated.length, 300);
+  assert.deepEqual(new Set(saturated.map(packet => packet[8])), new Set([0, 1, 2, 3]));
+  const afterCull = sample(highDensity, 150);
+  assert.equal(afterCull.length, 296);
+  assert.deepEqual(afterCull[0], [-1.9919533729553223, 3.0696725845336914, 2.078925371170044,
+    .029230620712041855, 255, 255, 255, 120, 2]);
+  assert.equal(sample(highDensity, 1834).length, 300);
+  assert.deepEqual(sample(highDensity, 75, 30), afterCull);
+  assert.deepEqual(sample(highDensity, 60, 30), saturated);
+
+  const f32 = Math.fround;
+  const typedRows = rows => rows.map(([stamp, ...values]) => [stamp, ...values.map(f32)]);
+  const tinted = create({...source, startColor: [.88, .46, .9, .6].map(f32), colorOverLife: {
+    rgb: typedRows([[0, .05, .17, .85], [20489, 1, .75, .13], [43871, .12, .28, .93], [65535, .9, .3, .8]]),
+    alpha: typedRows([[0, .71], [1720, .33], [58153, .92], [65535, 0]]),
+  }}, sharedSeed);
+  assert.deepEqual(sample(tinted, 1)[0].slice(4), [12, 20, 195, 106, 2]);
+  assert.deepEqual(sample(tinted, 30)[0].slice(4), [131, 58, 102, 66, 2]);
+  assert.deepEqual(sample(tinted, 120)[0].slice(4), [54, 33, 209, 124, 2]);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
@@ -957,4 +1033,5 @@ testAionMomijiFan();
 testAionStageGlow();
 testStationaryLensParticles();
 testStageBoxDust();
+testStageAtlasDust();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

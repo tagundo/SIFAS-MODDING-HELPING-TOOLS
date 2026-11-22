@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from webtools.core import mv_studio, mv_studio_stage_particles
+from webtools.core import mv_studio, mv_studio_stage_lens, mv_studio_stage_particles
 
 
 class MVStudioStorageTests(unittest.TestCase):
@@ -683,16 +683,22 @@ class MVStudioStorageTests(unittest.TestCase):
         cues = [{"trackId": "lens", "eventId": f"lens:{i}", "emitterId": identity, "quality": "stage_control"}
                 for i, identity in enumerate(("A", "B", "B"))]
         emitters = [{"id": "A", "rate": 10, "texture": 0}, {"id": "B", "kind": "boxDust", "rate": 70, "texture": 0}]
-        original = {"schema": 2, "scanComplete": True, "cues": cues, "emitters": emitters,
+        original = {"schema": mv_studio_stage_lens.SCHEMA, "scanComplete": True, "cues": cues, "emitters": emitters,
                     "textures": [[{"png": "source"}]], "material": {"blend": "add"},
                     "tiles": [2, 1], "maxViewportWidth": .5, "sortMode": 0}
         edited_early = {**emitters[0], "position": [2, 1, 0]}
         partial = {**original, "schema": 1, "cues": cues[:1], "emitters": [edited_early]}
         recovered = {**original, "cues": [cues[0], cues[2]], "emitters": [edited_early, emitters[1]]}
         custom_asset = {**partial, "material": {"blend": "alpha"}}
+        empty_v2 = {**original, "schema": 2, "textures": [], "emitters": [], "cues": []}
+        partial_v2 = {**partial, "schema": 2}
+        selected = {**original, "cues": cues[2:], "emitters": emitters[1:]}
         for saved, events, source, expected, reparses in (
-                (None, [late], self.original, {**original, "cues": cues[2:], "emitters": emitters[1:]}, True),
+                (None, [late], self.original, selected, True),
+                (empty_v2, [late], self.original, selected, True),
+                (empty_v2, [late], None, empty_v2, False),
                 (partial, [opening, late], self.original, recovered, True),
+                (partial_v2, [opening, late], self.original, recovered, True),
                 (partial, [opening], self.original, partial, False),
                 (partial, [opening, late], None, partial, False),
                 (custom_asset, [opening, late], self.original, custom_asset, True),
@@ -724,7 +730,7 @@ class MVStudioStorageTests(unittest.TestCase):
                                   "values": {"playableClass": "CustomControlClip",
                                              "prefabGameObject": {"m_FileID": 0, "m_PathID": "123"}},
                               }]}]
-        checked = {"schema": 2, "scanComplete": True, "textures": [], "emitters": [], "cues": []}
+        checked = {"schema": mv_studio_stage_lens.SCHEMA, "scanComplete": True, "textures": [], "emitters": [], "cues": []}
         archive_path = mv_studio.save(mv_studio._register(project, self.original))["path"]
         with ZipFile(archive_path) as archive, patch(
             "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLensFlare": checked},

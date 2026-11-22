@@ -2,9 +2,11 @@
   "use strict";
 
   const f32 = Math.fround;
-  const cycle = 5, gravityMagnitude = f32(9.81), ageScale = f32(.01);
+  const gravityMagnitude = f32(9.81), ageScale = f32(.01);
   const birthBias = f32(1e-6), clockBias = f32(.0001), velocitySalt = 0xe0fbd834;
+  const gravitySalt = 0xe2b7c3c3, startFrameSalt = 0x56b3dbb0, frameSalt = 0x13740583;
   const maxElapsed = 120;
+  const maxStamp = 65535;
   // The source emitter's +90° X quaternion is used as serialized by Unity.
   const quarterTurnX = f32(.7071068286895752);
   const gravityY = f32(2 * quarterTurnX * quarterTurnX - 1);
@@ -15,21 +17,46 @@
   const lerp = (a, b, t) => f32(a + f32(f32(b - a) * t));
   const byte = value => Math.trunc(f32(f32(value * 255) + .5));
 
+  function gradientKeys(keys, width) {
+    return Array.isArray(keys) && keys.length >= 2 && keys.length <= 8 &&
+      keys[0]?.[0] === 0 && keys.at(-1)?.[0] === maxStamp && keys.every((key, index) =>
+        Array.isArray(key) && key.length === width && Number.isInteger(key[0]) &&
+        (!index || key[0] > keys[index - 1][0]) && vector(key.slice(1), width - 1, 0, 1));
+  }
+
   function supported(row, seed) {
-    if (row?.duration !== cycle || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff ||
-        !range(row.rate, 0, 120) || f32(row.rate) <= 0 || !range(row.gravity, 0, 1) ||
+    if ((row?.duration !== 5 && row?.duration !== 3) || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff ||
+        !range(row.rate, 0, 180) || f32(row.rate) <= 0 ||
         !Number.isInteger(row.maxParticles) || !range(row.maxParticles, 1, 512) ||
         !vector(row.lifetime, 2, .1, 5) || !vector(row.size, 2, 0, 20) ||
         !vector(row.shapeScale, 3, 0, 100) || !vector(row.startColor, 4, 0, 1) ||
         !range(row.sizeMultiplier, 0, 16) || !Array.isArray(row.velocity) || row.velocity.length !== 3 ||
         !row.velocity.every(axis => Array.isArray(axis) && axis.length === 5 &&
           vector(axis.slice(0, 4), 4, -16, 16) && range(axis[4], 0, 4))) return false;
+    if (row.gravityRange === undefined ? !range(row.gravity, 0, 1) :
+        row.gravity !== undefined || !vector(row.gravityRange, 2, 0, 1)) return false;
+    const {atlas, colorOverLife} = row;
+    if (atlas !== undefined && (!vector(atlas?.start, 2, 0, 1) || !vector(atlas?.frame, 2, 0, 1))) return false;
+    if (colorOverLife !== undefined &&
+        (!gradientKeys(colorOverLife?.rgb, 4) || !gradientKeys(colorOverLife?.alpha, 2))) return false;
     const keys = row.sizeKeys;
     return Array.isArray(keys) && keys.length >= 2 && keys.length <= 16 &&
       keys[0]?.[0] === 0 && keys.at(-1)?.[0] === 1 &&
       keys.every((key, i) => Array.isArray(key) && key.length === 4 && range(key[0], 0, 1) &&
         (!i || f32(key[0]) > f32(keys[i - 1][0])) && range(key[1], 0, 16) &&
         key.slice(2).every(slope => slope === null || range(slope, -4096, 4096)));
+  }
+
+  function packedGradient({rgb, alpha}, start) {
+    function at(keys, stamp) {
+      const index = keys.findIndex(row => row[0] > stamp);
+      const right = keys[index < 0 ? keys.length - 1 : index];
+      const left = index > 0 ? keys[index - 1] : right;
+      const t = right === left ? 0 : f32((stamp - left[0]) / (right[0] - left[0]));
+      return left.slice(1).map((value, i) => byte(lerp(value, right[i + 1], t)));
+    }
+    const stamps = [...new Set([...rgb, ...alpha].map(row => row[0]))].sort((a, b) => a - b);
+    return {start, keys: stamps.map(stamp => [f32(stamp / maxStamp), ...at(rgb, stamp), ...at(alpha, stamp)])};
   }
 
   function inverseLifetime(value) {
@@ -56,10 +83,14 @@
   function create(row, seed) {
     const particles = global.MVStudioStageParticles;
     if (!particles?.nativeCurve || !supported(row, seed)) return null;
-    const {nativeRandom, nativeUnit, nativeFrame, nativeStep, nativeStepRate, nativeCurve} = particles;
-    const rate = f32(row.rate), gravity = f32(row.gravity), multiplier = f32(row.sizeMultiplier);
+    const {nativeRandom, nativeUnit, nativeFrame, nativeStep, nativeStepRate, nativeCurve, nativeColorAtTime} = particles;
+    const {duration: cycle} = row;
+    const rate = f32(row.rate), gravityRange = row.gravityRange?.map(f32);
+    const gravity = gravityRange ? 1 : f32(row.gravity), multiplier = f32(row.sizeMultiplier);
     const [lifeMin, lifeMax] = row.lifetime.map(f32), [sizeMin, sizeMax] = row.size.map(f32);
-    const [sx, sy, sz] = row.shapeScale.map(f32), [r, g, b, a] = row.startColor.map(byte);
+    const [sx, sy, sz] = row.shapeScale.map(f32), startColor = row.startColor.map(byte);
+    const gradient = row.colorOverLife && packedGradient(row.colorOverLife, startColor);
+    const atlas = row.atlas && {start: row.atlas.start.map(f32), frame: row.atlas.frame.map(f32)};
     const sizeAt = nativeCurve(row.sizeKeys.map(([time, value, incoming, outgoing]) =>
       [f32(time), f32(value), incoming === null ? null : f32(incoming), outgoing === null ? null : f32(outgoing)]));
     const velocity = row.velocity.map(values => {
@@ -91,20 +122,31 @@
       const stream = nativeRandom((word + velocitySalt) >>> 0);
       const weight = [nativeUnit(stream()), nativeUnit(stream()), nativeUnit(stream())];
       const fixed = velocity.map((axis, i) => axis.constant ? axis.sample(0, weight[i]) : null);
-      return {life, width, x: box(sx), y: box(sy), z: box(sz), weight, fixed};
+      const sample = (bounds, salt) => lerp(bounds[0], bounds[1], nativeUnit(nativeRandom((word + salt) >>> 0)()));
+      const acceleration = gravityRange ? sample(gravityRange, gravitySalt) : 1;
+      let tile;
+      if (atlas) {
+        // Whole-sheet frames wrap the sum of two independent authored ranges.
+        const phase = f32(sample(atlas.start, startFrameSalt) + sample(atlas.frame, frameSalt));
+        tile = Math.floor(f32(f32(phase - Math.floor(phase)) * 4));
+      }
+      return {life, width, x: box(sx), y: box(sy), z: box(sz), weight, fixed, acceleration, tile};
     }
 
-    const gravityStep = dt => f32(f32(gravityMagnitude * dt) * gravity);
+    function gravityStep(dt) {
+      const force = f32(f32(gravityMagnitude * dt) * gravity);
+      return [f32(force * gravityY), f32(force * gravityZ)];
+    }
     const ordinaryGravity = gravityStep(nativeStep);
 
-    function advance(atom, dt, force) {
+    function advance(atom, dt, [forceY, forceZ]) {
       const {source, age} = atom;
       const phase = f32(age * ageScale);
       const dx = source.fixed[0] ?? velocity[0].sample(phase, source.weight[0]);
       const dy = source.fixed[1] ?? velocity[1].sample(phase, source.weight[1]);
       const dz = source.fixed[2] ?? velocity[2].sample(phase, source.weight[2]);
-      atom.vy = f32(atom.vy + f32(force * gravityY));
-      atom.vz = f32(atom.vz + f32(force * gravityZ));
+      atom.vy = f32(atom.vy + f32(forceY * source.acceleration));
+      atom.vz = f32(atom.vz + f32(forceZ * source.acceleration));
       atom.x = f32(atom.x + f32(dx * dt));
       atom.y = f32(atom.y + f32(f32(atom.vy + dy) * dt));
       atom.z = f32(atom.z + f32(f32(atom.vz + dz) * dt));
@@ -154,8 +196,11 @@
         if (state.frame === checkpoints.length * checkpointInterval) checkpoints.push(clone(state));
       }
       for (const {source, x, y, z, age} of state.active) {
-        const size = Math.max(0, f32(sizeAt(f32(age * ageScale)) * multiplier));
-        emit(-x, y, z, f32(source.width * size), r, g, b, a);
+        const phase = f32(age * ageScale);
+        const size = f32(source.width * Math.max(0, f32(sizeAt(phase) * multiplier)));
+        const color = gradient ? nativeColorAtTime(gradient, phase).map(value => Math.round(value * 255)) : startColor;
+        if (atlas) emit(-x, y, z, size, ...color, source.tile);
+        else emit(-x, y, z, size, ...color);
       }
     }};
   }

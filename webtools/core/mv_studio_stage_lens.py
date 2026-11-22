@@ -12,8 +12,8 @@ from .model_rig import _authored_trs, _trs
 from .mv_studio_stage_title_particles import _constant, _float32
 
 
-SCHEMA = 2
-_LEGACY_SCHEMAS = (1, SCHEMA)
+SCHEMA = 3
+_LEGACY_SCHEMAS = (1, 2, SCHEMA)
 _SECTIONS = {"control": "stage_control", "display": "stage_display"}
 _STATE = {**billboard._SETTINGS, "looping": True, "prewarm": True, "ringBufferLoopRange": {"x": 0, "y": 1}}
 _RENDERER = {**billboard._RENDERER, "m_MaxParticleSize": .5, "m_Flip": billboard._ZERO}
@@ -122,7 +122,7 @@ def _emitter(objects, parts, transforms):
     if billboard._matches(fields, _RENDERER):
         system = _system(source)
     elif billboard._matches(fields, dust.RENDERER):
-        system = dust.read(source)
+        system = dust.read(source, max_viewport_width=fields["m_MaxParticleSize"])
     else:
         return None
     if system is None:

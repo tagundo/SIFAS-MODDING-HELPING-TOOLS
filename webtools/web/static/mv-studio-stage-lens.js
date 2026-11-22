@@ -15,7 +15,7 @@
 
   function checked(source, title) {
     const {textures, material, tiles, emitters, cues} = source;
-    if (![1, 2].includes(source.schema) || !Array.isArray(textures) || !textures.length || textures.length > 16 ||
+    if (![1, 2, 3].includes(source.schema) || !Array.isArray(textures) || !textures.length || textures.length > 16 ||
         !textures.every(levels => validAtlas(levels, title)) || material?.queue !== 3010 || material.cull !== 0 ||
         material.blend !== "add" || material.stencil !== "always" || material.stencilRef !== 2 ||
         material.premultiply !== false || material.saturate !== false || !matches(material.tint, [1, 1, 1, 1]) ||
@@ -30,7 +30,9 @@
             !matches(row.scale, [1, 1, 1]) || typeof row.autoSeed !== "boolean" || !seed32(row.seed) ||
             !Number.isFinite(row.rate) || row.rate <= 0) return false;
         if (row.kind === "boxDust") {
-          return source.schema === 2 && matches(row.tiles, [1, 1]) && row.maxViewportWidth === 1 &&
+          const plain = matches(row.tiles, [1, 1]) && row.maxViewportWidth === 1;
+          const animated = source.schema === 3 && matches(row.tiles, [2, 2]) && [1, 2].includes(row.maxViewportWidth);
+          return source.schema >= 2 && (plain || animated) &&
             Number.isInteger(row.maxParticles) && row.maxParticles > 0 && row.maxParticles <= 1000;
         }
         return row.kind === undefined && vector(row.sortCenter, 3) && row.rate <= 30 && row.lifetime === 5;
