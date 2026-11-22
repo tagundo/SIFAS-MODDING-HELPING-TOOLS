@@ -536,6 +536,55 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageLeaves"], expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_momiji_restores_only_roles_with_compatible_original_assets(self):
+        from webtools.core import mv_studio_momiji
+
+        project = mv_studio._blank("Edited momiji")
+        project["stageTitle"] = {"particleSchema": 2}
+        event = {"id": "transition:0", "label": "Edited transition", "start": 60, "duration": 2,
+                 "values": {"clipIn": .2, "offset": {"x": 0, "y": .5, "z": -1}}}
+        track = {"id": "transition", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": mv_studio_momiji.TRACK}
+        emitters = [{"role": role, "texture": kind} for role, kind in mv_studio_momiji.ROLES.items()]
+        atlas = {name: [{"png": name}] for name in ("fan", "flash", "leaf")}
+        anchor = {"position": [0, 1, 2]}
+        native = {"schema": 1, "trackId": track["id"], "eventId": event["id"], "anchor": anchor,
+                  "textures": atlas, "geometry": {"positions": []}, "emitters": emitters}
+        authored_flash = {**emitters[1], "size": 99}
+        partial = {**native, "textures": {"flash": atlas["flash"]}, "emitters": [authored_flash]}
+        merged = {**native, "emitters": [authored_flash, emitters[0], *emitters[2:]]}
+        incompatible_atlas = {**partial, "textures": {**partial["textures"], "leaf": [{"png": "custom"}]}}
+        only_fan = {**incompatible_atlas, "textures": {**incompatible_atlas["textures"], "fan": atlas["fan"]},
+                    "emitters": [authored_flash, emitters[0]]}
+        shifted = {**partial, "anchor": {"position": [5, 1, 2]}}
+        invalid = {**partial, "eventId": {}}
+        for saved, events, source, expected, reparses in (
+                (None, [event], self.original, native, True),
+                (partial, [event], self.original, merged, True),
+                (incompatible_atlas, [event], self.original, only_fan, True),
+                (shifted, [event], self.original, shifted, True),
+                (invalid, [event], self.original, invalid, False),
+                (partial, [], self.original, partial, False),
+                (partial, [event], None, partial, False),
+                (native, [event], self.original, native, False)):
+            with self.subTest(saved=saved, events=events, source=source):
+                tracks = [{**track, "events": events}]
+                document = {**project, "tracks": tracks}
+                if saved is not None:
+                    document["stageMomiji"] = saved
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageMomiji": native},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited momiji", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_momiji=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageMomiji"), expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

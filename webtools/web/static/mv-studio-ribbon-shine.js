@@ -168,9 +168,8 @@
         for (const batch of batches) {
           const event = !batch.track?.muted && batch.track?.events.find(row => row.id === batch.cue.eventId);
           const enabled = project?.quality?.values?.stage_display !== false;
-          batch.mesh.visible = Boolean(enabled && title.neutralClip(event) && event.duration <= durationLimit &&
-            time >= event.start && time < event.start + event.duration);
-          if (batch.mesh.visible) updateBatch(batch, time - event.start, curves.evaluate);
+          batch.mesh.visible = Boolean(enabled && title.ribbonClipActive(event, time) && event.duration <= durationLimit);
+          if (batch.mesh.visible) updateBatch(batch, Math.max(0, time - event.start), curves.evaluate);
         }
       },
       dispose,

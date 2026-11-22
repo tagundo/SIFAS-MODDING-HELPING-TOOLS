@@ -61,8 +61,8 @@ def _source(objects, owner, tree, event, *, overwrite_seed=False):
     return (prefab, seed) if prefab is not None else None
 
 
-def _texture(reader, deadline):
-    base = title._texture(reader, deadline, sizes=(256, 512))
+def _texture(reader, deadline, *, sizes=(256, 512)):
+    base = title._texture(reader, deadline, sizes=sizes)
     if base is None:
         return None
     levels = [base]

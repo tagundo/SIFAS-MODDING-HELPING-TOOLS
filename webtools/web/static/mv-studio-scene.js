@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageButterfly = null, stageRain = null, stageLeaves = null;
+    let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
@@ -409,6 +409,7 @@
       if (!stageBreak?.sort(camera, stageSpeedBack?.displaySortEntries)) stageSpeedBack?.sort(camera);
       stageDisplayLights?.sort(camera);
       stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
+      stageMomiji?.sort(camera, stageRibbons?.ribbonSortEntries);
       stageButterfly?.sort(camera);
       stageLeaves?.sort(camera, stageRain?.sortEntries(), stageButterfly?.sortEntries());
       // AxisBillboard follows the camera currently drawing each split layer.
@@ -542,6 +543,8 @@
       stageSpotlight = null;
       stageLeaves?.dispose();
       stageLeaves = null;
+      stageMomiji?.dispose();
+      stageMomiji = null;
       stageRain?.dispose();
       stageRain = null;
       stageButterfly?.dispose();
@@ -1088,6 +1091,12 @@
         return;
       }
       stageLeaves = leaves;
+      const momiji = await global.MVStudioMomiji?.apply(T, scene, value.stageMomiji, butterfly?.billboardAtlas);
+      if (!active()) {
+        momiji?.dispose();
+        return;
+      }
+      stageMomiji = momiji;
       const speedBack = await global.MVStudioSpeedBack?.apply(T, scene, value.stageSpeedBack);
       if (!active()) {
         speedBack?.dispose();
@@ -1344,6 +1353,7 @@
       stageButterfly?.invalidate();
       stageRain?.invalidate();
       stageLeaves?.invalidate();
+      stageMomiji?.invalidate();
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
       stageFallingEffects?.invalidate();
@@ -1425,6 +1435,7 @@
       stageButterfly?.update(currentTime, project);
       stageRain?.update(currentTime, project);
       stageLeaves?.update(currentTime, project);
+      stageMomiji?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);
       stageFallingEffects?.update(currentTime, project);

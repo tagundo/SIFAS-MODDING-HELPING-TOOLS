@@ -231,6 +231,19 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                       ("red-burst", 1586243424, .25),
                                       ("red-in", 1722352272, .25)])
                     self.assertTrue(all(row["material"] == leaves["material"] for row in transition["emitters"]))
+                    momiji = project["stageMomiji"]
+                    momiji_track = tracks[momiji["trackId"]]
+                    self.assertEqual(momiji_track["label"], "StageEffect/Expert/Display/dis_par_03_momiji")
+                    self.assertEqual(momiji_track["events"][0]["id"], momiji["eventId"])
+                    self.assertEqual([row["role"] for row in momiji["emitters"]], ["fan", "flash", "leaf-green", "leaf-red"])
+                    self.assertEqual(momiji["geometry"], leaves["geometry"])
+                    self.assertEqual(momiji["textures"]["leaf"], leaves["texture"])
+                    self.assertEqual({name: len(mips) for name, mips in momiji["textures"].items()},
+                                     {"fan": 9, "flash": 7, "leaf": 9})
+                    self.assertEqual([(row["material"]["cull"], row["material"]["blend"]) for row in momiji["emitters"]],
+                                     [(1, "alpha"), (0, "add"), (0, "alpha"), (0, "alpha")])
+                    self.assertTrue(all(row["material"]["queue"] == 2900 and row["material"]["stencilRef"] == 2
+                                        for row in momiji["emitters"]))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

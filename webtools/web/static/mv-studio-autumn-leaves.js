@@ -44,14 +44,17 @@
       new Set(roles).size === roles.length;
   }
 
+  function validFlower(geometry) {
+    return Array.isArray(geometry?.positions) && geometry.positions.length === 22 && geometry.positions.every(row => finiteVector(row, 3)) &&
+      Array.isArray(geometry.uv) && geometry.uv.length === 22 && geometry.uv.every(row => finiteVector(row, 2)) &&
+      Array.isArray(geometry.indices) && geometry.indices.length === 60 &&
+      geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 22);
+  }
+
   function checked(source, title) {
     const {geometry, material, cues} = source || {};
     return source?.schema === 1 && title.validMipChain(source.texture) && source.texture[0].width === 256 &&
-      Array.isArray(geometry?.positions) && geometry.positions.length === 22 && geometry.positions.every(row => finiteVector(row, 3)) &&
-      Array.isArray(geometry.uv) && geometry.uv.length === 22 && geometry.uv.every(row => finiteVector(row, 2)) &&
-      Array.isArray(geometry.indices) && geometry.indices.length === 60 &&
-      geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 22) &&
-      checkedMaterial(material, "alpha") &&
+      validFlower(geometry) && checkedMaterial(material, "alpha") &&
       Array.isArray(cues) && cues.length >= 1 && cues.length <= 10 && cues.every(checkedCue) &&
       new Set(cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === cues.length &&
       cues.filter(cue => cue.profile === "03").length <= 1 && cues.filter(cue => cue.profile === "04").length <= 1 &&
@@ -59,7 +62,7 @@
       cues.filter(cue => cue.profile === "06").length <= 4 && cues.filter(cue => cue.profile === "07").length <= 3;
   }
 
-  function make(T, source, texture, pose, name, surface, capacity) {
+  function meshBatch(T, source, texture, pose, name, surface, capacity) {
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(source.geometry.positions.flat(), 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute(source.geometry.uv.flat(), 2));
@@ -72,7 +75,8 @@
       depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
-      stencilWrite: true, stencilRef: 2, stencilFunc: T.AlwaysStencilFunc,
+      stencilWrite: true, stencilRef: 2,
+      stencilFunc: surface.stencil === "equal" ? T.EqualStencilFunc : T.AlwaysStencilFunc,
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(pose.uv)},
@@ -131,7 +135,7 @@
       return null;
     }
     const entries = candidates.map(({cue, pose, stream, anisotropic, surface, name, capacity}) => {
-      const packet = make(T, source, texture, pose, name, surface, capacity);
+      const packet = meshBatch(T, source, texture, pose, name, surface, capacity);
       root.add(packet.mesh);
       return {cue, stream, anisotropic, capacity, ...packet, frame: -1, fps: 0,
         emitterRotation: new T.Quaternion().fromArray(pose.rotation), center: new T.Vector3()};
@@ -240,5 +244,5 @@
     };
   }
 
-  global.MVStudioAutumnLeaves = {apply};
+  global.MVStudioAutumnLeaves = {apply, meshBatch, validFlower};
 })(typeof window !== "undefined" ? window : globalThis);

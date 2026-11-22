@@ -11,6 +11,8 @@ require("../webtools/web/static/mv-studio-autumn-leaves-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-red-burst-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-floor-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-burst-simulation.js");
+require("../webtools/web/static/mv-studio-momiji-leaves-simulation.js");
+require("../webtools/web/static/mv-studio-momiji-fan-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -616,10 +618,93 @@ function testAionRedBurst() {
   assert.deepEqual(sample(195, 60), end);
 }
 
+function testAionMomijiDisplayLeaves() {
+  const f32 = Math.fround;
+  const startColor = {
+    rgb: [[482, .47213301062583923, .7924528121948242, .3850124776363373],
+      [2506, .9245283007621765, .7669764757156372, .22241008281707764],
+      [4530, .849056601524353, .4465811848640442, .23629406094551086],
+      [8192, .9245283007621765, .008959945291280746, 0]],
+    alpha: [[0, 1], [65535, 1]],
+  };
+  const greenRow = {role: "leaf-green", seed: 1586243424,
+    position: [f32(-.11), f32(-2.05), f32(.35)], rotation: [0, 0, .1342455893754959, .9909480810165405],
+    alphaKeys: [[0, 0], [2602, 1], [50501, 1], [65535, 0]], startColor};
+  const redRow = {...greenRow, role: "leaf-red", position: [f32(-.11), f32(-2.05), f32(.45)], startColor: [1, 1, 1, 1]};
+  const create = globalThis.MVStudioMomijiLeavesSimulation.create;
+  assert.equal(create({...greenRow, seed: 0}), null);
+  assert.equal(create({...redRow, startColor}), null);
+  const green = create(greenRow), red = create(redRow);
+  const sample = (stream, frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  const native = (packet, source) => {
+    assert.ok(packet.slice(0, 3).every((value, i) => Math.abs(value - source[i]) <= 5e-6));
+    assert.deepEqual(packet.slice(3), source.slice(3));
+  };
+  assert.deepEqual(sample(green, 2, 60), []);
+  const greenStart = sample(green, 3, 60);
+  assert.equal(greenStart.length, 25);
+  native(greenStart[0], [-2.5222363471984863, 2.7449355125427246, 1.636109203673186e-7,
+    5.259414196014404, 0, .7749069929122925, -6.643908327278814e-15, 120, 202, 98, 0]);
+  const groupedGreen = sample(green, 2, 30);
+  assert.deepEqual(groupedGreen, sample(green, 4, 60));
+  native(groupedGreen[1], [-3.4174842834472656, 1.866597294807434, -.04829944297671318,
+    6.076663970947266, 0, 1.3502097129821777, -.029601503163576126, 120, 202, 98, 197]);
+  const secondBurst = sample(green, 10, 60);
+  assert.equal(secondBurst.length, 40);
+  native(secondBurst[25], [-1.1260584592819214, 2.6193671226501465, .19077037274837494,
+    5.904061794281006, 0, .3052603304386139, 6.578919453659182e-8, 202, 197, 69, 0]);
+  native(sample(green, 44, 60)[0], [-2.7617220878601074, 8.411262512207031, 5.148306740920816e-7,
+    .09264229238033295, 0, .7749069929122925, -1.2186986207962036, 120, 202, 98, 2]);
+  assert.equal(sample(green, 64, 60).length, 1);
+  assert.deepEqual(sample(green, 65, 60), []);
+  assert.deepEqual(sample(green, 3, 60), greenStart);
+
+  assert.deepEqual(sample(red, 12, 60), []);
+  const redStart = sample(red, 13, 60);
+  assert.equal(redStart.length, 10);
+  native(redStart[0], [-2.5222363471984863, 1.3724678754806519, 8.180546728908666e-8,
+    5.259414196014404, 0, .7749069929122925, -2.972434565151616e-8, 255, 255, 255, 0]);
+  assert.equal(sample(red, 7, 30)[0][10], 109);
+  assert.equal(sample(red, 22, 60).length, 20);
+  assert.equal(sample(red, 30, 60).length, 30);
+  assert.equal(sample(red, 86, 60).length, 1);
+  assert.deepEqual(sample(red, 87, 60), []);
+  assert.deepEqual(sample(red, 13, 60), redStart);
+}
+
+function testAionMomijiFan() {
+  const create = globalThis.MVStudioMomijiFanSimulation.create;
+  assert.equal(create({role: "fan", seed: 0}), null);
+  const stream = create({role: "fan", seed: 1498035885});
+  function sample(frame, fps = 60) {
+    const packets = [];
+    stream.sample(frame / fps, fps, (...packet) => packets.push(packet));
+    return packets;
+  }
+  const first = sample(1);
+  assert.deepEqual(first.map(packet => packet.slice(3, 5)), Array.from({length: 5}, () => [4, 2]));
+  assert.deepEqual(first.map(packet => packet[6]), [1, 0, 0, 1, 0]);
+  assert.equal(first[0][0], -1.714034080505371);
+  assert.equal(first[0][5], -.20124727487564087);
+  assert.equal(sample(14).length, 5);
+  assert.deepEqual(sample(15).map(packet => packet[6]), [1, 0, 0, 1, 0, 1, 0, 1, 0, 0]);
+  assert.deepEqual(sample(8, 30), sample(16));
+  assert.equal(sample(79).length, 10);
+  assert.equal(sample(80).length, 5);
+  assert.deepEqual(sample(94), []);
+  assert.deepEqual(sample(1), first);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
 testAionAutumnFloor();
 testAionRedBurst();
 testAionLeafBursts();
+testAionMomijiDisplayLeaves();
+testAionMomijiFan();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

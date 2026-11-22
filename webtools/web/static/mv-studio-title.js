@@ -230,6 +230,14 @@
         value.preExtrapolationMode || value.postExtrapolationMode);
   }
 
+  function ribbonClipActive(event, time) {
+    if (!neutralClip(event)) return false;
+    // Unity Timeline changes adjacent clips on discrete picosecond ticks.
+    const tick = value => Math.trunc(value / 1e-12 + .5);
+    const current = tick(time);
+    return current >= tick(event.start) && current < tick(event.start + event.duration);
+  }
+
   function materialFor(T, texture, fields, ribbons = false) {
     const [sx, sy, x, y] = fields.uv;
     const material = new T.ShaderMaterial({
@@ -299,6 +307,8 @@
     geometry.setIndex(fields.indices);
 
     const textures = [], groups = [], loader = new T.TextureLoader();
+    if (ribbons) geometry.computeBoundingBox();
+    const ribbonCenter = ribbons ? geometry.boundingBox.getCenter(new T.Vector3()) : null;
     let disposed = false;
     function dispose() {
       if (disposed) return;
@@ -328,7 +338,7 @@
           group.add(mesh);
           const uniforms = mesh.material.uniforms;
           meshes.push({ mesh, uv: uniforms.uTextureST.value, tint: uniforms.uTint.value,
-            channels: cue.curves.get(authored.path) });
+            channels: cue.curves.get(authored.path), center: ribbons ? new T.Vector3() : null });
         }
         root.add(group);
       }
@@ -361,6 +371,21 @@
     let tracks;
     return {
       invalidate() { tracks = null; },
+      ribbonSortEntries() {
+        const entries = [];
+        if (disposed || !ribbons) return entries;
+        for (const {group, meshes} of groups) {
+          if (!group.visible) continue;
+          for (const {mesh, center} of meshes) {
+            if (mesh.visible) {
+              mesh.updateWorldMatrix(true, false);
+              center.copy(ribbonCenter).applyMatrix4(mesh.matrixWorld);
+              entries.push({mesh, center, order: entries.length + 4});
+            }
+          }
+        }
+        return entries;
+      },
       displaySortEntries() {
         if (disposed || ribbons) return [];
         const entries = [];
@@ -393,10 +418,10 @@
         }
         const enabled = project?.quality?.values?.stage_display !== false;
         for (const { cue, track, event, group, meshes, isParticle } of groups) {
-          group.visible = Boolean(enabled && !track?.muted && neutralClip(event) &&
-            time >= event.start && time < event.start + event.duration);
+          group.visible = Boolean(enabled && !track?.muted && (ribbons ? ribbonClipActive(event, time) :
+            neutralClip(event) && time >= event.start && time < event.start + event.duration));
           if (!group.visible) continue;
-          const elapsed = time - event.start;
+          const elapsed = Math.max(0, time - event.start);
           if (isParticle) {
             const fps = project?.quality?.values?.frame_rate_60fps === true ? 60 : 30;
             const frameAt = stockParticleTitle(track, event) ? nativeFrame : null;
@@ -415,6 +440,6 @@
     };
   }
   global.MVStudioTitle = {
-    apply, validTexture, validMipChain, sharedMipTexture, loadTexture, boundedCurve, gradientKeys, gradient, neutralClip,
+    apply, validTexture, validMipChain, sharedMipTexture, loadTexture, boundedCurve, gradientKeys, gradient, neutralClip, ribbonClipActive,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -4,6 +4,9 @@
   const vertexShader = `
     uniform vec3 uAxisX;
     uniform vec3 uAxisY;
+    #ifdef PARTICLE_PIVOT
+    uniform vec2 uPivot;
+    #endif
     uniform float uMaxWidth;
     #ifdef MIN_VIEWPORT_WIDTH
     uniform float uMinWidth;
@@ -33,6 +36,11 @@
       float scale = depth < 0.0 ? 1.0 : min(1.0, sideLimit / largerSide);
       #endif
       vec2 local = position.xy * particleSize;
+      #ifdef PARTICLE_PIVOT
+      // The native billboard caps its rectangle without shrinking the pivot.
+      local = local * scale + uPivot * particleSize;
+      scale = 1.0;
+      #endif
       #ifdef VIEW_ALIGNED
       local.x = -local.x;
       #endif
@@ -118,7 +126,7 @@
 
   function localBillboards(T, {texture, rotation, capacity, maxViewportWidth, atlas, name,
     additive = false, rolling = false, viewAligned = false, columns = 1, tint = [1, 1, 1, 1], minViewportWidth = 0,
-    saturateRGB = false}) {
+    saturateRGB = false, pivot = null, side = T.DoubleSide}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([.5,.5,0,-.5,.5,0,-.5,-.5,0,.5,-.5,0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0,0,1,0,1,1,0,1], 2));
@@ -136,8 +144,9 @@
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader, transparent: true,
       defines: {...(rolling ? {PARTICLE_ROLL: 1} : {}), ...(viewAligned ? {VIEW_ALIGNED: 1} : {}),
-        ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {}), ...(saturateRGB ? {SATURATE_RGB: 1} : {})},
-      toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
+        ...(minViewportWidth > 0 ? {MIN_VIEWPORT_WIDTH: 1} : {}), ...(saturateRGB ? {SATURATE_RGB: 1} : {}),
+        ...(pivot ? {PARTICLE_PIVOT: 1} : {})},
+      toneMapped: false, side, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
       blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
       blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
       stencilWrite: true, stencilFunc: T.EqualStencilFunc, stencilRef: 2,
@@ -145,6 +154,7 @@
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uMaxWidth: {value: maxViewportWidth},
         uTint: {value: new T.Vector4().fromArray(tint)},
+        ...(pivot ? {uPivot: {value: new T.Vector2().fromArray(pivot)}} : {}),
         ...(minViewportWidth > 0 ? {uMinWidth: {value: minViewportWidth}} : {}),
         uAtlas: {value: new T.Vector4().fromArray(atlas)}, uAtlasColumns: {value: columns},
         uAxisX: {value: new T.Vector3(1, 0, 0).applyQuaternion(rotation)},

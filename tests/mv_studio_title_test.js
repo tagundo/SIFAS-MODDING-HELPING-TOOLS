@@ -413,6 +413,13 @@ async function runRibbons() {
   });
   const events = [{id: "ribbon:first", start: 10, duration: 2.75}, {id: "ribbon:second", start: 12.75, duration: 2.25}]
     .map(event => ({...event, values: {...track.events[0].values, offset: {x: 0, y: 0, z: 0}}}));
+  const seam = 59.28333333333333;
+  const outgoing = {...events[0], start: 10.35, duration: 48.93333333333334};
+  const incoming = {...events[1], start: seam};
+  assert.ok(outgoing.start + outgoing.duration > seam);
+  assert.equal(MVStudioTitle.ribbonClipActive(outgoing, seam - 1e-9), true);
+  assert.equal(MVStudioTitle.ribbonClipActive(outgoing, seam), false);
+  assert.equal(MVStudioTitle.ribbonClipActive(incoming, seam), true);
   const ribbonTrack = {id: "ribbon:track", nativeClass: "CustomControlTrack", events};
   const project = {tracks: [ribbonTrack], quality: {values: {stage_display: true}}};
   const material = {queue: 2900, cull: 2, tint: [.8, 1, 1, .9], uv: [.5, .25, .125, .5]};
