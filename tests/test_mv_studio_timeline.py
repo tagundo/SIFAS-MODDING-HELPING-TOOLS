@@ -179,6 +179,12 @@ class TimelineContractTests(unittest.TestCase):
             self.assertTrue(skinned["requiresOverlayMaterial"])
             self.assertTrue(skinned["sampleTimeF32"])
             self.assertEqual(skinned["channels"][0]["rendererClass"], 137)
+            for tracks in ([world, legacy], [legacy, world]):
+                shared = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(set(shared["bindings"]), {world["binding"], legacy["binding"]})
+                self.assertEqual(shared["mix"]["cab:2:0"], {"materialScope": "world"})
+                self.assertEqual(shared["mix"]["cab:1:0"], {})
+                self.assertEqual(shared["clips"]["cab:4"], skinned)
             bindings[3]["attribute"] = texture_tint | (2 << 28)
             self.assertIsNone(stage.read(objects, mono, [overlay], time.monotonic() + 3))
 

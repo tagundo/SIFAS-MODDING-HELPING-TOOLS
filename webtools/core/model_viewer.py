@@ -1334,35 +1334,40 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         _remaining(deadline)
         if _key(game_object) in detached_templates:
             continue
-        stage_beam = stage_opaque = stage_overlay_skin = None
+        stage_beam = stage_opaque = stage_transparent = None
         stage_motion = None
-        if stage_nodes is not None:
-            if renderer.type.name == "MeshRenderer":
-                stage_motion = stage_nodes.binding(game_object)
-            elif animated_effect and renderer.type.name == "SkinnedMeshRenderer":
-                binding = stage_nodes.binding(game_object)
-                refs = tree.get("m_Materials", ())
-                if binding and len(refs) == 1:
-                    candidate = _ref(renderer, refs[0])
+        overlay = False
+        renderer_type = renderer.type.name
+        if stage_nodes is not None and renderer_type in {"MeshRenderer", "SkinnedMeshRenderer"}:
+            binding = stage_nodes.binding(game_object)
+            overlay = binding is not None and mv_studio_stage_overlay.layer(scene, game_object)
+            if renderer_type == "MeshRenderer":
+                stage_motion = binding
+            refs = tree.get("m_Materials", ())
+            if animated_effect and binding and len(refs) == 1:
+                candidate = _ref(renderer, refs[0])
+                if renderer_type == "SkinnedMeshRenderer":
                     try:
                         stage_beam = mv_studio_stage_beam.export_material(
                             scene, renderer, game_object, candidate, materials, deadline)
                     except ValueError:
                         pass
-                    if stage_beam is None and candidate is not None:
-                        if mv_studio_stage_overlay.layer(scene, game_object):
-                            stage_overlay_skin = mv_studio_stage_overlay.read_material(scene, candidate)
-                        else:
-                            identity = _key(candidate)
-                            if identity not in stage_metadata:
-                                stage_metadata[identity] = mv_studio_stage_materials.read_material(
-                                    scene, candidate, ambient_materials, single_ambient)
-                            descriptor = stage_metadata[identity]
-                            if descriptor and descriptor["shader"] == "general":
-                                stage_opaque = descriptor
-                    if stage_beam is not None or stage_opaque is not None or stage_overlay_skin is not None:
-                        stage_motion = binding
-        overlay = stage_motion is not None and mv_studio_stage_overlay.layer(scene, game_object)
+                if stage_beam is None and (not overlay or renderer_type == "SkinnedMeshRenderer"):
+                    fields = mv_studio_stage_overlay.read_material(scene, candidate)
+                    if fields is not None and (overlay or fields.get("depthTest")
+                                               and mv_studio_stage_overlay.world_layer(scene, game_object)):
+                        stage_transparent = fields
+                    elif candidate is not None and not overlay and renderer_type == "SkinnedMeshRenderer":
+                        identity = _key(candidate)
+                        if identity not in stage_metadata:
+                            stage_metadata[identity] = mv_studio_stage_materials.read_material(
+                                scene, candidate, ambient_materials, single_ambient)
+                        descriptor = stage_metadata[identity]
+                        if descriptor and descriptor["shader"] == "general":
+                            stage_opaque = descriptor
+                if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
+                    stage_motion = binding
+        overlay = overlay and stage_motion is not None
         flash_binding = stage_flashes.get(_key(renderer)) if stage_materials else None
         renderer_enabled = tree.get("m_Enabled", True)
         if (not renderer_enabled and flash_binding is None) or (stage_motion is None and not scene.active(game_object)):
@@ -1387,12 +1392,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
             continue
         auto_face = _source_path(renderer) in faces.auto_paths
-        skin_material = stage_opaque or stage_overlay_skin
+        skin_material = (stage_opaque or stage_transparent) if renderer_type == "SkinnedMeshRenderer" else None
         native_skin = stage_beam is not None or skin_material is not None
         raw = {} if rig is not None or native_skin else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
-        stage_inputs, coloring_for_renderer = {} if overlay or flash_binding else None, {}
+        stage_inputs, coloring_for_renderer = {} if overlay or stage_transparent or flash_binding else None, {}
         if stage_opaque and stage_opaque.get("vertexColor") and stage_inputs is None:
             stage_inputs = {}
         if stage_materials and renderer.type.name == "MeshRenderer":
@@ -1416,7 +1421,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if stage_inputs is None:
                         stage_inputs = {}
         bones, skin_warnings, stage_skin = None, [], None
-        overlay_skin_material = None
+        transparent_skin_material = None
         try:
             # A previously visible renderer may still use its rest pose when
             # the original skin exceeds the live stage preview's support.
@@ -1451,18 +1456,18 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if not use_skin or not any(map(len, submeshes)):
                     break
                 if (uv is not None
-                        and (stage_beam is None and stage_overlay_skin is None or len(submeshes) == 1)
+                        and (stage_beam is None and stage_transparent is None or len(submeshes) == 1)
                         and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
-                    if stage_overlay_skin is not None:
+                    if stage_transparent is not None:
                         try:
-                            overlay_skin_material = mv_studio_stage_overlay.export_material(materials, stage_overlay_skin)
+                            transparent_skin_material = mv_studio_stage_overlay.export_material(materials, stage_transparent)
                         except ValueError:
                             pass
-                    if stage_overlay_skin is None or overlay_skin_material is not None:
+                    if stage_transparent is None or transparent_skin_material is not None:
                         stage_skin = stage_nodes.export_skinned(renderer, tree, game_object, raw, rigid=stage_beam is not None)
                 if stage_skin is not None or stage_beam is not None or not scene.active(game_object):
                     break
-                stage_motion = raw = None
+                stage_motion = raw = stage_transparent = transparent_skin_material = None
                 overlay = False
         except Exception as error:
             if auto_face:
@@ -1592,12 +1597,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if display is not None:
                     primitives[-1]["extras"]["mvStageDisplay"] = display
             overlay_material = None
-            if overlay and uv is not None:
-                if overlay_skin_material is not None:
-                    overlay_material = {**overlay_skin_material, "rendererClass": 137}
+            if uv is not None and (overlay or stage_transparent is not None):
+                if transparent_skin_material is not None:
+                    overlay_material = {**transparent_skin_material, "rendererClass": 137}
                 else:
                     try:
-                        overlay_material = mv_studio_stage_overlay.material(scene, materials, material_obj)
+                        overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
+                                            if overlay else mv_studio_stage_overlay.export_material(materials, stage_transparent))
                     except ValueError:
                         pass
                 if overlay_material is not None:
@@ -1605,6 +1611,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         if stage_color is None:
                             stage_color = glb.attribute(stage_inputs["color"], "VEC4")
                         primitives[-1]["attributes"] = {**attributes, "_STAGE_COLOR": stage_color}
+                    if not overlay:
+                        overlay_material["world"] = True
+                        mv_studio_stage_materials.collect_texture_sampler(
+                            materials, stage_transparent["texture"], overlay_material, "mainSampler")
                     primitives[-1]["extras"]["mvStageOverlay"] = overlay_material
             descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None and display is None and overlay_material is None else None
             if descriptor and (not stage_opaque or stage_skin is not None):

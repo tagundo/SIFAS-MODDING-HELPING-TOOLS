@@ -7,6 +7,9 @@ from . import model_viewer as viewer
 from .mv_studio_stage_display import _shader_matches
 
 
+# Authored MainCamera culling mask in the native live scene (level35).
+_MAIN_CAMERA_MASK = 0x0C0BC013
+
 _MATERIAL_PROPERTIES = {
     crc32(b"_TintColor") & 0x0FFFFFFF: "overlayTint",
     crc32(b"_MainTex_ST") & 0x0FFFFFFF: "overlayUV",
@@ -52,6 +55,11 @@ def material_channels(bindings, curves, width_of):
 
 def layer(scene, game_object):
     return scene.tree(game_object).get("m_Layer") == 20
+
+
+def world_layer(scene, game_object):
+    index = scene.tree(game_object).get("m_Layer")
+    return type(index) is int and 0 <= index < 32 and bool(_MAIN_CAMERA_MASK & (1 << index))
 
 
 def builtin_plane(scene, game_object):

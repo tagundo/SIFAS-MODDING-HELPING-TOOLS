@@ -3,6 +3,7 @@
 
   const layer = 20;
   const materialOwners = new WeakMap();
+  const materialKey = (scope, rendererClass) => `${scope}:${rendererClass}`;
   const vertexShader = [
     "#include <common>",
     "#include <skinning_pars_vertex>",
@@ -38,14 +39,16 @@
     return true;
   }
 
-  async function apply(T, root, parser) {
+  async function apply(T, root, parser, options = {}) {
+    const {active = () => true} = options;
     const meshes = [], owners = new Map(), textures = new Map();
     root.traverse((node) => {
       const fields = node.geometry?.userData?.mvStageOverlay;
       if (!node.isMesh || !fields || Array.isArray(node.material)) return;
       const rendererClass = fields.rendererClass === undefined ? 23 : fields.rendererClass;
+      const scope = fields.world === true ? "world" : "overlay";
       const skinned = node.isSkinnedMesh === true;
-      if (rendererClass !== (skinned ? 137 : 23)) return;
+      if (rendererClass !== (skinned ? 137 : 23) || (scope === "world" && fields.depthTest !== true)) return;
       if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
           !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
       let owner = node;
@@ -53,12 +56,19 @@
       if (!owner) return;
       let classes = owners.get(owner);
       if (!classes) owners.set(owner, classes = new Map());
-      classes.set(rendererClass, 1 + (classes.get(rendererClass) || 0));
-      meshes.push({ node, owner, fields, rendererClass, skinned, original: node.material,
+      const key = materialKey(scope, rendererClass);
+      classes.set(key, 1 + (classes.get(key) || 0));
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
-    const ready = [], usable = meshes.filter(({ owner, rendererClass }) => owners.get(owner).get(rendererClass) === 1);
+    const ready = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
     if (!usable.length) return null;
+    const sampler = usable.some(({scope, fields}) => scope === "world" && fields.texture !== null && fields.mainSampler)
+      ? global.MVStudioStageMaterial?.createTextureSampler?.(T, parser, options) : null;
+    if (sampler) {
+      root.traverse((node) => sampler.retainOriginalMaterial(node.material));
+      for (const {fields} of meshes) if (fields.texture !== null) sampler.reserveBase(fields.texture);
+    }
     const white = new T.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
     white.needsUpdate = true;
     function texture(index) {
@@ -75,11 +85,11 @@
     function dispose() {
       if (disposed) return;
       disposed = true;
-      for (const { node, owner, rendererClass, order, layer, frustumCulled, original, material } of ready) {
+      for (const { node, owner, rendererClass, scope, key, order, layer, frustumCulled, original, material } of ready) {
         const classes = materialOwners.get(owner);
-        classes.delete(rendererClass);
+        classes.delete(key);
         if (!classes.size) materialOwners.delete(owner);
-        if (rendererClass === 23) delete owner.userData.mvStageOverlayChannels;
+        if (scope === "overlay" && rendererClass === 23) delete owner.userData.mvStageOverlayChannels;
         node.material = original;
         node.renderOrder = order;
         node.layers.mask = layer;
@@ -87,11 +97,17 @@
         material.dispose();
       }
       for (const task of textures.values()) task.then((copy) => copy.dispose(), () => {});
+      sampler?.dispose();
       white.dispose();
     }
     try {
       for (const mesh of usable) {
-        const { node, owner, fields, rendererClass, skinned } = mesh;
+        if (!active()) break;
+        const { node, owner, fields, rendererClass, scope, key, skinned } = mesh;
+        const map = sampler && scope === "world" && fields.texture !== null && fields.mainSampler
+          ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
+        if (!active()) break;
+        if (!map) continue;
         const tint = new T.Vector4().fromArray(fields.tint), uv = new T.Vector4().fromArray(fields.uv);
         // Unity's CullMode values specify the side to discard. Three's side
         // specifies the faces to retain. Old previews are double-sided.
@@ -101,21 +117,21 @@
           depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite: false,
           toneMapped: false, side, blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
-          uniforms: { uTexture: { value: await texture(fields.texture) }, uTint: { value: tint },
+          uniforms: { uTexture: { value: map }, uTint: { value: tint },
             uTextureST: { value: uv }, uVertexColor: { value: fields.vertexColor } }
         });
-        material.name = "Native stage overlay";
+        material.name = scope === "world" ? "Native stage transparent" : "Native stage overlay";
         // Unity's built-in Plane has no authored vertex color.
         material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
         node.material = material;
         node.renderOrder = fields.queue;
-        node.layers.set(layer);
+        if (scope === "overlay") node.layers.set(layer);
         if (skinned) node.frustumCulled = false;
         const channels = { overlayTint: tint, overlayUV: uv };
         let classes = materialOwners.get(owner);
         if (!classes) materialOwners.set(owner, classes = new Map());
-        classes.set(rendererClass, channels);
-        if (rendererClass === 23) owner.userData.mvStageOverlayChannels = channels;
+        classes.set(key, channels);
+        if (scope === "overlay" && rendererClass === 23) owner.userData.mvStageOverlayChannels = channels;
         ready.push({ ...mesh, material });
       }
     } catch (error) {
@@ -123,8 +139,9 @@
       throw error;
     }
     return {
-      hasVisible: () => !disposed && ready.some(hasVisible),
-      hasDepthTest: () => !disposed && ready.some(entry => entry.material.depthTest && hasVisible(entry)),
+      hasVisible: () => !disposed && ready.some(entry => entry.scope === "overlay" && hasVisible(entry)),
+      hasDepthTest: () => !disposed && ready.some(entry =>
+        entry.scope === "overlay" && entry.material.depthTest && hasVisible(entry)),
       dispose,
     };
   }
@@ -163,6 +180,11 @@
     };
   }
   global.MVStudioStageOverlay = {
-    apply, create, materialChannel: (owner, kind, rendererClass = 23) => materialOwners.get(owner)?.get(rendererClass)?.[kind],
+    apply, create,
+    materialChannel(owner, kind, rendererClass = 23, scope = "overlay") {
+      if ((rendererClass === 23 || rendererClass === 137) && (scope === "overlay" || scope === "world")) {
+        return materialOwners.get(owner)?.get(materialKey(scope, rendererClass))?.[kind];
+      }
+    },
   };
 })(typeof window !== "undefined" ? window : globalThis);

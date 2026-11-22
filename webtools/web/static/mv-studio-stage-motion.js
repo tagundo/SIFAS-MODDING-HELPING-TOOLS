@@ -133,30 +133,31 @@
           const clip = stageMotion.clips?.[event.values.animation], mix = stageMotion.mix[event.id];
           if (!clip || !mix || !Array.isArray(clip.channels) || !Number.isFinite(clip.start) ||
               !Number.isFinite(clip.duration) || clip.duration < 0) continue;
+          const materialScope = mix.materialScope === undefined ? "overlay" : mix.materialScope;
+          if (materialScope !== "overlay" && materialScope !== "world") continue;
           const samples = [], targets = [];
-          const requiresOverlay = clip.requiresOverlayMaterial === true;
+          const requiresMaterial = clip.requiresOverlayMaterial === true || materialScope === "world";
           for (const source of clip.channels) {
             if (!Object.hasOwn(kinds, source?.kind)) continue;
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
             const material = kind === "overlayTint" || kind === "overlayUV";
-            const value = !material ? node?.[kind] : requiresOverlay
-              ? global.MVStudioStageOverlay?.materialChannel?.(node, kind, source.rendererClass)
+            const value = !material ? node?.[kind] : requiresMaterial
+              ? global.MVStudioStageOverlay?.materialChannel?.(node, kind, source.rendererClass, materialScope)
               : node?.userData.mvStageOverlayChannels?.[kind];
-            if (!node || (material && !requiresOverlay && source.rendererClass !== undefined) ||
+            if (!node || (material && !requiresMaterial && source.rendererClass !== undefined) ||
                 !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
                 (material && !value) ||
                 source.curves.length !== (kind === "visible" ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
             targets.push({source, kind, node, material, value});
           }
-          // A missing overlay target cannot be replaced by a generic mesh with
-          // only part of the authored animation applied.
-          if (requiresOverlay && (targets.length !== clip.channels.length || !targets.some(target => target.material))) continue;
+          // A missing material target must not leave a partial animation.
+          if (requiresMaterial && (targets.length !== clip.channels.length || !targets.some(target => target.material))) continue;
           for (const {source, kind, node, material, value} of targets) {
             const id = material ? value : `${source.path}:${kind}`;
             if (!group.channels.has(id)) group.channels.set(id, {
               node, kind, value, material, base: kind === "visible" ? value : value.clone(),
               nativeVisibility: clip.sampleTimeF32 === true &&
-                (requiresOverlay || binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"),
+                (requiresMaterial || binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"),
               sum: kind === "visible" ? 0 : value.clone(), weight: 0, changed: false,
             });
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });

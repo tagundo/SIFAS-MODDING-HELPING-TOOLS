@@ -5,6 +5,7 @@ const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 global.window = global;
 require("../webtools/web/static/viewer-motion-timeline.js");
 require("../webtools/web/static/mv-studio-lighting.js");
+require("../webtools/web/static/mv-studio-stage-material.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-stage-overlay.js");
 
@@ -250,10 +251,99 @@ async function testSkinnedOverlayMaterial() {
   assert.equal(skin.material.uniforms.uTint.value.w, .25, "a legacy classless required channel targets static only");
   assert.equal(owner.position.x, 0);
   skinnedOnly.dispose();
+  Object.assign(skinGeometry.userData.mvStageOverlay, {world: true, depthTest: true, queue: 3010});
+  const worldSkin = await MVStudioStageOverlay.apply(T, root);
+  assert.equal(skin.material.skinning, true);
+  assert.equal(skin.frustumCulled, false);
+  assert.equal(skin.layers.mask, 1);
+  assert.equal(skin.renderOrder, 3010);
+  assert.equal(worldSkin.hasVisible(), false);
+  assert.equal(worldSkin.hasDepthTest(), false);
+  worldSkin.dispose();
   console.log("Weighted overlay deforms on layer 20 and isolates both native renderer classes.");
 }
 
-run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).catch(error => {
+async function testWorldMaterialScope() {
+  const root = new T.Group(), owner = new T.Group();
+  const binding = "/EntryPoint/Live/Stages/MainStage/Effect/Floor";
+  owner.userData.mvStageNode = {active: true, path: 0, binding};
+  root.add(owner);
+  const add = (fields) => {
+    const mesh = new T.Mesh(new T.PlaneGeometry(), new T.MeshBasicMaterial());
+    mesh.geometry.userData.mvStageOverlay = {
+      texture: null, tint: [1, 1, 1, .25], uv: [1, 1, 0, 0], vertexColor: false, queue: 3010, ...fields,
+    };
+    owner.add(mesh);
+    return mesh;
+  };
+  const closed = [], borrowed = new T.Texture({width: 4, height: 4});
+  borrowed.encoding = T.sRGBEncoding;
+  borrowed.minFilter = T.LinearFilter;
+  const mip = (size) => new T.Texture({width: size, height: size, close: () => closed.push(size)});
+  const levels = [borrowed, mip(2), mip(1)];
+  const authored = {texture: 0, mainSampler: {mipmaps: [1, 2], filterMode: 1, anisotropy: 8}};
+  const overlayMesh = add(authored), worldMesh = add({...authored, world: true, depthTest: true, cull: 2});
+  overlayMesh.material.map = worldMesh.material.map = borrowed;
+  const unknownDepth = add({world: true});
+  const original = unknownDepth.material;
+  const panel = await MVStudioStageOverlay.apply(T, root, {async getDependency(type, index) { return levels[index]; }});
+  assert.equal(worldMesh.layers.mask, 1);
+  assert.equal(worldMesh.renderOrder, 3010);
+  assert.equal(worldMesh.material.depthTest, true);
+  assert.equal(worldMesh.material.depthFunc, T.LessEqualDepth);
+  assert.equal(worldMesh.material.depthWrite, false);
+  assert.equal(worldMesh.material.side, T.FrontSide);
+  assert.equal(worldMesh.material.blendSrc, T.SrcAlphaFactor);
+  assert.equal(worldMesh.material.blendDst, T.OneFactor);
+  const worldTexture = worldMesh.material.uniforms.uTexture.value;
+  assert.deepEqual(worldTexture.mipmaps, levels.map(level => level.image));
+  assert.equal(worldTexture.minFilter, T.LinearMipmapNearestFilter);
+  assert.equal(worldTexture.magFilter, T.LinearFilter);
+  assert.equal(worldTexture.anisotropy, 8);
+  assert.equal(worldTexture.generateMipmaps, false);
+  assert.equal(worldTexture.encoding, T.LinearEncoding);
+  assert.deepEqual(overlayMesh.material.uniforms.uTexture.value.mipmaps, []);
+  assert.deepEqual(borrowed.mipmaps, []);
+  assert.equal(borrowed.encoding, T.sRGBEncoding);
+  assert.equal(unknownDepth.material, original, "sources outside the proved world pass are unmodified");
+  assert.equal(overlayMesh.layers.mask, 1 << 20);
+  assert.equal(panel.hasDepthTest(), false, "world draws never request a layer-20 depth copy");
+  overlayMesh.visible = false;
+  assert.equal(panel.hasVisible(), false, "visible world draws cannot schedule the layer-20 camera");
+
+  const projectFor = (materialScope) => {
+    const scalar = (value) => ["constant", value];
+    return {
+      tracks: [{id: "motion", nativeClass: "AnimationTrack", binding, events: [
+        {id: "event", start: 1, duration: 1, values: {animation: "clip"}},
+      ]}],
+      stageMotion: {mix: {event: {materialScope}}, clips: {clip: {start: 0, duration: 1, requiresOverlayMaterial: true, channels: [
+        {path: 0, kind: "translation", curves: [3, 0, 0].map(scalar)},
+        {path: 0, kind: "overlayTint", curves: [1, 1, 1, .75].map(scalar)},
+      ]}}},
+    };
+  };
+  const alpha = (mesh) => mesh.material.uniforms.uTint.value.w;
+  const motion = MVStudioStageMotion.apply(T, root);
+  const sharedClip = projectFor("world");
+  sharedClip.tracks[0].events.push({id: "legacy", start: 2, duration: 1, values: {animation: "clip"}});
+  sharedClip.stageMotion.mix.legacy = {};
+  motion.update(1.5, sharedClip);
+  assert.equal(owner.position.x, -3);
+  assert.equal(alpha(worldMesh), .75);
+  assert.equal(alpha(overlayMesh), .25);
+  motion.update(2.5, sharedClip);
+  assert.equal(alpha(worldMesh), .25);
+  assert.equal(alpha(overlayMesh), .75);
+  motion.update(1.5, projectFor("invalid"));
+  assert.equal(owner.position.x, 0);
+  assert.equal(alpha(overlayMesh), .25);
+  panel.dispose();
+  assert.deepEqual(closed, [2, 1]);
+  console.log("Native transparent world draws use authored depth and keep isolated layer-20 ownership.");
+}
+
+run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope).catch(error => {
   console.error(error);
   process.exitCode = 1;
 });

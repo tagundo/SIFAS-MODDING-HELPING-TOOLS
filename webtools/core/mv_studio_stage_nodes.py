@@ -82,7 +82,8 @@ class StageNodes:
             return None
         root_game = bone_game(tree.get("m_RootBone"))
         root_path = self.paths.get(viewer._key(root_game), ()) if root_game is not None else ()
-        if not root_path:
+        root_binding = self.binding(root_game) if root_path else None
+        if root_binding is None or root_binding[0] != binding[0]:
             return None
         joints, paths, inverse = [], set(), []
         mirror = np.diag([-1., 1., 1., 1.])
@@ -93,12 +94,15 @@ class StageNodes:
                     return None
                 path = self.paths.get(viewer._key(game), ())
                 owner = self.binding(game)
-                if path[:len(root_path)] != root_path or path in paths or owner is None or owner[0] != binding[0]:
+                if path in paths or owner is None or owner[0] != binding[0]:
                     return None
                 paths.add(path)
                 joints.append(game)
                 inverse.append(mirror @ _matrix(pose, np) @ mirror)
-            if root_path not in paths:
+            # A Unity root bone can sit beside another joint. glTF's optional
+            # skeleton node must be a common ancestor of its joint palette.
+            root_owns_joints = all(path[:len(root_path)] == root_path for path in paths)
+            if rigid and (not root_owns_joints or root_path not in paths):
                 return None
             count = len(raw["positions"])
             if not 0 < count <= MAX_VERTICES:
@@ -136,11 +140,13 @@ class StageNodes:
         }
         matrices = np.asarray(inverse, dtype=np.float32).transpose(0, 2, 1).reshape(len(joints), 16)
         skins = self.glb.doc.setdefault("skins", [])
-        skin = len(skins)
-        skins.append({"joints": [self._ensure(game) for game in joints],
-                      "inverseBindMatrices": self.glb.attribute(matrices, "MAT4", target=None),
-                      "skeleton": self._ensure(root_game)})
-        return attributes, skin
+        skin_index = len(skins)
+        skin = {"joints": [self._ensure(game) for game in joints],
+                "inverseBindMatrices": self.glb.attribute(matrices, "MAT4", target=None)}
+        if root_owns_joints:
+            skin["skeleton"] = self._ensure(root_game)
+        skins.append(skin)
+        return attributes, skin_index
 
     def _ensure(self, game):
         key = viewer._key(game)

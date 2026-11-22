@@ -112,7 +112,9 @@ def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
                             for item in tree.get("m_FloatCurves", [])):
         return None
     data = animation.decode_clip(tree, deadline)
-    if overlay and data["unsupported"]:
+    if overlay and data["unsupported"] and all(
+            (row["typeID"], row["customType"]) in {(23, 22), (137, 22)}
+            for row in data.get("unsupportedKinds", ())):
         from .mv_studio_stage_overlay import material_channels
         channels, described = material_channels(bindings, animation._packed_curves(tree, deadline), animation._width)
         if described == data["unsupported"]:
@@ -252,12 +254,18 @@ def read(objects, mono, tracks, deadline):
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         parent = timeline._pointer(obj, tree.get("m_Parent"))
         setting = "stage_overlay_effect" if overlay else _quality(track["label"], parent=parent, mono=mono)
-        allow_overlay_material = setting == "stage_overlay_effect"
+        material_scope = None
+        if setting == "stage_overlay_effect":
+            material_scope = "overlay"
+        elif _quality(track["label"]) in {"stage_animation", "stage_control"}:
+            # Nested groups can affect the authored world pass even when the
+            # game's quality switch does not mute their AnimationTrack output.
+            material_scope = "world"
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]
             identity = values.get("animation")
-            profile = (identity, allow_overlay_material)
+            profile = (identity, material_scope)
             playable = by_id.get(values.get("asset"))
             if not identity or profile in rejected or playable is None or values.get("playableClass") != "AnimationPlayableAsset":
                 continue
@@ -276,16 +284,15 @@ def read(objects, mono, tracks, deadline):
             if data is None:
                 continue
             timing, timing_cost = data
+            resident_laser = False
             if identity in clips:
                 declaration, cost = clips[identity], 0
-                if declaration.get("requiresOverlayMaterial") and not allow_overlay_material:
-                    continue
             else:
                 resident_laser = laser_track and key[1] == _LASER_CLIP and not any(
                     other is not event and other["values"].get("animation") == identity
                     for row in tracks for other in row["events"])
                 try:
-                    clip = _read_clip(reader, deadline, overlay=allow_overlay_material, resident_laser=resident_laser)
+                    clip = _read_clip(reader, deadline, overlay=material_scope is not None, resident_laser=resident_laser)
                 except (KeyError, TypeError, ValueError, IndexError, OverflowError, struct.error):
                     clip = None
                 if clip is None or clip[1] > remaining:
@@ -294,11 +301,26 @@ def read(objects, mono, tracks, deadline):
                 declaration, cost = clip
                 if binding == _AION_OVERLAY and key[1] == _AION_OVERLAY_CLIP:
                     declaration["sampleTimeF32"] = True
+            material_channels = [channel for channel in declaration["channels"]
+                                 if channel["kind"] in {"overlayTint", "overlayUV"}]
+            requires_material = False
+            if material_channels:
+                has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
+                if material_scope == "world":
+                    if has_skin:
+                        timing["materialScope"] = "world"
+                        timing_cost += 1
+                        requires_material = True
+                    elif not resident_laser:
+                        rejected.add(profile)
+                        continue
+                elif material_scope == "overlay":
+                    requires_material = not overlay or has_skin
+                else:
+                    continue
             if cost + timing_cost > remaining:
                 continue
-            if allow_overlay_material and any(
-                    channel["kind"] in {"overlayTint", "overlayUV"} and
-                    (not overlay or channel.get("rendererClass") == 137) for channel in declaration["channels"]):
+            if requires_material:
                 declaration["requiresOverlayMaterial"] = True
                 declaration["sampleTimeF32"] = True
             remaining -= cost + timing_cost

@@ -848,7 +848,9 @@
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
-          record.stageOverlay = await global.MVStudioStageOverlay?.apply(T, record.root, gltf.parser);
+          record.stageOverlay = await global.MVStudioStageOverlay?.apply(T, record.root, gltf.parser, {
+            active, maxTextureSize: renderer.capabilities.maxTextureSize,
+          });
           if (!active()) return null;
           record.stageBeam = await global.MVStudioStageBeam?.apply(T, record.root, gltf.parser);
           if (!active()) return null;

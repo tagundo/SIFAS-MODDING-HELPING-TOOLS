@@ -226,13 +226,13 @@
     return {color, intensity};
   }
 
-  async function apply(T, root, parser, {active = () => true, maxTextureSize = 4096} = {}) {
-    const candidates = [], textures = new Map(), cubes = new Map(), records = [];
+  function createTextureSampler(T, parser, {active = () => true, maxTextureSize = 4096} = {}) {
+    const textures = new Map();
     const authoredTextures = new Map(), textureRequests = new Map(), mipTextures = new Set();
     const nativeBaseIndices = new Set(), nativeBaseMaps = new Set();
     const originalMaps = new Set(), originalImages = new Set();
-    root.traverse((node) => {
-      for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+    function retainOriginalMaterial(value) {
+      for (const material of Array.isArray(value) ? value : [value]) {
         if (!material) continue;
         for (const value of Object.values(material)) {
           if (value?.isTexture) {
@@ -241,27 +241,7 @@
           }
         }
       }
-      const meta = node.geometry?.userData?.mvStageMaterial;
-      if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
-      if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
-          !isColor(meta.colors._AmbientColor))) return;
-      if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) return;
-      if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
-          meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
-          !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
-      if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
-          meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
-      if (meta.emissive && (meta.shader !== "stage" || meta.reflectionToggle ||
-          !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
-          meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
-          !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
-      if (meta.shader === "stage") {
-        nativeBaseIndices.add(meta.lightmap);
-        if (meta.emissive) nativeBaseIndices.add(meta.emissive.texture);
-      }
-      candidates.push({node, original: node.material, meta});
-    });
-    if (!candidates.length) return null;
+    }
 
     function gammaTexture(texture) {
       if (!textures.has(texture)) {
@@ -335,6 +315,55 @@
       if (!active()) return null;
       return sampler ? sampledTexture(texture, sampler) : gammaTexture(texture);
     }
+
+    function dispose() {
+      const copies = new Set(textures.values()), images = new Set();
+      for (const samplers of authoredTextures.values()) for (const copy of samplers.values()) copies.add(copy);
+      for (const copy of copies) copy.dispose();
+      for (const texture of mipTextures) {
+        if (nativeBaseMaps.has(texture)) continue;
+        texture.dispose();
+        if (texture.image) images.add(texture.image);
+      }
+      for (const texture of nativeBaseMaps) {
+        images.delete(texture.image);
+        texture.dispose();
+      }
+      for (const image of images) image.close?.();
+    }
+
+    return {retainOriginalMaterial, reserveBase: index => nativeBaseIndices.add(index),
+      gammaTexture, sampledTexture, sampledNativeTexture, dispose};
+  }
+
+  async function apply(T, root, parser, options = {}) {
+    const {active = () => true} = options;
+    const candidates = [], cubes = new Map(), records = [];
+    const sampler = createTextureSampler(T, parser, options);
+    const {gammaTexture, sampledTexture, sampledNativeTexture} = sampler;
+    root.traverse((node) => {
+      sampler.retainOriginalMaterial(node.material);
+      const meta = node.geometry?.userData?.mvStageMaterial;
+      if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
+      if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
+          !isColor(meta.colors._AmbientColor))) return;
+      if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) return;
+      if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
+          meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
+          !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
+      if (meta.alphaCutoff !== undefined && (meta.shader !== "stage" || !Number.isFinite(meta.alphaCutoff) ||
+          meta.alphaCutoff < 0 || meta.alphaCutoff > 1)) return;
+      if (meta.emissive && (meta.shader !== "stage" || meta.reflectionToggle ||
+          !node.geometry.getAttribute("_stage_emissive_uv") || !Number.isSafeInteger(meta.emissive.texture) ||
+          meta.emissive.texture < 0 || !isColor(meta.emissive.color) ||
+          !isColor(meta.emissive.uvTransform) || !Number.isFinite(meta.emissive.intensity))) return;
+      if (meta.shader === "stage") {
+        sampler.reserveBase(meta.lightmap);
+        if (meta.emissive) sampler.reserveBase(meta.emissive.texture);
+      }
+      candidates.push({node, original: node.material, meta});
+    });
+    if (!candidates.length) return null;
 
     for (const entry of candidates) {
       if (!active()) break;
@@ -472,23 +501,11 @@
           node.material = original;
           material.dispose();
         }
-        const copies = new Set(textures.values()), images = new Set();
-        for (const samplers of authoredTextures.values()) for (const copy of samplers.values()) copies.add(copy);
-        for (const copy of copies) copy.dispose();
-        for (const texture of mipTextures) {
-          if (nativeBaseMaps.has(texture)) continue;
-          texture.dispose();
-          if (texture.image) images.add(texture.image);
-        }
-        for (const texture of nativeBaseMaps) {
-          images.delete(texture.image);
-          texture.dispose();
-        }
-        for (const image of images) image.close?.();
+        sampler.dispose();
         for (const cube of cubes.values()) cube?.dispose();
       },
     };
   }
 
-  global.MVStudioStageMaterial = { apply };
+  global.MVStudioStageMaterial = { apply, createTextureSampler };
 })(typeof window !== "undefined" ? window : globalThis);
