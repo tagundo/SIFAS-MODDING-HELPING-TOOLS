@@ -15,9 +15,15 @@ _MATERIAL_PROPERTIES = {
     crc32(b"_TintColor") & 0x0FFFFFFF: "overlayTint",
     crc32(b"_MainTex_ST") & 0x0FFFFFFF: "overlayUV",
 }
+_SOFT_BILLBOARD_COLOR = crc32(b"_Color") & 0x0FFFFFFF
+_SOFT_BILLBOARD_SCALARS = {
+    crc32(name.encode("ascii")) & 0x0FFFFFFF: name
+    for name in ("_Density", "_MoveIntensity", "_AlphaAnimPower", "_AlphaAnimScale",
+                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeRandom")
+}
 
 
-def material_channels(bindings, curves, width_of):
+def material_channels(bindings, curves, width_of, *, world=False):
     """Decode built-in renderer material bindings with Unity's component nibble."""
     outputs, renderer_classes, count, offset = {}, {}, 0, 0
     for binding in bindings:
@@ -25,29 +31,44 @@ def material_channels(bindings, curves, width_of):
         renderer_class = binding.get("typeID")
         if renderer_class in (23, 137) and (binding.get("customType"), binding.get("isPPtrCurve")) == (22, 0):
             attribute = binding["attribute"]
-            kind = _MATERIAL_PROPERTIES.get(attribute & 0x0FFFFFFF)
+            property_hash = attribute & 0x0FFFFFFF
+            kind = _MATERIAL_PROPERTIES.get(property_hash)
+            property_name = None
             family, channel = divmod(attribute >> 28, 4)
             path = binding.get("path")
-            if (kind is None or width != 1 or not path or family not in (0, 1)
-                    or family == 1 and kind != "overlayTint"
-                    or renderer_class == 137 and binding.get("script") != {"m_FileID": 0, "m_PathID": 0}):
+            if kind is None and world and renderer_class == 23:
+                if binding.get("script") != {"m_FileID": 0, "m_PathID": 0}:
+                    return [], 0
+                if property_hash == _SOFT_BILLBOARD_COLOR and family == 0:
+                    kind = "overlayColor"
+                elif family == 2 and channel == 0:
+                    property_name = _SOFT_BILLBOARD_SCALARS.get(property_hash)
+                    if property_name is not None:
+                        kind = "overlayScalar"
+            elif (family not in (0, 1) or family == 1 and kind != "overlayTint"
+                  or renderer_class == 137 and binding.get("script") != {"m_FileID": 0, "m_PathID": 0}):
+                return [], 0
+            if kind is None or width != 1 or not path:
                 return [], 0
             if renderer_classes.setdefault(path, renderer_class) != renderer_class:
                 return [], 0
-            # Unity identifies both a four-channel vector and an animated
-            # material color. Keep the families separate until all lanes exist.
-            components = outputs.setdefault((path, kind, family), {})
+            # Keep the scalar, vector and color families distinct until all
+            # lanes of every property are present.
+            components = outputs.setdefault((path, kind, property_name, family), {})
             if channel in components:
                 return [], 0
             components[channel] = curves[offset]
             count += 1
         offset += width
-    if (any(len(components) != 4 for components in outputs.values())
-            or len({(path, kind) for path, kind, _ in outputs}) != len(outputs)):
+    if (any(len(components) != (1 if kind == "overlayScalar" else 4)
+            for (_, kind, _, _), components in outputs.items())
+            or len({(path, kind, name) for path, kind, name, _ in outputs}) != len(outputs)):
         return [], 0
     channels = []
-    for (path, kind, _), components in outputs.items():
-        channel = {"path": path, "kind": kind, "curves": [components[index] for index in range(4)]}
+    for (path, kind, property_name, _), components in outputs.items():
+        channel = {"path": path, "kind": kind, "curves": [components[index] for index in range(len(components))]}
+        if property_name is not None:
+            channel["property"] = property_name
         if renderer_classes[path] == 137:
             channel["rendererClass"] = 137
         channels.append(channel)
@@ -141,11 +162,12 @@ def read_material(scene, original, *, world=False):
     flags = set(str(tree.get("m_ShaderKeywords", "")).split())
     cull, depth = floats.get("_CullMode", 0), floats.get("_ZTestMode", 4)
     destination = floats.get("_BlendDst", 1)
+    depth_write = floats.get("_ZWriteParam", 0)
     comparison, reference = floats.get("_StencilComp", 8), floats.get("_StencilRef", 2)
     if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2)
-            or depth not in (4, 8) or world and depth != 4
-            or (floats.get("_BlendSrc", 5), floats.get("_ZWriteParam", 0),
-                floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0)) != (5, 0, 0, 0)):
+            or depth not in (4, 8) or world and depth != 4 or depth_write not in (0, 1)
+            or (floats.get("_BlendSrc", 5), floats.get("_StencilPassOp", 0),
+                floats.get("_StencilZFailOp", 0)) != (5, 0, 0)):
         return None
     alpha_blend = (world and (destination, comparison) == (10, 3)
                    and type(reference) in (float, int) and 1 <= reference <= 255 and reference == int(reference))
@@ -169,6 +191,13 @@ def read_material(scene, original, *, world=False):
               "cull": int(cull), "queue": 3000 if queue == -1 else queue}
     if depth == 4:
         fields["depthTest"] = True
+    if depth_write:
+        # The original vertex-colored additive floors participate in the
+        # main transparent pass and write its depth, even at zero tint alpha.
+        if (not world or alpha_blend or fields["queue"] != 3000 or texture is not None
+                or not fields["vertexColor"]):
+            return None
+        fields["depthWrite"] = True
     if alpha_blend:
         fields.update(alphaBlend=True, stencilRef=int(reference))
     return fields

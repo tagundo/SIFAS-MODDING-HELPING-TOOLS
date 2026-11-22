@@ -109,4 +109,56 @@ controller.update(1, project);
 assert.equal(lens.visible, false);
 assert.equal(rig.visible, false);
 
+const fogColor = new T.Vector4(1, 1, 1, .5), floorTint = new T.Vector4(1, 1, 1, 1);
+const density = { value: 2 }, movement = { value: 6 };
+let hasFloor = true;
+global.MVStudioSoftBillboards = { materialChannel(node, kind, property) {
+  if (node !== pivot) return;
+  if (kind === "overlayColor" && property === "_Color") return fogColor;
+  if (kind === "overlayScalar" && property === "_Density") return density;
+  if (kind === "overlayScalar" && property === "_MoveIntensity") return movement;
+} };
+global.MVStudioStageOverlay = { materialChannel(node, kind, _, scope) {
+  if (node === lens && hasFloor && kind === "overlayTint" && scope === "world") return floorTint;
+} };
+const fogEvent = clip("fog", "fogSource", 0, 4, { blendIn: 2 });
+project.tracks = [{ id: "fog", nativeClass: "AnimationTrack", binding, events: [fogEvent] }];
+project.stageMotion = {
+  quality: { fog: "stage_animation" },
+  mix: { fog: { materialScope: "world" } },
+  clips: { fogSource: { start: 0, duration: 4, sampleTimeF32: true, requiresOverlayMaterial: true, channels: [
+    { path: 10, kind: "overlayColor", curves: [zero, zero, zero, ["constant", 1]] },
+    { path: 10, kind: "overlayScalar", property: "_Density", curves: [["linear", [[0, 2], [4, 10]]]] },
+    { path: 10, kind: "overlayScalar", property: "_MoveIntensity", curves: [["constant", 22]] },
+    { path: 20, kind: "overlayTint", curves: [zero, zero, zero, zero] },
+    { path: 10, kind: "translation", curves: [["constant", 3], ["constant", 1], zero] },
+  ] } },
+};
+controller.update(1, project);
+assert(controller.accepts(fogEvent));
+assert.deepEqual(fogColor.toArray(), [.5, .5, .5, .75]);
+assert.deepEqual(floorTint.toArray(), [.5, .5, .5, .5]);
+assert.equal(density.value, 3);
+assert.equal(movement.value, 14);
+controller.update(3, project);
+assert.deepEqual(fogColor.toArray(), [0, 0, 0, 1]);
+assert.equal(density.value, 8);
+assert.equal(movement.value, 22);
+assert.deepEqual(pivot.position.toArray(), [-3, 1, 0]);
+controller.update(4, project);
+assert.deepEqual(fogColor.toArray(), [1, 1, 1, .5]);
+assert.deepEqual(floorTint.toArray(), [1, 1, 1, 1]);
+assert.equal(density.value, 2);
+assert.equal(movement.value, 6);
+
+controller.update(3, project);
+hasFloor = false;
+project.stageMotion = { ...project.stageMotion };
+controller.update(3, project);
+assert(!controller.accepts(fogEvent));
+assert.deepEqual(fogColor.toArray(), [1, 1, 1, .5]);
+assert.deepEqual(pivot.position.toArray(), [0, 1, 0], "missing material holder rejects the entire native clip");
+assert.equal(density.value, 2);
+assert.equal(movement.value, 6);
+
 console.log("Native stage motion: packed curves, handedness, visibility, zero-length assets and extrapolation.");

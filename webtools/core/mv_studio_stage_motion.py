@@ -14,7 +14,10 @@ _ASSEMBLY = "UnityEngine.Timeline.dll"
 _NAMESPACE = "UnityEngine.Timeline"
 _MAX_SCALARS = 300_000
 _MAX_MIX_KEYS = 128
-_WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1, "overlayTint": 4, "overlayUV": 4}
+_MATERIAL_KINDS = {"overlayTint", "overlayUV", "overlayColor", "overlayScalar"}
+_SOFT_BILLBOARD_KINDS = {"overlayColor", "overlayScalar"}
+_WIDTH = {"translation": 3, "rotation": 4, "euler": 3, "scale": 3, "visibility": 1,
+          "overlayTint": 4, "overlayUV": 4, "overlayColor": 4, "overlayScalar": 1}
 _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation": "stage_animation",
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
@@ -157,7 +160,7 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             (row["typeID"], row["customType"]) in supported_packed for row in data.get("unsupportedKinds", ())):
         from .mv_studio_stage_overlay import material_channels
         packed = animation._packed_curves(tree, deadline)
-        channels, described = material_channels(bindings, packed, animation._width)
+        channels, described = material_channels(bindings, packed, animation._width, world=world)
         particle_described = 0
         if world:
             particles, particle_described = _particle_start_colors(bindings, packed)
@@ -186,7 +189,7 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             return None
         if not path and kind in {"translation", "rotation", "euler"}:
             return None  # Root motion also depends on the Animator and offsets.
-        key = (path, "rotation" if kind == "euler" else kind)
+        key = (path, "rotation" if kind == "euler" else kind, track.get("property"))
         if key in claimed:
             return None
         claimed.add(key)
@@ -197,6 +200,8 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
         channel = {"path": path, "kind": kind, "curves": curves}
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
+        if kind == "overlayScalar":
+            channel["property"] = track["property"]
         if track.get("rendererClass") == 137:
             channel["rendererClass"] = 137
         channels.append(channel)
@@ -354,13 +359,13 @@ def read(objects, mono, tracks, deadline):
                 # Unity samples the activation clock in float32 before a
                 # newly enabled ParticleSystem advances this display frame.
                 declaration["sampleTimeF32"] = True
-            material_channels = [channel for channel in declaration["channels"]
-                                 if channel["kind"] in {"overlayTint", "overlayUV"}]
+            material_channels = [channel for channel in declaration["channels"] if channel["kind"] in _MATERIAL_KINDS]
             requires_material = False
             if material_channels:
                 has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
+                has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS for channel in material_channels)
                 if material_scope == "world":
-                    if has_skin:
+                    if has_skin or has_soft_billboard:
                         timing["materialScope"] = "world"
                         timing_cost += 1
                         requires_material = True
@@ -368,6 +373,8 @@ def read(objects, mono, tracks, deadline):
                         rejected.add(profile)
                         continue
                 elif material_scope == "overlay":
+                    if has_soft_billboard:
+                        continue
                     requires_material = not overlay or has_skin
                 else:
                     continue

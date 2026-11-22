@@ -2,7 +2,8 @@
   "use strict";
 
   const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible",
-    overlayTint: "overlayTint", overlayUV: "overlayUV" };
+    overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar" };
+  const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar"]);
   const clamp = (x, low, high) => Math.min(high, Math.max(low, x));
   const number = (value, fallback) => Number.isFinite(value) ? value : fallback;
   const modulo = (x, divisor) => ((x % divisor) + divisor) % divisor;
@@ -88,6 +89,19 @@
       events: track.events.filter((event) => allowed.has(event.id)) };
   }
 
+  function materialValue(node, source, scope, requiresMaterial) {
+    const { kind, rendererClass, property } = source;
+    if (kind === "overlayColor" || kind === "overlayScalar") {
+      if (scope !== "world" || (rendererClass !== undefined && rendererClass !== 23)) return;
+      const color = kind === "overlayColor";
+      const value = global.MVStudioSoftBillboards?.materialChannel?.(node, kind, color ? "_Color" : property);
+      if (color ? value?.isVector4 : Number.isFinite(value?.value)) return value;
+      return;
+    }
+    if (requiresMaterial) return global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
+    if (rendererClass === undefined) return node.userData.mvStageOverlayChannels?.[kind];
+  }
+
   function apply(T, root) {
     const groups = new Map(), acceptedEvents = new Set();
     root.traverse((node) => {
@@ -107,6 +121,7 @@
     function restore(channel) {
       const { node, kind, base, value, material } = channel;
       if (kind === "visible") node.visible = base;
+      else if (kind === "overlayScalar") value.value = base;
       else {
         value.copy(base);
         if (!material) node.updateMatrix();
@@ -145,30 +160,29 @@
                 new Set(particleColors.map(row => row.path)).size !== particleColors.length) continue;
           }
           const samples = [], targets = [];
+          if (materialScope !== "world" && clip.channels.some(row => row?.kind === "overlayColor" || row?.kind === "overlayScalar")) continue;
           const requiresMaterial = clip.requiresOverlayMaterial === true || materialScope === "world";
           for (const source of clip.channels) {
             if (!Object.hasOwn(kinds, source?.kind)) continue;
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
-            const material = kind === "overlayTint" || kind === "overlayUV";
-            const value = !material ? node?.[kind] : requiresMaterial
-              ? global.MVStudioStageOverlay?.materialChannel?.(node, kind, source.rendererClass, materialScope)
-              : node?.userData.mvStageOverlayChannels?.[kind];
-            if (!node || (material && !requiresMaterial && source.rendererClass !== undefined) ||
-                !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
-                (material && !value) ||
-                source.curves.length !== (kind === "visible" ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
-            targets.push({source, kind, node, material, value});
+            const material = materialKinds.has(kind), numeric = kind === "visible" || kind === "overlayScalar";
+            if (!node || !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
+                source.curves.length !== (numeric ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
+            const value = material ? materialValue(node, source, materialScope, requiresMaterial) : node[kind];
+            if (material && !value) continue;
+            targets.push({source, kind, node, material, numeric, value});
           }
           // A missing material target must not leave a partial animation.
           if (requiresMaterial && (targets.length !== clip.channels.length || !targets.some(target => target.material))) continue;
-          for (const {source, kind, node, material, value} of targets) {
+          for (const {source, kind, node, material, numeric, value} of targets) {
             const id = material ? value : `${source.path}:${kind}`;
             if (!group.channels.has(id)) group.channels.set(id, {
-              node, kind, value, material, base: kind === "visible" ? value : value.clone(),
+              node, kind, value, material, numeric,
+              base: kind === "overlayScalar" ? value.value : numeric ? value : value.clone(),
               nativeVisibility: clip.sampleTimeF32 === true &&
                 (requiresMaterial || group.animation.quality === "stage_display" && source.visibilityType === "gameObject" ||
                   binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"),
-              sum: kind === "visible" ? 0 : value.clone(), weight: 0, changed: false,
+              sum: numeric ? 0 : value.clone(), weight: 0, changed: false,
             });
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });
           }
@@ -180,7 +194,7 @@
 
     function sample({ source, target, values }, time, weight) {
       for (let i = 0; i < values.length; i++) values[i] = evaluate(source.curves[i], time);
-      if (target.kind === "visible") target.sum += values[0] * weight;
+      if (target.numeric) target.sum += values[0] * weight;
       else if (target.kind === "quaternion") {
         if (source.kind === "euler") quaternion.setFromEuler(euler.set(values[0] * radians, -values[1] * radians, -values[2] * radians));
         else {
@@ -211,7 +225,7 @@
         if (group.animation?.node) group.animation.node.visible = enabled && group.animation.node.userData.mvStageNode.active;
         for (const channel of group.channels.values()) {
           channel.weight = 0;
-          if (channel.kind === "visible") channel.sum = 0;
+          if (channel.numeric) channel.sum = 0;
           else if (channel.kind !== "quaternion") channel.sum.set(0, 0, 0, 0);
         }
         if (enabled) for (const input of group.events) {
@@ -234,7 +248,8 @@
           if (kind === "visible") {
             const active = (sum + Number(base) * remainder) / (weight + remainder);
             node.visible = channel.nativeVisibility ? nativeActive(active) : active > .5;
-          } else {
+          } else if (kind === "overlayScalar") value.value = (sum + base * remainder) / (weight + remainder);
+          else {
             if (kind === "quaternion") value.copy(base).slerp(sum, weight / (weight + remainder));
             else value.copy(sum).addScaledVector(base, remainder).multiplyScalar(1 / (weight + remainder));
             if (!material) node.updateMatrix();

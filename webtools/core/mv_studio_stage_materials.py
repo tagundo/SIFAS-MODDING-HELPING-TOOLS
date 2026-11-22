@@ -15,6 +15,7 @@ _SHADERS = {
     ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "solid",
     ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "general",
 }
+_RIMLIGHT_DEPTH = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)
 _AMBIENT_SCRIPT = ("LiveCoreStageAmbient", "LLAS.Scene.Live.Components", "Assembly-CSharp.dll")
 _MODEL_SCRIPT = ("LiveCoreStageModel", *_AMBIENT_SCRIPT[1:])
 _EMISSIVE_SCRIPT = ("LiveCoreStageEmissive", *_AMBIENT_SCRIPT[1:])
@@ -133,21 +134,36 @@ def emissive_materials(scene, component, tree):
             if (material := _ref(receiver, ref)) is not None and material.type.name == "Material"}
 
 
-def _shader(material, tree):
+def _shader_key(material, tree):
     pointer = tree.get("m_Shader", {})
     number = pointer.get("m_FileID")
     externals = material.assets_file.externals
     if type(number) is not int or not 1 <= number <= len(externals):
         return None
     cab = externals[number - 1].path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
-    return _SHADERS.get((cab, pointer.get("m_PathID")))
+    return cab, pointer.get("m_PathID")
+
+
+def camera_depth(scene, material, renderer_tree, *, supports_cutout):
+    """Resolve the known ShadowCaster pass independently of the color preview."""
+    if renderer_tree.get("m_CastShadows") not in (0, 1, 2):
+        return None
+    tree = scene.tree(material)
+    key = _shader_key(material, tree)
+    queue = tree.get("m_CustomRenderQueue", -1)
+    if ((key not in _SHADERS and key != _RIMLIGHT_DEPTH) or type(queue) is not int or not -1 <= queue <= 2500
+            or tree.get("disabledShaderPasses")):
+        return None
+    if _SHADERS.get(key) == "stage" and "_ALPHATEST_ON" in tree.get("m_ShaderKeywords", "").split():
+        return {"kind": "cutout"} if supports_cutout else None
+    return {"kind": "opaque"}
 
 
 def read_material(scene, material, ambient, single_ambient):
     if material is None or material.type.name != "Material":
         return None
     tree = scene.tree(material)
-    mode = _shader(material, tree)
+    mode = _SHADERS.get(_shader_key(material, tree))
     if mode is None:
         return None
     floats = _properties(tree, "m_Floats")

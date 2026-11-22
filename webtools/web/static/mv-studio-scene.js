@@ -313,6 +313,7 @@
     const physicsClock = global.MVStudioPhysics?.createClock();
     const post = global.MVStudioPost?.create(T, renderer);
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
+    const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -381,6 +382,7 @@
       cancelDraw();
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
         if (preparation?.shown) {
+          prepareSoftDepth(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
           renderer.render(preparation.scene, stageCamera);
           return;
         }
@@ -404,6 +406,14 @@
         if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera, preserveDepth)) return;
       }
       renderScene(camera);
+    }
+
+    function prepareSoftDepth(source, camera, sceneRecords, qualityMode) {
+      const visibleEffects = sceneRecords.filter(({stageSoftBillboards}) => stageSoftBillboards?.hasVisible());
+      if (!visibleEffects.length) return;
+      // The live camera requests a separate opaque depth texture in the three full 3D modes.
+      const depth = (qualityMode ?? 30) <= 30 ? cameraDepth?.capture(source, camera) : null;
+      for (const {stageSoftBillboards} of visibleEffects) stageSoftBillboards.setDepth(depth, camera);
     }
 
     function focusDistance(slot, part) {
@@ -471,6 +481,7 @@
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
+      prepareSoftDepth(scene, camera, records, project?.quality?.mode);
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -577,6 +588,7 @@
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
+      record.stageSoftBillboards?.dispose();
       record.stageBeam?.dispose();
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
@@ -858,6 +870,10 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stageSoftBillboards = await global.MVStudioSoftBillboards?.apply(T, record.root, gltf.parser, {
+            active, maxTextureSize: renderer.capabilities.maxTextureSize,
+          });
+          if (!active()) return null;
           record.stageBeam = await global.MVStudioStageBeam?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.shaftTemplates = await global.MVStudioShaft?.prepare(T, gltf);
@@ -1015,6 +1031,7 @@
           for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
           record.stageFlash?.update(0, preview);
           record.stageMotion?.update(0, preview);
+          record.stageSoftBillboards?.update(0);
           record.stageLaserCores?.update(0, preview, record.stageMotion);
           record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
@@ -1549,6 +1566,7 @@
       stageSparksRoop?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
@@ -1650,6 +1668,7 @@
         clear();
         split?.dispose();
         post?.dispose();
+        cameraDepth?.dispose();
         release(grid);
         controls.dispose();
         renderer.dispose();

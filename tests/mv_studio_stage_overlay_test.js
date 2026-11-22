@@ -522,8 +522,48 @@ async function testWorldMatcap() {
   console.log("Native MatCap uses camera-space normals and vertex RGBA with the authored world pass.");
 }
 
+async function testWorldAdditiveDepthWrites() {
+  const root = new T.Group();
+  function add(path, fields) {
+    const owner = new T.Group();
+    owner.userData.mvStageNode = {active: true, path, binding: "/EntryPoint/Live/Stages/MainStage/Effect/Floor"};
+    const original = new T.MeshBasicMaterial();
+    const mesh = new T.Mesh(new T.PlaneGeometry(), original);
+    mesh.geometry.userData.mvStageOverlay = {
+      world: true, depthTest: true, queue: 3000, texture: null,
+      tint: [1, 1, 1, 0], uv: [1, 1, 0, 0], vertexColor: true, cull: 0, ...fields,
+    };
+    owner.add(mesh);
+    root.add(owner);
+    return {mesh, original};
+  }
+  const floor = add(1, {depthWrite: true}), legacy = add(2, {});
+  const invalid = [
+    add(3, {depthWrite: true, world: false}),
+    add(4, {depthWrite: true, alphaBlend: true, stencilRef: 2, sortCenter: [0, 0, 0]}),
+    add(5, {depthWrite: "true"}),
+    add(6, {depthWrite: true, queue: 2000}),
+  ];
+  const panel = await MVStudioStageOverlay.apply(T, root);
+  assert.equal(floor.mesh.material.transparent, true);
+  assert.equal(floor.mesh.material.uniforms.uTint.value.w, 0);
+  assert.equal(floor.mesh.material.depthTest, true);
+  assert.equal(floor.mesh.material.depthWrite, true);
+  assert.equal(floor.mesh.material.depthFunc, T.LessEqualDepth);
+  assert.equal(floor.mesh.material.blendSrc, T.SrcAlphaFactor);
+  assert.equal(floor.mesh.material.blendDst, T.OneFactor);
+  assert.equal(floor.mesh.material.stencilWrite, false);
+  assert.equal(floor.mesh.renderOrder, 3000);
+  assert.equal(legacy.mesh.material.depthWrite, false);
+  for (const {mesh, original} of invalid) assert.equal(mesh.material, original);
+  assert.equal(panel.hasDepthTest(), false);
+  panel.dispose();
+  assert.equal(floor.mesh.material, floor.original);
+  console.log("Native main-camera additive transparency retains authored depth writes.");
+}
+
 run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope)
-  .then(testTransparentBoundsOrder).then(testWorldMatcap).catch(error => {
+  .then(testTransparentBoundsOrder).then(testWorldMatcap).then(testWorldAdditiveDepthWrites).catch(error => {
     console.error(error);
     process.exitCode = 1;
   });

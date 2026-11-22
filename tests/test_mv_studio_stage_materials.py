@@ -73,6 +73,23 @@ class StageMatCapMaterialTests(unittest.TestCase):
 
 
 class StageOpaqueMaterialTests(unittest.TestCase):
+    def test_camera_depth_uses_the_native_pass_queue_and_casting_mode(self):
+        material = SimpleNamespace(assets_file=SimpleNamespace(
+            externals=[SimpleNamespace(path="CAB-fc0511ca63f2d94bbfe211260d08ddd1")]))
+        tree = {"m_Shader": {"m_FileID": 1, "m_PathID": -6509019661097744245}, "m_CustomRenderQueue": -1}
+        scene = SimpleNamespace(tree=lambda _: tree)
+        renderer = {"m_CastShadows": 0}
+        self.assertEqual(stage.camera_depth(scene, material, renderer, supports_cutout=False), {"kind": "opaque"})
+        self.assertIsNone(stage.camera_depth(scene, material, {"m_CastShadows": 3}, supports_cutout=True))
+        tree["m_CustomRenderQueue"] = 2501
+        self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=True))
+        tree["m_CustomRenderQueue"] = 2500
+        tree["m_ShaderKeywords"] = "_ALPHATEST_ON"
+        self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=False))
+        self.assertEqual(stage.camera_depth(scene, material, renderer, supports_cutout=True), {"kind": "cutout"})
+        tree["disabledShaderPasses"] = ["SHADOWCASTER"]
+        self.assertIsNone(stage.camera_depth(scene, material, renderer, supports_cutout=True))
+
     def test_general_opaque_uses_compiled_blend_and_depth_but_authored_stencil(self):
         material = SimpleNamespace(
             path_id=11, type=SimpleNamespace(name="Material"),
@@ -98,6 +115,29 @@ class StageOpaqueMaterialTests(unittest.TestCase):
 
 
 class StageAlphaMaterialTests(unittest.TestCase):
+    def test_world_additive_depth_write_uses_authored_material_state(self):
+        material = SimpleNamespace(type=SimpleNamespace(name="Material"), assets_file=SimpleNamespace(
+            parent=None, externals=[SimpleNamespace(path="CAB-adf9ba7b61bd035c754bf74ae44927cb")]))
+        floats = {"_BlendSrc": 5., "_BlendDst": 1., "_ZTestMode": 4., "_ZWriteParam": 1., "_CullMode": 0.,
+                  "_StencilComp": 8., "_StencilRef": 2., "_StencilPassOp": 0., "_StencilZFailOp": 0.}
+        tree = {"m_Shader": {"m_FileID": 1, "m_PathID": 7151384334892346267},
+                "m_CustomRenderQueue": 3000, "m_ShaderKeywords": "_VERTEX_COLOR_ON",
+                "m_SavedProperties": {"m_Floats": floats.items()}}
+        scene = SimpleNamespace(tree=lambda _: tree)
+        self.assertIsNone(overlay.read_material(scene, material))
+        fields = overlay.read_material(scene, material, world=True)
+        self.assertEqual(fields, {"texture": None, "tint": [1, 1, 1, 1], "uv": [1, 1, 0, 0],
+                                  "vertexColor": True, "cull": 0, "queue": 3000,
+                                  "depthTest": True, "depthWrite": True})
+        self.assertEqual(overlay.export_material(None, fields), fields)
+        for rejected in ({"_ZWriteParam": 2.}, {"_BlendDst": 10., "_StencilComp": 3.},
+                         {"_StencilComp": 3.}, {"_ZTestMode": 8.}, {"_SATURATE": 1.}):
+            with self.subTest(rejected=rejected), patch.dict(floats, rejected):
+                self.assertIsNone(overlay.read_material(scene, material, world=True))
+        floats["_ZWriteParam"] = 0.
+        self.assertNotIn("depthWrite", overlay.read_material(scene, material, world=True))
+        self.assertNotIn("depthWrite", overlay.read_material(scene, material))
+
     def test_world_alpha_blend_keeps_authored_stencil_comparison(self):
         from webtools.core import mv_studio_stage_overlay as transparent
 

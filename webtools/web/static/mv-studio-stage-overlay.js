@@ -96,7 +96,10 @@
       const skinned = node.isSkinnedMesh === true;
       if (rendererClass !== (skinned ? 137 : 23) || (scope === "world" && fields.depthTest !== true)) return;
       const alphaBlend = fields.alphaBlend === true, stencilRef = fields.stencilRef;
-      const matcap = fields.matcap === true;
+      const matcap = fields.matcap === true, depthWrite = fields.depthWrite === true;
+      if (fields.depthWrite !== undefined && typeof fields.depthWrite !== "boolean") return;
+      if (depthWrite && (scope !== "world" || alphaBlend || matcap || stencilRef !== undefined ||
+          fields.queue !== 3000 || fields.texture !== null || fields.vertexColor !== true)) return;
       if (matcap) {
         if (!validMatcap(node.geometry, fields)) return;
       } else if ((alphaBlend || stencilRef !== undefined) &&
@@ -123,7 +126,7 @@
       if (!classes) owners.set(owner, classes = new Map());
       const key = materialKey(scope, rendererClass);
       classes.set(key, 1 + (classes.get(key) || 0));
-      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, stencilRef, sortAnchor, original: node.material,
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef, sortAnchor, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
     const ready = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
@@ -168,7 +171,7 @@
     try {
       for (const mesh of usable) {
         if (!active()) break;
-        const { node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, stencilRef } = mesh;
+        const { node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef } = mesh;
         const map = sampler && scope === "world" && fields.texture !== null && fields.mainSampler
           ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
         if (!active()) break;
@@ -189,7 +192,7 @@
         const stencilTest = stencilRef !== undefined;
         const material = new T.ShaderMaterial({
           vertexShader, fragmentShader, defines: matcap ? { MATCAP: 1 } : {}, transparent: true, skinning: skinned,
-          depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite: false,
+          depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite,
           toneMapped: false, side, blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: blendDst,
           stencilWrite: stencilTest, stencilFunc: stencilTest ? T.EqualStencilFunc : T.AlwaysStencilFunc,

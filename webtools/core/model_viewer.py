@@ -1047,6 +1047,23 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data
     if stage_data is not None:
         from .mv_studio_stage_materials import read_vertex_inputs
         read_vertex_inputs(handler, stage_data, len(positions))
+        soft = stage_data.get("softBillboard")
+        if soft:
+            channels = getattr(mesh.m_VertexData, "m_Channels", ())
+            required = {0: 3, 4: 2, **({3: 4, 5: 3} if soft == "fog" else {1: 3})}
+            if all(index < len(channels) and (channels[index].format, channels[index].dimension) == (0, dimensions)
+                   for index, dimensions in required.items()):
+                if soft == "fog":
+                    centers = np.asarray(handler.m_UV1, dtype=np.float32)
+                    if (centers.shape == positions.shape and np.isfinite(centers).all()
+                            and "color" in stage_data):
+                        # The main mesh and pivot both mirror X. The shader reconstructs
+                        # the unreflected camera-facing delta from those coordinates.
+                        centers = centers.copy()
+                        centers[:, 0] *= -1
+                        stage_data["softCenter"] = centers
+                elif len(channels) <= 3 or not channels[3].dimension or "color" in stage_data:
+                    stage_data["smokeNormals"] = has_source_normals and (np.abs(normals).max(axis=1) >= 1e-12).all()
     if morph_weights:
         from .model_rig import apply_default_morphs
         positions, normals = apply_default_morphs(mesh, positions, normals, morph_weights, deadline=deadline)
@@ -1217,6 +1234,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
+        from . import mv_studio_soft_billboards
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
@@ -1343,7 +1361,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         _remaining(deadline)
         if _key(game_object) in detached_templates:
             continue
-        stage_beam = stage_opaque = stage_transparent = None
+        stage_beam = stage_opaque = stage_transparent = stage_soft = None
         stage_motion = None
         overlay = False
         renderer_type = renderer.type.name
@@ -1365,7 +1383,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         pass
                 if stage_beam is None and (not overlay or renderer_type == "SkinnedMeshRenderer"):
                     if overlay or mv_studio_stage_overlay.world_layer(scene, game_object):
-                        stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
+                        if not overlay and renderer_type == "MeshRenderer":
+                            stage_soft = mv_studio_soft_billboards.read_material(scene, candidate)
+                        if stage_soft is None:
+                            stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
                     if (stage_transparent is None and candidate is not None and not overlay
                             and renderer_type == "SkinnedMeshRenderer" and len(material_refs) == 1):
                         identity = _key(candidate)
@@ -1389,7 +1410,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             mesh_obj = _ref(renderer, tree.get("m_Mesh"))
         else:
             mesh_obj = scene.filters.get(_key(game_object))
-        builtin_plane = overlay and mesh_obj is None and mv_studio_stage_overlay.builtin_plane(scene, game_object)
+        builtin_plane = (mesh_obj is None and (overlay or stage_transparent and stage_transparent.get("depthWrite"))
+                         and mv_studio_stage_overlay.builtin_plane(scene, game_object))
         if not builtin_plane and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
             scene.warn("linked_mesh_missing", game_name)
             continue
@@ -1408,7 +1430,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
         display_binding = stage_displays.get(_key(renderer)) if stage_materials else None
-        stage_inputs = {} if overlay or stage_transparent or flash_binding or display_binding else None
+        stage_inputs = {} if overlay or stage_transparent or stage_soft or flash_binding or display_binding else None
+        if stage_soft:
+            stage_inputs["softBillboard"] = stage_soft["kind"]
         if stage_transparent and stage_transparent.get("matcap"):
             stage_inputs["needsAuthoredNormals"] = True
         coloring_for_renderer = {}
@@ -1556,6 +1580,22 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
+        soft_billboard = None
+        if stage_soft and uv is not None and len(submeshes) == 1:
+            center = stage_inputs.get("softCenter")
+            if center is not None or stage_inputs.get("smokeNormals"):
+                texture = stage_soft["texture"]
+                try:
+                    texture_index = materials.texture(texture)
+                except ValueError:
+                    pass
+                else:
+                    soft_billboard = {**stage_soft, "texture": texture_index}
+                    mv_studio_stage_materials.collect_texture_sampler(materials, texture, soft_billboard, "mainSampler")
+                    if "color" in stage_inputs:
+                        attributes["_STAGE_COLOR"] = glb.attribute(stage_inputs["color"], "VEC4")
+                    if center is not None:
+                        attributes["_SOFT_CENTER"] = glb.attribute(center, "VEC3")
         source = _source_path(mesh_source)
         source_index = rig.source_indices.get(source) if rig is not None else None
         writable = source_index is not None and not auto_face
@@ -1613,6 +1653,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     primitives[-1]["extras"]["mvPenlight"] = {**penlight_transform, "material": native_material}
             if stage_beam is not None:
                 primitives[-1]["extras"]["mvStageBeam"] = stage_beam
+            if soft_billboard is not None:
+                primitives[-1]["extras"]["mvStageSoftBillboard"] = soft_billboard
             if flash is not None:
                 primitives[-1]["attributes"] = {**attributes, "_STAGE_FLASH_UV": glb.attribute(stage_inputs["lightUV"], "VEC2")}
                 primitives[-1]["extras"]["mvStageFlash"] = flash
@@ -1717,6 +1759,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         mv_studio_stage_materials.collect_texture_sampler(
                             materials, stage_lightmap_source, descriptor, "lightmapSampler",
                         )
+            if (stage_materials and material_obj is not None and renderer_type == "MeshRenderer" and display is None
+                    and mv_studio_stage_overlay.world_layer(scene, game_object)):
+                shadow = mv_studio_stage_materials.camera_depth(
+                    scene, material_obj, tree, supports_cutout=bool(descriptor and "alphaCutoff" in descriptor),
+                )
+                if shadow is not None:
+                    primitives[-1]["extras"]["mvStageCameraDepth"] = shadow
             coloring = coloring_for_renderer.get(_key(material_obj)) if material_obj is not None else None
             if coloring and uv is not None and "lightUV" in stage_inputs:
                 try:

@@ -99,6 +99,47 @@ class TimelineContractTests(unittest.TestCase):
         ):
             self.assertEqual(material_channels(unsupported, curves, lambda _: 1), ([], 0))
 
+    def test_soft_billboard_material_requires_complete_world_color_and_typed_scalar_lanes(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        from zlib import crc32
+
+        def binding(path, name, lane, renderer_class=23):
+            return {"path": path, "typeID": renderer_class, "customType": 22, "isPPtrCurve": 0,
+                    "script": {"m_FileID": 0, "m_PathID": 0},
+                    "attribute": (crc32(name.encode()) & 0x0fffffff) | (lane << 28)}
+
+        fog, floor = 108786859, 3192247854
+        color = [binding(fog, "_Color", lane) for lane in (3, 1, 0, 2)]
+        props = ("_Density", "_MoveIntensity", "_AlphaAnimPower", "_AlphaAnimScale",
+                 "_SizeStartX", "_SizeStartY", "_SizeEndX", "_SizeEndY", "_SizeRandom")
+        scalars = [binding(fog, name, 8) for name in props]
+        tint = [binding(floor, "_TintColor", lane) for lane in range(4)]
+        bindings = {"genericBindings": []}
+        constants = {"data": []}
+        tree = {"m_ClipBindingConstant": bindings, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": constants},
+        }}
+        reader = SimpleNamespace(read_typetree=lambda: tree)
+
+        def read(rows, **scope):
+            bindings["genericBindings"] = rows
+            constants["data"] = list(range(len(rows)))
+            return stage._read_clip(reader, None, **scope)
+
+        declaration, _ = read(color + scalars + tint, world=True)
+        self.assertEqual(declaration["channels"], [
+            {"path": fog, "kind": "overlayColor", "curves": [("constant", lane) for lane in (2, 1, 3, 0)]},
+            *[{"path": fog, "kind": "overlayScalar", "property": name, "curves": [("constant", lane)]}
+              for lane, name in enumerate(props, 4)],
+            {"path": floor, "kind": "overlayTint", "curves": [("constant", lane) for lane in range(13, 17)]},
+        ])
+        self.assertIsNone(read(color + scalars + tint, overlay=True))
+        for invalid in (color[1:] + scalars, color + scalars + scalars[:1],
+                        color + [binding(fog, "_Density", 9)], color + [binding(fog, "_Density", 8, 137)],
+                        color + [binding(fog, "_UnknownFloat", 8)],
+                        color + [{**scalars[0], "script": {"m_FileID": 0, "m_PathID": 77}}]):
+            self.assertIsNone(read(invalid + tint, world=True))
+
     def test_stage_motion_rejects_partial_native_clip_playback(self):
         from webtools.core import mv_studio_stage_motion as stage
 
@@ -187,6 +228,15 @@ class TimelineContractTests(unittest.TestCase):
                 self.assertEqual(shared["clips"]["cab:4"], skinned)
             bindings[3]["attribute"] = texture_tint | (2 << 28)
             self.assertIsNone(stage.read(objects, mono, [overlay], time.monotonic() + 3))
+            soft_color = crc32(b"_Color") & 0x0fffffff
+            for lane, row in enumerate(bindings):
+                row.update(typeID=23, attribute=soft_color | (lane << 28))
+            for tracks in ([world, legacy], [legacy, world]):
+                shared = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(shared["bindings"], [world["binding"]])
+                self.assertEqual(shared["mix"], {"cab:2:0": {"materialScope": "world"}})
+                self.assertTrue(shared["clips"]["cab:4"]["requiresOverlayMaterial"])
+                self.assertTrue(shared["clips"]["cab:4"]["sampleTimeF32"])
 
     def test_resident_particle_color_requires_exact_world_skin_and_complete_lanes(self):
         from webtools.core import mv_studio_stage_motion as stage
