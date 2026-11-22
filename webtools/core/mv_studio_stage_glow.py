@@ -88,8 +88,10 @@ def _system(source):
 
 def read_additive_atlas(objects, renderer, fields, *, surface=None, atlas=None):
     refs = fields["m_Materials"]
-    count = 2 if surface is not None else len(refs)
-    if count not in (1, 2) or len(refs) != count or any(ref != refs[0] for ref in refs):
+    if surface is not None:
+        if len(refs) != 2 or refs[0] != refs[1]:
+            return None
+    elif len(refs) not in (1, 2) or len(refs) == 2 and refs[1] not in (refs[0], billboard._NULL):
         return None
     material = title._local(objects, renderer, refs[0], "Material")
     if material is None:

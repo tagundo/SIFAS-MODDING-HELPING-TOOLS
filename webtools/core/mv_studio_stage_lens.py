@@ -5,12 +5,15 @@ import time
 
 from . import model_viewer as viewer, mv_studio_butterfly_glow as billboard
 from . import mv_studio_butterfly_shine as shine, mv_studio_leaves as leaves
+from . import mv_studio_stage_dust as dust
 from . import mv_studio_stage_glow as glow, mv_studio_stage_particles as particles, mv_studio_stage_title as title
 from . import mv_studio_timeline as timeline
 from .model_rig import _authored_trs, _trs
 from .mv_studio_stage_title_particles import _constant, _float32
 
 
+SCHEMA = 2
+_LEGACY_SCHEMAS = (1, SCHEMA)
 _SECTIONS = {"control": "stage_control", "display": "stage_display"}
 _STATE = {**billboard._SETTINGS, "looping": True, "prewarm": True, "ringBufferLoopRange": {"x": 0, "y": 1}}
 _RENDERER = {**billboard._RENDERER, "m_MaxParticleSize": .5, "m_Flip": billboard._ZERO}
@@ -115,9 +118,13 @@ def _prefab(objects, game, deadline):
 
 def _emitter(objects, parts, transforms):
     renderer, fields = parts["ParticleSystemRenderer"]
-    if not billboard._matches(fields, _RENDERER):
+    source = parts["ParticleSystem"][1]
+    if billboard._matches(fields, _RENDERER):
+        system = _system(source)
+    elif billboard._matches(fields, dust.RENDERER):
+        system = dust.read(source)
+    else:
         return None
-    system = _system(parts["ParticleSystem"][1])
     if system is None:
         return None
     atlas = glow.read_additive_atlas(objects, renderer, fields)
@@ -127,12 +134,19 @@ def _emitter(objects, parts, transforms):
     for transform in transforms[1:]:
         world = world @ viewer._trs(transform)
     pose = _trs(world)
-    position = pose["translation"]
-    # Unity builds local bounds before applying the unit-scale emitter pose.
-    center = world @ [0, system["shapeScale"][2] / 2, 0, 1]
-    sort_center = [_float32(-center[0]), _float32(center[1]), _float32(center[2])]
-    return {**system, "position": position, "rotation": pose["rotation"], "scale": [1, 1, 1],
-            "sortCenter": sort_center}, atlas
+    rotation = pose["rotation"]
+    row = {**system, "position": pose["translation"], "rotation": rotation, "scale": [1, 1, 1]}
+    if system.get("kind") == "boxDust":
+        # The native Float32 gravity basis depends on the serialized quaternion.
+        diagonal = _float32(.7071068286895752)
+        if (any(_authored_trs(node)["rotation"] != title._IDENTITY["rotation"] for node in transforms[:-1])
+                or transforms[-1]["m_LocalRotation"] != dict(zip("xyzw", (diagonal, 0, 0, diagonal)))):
+            return None
+    else:
+        # Unity builds local bounds before applying the unit-scale emitter pose.
+        center = world @ [0, system["shapeScale"][2] / 2, 0, 1]
+        row["sortCenter"] = [_float32(-center[0]), _float32(center[1]), _float32(center[2])]
+    return row, atlas
 
 
 def _section(track):
@@ -152,7 +166,7 @@ def _source(objects, owner, fields, event):
     overwrite = event["values"].get("overwriteRandomSeed")
     if type(overwrite) is not int or overwrite not in (0, 1):
         return None
-    control = particles._source(objects, owner, fields, event, overwrite_seed=bool(overwrite))
+    control = particles._source(objects, owner, fields, event, overwrite_seed=bool(overwrite), max_duration=120)
     return control[0] if control is not None else None
 
 
@@ -162,7 +176,7 @@ def read(objects, mono, tracks, deadline):
         return None
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
-    cues, emitters, rejected, textures, atlas_indices = [], {}, set(), [], {}
+    cues, emitters, layouts, rejected, textures, atlas_indices = [], {}, {}, set(), [], {}
     complete = True
     for track in tracks:
         source = controls.get(track["id"])
@@ -195,8 +209,16 @@ def read(objects, mono, tracks, deadline):
                 identity = timeline._id(key)
                 if identity in rejected:
                     continue
+                if identity not in layouts:
+                    layouts[identity] = _prefab(objects, prefab, deadline)
+                layout = layouts[identity]
+                if layout is None:
+                    rejected.add(identity)
+                    continue
+                if event["duration"] > 60 and layout[0].get("kind") != "boxDust":
+                    continue
                 if identity not in emitters:
-                    emitter = _load_emitter(objects, prefab, deadline, atlas_indices, textures)
+                    emitter = _load_emitter(layout, deadline, atlas_indices, textures)
                     if emitter is None:
                         rejected.add(identity)
                         continue
@@ -210,16 +232,13 @@ def read(objects, mono, tracks, deadline):
                          "quality": _SECTIONS[section]})
     if not cues and not complete:
         return None
-    return {"schema": 1, "scanComplete": complete, "textures": textures, "material": glow._MATERIAL,
+    return {"schema": SCHEMA, "scanComplete": complete, "textures": textures, "material": glow._MATERIAL,
             "tiles": [2, 1], "maxViewportWidth": .5, "sortMode": 0, "emitters": list(emitters.values()),
             "cues": cues}
 
 
-def _load_emitter(objects, prefab, deadline, indices, textures):
-    result = _prefab(objects, prefab, deadline)
-    if result is None:
-        return None
-    emitter, (atlas, dimensions) = result
+def _load_emitter(layout, deadline, indices, textures):
+    emitter, (atlas, dimensions) = layout
     key = viewer._key(atlas)
     index = indices.get(key)
     if index is None:
@@ -240,8 +259,13 @@ def candidate_cues(tracks):
             and ptr.get("m_FileID") == 0 and ptr.get("m_PathID") not in (None, 0, "0")}
 
 
+def known_schema(descriptor):
+    return (isinstance(descriptor, dict) and type(descriptor.get("schema")) is int
+            and descriptor["schema"] in _LEGACY_SCHEMAS)
+
+
 def saved_cues(descriptor):
-    if not isinstance(descriptor, dict) or type(descriptor.get("schema")) is not int or descriptor["schema"] != 1:
+    if not known_schema(descriptor):
         return ()
     cues = descriptor.get("cues")
     if not isinstance(cues, list) or not 1 <= len(cues) <= _MAX_CUES:
@@ -296,6 +320,7 @@ def restore_saved(saved, original, active, current):
             saved_emitters[identity] = row
         cues.append(cue)
     added = len(cues) - len(current)
-    if complete:
-        base = {**base, "scanComplete": added == len(candidates)}
-    return {**base, "textures": textures, "emitters": emitters, "cues": cues} if added or complete else None
+    if added or complete:
+        return {**base, "schema": SCHEMA, "scanComplete": complete and added == len(candidates),
+                "textures": textures, "emitters": emitters, "cues": cues}
+    return None

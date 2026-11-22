@@ -33,10 +33,10 @@ def preserves(saved, restored):
     return all(cue in rebuilt and emitters <= rebuilt[cue] for cue, emitters in required.items())
 
 
-def _source(objects, owner, tree, event, *, overwrite_seed=False):
+def _source(objects, owner, tree, event, *, overwrite_seed=False, max_duration=60):
     values = event["values"]
     if (values.get("playableClass") != "CustomControlClip" or values.get("timeScale") != 1
-            or not 0 < event["duration"] <= 60
+            or not 0 < event["duration"] <= max_duration
             or any(values.get(field) for field in ("preExtrapolationMode", "postExtrapolationMode"))
             or any(values.get(field, 0) > 0 for field in ("easeIn", "easeOut", "blendIn", "blendOut"))):
         return None

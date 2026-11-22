@@ -1027,9 +1027,11 @@ def _open_saved(archive, entries):
     saved_lens = project.get("stageLensFlare")
     saved_lens_cues = mv_studio_stage_lens.saved_cues(saved_lens)
     lens_missing = lens_cues - {(cue["trackId"], cue["eventId"]) for cue in saved_lens_cues}
-    lens_scanned = (isinstance(saved_lens, dict) and type(saved_lens.get("schema")) is int
-                    and saved_lens["schema"] == 1 and saved_lens.get("scanComplete") is True)
-    restore_lens = bool(lens_missing) and not lens_scanned and ("stageLensFlare" not in project or bool(saved_lens_cues))
+    known_lens = mv_studio_stage_lens.known_schema(saved_lens)
+    lens_scanned = known_lens and saved_lens["schema"] == mv_studio_stage_lens.SCHEMA and saved_lens.get("scanComplete") is True
+    empty_lens = known_lens and all(saved_lens.get(key) == [] for key in ("textures", "emitters", "cues"))
+    restore_lens = bool(lens_missing) and not lens_scanned and (
+        "stageLensFlare" not in project or bool(saved_lens_cues) or empty_lens)
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(

@@ -682,12 +682,12 @@ class MVStudioStorageTests(unittest.TestCase):
         opening = {**late, "id": "lens:0", "start": 1, "duration": 6}
         cues = [{"trackId": "lens", "eventId": f"lens:{i}", "emitterId": identity, "quality": "stage_control"}
                 for i, identity in enumerate(("A", "B", "B"))]
-        emitters = [{"id": "A", "rate": 10, "texture": 0}, {"id": "B", "rate": 15, "texture": 0}]
-        original = {"schema": 1, "cues": cues, "emitters": emitters,
+        emitters = [{"id": "A", "rate": 10, "texture": 0}, {"id": "B", "kind": "boxDust", "rate": 70, "texture": 0}]
+        original = {"schema": 2, "scanComplete": True, "cues": cues, "emitters": emitters,
                     "textures": [[{"png": "source"}]], "material": {"blend": "add"},
                     "tiles": [2, 1], "maxViewportWidth": .5, "sortMode": 0}
         edited_early = {**emitters[0], "position": [2, 1, 0]}
-        partial = {**original, "cues": cues[:1], "emitters": [edited_early]}
+        partial = {**original, "schema": 1, "cues": cues[:1], "emitters": [edited_early]}
         recovered = {**original, "cues": [cues[0], cues[2]], "emitters": [edited_early, emitters[1]]}
         custom_asset = {**partial, "material": {"blend": "alpha"}}
         for saved, events, source, expected, reparses in (
@@ -724,7 +724,7 @@ class MVStudioStorageTests(unittest.TestCase):
                                   "values": {"playableClass": "CustomControlClip",
                                              "prefabGameObject": {"m_FileID": 0, "m_PathID": "123"}},
                               }]}]
-        checked = {"schema": 1, "scanComplete": True, "textures": [], "emitters": [], "cues": []}
+        checked = {"schema": 2, "scanComplete": True, "textures": [], "emitters": [], "cues": []}
         archive_path = mv_studio.save(mv_studio._register(project, self.original))["path"]
         with ZipFile(archive_path) as archive, patch(
             "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLensFlare": checked},

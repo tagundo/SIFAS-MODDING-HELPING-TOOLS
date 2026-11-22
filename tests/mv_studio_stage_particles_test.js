@@ -16,6 +16,7 @@ require("../webtools/web/static/mv-studio-momiji-leaves-simulation.js");
 require("../webtools/web/static/mv-studio-momiji-fan-simulation.js");
 require("../webtools/web/static/mv-studio-stage-glow-simulation.js");
 require("../webtools/web/static/mv-studio-stage-lens-simulation.js");
+require("../webtools/web/static/mv-studio-stage-dust-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -876,6 +877,74 @@ function testStationaryLensParticles() {
   assert.deepEqual(sample(customized, 0, 30), customizedWarm);
 }
 
+function testStageBoxDust() {
+  const create = globalThis.MVStudioStageDustSimulation.create;
+  const {activeControlFrame} = globalThis.MVStudioStageParticles;
+  const source = {
+    duration: 5, rate: 70, lifetime: [2, 3], size: [.1, .05], shapeScale: [12.3, 16.41, 10.4],
+    maxParticles: 200, gravity: .01, startColor: [1, 1, 1, .6], sizeMultiplier: 1,
+    velocity: [[1, -1, -1, 1, .1], [-1, -1, 1, 1, .1], [-1, -1, 1, 1, .1]],
+    sizeKeys: [[0, 1], [.08008640259504318, .6501891016960144], [.1948753297328949, .8707122802734375],
+      [.36898064613342285, .6043072938919067], [.46387240290641785, .366987407207489],
+      [.5426903367042542, .5493064522743225], [.6813446879386902, .2570728063583374],
+      [.8049848675727844, .8921298980712891], [.8829950094223022, .3831230401992798], [1, 1]]
+      .map(([time, size]) => [time, size, null, null]),
+  };
+  const smooth = {...source, shapeScale: [19.7, 50, 10.4],
+    sizeKeys: [[0, 1, -4.4126877784729], [.0980633944272995, .5672768354415894, 2.5679025650024414],
+      [.21365614235401154, .8353536128997803, -3.5896284580230713],
+      [.3291333019733429, .14744937419891357, 2.2265236377716064],
+      [.5174619555473328, .4686538279056549, .678571879863739],
+      [.5993106365203857, .07401049137115479, .16358709335327148],
+      [.7108657360076904, .8735877871513367, .9400593638420105],
+      [.7586367726325989, .598025918006897, -1.6710126399993896],
+      [.815961480140686, .8435974717140198, -.945955753326416],
+      [.9377886056900024, .20360839366912842, -2.2846429347991943],
+      [1, .469696044921875, 4.277153015136719]].map(([time, size, slope]) => [time, size, slope, slope])};
+  const sample = (stream, frame, fps = 60) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+
+  assert.equal(create({...source, velocity: [[0], [0], [0]]}, 0), null);
+  assert.equal(create({...source, maxParticles: 0}, 0), null);
+  const stepped = create(source, 0), cubic = create(smooth, 0);
+  assert.deepEqual(sample(stepped, 0), []);
+  assert.deepEqual(sample(stepped, 1), [[-1.034886360168457, 1.3797595500946045, 1.805332899093628,
+    .06631965935230255, 255, 255, 255, 153]]);
+  assert.deepEqual(sample(cubic, 1), [[-1.657519817352295, 4.20408821105957, 1.805332899093628,
+    .06604604423046112, 255, 255, 255, 153]]);
+  assert.equal(sample(stepped, 30)[0][3], .04312032088637352);
+  assert.equal(sample(cubic, 30)[0][3], .057611871510744095);
+  const steppedLate = sample(stepped, 224, 30);
+  assert.equal(steppedLate.length, 175);
+  assert.deepEqual(steppedLate[48], [1.1582573652267456, 6.6430253982543945, -2.78242564201355,
+    .05000874772667885, 255, 255, 255, 153]);
+  assert.deepEqual(sample(stepped, 448), steppedLate);
+
+  const tail = sample(cubic, 4464);
+  assert.equal(tail.length, 174);
+  assert.deepEqual(tail[128], [7.450107097625732, -11.755303382873535, .23175211250782013,
+    .04380039870738983, 255, 255, 255, 153]);
+  assert.deepEqual(sample(cubic, 2232, 30), tail);
+  assert.deepEqual(sample(cubic, 0, 30), []);
+  assert.deepEqual(sample(cubic, 4464), tail);
+  assert.equal(sample(cubic, 7200).length > 0, true);
+  assert.deepEqual(sample(cubic, 7201), []);
+
+  const control = {start: 0, duration: 74.4, values: {playableClass: "CustomControlClip", weight: 1,
+    timeScale: 1, offset: {x: 0, y: 0, z: 0}}};
+  for (const fps of [30, 60]) {
+    const frame = Math.round(74.4 * fps);
+    const beforeEnd = (frame - 1) / fps;
+    assert.equal(activeControlFrame(control, beforeEnd, fps), null);
+    assert.equal(activeControlFrame(control, beforeEnd, fps, 120).frame, frame);
+    assert.equal(activeControlFrame(control, frame / fps, fps, 120), null);
+    assert.equal(activeControlFrame({...control, duration: 120}, 119, fps, 120).frame, 119 * fps + 1);
+  }
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
@@ -887,4 +956,5 @@ testAionMomijiDisplayLeaves();
 testAionMomijiFan();
 testAionStageGlow();
 testStationaryLensParticles();
+testStageBoxDust();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

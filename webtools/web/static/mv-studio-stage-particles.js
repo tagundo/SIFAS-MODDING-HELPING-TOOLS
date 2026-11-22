@@ -40,10 +40,10 @@
       indices.every(index => Number.isInteger(index) && index >= 0 && index < positions.length);
   }
 
-  function activeOffset(event, time) {
+  function activeOffset(event, time, maxDuration = 60) {
     const fields = event?.values;
     if (fields?.playableClass !== "CustomControlClip" || fields.weight !== 1 || fields.timeScale !== 1 ||
-        !Number.isFinite(event.start) || !inRange(event.duration, 0.001, 60) ||
+        !Number.isFinite(event.start) || !inRange(event.duration, 0.001, maxDuration) ||
         time < event.start || time >= event.start + event.duration ||
         ["easeIn", "easeOut", "blendIn", "blendOut"].some(field => fields[field] > 0) ||
         fields.preExtrapolationMode || fields.postExtrapolationMode) return null;
@@ -53,11 +53,11 @@
 
   const timelineTick = time => Math.trunc(time / 1e-12 + .5);
 
-  function activeControlFrame(event, time, fps) {
+  function activeControlFrame(event, time, fps, maxDuration = 60) {
     if (!event) return null;
     const start = timelineTick(event.start), current = timelineTick(time);
     if (current < start || current >= timelineTick(event.start + event.duration)) return null;
-    const offset = activeOffset(event, Math.max(time, event.start));
+    const offset = activeOffset(event, Math.max(time, event.start), maxDuration);
     if (!offset) return null;
     const first = Math.ceil(event.start * fps);
     const activated = timelineTick((first - 1) / fps) === start ? first - 1 : first;
@@ -191,6 +191,35 @@
     // At the RNG's inclusive endpoint the native SIMD log extracts a zero mantissa and exponent -127.
     const length = f32(radius * sphereRadius(radial, 2 ** -127));
     return [x, y, z].map((value, i) => f32(f32(value * length) * scale[i]));
+  }
+
+  function nativeCurve(keys) {
+    const f32 = Math.fround;
+    const segments = [];
+    for (let i = 0; i < keys.length - 1; i++) {
+      const [from, value, , outSlope] = keys[i], [to, next, inSlope] = keys[i + 1];
+      if (outSlope === null || inSlope === null) {
+        segments.push([from, to, value, 0, 0, 0]);
+        continue;
+      }
+      // AnimationCurve caches the unweighted Hermite coefficients with float32 rounding.
+      const span = f32(to - from), delta = f32(next - value);
+      const out = f32(span * outSlope), incoming = f32(span * inSlope);
+      const invSquare = f32(1 / f32(span * span));
+      const quadratic = f32(f32(f32(f32(delta + delta) + delta) - out) - out);
+      const cubic = f32(f32(f32(out + incoming) - delta) - delta);
+      segments.push([from, to, value, f32(f32(invSquare * cubic) / span),
+        f32(invSquare * f32(quadratic - incoming)), outSlope]);
+    }
+    return phase => {
+      if (phase <= keys[0][0]) return keys[0][1];
+      for (const [from, to, value, a, b, c] of segments) {
+        if (phase >= to) continue;
+        const t = f32(phase - from);
+        return f32(value + f32(t * f32(c + f32(t * f32(b + f32(t * a))))));
+      }
+      return keys[keys.length - 1][1];
+    };
   }
 
   function nativeRoll([min, max]) {
@@ -359,6 +388,6 @@
 
   global.MVStudioStageParticles = {
     apply, activeOffset, activeControlFrame, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
-    nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition, nativeHemispherePosition,
+    nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition, nativeHemispherePosition, nativeCurve,
   };
 })(typeof window !== "undefined" ? window : globalThis);

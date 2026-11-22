@@ -34,34 +34,6 @@
     return keyList(keys, count, 2, stamp, row => valueCheck(row[1]));
   }
 
-  function compileCurve(keys) {
-    const segments = [];
-    for (let i = 0; i < keys.length - 1; i++) {
-      const [from, value, , outSlope] = keys[i], [to, next, inSlope] = keys[i + 1];
-      if (outSlope === null || inSlope === null) {
-        segments.push([from, to, value, 0, 0, 0]);
-        continue;
-      }
-      // AnimationCurve caches the unweighted Hermite coefficients with float32 rounding.
-      const span = f32(to - from), delta = f32(next - value);
-      const out = f32(span * outSlope), incoming = f32(span * inSlope);
-      const invSquare = f32(1 / f32(span * span));
-      const quadratic = f32(f32(f32(f32(delta + delta) + delta) - out) - out);
-      const cubic = f32(f32(f32(out + incoming) - delta) - delta);
-      segments.push([from, to, value, f32(f32(invSquare * cubic) / span),
-        f32(invSquare * f32(quadratic - incoming)), outSlope]);
-    }
-    return phase => {
-      if (phase <= keys[0][0]) return keys[0][1];
-      for (const [from, to, value, a, b, c] of segments) {
-        if (phase >= to) continue;
-        const t = f32(phase - from);
-        return f32(value + f32(t * f32(c + f32(t * f32(b + f32(t * a))))));
-      }
-      return keys[keys.length - 1][1];
-    };
-  }
-
   function inverseLife(value) {
     // InitialModule uses a NEON estimate followed by two reciprocal refinements.
     const scale = 2 ** -Math.floor(Math.log2(value));
@@ -104,9 +76,9 @@
     }
 
     const {nativeFrame, nativeRandom, nativeUnit, nativeSpherePosition, nativeColorAtTime,
-      nativeStep: dt, nativeStepRate} = particles;
-    const sizeCurves = sizeKeys.map(compileCurve);
-    const axes = velocity.map(axis => ({min: compileCurve(axis.min), max: compileCurve(axis.max), scalar: axis.scale[1]}));
+      nativeStep: dt, nativeStepRate, nativeCurve} = particles;
+    const sizeCurves = sizeKeys.map(nativeCurve);
+    const axes = velocity.map(axis => ({min: nativeCurve(axis.min), max: nativeCurve(axis.max), scalar: axis.scale[1]}));
     const lifeColor = {start: white, keys: source.alphaKeys.map(([time, alpha]) =>
       [f32(time / 65535), 255, 255, 255, alpha])};
     const fixedColor = role === "alpha" ? sourceColor.map(colorByte) : null;
