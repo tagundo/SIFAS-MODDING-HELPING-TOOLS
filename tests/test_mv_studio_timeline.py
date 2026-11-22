@@ -6,6 +6,7 @@ from unittest.mock import patch
 import io
 import json
 import os
+import time
 import unittest
 import zipfile
 
@@ -104,6 +105,52 @@ class TimelineContractTests(unittest.TestCase):
                     data["tracks"].pop()
             data["unsupported"] = 1
             self.assertIsNone(stage._read_clip(reader, None))
+
+    def test_typed_native_overlay_uses_category_and_keeps_world_alias_unbound(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        from zlib import crc32
+
+        texture_tint = crc32(b"_TintColor") & 0x0FFFFFFF
+        bindings = [{"path": 17, "typeID": 23, "customType": 22, "isPPtrCurve": 0,
+                     "attribute": texture_tint | (lane << 28)} for lane in range(4)]
+        clip = {"m_ClipBindingConstant": {"genericBindings": bindings}, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": {"data": [1, .5, .25, 0]}},
+        }}
+        reader = SimpleNamespace(type=SimpleNamespace(name="AnimationClip"), read_typetree=lambda: clip)
+        native = object()
+        mono = {("cab", track_id): (native, {"m_Clips": [{}]}, "AnimationTrack") for track_id in (1, 2)}
+        mono[("cab", 3)] = native, {"m_Clip": {"m_PathID": 4}}, "AnimationPlayableAsset"
+        objects = {("cab", 4): reader}
+
+        def track(track_id, category, path):
+            return {"id": f"cab:{track_id}", "label": f"StageEffect/Expert/{category}/Track",
+                    "binding": f"/EntryPoint/Live/Stages/MainStage/Effect/{path}", "nativeClass": "AnimationTrack",
+                    "events": [{"id": f"cab:{track_id}:0", "values": {
+                        "animation": "cab:4", "asset": "cab:3", "playableClass": "AnimationPlayableAsset",
+                    }}]}
+
+        overlay = track(1, "OverlayEffect", "ArbitraryPrefab/AuthoredRoot")
+        world = track(2, "Animation", "WorldPrefab/Root")
+        legacy = track(1, "OverlayEffect", "fx_ove_known/Effect_root")
+        with patch.object(stage, "_declared", return_value=True), \
+                patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
+            for tracks in ([world, overlay], [overlay, world]):
+                parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(parsed["bindings"], [overlay["binding"]])
+                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect"})
+                self.assertEqual(set(parsed["mix"]), {"cab:1:0"})
+                declared = parsed["clips"]["cab:4"]
+                self.assertTrue(declared["requiresOverlayMaterial"])
+                self.assertTrue(declared["sampleTimeF32"])
+                self.assertEqual(declared["channels"], [{
+                    "path": 17, "kind": "overlayTint",
+                    "curves": [("constant", value) for value in (1, .5, .25, 0)],
+                }])
+            existing = stage.read(objects, mono, [legacy], time.monotonic() + 3)["clips"]["cab:4"]
+            self.assertNotIn("requiresOverlayMaterial", existing)
+            self.assertNotIn("sampleTimeF32", existing)
+            bindings[3]["attribute"] = texture_tint | (2 << 28)
+            self.assertIsNone(stage.read(objects, mono, [overlay], time.monotonic() + 3))
 
 
 @unittest.skipUnless((SAMPLES / "a-1205603-live_timeline.unity").is_file() and

@@ -2,6 +2,7 @@
   "use strict";
 
   const layer = 20;
+  const materialOwners = new WeakMap();
   const vertexShader = [
     "attribute vec4 _stage_color;",
     "uniform vec4 uTextureST;",
@@ -59,6 +60,7 @@
     }
     function dispose() {
       for (const { node, owner, order, layer, original, material } of ready) {
+        materialOwners.delete(owner);
         delete owner.userData.mvStageOverlayChannels;
         node.material = original;
         node.renderOrder = order;
@@ -88,7 +90,9 @@
         node.material = material;
         node.renderOrder = fields.queue;
         node.layers.set(layer);
-        owner.userData.mvStageOverlayChannels = { overlayTint: tint, overlayUV: uv };
+        const channels = { overlayTint: tint, overlayUV: uv };
+        materialOwners.set(owner, channels);
+        owner.userData.mvStageOverlayChannels = channels;
         ready.push({ ...mesh, material });
       }
     } catch (error) {
@@ -131,5 +135,5 @@
       }
     };
   }
-  global.MVStudioStageOverlay = { apply, create };
+  global.MVStudioStageOverlay = { apply, create, materialChannel: (owner, kind) => materialOwners.get(owner)?.[kind] };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -242,12 +242,14 @@ def read(objects, mono, tracks, deadline):
         overlay = len(branch) == 2 and branch[0].startswith("fx_ove_") and branch[1] == "Effect_root"
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         setting = "stage_overlay_effect" if overlay else _quality(track["label"])
+        allow_overlay_material = setting == "stage_overlay_effect"
         for event in track["events"]:
             _remaining(deadline)
             values = event["values"]
             identity = values.get("animation")
+            profile = (identity, allow_overlay_material)
             playable = by_id.get(values.get("asset"))
-            if not identity or identity in rejected or playable is None or values.get("playableClass") != "AnimationPlayableAsset":
+            if not identity or profile in rejected or playable is None or values.get("playableClass") != "AnimationPlayableAsset":
                 continue
             owner, payload, _ = playable
             if (payload.get("m_Loop", 0) != 0 or not _neutral_offsets(payload)
@@ -266,22 +268,28 @@ def read(objects, mono, tracks, deadline):
             timing, timing_cost = data
             if identity in clips:
                 declaration, cost = clips[identity], 0
+                if declaration.get("requiresOverlayMaterial") and not allow_overlay_material:
+                    continue
             else:
                 resident_laser = laser_track and key[1] == _LASER_CLIP and not any(
                     other is not event and other["values"].get("animation") == identity
                     for row in tracks for other in row["events"])
                 try:
-                    clip = _read_clip(reader, deadline, overlay=overlay, resident_laser=resident_laser)
+                    clip = _read_clip(reader, deadline, overlay=allow_overlay_material, resident_laser=resident_laser)
                 except (KeyError, TypeError, ValueError, IndexError, OverflowError, struct.error):
                     clip = None
                 if clip is None or clip[1] > remaining:
-                    rejected.add(identity)
+                    rejected.add(profile)
                     continue
                 declaration, cost = clip
                 if binding == _AION_OVERLAY and key[1] == _AION_OVERLAY_CLIP:
                     declaration["sampleTimeF32"] = True
             if cost + timing_cost > remaining:
                 continue
+            if allow_overlay_material and not overlay and any(
+                    channel["kind"] in {"overlayTint", "overlayUV"} for channel in declaration["channels"]):
+                declaration["requiresOverlayMaterial"] = True
+                declaration["sampleTimeF32"] = True
             remaining -= cost + timing_cost
             clips[identity] = declaration
             mix[event["id"]] = timing
