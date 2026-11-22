@@ -49,8 +49,24 @@
       const scope = fields.world === true ? "world" : "overlay";
       const skinned = node.isSkinnedMesh === true;
       if (rendererClass !== (skinned ? 137 : 23) || (scope === "world" && fields.depthTest !== true)) return;
+      const alphaBlend = fields.alphaBlend === true, stencilRef = fields.stencilRef;
+      if ((alphaBlend || stencilRef !== undefined) &&
+          (scope !== "world" || !alphaBlend || !Number.isInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) return;
       if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
           !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
+      let sortAnchor = null;
+      if (alphaBlend) {
+        const {queue, sortCenter, sortJoint} = fields;
+        if (!Number.isInteger(queue) || queue < 0 || queue > 5000 ||
+            !Array.isArray(sortCenter) || sortCenter.length !== 3 || !sortCenter.every(Number.isFinite)) return;
+        if (skinned) {
+          if (!Number.isInteger(sortJoint) || sortJoint < 0 || !node.skeleton.bones[sortJoint]?.isBone) return;
+          sortAnchor = node.skeleton.bones[sortJoint];
+        } else {
+          if (sortJoint !== undefined) return;
+          sortAnchor = node;
+        }
+      }
       let owner = node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner) return;
@@ -58,7 +74,7 @@
       if (!classes) owners.set(owner, classes = new Map());
       const key = materialKey(scope, rendererClass);
       classes.set(key, 1 + (classes.get(key) || 0));
-      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, original: node.material,
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, alphaBlend, stencilRef, sortAnchor, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
     const ready = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
@@ -103,7 +119,7 @@
     try {
       for (const mesh of usable) {
         if (!active()) break;
-        const { node, owner, fields, rendererClass, scope, key, skinned } = mesh;
+        const { node, owner, fields, rendererClass, scope, key, skinned, alphaBlend, stencilRef } = mesh;
         const map = sampler && scope === "world" && fields.texture !== null && fields.mainSampler
           ? await sampler.sampledNativeTexture(fields.texture, fields.mainSampler) : await texture(fields.texture);
         if (!active()) break;
@@ -112,11 +128,15 @@
         // Unity's CullMode values specify the side to discard. Three's side
         // specifies the faces to retain. Old previews are double-sided.
         const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
+        const blendDst = alphaBlend ? T.OneMinusSrcAlphaFactor : T.OneFactor;
         const material = new T.ShaderMaterial({
           vertexShader, fragmentShader, transparent: true, skinning: skinned,
           depthTest: fields.depthTest === true, depthFunc: T.LessEqualDepth, depthWrite: false,
           toneMapped: false, side, blending: T.CustomBlending,
-          blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
+          blendSrc: T.SrcAlphaFactor, blendDst, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: blendDst,
+          stencilWrite: alphaBlend, stencilFunc: alphaBlend ? T.EqualStencilFunc : T.AlwaysStencilFunc,
+          stencilRef: stencilRef ?? 0, stencilFuncMask: 255, stencilWriteMask: 255,
+          stencilFail: T.KeepStencilOp, stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
           uniforms: { uTexture: { value: map }, uTint: { value: tint },
             uTextureST: { value: uv }, uVertexColor: { value: fields.vertexColor } }
         });
@@ -138,11 +158,37 @@
       dispose();
       throw error;
     }
+
+    const byQueue = new Map();
+    for (const {node, fields, sortAnchor} of ready) {
+      if (!sortAnchor) continue;
+      let group = byQueue.get(fields.queue);
+      if (!group) byQueue.set(fields.queue, group = []);
+      group.push({node, anchor: sortAnchor, center: new T.Vector3().fromArray(fields.sortCenter),
+        order: group.length, distance: 0});
+    }
+    const groups = [...byQueue].filter(([, entries]) => entries.length > 1);
+    const eye = new T.Vector3(), point = new T.Vector3();
+    function sort(camera) {
+      if (disposed || groups.length === 0) return;
+      camera.updateWorldMatrix(true, false);
+      eye.setFromMatrixPosition(camera.matrixWorld);
+      for (const [queue, entries] of groups) {
+        for (const entry of entries) {
+          entry.anchor.updateWorldMatrix(true, false);
+          point.copy(entry.center).applyMatrix4(entry.anchor.matrixWorld);
+          entry.distance = Math.fround(camera.isOrthographicCamera
+            ? -point.applyMatrix4(camera.matrixWorldInverse).z : eye.distanceToSquared(point));
+        }
+        entries.sort((a, b) => b.distance - a.distance || a.order - b.order);
+        for (const [index, entry] of entries.entries()) entry.node.renderOrder = queue + index / entries.length;
+      }
+    }
     return {
       hasVisible: () => !disposed && ready.some(entry => entry.scope === "overlay" && hasVisible(entry)),
       hasDepthTest: () => !disposed && ready.some(entry =>
         entry.scope === "overlay" && entry.material.depthTest && hasVisible(entry)),
-      dispose,
+      sort, dispose,
     };
   }
 

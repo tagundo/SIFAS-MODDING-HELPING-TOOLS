@@ -467,6 +467,7 @@
       sortRibbonDisplay(camera);
       stageButterfly?.sort(camera);
       sortControlParticles(camera);
+      for (const record of records) record.stageOverlay?.sort?.(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
@@ -836,7 +837,10 @@
             }
             const quality = /(?:^|_)aud(?:_|$)/i.test(name) ? "stage_audience" :
               /(?:^|_)dis(?:_|$)/i.test(name) ? "stage_display" : null;
-            if (quality && !node.geometry.userData?.mvStageDisplay) record.visibility.push({ node, quality });
+            const source = node.geometry.userData;
+            if (quality && !source?.mvStageDisplay && !source?.mvStageOverlay?.world) {
+              record.visibility.push({ node, quality });
+            }
           }
         });
         if (entry.group !== actors) {

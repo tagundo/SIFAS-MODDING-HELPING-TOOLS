@@ -268,12 +268,12 @@ async function testWorldMaterialScope() {
   const binding = "/EntryPoint/Live/Stages/MainStage/Effect/Floor";
   owner.userData.mvStageNode = {active: true, path: 0, binding};
   root.add(owner);
-  const add = (fields) => {
+  const add = (fields, parent = owner) => {
     const mesh = new T.Mesh(new T.PlaneGeometry(), new T.MeshBasicMaterial());
     mesh.geometry.userData.mvStageOverlay = {
       texture: null, tint: [1, 1, 1, .25], uv: [1, 1, 0, 0], vertexColor: false, queue: 3010, ...fields,
     };
-    owner.add(mesh);
+    parent.add(mesh);
     return mesh;
   };
   const closed = [], borrowed = new T.Texture({width: 4, height: 4});
@@ -286,6 +286,13 @@ async function testWorldMaterialScope() {
   overlayMesh.material.map = worldMesh.material.map = borrowed;
   const unknownDepth = add({world: true});
   const original = unknownDepth.material;
+  const readerOwner = new T.Group();
+  readerOwner.userData.mvStageNode = {active: true, path: 7, binding};
+  owner.add(readerOwner);
+  const reader = add({world: true, depthTest: true, alphaBlend: true, stencilRef: 2, queue: 2910,
+    sortCenter: [0, 0, 0]}, readerOwner);
+  const unsupportedReader = add({world: true, depthTest: true, alphaBlend: true, stencilRef: 256}, readerOwner);
+  const unsupportedOriginal = unsupportedReader.material;
   const panel = await MVStudioStageOverlay.apply(T, root, {async getDependency(type, index) { return levels[index]; }});
   assert.equal(worldMesh.layers.mask, 1);
   assert.equal(worldMesh.renderOrder, 3010);
@@ -295,6 +302,23 @@ async function testWorldMaterialScope() {
   assert.equal(worldMesh.material.side, T.FrontSide);
   assert.equal(worldMesh.material.blendSrc, T.SrcAlphaFactor);
   assert.equal(worldMesh.material.blendDst, T.OneFactor);
+  assert.equal(worldMesh.material.stencilWrite, false);
+  assert.equal(reader.layers.mask, 1);
+  assert.equal(reader.renderOrder, 2910);
+  assert.equal(reader.material.depthTest, true);
+  assert.equal(reader.material.depthFunc, T.LessEqualDepth);
+  assert.equal(reader.material.depthWrite, false);
+  assert.equal(reader.material.blendSrc, T.SrcAlphaFactor);
+  assert.equal(reader.material.blendDst, T.OneMinusSrcAlphaFactor);
+  assert.equal(reader.material.blendSrcAlpha, T.SrcAlphaFactor);
+  assert.equal(reader.material.blendDstAlpha, T.OneMinusSrcAlphaFactor);
+  assert.equal(reader.material.stencilWrite, true);
+  assert.equal(reader.material.stencilFunc, T.EqualStencilFunc);
+  assert.equal(reader.material.stencilRef, 2);
+  assert.equal(reader.material.stencilWriteMask, 255);
+  assert.equal(reader.material.stencilFuncMask, 255);
+  for (const key of ["stencilFail", "stencilZFail", "stencilZPass"]) assert.equal(reader.material[key], T.KeepStencilOp);
+  assert.equal(unsupportedReader.material, unsupportedOriginal);
   const worldTexture = worldMesh.material.uniforms.uTexture.value;
   assert.deepEqual(worldTexture.mipmaps, levels.map(level => level.image));
   assert.equal(worldTexture.minFilter, T.LinearMipmapNearestFilter);
@@ -343,7 +367,73 @@ async function testWorldMaterialScope() {
   console.log("Native transparent world draws use authored depth and keep isolated layer-20 ownership.");
 }
 
-run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope).catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+async function testTransparentBoundsOrder() {
+  const root = new T.Group();
+  const binding = "/EntryPoint/Live/Stages/MainStage/Effect/Curtain";
+  const fields = {world: true, depthTest: true, alphaBlend: true, stencilRef: 2, queue: 2910,
+    texture: null, tint: [1, 1, 1, .25], uv: [1, 1, 0, 0], vertexColor: false};
+  const owner = (path) => {
+    const group = new T.Group();
+    group.userData.mvStageNode = {active: true, binding, path};
+    root.add(group);
+    return group;
+  };
+  const planeGeometry = new T.PlaneGeometry(), skinGeometry = new T.PlaneGeometry();
+  planeGeometry.userData.mvStageOverlay = {...fields, sortCenter: [0, 0, 19]};
+  skinGeometry.userData.mvStageOverlay = {...fields, rendererClass: 137, sortJoint: 0, sortCenter: [0, 0, 0]};
+  skinGeometry.setAttribute("skinIndex", new T.Uint16BufferAttribute(new Uint16Array(16), 4));
+  skinGeometry.setAttribute("skinWeight", new T.Float32BufferAttribute(Array(4).fill([1, 0, 0, 0]).flat(), 4));
+  const plane = new T.Mesh(planeGeometry, new T.MeshBasicMaterial());
+  const skin = new T.SkinnedMesh(skinGeometry, new T.MeshBasicMaterial());
+  const joint = new T.Bone();
+  skin.userData.mvStageSkin = true;
+  plane.position.z = -20;
+  plane.renderOrder = 17;
+  skin.position.z = -2;
+  joint.position.z = -16;
+  owner(1).add(plane);
+  owner(2).add(skin, joint);
+  skin.bind(new T.Skeleton([joint]), new T.Matrix4());
+
+  const invalidGeometry = new T.PlaneGeometry();
+  invalidGeometry.userData.mvStageOverlay = {...fields, sortCenter: [0, 0]};
+  const invalidMaterial = new T.MeshBasicMaterial();
+  const invalid = new T.Mesh(invalidGeometry, invalidMaterial);
+  owner(3).add(invalid);
+
+  const controller = await MVStudioStageOverlay.apply(T, root);
+  const perspective = new T.PerspectiveCamera();
+  controller.sort(perspective);
+  assert.equal(skin.renderOrder, 2910, "the farther root-bone bounds precede the nearer static bounds");
+  assert.equal(plane.renderOrder, 2910.5, "the static mesh pivot would have placed it first");
+  assert.equal(invalid.material, invalidMaterial);
+
+  perspective.position.z = -25;
+  controller.sort(perspective);
+  assert.equal(plane.renderOrder, 2910);
+  assert.equal(skin.renderOrder, 2910.5);
+
+  perspective.position.z = 0;
+  controller.sort(perspective);
+  assert.equal(skin.renderOrder, 2910);
+  joint.position.z = -1;
+  controller.sort(perspective);
+  assert.equal(plane.renderOrder, 2910, "an equal sort key restores initial draw order");
+  joint.position.z = -16;
+  plane.position.x = 100;
+  controller.sort(perspective);
+  assert.equal(plane.renderOrder, 2910);
+  controller.sort(new T.OrthographicCamera());
+  assert.equal(skin.renderOrder, 2910, "orthographic sorting uses only camera-axis depth");
+  assert.equal(plane.renderOrder, 2910.5);
+  controller.dispose();
+  assert.equal(plane.renderOrder, 17);
+  assert.equal(skin.renderOrder, 0);
+  console.log("Native transparent readers are sorted per camera from authored renderer bounds.");
+}
+
+run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope)
+  .then(testTransparentBoundsOrder).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });

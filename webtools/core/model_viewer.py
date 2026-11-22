@@ -1353,11 +1353,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     except ValueError:
                         pass
                 if stage_beam is None and (not overlay or renderer_type == "SkinnedMeshRenderer"):
-                    fields = mv_studio_stage_overlay.read_material(scene, candidate)
-                    if fields is not None and (overlay or fields.get("depthTest")
-                                               and mv_studio_stage_overlay.world_layer(scene, game_object)):
-                        stage_transparent = fields
-                    elif candidate is not None and not overlay and renderer_type == "SkinnedMeshRenderer":
+                    if overlay or mv_studio_stage_overlay.world_layer(scene, game_object):
+                        stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
+                    if stage_transparent is None and candidate is not None and not overlay and renderer_type == "SkinnedMeshRenderer":
                         identity = _key(candidate)
                         if identity not in stage_metadata:
                             stage_metadata[identity] = mv_studio_stage_materials.read_material(
@@ -1394,10 +1392,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         auto_face = _source_path(renderer) in faces.auto_paths
         skin_material = (stage_opaque or stage_transparent) if renderer_type == "SkinnedMeshRenderer" else None
         native_skin = stage_beam is not None or skin_material is not None
-        raw = {} if rig is not None or native_skin else None
+        raw = {} if rig is not None or native_skin or stage_transparent and stage_transparent.get("alphaBlend") else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
-        stage_inputs, coloring_for_renderer = {} if overlay or stage_transparent or flash_binding else None, {}
+        display_binding = stage_displays.get(_key(renderer)) if stage_materials else None
+        stage_inputs = {} if overlay or stage_transparent or flash_binding or display_binding else None
+        coloring_for_renderer = {}
         if stage_opaque and stage_opaque.get("vertexColor") and stage_inputs is None:
             stage_inputs = {}
         if stage_materials and renderer.type.name == "MeshRenderer":
@@ -1460,7 +1460,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
                     if stage_transparent is not None:
                         try:
-                            transparent_skin_material = mv_studio_stage_overlay.export_material(materials, stage_transparent)
+                            transparent_skin_material = mv_studio_stage_overlay.export_material(
+                                materials, stage_transparent, renderer_tree=tree, skinned=True)
                         except ValueError:
                             pass
                     if stage_transparent is None or transparent_skin_material is not None:
@@ -1588,13 +1589,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if flash is not None:
                 primitives[-1]["attributes"] = {**attributes, "_STAGE_FLASH_UV": glb.attribute(stage_inputs["lightUV"], "VEC2")}
                 primitives[-1]["extras"]["mvStageFlash"] = flash
-            display = stage_displays.get(_key(renderer)) if stage_materials and uv is not None and len(submeshes) == 1 else None
-            if display:
+            display = None
+            if display_binding and uv is not None and len(submeshes) == 1:
                 try:
-                    display = mv_studio_stage_display.export(scene, materials, display)
+                    display = mv_studio_stage_display.export(scene, materials, display_binding)
                 except ValueError:
-                    display = None
+                    pass
                 if display is not None:
+                    if "color" in stage_inputs and (display["fallback"].get("vertexColor")
+                            or any(variant["background"].get("vertexColor") for variant in display["variants"])):
+                        stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
                     primitives[-1]["extras"]["mvStageDisplay"] = display
             overlay_material = None
             if uv is not None and (overlay or stage_transparent is not None):
@@ -1603,7 +1608,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 else:
                     try:
                         overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
-                                            if overlay else mv_studio_stage_overlay.export_material(materials, stage_transparent))
+                                            if overlay else mv_studio_stage_overlay.export_material(
+                                                materials, stage_transparent, renderer_tree=tree, mesh=(raw or {}).get("mesh")))
                     except ValueError:
                         pass
                 if overlay_material is not None:

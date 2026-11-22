@@ -92,7 +92,7 @@ def plane_geometry():
     return "Plane", vertices, normals, uv, [np.asarray(triangles, dtype=np.int64)]
 
 
-def read_material(scene, original):
+def read_material(scene, original, *, world=False):
     if original is None or original.type.name != "Material":
         return None
     tree = scene.tree(original)
@@ -101,10 +101,16 @@ def read_material(scene, original):
     floats = viewer._properties(tree, "m_Floats")
     flags = set(str(tree.get("m_ShaderKeywords", "")).split())
     cull, depth = floats.get("_CullMode", 0), floats.get("_ZTestMode", 4)
-    if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2) or depth not in (4, 8) or
-            (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1), floats.get("_ZWriteParam", 0),
-             floats.get("_StencilComp", 8), floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0))
-            != (5, 1, 0, 8, 0, 0)):
+    destination = floats.get("_BlendDst", 1)
+    comparison, reference = floats.get("_StencilComp", 8), floats.get("_StencilRef", 2)
+    if (flags - {"_VERTEX_COLOR_ON"} or floats.get("_SATURATE") or cull not in (0, 1, 2)
+            or depth not in (4, 8) or world and depth != 4
+            or (floats.get("_BlendSrc", 5), floats.get("_ZWriteParam", 0),
+                floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0)) != (5, 0, 0, 0)):
+        return None
+    alpha_blend = (world and (destination, comparison) == (10, 3)
+                   and type(reference) in (float, int) and 1 <= reference <= 255 and reference == int(reference))
+    if not alpha_blend and (destination, comparison) != (1, 8):
         return None
     values = viewer._properties(tree, "m_Colors")
     tint = [values.get("_TintColor", {}).get(axis, 1) for axis in "rgba"]
@@ -124,12 +130,42 @@ def read_material(scene, original):
               "cull": int(cull), "queue": 3000 if queue == -1 else queue}
     if depth == 4:
         fields["depthTest"] = True
+    if alpha_blend:
+        fields.update(alphaBlend=True, stencilRef=int(reference))
     return fields
 
 
-def export_material(materials, fields):
+def _sort_bounds(tree, mesh, skinned):
+    if tree is None or any(tree.get(field, 0) for field in
+                           ("m_RendererPriority", "m_SortingLayerID", "m_SortingLayer", "m_SortingOrder")):
+        return None
+    fields = {}
+    if skinned:
+        # The skin's authored bounds are in its root bone's frame.
+        root = tree.get("m_RootBone")
+        joints = tree.get("m_Bones", ())
+        if not root or root not in joints or tree.get("m_DirtyAABB"):
+            return None
+        fields["sortJoint"] = joints.index(root)
+        center = tree.get("m_AABB", {}).get("m_Center", {})
+        values = [center.get(axis) for axis in "xyz"]
+    else:
+        center = getattr(getattr(mesh, "m_LocalAABB", None), "m_Center", None)
+        values = [getattr(center, axis, None) for axis in "xyz"]
+    if any(type(value) not in (float, int) or not math.isfinite(value) for value in values):
+        return None
+    fields["sortCenter"] = [-values[0], values[1], values[2]]
+    return fields
+
+
+def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False):
     if fields is None:
         return None
+    if fields.get("alphaBlend"):
+        bounds = _sort_bounds(renderer_tree, mesh, skinned)
+        if bounds is None:
+            return None
+        fields = {**fields, **bounds}
     texture = fields["texture"]
     return {**fields, "texture": materials.texture(texture) if texture is not None else None}
 

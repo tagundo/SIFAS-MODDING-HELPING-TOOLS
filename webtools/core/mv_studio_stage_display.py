@@ -56,11 +56,14 @@ def _material(scene, materials, material, transparent):
     if material is None or material.type.name != "Material":
         return None
     tree = scene.tree(material)
-    if tree.get("m_ShaderKeywords") or not _shader_matches(
+    keywords = set((tree.get("m_ShaderKeywords") or "").split())
+    if (keywords and (transparent or keywords != {"_VERTEX_COLOR_ON"})) or not _shader_matches(
             material, tree, "AS/General/Transparent" if transparent else "AS/General/Opaque"):
         return None
+    vertex_color = bool(keywords)
     floats = viewer._properties(tree, "m_Floats")
-    if floats.get("_VERTEX_COLOR") or floats.get("_SATURATE"):
+    vertex_color_property = floats.get("_VERTEX_COLOR", 0)
+    if (vertex_color_property and (not vertex_color or vertex_color_property != 1)) or floats.get("_SATURATE"):
         return None
     cull, queue = floats.get("_CullMode", 0), tree.get("m_CustomRenderQueue", -1)
     stencil = (floats.get("_StencilComp", 8), floats.get("_StencilRef", 2),
@@ -88,8 +91,11 @@ def _material(scene, materials, material, transparent):
         if original is None or original.type.name != "Texture2D":
             return None
         texture = materials.texture(original)
-    return {"texture": texture, "uv": tex_st, "tint": tint, "ambient": ambient, "cull": cull,
-            "stencil": int(stencil[1]), "queue": (3000 if transparent else 2000) if queue == -1 else queue}
+    fields = {"texture": texture, "uv": tex_st, "tint": tint, "ambient": ambient, "cull": cull,
+              "stencil": int(stencil[1]), "queue": (3000 if transparent else 2000) if queue == -1 else queue}
+    if vertex_color:
+        fields["vertexColor"] = True
+    return fields
 
 
 def export(scene, materials, binding):

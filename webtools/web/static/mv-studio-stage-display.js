@@ -2,10 +2,14 @@
   "use strict";
 
   const vertex = [
+    "attribute vec4 _stage_color;",
     "uniform vec4 uTextureST;",
+    "uniform bool uVertexColor;",
     "varying vec2 vScreen;",
+    "varying vec4 vColor;",
     "void main() {",
     "  vScreen = uv * uTextureST.xy + uTextureST.zw;",
+    "  vColor = uVertexColor ? _stage_color : vec4(1.0);",
     "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
     "}"
   ].join("\n");
@@ -14,8 +18,9 @@
     "uniform vec4 uTint;",
     "uniform vec4 uAmbient;",
     "varying vec2 vScreen;",
+    "varying vec4 vColor;",
     "void main() {",
-    "  vec4 texel = texture2D(uTexture, vScreen);",
+    "  vec4 texel = texture2D(uTexture, vScreen) * vColor;",
     "  gl_FragColor = vec4(mix(texel.rgb, uAmbient.rgb, uAmbient.a), texel.a) * uTint;",
     "}"
   ].join("\n");
@@ -63,6 +68,7 @@
     function shader(logo) {
       const uniforms = {
         uTexture: { value: white }, uTextureST: { value: new T.Vector4(1, 1, 0, 0) },
+        uVertexColor: { value: false },
         uTint: { value: new T.Vector4(1, 1, 1, 1) }, uAmbient: { value: new T.Vector4(0, 0, 0, 0) }
       };
       const material = new T.ShaderMaterial({
@@ -74,6 +80,7 @@
         stencilWrite: !logo, stencilFunc: T.AlwaysStencilFunc, stencilZPass: T.ReplaceStencilOp
       });
       material.name = logo ? "Native stage display logo" : "Native stage display background";
+      material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
       owned.push(material);
       return material;
     }
@@ -81,6 +88,7 @@
       const uniforms = material.uniforms;
       const [sx, sy, x, y] = fields.uv, [ox, oy] = state?.offset || [x, y];
       uniforms.uTexture.value = fields.image;
+      uniforms.uVertexColor.value = !logo && fields.vertexColor === true;
       uniforms.uTextureST.value.set(sx, sy, ox, 1 - sy - oy);
       uniforms.uAmbient.value.fromArray(logo ? [0, 0, 0, 0] : state?.ambient || fields.ambient);
       uniforms.uTint.value.fromArray(fields.tint);

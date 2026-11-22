@@ -9,6 +9,29 @@ from unittest.mock import Mock, patch
 from PIL import Image
 
 from webtools.core import decode, model_materials, model_viewer, mv_studio_stage_materials as stage
+from webtools.core import mv_studio_stage_display as displays
+
+
+class StageDisplayMaterialTests(unittest.TestCase):
+    def test_only_exact_opaque_stencil_writers_add_authored_vertex_color(self):
+        original = SimpleNamespace(type=SimpleNamespace(name="Material"))
+        floats = {"_StencilComp": 8, "_StencilRef": 2, "_StencilPassOp": 2,
+                  "_StencilZFailOp": 0, "_VERTEX_COLOR": 1}
+        tree = {"m_ShaderKeywords": "_VERTEX_COLOR_ON", "m_CustomRenderQueue": -1,
+                "m_SavedProperties": {"m_Floats": floats.items()}}
+        scene = SimpleNamespace(tree=lambda _: tree)
+        with patch.object(displays, "_shader_matches", return_value=True):
+            variant = displays._material(scene, None, original, False)
+            self.assertTrue(variant["vertexColor"])
+            self.assertEqual((variant["queue"], variant["stencil"]), (2000, 2))
+            self.assertIsNone(displays._material(scene, None, original, True))
+            floats["_StencilPassOp"] = 0
+            self.assertIsNone(displays._material(scene, None, original, False))
+            floats.update(_StencilPassOp=2, _VERTEX_COLOR=0)
+            tree["m_ShaderKeywords"] = ""
+            fallback = displays._material(scene, None, original, False)
+            self.assertNotIn("vertexColor", fallback)
+            self.assertEqual({k: v for k, v in variant.items() if k != "vertexColor"}, fallback)
 
 
 class StageOpaqueMaterialTests(unittest.TestCase):
@@ -34,6 +57,28 @@ class StageOpaqueMaterialTests(unittest.TestCase):
         self.assertEqual(descriptor["cull"], 0)
         floats.append(("_StencilPassOp", 2))
         self.assertIsNone(stage.read_material(scene, material, {}, {}))
+
+
+class StageAlphaMaterialTests(unittest.TestCase):
+    def test_world_alpha_blend_keeps_authored_stencil_comparison(self):
+        from webtools.core import mv_studio_stage_overlay as transparent
+
+        material = SimpleNamespace(type=SimpleNamespace(name="Material"))
+        floats = [("_BlendSrc", 5), ("_BlendDst", 10), ("_ZTestMode", 4), ("_ZWriteParam", 0),
+                  ("_StencilComp", 3), ("_StencilRef", 2), ("_StencilPassOp", 0), ("_StencilZFailOp", 0)]
+        scene = SimpleNamespace(tree=lambda _: {
+            "m_SavedProperties": {"m_Floats": floats},
+            "m_CustomRenderQueue": 2910,
+            "m_ShaderKeywords": "_VERTEX_COLOR_ON",
+        })
+        with patch.object(transparent, "_shader_matches", return_value=True):
+            self.assertIsNone(transparent.read_material(scene, material))
+            fields = transparent.read_material(scene, material, world=True)
+            self.assertEqual(fields, {"texture": None, "tint": [1, 1, 1, 1], "uv": [1, 1, 0, 0],
+                                      "vertexColor": True, "cull": 0, "queue": 2910, "depthTest": True,
+                                      "alphaBlend": True, "stencilRef": 2})
+            floats.append(("_StencilZFailOp", 2))
+            self.assertIsNone(transparent.read_material(scene, material, world=True))
 
 
 class StageTextureSamplerTests(unittest.TestCase):
