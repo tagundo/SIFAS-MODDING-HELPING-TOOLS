@@ -183,4 +183,116 @@ async function testStageEmissive() {
   console.log("Native stage emissive target ownership, crossfades, seek gaps and quality gates passed");
 }
 
-testSingleStageAmbient().then(testStageEmissive).catch(error => { console.error(error); process.exitCode = 1; });
+async function testStageMainSampler() {
+  const root = new T.Group(), disposed = [], closed = [], requests = [];
+  const texture = (name, width, height) => {
+    const value = new T.Texture({width, height, close: () => closed.push(name)});
+    value.addEventListener("dispose", () => disposed.push(name));
+    return value;
+  };
+  const base = texture("base", 8, 4);
+  base.flipY = false;
+  base.wrapS = T.RepeatWrapping;
+  base.wrapT = T.MirroredRepeatWrapping;
+  base.encoding = T.sRGBEncoding;
+  base.minFilter = T.LinearFilter;
+  const lightmap = texture("light", 4, 4);
+  const levels = [texture("mip1", 4, 2), texture("mip2", 2, 1), texture("mip3", 1, 1)];
+  const invalid = texture("wrong-size", 4, 1);
+  const addSurface = (target, mainSampler) => {
+    const geometry = new T.PlaneGeometry();
+    geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
+    geometry.userData.mvStageMaterial = {
+      shader: "stage", lightmap: 0, mipBias: .25, uvTransform: [1, 1, 0, 0], mainSampler,
+      colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
+    };
+    const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: base}));
+    target.add(node);
+    return node;
+  };
+  const authored = {mipmaps: [1, 2, 3], filterMode: 1, anisotropy: 8};
+  const bilinear = addSurface(root, authored);
+  const shared = addSurface(root, {...authored});
+  const trilinear = addSurface(root, {...authored, filterMode: 2});
+  const point = addSurface(root, {...authored, filterMode: 0, anisotropy: 0});
+  const pointBase = addSurface(root, {mipmaps: [], filterMode: 0});
+  const broken = addSurface(root, {...authored, mipmaps: [4, 2, 3]});
+  const unresolved = addSurface(root, {...authored, mipmaps: [1, 2, 5]});
+  const borrowed = addSurface(root, {...authored, mipmaps: [1, 2, 6]});
+  const incomplete = addSurface(root, {...authored, mipmaps: [7]});
+  const legacy = addSurface(root);
+  const original = bilinear.material;
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    getDependency(type, index) {
+      assert.equal(type, "texture");
+      requests.push(index);
+      if (index === 5) throw new Error("missing mip");
+      return Promise.resolve([lightmap, ...levels, invalid, null, base][index]);
+    },
+  });
+  const map = (node) => node.material.uniforms.mainMap.value;
+  assert.equal(bilinear.material.uniforms.mipBias.value, .25);
+  assert.notEqual(map(bilinear), base);
+  assert.equal(map(bilinear), map(shared));
+  assert.equal(map(bilinear).image, base.image);
+  assert.deepEqual(map(bilinear).mipmaps, [base.image, ...levels.map(item => item.image)]);
+  assert.equal(map(bilinear).magFilter, T.LinearFilter);
+  assert.equal(map(bilinear).minFilter, T.LinearMipmapNearestFilter);
+  assert.equal(map(bilinear).anisotropy, 8);
+  assert.equal(map(bilinear).generateMipmaps, false);
+  assert.equal(map(bilinear).encoding, T.LinearEncoding);
+  assert.equal(map(bilinear).flipY, false);
+  assert.equal(map(bilinear).wrapS, base.wrapS);
+  assert.equal(map(bilinear).wrapT, base.wrapT);
+  assert.notEqual(map(trilinear), map(bilinear));
+  assert.equal(map(trilinear).minFilter, T.LinearMipmapLinearFilter);
+  assert.equal(map(point).magFilter, T.NearestFilter);
+  assert.equal(map(point).minFilter, T.NearestMipmapNearestFilter);
+  assert.equal(map(point).anisotropy, 1);
+  assert.equal(map(pointBase).minFilter, T.NearestFilter);
+  assert.deepEqual(map(pointBase).mipmaps, []);
+  for (const node of [broken, unresolved, borrowed, incomplete]) assert.equal(map(node), map(legacy));
+  assert.equal(map(legacy).minFilter, T.LinearFilter);
+  assert.deepEqual(map(legacy).mipmaps, []);
+  assert.equal(base.encoding, T.sRGBEncoding);
+  assert.equal(base.minFilter, T.LinearFilter);
+  assert.deepEqual(base.mipmaps, []);
+  assert.deepEqual(requests.filter(index => index !== 0), [1, 2, 3, 4, 5, 6]);
+  const owned = map(bilinear);
+  owned.addEventListener("dispose", () => disposed.push("owned"));
+  controller.dispose();
+  assert.equal(bilinear.material, original);
+  assert.deepEqual(disposed.sort(), ["light", "mip1", "mip2", "mip3", "owned", "wrong-size"]);
+  assert.deepEqual(closed.sort(), ["mip1", "mip2", "mip3", "wrong-size"]);
+
+  const limitedRoot = new T.Group(), limited = addSurface(limitedRoot, authored);
+  const limitedController = await MVStudioStageMaterial.apply(T, limitedRoot, {
+    async getDependency(type, index) {
+      assert.equal(index, 0, "an over-limit base uses the existing fallback without requesting extra levels");
+      return lightmap;
+    },
+  }, {maxTextureSize: 4});
+  assert.deepEqual(map(limited).mipmaps, []);
+  limitedController.dispose();
+
+  const staleRoot = new T.Group(), stale = addSurface(staleRoot, authored), staleMaterial = stale.material;
+  const staleLevels = [texture("stale1", 4, 2), texture("stale2", 2, 1), texture("stale3", 1, 1)];
+  let active = true;
+  const staleController = await MVStudioStageMaterial.apply(T, staleRoot, {
+    async getDependency(type, index) {
+      assert.equal(type, "texture");
+      assert(index > 0, "a stale stage does not start further resource loads");
+      if (index === 3) active = false;
+      return staleLevels[index - 1];
+    },
+  }, {active: () => active});
+  assert.equal(stale.material, staleMaterial);
+  staleController.dispose();
+  assert.deepEqual(closed.slice(-3), ["stale1", "stale2", "stale3"]);
+  console.log("Native stage MainTex mip dimensions, filter selection, sharing, fallback and canceled cleanup passed");
+}
+
+testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -837,7 +837,9 @@
           }
         });
         if (entry.group !== actors) {
-          record.stageMaterial = await global.MVStudioStageMaterial?.apply(T, record.root, gltf.parser);
+          record.stageMaterial = await global.MVStudioStageMaterial?.apply(T, record.root, gltf.parser, {
+            active, maxTextureSize: renderer.capabilities.maxTextureSize,
+          });
           if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;

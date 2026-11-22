@@ -217,9 +217,20 @@
     return {color, intensity};
   }
 
-  async function apply(T, root, parser) {
+  async function apply(T, root, parser, {active = () => true, maxTextureSize = 4096} = {}) {
     const candidates = [], textures = new Map(), nativeMaps = new Set(), cubes = new Map(), records = [];
+    const mainSamplers = new Map(), mipRequests = new Map(), mipTextures = new Set();
+    const originalMaps = new Set(), originalImages = new Set();
     root.traverse((node) => {
+      for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+        if (!material) continue;
+        for (const value of Object.values(material)) {
+          if (value?.isTexture) {
+            originalMaps.add(value);
+            if (value.image) originalImages.add(value.image);
+          }
+        }
+      }
       const meta = node.geometry?.userData?.mvStageMaterial;
       if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
       if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
@@ -248,14 +259,68 @@
       return textures.get(texture);
     }
 
+    function mipTexture(index) {
+      if (!mipRequests.has(index)) {
+        const request = Promise.resolve().then(() => parser.getDependency("texture", index)).then((texture) => {
+          if (!texture?.isTexture || originalMaps.has(texture) || originalImages.has(texture.image)) return null;
+          mipTextures.add(texture);
+          return texture;
+        }).catch(() => null);
+        mipRequests.set(index, request);
+      }
+      return mipRequests.get(index);
+    }
+
+    async function mainTexture(base, source) {
+      const {mipmaps, filterMode, anisotropy = 1} = source || {};
+      const {width, height} = base.image || {};
+      if (!Array.isArray(mipmaps) || mipmaps.length > 12 ||
+          !mipmaps.every(index => Number.isSafeInteger(index) && index >= 0) ||
+          new Set(mipmaps).size !== mipmaps.length || ![0, 1, 2].includes(filterMode) ||
+          !Number.isInteger(anisotropy) || anisotropy < 0 || anisotropy > 16 ||
+          ![width, height].every(side => Number.isInteger(side) && side >= 1 && side <= Math.min(maxTextureSize, 4096)) ||
+          (mipmaps.length && (!T.MathUtils.isPowerOfTwo(width) || !T.MathUtils.isPowerOfTwo(height) ||
+            mipmaps.length !== Math.log2(Math.max(width, height))))) return gammaTexture(base);
+
+      let samplers = mainSamplers.get(base);
+      if (!samplers) mainSamplers.set(base, samplers = new Map());
+      const key = [filterMode, anisotropy, ...mipmaps].join(",");
+      if (samplers.has(key)) return samplers.get(key);
+      // Observe every request before deciding whether the authored chain is usable.
+      const levels = await Promise.all(mipmaps.map(mipTexture));
+      if (!active()) return null;
+      if (levels.some((texture, index) => texture?.image?.width !== Math.max(1, width >> (index + 1)) ||
+          texture?.image?.height !== Math.max(1, height >> (index + 1)))) {
+        const fallback = gammaTexture(base);
+        samplers.set(key, fallback);
+        return fallback;
+      }
+
+      const copy = base.clone();
+      copy.encoding = T.LinearEncoding;
+      copy.magFilter = filterMode === 0 ? T.NearestFilter : T.LinearFilter;
+      const mipFilters = [T.NearestMipmapNearestFilter, T.LinearMipmapNearestFilter, T.LinearMipmapLinearFilter];
+      copy.minFilter = levels.length ? mipFilters[filterMode] : copy.magFilter;
+      copy.anisotropy = Math.max(1, anisotropy);
+      copy.generateMipmaps = false;
+      copy.mipmaps = levels.length ? [base.image, ...levels.map(texture => texture.image)] : [];
+      copy.needsUpdate = true;
+      samplers.set(key, copy);
+      return copy;
+    }
+
     for (const entry of candidates) {
+      if (!active()) break;
       const {node, original, meta} = entry;
       const uniforms = { tint: {value: new T.Vector4().fromArray(meta.colors._TintColor)} };
       const defines = {};
       let reflectionCube = null;
       if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
-        uniforms.mainMap = {value: gammaTexture(original.map)};
+        const map = meta.shader === "stage" && meta.mainSampler
+          ? await mainTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
+        if (!map || !active()) break;
+        uniforms.mainMap = {value: map};
         uniforms.mainUVTransform = {value: new T.Vector4().fromArray(meta.uvTransform)};
         uniforms.ambient = {value: new T.Vector4().fromArray(meta.colors._AmbientColor)};
       }
@@ -266,6 +331,7 @@
         catch { continue; }
         if (!lightMap?.isTexture) continue;
         nativeMaps.add(lightMap);
+        if (!active()) break;
         defines.LIGHTMAPPED = 1;
         uniforms.lightMap = {value: gammaTexture(lightMap)};
         uniforms.mipBias = {value: meta.mipBias};
@@ -280,6 +346,7 @@
           catch { continue; }
           if (!emissive?.isTexture) continue;
           nativeMaps.add(emissive);
+          if (!active()) break;
           defines.EMISSIVE = 1;
           uniforms.emissiveMap = {value: gammaTexture(emissive)};
           uniforms.emissiveUVTransform = {value: new T.Vector4().fromArray(meta.emissive.uvTransform)};
@@ -289,6 +356,7 @@
         const source = meta.reflection;
         if (meta.reflectionToggle && reflectionSource(source)) {
           if (!cubes.has(source.bufferView)) cubes.set(source.bufferView, await loadCube(T, parser, source));
+          if (!active()) break;
           reflectionCube = cubes.get(source.bufferView);
           if (reflectionCube) {
             defines.CUBEMAP = 1;
@@ -379,8 +447,19 @@
           node.material = original;
           material.dispose();
         }
-        for (const copy of textures.values()) copy.dispose();
-        for (const original of nativeMaps) original.dispose();
+        const copies = new Set(textures.values()), images = new Set();
+        for (const samplers of mainSamplers.values()) for (const copy of samplers.values()) copies.add(copy);
+        for (const copy of copies) copy.dispose();
+        for (const texture of mipTextures) {
+          if (nativeMaps.has(texture)) continue;
+          texture.dispose();
+          if (texture.image) images.add(texture.image);
+        }
+        for (const texture of nativeMaps) {
+          images.delete(texture.image);
+          texture.dispose();
+        }
+        for (const image of images) image.close?.();
         for (const cube of cubes.values()) cube?.dispose();
       },
     };

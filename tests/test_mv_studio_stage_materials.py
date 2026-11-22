@@ -1,11 +1,78 @@
 """Exercise native stage shader inputs and ownership metadata."""
+from io import BytesIO
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from webtools.core import decode, mv_studio_stage_materials as stage
+from webtools.core import decode, model_viewer, mv_studio_stage_materials as stage
+
+
+class StageMainSamplerTests(unittest.TestCase):
+    @staticmethod
+    def source():
+        settings = SimpleNamespace(m_FilterMode=1, m_Aniso=8, m_MipBias=0, m_WrapU=2, m_WrapV=1)
+        rgba = b"".join(bytes([level, 77, 123, 255]) * pixels
+                        for level, pixels in enumerate((32, 8, 2, 1)))
+        texture = SimpleNamespace(m_Name="stage_main", m_Width=8, m_Height=4, m_TextureFormat=4,
+                                  m_MipCount=4, m_ImageCount=1, m_TextureDimension=2, m_ColorSpace=1,
+                                  m_TextureSettings=settings, get_image_data=lambda: rgba)
+        return SimpleNamespace(read=lambda: texture, path_id=11, assets_file=object(),
+                               type=SimpleNamespace(name="Texture2D"))
+
+    def test_shared_main_texture_retains_complete_original_chain_without_level_zero_duplicate(self):
+        deadline = time.monotonic() + 5
+        source, material = self.source(), object()
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=deadline, preview_stage=True, stats={"textures": 0},
+                                tree=lambda _: {"m_SavedProperties": {"m_TexEnvs": [
+                                    ("_MainTex", {"m_Texture": {"m_FileID": 0, "m_PathID": 11}}),
+                                ]}})
+        materials = model_viewer._Materials(scene, glb)
+        base = materials.texture(source)
+        first, second = {"mipBias": -1.25}, {}
+        with patch.object(stage, "_ref", return_value=source):
+            stage.collect_main_sampler(scene, materials, material, first)
+            stage.collect_main_sampler(scene, materials, material, second)
+        self.assertTrue(stage.attach_main_samplers(materials, deadline))
+        expected = {"mipmaps": [1, 2, 3], "filterMode": 1, "anisotropy": 8}
+        self.assertEqual(first, {"mipBias": -1.25, "mainSampler": expected})
+        self.assertEqual(second, {"mainSampler": expected})
+        self.assertEqual(base, 0)
+        self.assertEqual(scene.stats["textures"], 4)
+        for level, image in enumerate(glb.doc["images"]):
+            view = glb.doc["bufferViews"][image["bufferView"]]
+            begin, size = view["byteOffset"], view["byteLength"]
+            with Image.open(BytesIO(glb.data[begin:begin + size])) as png:
+                self.assertEqual(png.size, (max(1, 8 >> level), max(1, 4 >> level)))
+                self.assertEqual(png.getpixel((0, 0)), (level, 77, 123, 255))
+        self.assertEqual(glb.doc["samplers"][base]["wrapS"], 33648)
+        self.assertEqual(glb.doc["samplers"][base]["wrapT"], 33071)
+
+    def test_partial_append_cannot_consume_baseline_texture_budget(self):
+        deadline = time.monotonic() + 5
+        source = self.source()
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=deadline, preview_stage=True, stats={"textures": 0})
+        materials = model_viewer._Materials(scene, glb)
+        materials.texture(source)
+        baseline = glb.finish()
+        descriptor = {}
+        materials.stage_main_samplers[stage._key(source)] = source, [descriptor]
+
+        def fail(levels):
+            materials.texture(levels[0])
+            raise ValueError("missing authored mip")
+
+        with patch.object(materials, "mip_textures", side_effect=fail):
+            self.assertFalse(stage.attach_main_samplers(materials, deadline))
+        self.assertEqual(glb.finish(), baseline)
+        self.assertFalse(descriptor)
+        self.assertEqual(materials.textures, {stage._key(source): 0})
+        self.assertEqual(materials.pixels, 32)
+        self.assertEqual(scene.stats["textures"], 1)
 
 
 class StageCubemapTests(unittest.TestCase):

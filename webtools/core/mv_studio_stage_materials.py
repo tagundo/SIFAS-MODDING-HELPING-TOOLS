@@ -1,9 +1,11 @@
 """Retain supported native stage shader inputs in the MV preview GLB."""
 import math
 import subprocess
+import time
 
 import numpy as np
 
+from .model_materials import _original_mips
 from .model_viewer import MAX_TEXTURE_PIXELS, _key, _properties, _ref
 from .mv_studio_stage_coloring import _path as _object_path
 
@@ -187,6 +189,67 @@ def export_emissive(scene, materials, material, controlled=False):
             result["binding"] = _MAIN_STAGE + "/Model"
         return result
     return None
+
+
+def collect_main_sampler(scene, materials, material, descriptor):
+    """Record the actual texture PPtr for each rendered stage primitive."""
+    source = _properties(scene.tree(material), "m_TexEnvs").get("_MainTex", {})
+    texture = _ref(material, source.get("m_Texture"))
+    if texture is None or texture.type.name != "Texture2D":
+        return
+    key = _key(texture)
+    if materials.textures.get(key) is not None:
+        materials.stage_main_samplers.setdefault(key, (texture, []))[1].append(descriptor)
+
+
+def _main_sampler(materials, obj):
+    texture = obj.read()
+    settings = texture.m_TextureSettings
+    filter_mode, anisotropy = settings.m_FilterMode, settings.m_Aniso
+    if (type(filter_mode) is not int or filter_mode not in (0, 1, 2)
+            or type(anisotropy) is not int or not 0 <= anisotropy <= 16
+            or settings.m_MipBias != 0 or settings.m_WrapU not in (0, 1, 2)
+            or settings.m_WrapV not in (0, 1, 2) or texture.m_ColorSpace != 1):
+        return None
+    width, height = texture.m_Width, texture.m_Height
+    if texture.m_MipCount > 1 and (width & (width - 1) or height & (height - 1)):
+        return None  # Explicit mip chains must also work on the WebGL1 path.
+    mips = _original_mips(obj, texture)
+    if not mips and texture.m_MipCount != 1:
+        return None
+    missing = (mip.read() for mip in mips if _key(mip) not in materials.textures)
+    additional_pixels = sum(level.m_Width * level.m_Height for level in missing)
+    if additional_pixels + materials.pixels > MAX_TEXTURE_PIXELS:
+        return None
+    return {"mipmaps": materials.mip_textures(mips), "filterMode": filter_mode, "anisotropy": anisotropy}
+
+
+def attach_main_samplers(materials, deadline):
+    """Add complete optional chains after essential stage textures and geometry."""
+    glb, scene = materials.glb, materials.scene
+    changed = False
+    for source, descriptors in materials.stage_main_samplers.values():
+        if time.monotonic() >= deadline:
+            break
+        data_size, pixels, count = len(glb.data), materials.pixels, scene.stats["textures"]
+        lengths = {name: len(glb.doc[name]) for name in ("bufferViews", "images", "samplers", "textures")}
+        texture_indices = materials.textures.copy()
+        try:
+            sampler = _main_sampler(materials, source)
+        except (AttributeError, OSError, TypeError, ValueError, subprocess.SubprocessError):
+            # A missing or failed level must neither expose a partial chain nor
+            # reserve texture budget needed by the next native source.
+            del glb.data[data_size:]
+            for name, length in lengths.items():
+                del glb.doc[name][length:]
+            materials.textures, materials.pixels = texture_indices, pixels
+            scene.stats["textures"] = count
+            continue
+        if sampler is not None:
+            for descriptor in descriptors:
+                descriptor["mainSampler"] = sampler
+            changed = True
+    return changed
 
 
 def lightmap_for(scene, renderer, tree, lightmap_settings):

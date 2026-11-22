@@ -772,6 +772,7 @@ class _Materials:
         self.predecoded = {}
         self.pixels = 0
         self.source_indices, self.source_files = {}, {}
+        self.stage_main_samplers = {}
 
     def mip_textures(self, objects):
         """Decode at most two immutable mip slices concurrently; append in order.
@@ -1619,6 +1620,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
+                    if descriptor["shader"] == "stage":
+                        mv_studio_stage_materials.collect_main_sampler(scene, materials, material_obj, descriptor)
             coloring = coloring_for_renderer.get(_key(material_obj)) if material_obj is not None else None
             if coloring and uv is not None and "lightUV" in stage_inputs:
                 try:
@@ -1737,6 +1740,19 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
         if shadow is not None:
             glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadow"] = shadow
     base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
+    if materials.stage_main_samplers:
+        from .mv_studio_stage_materials import attach_main_samplers
+
+        # Serialize the baseline first so an optional mip timeout or the GLB
+        # size limit cannot remove a stage that would otherwise be usable.
+        if attach_main_samplers(materials, deadline):
+            try:
+                _remaining(deadline)
+                sampled_stage = bytes(glb.finish())
+                _remaining(deadline)
+                base = (sampled_stage, dict(scene.stats), *base[2:])
+            except ModelViewerError:
+                pass
     face_enabled = bool(face_context and face_context.get("enabled", True))
     playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
     authored_motion = bool(face_context and face_context.get("_mv_authored_motion"))
