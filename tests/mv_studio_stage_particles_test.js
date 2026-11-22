@@ -5,6 +5,7 @@ const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-title.js");
 require("../webtools/web/static/mv-studio-stage-particles.js");
+require("../webtools/web/static/mv-studio-rain-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -179,4 +180,82 @@ async function testFinaleFlash() {
   console.log("Monster Girls finale flash preserves native fade, local planes and the per-camera width limit.");
 }
 
+function testAionRain() {
+  const source = {
+    rotation: [Math.SQRT1_2, 0, 0, Math.SQRT1_2],
+    sizeKeys: [
+      [[0, .48181650042533875, 0, 0], [.11518724262714386, .624366283416748, 1.4387071132659912, 1.4387071132659912],
+        [1, 1, 0, 0]],
+      [[0, 0, 0, 0], [.16759809851646423, .33066192269325256, 1.7415918111801147, 1.7415918111801147],
+        [1, 0, -.4135459065437317, -.4135459065437317]],
+    ],
+    startRGB: [
+      [0, .5801886916160583, .877376139163971, 1], [28045, .989980936050415, 1, .6596245765686035],
+      [65535, .6745283007621765, 1, .8095535635948181],
+    ],
+    colorKeys: {
+      rgb: [[0, 1, .7971698045730591, .8793900609016418], [65535, 1, 1, 1]],
+      alpha: [[0, 0], [14637, 1], [49922, .48235294222831726], [65535, 0]],
+    },
+  };
+  const createRain = globalThis.MVStudioRainSimulation.create, f32 = Math.fround;
+  const opening = {...source, profile: "01", position: [-.19, 15.01, -3.88].map(f32)};
+  const ending = {...source, profile: "02", position: [-.19, 8.54, -3.88].map(f32)};
+  assert.equal(createRain({...opening, sizeKeys: {length: 2}}), null);
+  assert.equal(createRain({...ending, position: [0, 0, 0]}), null);
+  const continuing = createRain(opening);
+  const fading = createRain(ending);
+  const at = (stream, frame, fps) => {
+    const results = [];
+    stream.sample(frame / fps, fps, (...packet) => results.push(packet));
+    return results;
+  };
+  const matchesNative = (packet, expected) => {
+    assert.ok(packet);
+    for (let field = 0; field < 6; field++) {
+      assert.ok(Math.abs(packet[field] - expected[field]) <= 2e-6, `rain position or velocity field ${field}`);
+    }
+    assert.deepEqual(packet.slice(6), expected.slice(6));
+  };
+
+  // Connected original Android worker, warming to 168 live particles before the first update.
+  const warm = at(continuing, 0, 60);
+  assert.equal(warm.length, 168);
+  matchesNative(warm[0], [1.304569959640503, -5.445957183837891, -8.121582984924316,
+    0, -24.81845474243164, -.18065208196640015, .29021546244621277, 1.3251445293426514, 187, 234, 223, 7]);
+  const grouped = at(continuing, 1, 30);
+  assert.deepEqual(grouped, at(continuing, 2, 60));
+  matchesNative(grouped[0], [6.39950704574585, 14.827088356018066, .8662109375,
+    0, -4.5859055519104, -.15722298622131348, .06587917357683182, .33306992053985596, 243, 205, 152, 33]);
+  const wrap = at(continuing, 30, 60);
+  assert.equal(wrap.length, 168);
+  matchesNative(wrap[4], [8.466684341430664, 11.772109985351562, 3.451857089996338,
+    0, -10.383543968200684, -.15059418976306915, .1950044184923172, 1.000145673751831, 232, 220, 163, 231]);
+
+  // Seek near the end of the native cue, then use checkpoints to rewind deterministically.
+  const late = at(continuing, 1281, 30);
+  assert.equal(late.length, 168);
+  matchesNative(late[57], [9.687050819396973, 8.857813835144043, -11.227054595947266,
+    0, -13.734615325927734, -.151360884308815, .15392673015594482, .6711877584457397, 215, 220, 187, 185]);
+  assert.deepEqual(at(continuing, 0, 30), warm);
+  assert.deepEqual(at(continuing, 1, 30), grouped);
+  assert.deepEqual(at(continuing, 2562, 60), late);
+
+  assert.deepEqual(at(fading, 0, 60), []);
+  assert.deepEqual(at(fading, 1, 60), []);
+  const first = at(fading, 1, 30);
+  assert.equal(first.length, 1);
+  matchesNative(first[0], [1.304569959640503, 8.539999961853027, -10.117005348205566,
+    .0667838379740715, -10.512883186340332, -.02260831743478775, .13980631530284882, .42304930090904236, 187, 187, 196, 0]);
+  assert.deepEqual(first, at(fading, 2, 60));
+  const lastEmission = at(fading, 150, 60);
+  assert.equal(lastEmission.length, 53);
+  matchesNative(lastEmission[0], [-3.4947824478149414, .3153972625732422, 1.0431108474731445,
+    .12405794858932495, -9.48993968963623, .04278596490621567, .17133168876171112, .30916571617126465, 189, 210, 206, 200]);
+  assert.equal(at(fading, 240, 60).length, 6);
+  assert.deepEqual(at(fading, 270, 60), []);
+  assert.deepEqual(at(fading, 1, 30), first);
+}
+
+testAionRain();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

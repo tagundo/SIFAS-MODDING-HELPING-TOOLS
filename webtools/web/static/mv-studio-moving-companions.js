@@ -10,6 +10,9 @@
     varying vec4 vParticleColor;
     #ifdef STRETCHED
     attribute vec3 velocity;
+    #ifdef SEPARATE_LENGTH
+    attribute float particleLength;
+    #endif
     uniform vec2 uStretch;
 
     float reciprocalSqrtEstimate(float squared) {
@@ -29,8 +32,17 @@
       float depth = -head.z;
       float width = centerAndSize.w;
       float limit = (2.0 * uMaxWidth) / abs(projectionMatrix[0][0]);
-      if (projectionMatrix[3][3] == 1.0) width = min(width, limit);
-      else if (depth >= 0.0) width = min(width, limit * depth);
+      bool orthographic = projectionMatrix[3][3] == 1.0;
+      if (orthographic || depth >= 0.0) {
+        float maximum = orthographic ? limit : limit * depth;
+        #ifdef SEPARATE_LENGTH
+        // Native 3D sizes cap width using the larger X/Y side. The axial
+        // streak still uses its original Y and does not shrink with width.
+        width *= min(1.0, maximum / max(1e-6, max(width, particleLength)));
+        #else
+        width = min(width, maximum);
+        #endif
+      }
       vec4 point = head;
       #ifdef STRETCHED
       vec3 movement = mat3(modelViewMatrix) * velocity;
@@ -44,7 +56,11 @@
           point.xy += across * inversesqrt(sideSquared) * (0.5 * width * position.y);
         }
         if (position.x > 0.0) {
+          #ifdef SEPARATE_LENGTH
+          float sizeLength = particleLength * uStretch.x;
+          #else
           float sizeLength = centerAndSize.w * uStretch.x;
+          #endif
           float lengthPerSpeed = uStretch.y + sizeLength * reciprocalSqrtEstimate(squared) * 1.0019569397;
           point.xyz -= movement * lengthPerSpeed;
         }
@@ -81,7 +97,8 @@
       Number.isFinite(stretch.velocityScale) && stretch.velocityScale >= 0 && stretch.velocityScale <= 1;
   }
 
-  function velocityBillboards(T, {texture, capacity, stretch, uv, maxViewportWidth, name, tint = [1, 1, 1, 1]}) {
+  function velocityBillboards(T, {texture, capacity, stretch, uv, maxViewportWidth, name, tint = [1, 1, 1, 1],
+    separateLength = false}) {
     const geometry = new T.InstancedBufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute([-1, 1, 0, 1, 1, 0, 1, -1, 0, -1, -1, 0], 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
@@ -90,13 +107,16 @@
     const colors = new T.InstancedBufferAttribute(new Uint8Array(capacity * 4), 4, true).setUsage(T.DynamicDrawUsage);
     const velocities = stretch ? new T.InstancedBufferAttribute(new Float32Array(capacity * 3), 3)
       .setUsage(T.DynamicDrawUsage) : null;
+    const lengths = velocities && separateLength ? new T.InstancedBufferAttribute(new Float32Array(capacity), 1)
+      .setUsage(T.DynamicDrawUsage) : null;
     geometry.setAttribute("centerAndSize", centers);
     geometry.setAttribute("particleColor", colors);
     if (velocities) geometry.setAttribute("velocity", velocities);
+    if (lengths) geometry.setAttribute("particleLength", lengths);
     geometry.instanceCount = 0;
     const material = new T.ShaderMaterial({
       name, vertexShader, fragmentShader,
-      defines: stretch ? {STRETCHED: 1} : {},
+      defines: stretch ? {STRETCHED: 1, ...(lengths ? {SEPARATE_LENGTH: 1} : {})} : {},
       uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(uv)},
         uTint: {value: new T.Vector4().fromArray(tint)},
         uMaxWidth: {value: maxViewportWidth},
@@ -115,7 +135,7 @@
     mesh.matrixAutoUpdate = false;
     // Expanded shader vertices are outside the static unit quad bounds.
     mesh.frustumCulled = false;
-    return {mesh, centers, colors, velocities};
+    return {mesh, centers, colors, velocities, lengths};
   }
 
   function create(T, group, rows, atlas) {

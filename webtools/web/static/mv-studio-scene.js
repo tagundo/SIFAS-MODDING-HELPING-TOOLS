@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageButterfly = null;
+    let stageButterfly = null, stageRain = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
@@ -539,6 +539,8 @@
       stageParticles = null;
       stageSpotlight?.dispose();
       stageSpotlight = null;
+      stageRain?.dispose();
+      stageRain = null;
       stageButterfly?.dispose();
       stageButterfly = null;
       stageSparksRoop?.dispose();
@@ -1071,6 +1073,12 @@
         return;
       }
       stageButterfly = butterfly;
+      const rain = await global.MVStudioStageRain?.apply(T, scene, value.stageRain, butterfly?.billboardAtlas);
+      if (!active()) {
+        rain?.dispose();
+        return;
+      }
+      stageRain = rain;
       const speedBack = await global.MVStudioSpeedBack?.apply(T, scene, value.stageSpeedBack);
       if (!active()) {
         speedBack?.dispose();
@@ -1325,6 +1333,7 @@
       stageShine?.invalidate();
       stageSpotlight?.invalidate();
       stageButterfly?.invalidate();
+      stageRain?.invalidate();
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
       stageFallingEffects?.invalidate();
@@ -1404,6 +1413,7 @@
       stageParticles?.update(currentTime, project);
       stageSpotlight?.update(currentTime, project);
       stageButterfly?.update(currentTime, project);
+      stageRain?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);
       stageFallingEffects?.update(currentTime, project);

@@ -287,7 +287,7 @@ def _timeline(path):
                                                preview_member_shafts=True, preview_stage_title=True,
                                                preview_stage_particles=True, preview_stage_ribbons=True,
                                                preview_stage_spotlight=True, preview_stage_butterfly=True,
-                                               preview_stage_speed_back=True,
+                                               preview_stage_rain=True, preview_stage_speed_back=True,
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
@@ -464,7 +464,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             native, parsed = _timeline(timeline)
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                             "stageRibbons", "stageSpotlight", "stageButterfly", "stageSpeedBack",
+                             "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageSpeedBack",
                              "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
                              "stageSparksA", "stageSparksB", "stageSparksRoop")
                             if field in parsed})
@@ -817,7 +817,7 @@ def _restore_butterfly_companion(saved, rebuilt, field, tracks, authentic_atlas)
 
 
 def _open_saved(archive, entries):
-    from . import mv_studio_stage_particles
+    from . import mv_studio_rain, mv_studio_stage_particles
 
     entry = entries["project.json"]
     if entry.file_size > PROJECT_BYTES:
@@ -865,6 +865,9 @@ def _open_saved(archive, entries):
     ) if not isinstance(row, dict) or not required <= row.keys() or "glowTexture" not in butterfly)
     restore_butterfly = bool(missing_butterflies) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith(missing_butterflies)
+        for track in project["tracks"])
+    restore_rain = "stageRain" not in project and any(
+        track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_rain.TRACK and track["events"]
         for track in project["tracks"])
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
@@ -920,7 +923,7 @@ def _open_saved(archive, entries):
             "m_FileID": 0, "m_PathID": "1069439206166195116",
         } for event in track["events"]) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
-                               or restore_spotlight or restore_butterfly or restore_speed_back
+                               or restore_spotlight or restore_butterfly or restore_rain or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
                                or restore_sparks_roop):
@@ -936,6 +939,8 @@ def _open_saved(archive, entries):
                 options["preview_stage_spotlight"] = True
             if restore_butterfly:
                 options["preview_stage_butterfly"] = True
+            if restore_rain:
+                options["preview_stage_rain"] = True
             if restore_speed_back:
                 options["preview_stage_speed_back"] = True
             if restore_display_lights:
@@ -970,6 +975,12 @@ def _open_saved(archive, entries):
                         saved_finale or {}, rebuilt["finale"], "dust", project["tracks"], use_atlas,
                     )
                 project["stageButterfly"] = recovered
+            if restore_rain and "stageRain" in original:
+                rebuilt = original["stageRain"]
+                existing = {(track["id"], event["id"]) for track in project["tracks"] for event in track["events"]}
+                cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in existing]
+                if cues:
+                    project["stageRain"] = {**rebuilt, "cues": cues}
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background
@@ -1020,7 +1031,7 @@ def _mod_files(project, files):
                 native = raw
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
-                                 "stageRibbons", "stageSpotlight", "stageButterfly", "stageSpeedBack",
+                                 "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageSpeedBack",
                                  "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
                                  "stageSparksA", "stageSparksB", "stageSparksRoop")
                                 if field in parsed})

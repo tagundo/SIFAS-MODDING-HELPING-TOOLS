@@ -169,6 +169,17 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual([row["role"] for row in butterfly_dust["emitters"]], ["add", "alpha"])
                     self.assertEqual({row["material"]["blend"] for row in butterfly_dust["emitters"]}, {"add", "alpha"})
                     self.assertNotIn("texture", butterfly_dust)
+                    rain = project["stageRain"]
+                    self.assertEqual([cue["profile"] for cue in rain["cues"]], ["01", "02"])
+                    self.assertEqual(rain["texture"], butterfly["glowTexture"])
+                    self.assertEqual(rain["uv"], [.25, .25, .5, 0])
+                    self.assertEqual([round(cue["position"][1], 5) for cue in rain["cues"]], [15.01, 8.54])
+                    self.assertEqual([len(keys) for keys in rain["sizeKeys"]], [3, 3])
+                    self.assertEqual(len(rain["startRGB"]), 3)
+                    self.assertEqual({name: len(keys) for name, keys in rain["colorKeys"].items()}, {"rgb": 2, "alpha": 4})
+                    for index, cue in enumerate(rain["cues"]):
+                        self.assertEqual(tracks[cue["trackId"]]["label"], "StageEffect/Expert/Control/par_01-02_rain")
+                        self.assertEqual(tracks[cue["trackId"]]["events"][index]["id"], cue["eventId"])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

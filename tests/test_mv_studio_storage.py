@@ -282,6 +282,43 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageButterfly"], expected)
                 self.assertEqual(reopened["tracks"], document["tracks"])
 
+    def test_saved_rain_recovers_the_original_cues_still_in_the_edited_project(self):
+        from webtools.core import mv_studio_rain
+
+        project = mv_studio._blank("Edited rain")
+        project["duration"] = 60
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        first = {"id": "rain:0", "label": "Edited cue", "start": 1, "duration": 40,
+                 "values": {"offset": {"x": -.125, "y": .5, "z": 2}, "clipIn": 1}}
+        second = {"id": "rain:1", "label": "Second rain", "start": 41, "duration": 6, "values": {}}
+        track = {"id": "rain", "kind": "effects", "nativeClass": "CustomControlTrack", "label": mv_studio_rain.TRACK}
+        cues = [{"trackId": track["id"], "eventId": cue["id"], "profile": profile}
+                for cue, profile in ((first, "01"), (second, "02"))]
+        rain = {"schema": 1, "cues": cues, "texture": [{"png": "original atlas"}]}
+        custom = {**rain, "texture": [{"png": "custom atlas"}]}
+        for events, source, previous, expected in (
+                ([first, second], self.original, None, rain),
+                ([first], self.original, None, {**rain, "cues": cues[:1]}),
+                ([], self.original, None, None),
+                ([first], None, None, None),
+                ([first, second], self.original, custom, custom)):
+            with self.subTest(events=events, source=source, previous=previous):
+                document = {**project, "tracks": [{**track, "events": events}]}
+                if previous is not None:
+                    document["stageRain"] = previous
+                saved = mv_studio.save(mv_studio._register(document, source))
+                with ZipFile(saved["path"]) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageRain": rain},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if source and events and previous is None:
+                    parse.assert_called_once_with(self.original, "Edited rain", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_rain=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageRain"), expected)
+                self.assertEqual(reopened["tracks"], document["tracks"])
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

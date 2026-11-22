@@ -273,6 +273,7 @@
     sortable.forEach((draw, index) => { draw.order = draw.bounds ? index : sortable.length; });
     let tracks, disposed = false;
     return {
+      billboardAtlas: billboardTexture && {texture: billboardTexture, levels: source.glowTexture},
       invalidate() { tracks = null; },
       update(time, project) {
         if (disposed) return;
