@@ -151,8 +151,11 @@ def read_material(scene, material, ambient, single_ambient):
         return None
     floats = _properties(tree, "m_Floats")
     keywords = set(tree.get("m_ShaderKeywords", "").split())
-    if (floats.get("_SrcBlend", 1) != 1 or floats.get("_DstBlend", 0) != 0 or floats.get("_ZWrite", 1) != 1
-            or floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
+    # AS/General/Opaque fixes blend and depth in its compiled passes.
+    # Serialized values for those properties can survive a material shader swap.
+    if mode != "general" and (floats.get("_SrcBlend", 1), floats.get("_DstBlend", 0), floats.get("_ZWrite", 1)) != (1, 0, 1):
+        return None
+    if (floats.get("_StencilComp", 8) != 8 or floats.get("_StencilPassOp", 0) != 0
             or floats.get("_StencilZFailOp", 0) != 0):
         return None
     colors = _colors(tree)

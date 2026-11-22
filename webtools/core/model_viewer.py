@@ -1334,7 +1334,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         _remaining(deadline)
         if _key(game_object) in detached_templates:
             continue
-        stage_beam = None
+        stage_beam = stage_opaque = None
         stage_motion = None
         if stage_nodes is not None:
             if renderer.type.name == "MeshRenderer":
@@ -1348,7 +1348,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             scene, renderer, game_object, _ref(renderer, refs[0]), materials, deadline)
                     except ValueError:
                         pass
-                if stage_beam is not None:
+                if binding and len(refs) == 1 and stage_beam is None and not mv_studio_stage_overlay.layer(scene, game_object):
+                    candidate = _ref(renderer, refs[0])
+                    if candidate is not None:
+                        identity = _key(candidate)
+                        if identity not in stage_metadata:
+                            stage_metadata[identity] = mv_studio_stage_materials.read_material(
+                                scene, candidate, ambient_materials, single_ambient)
+                        descriptor = stage_metadata[identity]
+                        if descriptor and descriptor["shader"] == "general":
+                            stage_opaque = descriptor
+                if stage_beam is not None or stage_opaque is not None:
                     stage_motion = binding
         overlay = stage_motion is not None and mv_studio_stage_overlay.layer(scene, game_object)
         flash_binding = stage_flashes.get(_key(renderer)) if stage_materials else None
@@ -1375,10 +1385,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
             continue
         auto_face = _source_path(renderer) in faces.auto_paths
-        raw = {} if rig is not None or stage_beam is not None else None
+        native_skin = stage_beam is not None or stage_opaque is not None
+        raw = {} if rig is not None or native_skin else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
         stage_inputs, coloring_for_renderer = {} if overlay or flash_binding else None, {}
+        if stage_opaque and stage_opaque.get("vertexColor") and stage_inputs is None:
+            stage_inputs = {}
         if stage_materials and renderer.type.name == "MeshRenderer":
             for pointer in tree.get("m_Materials", ()):
                 candidate = _ref(renderer, pointer)
@@ -1399,36 +1412,47 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     coloring_for_renderer[identity] = coloring
                     if stage_inputs is None:
                         stage_inputs = {}
-        bones, skin_warnings = None, []
+        bones, skin_warnings, stage_skin = None, [], None
         try:
-            if renderer.type.name == "SkinnedMeshRenderer" and stage_beam is None:
-                refs = tree.get("m_Bones", [])
-                if len(refs) > 1024:
-                    raise ModelViewerError("The model has too many bones for the mobile viewer.")
-                bones = []
-                for ref in refs:
-                    transform = _ref(renderer, ref)
-                    bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
-            if stage_motion is None:
-                world = faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object))))
-            else:
-                import numpy as np
+            # A previously visible renderer may still use its rest pose when
+            # the original skin exceeds the live stage preview's support.
+            for use_skin in ((True, False) if stage_opaque is not None else (native_skin,)):
+                if renderer.type.name == "SkinnedMeshRenderer" and not use_skin:
+                    refs = tree.get("m_Bones", [])
+                    if len(refs) > 1024:
+                        raise ModelViewerError("The model has too many bones for the mobile viewer.")
+                    bones = []
+                    for ref in refs:
+                        transform = _ref(renderer, ref)
+                        bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
+                if stage_motion is None:
+                    world = faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object))))
+                else:
+                    import numpy as np
 
-                # The native parent hierarchy supplies the transforms for these meshes.
-                world = np.eye(4)
-            arguments = (mesh_obj, world, bones, skin_warnings)
-            keywords = {"rig_data": raw} if raw is not None else {}
-            if native_attributes is not None:
-                keywords["penlight_data"] = native_attributes
-            if stage_inputs is not None:
-                keywords["stage_data"] = stage_inputs
-            if any(tree.get("m_BlendShapeWeights", [])):
-                keywords["morph_weights"] = tree["m_BlendShapeWeights"]
-                keywords["deadline"] = deadline
-            if builtin_plane:
-                name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
-            else:
-                name, positions, normals, uv, submeshes = _geometry(*arguments, **keywords)
+                    # The native parent hierarchy supplies the transforms for these meshes.
+                    world = np.eye(4)
+                keywords = {"rig_data": raw} if raw is not None else {}
+                if native_attributes is not None:
+                    keywords["penlight_data"] = native_attributes
+                if stage_inputs is not None:
+                    keywords["stage_data"] = stage_inputs
+                if any(tree.get("m_BlendShapeWeights", [])):
+                    keywords["morph_weights"] = tree["m_BlendShapeWeights"]
+                    keywords["deadline"] = deadline
+                if builtin_plane:
+                    name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
+                else:
+                    name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
+                if not use_skin or not any(map(len, submeshes)):
+                    break
+                if (uv is not None
+                        and (stage_beam is None or len(submeshes) == 1)
+                        and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
+                    stage_skin = stage_nodes.export_skinned(renderer, tree, game_object, raw, rigid=stage_beam is not None)
+                if stage_skin is not None or stage_beam is not None or not scene.active(game_object):
+                    break
+                stage_motion = raw = None
         except Exception as error:
             if auto_face:
                 faces.failed()
@@ -1444,13 +1468,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             scene.warn(warning, game_name)
         if not any(map(len, submeshes)):
             continue
-        stage_skin = None
-        if stage_beam is not None:
-            if uv is None or len(submeshes) != 1:
-                continue
-            stage_skin = stage_nodes.export_skinned(renderer, tree, game_object, raw)
-            if stage_skin is None:
-                continue
+        if native_skin and stage_skin is None and (stage_beam is not None or stage_motion is not None):
+            continue
         flash = None
         if flash_binding is not None:
             if uv is not None and len(submeshes) == 1 and "lightUV" in stage_inputs:
@@ -1502,7 +1521,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if bones:
                 writable = False  # Rest-skin baking is not one invertible affine map.
             else:
-                position_matrix = position_matrix @ arguments[1]
+                position_matrix = position_matrix @ world
         mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_source.assets_file), 0),
                          "id": "10209" if builtin_plane else str(mesh_obj.path_id)}
         penlight_attributes, penlight_transform = None, None
@@ -1574,7 +1593,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         primitives[-1]["attributes"] = {**attributes, "_STAGE_COLOR": stage_color}
                     primitives[-1]["extras"]["mvStageOverlay"] = overlay_material
             descriptor = stage_metadata.get(_key(material_obj)) if stage_materials and material_obj is not None and display is None and overlay_material is None else None
-            if descriptor:
+            if descriptor and (not stage_opaque or stage_skin is not None):
                 descriptor = dict(descriptor)
                 if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
                     descriptor = None
@@ -1632,8 +1651,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         custom["_STAGE_EMISSIVE_UV"] = stage_emissive_uv
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], **custom}
                     primitives[-1]["extras"]["mvStageMaterial"] = descriptor
-                    if descriptor["shader"] == "stage":
+                    if descriptor["shader"] == "stage" or stage_opaque is not None:
                         mv_studio_stage_materials.collect_main_sampler(scene, materials, material_obj, descriptor)
+                    if descriptor["shader"] == "stage":
                         mv_studio_stage_materials.collect_texture_sampler(
                             materials, stage_lightmap_source, descriptor, "lightmapSampler",
                         )
@@ -1668,6 +1688,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         else:
             if stage_skin is not None:
                 glb.doc["nodes"][node_index]["skin"] = skin
+                if stage_opaque is not None:
+                    glb.doc["nodes"][node_index]["extras"]["mvStageSkin"] = True
             stage_nodes.attach(game_object, node_index)
         if rig is not None and skin is not None:
             rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)

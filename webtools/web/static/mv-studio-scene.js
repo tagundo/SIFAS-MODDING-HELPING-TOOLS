@@ -822,7 +822,8 @@
           node.receiveShadow = true;
           // Three's static geometry bounds do not cover a skinned dance pose.
           // The renderer uses updated bone bounds for supported actor meshes.
-          if (entry.group === actors && node.isSkinnedMesh) node.frustumCulled = false;
+          if (node.isSkinnedMesh && (entry.group === actors ||
+              node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true)) node.frustumCulled = false;
           if (entry.group !== effects) return;
           for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
             const name = material.name || "";

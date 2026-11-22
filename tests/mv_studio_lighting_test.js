@@ -470,8 +470,61 @@ async function testStageCubemapQuality() {
   console.log("Native stage cubemap blend selection, ownership, legacy fallback and opaque pass state passed");
 }
 
+async function testWeightedStageMaterial() {
+  const root = new T.Group(), partition = new T.Group();
+  partition.userData.mvStageSkin = true;
+  root.add(partition);
+  const map = new T.Texture({width: 4, height: 4});
+  map.encoding = T.sRGBEncoding;
+  map.minFilter = T.LinearFilter;
+  const mips = [new T.Texture({width: 2, height: 2}), new T.Texture({width: 1, height: 1})];
+  const description = {
+    shader: "general", cull: 0, uvTransform: [1, 1, 0, 0],
+    colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [1, 1, 1, 0]},
+    mainSampler: {mipmaps: [0, 1], filterMode: 1, anisotropy: 8},
+  };
+  const geometry = new T.PlaneGeometry();
+  geometry.userData.mvStageMaterial = description;
+  geometry.setAttribute("skinIndex", new T.Uint16BufferAttribute(Array(4).fill([0, 1, 0, 0]).flat(), 4));
+  geometry.setAttribute("skinWeight", new T.Float32BufferAttribute(Array(4).fill([.75, .25, 0, 0]).flat(), 4));
+  const material = new T.MeshBasicMaterial({map});
+  const mesh = new T.SkinnedMesh(geometry, material);
+  const rootJoint = new T.Bone(), leafJoint = new T.Bone();
+  root.add(rootJoint);
+  rootJoint.add(leafJoint);
+  partition.add(mesh);
+  mesh.bind(new T.Skeleton([rootJoint, leafJoint]), new T.Matrix4());
+  const baseline = new T.Mesh(new T.PlaneGeometry(), material);
+  baseline.geometry.userData.mvStageMaterial = description;
+  root.add(baseline);
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    getDependency: (type, index) => mips[index],
+  });
+  assert.equal(mesh.material.skinning, true);
+  assert.match(mesh.material.vertexShader, /#include <skinbase_vertex>\s+#include <skinning_vertex>/);
+  assert.match(mesh.material.vertexShader, /#include <skinnormal_vertex>/);
+  assert.equal(mesh.material.side, T.DoubleSide);
+  assert.equal(mesh.material.depthFunc, T.LessEqualDepth);
+  assert.equal(mesh.material.depthWrite, true);
+  assert.equal(mesh.material.transparent, false);
+  assert.deepEqual(mesh.material.uniforms.mainMap.value.mipmaps, [map.image, ...mips.map(mip => mip.image)]);
+  assert.equal(mesh.material.uniforms.mainMap.value.encoding, T.LinearEncoding);
+  assert.equal(baseline.material.skinning, false);
+  assert.equal(baseline.material.uniforms.mainMap.value.minFilter, T.LinearFilter);
+  assert.deepEqual(baseline.material.uniforms.mainMap.value.mipmaps, []);
+
+  leafJoint.position.x = 4;
+  root.updateMatrixWorld(true);
+  const vertex = new T.Vector3().fromBufferAttribute(geometry.getAttribute("position"), 0);
+  const weighted = mesh.boneTransform(0, vertex.clone());
+  assert.deepEqual(weighted.toArray(), [vertex.x + 1, vertex.y, vertex.z]);
+  controller.dispose();
+  assert.equal(mesh.material, material);
+  console.log("Weighted native stage material selects Three skinning, opaque state and authored texture sampling.");
+}
+
 testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
-  .then(testStageCubemapQuality).catch(error => {
+  .then(testStageCubemapQuality).then(testWeightedStageMaterial).catch(error => {
     console.error(error);
     process.exitCode = 1;
   });

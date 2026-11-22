@@ -48,8 +48,8 @@ class StageNodes:
         parent = self._ensure(game)
         self.glb.doc["nodes"][parent].setdefault("children", []).append(mesh)
 
-    def export_skinned(self, renderer, tree, game_object, raw):
-        """Add a local rigid skin to the original animated stage hierarchy."""
+    def export_skinned(self, renderer, tree, game_object, raw, *, rigid=False):
+        """Add a local skin to the original animated stage hierarchy."""
         import numpy as np
 
         from .model_skinning import MAX_BONES, MAX_VERTICES, SkinningError, _matrix, _rows
@@ -107,18 +107,32 @@ class StageNodes:
             weights = _rows(raw.get("weights"), count, (1, 2, 3, 4), np, "vertex weights")
         except (KeyError, TypeError, SkinningError):
             return None
-        if indices.shape != weights.shape or indices.dtype.kind not in "iuf":
+        if (indices.shape != weights.shape or indices.dtype.kind not in "iuf"
+                or not np.isfinite(weights).all() or (weights < 0).any()):
             return None
-        weighted = weights == 1
-        if not ((weights == 0) | weighted).all() or not (weighted.sum(axis=1) == 1).all():
+        active = weights > 0
+        totals = weights.sum(axis=1)
+        # Auto depends on Unity's global skin quality. Only accept an Auto
+        # skin here if every vertex is rigid and the quality cannot change it.
+        quality = tree.get("m_Quality", 0)
+        max_influences = quality if not rigid and quality in (2, 4) else 1
+        if ((active.sum(axis=1) > max_influences).any() or (np.abs(totals - 1) > 1e-6).any()
+                or rigid and (totals != 1).any()):
             return None
-        selected = indices[weighted]
+        selected = indices[active]
         if not np.isfinite(selected).all() or (selected < 0).any() or (selected >= len(joints)).any() \
                 or not np.equal(selected, np.trunc(selected)).all():
             return None
+        if rigid:
+            joint_values = np.column_stack((selected, np.zeros((count, 3))))
+            weight_values = np.column_stack((np.ones(count), np.zeros((count, 3))))
+        else:
+            padding = ((0, 0), (0, 4 - weights.shape[1]))
+            joint_values = np.pad(np.where(active, indices, 0), padding)
+            weight_values = np.pad(weights / totals[:, None], padding)
         attributes = {
-            "JOINTS_0": self.glb.attribute(np.column_stack((selected, np.zeros((count, 3)))), "VEC4", 5123),
-            "WEIGHTS_0": self.glb.attribute(np.column_stack((np.ones(count), np.zeros((count, 3)))), "VEC4"),
+            "JOINTS_0": self.glb.attribute(joint_values, "VEC4", 5123),
+            "WEIGHTS_0": self.glb.attribute(weight_values, "VEC4"),
         }
         matrices = np.asarray(inverse, dtype=np.float32).transpose(0, 2, 1).reshape(len(joints), 16)
         skins = self.glb.doc.setdefault("skins", [])

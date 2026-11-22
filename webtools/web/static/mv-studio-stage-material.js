@@ -5,6 +5,8 @@
   // GlTF keeps the maps and shader inputs in the asset, while this pass
   // applies the original stage equations during playback.
   const vertexShader = `
+    #include <common>
+    #include <skinning_pars_vertex>
     #ifdef TEXTURED
       uniform vec4 mainUVTransform;
       varying vec2 vStageUV;
@@ -27,6 +29,9 @@
       varying vec3 vReflectionNormal;
     #endif
     void main() {
+      #include <begin_vertex>
+      #include <skinbase_vertex>
+      #include <skinning_vertex>
       #ifdef TEXTURED
         vStageUV = uv * mainUVTransform.xy + mainUVTransform.zw;
       #endif
@@ -40,12 +45,14 @@
         vStageEmissiveUV = _stage_emissive_uv * emissiveUVTransform.xy + emissiveUVTransform.zw;
       #endif
       #ifdef CUBEMAP
+        #include <beginnormal_vertex>
+        #include <skinnormal_vertex>
         const vec3 unityAxes = vec3(-1.0, 1.0, 1.0);
-        vReflectionPosition = (modelMatrix * vec4(position, 1.0)).xyz * unityAxes;
-        vec3 worldNormal = (vec4(normalMatrix * normal, 0.0) * viewMatrix).xyz;
+        vReflectionPosition = (modelMatrix * vec4(transformed, 1.0)).xyz * unityAxes;
+        vec3 worldNormal = (vec4(normalMatrix * objectNormal, 0.0) * viewMatrix).xyz;
         vReflectionNormal = normalize(worldNormal) * unityAxes;
       #endif
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
     }
   `;
 
@@ -332,12 +339,14 @@
     for (const entry of candidates) {
       if (!active()) break;
       const {node, original, meta} = entry;
+      const skinning = node.isSkinnedMesh === true &&
+        (node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true);
       const uniforms = { tint: {value: new T.Vector4().fromArray(meta.colors._TintColor)} };
       const defines = {};
       let reflectionCube = null;
       if (meta.shader !== "solid") {
         defines.TEXTURED = 1;
-        const map = meta.shader === "stage" && meta.mainSampler
+        const map = (meta.shader === "stage" || skinning && meta.shader === "general") && meta.mainSampler
           ? await sampledTexture(original.map, meta.mainSampler) : gammaTexture(original.map);
         if (!map || !active()) break;
         uniforms.mainMap = {value: map};
@@ -385,7 +394,7 @@
         }
       }
       const material = new T.ShaderMaterial({
-        name: original.name, defines, uniforms, vertexShader, fragmentShader, toneMapped: false,
+        name: original.name, defines, uniforms, vertexShader, fragmentShader, skinning, toneMapped: false,
         side: meta.cull === 0 ? T.DoubleSide : meta.cull === 1 ? T.BackSide : T.FrontSide,
       });
       if (!meta.reflectionToggle || uniforms.useReflection) node.material = material;

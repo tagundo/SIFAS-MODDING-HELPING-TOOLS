@@ -11,6 +11,31 @@ from PIL import Image
 from webtools.core import decode, model_materials, model_viewer, mv_studio_stage_materials as stage
 
 
+class StageOpaqueMaterialTests(unittest.TestCase):
+    def test_general_opaque_uses_compiled_blend_and_depth_but_authored_stencil(self):
+        material = SimpleNamespace(
+            path_id=11, type=SimpleNamespace(name="Material"),
+            assets_file=SimpleNamespace(externals=[SimpleNamespace(path="CAB-618a998abe328b9a2b05b370a5907b3e")]),
+        )
+        floats = [("_SrcBlend", 1), ("_DstBlend", 10), ("_ZWrite", 0), ("_CullMode", 0)]
+        color = dict.fromkeys("rgba", 1)
+        tree = {
+            "m_Shader": {"m_FileID": 1, "m_PathID": 8330475765356442367},
+            "m_ShaderKeywords": "_ALPHAPREMULTIPLY_ON",
+            "m_SavedProperties": {
+                "m_Floats": floats,
+                "m_Colors": [("_AmbientColor", color), ("_TintColor", color)],
+                "m_TexEnvs": [("_MainTex", {"m_Scale": {"x": 1, "y": 1}, "m_Offset": {"x": 0, "y": 0}})],
+            },
+        }
+        scene = SimpleNamespace(tree=lambda _: tree)
+        descriptor = stage.read_material(scene, material, {}, {})
+        self.assertEqual(descriptor["shader"], "general")
+        self.assertEqual(descriptor["cull"], 0)
+        floats.append(("_StencilPassOp", 2))
+        self.assertIsNone(stage.read_material(scene, material, {}, {}))
+
+
 class StageTextureSamplerTests(unittest.TestCase):
     @staticmethod
     def source():
