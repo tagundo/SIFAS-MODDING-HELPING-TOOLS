@@ -180,7 +180,13 @@
           const weight = global.MVStudioLighting.nativeWeight({ ...event, values: timing }, time);
           if (!(weight > 0)) continue;
           const seconds = clip.loop && clip.duration > 0 ? modulo(local, clip.duration) : clamp(local, 0, clip.duration);
-          for (const row of samples) sample(row, clip.start + seconds, weight);
+          const sourceDuration = Math.fround(clip.duration);
+          // The original AnimationClipPlayable sends a normalized float to the
+          // packed curves, which convert it back to local seconds in float32.
+          const curveTime = clip.sampleTimeF32 === true && sourceDuration > 0
+            ? Math.fround(Math.fround(Math.fround(seconds / sourceDuration) * sourceDuration) + Math.fround(clip.start))
+            : clip.start + seconds;
+          for (const row of samples) sample(row, curveTime, weight);
         }
         for (const channel of group.channels.values()) {
           if (!channel.weight) {

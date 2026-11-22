@@ -516,6 +516,7 @@
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
+      record.stageBeam?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -769,6 +770,8 @@
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.stageOverlay = await global.MVStudioStageOverlay?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
+          record.stageBeam = await global.MVStudioStageBeam?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.shaftTemplates = await global.MVStudioShaft?.prepare(T, gltf);
           if (!active()) return null;

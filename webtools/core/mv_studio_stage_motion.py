@@ -2,6 +2,7 @@
 
 import math
 import struct
+from collections import Counter
 
 from . import model_animation as animation
 from . import mv_studio_timeline as timeline
@@ -18,6 +19,16 @@ _STAGE_QUALITY = {"post": "posteffect", "ambient": "stage_ambient", "animation":
                   "coloring": "stage_coloring", "control": "stage_control", "flashlight": "stage_flash_light",
                   "display": "stage_display", "audience": "stage_audience", "emissive": "stage_emissive",
                   "overlayeffect": "stage_overlay_effect"}
+_LASER_BINDING = _BINDING_ROOT + "fx_par_so2056_05/root"
+_LASER_TRACK = "StageEffect/Expert/Control/fx_par_so2056_05_root"
+_LASER_CLIP = -7002476404608242900
+_LASER_DURATION = 118.81666564941406
+_LASER_BEAM = animation.path_hash("joint_all/LaserBeam")
+_LASER_TINT = animation.path_hash("_TintColor") & 0x0FFFFFFF
+_LASER_CORE_PATHS = {animation.path_hash(f"joint_all/Joint_root_{root:02}/{side}/core")
+                     for root in (1, 2) for side in ("L", "R")}
+_LASER_CORE_CONSTANTS = {0xF31EAC3F: 0.6000000238418579, 0x9EC348D4: 0.800000011920929,
+                         0xEEA9BC5B: 1.0, 0x77A0EDE1: 0.6000000238418579}
 
 
 def _declared(objects, owner, tree, name, scripts):
@@ -49,7 +60,44 @@ def _track_supported(obj, tree, mono):
         (tree.get(field) or {}).get("m_PathID") for field in ("m_AvatarMask", "m_AnimClip", "m_InfiniteClip"))
 
 
-def _read_clip(reader, deadline, *, overlay=False):
+def _laser_tint(tree, bindings, deadline):
+    # The beam uses a SkinnedMeshRenderer. Its four particle siblings have a
+    # separate set of constant properties and are outside the supported renderer.
+    if tree.get("m_Name") != "clip_par_so2056_05" or len(bindings) != 55:
+        return None
+    transform_profile = Counter({(4, 4, 4): 28, (4, 3, 0): 4, (1, 2086281974, 0): 3})
+    core = {(path, attribute): value for path in _LASER_CORE_PATHS
+            for attribute, value in _LASER_CORE_CONSTANTS.items()}
+    packed = animation._packed_curves(tree, deadline)
+    components, index = {}, 0
+    for binding in bindings:
+        if binding.get("isPPtrCurve") != 0 or binding.get("script") != {"m_FileID": 0, "m_PathID": 0}:
+            return None
+        path = binding["path"]
+        kind = binding["typeID"]
+        attribute = binding["attribute"]
+        custom = binding["customType"]
+        profile = kind, attribute, custom
+        if transform_profile[profile]:
+            transform_profile[profile] -= 1
+        elif kind == 198 and custom == 27:
+            value = core.pop((path, attribute), None)
+            if value is None or packed[index] != ("constant", value):
+                return None
+        elif kind == 137 and custom == 22 and path == _LASER_BEAM:
+            lane = attribute >> 28
+            if (attribute & 0x0FFFFFFF) != _LASER_TINT or not 0 <= lane < 4 or lane in components:
+                return None
+            components[lane] = packed[index]
+        else:
+            return None
+        index += animation._width(binding)
+    if core or any(transform_profile.values()) or len(components) != 4:
+        return None
+    return {"path": _LASER_BEAM, "kind": "overlayTint", "curves": [components[lane] for lane in range(4)]}
+
+
+def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
     tree = reader.read_typetree()
     if any(tree.get(field) for field in ("m_Legacy", "m_Compressed", "m_HasGenericRootTransform", "m_HasMotionFloatCurves",
                                           "m_Events", "m_PPtrCurves", "m_CompressedRotationCurves")):
@@ -68,6 +116,13 @@ def _read_clip(reader, deadline, *, overlay=False):
         if described == data["unsupported"]:
             data["tracks"].extend(channels)
             data["unsupported"] = 0
+    tint = None
+    if (resident_laser and data["unsupported"] == 20 and
+            (data["start"], data["duration"], data["loop"]) == (0.0, _LASER_DURATION, False)):
+        tint = _laser_tint(tree, bindings, deadline)
+    if tint is not None:
+        data["tracks"].append(tint)
+        data["unsupported"] = 0
     if data["unsupported"] or not data["tracks"]:
         return None
 
@@ -100,7 +155,10 @@ def _read_clip(reader, deadline, *, overlay=False):
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
         channels.append(channel)
-    return {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}, cost
+    clip = {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}
+    if tint is not None:
+        clip["sampleTimeF32"] = True
+    return clip, cost
 
 
 def _mix(clip):
@@ -180,6 +238,7 @@ def read(objects, mono, tracks, deadline):
             continue
         branch = binding.removeprefix(_BINDING_ROOT).split("/")
         overlay = len(branch) == 2 and branch[0].startswith("fx_ove_") and branch[1] == "Effect_root"
+        laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
         setting = "stage_overlay_effect" if overlay else _quality(track["label"])
         for event in track["events"]:
             _remaining(deadline)
@@ -206,8 +265,11 @@ def read(objects, mono, tracks, deadline):
             if identity in clips:
                 declaration, cost = clips[identity], 0
             else:
+                resident_laser = laser_track and key[1] == _LASER_CLIP and not any(
+                    other is not event and other["values"].get("animation") == identity
+                    for row in tracks for other in row["events"])
                 try:
-                    clip = _read_clip(reader, deadline, overlay=overlay)
+                    clip = _read_clip(reader, deadline, overlay=overlay, resident_laser=resident_laser)
                 except (KeyError, TypeError, ValueError, IndexError, OverflowError, struct.error):
                     clip = None
                 if clip is None or clip[1] > remaining:

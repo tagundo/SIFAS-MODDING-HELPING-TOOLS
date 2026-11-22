@@ -141,16 +141,26 @@ class ActualTimelineTests(unittest.TestCase):
             self.assertEqual(parsed, self.original[platform], "stage playback must not change the native revision")
             roots = [f"/EntryPoint/Live/Stages/MainStage/Effect/lit_01/lit{group}_All" for group in "ABCD"]
             overlay = "/EntryPoint/Live/Stages/MainStage/Effect/fx_ove_so2056_01/Effect_root"
-            self.assertEqual(stage["bindings"], [*roots, overlay])
-            self.assertEqual(len(stage["clips"]), 15)
-            self.assertEqual(len(stage["mix"]), 25)
+            beam = "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root"
+            self.assertEqual(stage["bindings"], [*roots, beam, overlay])
+            self.assertEqual(len(stage["clips"]), 16)
+            self.assertEqual(len(stage["mix"]), 26)
             tracks = [track for track in parsed["tracks"] if stage["quality"].get(track["id"]) == "stage_animation"]
             self.assertEqual([track["binding"] for track in tracks], roots)
             overlay_tracks = [track for track in parsed["tracks"]
                               if stage["quality"].get(track["id"]) == "stage_overlay_effect"]
             self.assertEqual([track["binding"] for track in overlay_tracks], [overlay])
             self.assertEqual(len(overlay_tracks[0]["events"]), 1)
-            for track in [*tracks, *overlay_tracks]:
+            beam_track, = [track for track in parsed["tracks"] if track.get("binding") == beam]
+            self.assertEqual(stage["quality"][beam_track["id"]], "stage_control")
+            cue, = beam_track["events"]
+            beam_clip = stage["clips"][cue["values"]["animation"]]
+            self.assertTrue(beam_clip["sampleTimeF32"])
+            self.assertEqual(len(beam_clip["channels"]), 36)
+            tint, = [channel for channel in beam_clip["channels"] if channel["kind"] == "overlayTint"]
+            self.assertEqual(tint["path"], 587684620)
+            self.assertEqual(len(tint["curves"]), 4)
+            for track in [*tracks, *overlay_tracks, beam_track]:
                 event = track["events"][-1]
                 self.assertIsNone(event["values"]["postExtrapolationTime"])
                 self.assertTrue(stage["mix"][event["id"]]["postInfinite"])
