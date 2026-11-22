@@ -38,6 +38,12 @@ class StageNodes:
                 return name, model_animation.path_hash("/".join(path[len(root):]))
         return None
 
+    def retain(self, game):
+        if self.binding(game) is None:
+            return False
+        self._ensure(game)
+        return True
+
     def attach(self, game, mesh):
         parent = self._ensure(game)
         self.glb.doc["nodes"][parent].setdefault("children", []).append(mesh)

@@ -29,6 +29,27 @@
     return local * number(values.timeScale, 1) + number(values.clipIn, 0);
   }
 
+  function sampleTime(clip, local) {
+    const seconds = clip.loop && clip.duration > 0 ? modulo(local, clip.duration) : clamp(local, 0, clip.duration);
+    const duration = Math.fround(clip.duration);
+    // The native AnimationClipPlayable sends a normalized float that the
+    // packed curves convert back to local seconds in float32.
+    return clip.sampleTimeF32 === true && duration > 0
+      ? Math.fround(Math.fround(Math.fround(seconds / duration) * duration) + Math.fround(clip.start))
+      : clip.start + seconds;
+  }
+
+  function weightedEvent(event, mix) {
+    return { ...event, values: { ...event.values, mixIn: mix.mixIn, mixOut: mix.mixOut,
+      postExtrapolationTime: mix.postInfinite ? Number.MAX_VALUE : event.values.postExtrapolationTime,
+      preExtrapolationTime: mix.preInfinite ? Number.MAX_VALUE : event.values.preExtrapolationTime } };
+  }
+
+  function nativeActive(value) {
+    // The native Animator's GameObject binding converts a float to bool.
+    return Math.abs(Math.fround(value)) > Math.fround(.001);
+  }
+
   function evaluate(curve, time) {
     const [mode, keys] = curve;
     if (mode === "constant") return keys;
@@ -124,6 +145,8 @@
             const id = `${source.path}:${kind}`;
             if (!group.channels.has(id)) group.channels.set(id, {
               node, kind, value, material, base: kind === "visible" ? value : value.clone(),
+              nativeVisibility: clip.sampleTimeF32 === true &&
+                binding === "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2056_05/root",
               sum: kind === "visible" ? 0 : value.clone(), weight: 0, changed: false,
             });
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });
@@ -174,18 +197,9 @@
           if (track.muted) continue;
           const local = clipTime(event, mix, time);
           if (local === null) continue;
-          const timing = { ...event.values, mixIn: mix.mixIn, mixOut: mix.mixOut,
-            postExtrapolationTime: mix.postInfinite ? Number.MAX_VALUE : event.values.postExtrapolationTime,
-            preExtrapolationTime: mix.preInfinite ? Number.MAX_VALUE : event.values.preExtrapolationTime };
-          const weight = global.MVStudioLighting.nativeWeight({ ...event, values: timing }, time);
+          const weight = global.MVStudioLighting.nativeWeight(weightedEvent(event, mix), time);
           if (!(weight > 0)) continue;
-          const seconds = clip.loop && clip.duration > 0 ? modulo(local, clip.duration) : clamp(local, 0, clip.duration);
-          const sourceDuration = Math.fround(clip.duration);
-          // The original AnimationClipPlayable sends a normalized float to the
-          // packed curves, which convert it back to local seconds in float32.
-          const curveTime = clip.sampleTimeF32 === true && sourceDuration > 0
-            ? Math.fround(Math.fround(Math.fround(seconds / sourceDuration) * sourceDuration) + Math.fround(clip.start))
-            : clip.start + seconds;
+          const curveTime = sampleTime(clip, local);
           for (const row of samples) sample(row, curveTime, weight);
         }
         for (const channel of group.channels.values()) {
@@ -195,8 +209,10 @@
             continue;
           }
           const { node, kind, base, sum, weight, value, material } = channel, remainder = Math.max(0, 1 - weight);
-          if (kind === "visible") node.visible = (sum + Number(base) * remainder) / (weight + remainder) > .5;
-          else {
+          if (kind === "visible") {
+            const active = (sum + Number(base) * remainder) / (weight + remainder);
+            node.visible = channel.nativeVisibility ? nativeActive(active) : active > .5;
+          } else {
             if (kind === "quaternion") value.copy(base).slerp(sum, weight / (weight + remainder));
             else value.copy(sum).addScaledVector(base, remainder).multiplyScalar(1 / (weight + remainder));
             if (!material) node.updateMatrix();
@@ -215,5 +231,5 @@
     return { update };
   }
 
-  global.MVStudioStageMotion = { apply, clipTime, evaluate, validCurve };
+  global.MVStudioStageMotion = { apply, clipTime, evaluate, nativeActive, sampleTime, validCurve, weightedEvent };
 })(typeof window !== "undefined" ? window : globalThis);

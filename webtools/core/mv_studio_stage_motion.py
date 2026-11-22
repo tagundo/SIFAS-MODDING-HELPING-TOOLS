@@ -61,8 +61,8 @@ def _track_supported(obj, tree, mono):
 
 
 def _laser_tint(tree, bindings, deadline):
-    # The beam uses a SkinnedMeshRenderer. Its four particle siblings have a
-    # separate set of constant properties and are outside the supported renderer.
+    # The beam tint belongs to the SkinnedMeshRenderer. The four core emitters
+    # use their own validated constant birth colors in the resident particle reader.
     if tree.get("m_Name") != "clip_par_so2056_05" or len(bindings) != 55:
         return None
     transform_profile = Counter({(4, 4, 4): 28, (4, 3, 0): 4, (1, 2086281974, 0): 3})

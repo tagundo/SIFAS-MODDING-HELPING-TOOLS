@@ -517,6 +517,7 @@
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
       record.stageBeam?.dispose();
+      record.stageLaserCores?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -778,6 +779,8 @@
           record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
+          record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser);
+          if (!active()) return null;
           record.penlight = global.MVStudioPenlight?.apply(T, record.root);
           record.stageFlash = await global.MVStudioStageFlash?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
@@ -918,6 +921,7 @@
           for (const item of record.visibility) item.node.visible = quality[item.quality] !== false;
           record.stageFlash?.update(0, preview);
           record.stageMotion?.update(0, preview);
+          record.stageLaserCores?.update(0, preview);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
           record.stageColoring?.update(0, preview);
@@ -1391,6 +1395,7 @@
       stageSparksRoop?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      for (const record of records) record.stageLaserCores?.update(currentTime, project);
       for (const record of records) record.penlight?.update(currentTime, project);
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
       for (const record of records) record.stageColoring?.update(currentTime, project);

@@ -232,7 +232,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
 def _preview_file(path, kind, *, stage_bindings=()):
     if path.suffix.lower() == ".glb":
         return _media(path.read_bytes(), "glb"), {}
-    return _preview(path, performer=kind in {"performer", "outfit"}, stage_bindings=stage_bindings)
+    return _preview(path, performer=kind in {"performer", "outfit"}, stage_bindings=stage_bindings,
+                    native_stage_effect=kind == "effect" and bool(stage_bindings))
 
 
 def _song_audio(path, offset=0):

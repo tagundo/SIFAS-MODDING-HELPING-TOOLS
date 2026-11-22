@@ -839,26 +839,27 @@ class _Materials:
                 png = _texture_png(texture, self.scene.deadline, stage=True)
             else:
                 png = _texture_png(texture, self.scene.deadline)
-        image_index = len(self.glb.doc["images"])
-        self.glb.doc["images"].append({"bufferView": self.glb.view(png), "mimeType": "image/png",
-                                       "name": str(texture.m_Name)})
         settings = getattr(texture, "m_TextureSettings", None)
         wrapping = {0: 10497, 1: 33071, 2: 33648, 3: 33071}
-        sampler = {"magFilter": 9729, "minFilter": 9729,
-                   "wrapS": wrapping.get(getattr(settings, "m_WrapU", 0), 10497),
-                   "wrapT": wrapping.get(getattr(settings, "m_WrapV", 0), 10497)}
-        sampler_index = len(self.glb.doc["samplers"])
-        self.glb.doc["samplers"].append(sampler)
-        index = len(self.glb.doc["textures"])
-        descriptor = {"source": image_index, "sampler": sampler_index}
+        index = self.embed_texture(png, str(texture.m_Name),
+                                   wrapping.get(getattr(settings, "m_WrapU", 0), 10497),
+                                   wrapping.get(getattr(settings, "m_WrapV", 0), 10497))
         source = _source_path(obj)
         source_index = self.source_indices.get(source)
         file_index = self.source_files.get(source, {}).get(id(obj.assets_file))
         if source_index is not None and file_index is not None:
-            descriptor["extras"] = {"viewerTexture": {
+            self.glb.doc["textures"][index]["extras"] = {"viewerTexture": {
                 "source": source_index, "file": file_index, "id": str(obj.path_id)}}
-        self.glb.doc["textures"].append(descriptor)
         self.textures[key] = index
+        return index
+
+    def embed_texture(self, png, name, wrap_s=10497, wrap_t=10497):
+        image_index = len(self.glb.doc["images"])
+        self.glb.doc["images"].append({"bufferView": self.glb.view(png), "mimeType": "image/png", "name": name})
+        sampler_index = len(self.glb.doc["samplers"])
+        self.glb.doc["samplers"].append({"magFilter": 9729, "minFilter": 9729, "wrapS": wrap_s, "wrapT": wrap_t})
+        index = len(self.glb.doc["textures"])
+        self.glb.doc["textures"].append({"source": image_index, "sampler": sampler_index})
         self.scene.stats["textures"] += 1
         return index
 
@@ -1269,6 +1270,18 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         glb.doc["scenes"][0].setdefault("extras", {})["mvAudiencePoint"] = next(iter(audience_points))
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
+    if animated_effect:
+        from . import mv_studio_stage_laser_cores
+
+        cores = mv_studio_stage_laser_cores.read(scene, stage_nodes, deadline)
+        if cores is not None:
+            fields, mips = cores
+            pixels = sum((512 >> level) ** 2 for level in range(len(mips)))
+            if materials.pixels + pixels <= MAX_TEXTURE_PIXELS:
+                materials.pixels += pixels
+                fields["texture"] = [materials.embed_texture(png, f"tex_par_gen_17 mip {level}")
+                                     for level, png in enumerate(mips)]
+                glb.doc["scenes"][0].setdefault("extras", {})["mvStageLaserCores"] = fields
     if len(shaft_sources) == 1:
         retained = mv_studio_shaft.export(scene, glb, materials, shaft_sources[0], deadline)
         if retained:
