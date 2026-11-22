@@ -72,9 +72,12 @@
       for (const mesh of usable) {
         const { node, owner, fields } = mesh;
         const tint = new T.Vector4().fromArray(fields.tint), uv = new T.Vector4().fromArray(fields.uv);
+        // Unity's CullMode values specify the side to discard. Three's side
+        // specifies the faces to retain. Old previews are double-sided.
+        const side = [T.DoubleSide, T.BackSide, T.FrontSide][fields.cull] ?? T.DoubleSide;
         const material = new T.ShaderMaterial({
           vertexShader, fragmentShader, transparent: true, depthTest: false, depthWrite: false,
-          toneMapped: false, side: T.DoubleSide, blending: T.CustomBlending,
+          toneMapped: false, side, blending: T.CustomBlending,
           blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor, blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor,
           uniforms: { uTexture: { value: await texture(fields.texture) }, uTint: { value: tint },
             uTextureST: { value: uv }, uVertexColor: { value: fields.vertexColor } }

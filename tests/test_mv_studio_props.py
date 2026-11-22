@@ -136,8 +136,24 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     effect_bytes = effect_glb.read_bytes()
                     effect_length = int.from_bytes(effect_bytes[12:16], "little")
                     effect_doc = json.loads(effect_bytes[20:20+effect_length])
-                    self.assertEqual(len(effect_doc["meshes"]), 149)
+                    self.assertEqual(len(effect_doc["meshes"]), 151)
                     self.assertGreater(len(effect_doc["meshes"]), model_viewer.MAX_MESHES)
+                    overlays = {mesh["name"]: (primitive["extras"]["mvStageOverlay"]["cull"],
+                                               effect_doc["accessors"][primitive["indices"]]["count"])
+                                for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
+                                if "mvStageOverlay" in primitive.get("extras", {})}
+                    self.assertEqual(overlays, {"Glow_02": (0, 420), "Plane_02": (1, 24)})
+                    overlay_track, = (track for track in tracks.values()
+                                      if track.get("binding", "").endswith("/fx_ove_so2028_01/Effect_root"))
+                    overlay_motion = project["stageMotion"]
+                    self.assertEqual(overlay_motion["quality"][overlay_track["id"]], "stage_overlay_effect")
+                    overlay_event, = overlay_track["events"]
+                    overlay_clip = overlay_motion["clips"][overlay_event["values"]["animation"]]
+                    self.assertTrue(overlay_clip["sampleTimeF32"])
+                    self.assertEqual({(channel["path"], channel["kind"]) for channel in overlay_clip["channels"]
+                                      if channel["kind"].startswith("overlay")},
+                                     {(2350170846, "overlayTint"), (3121091544, "overlayTint"),
+                                      (3121091544, "overlayUV")})
                     effect_ambient = [primitive["extras"]["mvStageMaterial"]["singleAmbientBinding"]
                                       for mesh in effect_doc["meshes"] for primitive in mesh["primitives"]
                                       if "singleAmbientBinding" in primitive.get("extras", {}).get("mvStageMaterial", {})]

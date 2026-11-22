@@ -39,6 +39,29 @@ class TimelineContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "camera bindings"):
                     studio._camera_sample_order(amended)
 
+    def test_overlay_material_distinguishes_native_color_and_vector_lanes(self):
+        from webtools.core.mv_studio_stage_overlay import material_channels
+        from zlib import crc32
+
+        def binding(path, property_name, channel):
+            return {"path": path, "typeID": 23, "customType": 22, "isPPtrCurve": 0,
+                    "attribute": (crc32(property_name) & 0x0FFFFFFF) | (channel << 28)}
+
+        # Aion's second flare uses color lanes 4–7 plus four ordinary UV lanes.
+        lanes = [binding(3121091544, b"_TintColor", i) for i in range(4, 8)]
+        uv = [binding(3121091544, b"_MainTex_ST", i) for i in range(4)]
+        curves = [("constant", value) for value in range(8)]
+        decoded, count = material_channels(lanes + uv, curves, lambda _: 1)
+        self.assertEqual(count, 8)
+        self.assertEqual(decoded, [
+            {"path": 3121091544, "kind": "overlayTint", "curves": curves[:4]},
+            {"path": 3121091544, "kind": "overlayUV", "curves": curves[4:]},
+        ])
+        vectors = [binding(3121091544, b"_TintColor", i) for i in range(4)]
+        for unsupported in (lanes[:-1] + vectors[-1:], lanes + vectors,
+                            [binding(3121091544, b"_MainTex_ST", i) for i in range(4, 8)]):
+            self.assertEqual(material_channels(unsupported, curves, lambda _: 1), ([], 0))
+
     def test_stage_motion_rejects_partial_native_clip_playback(self):
         from webtools.core import mv_studio_stage_motion as stage
 

@@ -24,6 +24,7 @@ async function run() {
   assert.equal(mesh.material.blendDst, T.OneFactor);
   assert.equal(mesh.material.depthTest, false);
   assert.equal(mesh.material.depthWrite, false);
+  assert.equal(mesh.material.side, T.DoubleSide);
 
   const motion = MVStudioStageMotion.apply(T, root);
   const values = { animation: "clip", timeScale: 1, clipIn: 0 };
@@ -64,6 +65,12 @@ async function run() {
   overlay.dispose();
   assert.equal(mesh.layers.mask, 1);
   assert.equal(mesh.material, material);
+  for (const [cull, side] of [[1, T.BackSide], [2, T.FrontSide]]) {
+    mesh.geometry.userData.mvStageOverlay.cull = cull;
+    const sidedOverlay = await MVStudioStageOverlay.apply(T, root);
+    assert.equal(mesh.material.side, side);
+    sidedOverlay.dispose();
+  }
   console.log("Native screen overlay: layer and camera, per-renderer material curves, blending and no clear.");
 }
 
