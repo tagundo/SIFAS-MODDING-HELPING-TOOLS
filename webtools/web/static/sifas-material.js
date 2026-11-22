@@ -519,6 +519,7 @@
       var main = new T.ShaderMaterial(parameters);
       main.name = original.name + " (" + data.shader + ")";
       main.userData.sifas = data;
+      if (!memberProp && options.nativeMemberDepth) main.userData.mvStageMemberDepthRim = { value: 0 };
       main.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       var outlineParameters = Object.assign({}, parameters, {
         vertexShader: memberProp ? PROP_OUTLINE_VERTEX : mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
@@ -732,6 +733,10 @@
           else uniforms.uRimlightDirection.value.copy(pair.rim.direction);
           uniforms.uRimglightIntensity.value = rim?.intensity ?? pair.rim.intensity;
           uniforms.uRimglightPower.value = rim?.power ?? pair.rim.power;
+          // LiveCoreMemberRimlight resets the depth pass intensity before
+          // BaseLight and Member Rim Light write their current values.
+          var depthRim = pair.main.userData.mvStageMemberDepthRim;
+          if (depthRim) depthRim.value = finite(rim?.intensity, 0);
         });
       },
       setRimlight: function (value) {

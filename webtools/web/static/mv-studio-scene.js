@@ -383,8 +383,7 @@
       cancelDraw();
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
         if (preparation?.shown) {
-          prepareSoftDepth(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
-          drawWorld(preparation.scene, stageCamera, preparation.records);
+          drawWorld(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
           return;
         }
         if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
@@ -417,7 +416,8 @@
       for (const {stageSoftBillboards} of visibleEffects) stageSoftBillboards.setDepth(depth, camera);
     }
 
-    function drawWorld(source, camera, sceneRecords) {
+    function drawWorld(source, camera, sceneRecords, qualityMode) {
+      prepareSoftDepth(source, camera, sceneRecords, qualityMode);
       if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
       else renderer.render(source, camera);
     }
@@ -486,13 +486,12 @@
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
-      prepareSoftDepth(scene, camera, records, project?.quality?.mode);
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
           projection[11] !== -1 || projection[15] !== 0 || !(projection[0] > 0.001 && projection[5] > 0.001) ||
           !records.some((record) => record.skinBounds?.length)) {
-        drawWorld(scene, camera, records);
+        drawWorld(scene, camera, records, project?.quality?.mode);
         return;
       }
       const autoUpdate = scene.autoUpdate;
@@ -506,7 +505,7 @@
             culled.push(entry.mesh);
           }
         }
-        drawWorld(scene, camera, records);
+        drawWorld(scene, camera, records, project?.quality?.mode);
       } finally {
         culled.forEach((mesh) => { mesh.visible = true; });
         culled.length = 0;
@@ -925,7 +924,7 @@
           }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
-            mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, releaseParserAfterLoad: true
+            mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, nativeMemberDepth: true, releaseParserAfterLoad: true
           });
           if (record.materials && record.materials.ready) await record.materials.ready;
           if (!active()) return null;

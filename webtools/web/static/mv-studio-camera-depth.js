@@ -2,6 +2,14 @@
   "use strict";
 
   const vertexShader = `
+    #ifdef MEMBER
+      #include <common>
+      #include <morphtarget_pars_vertex>
+      #include <skinning_pars_vertex>
+      attribute highp vec4 _sifas_color;
+      uniform mediump float memberRimIntensity;
+      uniform highp float memberResolutionRatio;
+    #endif
     #ifdef CUTOUT
       uniform vec4 mainUVTransform;
       varying highp vec2 vUv;
@@ -10,7 +18,29 @@
       #ifdef CUTOUT
         vUv = uv * mainUVTransform.xy + mainUVTransform.zw;
       #endif
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      #ifdef MEMBER
+        #include <beginnormal_vertex>
+        #include <morphnormal_vertex>
+        #include <skinbase_vertex>
+        #include <skinnormal_vertex>
+        #include <begin_vertex>
+        #include <morphtarget_vertex>
+        #include <skinning_vertex>
+        #include <project_vertex>
+        if (memberRimIntensity <= 0.0) {
+          vec3 viewNormal = normalize(normalMatrix * objectNormal);
+          if (projectionMatrix[3].w == 0.0) {
+            float scale = max(-mvPosition.z, 0.0) * memberResolutionRatio;
+            scale /= abs(projectionMatrix[1].y) * 0.267949194;
+            scale = scale < 0.899999976 ? scale * 1.11111116 : scale * 0.555555582 + 0.5;
+            vec2 shift = projectionMatrix[0].xy * viewNormal.x + projectionMatrix[1].xy * viewNormal.y;
+            gl_Position.xy += shift * _sifas_color.r * scale * 0.00100000005;
+          }
+          gl_Position.z += (1.0 - _sifas_color.g) * 0.000699999975;
+        }
+      #else
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      #endif
     }
   `;
 
@@ -30,7 +60,19 @@
 
   function depthKind(node, material) {
     const extras = node.geometry?.userData;
-    const kind = extras?.mvStageCameraDepth?.kind;
+    const depth = extras?.mvStageCameraDepth;
+    const kind = depth?.kind;
+    if (kind === "member") {
+      const {position, normal, _sifas_color: color, skinIndex, skinWeight} = node.geometry.attributes;
+      const matching = (attribute, size) => attribute?.itemSize === size && attribute.count === position?.count;
+      const skinned = node.isSkinnedMesh === true;
+      return material.isShaderMaterial && material.userData.sifas?.shader === "AS/Member" &&
+        !material.userData.viewerHelper && !material.transparent && material.depthWrite &&
+        Number.isInteger(depth.queue) && depth.queue >= 0 && depth.queue <= 2500 &&
+        Number.isFinite(material.userData.mvStageMemberDepthRim?.value) &&
+        position?.itemSize === 3 && position.count > 0 && matching(normal, 3) && matching(color, 4) &&
+        (!skinned || node.skeleton?.bones?.length && matching(skinIndex, 4) && matching(skinWeight, 4)) ? kind : null;
+    }
     if (kind === "opaque") return kind;
     if (kind === "cutout") {
       const uniforms = material.uniforms;
@@ -52,30 +94,47 @@
     let target = null, ready = false, disposed = false;
     scene.autoUpdate = false;
 
-    function pass(kind) {
-      if (!materials.has(kind)) {
+    function pass(kind, skinning, morphTargets, morphNormals) {
+      const members = kind === "member";
+      const key = members ? `${kind}:${skinning}:${morphTargets}:${morphNormals}` : kind;
+      if (!materials.has(key)) {
         const cutout = kind === "cutout";
-        materials.set(kind, new T.ShaderMaterial({
-          vertexShader, fragmentShader, defines: cutout ? {CUTOUT: 1} : {},
-          uniforms: cutout ? {mainMap: {value: null}, mainUVTransform: {value: new T.Vector4()},
-            alphaCutoff: {value: 0}} : {},
+        const uniforms = {};
+        if (cutout) Object.assign(uniforms, {mainMap: {value: null}, mainUVTransform: {value: new T.Vector4()},
+          alphaCutoff: {value: 0}});
+        if (members) Object.assign(uniforms, {memberRimIntensity: {value: 0}, memberResolutionRatio: {value: 1}});
+        materials.set(key, new T.ShaderMaterial({
+          vertexShader, fragmentShader, defines: members ? {MEMBER: 1} : cutout ? {CUTOUT: 1} : {},
+          uniforms, skinning, morphTargets, morphNormals,
           side: T.FrontSide, depthTest: true, depthWrite: true, depthFunc: T.LessEqualDepth,
           colorWrite: false, blending: T.NoBlending, toneMapped: false,
         }));
       }
-      return materials.get(kind);
+      return materials.get(key);
     }
 
-    function addCaster(node, camera) {
+    function bindMemberUniforms() {
+      const {source, ratio} = this.userData;
+      const {material} = this;
+      material.uniforms.memberRimIntensity.value = source.userData.mvStageMemberDepthRim.value;
+      material.uniforms.memberResolutionRatio.value = ratio;
+      material.uniformsNeedUpdate = true;
+    }
+
+    function addCaster(node, camera, ratio) {
       const source = node.material;
-      if (!node.isMesh || node.isSkinnedMesh || node.isInstancedMesh || node.morphTargetInfluences?.length ||
-          !source?.visible || !node.layers.test(camera.layers)) return;
+      if (!node.isMesh || node.isInstancedMesh || !source?.visible || !node.layers.test(camera.layers)) return false;
       const kind = depthKind(node, source);
-      if (!kind) return;
-      const depthMaterial = pass(kind);
+      if (!kind) return false;
+      const members = kind === "member", skinning = node.isSkinnedMesh === true;
+      const morphed = Boolean(node.morphTargetInfluences?.length);
+      if (!members && (skinning || morphed)) return false;
+      const morphTargets = morphed && source.morphTargets === true;
+      const morphNormals = morphTargets && source.morphNormals === true;
+      const depthMaterial = pass(kind, skinning, morphTargets, morphNormals);
       let surrogate = proxies.get(node);
       if (!surrogate) {
-        surrogate = new T.Mesh(node.geometry, depthMaterial);
+        surrogate = skinning ? new T.SkinnedMesh(node.geometry, depthMaterial) : new T.Mesh(node.geometry, depthMaterial);
         proxies.set(node, surrogate);
       }
       surrogate.geometry = node.geometry;
@@ -83,7 +142,17 @@
       surrogate.frustumCulled = node.frustumCulled;
       surrogate.layers.mask = node.layers.mask;
       surrogate.matrixWorld.copy(node.matrixWorld);
-      if (kind === "cutout") {
+      if (members) {
+        if (skinning) {
+          surrogate.skeleton = node.skeleton;
+          surrogate.bindMatrix.copy(node.bindMatrix);
+          surrogate.bindMatrixInverse.copy(node.bindMatrixInverse);
+        }
+        surrogate.morphTargetInfluences = node.morphTargetInfluences;
+        surrogate.userData.source = source;
+        surrogate.userData.ratio = ratio;
+        surrogate.onBeforeRender = bindMemberUniforms;
+      } else if (kind === "cutout") {
         surrogate.onBeforeRender = () => {
           depthMaterial.uniforms.mainMap.value = source.uniforms.mainMap.value;
           depthMaterial.uniforms.mainUVTransform.value.copy(source.uniforms.mainUVTransform.value);
@@ -92,6 +161,7 @@
         };
       } else surrogate.onBeforeRender = T.Object3D.prototype.onBeforeRender;
       scene.add(surrogate);
+      return skinning;
     }
 
     function capture(source, camera) {
@@ -117,10 +187,18 @@
       scissor.fromArray(gl.getParameter(gl.SCISSOR_BOX));
       const scissorTest = gl.isEnabled(gl.SCISSOR_TEST), depthTest = gl.isEnabled(gl.DEPTH_TEST);
       const clearDepth = gl.getParameter(gl.DEPTH_CLEAR_VALUE), depthMask = gl.getParameter(gl.DEPTH_WRITEMASK);
-      const state = renderer.state;
+      const state = renderer.state, renderInfo = renderer.info;
+      const previousAutoReset = renderInfo?.autoReset;
+      let skinned = false;
       try {
         if (source.autoUpdate) source.updateMatrixWorld();
-        source.traverseVisible(node => addCaster(node, camera));
+        const ratio = Math.min(1, renderer.domElement.height / (viewport.w || height));
+        source.traverseVisible(node => {
+          if (addCaster(node, camera, ratio)) skinned = true;
+        });
+        // Three r128 updates a shared skeleton once per info.render.frame.
+        // Keep this prepass in the same frame as the subsequent camera draw.
+        if (skinned && renderInfo) renderInfo.autoReset = false;
         renderer.autoClear = false;
         shadow.enabled = false;
         renderer.setRenderTarget(target);
@@ -133,6 +211,7 @@
         return target.depthTexture;
       } finally {
         scene.clear();
+        if (skinned && renderInfo) renderInfo.autoReset = previousAutoReset;
         renderer.autoClear = previousClear;
         shadow.enabled = shadowsEnabled;
         state.buffers.depth.setClear(clearDepth);

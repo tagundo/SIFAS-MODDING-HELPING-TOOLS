@@ -601,6 +601,9 @@ def _properties(tree, name):
     return dict(tree.get("m_SavedProperties", {}).get(name, []))
 
 
+_NATIVE_MEMBER_SHADER = ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333)
+
+
 def _as_member_material(scene, obj, tree):
     """Identify the known SIFAS shader before ignoring its unused _Color."""
     if obj is None:
@@ -626,7 +629,7 @@ def _as_member_material(scene, obj, tree):
     # This reference is independently verified against the original AS/Member
     # shader and the actual iOS mod/Android assets. A dependency or stale saved
     # properties alone cannot establish which shader an external PPtr uses.
-    if identity != ("cab-9382ea964987eceddd567506a3b21312", 8291131735116688333):
+    if identity != _NATIVE_MEMBER_SHADER:
         return False
     if not {"_TintColor", "_AmbientColor", "_RimlightColor"} <= set(_properties(tree, "m_Colors")):
         return False
@@ -636,6 +639,50 @@ def _as_member_material(scene, obj, tree):
             if "asmember.shader.unity3d" in scene.tree(candidate).get("m_Dependencies", []):
                 return True
     return False
+
+
+def _member_depth_material(scene, material):
+    """Admit the exact opaque wrapper that imports the member depth pass."""
+    if material.type.name != "Material":
+        return None
+    tree = scene.tree(material)
+    pointer = tree.get("m_Shader") or {}
+    file_id = pointer.get("m_FileID")
+    externals = material.assets_file.externals
+    if type(file_id) is not int or not 0 <= file_id <= len(externals):
+        return None
+    file_name = externals[file_id - 1].name if file_id else material.assets_file.name
+    if (ntpath.basename(file_name).casefold(), pointer.get("m_PathID")) != _NATIVE_MEMBER_SHADER:
+        return None
+    queue = tree.get("m_CustomRenderQueue", -1)
+    if (type(queue) is not int or not -1 <= queue <= 2500 or tree.get("disabledShaderPasses")
+            or tree.get("stringTagMap")):
+        return None
+    return {"kind": "member", "queue": 1900 if queue == -1 else queue}
+
+
+def _member_depth_vertices(mesh, raw, quality):
+    """Check that the GLB preserves the native member pass's posed inputs."""
+    import numpy as np
+
+    # Auto uses the player's two-weight setting. Fixed limits are serialized
+    # on the renderer. The preview and live pose must use the same weights.
+    limit = {0: 2, 1: 1, 2: 2, 4: 4}.get(quality)
+    weights = np.asarray(raw["weights"])
+    if (limit is None or weights.ndim != 2 or (np.count_nonzero(weights, axis=1) > limit).any()
+            or getattr(mesh.m_Shapes, "channels", ())):
+        return False
+    channels = getattr(mesh.m_VertexData, "m_Channels", ())
+    if len(channels) < 4 or channels[3].dimension != 4:
+        return False
+    colors = np.asarray(raw["colors"])
+    if colors.dtype.kind not in "iuf" or colors.ndim != 2 or colors.shape[1] != 4 or not colors.size:
+        return False
+    # RigBuilder converts emitted byte colors to normalized floats. A byte
+    # stream containing only 0 and 1 cannot use its range-based conversion.
+    if channels[3].format == 2:
+        return colors.min() >= 0 and 1 < colors.max() <= 255
+    return channels[3].format == 0 and colors.min() >= 0 and colors.max() <= 1
 
 
 def _png_texture(image, deadline):
@@ -1034,7 +1081,7 @@ def _geometry(mesh_obj, world, bone_world_matrices=None, warnings=None, rig_data
     if rig_data is not None:
         rig_data.update(mesh=mesh, positions=positions, normals=normals,
                         indices=handler.m_BoneIndices, weights=handler.m_BoneWeights,
-                        colors=handler.m_Colors)
+                        colors=handler.m_Colors, authored_normals=has_source_normals)
     if penlight_data is not None:
         # AS/Penlight stores each billboard's pivot in UV1 and four random
         # inputs in COLOR0. Neither channel is a conventional UV or color.
@@ -1223,6 +1270,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 rig.source_indices[path] = len(rig.source_indices)
     penlights, audience_points, detached_templates, shaft_sources, area_sources = {}, set(), set(), [], []
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
+    member_depth = faces.context.get("_mv_performer") is True and rig is not None and not auto_only
     stage_nodes = None
     if stage_materials and getattr(scene, "stage_motion_bindings", ()):
         from .mv_studio_stage_nodes import StageNodes
@@ -1586,6 +1634,15 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 targets, target_names, target_hashes, target_weights = [], [], [], []
         if uv is not None:
             attributes["TEXCOORD_0"] = glb.attribute(uv, "VEC2")
+        member_depth_mesh = (
+            member_depth and skin is not None and renderer_type == "SkinnedMeshRenderer"
+            and game_name.casefold() in {"body", "hair"} and _source_path(renderer) in rig.selected
+            and _source_path(renderer) not in facial_sources and scene.tree(game_object).get("m_Layer") == 16
+            and tree.get("m_Enabled") is True and tree.get("m_CastShadows") in (0, 1, 2)
+            and not tree.get("m_ForceRenderingOff")
+            and tree.get("m_Bones") and raw["mesh"].m_BindPose and raw["authored_normals"]
+            and "_SIFAS_COLOR" in attributes and _member_depth_vertices(raw["mesh"], raw, tree.get("m_Quality"))
+        )
         soft_billboard = None
         if stage_soft and uv is not None and len(submeshes) == 1:
             center = stage_inputs.get("softCenter")
@@ -1626,8 +1683,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 continue
             ref = refs[min(index, len(refs) - 1)] if refs else None
             material_obj = None
+            original_material = None
             try:
-                material_obj = faces.material(renderer, _ref(renderer, ref))
+                original_material = _ref(renderer, ref)
+                material_obj = faces.material(renderer, original_material)
                 material = materials.material(material_obj)
             except Exception:
                 if not auto_face:
@@ -1660,6 +1719,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     primitives[-1]["extras"]["mvPenlight"] = {**penlight_transform, "material": native_material}
             if stage_beam is not None:
                 primitives[-1]["extras"]["mvStageBeam"] = stage_beam
+            if (member_depth_mesh and original_material is not None and original_material is material_obj
+                    and _source_path(original_material) == _source_path(renderer)):
+                depth = _member_depth_material(scene, original_material)
+                if depth is not None:
+                    primitives[-1]["extras"]["mvStageCameraDepth"] = depth
             if soft_billboard is not None:
                 primitives[-1]["extras"]["mvStageSoftBillboard"] = soft_billboard
             if flash is not None:
