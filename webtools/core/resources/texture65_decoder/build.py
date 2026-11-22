@@ -94,8 +94,8 @@ def build(target, output, *, ndk=None, abi="arm64-v8a", cxx=None):
         return {"status": "PASS", "target": target, "abi": abi if target == "android" else None,
                 "output": str(output), "bytes": len(raw), "sha256": sha(output),
                 "command": command, "sources": provenance, "load_segments": segments,
-                "interface": "WIDTH HEIGHT INPUT_CRN OUTPUT_RGBA [--mip N] or --raw etc1|pvrtc4 WIDTH HEIGHT INPUT OUTPUT; unflipped RGBA8",
-                "capabilities": ["texture65-etc2a-rgba8", "authored-mip-v1", "raw-etc1-pvrtc4-v1"]}
+                "interface": "WIDTH HEIGHT INPUT_CRN OUTPUT_RGBA [--mip N] or --raw etc1|pvrtc4|pvrtc4a WIDTH HEIGHT INPUT OUTPUT; unflipped RGBA8",
+                "capabilities": ["texture65-etc2a-rgba8", "authored-mip-v1", "raw-etc1-pvrtc4-v1", "raw-pvrtc4-alpha-v1"]}
     finally:
         temporary.unlink(missing_ok=True)
 

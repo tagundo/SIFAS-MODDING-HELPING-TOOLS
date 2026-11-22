@@ -394,7 +394,84 @@ async function testStageAuxiliarySamplers() {
   console.log("Native stage lightmap and emissive mip routing, sharing, legacy fallback and cancellation passed");
 }
 
-testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers).catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+async function testStageCubemapQuality() {
+  const root = new T.Group(), base = new T.Texture(), lightmap = new T.Texture();
+  const addSurface = (blend, controlled, bufferView = 0) => {
+    const geometry = new T.PlaneGeometry();
+    geometry.setAttribute("_stage_light_uv", geometry.getAttribute("uv"));
+    geometry.setAttribute("_stage_color", new T.Float32BufferAttribute([
+      1, 1, 1, 0, 1, 1, 1, .25, 1, 1, 1, .75, 1, 1, 1, 1,
+    ], 4));
+    geometry.userData.mvStageMaterial = {
+      shader: "stage", lightmap: 0, mipBias: 0, uvTransform: [1, 1, 0, 0], vertexColor: true,
+      reflectionToggle: true, reflectionQualityControlled: controlled,
+      reflection: {bufferView, size: 8, boxMin: [-2, -1, -4], boxMax: [2, 5, 4], origin: [0, 2, 0], blend},
+      colors: {_TintColor: [1, 1, 1, 1], _AmbientColor: [0, 0, 0, 0], _BlendColor: [0, 0, 0, 0]},
+    };
+    const node = new T.Mesh(geometry, new T.MeshBasicMaterial({map: base}));
+    root.add(node);
+    return node;
+  };
+  const cage = addSurface("add-vertex-alpha", true);
+  const floor = addSurface("add-texture-alpha", true);
+  const legacy = addSurface("vertex-alpha");
+  const independent = addSurface("add-vertex-alpha", false);
+  const missing = addSurface("add-texture-alpha", true, 1);
+  const missingIndependent = addSurface("add-vertex-alpha", false, 1);
+  const originals = [cage, floor, legacy, independent, missing, missingIndependent].map(node => node.material);
+  const cubeRequests = [];
+  const controller = await MVStudioStageMaterial.apply(T, root, {
+    async getDependency(type, index) {
+      if (type === "texture") return lightmap;
+      cubeRequests.push(index);
+      return new ArrayBuffer(index === 0 ? 6 * 4 * (64 + 16 + 4 + 1) : 4);
+    },
+  });
+  assert.deepEqual(cubeRequests, [0, 1], "distinct modes and ownership share the same baked cube");
+  const project = {quality: {values: {}}, tracks: []};
+  controller.update(0, project);
+  const cube = cage.material.uniforms.reflectionCube.value;
+  assert(cube.isCubeTexture && cube.image.length === 6 && cube.mipmaps.length === 3);
+  assert.equal(cage.material.defines.CUBEMAP_ADD_VERTEX_ALPHA, 1);
+  assert.equal(cage.material.defines.CUBEMAP_ADD, undefined);
+  assert.equal(floor.material.defines.CUBEMAP_ADD, 1);
+  assert.equal(legacy.material.defines.CUBEMAP_ADD_VERTEX_ALPHA, undefined);
+  assert.equal(legacy.material.defines.CUBEMAP_ADD, undefined);
+  for (const node of [cage, floor, legacy, independent]) {
+    assert.equal(node.material.uniforms.reflectionCube.value, cube);
+    assert.equal(node.material.side, T.FrontSide);
+    assert.equal(node.material.depthFunc, T.LessEqualDepth);
+    assert.equal(node.material.depthWrite, true);
+    assert.equal(node.material.transparent, false);
+  }
+  assert.equal(missing.material, originals[4]);
+  assert.equal(missingIndependent.material, originals[5]);
+  const cageMaterial = cage.material;
+  project.quality.values.stage_cubemap = false;
+  controller.update(1, project);
+  for (const node of [cage, floor, legacy]) {
+    assert.equal(node.material.uniforms.useReflection.value, false);
+    assert.equal(node.material.uniforms.reflectionCube.value, null);
+  }
+  assert.equal(cage.material, cageMaterial);
+  assert.equal(independent.material.uniforms.useReflection.value, true);
+  assert.equal(independent.material.uniforms.reflectionCube.value, cube);
+  assert.equal(missing.material.isShaderMaterial, true);
+  assert.equal(missingIndependent.material, originals[5]);
+  project.quality.values.stage_cubemap = true;
+  controller.update(0, project);
+  assert.equal(cage.material.uniforms.reflectionCube.value, cube);
+  assert.equal(missing.material, originals[4]);
+  let disposed = 0;
+  cube.addEventListener("dispose", () => { disposed++; });
+  controller.dispose();
+  assert.deepEqual([cage, floor, legacy, independent, missing, missingIndependent].map(node => node.material), originals);
+  assert.equal(disposed, 1);
+  console.log("Native stage cubemap blend selection, ownership, legacy fallback and opaque pass state passed");
+}
+
+testSingleStageAmbient().then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
+  .then(testStageCubemapQuality).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });

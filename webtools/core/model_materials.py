@@ -87,7 +87,7 @@ def _array_layer(obj, layer):
                            read=lambda: proxy)
 
 
-def _original_mips(obj, texture):
+def _original_mips(obj, texture, *, stage=False):
     """Yield exact authored mip pixels to the same bounded image exporter."""
     from UnityPy.enums import TextureFormat
     count = int(getattr(texture, "m_MipCount", 1))
@@ -105,8 +105,11 @@ def _original_mips(obj, texture):
     channels = {"RGBA32": 4, "ARGB32": 4, "BGRA32": 4, "RGB24": 3}.get(name)
     astc = re.fullmatch(r"ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1", name)
     crunch65 = name == "ETC2_RGBA8Crunched"
-    if channels is None and astc is None and not crunch65:
+    pvrtc = stage and name in ("PVRTC_RGB4", "PVRTC_RGBA4")
+    if channels is None and astc is None and not (crunch65 or pvrtc):
         raise ValueError("The authored mip format is unavailable in this preview.")
+    if pvrtc and (width & (width - 1) or height & (height - 1)):
+        raise ValueError("Authored PVRTC mip chains require power-of-two dimensions.")
     data = texture.get_image_data()
     if not isinstance(data, (bytes, bytearray)) or not 0 < len(data) <= MAX_ARRAY_BYTES:
         raise ValueError("The authored mip data exceeds the preview limits.")
@@ -129,6 +132,8 @@ def _original_mips(obj, texture):
         w, h = max(1, width >> level), max(1, height >> level)
         if channels is not None:
             size = w * h * channels
+        elif pvrtc:
+            size = max(8, w) * max(8, h) // 2
         else:
             block = int(astc.group(1))
             size = ((w + block - 1) // block) * ((h + block - 1) // block) * 16
@@ -150,6 +155,8 @@ def _original_mips(obj, texture):
                 path_id=(obj.path_id, "authored-mip", level),
                 type=SimpleNamespace(name="Texture2D"), read=lambda value=proxy: value))
         offset += size
+    if pvrtc and offset != len(data):
+        raise ValueError("The authored PVRTC mip data does not match the declared levels.")
     return output
 
 

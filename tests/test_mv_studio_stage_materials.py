@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from webtools.core import decode, model_viewer, mv_studio_stage_materials as stage
+from webtools.core import decode, model_materials, model_viewer, mv_studio_stage_materials as stage
 
 
 class StageTextureSamplerTests(unittest.TestCase):
@@ -114,6 +114,35 @@ class StageTextureSamplerTests(unittest.TestCase):
         self.assertEqual(len(doc["textures"]), 5)
         self.assertEqual(result[1], {"textures": 5})
 
+    def test_stage_pvrtc_levels_keep_padded_blocks_and_crop_before_flip(self):
+        deadline = time.monotonic() + 5
+        source = self.source()
+        for format_id, mode in ((32, "pvrtc4"), (33, "pvrtc4a")):
+            with self.subTest(format=format_id):
+                data = bytes(64) + b"".join(bytes([level]) * 32 for level in range(1, 5))
+                texture = SimpleNamespace(m_Width=16, m_Height=8, m_MipCount=5, m_Name="stage",
+                                          m_TextureFormat=format_id, m_TextureSettings=None,
+                                          get_image_data=lambda: data)
+                with self.assertRaises(ValueError):
+                    model_materials._original_mips(source, texture)
+                levels = model_materials._original_mips(source, texture, stage=True)
+                self.assertEqual([(m.read().m_Width, m.read().m_Height) for m in levels],
+                                 [(8, 4), (4, 2), (2, 1), (1, 1)])
+                self.assertEqual([m.read().image_data for m in levels],
+                                 [bytes([level]) * 32 for level in range(1, 5)])
+
+                def block_image(format_name, payload, width, height, limit):
+                    self.assertEqual((format_name, payload, width, height, limit),
+                                     (mode, bytes([2]) * 32, 8, 8, deadline))
+                    return Image.frombytes("RGBA", (8, 8),
+                                           bytes(ch for y in range(8) for x in range(8) for ch in (x, y, 0, 100)))
+
+                with patch.object(decode, "_stage_block_image", side_effect=block_image):
+                    with decode._android_image(levels[1].read(), deadline, stage=True) as image:
+                        self.assertEqual(image.size, (4, 2))
+                        self.assertEqual(image.getpixel((3, 0)), (3, 1, 0, 100))
+                        self.assertEqual(image.getpixel((0, 1)), (0, 0, 0, 100))
+
 
 class StageCubemapTests(unittest.TestCase):
     @staticmethod
@@ -162,7 +191,48 @@ class StageCubemapTests(unittest.TestCase):
             self.assertIsNone(stage._cube_pixels(raw_cube, 1024, 123))
             decoder.assert_not_called()
 
+    def test_additive_vertex_alpha_selects_the_original_blend(self):
+        glb = model_viewer._Glb()
+        scene = SimpleNamespace(deadline=1, tree=lambda _: {
+            "m_ShaderKeywords": "_CUBEMAP_MODE_FRAGMENT _PARALLAX_CORRECTED_CUBEMAP_ON "
+                                "_CUBEMAP_BLEND_OP_ADD _CUBEMAP_REFLECTIVITY_VERTEX_ALPHA",
+            "m_SavedProperties": {
+                "m_Colors": [(field, {"r": 0, "g": 0, "b": 0})
+                             for field in ("_BoxMin", "_BoxMax", "_CubemapPos")],
+                "m_TexEnvs": [("_Cube", {"m_Texture": {}})],
+            },
+        })
+        materials = SimpleNamespace(pixels=0)
+        cube = SimpleNamespace(assets_file=object(), path_id=1, type=SimpleNamespace(name="Cubemap"), read=Mock())
+        with patch.object(stage, "_ref", return_value=cube), patch.object(stage, "_cube_pixels", return_value=(b"data", 8, 4)):
+            result = stage.export_reflection(scene, glb, materials, object(), {})
+        self.assertEqual(result["blend"], "add-vertex-alpha")
+        self.assertEqual(result["bufferView"], 0)
+        self.assertEqual(materials.pixels, 4)
 
+    def test_quality_ownership_uses_only_typed_primary_model_ambient(self):
+        def node(kind, path):
+            return SimpleNamespace(type=SimpleNamespace(name=kind), assets_file=object(), path_id=path)
+
+        root = node("GameObject", 1)
+        model, primary, secondary = (node("MonoBehaviour", value) for value in (2, 3, 4))
+        controlled, uncontrolled = (node("Material", value) for value in (5, 6))
+        model_tree = {"m_GameObject": root, "ambient": primary, "ambients": [secondary]}
+        trees = {obj.path_id: data for obj, data in (
+            (root, {"m_Component": [{"component": model}, {"component": primary}]}),
+            (primary, {"materials": [controlled]}),
+            (secondary, {"materials": [uncontrolled]}),
+        )}
+        identities = {model.path_id: stage._MODEL_SCRIPT, primary.path_id: stage._AMBIENT_SCRIPT,
+                      secondary.path_id: stage._AMBIENT_SCRIPT}
+        scene = SimpleNamespace(tree=lambda obj: trees[obj.path_id])
+        with patch.object(stage, "_ref", side_effect=lambda _, ptr: ptr), \
+                patch.object(stage, "_object_path", return_value=("Model",)), \
+                patch.object(stage, "_component_identity", side_effect=lambda _, obj, __: identities.get(obj.path_id)):
+            self.assertEqual(stage.cubemap_model_ownership(scene, model, model_tree), (True, {stage._key(controlled)}))
+            self.assertEqual(stage.cubemap_model_ownership(scene, model, {**model_tree, "ambient": None}), (True, None))
+            scene.native_stage_effect = True
+            self.assertEqual(stage.cubemap_model_ownership(scene, model, model_tree), (False, None))
 
 class StageEmissiveOwnershipTests(unittest.TestCase):
     def test_model_binding_uses_only_the_unique_root_receiver(self):

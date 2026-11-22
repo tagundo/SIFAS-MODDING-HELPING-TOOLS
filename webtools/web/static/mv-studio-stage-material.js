@@ -98,8 +98,10 @@
             float distance = min(min(walls.x, walls.y), walls.z);
             vec3 direction = ray * distance + vReflectionPosition - reflectionOrigin;
             vec3 reflected = mix(textureCube(reflectionCube, direction).rgb, ambient.rgb, ambient.a);
-            #ifdef CUBEMAP_ADD
+            #if defined(CUBEMAP_ADD)
               lit += reflected * clamp(surface.a, 0.0, 1.0);
+            #elif defined(CUBEMAP_ADD_VERTEX_ALPHA)
+              lit += reflected * clamp(vStageColor.a, 0.0, 1.0);
             #else
               lit = mix(lit, reflected, clamp(vStageColor.a, 0.0, 1.0));
             #endif
@@ -139,7 +141,7 @@
     return Number.isSafeInteger(value?.bufferView) && value.bufferView >= 0 &&
       Number.isSafeInteger(value.size) && value.size >= 8 && value.size <= 256 &&
       (value.size & (value.size - 1)) === 0 &&
-      ["vertex-alpha", "add-texture-alpha"].includes(value.blend) &&
+      ["vertex-alpha", "add-texture-alpha", "add-vertex-alpha"].includes(value.blend) &&
       [value.boxMin, value.boxMax, value.origin].every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite));
   }
 
@@ -373,6 +375,7 @@
           if (reflectionCube) {
             defines.CUBEMAP = 1;
             if (source.blend === "add-texture-alpha") defines.CUBEMAP_ADD = 1;
+            else if (source.blend === "add-vertex-alpha") defines.CUBEMAP_ADD_VERTEX_ALPHA = 1;
             uniforms.useReflection = {value: false};
             uniforms.reflectionCube = {value: null};
             uniforms.reflectionBoxMin = {value: new T.Vector3().fromArray(source.boxMin)};
@@ -417,7 +420,8 @@
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube} of records) {
           if (meta.reflectionToggle) {
-            const enable = project?.quality?.values?.stage_cubemap !== false;
+            const enable = meta.reflectionQualityControlled === false ||
+              project?.quality?.values?.stage_cubemap !== false;
             const reflection = material.uniforms.useReflection;
             if (reflection) {
               reflection.value = enable;

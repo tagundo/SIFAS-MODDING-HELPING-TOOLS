@@ -803,6 +803,8 @@ class _Materials:
             previous = getattr(_REQUEST_STATE, "reimport", False)
             _REQUEST_STATE.reimport = reimport
             try:
+                if getattr(self.scene, "preview_stage", False):
+                    return _texture_png(texture, self.scene.deadline, stage=True)
                 return _texture_png(texture, self.scene.deadline)
             finally:
                 _REQUEST_STATE.reimport = previous
@@ -1213,7 +1215,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
-        single_ambient, stage_emissive = {}, set()
+        single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
     shadow_stages = None
@@ -1262,6 +1264,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 stage_emissive.update(mv_studio_stage_materials.emissive_materials(scene, obj, tree))
             except (TypeError, ValueError, KeyError, EOFError, struct.error):
                 pass
+            try:
+                is_model, cubemap_owner = mv_studio_stage_materials.cubemap_model_ownership(scene, obj, tree)
+                if is_model:
+                    stage_cubemap_owners.append(cubemap_owner)
+            except (TypeError, ValueError, KeyError, EOFError, struct.error):
+                stage_cubemap_owners.append(None)
             if ambient_binding:
                 for identity in defaults:
                     single_ambient[identity] = None if identity in single_ambient else ambient_binding
@@ -1284,6 +1292,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         glb.doc["scenes"][0].setdefault("extras", {})["mvAudiencePoint"] = next(iter(audience_points))
     if shadow_stages is not None and len(shadow_stages) == 1:
         glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadowDefaults"] = shadow_stages[0]
+    cubemap_owner = stage_cubemap_owners[0] if stage_materials and len(stage_cubemap_owners) == 1 else None
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
     if animated_effect:
@@ -1586,6 +1595,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     if stage_uv is not None:
                         descriptor["lightmap"] = stage_lightmap
                         if descriptor.get("reflectionToggle"):
+                            if cubemap_owner is not None:
+                                descriptor["reflectionQualityControlled"] = _key(material_obj) in cubemap_owner
                             reflection = mv_studio_stage_materials.export_reflection(
                                 scene, glb, materials, material_obj, stage_cubes,
                             )

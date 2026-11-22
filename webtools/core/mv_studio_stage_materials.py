@@ -24,6 +24,7 @@ _PARALLAX_REFLECTION = {"_CUBEMAP_MODE_FRAGMENT", "_PARALLAX_CORRECTED_CUBEMAP_O
 _REFLECTION_BLENDS = {
     ("_CUBEMAP_BLEND_OP_ALPHA_BLEND", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "vertex-alpha",
     ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_MAIN_TEX_ALPHA"): "add-texture-alpha",
+    ("_CUBEMAP_BLEND_OP_ADD", "_CUBEMAP_REFLECTIVITY_VERTEX_ALPHA"): "add-vertex-alpha",
 }
 _CUBE_FORMATS = {34: "etc1", 32: "pvrtc4"}
 _MAX_CUBE_SIZE = 256
@@ -71,6 +72,30 @@ def _component_identity(scene, component, tree):
         return None
     declaration = scene.tree(script)
     return tuple(declaration.get(field) for field in ("m_ClassName", "m_Namespace", "m_AssemblyName"))
+
+
+def cubemap_model_ownership(scene, component, tree):
+    """Resolve the Model root and the primary Ambient that receives quality."""
+    if (getattr(scene, "native_stage_effect", False)
+            or _component_identity(scene, component, tree) != _MODEL_SCRIPT):
+        return False, None
+    root = _ref(component, tree.get("m_GameObject"))
+    if root is None or root.type.name != "GameObject" or len(_object_path(scene, root)) != 1:
+        return False, None
+    declarations = scene.tree(root).get("m_Component", ())
+    if not any(_ref(root, entry.get("component")) is component for entry in declarations):
+        return True, None
+    receiver = _ref(component, tree.get("ambient"))
+    if receiver is None or receiver.type.name != "MonoBehaviour":
+        return True, None
+    data = scene.tree(receiver)
+    references = data.get("materials")
+    if _component_identity(scene, receiver, data) != _AMBIENT_SCRIPT or not isinstance(references, list) or len(references) > 128:
+        return True, None
+    materials = [_ref(receiver, pointer) for pointer in references]
+    if any(material is None or material.type.name != "Material" for material in materials):
+        return True, None
+    return True, {_key(material) for material in materials}
 
 
 def emissive_materials(scene, component, tree):
@@ -219,7 +244,7 @@ def _texture_sampler(materials, obj):
     width, height = texture.m_Width, texture.m_Height
     if texture.m_MipCount > 1 and (width & (width - 1) or height & (height - 1)):
         return None  # Explicit mip chains must also work on the WebGL1 path.
-    mips = _original_mips(obj, texture)
+    mips = _original_mips(obj, texture, stage=True)
     if not mips and texture.m_MipCount != 1:
         return None
     missing = (mip.read() for mip in mips if _key(mip) not in materials.textures)

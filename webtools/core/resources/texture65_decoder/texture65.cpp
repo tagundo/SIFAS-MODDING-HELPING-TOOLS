@@ -121,7 +121,8 @@ void write_rgba(const char* path, const std::vector<uint32_t>& bgra,
 bool power_of_two(unsigned value) { return value && !(value & (value - 1)); }
 
 void decode_raw(const char* format, unsigned width, unsigned height, const char* input, const char* output) {
-    const bool pvrtc = std::strcmp(format, "pvrtc4") == 0;
+    const bool preserve_alpha = std::strcmp(format, "pvrtc4a") == 0;
+    const bool pvrtc = preserve_alpha || std::strcmp(format, "pvrtc4") == 0;
     if (!pvrtc && std::strcmp(format, "etc1")) throw Failure(2, "Unsupported raw texture format");
     if (width > 4096 || height > 4096 ||
         (pvrtc && (width < 8 || height < 8 || !power_of_two(width) || !power_of_two(height))))
@@ -157,7 +158,7 @@ void decode_raw(const char* format, unsigned width, unsigned height, const char*
     const int success = pvrtc ? decode_pvrtc(encoded.data(), width, height, bgra.data(), 0)
                               : decode_etc1(encoded.data(), width, height, bgra.data());
     if (!success) throw Failure(12, "Raw texture pixel decode failed");
-    write_rgba(output, bgra, width, height, true);
+    write_rgba(output, bgra, width, height, !preserve_alpha);
 }
 } // namespace
 
@@ -168,9 +169,9 @@ int main(int argc, char** argv) {
         }
         if (argc >= 2 && !std::strcmp(argv[1], "--raw")) {
             if (argc == 3 && !std::strcmp(argv[2], "--version")) {
-                std::puts("elichika-texture65 raw 1 (ETC1 and PVRTC4 RGB to RGBA8)"); return 0;
+                std::puts("elichika-texture65 raw 1 (ETC1 and PVRTC4 RGB/RGBA to RGBA8)"); return 0;
             }
-            if (argc != 7) throw Failure(2, "Usage: texture65 --raw etc1|pvrtc4 WIDTH HEIGHT INPUT OUTPUT");
+            if (argc != 7) throw Failure(2, "Usage: texture65 --raw etc1|pvrtc4|pvrtc4a WIDTH HEIGHT INPUT OUTPUT");
             decode_raw(argv[2], dimension(argv[3]), dimension(argv[4]), argv[5], argv[6]);
             return 0;
         }

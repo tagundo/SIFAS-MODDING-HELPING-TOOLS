@@ -155,12 +155,13 @@ class NativeTexture65Tests(unittest.TestCase):
     def texture(self, **values):
         return Texture(self.encoded, self.meta["width"], self.meta["height"], **values)
 
-    def test_raw_stage_rgb_blocks_have_exact_opaque_rgba(self):
+    def test_raw_stage_blocks_preserve_the_declared_alpha_mode(self):
         probe = subprocess.check_output([str(self.binary), "--raw", "--version"], text=True, timeout=5)
         self.assertTrue(probe.startswith("elichika-texture65 raw 1"))
         cases = [("etc1", 5, 3, bytes.fromhex("ff00000000000000") * 2, bytes([255, 2, 2, 255])),
                  ("pvrtc4", 16, 8, bytes.fromhex("0000000000fc00fc") * 8, bytes([255, 0, 0, 255])),
-                 ("pvrtc4", 8, 8, bytes(32), bytes([0, 0, 0, 255]))]
+                 ("pvrtc4", 8, 8, bytes(32), bytes([0, 0, 0, 255])),
+                 ("pvrtc4a", 8, 8, bytes(32), bytes([0, 0, 0, 0]))]
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "input.blocks"
             for index, (mode, width, height, data, pixel) in enumerate(cases):

@@ -34,7 +34,7 @@ _RAW_FORMATS = {
     "ARGB32": ("RGBA", "ARGB", 4),
     "BGRA32": ("RGBA", "BGRA", 4),
 }
-_STAGE_BLOCK_FORMATS = {"ETC_RGB4": "etc1", "PVRTC_RGB4": "pvrtc4"}
+_STAGE_BLOCK_FORMATS = {"ETC_RGB4": "etc1", "PVRTC_RGB4": "pvrtc4", "PVRTC_RGBA4": "pvrtc4a"}
 
 
 def _embedded_android():
@@ -160,7 +160,17 @@ def _android_image(texture, deadline, *, stage=False):
             raise ValueError("Truncated raw texture data")
         image = Image.frombytes(mode, (width, height), bytes(data[:needed]), "raw", layout)
     elif stage_format:
-        image = _stage_block_image(stage_format, data, width, height, deadline)
+        physical = (width, height)
+        if stage_format in ("pvrtc4", "pvrtc4a"):
+            if width & (width - 1) or height & (height - 1):
+                raise ValueError("PVRTC stage textures must have power-of-two dimensions.")
+            # The last authored levels retain PVRTC's two-block storage on
+            # both axes. Crop to the logical extent before flipping Unity V.
+            physical = (max(8, width), max(8, height))
+        image = _stage_block_image(stage_format, data, *physical, deadline)
+        if physical != (width, height):
+            with image as padded:
+                image = padded.crop((0, 0, width, height))
     elif crunch65:
         # Never load texture2ddecoder into the app interpreter. The trusted
         # executable validates/budgets Crunch and ETC2A in a disposable process.
