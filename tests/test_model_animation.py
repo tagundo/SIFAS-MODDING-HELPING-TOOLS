@@ -57,6 +57,22 @@ def values(glb, index):
 
 
 class AnimationTests(unittest.TestCase):
+    def test_animation_rebuild_remaps_detached_shadow_geometry(self):
+        glb = builder()
+        glb.attribute([.25, .5], "SCALAR")  # Old animation data, no live reference.
+        positions = glb.attribute([[0, 0, 0], [1, 0, 0], [0, 0, 1]], "VEC3")
+        uv = glb.attribute([[0, 0], [1, 0], [0, 1]], "VEC2")
+        indices = glb.attribute([0, 1, 2], "SCALAR", 5123)
+        source = {"POSITION": positions, "TEXCOORD_0": uv, "indices": indices}
+        glb.doc["scenes"][0]["extras"] = {"mvMemberShadow": {"schema": 1, "geometry": source}}
+
+        rebuilt = animation.animation_candidate(glb)
+        restored = rebuilt.doc["scenes"][0]["extras"]["mvMemberShadow"]["geometry"]
+        self.assertEqual(list(restored.values()), [0, 1, 2])
+        self.assertEqual(list(source.values()), [1, 2, 3])
+        self.assertEqual(values(rebuilt, restored["POSITION"]), values(glb, positions))
+        self.assertEqual(len(rebuilt.doc["bufferViews"]), 3)
+
     def test_full_song_float32_keys_do_not_duplicate_the_nominal_60hz_grid(self):
         duration = 125.5
         stamps = [struct.unpack("<f", struct.pack("<f", frame / 60))[0] for frame in range(7531)]

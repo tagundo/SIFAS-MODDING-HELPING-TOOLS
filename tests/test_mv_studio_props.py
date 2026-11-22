@@ -137,6 +137,7 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     effect_length = int.from_bytes(effect_bytes[12:16], "little")
                     effect_doc = json.loads(effect_bytes[20:20+effect_length])
                     self.assertEqual(len(effect_doc["meshes"]), 151)
+                    self.assertIs(effect_doc["scenes"][0]["extras"]["mvMemberShadowDefaults"], True)
                     self.assertGreater(len(effect_doc["meshes"]), model_viewer.MAX_MESHES)
                     overlays = {mesh["name"]: (primitive["extras"]["mvStageOverlay"]["cull"],
                                                effect_doc["accessors"][primitive["indices"]]["count"])
@@ -177,6 +178,21 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     actor, = project["performers"]
                     self.assertEqual((actor["memberId"], actor["position"]), (208, 1))
                     self.assertTrue(actor["motion"])
+                    actor_glb, _ = mv_studio.media(actor["glb"].rsplit("/", 1)[-1])
+                    actor_bytes = actor_glb.read_bytes()
+                    actor_length = int.from_bytes(actor_bytes[12:16], "little")
+                    actor_doc = json.loads(actor_bytes[20:20 + actor_length])
+                    shadow = actor_doc["scenes"][0]["extras"]["mvMemberShadow"]
+                    self.assertEqual(shadow["schema"], 1)
+                    by_node = {row["extras"]["elichika_node"]: row["extras"]["originalName"]
+                               for row in actor_doc["nodes"] if "originalName" in row.get("extras", {})}
+                    self.assertEqual([by_node[node] for node in shadow["toes"]], ["LeftToeBase", "RightToeBase"])
+                    self.assertEqual([by_node[node] for node in shadow["anchors"]], ["ShadowToeL", "ShadowToeR"])
+                    self.assertEqual({key: actor_doc["accessors"][index]["count"]
+                                      for key, index in shadow["geometry"].items()},
+                                     {"POSITION": 12, "TEXCOORD_0": 12, "indices": 30})
+                    texture = actor_doc["textures"][shadow["texture"]]["source"]
+                    self.assertEqual(actor_doc["images"][texture]["name"], "dropshadow")
                     spec = prop["attachment"]
                     self.assertEqual((spec["member"], spec["bone"], spec["limit"]), (1, _HAND, 135))
                     self.assertEqual(spec["binding"], _TARGET)

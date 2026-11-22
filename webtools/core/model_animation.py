@@ -504,8 +504,8 @@ def _attribute(glb, values, kind, cache, bounds=False):
 def animation_candidate(glb, deadline=None):
     """Copy live geometry/images to a new builder, discarding old animations.
 
-    Geometry may have been appended after an earlier animation pass. Mark
-    typed references rather than truncating a binary tail or rewriting extras.
+    Geometry may have been appended after an earlier animation pass. Follow
+    typed references so detached geometry and its buffers are retained.
     The original document/data remain available for transactional recovery.
     """
     import copy
@@ -536,6 +536,11 @@ def animation_candidate(glb, deadline=None):
     for skin in candidate.doc.get("skins", []):
         if "inverseBindMatrices" in skin:
             accessor(skin["inverseBindMatrices"])
+    shadows = [scene["extras"]["mvMemberShadow"] for scene in candidate.doc.get("scenes", [])
+               if "mvMemberShadow" in scene.get("extras", {})]
+    for shadow in shadows:
+        for value in shadow["geometry"].values():
+            accessor(value)
     for index in live_accessors:
         item = accessors[index]
         if "bufferView" in item:
@@ -579,6 +584,8 @@ def animation_candidate(glb, deadline=None):
     for skin in candidate.doc.get("skins", []):
         if "inverseBindMatrices" in skin:
             skin["inverseBindMatrices"] = accessor_map[skin["inverseBindMatrices"]]
+    for shadow in shadows:
+        shadow["geometry"] = {key: accessor_map[value] for key, value in shadow["geometry"].items()}
     for image in candidate.doc.get("images", []):
         if "bufferView" in image:
             image["bufferView"] = view_map[image["bufferView"]]

@@ -319,7 +319,7 @@
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
-    const stage = new T.Group(), actors = new T.Group(), effects = new T.Group();
+    const stage = new T.Group(), actors = new T.Group(), effects = new T.Group(), memberShadows = new T.Group();
     const grid = new T.GridHelper(30, 30, 0x53728c, 0x27354c);
     const ambient = new T.HemisphereLight(0xe4edff, 0x54546e, 1.2);
     const key = new T.DirectionalLight(0xffffff, 2.1);
@@ -331,10 +331,10 @@
     const lights = [ambient, key, rim];
     const stageLights = lights.map((light) => light.clone());
     stageLights[1].castShadow = false;
-    scene.add(stage, actors, effects, grid, ambient, key, rim);
+    scene.add(stage, actors, effects, memberShadows, grid, ambient, key, rim);
     // The scene's fixed roots otherwise dirty the world matrix of every
     // descendant on each render. Dancers and both cameras still animate.
-    for (const node of [scene, stage, actors, effects, grid, ambient, key, rim]) {
+    for (const node of [scene, stage, actors, effects, memberShadows, grid, ambient, key, rim]) {
       node.updateMatrix();
       node.matrixAutoUpdate = false;
     }
@@ -350,7 +350,7 @@
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null;
+    let loadedProjectToken = null, defaultMemberShadows = false;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
     let lastShaftFrame = null, resetShafts = true;
@@ -518,6 +518,7 @@
       record.stageOverlay?.dispose();
       record.stageBeam?.dispose();
       record.stageLaserCores?.dispose();
+      record.memberShadow?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -728,6 +729,7 @@
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [], rig: entry.spec.rig };
+      if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
@@ -837,6 +839,8 @@
           }
           record.physics = global.MVStudioPhysics?.create(record.root, entry.spec.rig?.physics,
             entry.spec.motion?.physics ?? project?.motionPhysics);
+          record.memberShadow = await global.MVStudioMemberShadow?.apply(T, record.root, gltf.parser, memberShadows);
+          if (!active()) return null;
         }
         if (entry.group === actors && record.materials) record.skinBounds = skinBounds(T, record.root);
         ready = true;
@@ -1227,6 +1231,9 @@
     function applyProject() {
       const tracks = project && project.tracks || [];
       settings = project && project.quality && project.quality.values || {};
+      const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
+      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
+        !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
@@ -1422,6 +1429,9 @@
       // prepare every actor at this timestamp before resolving any gaze.
       const targets = gazeContext();
       for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
+      // The native ShadowComponent runs before the member manager's LateUpdate.
+      const advancingShadow = playing && Number.isFinite(frameTimestamp);
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
       const physicsStep = playing && visible && records.some((record) => record.physics)
         ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
       for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);

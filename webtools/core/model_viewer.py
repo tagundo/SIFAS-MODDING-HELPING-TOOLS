@@ -1215,6 +1215,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         single_ambient = {}
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
+    shadow_stages = None
+    if stage_materials and getattr(scene, "native_stage_effect", False):
+        from . import mv_studio_member_shadow
+
+        shadow_stages = []
     for obj in scene.env.objects:
         if auto_only and _source_path(obj) not in faces.auto_paths:
             continue
@@ -1237,6 +1242,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if binding is not None:
                 owner, linked_materials, suffix = binding
                 penlights[owner] = linked_materials, suffix
+        if shadow_stages is not None:
+            defaults = mv_studio_member_shadow.stage_default(scene, obj, tree)
+            if defaults is not None:
+                shadow_stages.append(defaults)
         if stage_materials:
             excluded, shaft_source = mv_studio_shaft.references(scene, obj, tree)
             detached_templates.update(excluded)
@@ -1268,6 +1277,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             scene.warn("facial_assets_missing")
     if len(audience_points) == 1:
         glb.doc["scenes"][0].setdefault("extras", {})["mvAudiencePoint"] = next(iter(audience_points))
+    if shadow_stages is not None and len(shadow_stages) == 1:
+        glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadowDefaults"] = shadow_stages[0]
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
     if animated_effect:
@@ -1714,6 +1725,12 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
             glb = _Glb()
             scene.warn("rig_unavailable")
     materials = _append_scene(scene, glb, disabled_faces, deadline, rig=rig)
+    if rig is not None and (face_context or {}).get("_mv_performer"):
+        from . import mv_studio_member_shadow
+
+        shadow = mv_studio_member_shadow.read(scene, glb, materials, rig, deadline)
+        if shadow is not None:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadow"] = shadow
     base = _to_glb(scene, glb, disabled_faces, deadline, rig=rig)
     face_enabled = bool(face_context and face_context.get("enabled", True))
     playable_rig = rig is not None and (rig.skinned > 0 or bool(rig.morphs))
