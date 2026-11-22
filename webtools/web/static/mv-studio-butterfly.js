@@ -117,6 +117,56 @@
     return {mesh, uniforms, stream, source, clip, finale};
   }
 
+  function checkedGlow({source, finale}) {
+    const glow = source.glow, material = glow?.material;
+    return glow?.profile === (finale ? "finale" : "opening") &&
+      glow.activation === (finale ? Math.fround(5 + 5 / 60) : 0) && glow.activation <= source.animation.duration &&
+      glow.maxViewportWidth === (finale ? 1 : .5) && vector(glow.position, 3, 1) &&
+      vector(glow.uv, 4, 1) && glow.uv.every(value => value === .5) && material?.queue === 3010 &&
+      material.cull === 0 && material.blend === "add" && material.premultiply === false && vector(material.tint, 4, 8);
+  }
+
+  async function prepareGlows(T, entries, levels, title) {
+    const renderer = global.MVStudioDisplayLights, simulation = global.MVStudioButterflyGlowSimulation;
+    if (!renderer || !simulation || !title.validMipChain(levels) || levels[0].width !== 256) return null;
+    const candidates = entries.filter(checkedGlow);
+    if (!candidates.length) return null;
+    let texture;
+    try {
+      texture = await title.loadTexture(T, new T.TextureLoader(), levels);
+    } catch { return null; }
+    for (const entry of candidates) {
+      const row = entry.source.glow;
+      const stream = simulation.create(row.profile);
+      if (!stream) continue;
+      const name = `${entry.mesh.name} glow`;
+      const draw = renderer.localBillboards(T, {texture, rotation: new T.Quaternion(), capacity: 1,
+        maxViewportWidth: row.maxViewportWidth, atlas: row.uv, additive: true, viewAligned: true,
+        tint: row.material.tint, name});
+      draw.mesh.name = name;
+      draw.mesh.renderOrder = row.material.queue;
+      draw.mesh.material.stencilFunc = T.AlwaysStencilFunc;
+      entry.glow = {...draw, row, stream};
+    }
+    return texture;
+  }
+
+  function glowBirth(glow, clip, motion, cueStart, firstFrame, fps) {
+    if (!glow.row.activation) return firstFrame;
+    if (glow.cueStart !== cueStart || glow.fps !== fps) {
+      glow.cueStart = cueStart;
+      glow.fps = fps;
+      let left = firstFrame, right = Math.ceil((cueStart + clip.duration) * fps);
+      while (left < right) {
+        const frame = (left + right) >>> 1;
+        if (motion.sampleTime(clip, frame / fps - cueStart) >= glow.row.activation) right = frame;
+        else left = frame + 1;
+      }
+      glow.firstFrame = left;
+    }
+    return glow.firstFrame;
+  }
+
   async function apply(T, root, source) {
     const title = global.MVStudioTitle, motion = global.MVStudioStageMotion, particles = global.MVStudioStageParticles;
     const simulation = global.MVStudioButterflySimulation;
@@ -127,7 +177,11 @@
     ]);
     const entries = prepared.filter(Boolean);
     if (!entries.length) return null;
-    for (const {mesh} of entries) root.add(mesh);
+    const glowTexture = await prepareGlows(T, entries, source.glowTexture, title);
+    for (const {mesh, glow} of entries) {
+      root.add(mesh);
+      if (glow) root.add(glow.mesh);
+    }
     let tracks, disposed = false;
     return {
       invalidate() { tracks = null; },
@@ -143,8 +197,12 @@
         const enabled = quality?.stage_control !== false;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const frame = Math.floor(time * fps + 1e-9), tick = timelineTick(time);
-        for (const {mesh, uniforms, stream, source, track, clip, finale} of entries) {
+        for (const {mesh, uniforms, stream, source, track, clip, finale, glow} of entries) {
           mesh.visible = false;
+          if (glow) {
+            glow.mesh.visible = false;
+            glow.mesh.geometry.instanceCount = 0;
+          }
           const event = enabled && !track?.muted && track?.events.find(row => row.id === source.eventId);
           if (!event) continue;
           // Unity Timeline queries its half-open clip intervals in 1 ps
@@ -159,9 +217,22 @@
           const start = timelineTick((firstFrame - 1) / fps) === firstTick ? firstFrame - 1 : firstFrame;
           const elapsed = (frame - start + 1) / fps;
           const drift = stream.sample(elapsed, fps);
-          if (!drift) continue;
+          const light = glow && glow.stream.sample((frame - glowBirth(glow, clip, motion, event.start, start, fps) + 1) / fps, fps);
+          if (!drift && !light) continue;
           const stamp = motion.sampleTime(clip, stageTime - event.start);
           const [x, y, z] = source.animation.curves.map(curve => motion.evaluate(curve, stamp));
+          if (light) {
+            // The original emitter is attached to the Animator's ctrl node.
+            // The principal particle's drift and shader motion are independent.
+            const [gx, gy, gz] = glow.row.position;
+            glow.centers.setXYZW(0, -x + offset[0] - gx, y + offset[1] + gy, z + offset[2] + gz, 0);
+            glow.sizes.setXY(0, light.size, light.size);
+            glow.colors.setXYZW(0, ...light.rgba);
+            glow.centers.needsUpdate = glow.sizes.needsUpdate = glow.colors.needsUpdate = true;
+            glow.mesh.geometry.instanceCount = 1;
+            glow.mesh.visible = true;
+          }
+          if (!drift) continue;
           uniforms.uCenter.value.set(x - offset[0] - drift[0], y + offset[1] + drift[1], z + offset[2] + drift[2]);
           if (finale) {
             const appearance = stream.appearance(elapsed, fps);
@@ -178,12 +249,18 @@
       dispose() {
         if (disposed) return;
         disposed = true;
-        for (const {mesh, uniforms} of entries) {
+        for (const {mesh, uniforms, glow} of entries) {
           root.remove(mesh);
           mesh.geometry.dispose();
           mesh.material.dispose();
           uniforms.uTexture.value.dispose();
+          if (glow) {
+            root.remove(glow.mesh);
+            glow.mesh.geometry.dispose();
+            glow.mesh.material.dispose();
+          }
         }
+        glowTexture?.dispose();
       },
     };
   }

@@ -845,9 +845,10 @@ def _open_saved(archive, entries):
         for track in project["tracks"])
     butterfly = project.get("stageButterfly")
     butterfly = butterfly if isinstance(butterfly, dict) else {}
-    missing_butterflies = tuple(suffix for key, suffix in (
-        ("trackId", "/Control/par_13_butterfly"), ("finale", "/Control/par_14_butterfly"),
-    ) if key not in butterfly)
+    saved_finale = butterfly.get("finale")
+    missing_butterflies = tuple(suffix for row, suffix in (
+        (butterfly, "/Control/par_13_butterfly"), (saved_finale, "/Control/par_14_butterfly"),
+    ) if not isinstance(row, dict) or "trackId" not in row or "glow" not in row or "glowTexture" not in butterfly)
     restore_butterfly = bool(missing_butterflies) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith(missing_butterflies)
         for track in project["tracks"])
@@ -946,7 +947,11 @@ def _open_saved(archive, entries):
                 if field in original:
                     project[field] = original[field]
             if "stageButterfly" in original:
-                project["stageButterfly"] = {**original["stageButterfly"], **butterfly}
+                rebuilt = original["stageButterfly"]
+                recovered = {**rebuilt, **butterfly}
+                if isinstance(saved_finale, dict) and "finale" in rebuilt:
+                    recovered["finale"] = {**rebuilt["finale"], **saved_finale}
+                project["stageButterfly"] = recovered
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background

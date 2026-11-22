@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-butterfly-simulation.js");
+require("../webtools/web/static/mv-studio-butterfly-glow-simulation.js");
 
 const {create} = MVStudioButterflySimulation;
 assert.equal(create(-1), null);
@@ -61,9 +62,38 @@ assert.equal(finale.sample(167 / 30, 30), null);
 assert.deepEqual(appearance(1), {size: 6.731137275695801, alpha: 255});
 assert.deepEqual(simulation.sample(13, 60), late);
 
+// Original billboard worker size and packed Color32 inputs, sampled at both
+// display rates before and after the opening pulse wrap and finale fade.
+const glows = MVStudioButterflyGlowSimulation;
+assert.equal(glows.create("unknown"), null);
+const openingGlow = glows.create("opening");
+const blue = [11, 60, 255, 36];
+assert.equal(openingGlow.sample(0, 60), null);
+assert.deepEqual(openingGlow.sample(1 / 60, 60), {size: .3758937120437622, rgba: blue});
+assert.deepEqual(openingGlow.sample(1 / 30, 30), {size: .3758782148361206, rgba: blue});
+assert.deepEqual(openingGlow.sample(6, 60), {size: .30318084359169006, rgba: blue});
+assert.deepEqual(openingGlow.sample(8, 30), {size: .3999679386615753, rgba: blue});
+assert.deepEqual(openingGlow.sample(1048 / 60, 60), {size: .39999738335609436, rgba: blue});
+assert.deepEqual(openingGlow.sample(1049 / 60, 60), {size: .37588736414909363, rgba: blue});
+assert.deepEqual(openingGlow.sample(30, 30), {size: .39478302001953125, rgba: blue});
+assert.equal(openingGlow.sample(1801 / 60, 60), null);
+assert.deepEqual(openingGlow.sample(1 / 60, 60), {size: .3758937120437622, rgba: blue});
+
+const finaleGlow = glows.create("finale");
+const pink = alpha => [252, 143, 255, alpha];
+assert.deepEqual(finaleGlow.sample(1 / 60, 60), {size: .2528753876686096, rgba: pink(0)});
+assert.deepEqual(finaleGlow.sample(1 / 30, 30), {size: .26595911383628845, rgba: pink(5)});
+assert.deepEqual(finaleGlow.sample(20 / 60, 60), {size: .4057421386241913, rgba: pink(108)});
+assert.deepEqual(finaleGlow.sample(16 / 30, 30), {size: .4543570280075073, rgba: pink(119)});
+assert.deepEqual(finaleGlow.sample(27 / 30, 30), {size: .49989715218544006, rgba: pink(9)});
+assert.equal(finaleGlow.sample(55 / 60, 60), null);
+assert.equal(finaleGlow.sample(28 / 30, 30), null);
+assert.deepEqual(finaleGlow.sample(1 / 60, 60), {size: .2528753876686096, rgba: pink(0)});
+
 async function checkCuePlayback() {
   const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
   require("../webtools/web/static/mv-studio-stage-motion.js");
+  require("../webtools/web/static/mv-studio-display-lights.js");
   require("../webtools/web/static/mv-studio-butterfly.js");
   global.MVStudioTitle = {
     validMipChain: levels => levels?.length === 1,
@@ -79,11 +109,15 @@ async function checkCuePlayback() {
     particle: {birth: 0, lifetime: Math.fround(5.55), size: 9, velocity: [-.001,-.001,.001], color: [1,1,1,1]},
     material: {randomMove: [.01,.0075,.01,10], randomUp: [.1,0,.1,10], ambient: [1,1,1,0], tint: [2,2,2,1],
       flapSpeed: 28, flapIntensity: .9, randomFlapIntensity: .3, randomFlapDelay: 1},
+    glow: {profile: "finale", activation: Math.fround(5 + 5 / 60), maxViewportWidth: 1, position: [0,0,0],
+      uv: [.5,.5,.5,.5], material: {queue: 3010, cull: 0, blend: "add", premultiply: false, tint: [1,1,1,1]}},
   };
   const root = new T.Group();
-  const control = await MVStudioButterfly.apply(T, root, {schema: 1, finale: row});
+  const control = await MVStudioButterfly.apply(T, root, {schema: 1, finale: row, glowTexture: [{width: 256}]});
   assert.ok(control);
-  const [mesh] = root.children;
+  const [mesh, glow] = root.children;
+  assert.equal(glow.material.stencilFunc, T.AlwaysStencilFunc);
+  assert.equal(glow.renderOrder, 3010);
   const event = {id: "event", start: 89.01666666666732, duration: 8.85,
     values: {playableClass: "CustomControlClip", weight: 1, timeScale: 1, offset: {x: 0, y: 0, z: 0}}};
   const track = {id: "track", nativeClass: "CustomControlTrack", events: [event]};
@@ -106,6 +140,27 @@ async function checkCuePlayback() {
   assert.equal(at(2837 / 30), false);
   assert.equal(at(2671 / 30), true);
   assert.equal(uniforms.uColor.value.w, 1);
+  const glowGeometry = glow.geometry;
+  const alpha = glowGeometry.getAttribute("particleColor");
+  at(94.1);
+  assert.equal(glowGeometry.instanceCount, 1);
+  assert.equal(alpha.getW(0), 5);
+  quality.frame_rate_60fps = true;
+  at(94.1 - 1 / 60);
+  assert.equal(glow.visible, false);
+  at(94.1);
+  assert.equal(glowGeometry.instanceCount, 1);
+  assert.equal(alpha.getW(0), 0);
+  assert.equal(at(5674 / 60), false);
+  assert.equal(glow.visible, true);
+  at(95);
+  assert.equal(glowGeometry.instanceCount, 0);
+  event.start += .25;
+  at(94.1);
+  assert.equal(glow.visible, false);
+  at(94.35);
+  assert.equal(glowGeometry.instanceCount, 1);
+  assert.equal(alpha.getW(0), 0);
   track.muted = true;
   assert.equal(at(2671 / 30), false);
   control.dispose();

@@ -3,6 +3,7 @@
 import math
 
 from . import model_animation as animation, model_viewer as viewer
+from . import mv_studio_butterfly_glow
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title
 from . import mv_studio_timeline as timeline
 from .model_rig import _authored_trs
@@ -288,7 +289,11 @@ def _prefab(objects, game, deadline, *, finale=False):
     if any(value is None for value in (particle, pose, geometry, surface)):
         return None
     material, reader = surface
-    return {"schema": 1, "geometry": geometry, "animation": pose, "particle": particle, "material": material}, reader
+    try:
+        glow = mv_studio_butterfly_glow.read(objects, *hierarchy["ctrl"]["Transform"], deadline, finale=finale)
+    except title._UNSUPPORTED:
+        glow = None
+    return {"schema": 1, "geometry": geometry, "animation": pose, "particle": particle, "material": material}, reader, glow
 
 
 def read(objects, mono, tracks, deadline):
@@ -316,18 +321,33 @@ def read(objects, mono, tracks, deadline):
                 accepted[label] = None if label in accepted else (track["id"], event["id"], effect)
         except title._UNSUPPORTED:
             continue
-    results = {}
+    results, glows = {}, {}
     for label, effect in accepted.items():
         if effect is None:
             continue
-        track_id, event_id, (data, reader) = effect
+        track_id, event_id, (data, reader, glow) = effect
         try:
             mipmaps = particles._texture(reader, deadline)
         except title._UNSUPPORTED:
             continue
         if mipmaps:
             results[label] = {**data, "trackId": track_id, "eventId": event_id, "texture": mipmaps}
-    first, finale = results.get(_TRACK), results.get(_FINALE)
-    if finale is None:
-        return first
-    return {**(first or {"schema": 1}), "finale": finale}
+            if glow is not None:
+                glows[label] = glow
+    if not results:
+        return None
+    result = results.get(_TRACK, {"schema": 1})
+    if _FINALE in results:
+        result["finale"] = results[_FINALE]
+    if glows:
+        _, atlas = next(iter(glows.values()))
+        try:
+            glow_mips = particles._texture(atlas, deadline)
+        except title._UNSUPPORTED:
+            glow_mips = None
+        if glow_mips:
+            result["glowTexture"] = glow_mips
+            for label, (details, reader) in glows.items():
+                if viewer._key(atlas) == viewer._key(reader):
+                    results[label]["glow"] = details
+    return result

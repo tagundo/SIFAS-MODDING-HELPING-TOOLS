@@ -143,6 +143,13 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                     self.assertEqual(finale["particle"]["size"], 9)
                     self.assertAlmostEqual(finale["particle"]["lifetime"], 5.55, places=6)
                     self.assertEqual(len(finale["animation"]["tintCurves"]), 4)
+                    opening_glow, finale_glow = butterfly["glow"], finale["glow"]
+                    self.assertEqual((opening_glow["profile"], finale_glow["profile"]), ("opening", "finale"))
+                    self.assertEqual((opening_glow["activation"], finale_glow["activation"]), (0, 5.083333492279053))
+                    self.assertEqual((opening_glow["maxViewportWidth"], finale_glow["maxViewportWidth"]), (.5, 1))
+                    self.assertEqual(opening_glow["uv"], finale_glow["uv"])
+                    self.assertEqual(opening_glow["uv"], [.5, .5, .5, .5])
+                    self.assertEqual([mip["width"] for mip in butterfly["glowTexture"]], [256 >> i for i in range(9)])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")
