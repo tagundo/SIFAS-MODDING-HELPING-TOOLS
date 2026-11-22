@@ -22,12 +22,26 @@
 
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
   const finiteVector = (value, count) => Array.isArray(value) && value.length === count && value.every(Number.isFinite);
-  const capacity = 200;
+  const defaultCapacity = 200;
   const atlasColumns = new Map([["03", 0], ["04", .5], ["06", .25], ["07", .25]]);
+  const transitionColumns = new Map([["green-burst", 0], ["yellow-burst", .5], ["red-in", .25], ["red-burst", .25]]);
 
   function checkedMaterial(material, blend) {
     return material?.queue === 3010 && material.cull === 0 && material.blend === blend &&
       material.premultiply === false && finiteVector(material.tint, 4) && material.tint.every(value => value === 1);
+  }
+
+  function checkedPose(row, column) {
+    return finiteVector(row.position, 3) && finiteVector(row.rotation, 4) && finiteVector(row.uv, 4) &&
+      row.uv[0] === .25 && row.uv[1] === .25 && row.uv[2] === column && row.uv[3] === .25;
+  }
+
+  function checkedCue(cue) {
+    if (!id(cue?.trackId) || !id(cue.eventId)) return false;
+    if (cue.profile !== "05") return atlasColumns.has(cue.profile) && checkedPose(cue, atlasColumns.get(cue.profile));
+    const roles = Array.isArray(cue.emitters) && cue.emitters.map(row => row?.role);
+    return roles && roles.length >= 1 && roles.length <= 4 && roles.every(role => transitionColumns.has(role)) &&
+      new Set(roles).size === roles.length;
   }
 
   function checked(source, title) {
@@ -38,16 +52,14 @@
       Array.isArray(geometry.indices) && geometry.indices.length === 60 &&
       geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 22) &&
       checkedMaterial(material, "alpha") &&
-      Array.isArray(cues) && cues.length >= 1 && cues.length <= 9 && cues.every(cue => id(cue?.trackId) &&
-        id(cue.eventId) && atlasColumns.has(cue.profile) &&
-        finiteVector(cue.position, 3) && finiteVector(cue.rotation, 4) && finiteVector(cue.uv, 4) &&
-        cue.uv[0] === .25 && cue.uv[1] === .25 && cue.uv[2] === atlasColumns.get(cue.profile) && cue.uv[3] === .25) &&
+      Array.isArray(cues) && cues.length >= 1 && cues.length <= 10 && cues.every(checkedCue) &&
       new Set(cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === cues.length &&
       cues.filter(cue => cue.profile === "03").length <= 1 && cues.filter(cue => cue.profile === "04").length <= 1 &&
+      cues.filter(cue => cue.profile === "05").length <= 1 &&
       cues.filter(cue => cue.profile === "06").length <= 4 && cues.filter(cue => cue.profile === "07").length <= 3;
   }
 
-  function make(T, source, texture, cue, name, surface) {
+  function make(T, source, texture, pose, name, surface, capacity) {
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(source.geometry.positions.flat(), 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute(source.geometry.uv.flat(), 2));
@@ -63,7 +75,7 @@
       stencilWrite: true, stencilRef: 2, stencilFunc: T.AlwaysStencilFunc,
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
-      uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(cue.uv)},
+      uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(pose.uv)},
         uTint: {value: new T.Vector4().fromArray(surface.tint)}},
     });
     const mesh = new T.InstancedMesh(geometry, material, capacity);
@@ -80,22 +92,35 @@
   async function apply(T, root, source, sharedAtlas) {
     const title = global.MVStudioTitle, simulation = global.MVStudioAutumnLeavesSimulation;
     const floorSimulation = global.MVStudioAutumnFloorSimulation;
+    const burstSimulation = global.MVStudioAutumnBurstSimulation;
+    const redBurstSimulation = global.MVStudioAutumnRedBurstSimulation;
     const particles = global.MVStudioStageParticles;
     if (!root?.isObject3D || !particles || !title || !checked(source, title)) return null;
     let redCue = 0, floorCue = 0;
     const candidates = source.cues.flatMap(cue => {
+      if (cue.profile === "05") {
+        return cue.emitters.filter(row => checkedPose(row, transitionColumns.get(row.role)) && checkedMaterial(row.material, "alpha"))
+          .map(row => {
+            const engine = row.role === "red-in" ? simulation :
+              row.role === "red-burst" ? redBurstSimulation : burstSimulation;
+            return {cue, pose: row, stream: engine?.create({...source, ...cue, ...row}), anisotropic: false,
+              surface: row.material, capacity: row.role === "red-burst" ? 300 : defaultCapacity,
+              name: `Native Aion transition leaves ${row.role}`};
+          });
+      }
       if (cue.profile === "07") {
         const order = ++floorCue;
         if (!floorSimulation || !Array.isArray(cue.emitters) || cue.emitters.length !== 2 ||
             !["alpha", "add"].every(role => checkedMaterial(cue.emitters.find(row => row?.role === role)?.material, role))) return [];
-        return cue.emitters.map(emitter => ({cue, stream: floorSimulation.create({...source, ...cue, ...emitter}),
-          anisotropic: true, surface: emitter.material, name: `Native Aion floor leaves ${emitter.role} ${order}`}));
+        return cue.emitters.map(emitter => ({cue, pose: cue, stream: floorSimulation.create({...source, ...cue, ...emitter}),
+          anisotropic: true, surface: emitter.material, capacity: defaultCapacity,
+          name: `Native Aion floor leaves ${emitter.role} ${order}`}));
       }
       // Native PrefabControl has its own clone and clock for every clip,
       // including adjacent clips that reuse the same red-leaf prefab.
       const clip = cue.profile === "06" ? `06 ${++redCue}` : cue.profile;
-      return [{cue, stream: simulation?.create({...source, ...cue}), anisotropic: false,
-        surface: source.material, name: `Native Aion falling leaves ${clip}`}];
+      return [{cue, pose: cue, stream: simulation?.create({...source, ...cue}), anisotropic: false,
+        surface: source.material, capacity: defaultCapacity, name: `Native Aion falling leaves ${clip}`}];
     }).filter(entry => entry.stream);
     if (!candidates.length) return null;
     const borrowed = title.sharedMipTexture(source.texture, sharedAtlas);
@@ -105,11 +130,11 @@
     } catch {
       return null;
     }
-    const entries = candidates.map(({cue, stream, anisotropic, surface, name}) => {
-      const packet = make(T, source, texture, cue, name, surface);
+    const entries = candidates.map(({cue, pose, stream, anisotropic, surface, name, capacity}) => {
+      const packet = make(T, source, texture, pose, name, surface, capacity);
       root.add(packet.mesh);
-      return {cue, stream, anisotropic, ...packet, frame: -1, fps: 0,
-        emitterRotation: new T.Quaternion().fromArray(cue.rotation), center: new T.Vector3()};
+      return {cue, stream, anisotropic, capacity, ...packet, frame: -1, fps: 0,
+        emitterRotation: new T.Quaternion().fromArray(pose.rotation), center: new T.Vector3()};
     });
     const center = new T.Vector3(), scale = new T.Vector3(), eye = new T.Vector3();
     const matrix = new T.Matrix4(), spin = new T.Euler(), orientation = new T.Quaternion();
@@ -117,7 +142,7 @@
     let tracks, disposed = false;
 
     function update(entry, frame, fps) {
-      const {mesh, stream, colors, emitterRotation, anisotropic} = entry;
+      const {mesh, stream, colors, emitterRotation, anisotropic, capacity} = entry;
       let count = 0;
       bounds.makeEmpty();
       function write(x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, a) {

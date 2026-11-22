@@ -8,7 +8,9 @@ require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-rain-simulation.js");
 require("../webtools/web/static/mv-studio-rain-floor-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-leaves-simulation.js");
+require("../webtools/web/static/mv-studio-autumn-red-burst-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-floor-simulation.js");
+require("../webtools/web/static/mv-studio-autumn-burst-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -458,6 +460,24 @@ function testAionAutumnLeaves() {
   assert.equal(finaleEnd.length, 125);
   matchesNative(finaleEnd[14], [-4.124294757843018, 2.072416067123413, -1.3240665197372437,
     .6866532564163208, 2.9302151203155518, 17.458295822143555, 21.145315170288086, 255, 143, 157, 178]);
+
+  const redIn = createLeaves({...red, profile: "05", role: "red-in", rate: 26, seed: 1722352272,
+    position: [red.position[0], 4, red.position[2]]});
+  assert.deepEqual(sample(redIn, 35, 60), []);
+  const entrance = sample(redIn, 36, 60);
+  assert.equal(entrance.length, 30);
+  matchesNative(entrance[0], [4.950591564178467, 5.402165412902832, .9676176309585571,
+    .5097834467887878, 1.748797944834974e-14, 2.456627803471608e-14, .5981311798095703, 255, 143, 158, 0]);
+  assert.deepEqual(sample(redIn, 18, 30), entrance);
+  const continuous = sample(redIn, 39, 60);
+  assert.equal(continuous.length, 31);
+  matchesNative(continuous[30], [-4.0948381423950195, 5.440464496612549, 2.0229790210723877,
+    .5845345258712769, .014632106758654118, .03817937895655632, .14613686501979828, 255, 144, 158, 4]);
+  const transitionEnd = sample(redIn, 195, 60);
+  assert.equal(transitionEnd.length, 98);
+  matchesNative(transitionEnd[90], [4.49331521987915, 2.7718241214752197, -1.9583169221878052,
+    .5276740193367004, .10592936724424362, -.44781625270843506, -.7526700496673584, 255, 127, 144, 123]);
+  assert.deepEqual(sample(redIn, 36, 60), entrance);
 }
 
 function testAionAutumnFloor() {
@@ -507,8 +527,99 @@ function testAionAutumnFloor() {
   assert.deepEqual(sample(alpha, 1275, 60), last);
 }
 
+function testAionLeafBursts() {
+  const position = [0, Math.fround(.57), 0], rotation = [-Math.SQRT1_2, 0, 0, Math.SQRT1_2];
+  const alphaKeys = [[0, 1], [58982, 1], [65535, 0]];
+  const create = globalThis.MVStudioAutumnBurstSimulation.create;
+  const cases = [
+    {
+      role: "green-burst", seed: 3279275062, rgb: [.7233373522758484, .7921568751335144, .5490196347236633],
+      first: [.8436978459358215, 2.0149118900299072, 4.019004821777344, .6733894348144531,
+        1.2100321633568001e-8, 2.3756719258472003e-8, .6410994529724121, 185, 202, 140, 255],
+      grouped: [.8457433581352234, 2.020505905151367, 4.027272701263428],
+    },
+    {
+      role: "yellow-burst", seed: 3364901415, rgb: [.7924528121948242, .7491843700408936, .5494837760925293],
+      first: [2.771296262741089, 2.537299871444702, .20554675161838531, .7360759973526001,
+        9.237621334534651e-9, 1.6175603079204848e-8, -.6389018297195435, 202, 191, 141, 255],
+      grouped: [2.768643617630005, 2.550642967224121, .21512798964977264],
+    },
+  ];
+  for (const {role, seed, rgb, first, grouped} of cases) {
+    const source = {role, seed, rate: 0, position, rotation, alphaKeys, startColor: {
+      rgb: [[0, ...rgb], [29141, 1, 1, 1], [65535, 1, .9386792182922363, .9645374417304993]],
+      alpha: [[0, 1], [65535, 1]],
+    }};
+    assert.equal(create({...source, seed: 0}), null);
+    const stream = create(source);
+    const sample = (time, fps) => {
+      const rows = [];
+      stream.sample(time, fps, (...packet) => rows.push(packet));
+      return rows;
+    };
+    assert.deepEqual(sample(0, 60), []);
+    const release = sample(1 / 60, 60);
+    assert.equal(release.length, 50);
+    assert(release[0].slice(0, 3).every((value, axis) => Math.abs(value - first[axis]) < 2e-6));
+    assert.deepEqual(release[0].slice(3), first.slice(3));
+    const at30 = sample(1 / 30, 30);
+    assert.equal(at30.length, 50);
+    assert(at30[0].slice(0, 3).every((value, axis) => Math.abs(value - grouped[axis]) < 2e-6));
+    assert.deepEqual(sample(1.6, 60), []);
+    assert.deepEqual(sample(1 / 60, 60), release);
+  }
+}
+
+function testAionRedBurst() {
+  const f32 = Math.fround;
+  const source = {
+    profile: "05", role: "red-burst", seed: 1586243424, rate: 0,
+    position: [f32(.512), f32(.021), f32(4.133)], rotation: [0, .983316296761958, 0, -.18190398709854855],
+    alphaKeys: [[0, 0], [1311, 1], [58982, 1], [65535, 0]],
+    startColor: {
+      rgb: [[[0, 1, .7701709866523743, .5137255191802979], [65535, 1, 1, 1]],
+        [[9445, 1, .6000000238418579, .6796650290489197], [65535, 1, 1, 1]]],
+      alpha: [[[0, 1], [65535, 1]], [[0, 1], [65535, 1]]],
+    },
+  };
+  const create = globalThis.MVStudioAutumnRedBurstSimulation.create;
+  assert.equal(create({...source, role: "red-in"}), null);
+  const stream = create(source);
+  const sample = (frames, fps) => {
+    const rows = [];
+    stream.sample(frames / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  const native = (actual, expected) => {
+    assert.ok(actual.slice(0, 3).every((p, i) => Math.abs(p - expected[i]) <= 1e-6));
+    assert.deepEqual(actual.slice(3), expected.slice(3));
+  };
+  assert.deepEqual(sample(6, 60), []);
+  const beginning = sample(7, 60);
+  assert.equal(beginning.length, 30);
+  native(beginning[0], [.08517506718635559, .22827157378196716, 4.014399528503418,
+    .284058541059494, 0, .006578462664037943, 0, 255, 193, 136, 0]);
+  native(sample(8, 60)[0], [.1112821102142334, .29470095038414, 3.975200653076172,
+    .284058541059494, 0, .1226159855723381, 0, 255, 193, 136, 18]);
+  assert.equal(sample(13, 60).length, 130);
+  assert.equal(sample(24, 60).length, 230);
+  const burst = sample(36, 60);
+  assert.equal(burst.length, 290);
+  native(burst[230], [.036619335412979126, .625893771648407, 5.065024375915527,
+    .3543529212474823, 0, .13743512332439423, 0, 255, 191, 143, 0]);
+  assert.deepEqual(sample(18, 30), burst);
+  const end = sample(195, 60);
+  assert.equal(end.length, 290);
+  native(end[50], [2.3118722438812256, 4.1183576583862305, 1.0767631530761719,
+    .23893672227859497, 0, 17.30269432067871, 0, 255, 166, 161, 255]);
+  assert.deepEqual(sample(7, 60), beginning);
+  assert.deepEqual(sample(195, 60), end);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
 testAionAutumnFloor();
+testAionRedBurst();
+testAionLeafBursts();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

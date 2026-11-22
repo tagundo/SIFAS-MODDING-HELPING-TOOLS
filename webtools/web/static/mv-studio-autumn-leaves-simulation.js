@@ -22,11 +22,13 @@
   }
 
   function supported(row) {
-    if (!row || !["03", "04", "06"].includes(row.profile)) return false;
+    if (!row || !["03", "04", "05", "06"].includes(row.profile)) return false;
     const {position, rotation, startColor, alphaKeys} = row, red = row.profile === "06", yellow = row.profile === "04";
-    return row.rate === (red ? 20 : yellow ? 10 : 12) &&
+    const redIn = row.profile === "05";
+    return (!redIn || (row.role === "red-in" && row.seed === 1722352272)) &&
+      row.rate === (redIn ? 26 : red ? 20 : yellow ? 10 : 12) &&
       (!red || (Number.isInteger(row.seed) && row.seed >= 0 && row.seed <= 0xffffffff)) && vector(position, 3) &&
-      position[0] === f32(.65) && position[1] === 5 && position[2] === f32(-.46) &&
+      position[0] === f32(.65) && position[1] === (redIn ? 4 : 5) && position[2] === f32(-.46) &&
       vector(rotation, 4) && !rotation[1] && !rotation[2] &&
       Math.abs(rotation[0] - Math.SQRT1_2) < 1e-6 && Math.abs(rotation[3] - Math.SQRT1_2) < 1e-6 &&
       keysValid(alphaKeys, 4, 1) && (yellow ? vector(startColor, 4) && startColor.every(unit) :
@@ -77,15 +79,16 @@
     if (!particles || !supported(row)) return null;
     const {nativeFrame, nativeStep, nativeStepRate, nativeRandom, nativeUnit, nativeColorAtTime} = particles;
     const {rate, position, startColor, alphaKeys} = row;
-    const red = row.profile === "06", constant = row.profile === "04" ? startColor.map(byte) : null;
+    const red = row.profile === "06", redIn = row.profile === "05";
+    const constant = row.profile === "04" ? startColor.map(byte) : null;
     const gradient = alphaKeys.map(([time, alpha]) => [f32(time / 65535), 255, 255, 255, byte(alpha)]);
-    const streams = Array.from({length: red ? 4 : 1}, (_, lane) => {
-      const word = red ? (row.seed + 367 * lane) >>> 0 : seed;
+    const streams = Array.from({length: red || redIn ? 4 : 1}, (_, lane) => {
+      const word = red || redIn ? (row.seed + 367 * lane) >>> 0 : seed;
       return {initial: nativeRandom(word), shape: nativeRandom(word)};
     });
     const birthGroups = [];
     const stepMotion = orbit(nativeStep), stepGravity = gravity(nativeStep);
-    let frame = 0, clock = 0, carry = 0, group = 0, active = [];
+    let frame = 0, clock = 0, carry = 0, group = 0, delay = redIn ? f32(.6) : 0, active = [];
     let displayFps, firstFrameRemainder = 0, warmRemainder = 0;
     let checkpoints;
 
@@ -104,7 +107,7 @@
       const colorPhase = nativeUnit(initial()); // InitialModule also draws for fixed color.
       const x = f32(f32(nativeUnit(shape()) - .5) * 13);
       const y = f32(f32(nativeUnit(shape()) - .5) * 10);
-      const z = f32(f32(nativeUnit(shape()) - .5) * 2);
+      const z = f32(f32(nativeUnit(shape()) - .5) * (redIn ? 3 : 2));
       const velocity = nativeRandom((word + velocitySalt) >>> 0);
       const velocityX = nativeUnit(velocity()), velocityY = nativeUnit(velocity());
       // Both authored two-constant rotation modules add their rates using
@@ -119,7 +122,8 @@
     function advance(particle, step, speedGain, [cosine, sine, inverseStep]) {
       const {source, x, y} = particle, phase = f32(particle.age * ageScale);
       const low = negative(phase), high = positive(phase);
-      const rawX = lerp(low, high, source.velocityX), rawY = lerp(high, low, source.velocityY);
+      const rawX = redIn ? f32(2 * lerp(low, high, source.velocityX)) : lerp(low, high, source.velocityX);
+      const rawY = lerp(high, low, source.velocityY);
       const rotatedX = f32(f32(x * cosine) - f32(y * sine));
       const rotatedY = f32(f32(x * sine) + f32(y * cosine));
       const vx = f32(rawX + f32(f32(rotatedX - x) * inverseStep));
@@ -148,23 +152,37 @@
     }
 
     function step(delta) {
+      if (delay >= delta) {
+        delay = f32(delay - delta);
+        return;
+      }
+      if (delay > 0) {
+        delta = f32(delta - delay);
+        delay = 0;
+      }
       const motion = delta === nativeStep ? stepMotion : orbit(delta);
       const gain = delta === nativeStep ? stepGravity : gravity(delta);
       for (const particle of active) advance(particle, delta, gain, motion);
       cull();
       const previous = clock, next = f32(clock + delta);
-      clock = next > cycle ? f32(next - cycle) : next;
-      const amount = next > cycle ?
+      clock = redIn ? Math.min(next, cycle) : next > cycle ? f32(next - cycle) : next;
+      const amount = !redIn && next > cycle ?
         f32(f32(f32(cycle - previous) * rate) + f32(clock * rate)) : f32(f32(clock - previous) * rate);
-      const combined = f32(amount + carry), count = Math.trunc(combined);
-      carry = f32(combined - count);
+      const combined = f32(amount + carry), continuous = Math.trunc(combined);
+      carry = f32(combined - continuous);
+      const count = continuous + (redIn && previous === 0 ? 30 : 0);
       if (!count) return;
-      if (group === birthGroups.length) birthGroups.push(streams.map(prepareBirth));
-      const sources = birthGroups[group++], reciprocal = f32(1 / amount);
+      const reciprocal = amount >= birthBias ? f32(1 / amount) : 1;
+      let sources;
       for (let lane = 0; lane < count; lane++) {
-        const source = sources[lane], phase = red ? source.colorPhase : f32(clock / cycle);
+        const slot = lane % 4;
+        if (slot === 0) {
+          if (group === birthGroups.length) birthGroups.push(streams.map(prepareBirth));
+          sources = birthGroups[group++];
+        }
+        const source = sources[slot], phase = red || redIn ? source.colorPhase : f32(clock / cycle);
         const color = constant || [...palette(startColor.rgb, phase), ...palette(startColor.alpha, phase)];
-        const fraction = Math.max(birthBias, Math.min(1, f32(f32(lane + carry) * reciprocal)));
+        const fraction = lane < continuous ? Math.max(birthBias, Math.min(1, f32(f32(lane + carry) * reciprocal))) : birthBias;
         const partial = f32(delta * fraction);
         // ShapeModule samples speed at birth. Green InitialModule colors use the step's end phase.
         const speedTime = f32(f32(clock - partial) / cycle);
@@ -176,11 +194,11 @@
     }
 
     function snapshot() {
-      return {clock, carry, group, active: active.map(particle => ({...particle}))};
+      return {clock, carry, group, delay, active: active.map(particle => ({...particle}))};
     }
 
     function restore(saved, savedFrame) {
-      ({clock, carry, group} = saved);
+      ({clock, carry, group, delay} = saved);
       frame = savedFrame;
       active = saved.active.map(particle => ({...particle}));
     }

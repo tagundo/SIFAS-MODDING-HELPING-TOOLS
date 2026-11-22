@@ -493,6 +493,49 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageLeaves"], expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_leaves_fill_missing_transition_roles_when_shared_assets_match(self):
+        from webtools.core import mv_studio_leaves
+
+        project = mv_studio._blank("Edited transition")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        event = {"id": "transition:0", "label": "Edited transition", "start": 60, "duration": 4,
+                 "values": {"clipIn": 1, "offset": {"x": .5, "y": 0, "z": -1}}}
+        track = {"id": "transition", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": mv_studio_leaves.TRANSITION_TRACK}
+        previous_cue = {"profile": "07", "trackId": "floor", "eventId": "floor:0", "emitters": []}
+        emitters = [{"role": role, "seed": index} for index, role in enumerate(mv_studio_leaves.TRANSITION_ROLES)]
+        cue = {"profile": "05", "trackId": track["id"], "eventId": event["id"], "emitters": emitters}
+        shared = {"schema": 1, "geometry": {"positions": []}, "texture": [{"png": "authentic"}],
+                  "alphaKeys": [[0, 0]], "material": {"blend": "alpha"}}
+        prior = {**shared, "cues": [previous_cue]}
+        native = {**shared, "cues": [previous_cue, cue]}
+        partial = {**cue, "emitters": [{**emitters[0], "seed": 999}]}
+        prior_partial = {**prior, "cues": [previous_cue, partial]}
+        updated = {**prior, "cues": [previous_cue, {**cue, "emitters": [*partial["emitters"], *emitters[1:]]}]}
+        incompatible = {**prior_partial, "texture": [{"png": "custom"}]}
+        for saved, events, source, expected, reparses in (
+                (prior, [event], self.original, native, True),
+                (prior_partial, [event], self.original, updated, True),
+                (prior_partial, [], self.original, prior_partial, False),
+                (prior, [event], None, prior, False),
+                (native, [event], self.original, native, False),
+                (incompatible, [event], self.original, incompatible, True)):
+            with self.subTest(saved=saved, events=events, source=source):
+                tracks = [{**track, "events": events}]
+                document = {**project, "tracks": tracks, "stageLeaves": saved}
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLeaves": native},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited transition", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_leaves=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageLeaves"], expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

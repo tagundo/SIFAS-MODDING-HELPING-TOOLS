@@ -8,11 +8,14 @@ from .mv_studio_stage_title_particles import _constant, _float32
 
 RED_TRACK = "StageEffect/Expert/Control/par_06_momij_red"
 FLOOR_TRACK = "StageEffect/Expert/Control/par_07_momiji_floor"
+TRANSITION_TRACK = "StageEffect/Expert/Control/par_05_momij_burst"
+TRANSITION_ROLES = ("green-burst", "yellow-burst", "red-burst", "red-in")
 PROFILES = {
     "StageEffect/Expert/Control/par_03_momij_green": ("03", "green", 12, 0),
     "StageEffect/Expert/Control/par_04_momij_yellow": ("04", "yellow", 10, .5),
     RED_TRACK: ("06", "red", 20, .25),
     FLOOR_TRACK: ("07", "floor", None, .25),
+    TRANSITION_TRACK: ("05", "burst", None, None),
 }
 _POSITION = [_float32(.65), 5, -_float32(.46)]
 _ROTATION = [.7071067811865475, 0, 0, .7071067811865475]
@@ -29,13 +32,20 @@ _RENDERER = {**billboard._RENDERER, "m_RenderMode": 4, "m_RenderingLayerMask": 0
              "m_Flip": billboard._ZERO, "m_EnableGPUInstancing": False, "m_ApplyActiveColorSpace": False,
              "m_Mesh": {"m_FileID": 0, "m_PathID": _MESH}}
 _MATERIAL = {"queue": 3010, "cull": 0, "blend": "alpha", "premultiply": False, "tint": [1, 1, 1, 1]}
+_ALPHA_KEYS = [[0, 0], [6554, 1], [58982, 1], [65535, 0]]
+_VELOCITY_CURVES = (("x", (-10, 1), (-1, 1), (1, -1)), ("y", (-5, 1), (1, -1), (-1, 1)),
+                    ("z", (0, 0), (1, -1), (-1, 1)))
+
+
+def _keyframes_match(source, expected):
+    keys = source["m_Curve"]
+    return ((source["m_PreInfinity"], source["m_PostInfinity"]) == (2, 2) and len(keys) == len(expected)
+            and all(not key["weightedMode"] and tuple(key[name] for name in ("time", "value", "inSlope", "outSlope")) == row
+                    for key, row in zip(keys, expected)))
 
 
 def _curve_matches(source, values):
-    keys = source["m_Curve"]
-    return ((source["m_PreInfinity"], source["m_PostInfinity"]) == (2, 2) and len(keys) == 2
-            and all((key["time"], key["value"], key["inSlope"], key["outSlope"], key["weightedMode"])
-                    == (index, value, 0, 0, 0) for index, (key, value) in enumerate(zip(keys, values))))
+    return _keyframes_match(source, tuple((index, value, 0, 0) for index, value in enumerate(values)))
 
 
 def _minmax(source, scale, minimum, maximum):
@@ -43,19 +53,19 @@ def _minmax(source, scale, minimum, maximum):
             and _curve_matches(source["minCurve"], minimum) and _curve_matches(source["maxCurve"], maximum))
 
 
-def _shape(source):
-    if (not billboard._matches(source, {"type": 5, "placementMode": 0, "radiusThickness": 1, "alignToDirection": False,
-                                       "m_Position": billboard._ZERO, "m_Rotation": billboard._ZERO,
-                                       "m_Scale": {"x": 13, "y": 10, "z": 2}, "boxThickness": billboard._ZERO})
+def _shape(source, *, shape_type=5, scale=(13, 10, 2), rotation=(0, 0, 0), radius=1):
+    if (not billboard._matches(source, {"type": shape_type, "placementMode": 0, "radiusThickness": 1, "alignToDirection": False,
+                                       "m_Position": billboard._ZERO, "m_Rotation": dict(zip("xyz", rotation)),
+                                       "m_Scale": dict(zip("xyz", scale)), "boxThickness": billboard._ZERO})
             or any(source[name] for name in ("randomDirectionAmount", "sphericalDirectionAmount", "randomPositionAmount"))
             or any(source[name] != billboard._NULL for name in ("m_Mesh", "m_MeshRenderer", "m_SkinnedMeshRenderer",
                                                                  "m_Sprite", "m_SpriteRenderer", "m_Texture"))):
         return False
     return all(billboard._matches(source[name], {"value": value, "mode": 0, "spread": 0})
-               and _constant(source[name]["speed"]) == 1 for name, value in (("radius", 1), ("arc", 360)))
+               and _constant(source[name]["speed"]) == 1 for name, value in (("radius", radius), ("arc", 360)))
 
 
-def _motion(source):
+def _motion(source, velocity_curves=_VELOCITY_CURVES):
     rotation = source["RotationModule"]
     by_speed = source["RotationBySpeedModule"]
     pi = 3.141592502593994
@@ -71,25 +81,26 @@ def _motion(source):
             or any(_constant(velocity[name]) != 0 for name in ("radial", "orbitalX", "orbitalY",
                                                               "orbitalOffsetX", "orbitalOffsetY", "orbitalOffsetZ"))):
         return False
-    return all(_minmax(velocity[axis], scale, minimum, maximum) for axis, scale, minimum, maximum in (
-        ("x", (-10, 1), (-1, 1), (1, -1)), ("y", (-5, 1), (1, -1), (-1, 1)), ("z", (0, 0), (1, -1), (-1, 1))))
+    return all(_minmax(velocity[axis], scale, minimum, maximum)
+               for axis, scale, minimum, maximum in velocity_curves)
 
 
-def _colors(source, profile):
+def _colors(source, profile, *, alpha_keys=_ALPHA_KEYS):
     start = source["InitialModule"]["startColor"]
     life = source["ColorModule"]["gradient"]
     if life["minMaxState"] != 1:
         return None
     maximum = life["maxGradient"]
     rgb = shine._gradient(maximum, "ctime", 2, "rgb")
-    alpha = shine._gradient(maximum, "atime", 4, "a")
-    if rgb != [[0, 1, 1, 1], [65535, 1, 1, 1]] or alpha != [[0, 0], [6554, 1], [58982, 1], [65535, 0]]:
+    alpha = shine._gradient(maximum, "atime", len(alpha_keys), "a")
+    if rgb != [[0, 1, 1, 1], [65535, 1, 1, 1]] or alpha != alpha_keys:
         return None
     if profile != "04":
         initial = start["maxGradient"]
         rgb = shine._gradient(initial, "ctime", 3, "rgb")
         initial_alpha = shine._gradient(initial, "atime", 2, "a")
-        if (start["minMaxState"] != (1 if profile == "03" else 4) or not rgb or rgb[0][0] != 0 or rgb[-1][0] != 65535
+        if (start["minMaxState"] != (1 if profile in ("03", "green-burst", "yellow-burst") else 4)
+                or not rgb or rgb[0][0] != 0 or rgb[-1][0] != 65535
                 or initial_alpha != [[0, 1], [65535, 1]]):
             return None
         color = {"rgb": rgb, "alpha": initial_alpha}
@@ -168,6 +179,10 @@ def _prefab(objects, game, profile, deadline):
         from . import mv_studio_floor_leaves
 
         return mv_studio_floor_leaves.read(objects, transform, fields)
+    if number == "05":
+        from . import mv_studio_transition_leaves
+
+        return mv_studio_transition_leaves.read(objects, transform, fields)
     child, = fields["m_Children"]
     game = title._transform_child(objects, transform, child)
     leaf = title._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"},

@@ -222,6 +222,15 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                         self.assertEqual([(emitter["role"], emitter["seed"], emitter["rate"], emitter["material"]["blend"])
                                           for emitter in cue["emitters"]],
                                          [("alpha", 3279275062, 7, "alpha"), ("add", 363848346, 3, "add")])
+                    transition, = [cue for cue in leaves["cues"] if cue["profile"] == "05"]
+                    transition_track = tracks[transition["trackId"]]
+                    self.assertEqual(transition_track["label"], "StageEffect/Expert/Control/par_05_momij_burst")
+                    self.assertEqual(transition_track["events"][0]["id"], transition["eventId"])
+                    self.assertEqual([(row["role"], row["seed"], row["uv"][2]) for row in transition["emitters"]],
+                                     [("green-burst", 3279275062, 0), ("yellow-burst", 3364901415, .5),
+                                      ("red-burst", 1586243424, .25),
+                                      ("red-in", 1722352272, .25)])
+                    self.assertTrue(all(row["material"] == leaves["material"] for row in transition["emitters"]))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

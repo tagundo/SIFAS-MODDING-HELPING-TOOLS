@@ -859,9 +859,31 @@ def _restore_leaves(project, rebuilt, available, missing_cues):
     saved = project["stageLeaves"]
     if any(key not in saved or saved[key] != rebuilt.get(key) for key in ("geometry", "texture", "alphaKeys", "material")):
         return
-    additions = [cue for cue in cues if missing_cues.get((cue["trackId"], cue["eventId"])) == cue["profile"]]
-    if additions:
-        project["stageLeaves"] = {**saved, "cues": [*saved["cues"], *additions]}
+    additions = {(cue["trackId"], cue["eventId"]): cue for cue in cues
+                 if missing_cues.get((cue["trackId"], cue["eventId"])) == cue["profile"]}
+    restored = []
+    for existing in saved["cues"]:
+        cue = additions.pop((existing["trackId"], existing["eventId"]), None)
+        roles = _transition_roles(existing)
+        if cue is None or roles is None:
+            restored.append(existing)
+        else:
+            emitters = [emitter for emitter in cue["emitters"] if emitter["role"] not in roles]
+            merged = [*existing["emitters"], *emitters]
+            restored.append({**existing, "emitters": merged} if len(merged) <= 4 else existing)
+    restored.extend(additions.values())
+    if restored != saved["cues"]:
+        project["stageLeaves"] = {**saved, "cues": restored}
+
+
+def _transition_roles(cue):
+    emitters = cue.get("emitters")
+    if cue["profile"] != "05" or not isinstance(emitters, list) or not 1 <= len(emitters) <= 4:
+        return None
+    if any(not isinstance(row, dict) or not isinstance(row.get("role"), str) for row in emitters):
+        return None
+    roles = {row["role"] for row in emitters}
+    return roles if len(roles) == len(emitters) else None
 
 
 def _open_saved(archive, entries):
@@ -923,12 +945,17 @@ def _open_saved(archive, entries):
     leaf_cues = {(track["id"], event["id"]) for track in project["tracks"]
                  if track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")) in mv_studio_leaves.PROFILES
                  for event in track["events"]}
-    saved_leaves = _saved_particle_cues(project.get("stageLeaves"), 9)
-    saved_leaf_cues = {(cue["trackId"], cue["eventId"]) for cue in saved_leaves}
+    saved_leaves = _saved_particle_cues(project.get("stageLeaves"), 10)
+    saved_leaf_cues = {(cue["trackId"], cue["eventId"]): cue for cue in saved_leaves}
+    transition_roles = set(mv_studio_leaves.TRANSITION_ROLES)
+    partial_transitions = {key for key, cue in saved_leaf_cues.items()
+                           if (roles := _transition_roles(cue)) is not None and not transition_roles <= roles}
     missing_leaves = {(track["id"], event["id"]): mv_studio_leaves.PROFILES[track["label"]][0]
                       for track in project["tracks"] if track.get("nativeClass") == "CustomControlTrack"
-                      and track.get("label") in (mv_studio_leaves.RED_TRACK, mv_studio_leaves.FLOOR_TRACK)
-                      for event in track["events"] if (track["id"], event["id"]) not in saved_leaf_cues}
+                      and track.get("label") in (mv_studio_leaves.RED_TRACK, mv_studio_leaves.FLOOR_TRACK,
+                                                 mv_studio_leaves.TRANSITION_TRACK)
+                      for event in track["events"] if (track["id"], event["id"]) not in saved_leaf_cues
+                      or (track["id"], event["id"]) in partial_transitions}
     restore_leaves = bool(leaf_cues) and ("stageLeaves" not in project or bool(saved_leaves and missing_leaves))
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
