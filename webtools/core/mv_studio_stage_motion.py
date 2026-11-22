@@ -201,13 +201,20 @@ def _activation_events(events, by_id, objects, scripts):
     return ids
 
 
-def _quality(label):
+def _quality(label, *, parent=None, mono=None):
     # The native collector indexes direct category children of a StageEffect
     # difficulty group, normalizing case and removing spaces from the name.
     parts = label.split("/")
-    if len(parts) >= 4 and parts[0] == "StageEffect":
-        return _STAGE_QUALITY.get(parts[2].replace(" ", "").lower())
-    return None
+    if len(parts) < 4 or parts[0] != "StageEffect":
+        return None
+    category = parts[2].replace(" ", "").lower()
+    if category == "animation" and mono is not None and parent in mono:
+        # The game's Timeline mutes a nested GroupTrack itself. Its output
+        # AnimationTracks are compiled independently and continue to play.
+        _, parent_path = timeline._lineage(parent, mono, set())
+        if parent_path != "/" + "/".join(parts[:3]):
+            return None
+    return _STAGE_QUALITY.get(category)
 
 
 def read(objects, mono, tracks, deadline):
@@ -241,7 +248,8 @@ def read(objects, mono, tracks, deadline):
         branch = binding.removeprefix(_BINDING_ROOT).split("/")
         overlay = len(branch) == 2 and branch[0].startswith("fx_ove_") and branch[1] == "Effect_root"
         laser_track = binding == _LASER_BINDING and track["label"] == _LASER_TRACK
-        setting = "stage_overlay_effect" if overlay else _quality(track["label"])
+        parent = timeline._pointer(obj, tree.get("m_Parent"))
+        setting = "stage_overlay_effect" if overlay else _quality(track["label"], parent=parent, mono=mono)
         allow_overlay_material = setting == "stage_overlay_effect"
         for event in track["events"]:
             _remaining(deadline)

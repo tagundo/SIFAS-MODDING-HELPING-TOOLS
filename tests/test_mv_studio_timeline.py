@@ -106,6 +106,17 @@ class TimelineContractTests(unittest.TestCase):
             data["unsupported"] = 1
             self.assertIsNone(stage._read_clip(reader, None))
 
+    def test_stage_animation_quality_uses_direct_native_children(self):
+        from webtools.core import mv_studio_stage_motion as stage
+
+        owner = object()
+        mono = {("cab", 0): (owner, {}, "TimelineAsset")}
+        for identity, name in enumerate(("StageEffect", "Expert", "Animation", "Curtain"), 1):
+            mono[("cab", identity)] = owner, {"m_Name": name, "m_Parent": {"m_PathID": identity - 1}}, "GroupTrack"
+        with patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
+            self.assertEqual(stage._quality("StageEffect/Expert/Animation/Lights", parent=("cab", 3), mono=mono), "stage_animation")
+            self.assertIsNone(stage._quality("StageEffect/Expert/Animation/Curtain/Track", parent=("cab", 4), mono=mono))
+
     def test_typed_native_overlay_uses_category_and_keeps_world_alias_unbound(self):
         from webtools.core import mv_studio_stage_motion as stage
         from zlib import crc32
