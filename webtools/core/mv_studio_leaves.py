@@ -1,4 +1,4 @@
-"""Read the native green, yellow and red autumn leaves in Aion Expert."""
+"""Read the native falling and floor autumn leaves in Aion Expert."""
 
 from . import model_viewer as viewer, mv_studio_butterfly_glow as billboard, mv_studio_butterfly_shine as shine
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title, mv_studio_timeline as timeline
@@ -7,10 +7,12 @@ from .mv_studio_stage_title_particles import _constant, _float32
 
 
 RED_TRACK = "StageEffect/Expert/Control/par_06_momij_red"
+FLOOR_TRACK = "StageEffect/Expert/Control/par_07_momiji_floor"
 PROFILES = {
     "StageEffect/Expert/Control/par_03_momij_green": ("03", "green", 12, 0),
     "StageEffect/Expert/Control/par_04_momij_yellow": ("04", "yellow", 10, .5),
     RED_TRACK: ("06", "red", 20, .25),
+    FLOOR_TRACK: ("07", "floor", None, .25),
 }
 _POSITION = [_float32(.65), 5, -_float32(.46)]
 _ROTATION = [.7071067811865475, 0, 0, .7071067811865475]
@@ -26,6 +28,7 @@ _SETTINGS = {**billboard._SETTINGS, "lengthInSec": 10, "looping": True, "culling
 _RENDERER = {**billboard._RENDERER, "m_RenderMode": 4, "m_RenderingLayerMask": 0xFFFFFFFF, "m_MaxParticleSize": .5,
              "m_Flip": billboard._ZERO, "m_EnableGPUInstancing": False, "m_ApplyActiveColorSpace": False,
              "m_Mesh": {"m_FileID": 0, "m_PathID": _MESH}}
+_MATERIAL = {"queue": 3010, "cull": 0, "blend": "alpha", "premultiply": False, "tint": [1, 1, 1, 1]}
 
 
 def _curve_matches(source, values):
@@ -158,8 +161,15 @@ def _prefab(objects, game, profile, deadline):
         transform, fields = outer[1]["Transform"]
         if _authored_trs(fields) != title._IDENTITY or name != "root" and fields["m_Father"] != billboard._NULL:
             return None
-        child, = fields["m_Children"]
-        game = title._transform_child(objects, transform, child)
+        if name != "root":
+            child, = fields["m_Children"]
+            game = title._transform_child(objects, transform, child)
+    if number == "07":
+        from . import mv_studio_floor_leaves
+
+        return mv_studio_floor_leaves.read(objects, transform, fields)
+    child, = fields["m_Children"]
+    game = title._transform_child(objects, transform, child)
     leaf = title._components(objects, game, {"Transform", "ParticleSystem", "ParticleSystemRenderer"},
                              layer=1) if game is not None else None
     if leaf is None or leaf[0]["m_Name"] != f"autumnLeaves_{label}":
@@ -186,7 +196,7 @@ def _prefab(objects, game, profile, deadline):
 
 def _track_cues(objects, owner, fields, track, profile, deadline):
     red = profile[0] == "06"
-    limit = 4 if red else 1
+    limit = {"06": 4, "07": 3}.get(profile[0], 1)
     if (fields["m_Name"] != track["label"].rsplit("/", 1)[1] or not fields["m_Enabled"]
             or not 1 <= len(fields["m_Clips"]) <= limit or not 1 <= len(track["events"]) <= limit
             or not title._declared(objects, owner, fields, (*title._NAMESPACE, "CustomControlTrack"))
@@ -252,5 +262,4 @@ def read(objects, mono, tracks, deadline):
         return None
     if not levels:
         return None
-    return {"schema": 1, "geometry": geometry, "texture": levels, "alphaKeys": alpha, "cues": cues,
-            "material": {"queue": 3010, "cull": 0, "blend": "alpha", "premultiply": False, "tint": [1, 1, 1, 1]}}
+    return {"schema": 1, "geometry": geometry, "texture": levels, "alphaKeys": alpha, "cues": cues, "material": _MATERIAL}

@@ -849,7 +849,7 @@ def _restore_rain_impacts(project, rebuilt, existing):
         project["stageRain"] = {**saved, "cues": restored, "impactTextures": atlas}
 
 
-def _restore_leaves(project, rebuilt, available, missing_red):
+def _restore_leaves(project, rebuilt, available, missing_cues):
     cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in available]
     if not cues:
         return
@@ -859,9 +859,9 @@ def _restore_leaves(project, rebuilt, available, missing_red):
     saved = project["stageLeaves"]
     if any(key not in saved or saved[key] != rebuilt.get(key) for key in ("geometry", "texture", "alphaKeys", "material")):
         return
-    red = [cue for cue in cues if cue["profile"] == "06" and (cue["trackId"], cue["eventId"]) in missing_red]
-    if red:
-        project["stageLeaves"] = {**saved, "cues": [*saved["cues"], *red]}
+    additions = [cue for cue in cues if missing_cues.get((cue["trackId"], cue["eventId"])) == cue["profile"]]
+    if additions:
+        project["stageLeaves"] = {**saved, "cues": [*saved["cues"], *additions]}
 
 
 def _open_saved(archive, entries):
@@ -923,12 +923,13 @@ def _open_saved(archive, entries):
     leaf_cues = {(track["id"], event["id"]) for track in project["tracks"]
                  if track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")) in mv_studio_leaves.PROFILES
                  for event in track["events"]}
-    red_leaf_cues = {(track["id"], event["id"]) for track in project["tracks"]
-                     if track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_leaves.RED_TRACK
-                     for event in track["events"]}
-    saved_leaves = _saved_particle_cues(project.get("stageLeaves"), 6)
-    missing_red_leaves = red_leaf_cues - {(cue["trackId"], cue["eventId"]) for cue in saved_leaves}
-    restore_leaves = bool(leaf_cues) and ("stageLeaves" not in project or bool(saved_leaves and missing_red_leaves))
+    saved_leaves = _saved_particle_cues(project.get("stageLeaves"), 9)
+    saved_leaf_cues = {(cue["trackId"], cue["eventId"]) for cue in saved_leaves}
+    missing_leaves = {(track["id"], event["id"]): mv_studio_leaves.PROFILES[track["label"]][0]
+                      for track in project["tracks"] if track.get("nativeClass") == "CustomControlTrack"
+                      and track.get("label") in (mv_studio_leaves.RED_TRACK, mv_studio_leaves.FLOOR_TRACK)
+                      for event in track["events"] if (track["id"], event["id"]) not in saved_leaf_cues}
+    restore_leaves = bool(leaf_cues) and ("stageLeaves" not in project or bool(saved_leaves and missing_leaves))
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
@@ -1040,7 +1041,7 @@ def _open_saved(archive, entries):
             if restore_rain and "stageRain" in original:
                 _restore_rain_impacts(project, original["stageRain"], rain_cues)
             if restore_leaves and "stageLeaves" in original:
-                _restore_leaves(project, original["stageLeaves"], leaf_cues, missing_red_leaves)
+                _restore_leaves(project, original["stageLeaves"], leaf_cues, missing_leaves)
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background

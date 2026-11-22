@@ -205,13 +205,23 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                      [("03", 12, [.25, .25, 0, .25]), ("04", 10, [.25, .25, .5, .25])])
                     for cue in leaves["cues"][:2]:
                         self.assertEqual(tracks[cue["trackId"]]["events"][0]["id"], cue["eventId"])
-                    red_leaves = leaves["cues"][2:]
+                    red_leaves = [cue for cue in leaves["cues"] if cue["profile"] == "06"]
                     self.assertEqual([(cue["profile"], cue["rate"], cue["uv"]) for cue in red_leaves],
                                      [("06", 20, [.25, .25, .25, .25])] * 4)
                     self.assertEqual([cue["seed"] for cue in red_leaves], [670425550, 8958, 670425550, 2336])
                     self.assertEqual([cue["overwriteRandomSeed"] for cue in red_leaves], [False, True, False, True])
                     red_events = tracks[red_leaves[0]["trackId"]]["events"]
                     self.assertEqual([cue["eventId"] for cue in red_leaves], [event["id"] for event in red_events])
+                    floor_leaves = [cue for cue in leaves["cues"] if cue["profile"] == "07"]
+                    self.assertEqual(len(floor_leaves), 3)
+                    floor_events = tracks[floor_leaves[0]["trackId"]]["events"]
+                    self.assertEqual([cue["eventId"] for cue in floor_leaves], [event["id"] for event in floor_events])
+                    for cue in floor_leaves:
+                        self.assertEqual(cue["uv"], [.25] * 4)
+                        self.assertAlmostEqual(cue["position"][1], .06)
+                        self.assertEqual([(emitter["role"], emitter["seed"], emitter["rate"], emitter["material"]["blend"])
+                                          for emitter in cue["emitters"]],
+                                         [("alpha", 3279275062, 7, "alpha"), ("add", 363848346, 3, "add")])
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

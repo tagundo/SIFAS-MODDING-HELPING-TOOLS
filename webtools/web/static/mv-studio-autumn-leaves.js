@@ -23,7 +23,12 @@
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
   const finiteVector = (value, count) => Array.isArray(value) && value.length === count && value.every(Number.isFinite);
   const capacity = 200;
-  const atlasColumns = new Map([["03", 0], ["04", .5], ["06", .25]]);
+  const atlasColumns = new Map([["03", 0], ["04", .5], ["06", .25], ["07", .25]]);
+
+  function checkedMaterial(material, blend) {
+    return material?.queue === 3010 && material.cull === 0 && material.blend === blend &&
+      material.premultiply === false && finiteVector(material.tint, 4) && material.tint.every(value => value === 1);
+  }
 
   function checked(source, title) {
     const {geometry, material, cues} = source || {};
@@ -32,39 +37,39 @@
       Array.isArray(geometry.uv) && geometry.uv.length === 22 && geometry.uv.every(row => finiteVector(row, 2)) &&
       Array.isArray(geometry.indices) && geometry.indices.length === 60 &&
       geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 22) &&
-      material?.queue === 3010 && material.cull === 0 && material.blend === "alpha" && material.premultiply === false &&
-      finiteVector(material.tint, 4) && material.tint.every(value => value === 1) &&
-      Array.isArray(cues) && cues.length >= 1 && cues.length <= 6 && cues.every(cue => id(cue?.trackId) &&
+      checkedMaterial(material, "alpha") &&
+      Array.isArray(cues) && cues.length >= 1 && cues.length <= 9 && cues.every(cue => id(cue?.trackId) &&
         id(cue.eventId) && atlasColumns.has(cue.profile) &&
         finiteVector(cue.position, 3) && finiteVector(cue.rotation, 4) && finiteVector(cue.uv, 4) &&
         cue.uv[0] === .25 && cue.uv[1] === .25 && cue.uv[2] === atlasColumns.get(cue.profile) && cue.uv[3] === .25) &&
       new Set(cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === cues.length &&
       cues.filter(cue => cue.profile === "03").length <= 1 && cues.filter(cue => cue.profile === "04").length <= 1 &&
-      cues.filter(cue => cue.profile === "06").length <= 4;
+      cues.filter(cue => cue.profile === "06").length <= 4 && cues.filter(cue => cue.profile === "07").length <= 3;
   }
 
-  function make(T, source, texture, cue, name) {
+  function make(T, source, texture, cue, name, surface) {
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(source.geometry.positions.flat(), 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute(source.geometry.uv.flat(), 2));
     geometry.setIndex(source.geometry.indices);
     const colors = new T.InstancedBufferAttribute(new Uint8Array(capacity * 4), 4, true).setUsage(T.DynamicDrawUsage);
     geometry.setAttribute("particleColor", colors);
+    const destination = surface.blend === "add" ? T.OneFactor : T.OneMinusSrcAlphaFactor;
     const material = new T.ShaderMaterial({
       vertexShader, fragmentShader, transparent: true, toneMapped: false, side: T.DoubleSide,
       depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
-      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: T.OneMinusSrcAlphaFactor,
-      blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneMinusSrcAlphaFactor,
+      blending: T.CustomBlending, blendSrc: T.SrcAlphaFactor, blendDst: destination,
+      blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: destination,
       stencilWrite: true, stencilRef: 2, stencilFunc: T.AlwaysStencilFunc,
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: T.KeepStencilOp, stencilZPass: T.KeepStencilOp,
       uniforms: {uTexture: {value: texture}, uAtlas: {value: new T.Vector4().fromArray(cue.uv)},
-        uTint: {value: new T.Vector4().fromArray(source.material.tint)}},
+        uTint: {value: new T.Vector4().fromArray(surface.tint)}},
     });
     const mesh = new T.InstancedMesh(geometry, material, capacity);
     mesh.name = name;
     mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
-    mesh.renderOrder = source.material.queue;
+    mesh.renderOrder = surface.queue;
     mesh.frustumCulled = false;
     mesh.matrixAutoUpdate = false;
     mesh.visible = false;
@@ -74,9 +79,24 @@
 
   async function apply(T, root, source, sharedAtlas) {
     const title = global.MVStudioTitle, simulation = global.MVStudioAutumnLeavesSimulation;
+    const floorSimulation = global.MVStudioAutumnFloorSimulation;
     const particles = global.MVStudioStageParticles;
-    if (!root?.isObject3D || !particles || !title || !simulation || !checked(source, title)) return null;
-    const candidates = source.cues.map(cue => ({cue, stream: simulation.create({...source, ...cue})})).filter(entry => entry.stream);
+    if (!root?.isObject3D || !particles || !title || !checked(source, title)) return null;
+    let redCue = 0, floorCue = 0;
+    const candidates = source.cues.flatMap(cue => {
+      if (cue.profile === "07") {
+        const order = ++floorCue;
+        if (!floorSimulation || !Array.isArray(cue.emitters) || cue.emitters.length !== 2 ||
+            !["alpha", "add"].every(role => checkedMaterial(cue.emitters.find(row => row?.role === role)?.material, role))) return [];
+        return cue.emitters.map(emitter => ({cue, stream: floorSimulation.create({...source, ...cue, ...emitter}),
+          anisotropic: true, surface: emitter.material, name: `Native Aion floor leaves ${emitter.role} ${order}`}));
+      }
+      // Native PrefabControl has its own clone and clock for every clip,
+      // including adjacent clips that reuse the same red-leaf prefab.
+      const clip = cue.profile === "06" ? `06 ${++redCue}` : cue.profile;
+      return [{cue, stream: simulation?.create({...source, ...cue}), anisotropic: false,
+        surface: source.material, name: `Native Aion falling leaves ${clip}`}];
+    }).filter(entry => entry.stream);
     if (!candidates.length) return null;
     const borrowed = title.sharedMipTexture(source.texture, sharedAtlas);
     let texture;
@@ -85,14 +105,10 @@
     } catch {
       return null;
     }
-    let redCue = 0;
-    const entries = candidates.map(({cue, stream}) => {
-      // Native PrefabControl has its own clone and clock for every clip,
-      // including adjacent clips that reuse the same red-leaf prefab.
-      const clip = cue.profile === "06" ? `06 ${++redCue}` : cue.profile;
-      const packet = make(T, source, texture, cue, `Native Aion falling leaves ${clip}`);
+    const entries = candidates.map(({cue, stream, anisotropic, surface, name}) => {
+      const packet = make(T, source, texture, cue, name, surface);
       root.add(packet.mesh);
-      return {cue, stream, ...packet, frame: -1, fps: 0,
+      return {cue, stream, anisotropic, ...packet, frame: -1, fps: 0,
         emitterRotation: new T.Quaternion().fromArray(cue.rotation), center: new T.Vector3()};
     });
     const center = new T.Vector3(), scale = new T.Vector3(), eye = new T.Vector3();
@@ -101,18 +117,22 @@
     let tracks, disposed = false;
 
     function update(entry, frame, fps) {
-      const {mesh, stream, colors, emitterRotation} = entry;
+      const {mesh, stream, colors, emitterRotation, anisotropic} = entry;
       let count = 0;
       bounds.makeEmpty();
-      stream.sample(frame / fps, fps, (x, y, z, size, rx, ry, rz, r, g, b, a) => {
+      function write(x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, a) {
         center.set(x, y, z);
         bounds.expandByPoint(center);
-        if (!(size > 0) || !a || count >= capacity) return;
+        if (!(sx > 0 && sy > 0 && sz > 0) || !a || count >= capacity) return;
         // The native Mesh renderer rotates Z, X, then Y before applying the
         // emitter basis. Reflect the native angles along the imported mesh X.
         orientation.setFromEuler(spin.set(rx, -ry, -rz, "YXZ")).premultiply(emitterRotation);
-        mesh.setMatrixAt(count, matrix.compose(center, orientation, scale.setScalar(size)));
+        mesh.setMatrixAt(count, matrix.compose(center, orientation, scale.set(sx, sy, sz)));
         colors.setXYZW(count++, r, g, b, a);
+      }
+      if (anisotropic) stream.sample(frame / fps, fps, write);
+      else stream.sample(frame / fps, fps, (x, y, z, size, rx, ry, rz, r, g, b, a) => {
+        write(x, y, z, size, size, size, rx, ry, rz, r, g, b, a);
       });
       bounds.getCenter(entry.center);
       mesh.visible = count > 0;

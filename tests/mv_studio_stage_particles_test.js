@@ -8,6 +8,7 @@ require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-rain-simulation.js");
 require("../webtools/web/static/mv-studio-rain-floor-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-leaves-simulation.js");
+require("../webtools/web/static/mv-studio-autumn-floor-simulation.js");
 
 // The loader stands in for the browser's PNG decoder. It gives the same
 // per-level image sizes so the controller can build the authored mip chain.
@@ -459,7 +460,55 @@ function testAionAutumnLeaves() {
     .6866532564163208, 2.9302151203155518, 17.458295822143555, 21.145315170288086, 255, 143, 157, 178]);
 }
 
+function testAionAutumnFloor() {
+  const source = {
+    profile: "07", position: [0, Math.fround(.06), 0], rotation: [0, 0, 0, 1],
+    alphaKeys: [[0, 0], [6554, 1], [58982, 1], [65535, 0]],
+    startColor: {
+      rgb: [[0, 1, .8994349241256714, .4292452931404114], [29141, 1, 1, 1],
+        [65535, 1, .4575471878051758, .5265886187553406]],
+      alpha: [[0, 1], [65535, 1]],
+    },
+  };
+  const create = globalThis.MVStudioAutumnFloorSimulation.create;
+  const alphaRow = {...source, role: "alpha", rate: 7, seed: 3279275062};
+  const addRow = {...source, role: "add", rate: 3, seed: 363848346};
+  assert.equal(create({...alphaRow, seed: addRow.seed}), null);
+  assert.equal(create({...addRow, alphaKeys: {length: 4}}), null);
+  const alpha = create(alphaRow), add = create(addRow);
+  const sample = (stream, frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  const prewarmAlpha = sample(alpha, 0, 60), prewarmAdd = sample(add, 0, 60);
+  assert.equal(prewarmAlpha.length, 43);
+  assert.deepEqual(prewarmAlpha[0], [6.447775840759277, .060000184923410416, 3.0984199047088623,
+    .7857333421707153, 1, .34067052602767944, 1.570796251296997, 0, .6694448590278625, 255, 250, 250, 255]);
+  assert.equal(prewarmAdd.length, 13);
+  assert.deepEqual(prewarmAdd[0], [.1774028241634369, .060000237077474594, 4.017148971557617,
+    .5201356410980225, .800000011920929, .38656529784202576, 1.570796251296997, 0, -1.8080730438232422, 255, 132, 148, 2]);
+  assert.equal(sample(alpha, 1, 30)[33][8], .016444509848952293);
+  assert.equal(sample(alpha, 2, 60)[33][8], .016444507986307144);
+  assert.equal(sample(alpha, 599, 60).length, 32);
+  const wrap = sample(alpha, 600, 60);
+  assert.equal(wrap.length, 43);
+  assert.deepEqual(wrap[42], [-7.01458740234375, .06000002101063728, .35168397426605225,
+    .8115791082382202, 1, .49814334511756897, 1.570796251296997, 0, -7.37999528155342e-9, 255, 255, 254, 0]);
+  assert.equal(sample(alpha, 601, 60)[42][12], 10);
+  assert.equal(sample(add, 600, 60).length, 12);
+  const last = sample(alpha, 1275, 60);
+  assert.equal(last.length, 41);
+  assert.deepEqual(last[18], [8.250864028930664, .06000002846121788, .5184648633003235,
+    .6193529963493347, 1, .38605621457099915, 1.570796251296997, 0, -.34349626302719116, 255, 141, 156, 255]);
+  assert.deepEqual(sample(alpha, 0, 30), prewarmAlpha);
+  assert.deepEqual(sample(create(alphaRow), 0, 60), prewarmAlpha);
+  assert.deepEqual(sample(create(addRow), 0, 30), prewarmAdd);
+  assert.deepEqual(sample(alpha, 1275, 60), last);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
+testAionAutumnFloor();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

@@ -449,6 +449,50 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened["stageLeaves"], expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_leaves_restore_surviving_floor_emitters_only_with_compatible_assets(self):
+        from webtools.core import mv_studio_leaves
+
+        project = mv_studio._blank("Edited floor leaves")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        cue = {"profile": "06", "trackId": "red", "eventId": "red:0", "seed": 99}
+        events = [{"id": f"floor:{i}", "label": f"Edited floor {i}", "start": 61 + 9 * i, "duration": 6,
+                   "values": {"clipIn": 4 + i, "offset": {"x": 1, "y": 0, "z": -1}}} for i in range(3)]
+        track = {"id": "floor", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": mv_studio_leaves.FLOOR_TRACK}
+        floor = [{"profile": "07", "trackId": track["id"], "eventId": event["id"],
+                  "emitters": [{"role": "alpha", "seed": 3279275062}, {"role": "add", "seed": 363848346}]}
+                 for event in events]
+        assets = {"schema": 1, "geometry": {"positions": []}, "texture": [{"png": "authentic"}],
+                  "alphaKeys": [[0, 0]], "material": {"blend": "alpha"}}
+        saved = {**assets, "cues": [cue]}
+        original = {**assets, "cues": [{**cue, "seed": 670425550}, *floor]}
+        restored = {**saved, "cues": [cue, *floor]}
+        custom = {**saved, "texture": [{"png": "custom"}]}
+        incompatible_mesh = {**saved, "geometry": {"positions": [[1, 2, 3]]}}
+        for previous, kept, source, expected, reparses in (
+                (saved, events, self.original, restored, True),
+                (saved, events[1:], self.original, {**saved, "cues": [cue, *floor[1:]]}, True),
+                (saved, [], self.original, saved, False),
+                (saved, events, None, saved, False),
+                (custom, events, self.original, custom, True),
+                (incompatible_mesh, events, self.original, incompatible_mesh, True),
+                (restored, events, self.original, restored, False)):
+            with self.subTest(previous=previous, events=kept, source=source):
+                tracks = [{**track, "events": kept}]
+                document = {**project, "tracks": tracks, "stageLeaves": previous}
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLeaves": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited floor leaves", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_leaves=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageLeaves"], expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}
