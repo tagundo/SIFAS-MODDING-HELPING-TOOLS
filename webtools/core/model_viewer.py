@@ -1307,6 +1307,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 fields["texture"] = [materials.embed_texture(png, f"tex_par_gen_17 mip {level}")
                                      for level, png in enumerate(mips)]
                 glb.doc["scenes"][0].setdefault("extras", {})["mvStageLaserCores"] = fields
+        bound_cores = mv_studio_stage_laser_cores.read_bound(scene, stage_nodes, materials, deadline)
+        if bound_cores:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvStageResidentCores"] = bound_cores
     if len(shaft_sources) == 1:
         retained = mv_studio_shaft.export(scene, glb, materials, shaft_sources[0], deadline)
         if retained:
@@ -1338,15 +1341,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         stage_motion = None
         overlay = False
         renderer_type = renderer.type.name
+        material_refs = tree.get("m_Materials", ())
         if stage_nodes is not None and renderer_type in {"MeshRenderer", "SkinnedMeshRenderer"}:
             binding = stage_nodes.binding(game_object)
             overlay = binding is not None and mv_studio_stage_overlay.layer(scene, game_object)
             if renderer_type == "MeshRenderer":
                 stage_motion = binding
-            refs = tree.get("m_Materials", ())
-            if animated_effect and binding and len(refs) == 1:
-                candidate = _ref(renderer, refs[0])
-                if renderer_type == "SkinnedMeshRenderer":
+            shared_material = material_refs and all(ref == material_refs[0] for ref in material_refs[1:])
+            if animated_effect and binding and (len(material_refs) == 1 or
+                    renderer_type == "SkinnedMeshRenderer" and not overlay and shared_material):
+                candidate = _ref(renderer, material_refs[0])
+                if renderer_type == "SkinnedMeshRenderer" and len(material_refs) == 1:
                     try:
                         stage_beam = mv_studio_stage_beam.export_material(
                             scene, renderer, game_object, candidate, materials, deadline)
@@ -1355,7 +1360,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if stage_beam is None and (not overlay or renderer_type == "SkinnedMeshRenderer"):
                     if overlay or mv_studio_stage_overlay.world_layer(scene, game_object):
                         stage_transparent = mv_studio_stage_overlay.read_material(scene, candidate, world=not overlay)
-                    if stage_transparent is None and candidate is not None and not overlay and renderer_type == "SkinnedMeshRenderer":
+                    if (stage_transparent is None and candidate is not None and not overlay
+                            and renderer_type == "SkinnedMeshRenderer" and len(material_refs) == 1):
                         identity = _key(candidate)
                         if identity not in stage_metadata:
                             stage_metadata[identity] = mv_studio_stage_materials.read_material(
@@ -1455,8 +1461,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
                 if not use_skin or not any(map(len, submeshes)):
                     break
+                merge_submeshes = (stage_transparent is not None and not overlay
+                                   and not stage_transparent.get("alphaBlend")
+                                   and len(submeshes) > 1 and len(material_refs) == len(submeshes))
                 if (uv is not None
-                        and (stage_beam is None and stage_transparent is None or len(submeshes) == 1)
+                        and (stage_beam is None and stage_transparent is None or len(submeshes) == 1 or merge_submeshes)
                         and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
                     if stage_transparent is not None:
                         try:
@@ -1466,6 +1475,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             pass
                     if stage_transparent is None or transparent_skin_material is not None:
                         stage_skin = stage_nodes.export_skinned(renderer, tree, game_object, raw, rigid=stage_beam is not None)
+                if stage_skin is not None and merge_submeshes:
+                    # These draw ranges share the same native material and
+                    # belong to one animated renderer property block.
+                    submeshes = [np.concatenate(submeshes)]
                 if stage_skin is not None or stage_beam is not None or not scene.active(game_object):
                     break
                 stage_motion = raw = stage_transparent = transparent_skin_material = None

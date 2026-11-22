@@ -188,6 +188,42 @@ class TimelineContractTests(unittest.TestCase):
             bindings[3]["attribute"] = texture_tint | (2 << 28)
             self.assertIsNone(stage.read(objects, mono, [overlay], time.monotonic() + 3))
 
+    def test_resident_particle_color_requires_exact_world_skin_and_complete_lanes(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        from zlib import crc32
+
+        def lane(path, attr, class_id, custom):
+            return {"path": path, "attribute": attr, "typeID": class_id, "customType": custom, "isPPtrCurve": 0,
+                    "script": {"m_FileID": 0, "m_PathID": 0}}
+
+        surface = [lane(27, (crc32(b"_TintColor") & 0x0fffffff) | (i << 28), 137, 22) for i in range(4)]
+        colors = [lane(57, crc32(f"InitialModule.startColor.maxColor.{axis}".encode()), 198, 27) for axis in "rgba"]
+        payload = {"genericBindings": []}
+        constants = {"data": []}
+        raw = {"m_ClipBindingConstant": payload, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": constants},
+        }}
+        reader = SimpleNamespace(read_typetree=lambda: raw)
+        for mode, values in (([0, 1, 2], [.5, .75, 1.25]), ([2, 0, 3, 1], [1.25, .5, .6, .75])):
+            payload["genericBindings"] = surface + [colors[i] for i in mode]
+            constants["data"] = [1, .5, .75, 0] + values
+            self.assertIsNone(stage._read_clip(reader, None, overlay=True))
+            declaration, cost = stage._read_clip(reader, None, world=True)
+            expected = [.5, .75, 1.25] + ([.6] if len(mode) == 4 else [])
+            self.assertEqual(declaration["particleStartColors"],
+                             [{"path": 57, "curves": [("constant", value) for value in expected]}])
+            self.assertEqual(cost, 8 + len(mode))
+            with patch.object(stage, "_MAX_SCALARS", cost - 1):
+                self.assertIsNone(stage._read_clip(reader, None, world=True))
+
+        constants["data"] = [1] * 7
+        for unsupported in (colors[:2] + colors[3:], colors[:2] + colors[:1],
+                            colors[:2] + [{**colors[2], "script": {"m_FileID": 1, "m_PathID": 4}}]):
+            payload["genericBindings"] = surface + unsupported
+            self.assertIsNone(stage._read_clip(reader, None, world=True))
+        payload["genericBindings"] = [{**item, "typeID": 23} for item in surface] + colors[:3]
+        self.assertIsNone(stage._read_clip(reader, None, world=True))
+
 
 @unittest.skipUnless((SAMPLES / "a-1205603-live_timeline.unity").is_file() and
                      (SAMPLES / "i-1205603-live_timeline.unity").is_file(), "Original game samples are optional")

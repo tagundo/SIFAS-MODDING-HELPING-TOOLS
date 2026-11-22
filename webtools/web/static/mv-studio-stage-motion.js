@@ -89,7 +89,7 @@
   }
 
   function apply(T, root) {
-    const groups = new Map();
+    const groups = new Map(), acceptedEvents = new Set();
     root.traverse((node) => {
       const data = node.userData.mvStageNode;
       if (typeof data?.active !== "boolean") return;
@@ -114,6 +114,7 @@
     }
 
     function bind(project) {
+      acceptedEvents.clear();
       for (const [binding, group] of groups) {
         for (const channel of group.channels.values()) if (channel.changed) restore(channel);
         group.channels.clear();
@@ -135,6 +136,14 @@
               !Number.isFinite(clip.duration) || clip.duration < 0) continue;
           const materialScope = mix.materialScope === undefined ? "overlay" : mix.materialScope;
           if (materialScope !== "overlay" && materialScope !== "world") continue;
+          const particleColors = clip.particleStartColors;
+          if (particleColors !== undefined) {
+            if (materialScope !== "world" || !Array.isArray(particleColors) || !particleColors.length ||
+                !particleColors.every(row => group.nodes.get(row?.path) &&
+                  Array.isArray(row.curves) && [3, 4].includes(row.curves.length) && row.curves.every(validCurve) &&
+                  global.MVStudioStageLaserCores?.hasEmitter?.(group.nodes.get(row.path))) ||
+                new Set(particleColors.map(row => row.path)).size !== particleColors.length) continue;
+          }
           const samples = [], targets = [];
           const requiresMaterial = clip.requiresOverlayMaterial === true || materialScope === "world";
           for (const source of clip.channels) {
@@ -163,6 +172,7 @@
             samples.push({ source, target: group.channels.get(id), values: new Array(source.curves.length) });
           }
           group.events.push({ track, event, clip, mix, samples });
+          acceptedEvents.add(event);
         }
       }
     }
@@ -239,7 +249,7 @@
       }
     }
 
-    return { update };
+    return { update, accepts: event => acceptedEvents.has(event) };
   }
 
   global.MVStudioStageMotion = { apply, clipTime, evaluate, nativeActive, sampleTime, validCurve, weightedEvent };

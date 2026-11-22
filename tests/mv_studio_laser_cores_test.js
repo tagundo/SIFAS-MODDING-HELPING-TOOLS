@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-lighting.js");
+require("../webtools/web/static/mv-studio-stage-material.js");
+require("../webtools/web/static/mv-studio-stage-overlay.js");
 require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-display-lights.js");
 require("../webtools/web/static/mv-studio-laser-core-simulation.js");
@@ -140,5 +142,96 @@ async function verifyController() {
   assert.equal(stage.children.some(node => node.isMesh), false);
 }
 
+async function verifyResidentMixedController() {
+  const stage = new T.Group();
+  const binding = "/EntryPoint/Live/Stages/MainStage/Effect/NativeResident";
+  function node(parent, path, active = true) {
+    const group = new T.Group();
+    group.userData.mvStageNode = {binding, path, active};
+    parent.add(group);
+    return group;
+  }
+  const group = node(stage, 0), arm = node(group, 12), animatedCore = node(arm, 11, false);
+  const stableCore = node(group, 22), beamOwner = node(group, 32);
+  const geometry = new T.PlaneGeometry(), original = new T.MeshBasicMaterial();
+  geometry.userData.mvStageOverlay = {world: true, depthTest: true, queue: 3010,
+    texture: null, tint: [1, 1, 1, .25], uv: [1, 1, 0, 0], vertexColor: false};
+  const beam = new T.Mesh(geometry, original);
+  beamOwner.add(beam);
+  const mainSampler = {mipmaps: Array.from({length: 9}, (_, index) => index + 1), filterMode: 1, anisotropy: 1};
+  const emitter = path => ({path, color: [1, .25, .5, .6], size: f32(.8), seed: seed >>> 0,
+    burstPeriod: period, lifetime, rollRange, uv: [.125, .125, .625, .125],
+    maxViewportWidth: .5, capacity, alphaKeys, texture: 0, mainSampler});
+  stage.userData.mvStageResidentCores = [{binding, emitters: [emitter(11), emitter(22)]}];
+  const maps = Array.from({length: 10}, (_, level) => new T.Texture({width: 512 >> level, height: 512 >> level}));
+  const parser = {getDependency: (_, index) => Promise.resolve(maps[index])};
+  const overlay = await MVStudioStageOverlay.apply(T, stage, parser);
+  const motion = MVStudioStageMotion.apply(T, stage);
+  const controller = await MVStudioStageLaserCores.apply(T, stage, parser);
+  assert.ok(controller);
+  assert(MVStudioStageLaserCores.hasEmitter(animatedCore));
+  assert(MVStudioStageLaserCores.hasEmitter(stableCore));
+  const animated = stage.getObjectByName("Native resident stage core 11");
+  const stable = stage.getObjectByName("Native resident stage core 22");
+  assert.equal(animated.renderOrder, 3010);
+  assert.equal(animated.material.uniforms.uTexture.value.mipmaps.length, 10);
+  assert.deepEqual(animated.material.uniforms.uAtlas.value.toArray(), [.125, .125, .625, .125]);
+
+  const scalar = value => ["constant", value];
+  const step = ["cubic", [[0, [0, 0, 0, 1]], [f32(.04), [0, 0, 0, 0]]]];
+  const clip = {start: 0, duration: 1, sampleTimeF32: true, requiresOverlayMaterial: true,
+    channels: [
+      {kind: "visibility", path: 11, curves: [scalar(1)]},
+      {kind: "translation", path: 12, curves: [["linear", [[0, 0], [1, 6]]], scalar(0), scalar(0)]},
+      {kind: "overlayTint", path: 32, curves: [1, 1, 1, .75].map(scalar)},
+    ],
+    particleStartColors: [{path: 11, curves: [step, scalar(.25), scalar(.5)]}],
+  };
+  const event = {id: "cue", start: 0, duration: 1, values: {animation: "clip"}};
+  const project = {
+    tracks: [{id: "track", binding, nativeClass: "AnimationTrack", events: [event]}],
+    stageMotion: {mix: {cue: {materialScope: "world"}}, clips: {clip}, quality: {track: "stage_control"}},
+    quality: {values: {frame_rate_60fps: true}},
+  };
+  const sample = time => {
+    motion.update(time, project);
+    controller.update(time, project, motion);
+  };
+  const colors = mesh => Array.from(mesh.geometry.attributes.particleColor.array.subarray(0, mesh.geometry.instanceCount * 4));
+  sample(.1);
+  assert.equal(motion.accepts(event), true);
+  assert.equal(beam.material.uniforms.uTint.value.w, .75);
+  assert.deepEqual(colors(animated), [255,64,128,153, 0,64,128,153], "old and new birth colors coexist, preserving unbound alpha");
+  assert.deepEqual(colors(stable), [255,64,128,153, 255,64,128,153]);
+  assert.equal(animated.position.x, -f32(.1) * 6);
+  sample(1 / 60);
+  assert.deepEqual(colors(animated), [255,64,128,153], "a backwards seek reconstructs exact birth colors");
+
+  event.start = .5;
+  sample(.1);
+  assert.equal(animated.geometry.instanceCount, 0);
+  assert.equal(stable.geometry.instanceCount, 2, "signed default-active siblings play before a retimed cue");
+  event.start = 0;
+  project.quality.values.frame_rate_60fps = false;
+  sample(0);
+  assert.deepEqual(colors(animated), [255,64,128,153]);
+  project.quality.values.stage_control = false;
+  sample(.1);
+  assert.equal(stable.geometry.instanceCount, 0);
+  project.quality.values.stage_control = true;
+  project.stageMotion = {...project.stageMotion, clips: {clip: {...clip,
+    particleStartColors: [{path: 999, curves: clip.particleStartColors[0].curves}]}}};
+  sample(.1);
+  assert.equal(motion.accepts(event), false);
+  assert.equal(beam.material.uniforms.uTint.value.w, .25, "an unresolved particle target rejects the whole mixed event");
+  assert.equal(animated.geometry.instanceCount, 0);
+  assert.equal(stable.geometry.instanceCount, 0);
+  controller.dispose();
+  assert.equal(MVStudioStageLaserCores.hasEmitter(animatedCore), false);
+  assert.equal(stage.getObjectByName("Native resident stage core 11"), undefined);
+  overlay.dispose();
+  console.log("Resident stage cores update local pose and preserve birth colors through edited, atomically bound cues.");
+}
+
 verifyNative();
-verifyController().catch(error => { console.error(error); process.exitCode = 1; });
+verifyController().then(verifyResidentMixedController).catch(error => { console.error(error); process.exitCode = 1; });

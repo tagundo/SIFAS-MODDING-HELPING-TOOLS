@@ -161,7 +161,9 @@ def _android_image(texture, deadline, *, stage=False):
         image = Image.frombytes(mode, (width, height), bytes(data[:needed]), "raw", layout)
     elif stage_format:
         physical = (width, height)
-        if stage_format in ("pvrtc4", "pvrtc4a"):
+        if stage_format == "etc1":
+            physical = ((width + 3) // 4 * 4, (height + 3) // 4 * 4)
+        elif stage_format in ("pvrtc4", "pvrtc4a"):
             if width & (width - 1) or height & (height - 1):
                 raise ValueError("PVRTC stage textures must have power-of-two dimensions.")
             # The last authored levels retain PVRTC's two-block storage on

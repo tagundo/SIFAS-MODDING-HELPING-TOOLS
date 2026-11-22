@@ -1,4 +1,6 @@
-"""Read the resident Monster Girls laser core emitters and their original atlas."""
+"""Read resident stage core emitters and their authored particle profiles."""
+
+import math
 
 from . import decode, model_animation, model_viewer as viewer
 from . import mv_studio_stage_motion as motion, mv_studio_stage_title as title
@@ -25,10 +27,10 @@ _ANIMATED_COLOR = tuple(motion._LASER_CORE_CONSTANTS[model_animation.path_hash(
     f"InitialModule.startColor.maxColor.{component}")] for component in "rgba")
 
 
-def _components(scene, game):
+def _components(scene, game, *, allow_inactive=False):
     tree = scene.tree(game)
     refs = tree["m_Component"]
-    if not scene.active(game) or tree["m_Layer"] != 1 or len(refs) != len(_COMPONENTS):
+    if (not allow_inactive and not scene.active(game)) or tree["m_Layer"] != 1 or len(refs) != len(_COMPONENTS):
         return None
     parts = {}
     for reference in refs:
@@ -44,7 +46,7 @@ def _components(scene, game):
     return parts
 
 
-def _material(scene, renderer, fields):
+def _material(scene, renderer, fields, *, authored=False):
     if (not fields["m_Enabled"] or not fields["m_AllowRoll"] or fields["m_RenderMode"] != 0
             or fields["m_RenderAlignment"] != 2 or fields["m_MaxParticleSize"] != .5
             or fields["m_LengthScale"] != 2 or fields["m_NormalDirection"] != 1
@@ -62,7 +64,10 @@ def _material(scene, renderer, fields):
         return None
     # Unity reserves the second slot for trails. TrailModule is disabled here.
     refs = fields["m_Materials"]
-    if refs != [{"m_FileID": 0, "m_PathID": _MATERIAL_ID}] * 2:
+    if authored:
+        if len(refs) != 2 or refs[0] != refs[1] or refs[0]["m_FileID"] != 0:
+            return None
+    elif refs != [{"m_FileID": 0, "m_PathID": _MATERIAL_ID}] * 2:
         return None
     material = viewer._ref(renderer, refs[0])
     return material if material is not None and material.type.name == "Material" else None
@@ -128,7 +133,7 @@ def _velocity_is_zero(velocity):
                for axis in "xyz")
 
 
-def _profile(system, group, side):
+def _profile(system, group=None, side=None):
     if (_enabled(system) != _MODULES or not system["playOnAwake"] or not system["looping"]
             or not system["useRigidbodyForVelocity"] or system["randomSeed"] != _SEED
             or system["lengthInSec"] != 200 or system["simulationSpeed"] != 1 or system["scalingMode"] != 1
@@ -144,10 +149,15 @@ def _profile(system, group, side):
     roll = _constant_range(initial["startRotation"], 0, 7)
     color = initial["startColor"]
     rgba = [color["maxColor"][axis] for axis in "rgba"]
-    expected_color = [.4729999899864197, *_BASE_COLOR[1:]] if (group, side) == (2, "L") else _BASE_COLOR
-    if (color["minMaxState"] != 0 or rgba != expected_color
-            or (lifetime, size, roll, initial["maxNumParticles"]) != (
-                .25, _float32(.8 if group == 1 else .6), (0, _float32(6.283185)), 20)
+    if group is None:
+        if size not in {_float32(.6), _float32(.8)} or not all(math.isfinite(value) and 0 <= value <= 1 for value in rgba):
+            return None
+    else:
+        expected_color = [.4729999899864197, *_BASE_COLOR[1:]] if (group, side) == (2, "L") else _BASE_COLOR
+        if rgba != expected_color or size != _float32(.8 if group == 1 else .6):
+            return None
+    if (color["minMaxState"] != 0
+            or (lifetime, roll, initial["maxNumParticles"]) != (.25, (0, _float32(6.283185)), 20)
             or any(initial[name] for name in ("size3D", "rotation3D", "randomizeRotationDirection"))
             or any(_constant(initial[name]) != 0 for name in ("gravityModifier", "startSpeed"))):
         return None
@@ -157,25 +167,28 @@ def _profile(system, group, side):
             or _constant(emission["rateOverTime"]) != 0 or _constant(emission["rateOverDistance"]) != 0):
         return None
     burst = bursts[0]
-    if ((burst["time"], burst["cycleCount"], burst["probability"], burst["repeatInterval"]) != (0, 0, 1, _float32(.08))
-            or _constant(burst["countCurve"]) != 1):
+    periods = {_float32(.08), _float32(.05)} if group is None else {_float32(.08)}
+    if ((burst["time"], burst["cycleCount"], burst["probability"]) != (0, 0, 1)
+            or burst["repeatInterval"] not in periods or _constant(burst["countCurve"]) != 1):
         return None
     sheet = system["UVModule"]
+    tile = _constant(sheet["startFrame"])
     if ((sheet["tilesX"], sheet["tilesY"], sheet["animationType"], sheet["rowIndex"], sheet["cycles"]) != (8, 8, 1, 1, 1)
             or any(sheet[name] for name in ("mode", "timeMode", "randomRow", "flipU", "flipV"))
             or not (sheet["uvChannelMask"] & 1)
-            or _constant(sheet["frameOverTime"]) != 0 or _constant(sheet["startFrame"]) != .75):
+            or _constant(sheet["frameOverTime"]) != 0
+            or tile not in ({.625, .75} if group is None else {.75})):
         return None
     gradient = _rgba8(initial, system["ColorModule"])
     keys = gradient["rgba8"]["keys"] if gradient is not None else None
     alpha_keys = [[_float32(stamp / 65535), alpha] for stamp, alpha in ((0, 0), (655, 255), (64880, 255), (65535, 0))]
     if keys != [[time, 255, 255, 255, alpha] for time, alpha in alpha_keys]:
         return None
-    # Single Row, row 1. Native frame .75 selects column 6 of 8.
+    # Single Row, row 1. The authored fraction selects a column of 8.
     return rgba, size, {
         "seed": system["randomSeed"] & 0xFFFFFFFF, "burstPeriod": burst["repeatInterval"],
         "lifetime": lifetime, "rollRange": list(roll), "alphaKeys": alpha_keys,
-        "uv": [.125, .125, .75, .125], "maxViewportWidth": .5, "capacity": initial["maxNumParticles"],
+        "uv": [.125, .125, tile, .125], "maxViewportWidth": .5, "capacity": initial["maxNumParticles"],
     }
 
 
@@ -238,3 +251,61 @@ def read(scene, stage_nodes, deadline):
         return None
     return {"binding": motion._LASER_BINDING, "trackId": _TRACK_ID, "eventId": _TRACK_ID + ":0",
             "emitters": emitters, **common}, mips
+
+
+def read_bound(scene, stage_nodes, materials, deadline):
+    """Retain supported local emitters beneath authored stage Animator bindings."""
+    from . import mv_studio_stage_overlay as surface
+    from .mv_studio_stage_materials import collect_texture_sampler
+
+    groups = {}
+    for key in stage_nodes.paths:
+        viewer._remaining(deadline)
+        transform = scene.transforms[key]
+        game = viewer._ref(transform, scene.tree(transform)["m_GameObject"])
+        if game is None:
+            continue
+        binding = stage_nodes.binding(game)
+        if binding is None or binding[0] == motion._LASER_BINDING:
+            continue
+        try:
+            parts = _components(scene, game, allow_inactive=True)
+            if parts is None:
+                continue
+            _, pose = parts["Transform"]
+            if pose["m_Children"] or pose["m_LocalRotation"] != _ROTATION or pose["m_LocalScale"] != _ONE:
+                continue
+            profile = _profile(parts["ParticleSystem"][1])
+            material = _material(scene, *parts["ParticleSystemRenderer"], authored=True)
+            paint = surface.read_material(scene, material, world=True)
+            if (profile is None or paint is None or paint.get("alphaBlend") or paint["texture"] is None
+                    or not paint["vertexColor"] or paint["cull"] != 0 or paint["queue"] != 3010
+                    or paint["tint"] != [1, 1, 1, 1] or paint["uv"] != [1, 1, 0, 0]):
+                continue
+            color, size, fields = profile
+            group = groups.setdefault(binding[0], {})
+            if binding[1] in group:
+                group[binding[1]] = None
+                continue
+            group[binding[1]] = game, paint["texture"], {"path": binding[1], "color": color, "size": size, **fields}
+        except title._UNSUPPORTED:
+            continue
+    result = []
+    for binding, group in groups.items():
+        if len(result) >= 8:
+            break
+        if not 0 < len(group) <= 16 or None in group.values():
+            continue
+        emitters = []
+        for game, texture, fields in group.values():
+            try:
+                index = materials.texture(texture)
+            except title._UNSUPPORTED:
+                continue
+            if stage_nodes.retain(game):
+                row = {**fields, "texture": index}
+                collect_texture_sampler(materials, texture, row, "mainSampler")
+                emitters.append(row)
+        if emitters:
+            result.append({"binding": binding, "emitters": emitters})
+    return result

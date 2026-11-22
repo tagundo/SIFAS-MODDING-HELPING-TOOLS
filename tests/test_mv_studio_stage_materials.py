@@ -184,12 +184,15 @@ class StageTextureSamplerTests(unittest.TestCase):
         self.assertEqual(len(doc["textures"]), 5)
         self.assertEqual(result[1], {"textures": 5})
 
-    def test_stage_pvrtc_levels_keep_padded_blocks_and_crop_before_flip(self):
+    def test_stage_block_mips_keep_padded_blocks_and_crop_before_flip(self):
         deadline = time.monotonic() + 5
         source = self.source()
-        for format_id, mode in ((32, "pvrtc4"), (33, "pvrtc4a")):
+        for format_id, mode, sizes, extent in (
+                (32, "pvrtc4", (32, 32, 32, 32), 8),
+                (33, "pvrtc4a", (32, 32, 32, 32), 8),
+                (34, "etc1", (16, 8, 8, 8), 4)):
             with self.subTest(format=format_id):
-                data = bytes(64) + b"".join(bytes([level]) * 32 for level in range(1, 5))
+                data = bytes(64) + b"".join(bytes([level]) * size for level, size in enumerate(sizes, 1))
                 texture = SimpleNamespace(m_Width=16, m_Height=8, m_MipCount=5, m_Name="stage",
                                           m_TextureFormat=format_id, m_TextureSettings=None,
                                           get_image_data=lambda: data)
@@ -199,13 +202,13 @@ class StageTextureSamplerTests(unittest.TestCase):
                 self.assertEqual([(m.read().m_Width, m.read().m_Height) for m in levels],
                                  [(8, 4), (4, 2), (2, 1), (1, 1)])
                 self.assertEqual([m.read().image_data for m in levels],
-                                 [bytes([level]) * 32 for level in range(1, 5)])
+                                 [bytes([level]) * size for level, size in enumerate(sizes, 1)])
 
                 def block_image(format_name, payload, width, height, limit):
                     self.assertEqual((format_name, payload, width, height, limit),
-                                     (mode, bytes([2]) * 32, 8, 8, deadline))
-                    return Image.frombytes("RGBA", (8, 8),
-                                           bytes(ch for y in range(8) for x in range(8) for ch in (x, y, 0, 100)))
+                                     (mode, bytes([2]) * sizes[1], extent, extent, deadline))
+                    return Image.frombytes("RGBA", (extent, extent),
+                                           bytes(ch for y in range(extent) for x in range(extent) for ch in (x, y, 0, 100)))
 
                 with patch.object(decode, "_stage_block_image", side_effect=block_image):
                     with decode._android_image(levels[1].read(), deadline, stage=True) as image:

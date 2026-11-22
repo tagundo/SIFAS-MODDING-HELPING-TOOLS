@@ -31,6 +31,8 @@ _LASER_CORE_PATHS = {animation.path_hash(f"joint_all/Joint_root_{root:02}/{side}
                      for root in (1, 2) for side in ("L", "R")}
 _LASER_CORE_CONSTANTS = {0xF31EAC3F: 0.6000000238418579, 0x9EC348D4: 0.800000011920929,
                          0xEEA9BC5B: 1.0, 0x77A0EDE1: 0.6000000238418579}
+_PARTICLE_START_COLOR = {animation.path_hash(f"InitialModule.startColor.maxColor.{axis}"): lane
+                         for lane, axis in enumerate("rgba")}
 
 
 def _declared(objects, owner, tree, name, scripts):
@@ -99,7 +101,42 @@ def _laser_tint(tree, bindings, deadline):
     return {"path": _LASER_BEAM, "kind": "overlayTint", "curves": [components[lane] for lane in range(4)]}
 
 
-def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
+def _particle_start_colors(bindings, packed):
+    """Decode the original Color-mode startColor maximum lanes by target path."""
+    targets, count, offset = {}, 0, 0
+    for binding in bindings:
+        width = animation._width(binding)
+        if (binding.get("typeID"), binding.get("customType")) == (198, 27):
+            path = binding.get("path")
+            lane = _PARTICLE_START_COLOR.get(binding.get("attribute"))
+            if (type(path) is not int or not 0 < path <= 0xffffffff or lane is None or width != 1
+                    or binding.get("isPPtrCurve") != 0 or binding.get("script") != {"m_FileID": 0, "m_PathID": 0}):
+                return [], 0
+            curves = targets.setdefault(path, {})
+            if lane in curves:
+                return [], 0
+            curves[lane] = packed[offset]
+            count += 1
+        offset += width
+    if any(set(curves) not in ({0, 1, 2}, {0, 1, 2, 3}) for curves in targets.values()):
+        return [], 0
+    return [{"path": path, "curves": [curves[lane] for lane in range(len(curves))]}
+            for path, curves in targets.items()], count
+
+
+def _curve_cost(curves):
+    cost = 1  # Native relative path hash.
+    for mode, values in curves:
+        if mode == "constant":
+            cost += 1
+        elif mode in {"linear", "cubic"} and values:
+            cost += len(values) * (5 if mode == "cubic" else 2)
+        else:
+            return None
+    return cost
+
+
+def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=False):
     tree = reader.read_typetree()
     if any(tree.get(field) for field in ("m_Legacy", "m_Compressed", "m_HasGenericRootTransform", "m_HasMotionFloatCurves",
                                           "m_Events", "m_PPtrCurves", "m_CompressedRotationCurves")):
@@ -112,12 +149,20 @@ def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
                             for item in tree.get("m_FloatCurves", [])):
         return None
     data = animation.decode_clip(tree, deadline)
-    if overlay and data["unsupported"] and all(
-            (row["typeID"], row["customType"]) in {(23, 22), (137, 22)}
-            for row in data.get("unsupportedKinds", ())):
+    particles = []
+    supported_packed = {(23, 22), (137, 22)}
+    if world:
+        supported_packed.add((198, 27))
+    if (overlay or world) and data["unsupported"] and all(
+            (row["typeID"], row["customType"]) in supported_packed for row in data.get("unsupportedKinds", ())):
         from .mv_studio_stage_overlay import material_channels
-        channels, described = material_channels(bindings, animation._packed_curves(tree, deadline), animation._width)
-        if described == data["unsupported"]:
+        packed = animation._packed_curves(tree, deadline)
+        channels, described = material_channels(bindings, packed, animation._width)
+        particle_described = 0
+        if world:
+            particles, particle_described = _particle_start_colors(bindings, packed)
+        if (described + particle_described == data["unsupported"]
+                and (not particles or any(channel.get("rendererClass") == 137 for channel in channels))):
             data["tracks"].extend(channels)
             data["unsupported"] = 0
     tint = None
@@ -145,16 +190,10 @@ def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
         if key in claimed:
             return None
         claimed.add(key)
-        cost += 1  # Native relative path hash.
-        for mode, values in curves:
-            if mode == "constant":
-                cost += 1
-            elif mode in {"linear", "cubic"} and values:
-                cost += len(values) * (5 if mode == "cubic" else 2)
-            else:
-                return None
-        if cost > _MAX_SCALARS:
+        channel_cost = _curve_cost(curves)
+        if channel_cost is None or cost + channel_cost > _MAX_SCALARS:
             return None
+        cost += channel_cost
         channel = {"path": path, "kind": kind, "curves": curves}
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
@@ -162,6 +201,13 @@ def _read_clip(reader, deadline, *, overlay=False, resident_laser=False):
             channel["rendererClass"] = 137
         channels.append(channel)
     clip = {"start": data["start"], "duration": data["duration"], "loop": data["loop"], "channels": channels}
+    if particles:
+        for target in particles:
+            target_cost = _curve_cost(target["curves"])
+            if target_cost is None or cost + target_cost > _MAX_SCALARS:
+                return None
+            cost += target_cost
+        clip["particleStartColors"] = particles
     if tint is not None:
         clip["sampleTimeF32"] = True
     return clip, cost
@@ -287,12 +333,15 @@ def read(objects, mono, tracks, deadline):
             resident_laser = False
             if identity in clips:
                 declaration, cost = clips[identity], 0
+                if declaration.get("particleStartColors") and material_scope != "world":
+                    continue
             else:
                 resident_laser = laser_track and key[1] == _LASER_CLIP and not any(
                     other is not event and other["values"].get("animation") == identity
                     for row in tracks for other in row["events"])
                 try:
-                    clip = _read_clip(reader, deadline, overlay=material_scope is not None, resident_laser=resident_laser)
+                    clip = _read_clip(reader, deadline, overlay=material_scope == "overlay",
+                                      world=material_scope == "world" and not resident_laser, resident_laser=resident_laser)
                 except (KeyError, TypeError, ValueError, IndexError, OverflowError, struct.error):
                     clip = None
                 if clip is None or clip[1] > remaining:
