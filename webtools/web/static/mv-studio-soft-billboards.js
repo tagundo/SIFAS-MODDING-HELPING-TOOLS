@@ -200,7 +200,7 @@
     root.traverse(node => sampler.retainOriginalMaterial(node.material));
     for (const {fields} of candidates) sampler.reserveBase(fields.texture);
 
-    const ready = [];
+    const ready = [], sortEntries = [];
     const sharedUniforms = {
       _MusicTime: {value: 0}, uOpaqueDepth: {value: null}, uHasOpaqueDepth: {value: false},
       uDepthRange: {value: new T.Vector2(0.1, 1000)}, uOrthographic: {value: false},
@@ -217,6 +217,7 @@
         node.frustumCulled = frustumCulled;
         material.dispose();
       }
+      sortEntries.length = 0;
       sampler.dispose();
     }
     try {
@@ -252,6 +253,9 @@
         node.renderOrder = fields.queue;
         node.frustumCulled = false;
         owners.set(owner, {uniforms, scalars});
+        if (vector(fields.sortCenter, 3)) sortEntries.push({
+          node, anchor: node, center: new T.Vector3().fromArray(fields.sortCenter), queue: fields.queue,
+        });
       }
     } catch (error) {
       dispose();
@@ -278,6 +282,7 @@
     }
     return {
       update, setDepth, dispose,
+      sortEntries: () => sortEntries,
       hasVisible: () => !disposed && ready.some(({node, material}) => {
         if (!material.visible) return false;
         for (let current = node; current; current = current.parent) if (!current.visible) return false;

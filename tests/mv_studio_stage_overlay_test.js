@@ -367,7 +367,7 @@ async function testWorldMaterialScope() {
   console.log("Native transparent world draws use authored depth and keep isolated layer-20 ownership.");
 }
 
-async function testTransparentBoundsOrder() {
+async function testTransparentBoundsRecords() {
   const root = new T.Group();
   const binding = "/EntryPoint/Live/Stages/MainStage/Effect/Curtain";
   const fields = {world: true, depthTest: true, alphaBlend: true, stencilRef: 2, queue: 2910,
@@ -402,34 +402,20 @@ async function testTransparentBoundsOrder() {
   owner(3).add(invalid);
 
   const controller = await MVStudioStageOverlay.apply(T, root);
-  const perspective = new T.PerspectiveCamera();
-  controller.sort(perspective);
-  assert.equal(skin.renderOrder, 2910, "the farther root-bone bounds precede the nearer static bounds");
-  assert.equal(plane.renderOrder, 2910.5, "the static mesh pivot would have placed it first");
-  assert.equal(invalid.material, invalidMaterial);
-
-  perspective.position.z = -25;
-  controller.sort(perspective);
+  const entries = controller.sortEntries();
+  assert.equal(controller.sortEntries(), entries);
+  assert.deepEqual(entries, [
+    {node: plane, anchor: plane, center: new T.Vector3(0, 0, 19), queue: 2910},
+    {node: skin, anchor: joint, center: new T.Vector3(), queue: 2910},
+  ]);
   assert.equal(plane.renderOrder, 2910);
-  assert.equal(skin.renderOrder, 2910.5);
-
-  perspective.position.z = 0;
-  controller.sort(perspective);
   assert.equal(skin.renderOrder, 2910);
-  joint.position.z = -1;
-  controller.sort(perspective);
-  assert.equal(plane.renderOrder, 2910, "an equal sort key restores initial draw order");
-  joint.position.z = -16;
-  plane.position.x = 100;
-  controller.sort(perspective);
-  assert.equal(plane.renderOrder, 2910);
-  controller.sort(new T.OrthographicCamera());
-  assert.equal(skin.renderOrder, 2910, "orthographic sorting uses only camera-axis depth");
-  assert.equal(plane.renderOrder, 2910.5);
+  assert.equal(invalid.material, invalidMaterial);
   controller.dispose();
   assert.equal(plane.renderOrder, 17);
   assert.equal(skin.renderOrder, 0);
-  console.log("Native transparent readers are sorted per camera from authored renderer bounds.");
+  assert.deepEqual(entries, []);
+  console.log("Native transparent readers supply stable mesh or root-joint bounds in their authored queue.");
 }
 
 async function testWorldMatcap() {
@@ -537,7 +523,7 @@ async function testWorldAdditiveDepthWrites() {
     root.add(owner);
     return {mesh, original};
   }
-  const floor = add(1, {depthWrite: true}), legacy = add(2, {});
+  const floor = add(1, {depthWrite: true, sortCenter: [.25, .5, .75]}), legacy = add(2, {sortCenter: [.5, 0]});
   const invalid = [
     add(3, {depthWrite: true, world: false}),
     add(4, {depthWrite: true, alphaBlend: true, stencilRef: 2, sortCenter: [0, 0, 0]}),
@@ -555,6 +541,9 @@ async function testWorldAdditiveDepthWrites() {
   assert.equal(floor.mesh.material.stencilWrite, false);
   assert.equal(floor.mesh.renderOrder, 3000);
   assert.equal(legacy.mesh.material.depthWrite, false);
+  assert.deepEqual(panel.sortEntries(), [
+    {node: floor.mesh, anchor: floor.mesh, center: new T.Vector3(.25, .5, .75), queue: 3000},
+  ]);
   for (const {mesh, original} of invalid) assert.equal(mesh.material, original);
   assert.equal(panel.hasDepthTest(), false);
   panel.dispose();
@@ -563,7 +552,7 @@ async function testWorldAdditiveDepthWrites() {
 }
 
 run().then(testRequiredMaterial).then(testSkinnedOverlayMaterial).then(testWorldMaterialScope)
-  .then(testTransparentBoundsOrder).then(testWorldMatcap).then(testWorldAdditiveDepthWrites).catch(error => {
+  .then(testTransparentBoundsRecords).then(testWorldMatcap).then(testWorldAdditiveDepthWrites).catch(error => {
     console.error(error);
     process.exitCode = 1;
   });

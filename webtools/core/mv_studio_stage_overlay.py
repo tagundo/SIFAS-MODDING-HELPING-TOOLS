@@ -203,7 +203,7 @@ def read_material(scene, original, *, world=False):
     return fields
 
 
-def _sort_bounds(tree, mesh, skinned):
+def _sort_bounds(tree, mesh, skinned=False, *, builtin_plane=False):
     if tree is None or any(tree.get(field, 0) for field in
                            ("m_RendererPriority", "m_SortingLayerID", "m_SortingLayer", "m_SortingOrder")):
         return None
@@ -217,6 +217,9 @@ def _sort_bounds(tree, mesh, skinned):
         fields["sortJoint"] = joints.index(root)
         center = tree.get("m_AABB", {}).get("m_Center", {})
         values = [center.get(axis) for axis in "xyz"]
+    elif builtin_plane:
+        # Unity's built-in Plane (10209) is centered on its local origin.
+        values = [0., 0., 0.]
     else:
         center = getattr(getattr(mesh, "m_LocalAABB", None), "m_Center", None)
         values = [getattr(center, axis, None) for axis in "xyz"]
@@ -226,14 +229,15 @@ def _sort_bounds(tree, mesh, skinned):
     return fields
 
 
-def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False):
+def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False, builtin_plane=False):
     if fields is None:
         return None
-    if fields.get("alphaBlend"):
-        bounds = _sort_bounds(renderer_tree, mesh, skinned)
-        if bounds is None:
+    if fields.get("alphaBlend") or fields.get("depthWrite") and not skinned:
+        bounds = _sort_bounds(renderer_tree, mesh, skinned, builtin_plane=builtin_plane)
+        if bounds is not None:
+            fields = {**fields, **bounds}
+        elif fields.get("alphaBlend"):
             return None
-        fields = {**fields, **bounds}
     texture = fields["texture"]
     return {**fields, "texture": materials.texture(texture) if texture is not None else None}
 

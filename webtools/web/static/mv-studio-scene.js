@@ -314,6 +314,7 @@
     const post = global.MVStudioPost?.create(T, renderer);
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
+    const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
 
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
@@ -383,7 +384,7 @@
       if (!disposed && visible && mount.clientWidth && mount.clientHeight) {
         if (preparation?.shown) {
           prepareSoftDepth(preparation.scene, stageCamera, preparation.records, preparation.preview.quality?.mode);
-          renderer.render(preparation.scene, stageCamera);
+          drawWorld(preparation.scene, stageCamera, preparation.records);
           return;
         }
         if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
@@ -414,6 +415,11 @@
       // The live camera requests a separate opaque depth texture in the three full 3D modes.
       const depth = (qualityMode ?? 30) <= 30 ? cameraDepth?.capture(source, camera) : null;
       for (const {stageSoftBillboards} of visibleEffects) stageSoftBillboards.setDepth(depth, camera);
+    }
+
+    function drawWorld(source, camera, sceneRecords) {
+      if (transparentSort) transparentSort.draw(source, camera, sceneRecords);
+      else renderer.render(source, camera);
     }
 
     function focusDistance(slot, part) {
@@ -477,7 +483,6 @@
       sortRibbonDisplay(camera);
       stageButterfly?.sort(camera);
       sortControlParticles(camera);
-      for (const record of records) record.stageOverlay?.sort?.(camera);
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
@@ -487,7 +492,7 @@
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
           projection[11] !== -1 || projection[15] !== 0 || !(projection[0] > 0.001 && projection[5] > 0.001) ||
           !records.some((record) => record.skinBounds?.length)) {
-        renderer.render(scene, camera);
+        drawWorld(scene, camera, records);
         return;
       }
       const autoUpdate = scene.autoUpdate;
@@ -501,7 +506,7 @@
             culled.push(entry.mesh);
           }
         }
-        renderer.render(scene, camera);
+        drawWorld(scene, camera, records);
       } finally {
         culled.forEach((mesh) => { mesh.visible = true; });
         culled.length = 0;

@@ -1426,7 +1426,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         auto_face = _source_path(renderer) in faces.auto_paths
         skin_material = (stage_opaque or stage_transparent) if renderer_type == "SkinnedMeshRenderer" else None
         native_skin = stage_beam is not None or skin_material is not None
-        raw = {} if rig is not None or native_skin or stage_transparent and stage_transparent.get("alphaBlend") else None
+        needs_sort_bounds = (
+            stage_motion is not None and not builtin_plane and (
+                stage_soft is not None or stage_transparent is not None
+                and (stage_transparent.get("alphaBlend") or stage_transparent.get("depthWrite"))
+            )
+        )
+        raw = {} if rig is not None or native_skin or needs_sort_bounds else None
         penlight = penlights.get(_key(game_object)) if renderer.type.name == "MeshRenderer" else None
         native_attributes = {} if penlight is not None else None
         display_binding = stage_displays.get(_key(renderer)) if stage_materials else None
@@ -1590,7 +1596,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 except ValueError:
                     pass
                 else:
-                    soft_billboard = {**stage_soft, "texture": texture_index}
+                    sort_bounds = mv_studio_stage_overlay._sort_bounds(tree, (raw or {}).get("mesh"))
+                    soft_billboard = {**stage_soft, "texture": texture_index, **(sort_bounds or {})}
                     mv_studio_stage_materials.collect_texture_sampler(materials, texture, soft_billboard, "mainSampler")
                     if "color" in stage_inputs:
                         attributes["_STAGE_COLOR"] = glb.attribute(stage_inputs["color"], "VEC4")
@@ -1678,7 +1685,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     try:
                         overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
                                             if overlay else mv_studio_stage_overlay.export_material(
-                                                materials, stage_transparent, renderer_tree=tree, mesh=(raw or {}).get("mesh")))
+                                                materials, stage_transparent, renderer_tree=tree,
+                                                mesh=(raw or {}).get("mesh"), builtin_plane=builtin_plane))
                     except ValueError:
                         pass
                 if overlay_material is not None:

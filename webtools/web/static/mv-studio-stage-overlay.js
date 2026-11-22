@@ -85,6 +85,17 @@
       (color.normalized === true || color.array instanceof Float32Array);
   }
 
+  function sortEntry(T, node, fields, skinned) {
+    const {queue, sortCenter, sortJoint} = fields;
+    if (fields.world !== true || !Number.isInteger(queue) || queue < 0 || queue > 5000 ||
+        !Array.isArray(sortCenter) || sortCenter.length !== 3 || !sortCenter.every(Number.isFinite)) return null;
+    const anchor = skinned
+      ? Number.isInteger(sortJoint) && sortJoint >= 0 && node.skeleton.bones[sortJoint]
+      : sortJoint === undefined && node;
+    if (!anchor || skinned && !anchor.isBone) return null;
+    return {node, anchor, center: new T.Vector3().fromArray(sortCenter), queue};
+  }
+
   async function apply(T, root, parser, options = {}) {
     const {active = () => true} = options;
     const meshes = [], owners = new Map(), textures = new Map();
@@ -106,19 +117,8 @@
           (scope !== "world" || !alphaBlend || !Number.isInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) return;
       if (skinned && (!(node.userData.mvStageSkin === true || node.parent?.userData.mvStageSkin === true) ||
           !node.skeleton || !node.geometry.getAttribute("skinIndex") || !node.geometry.getAttribute("skinWeight"))) return;
-      let sortAnchor = null;
-      if (alphaBlend) {
-        const {queue, sortCenter, sortJoint} = fields;
-        if (!Number.isInteger(queue) || queue < 0 || queue > 5000 ||
-            !Array.isArray(sortCenter) || sortCenter.length !== 3 || !sortCenter.every(Number.isFinite)) return;
-        if (skinned) {
-          if (!Number.isInteger(sortJoint) || sortJoint < 0 || !node.skeleton.bones[sortJoint]?.isBone) return;
-          sortAnchor = node.skeleton.bones[sortJoint];
-        } else {
-          if (sortJoint !== undefined) return;
-          sortAnchor = node;
-        }
-      }
+      const sort = sortEntry(T, node, fields, skinned);
+      if (alphaBlend && !sort) return;
       let owner = node;
       while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
       if (!owner) return;
@@ -126,10 +126,10 @@
       if (!classes) owners.set(owner, classes = new Map());
       const key = materialKey(scope, rendererClass);
       classes.set(key, 1 + (classes.get(key) || 0));
-      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef, sortAnchor, original: node.material,
+      meshes.push({ node, owner, fields, rendererClass, scope, key, skinned, matcap, alphaBlend, depthWrite, stencilRef, sort, original: node.material,
         order: node.renderOrder, layer: node.layers.mask, frustumCulled: node.frustumCulled });
     });
-    const ready = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
+    const ready = [], sortEntries = [], usable = meshes.filter(({ owner, key }) => owners.get(owner).get(key) === 1);
     if (!usable.length) return null;
     const sampler = usable.some(({scope, fields}) => scope === "world" && fields.texture !== null && fields.mainSampler)
       ? global.MVStudioStageMaterial?.createTextureSampler?.(T, parser, options) : null;
@@ -165,6 +165,7 @@
         material.dispose();
       }
       for (const task of textures.values()) task.then((copy) => copy.dispose(), () => {});
+      sortEntries.length = 0;
       sampler?.dispose();
       white.dispose();
     }
@@ -212,42 +213,19 @@
         classes.set(key, channels);
         if (scope === "overlay" && rendererClass === 23) owner.userData.mvStageOverlayChannels = channels;
         ready.push({ ...mesh, material });
+        if (mesh.sort) sortEntries.push(mesh.sort);
       }
     } catch (error) {
       dispose();
       throw error;
     }
 
-    const byQueue = new Map();
-    for (const {node, fields, sortAnchor} of ready) {
-      if (!sortAnchor) continue;
-      let group = byQueue.get(fields.queue);
-      if (!group) byQueue.set(fields.queue, group = []);
-      group.push({node, anchor: sortAnchor, center: new T.Vector3().fromArray(fields.sortCenter),
-        order: group.length, distance: 0});
-    }
-    const groups = [...byQueue].filter(([, entries]) => entries.length > 1);
-    const eye = new T.Vector3(), point = new T.Vector3();
-    function sort(camera) {
-      if (disposed || groups.length === 0) return;
-      camera.updateWorldMatrix(true, false);
-      eye.setFromMatrixPosition(camera.matrixWorld);
-      for (const [queue, entries] of groups) {
-        for (const entry of entries) {
-          entry.anchor.updateWorldMatrix(true, false);
-          point.copy(entry.center).applyMatrix4(entry.anchor.matrixWorld);
-          entry.distance = Math.fround(camera.isOrthographicCamera
-            ? -point.applyMatrix4(camera.matrixWorldInverse).z : eye.distanceToSquared(point));
-        }
-        entries.sort((a, b) => b.distance - a.distance || a.order - b.order);
-        for (const [index, entry] of entries.entries()) entry.node.renderOrder = queue + index / entries.length;
-      }
-    }
     return {
       hasVisible: () => !disposed && ready.some(entry => entry.scope === "overlay" && hasVisible(entry)),
       hasDepthTest: () => !disposed && ready.some(entry =>
         entry.scope === "overlay" && entry.material.depthTest && hasVisible(entry)),
-      sort, dispose,
+      sortEntries: () => sortEntries,
+      dispose,
     };
   }
 

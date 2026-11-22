@@ -15,7 +15,7 @@ function fog(root) {
   geo.setAttribute("_stage_color", new T.Uint8BufferAttribute(new Uint8Array([
     64, 96, 128, 255, 64, 96, 128, 255, 64, 96, 128, 255, 64, 96, 128, 255,
   ]), 4, true));
-  const data = {kind: "fog", texture: 0, queue: 3000, cull: 2, alphaBlend: true,
+  const data = {kind: "fog", texture: 0, queue: 3000, sortCenter: [.2, .4, .6], cull: 2, alphaBlend: true,
     depthTest: true, depthWrite: false, stencil: {comparison: 8, ref: 2, pass: 0, zFail: 0},
     mainSampler: {mipmaps: [1], filterMode: 1, anisotropy: 1},
     uniforms: {_Color: [1, .8, .6, 1], _MainTex_ST: [1, 1, 0, 0], _Density: .3,
@@ -47,6 +47,9 @@ async function run() {
   assert.equal(material.blendSrcAlpha, T.SrcAlphaFactor);
   assert.equal(material.blendDstAlpha, T.OneMinusSrcAlphaFactor);
   assert.equal(mesh.renderOrder, 3000);
+  const entries = controller.sortEntries();
+  assert.equal(controller.sortEntries(), entries);
+  assert.deepEqual(entries, [{node: mesh, anchor: mesh, center: new T.Vector3(.2, .4, .6), queue: 3000}]);
   assert.equal(mesh.frustumCulled, false);
   assert.notEqual(u.uTexture.value, base);
   assert.equal(u.uTexture.value.minFilter, T.LinearMipmapNearestFilter);
@@ -86,6 +89,7 @@ async function run() {
   assert.equal(mesh.frustumCulled, true);
   assert.equal(mesh.renderOrder, 0);
   assert.equal(controller.hasVisible(), false);
+  assert.deepEqual(entries, []);
   assert.equal(materialChannel(owner, "overlayColor"), null);
 
   const duplicate = mesh.clone();
@@ -114,7 +118,7 @@ async function testSmoke() {
   second.owner.userData.mvStageNode.path = 2;
   second.mesh.geometry.deleteAttribute("_soft_center");
   second.mesh.geometry.deleteAttribute("_stage_color");
-  Object.assign(second.data, {kind: "smoke", stencil: {comparison: 6, ref: 4, pass: 2, zFail: 0}, uniforms: {
+  Object.assign(second.data, {kind: "smoke", sortCenter: undefined, stencil: {comparison: 6, ref: 4, pass: 2, zFail: 0}, uniforms: {
     _Color: [.8, .6, .4, 1], _MainTex_ST: [1, 1, 0, 0], _Density: .6, _DensitySaturate: .2,
     _TextureRate: .75, _FadeOutPower: 2, _FadeOutScale: 7, _DistortionAmplitude: .1,
     _DistortionSpeed: .3, _DistortionFreq: 4, _WaveAmplitude: .6, _WaveSpeed: .2, _WaveFreq: 4,
@@ -136,6 +140,7 @@ async function testSmoke() {
   const controller = await apply(T, root, parser);
   const smoke = second.mesh.material, fogMaterial = first.mesh.material;
   assert.equal(smoke.name, "Native stage smoke");
+  assert.equal(controller.sortEntries().length, 1);
   assert.deepEqual(smoke.defaultAttributeValues._stage_color, [1, 1, 1, 1]);
   assert.equal(smoke.stencilWrite, true);
   assert.equal(smoke.stencilFunc, T.NotEqualStencilFunc);
