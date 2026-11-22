@@ -182,6 +182,7 @@
       if (stream) {
         entry.glow = make(entry, "glow", row, 1);
         entry.glow.stream = stream;
+        if (entry.finale) entry.glow.sortCenter = new T.Vector3();
       }
     }
     if (shine) {
@@ -200,7 +201,6 @@
         draw.sortCenter = new T.Vector3();
         draw.createStream = positionAt => dustSimulation.create(role, positionAt, row);
       }
-      if (dust.glow) dust.glow.sortCenter = new T.Vector3();
     }
     return texture;
   }
@@ -271,10 +271,13 @@
     const eye = new T.Vector3(), scratch = new T.Vector3();
     // Equal-distance dust lanes use the order of their authored children.
     sortable.forEach((draw, index) => { draw.order = draw.bounds ? index : sortable.length; });
+    const sortPeers = sortable.slice().sort((a, b) => a.order - b.order)
+      .map(({mesh, sortCenter}) => ({mesh, center: sortCenter}));
     let tracks, disposed = false;
     return {
       billboardAtlas: billboardTexture && {texture: billboardTexture, levels: source.glowTexture},
       invalidate() { tracks = null; },
+      sortEntries() { return disposed ? [] : sortPeers.filter(({mesh}) => mesh.visible); },
       update(time, project) {
         if (disposed) return;
         if (tracks !== project?.tracks) {

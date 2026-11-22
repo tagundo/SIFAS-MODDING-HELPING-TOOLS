@@ -419,6 +419,44 @@ function testAionAutumnLeaves() {
   matchesNative(lastYellow[45], [-1.1643598079681396, .20392990112304688, -.13010355830192566,
     .6534518599510193, 6.48788595199585, 11.209589958190918, 1.3245729207992554, 255, 255, 255, 176]);
   assert.deepEqual(sample(y, 7, 60), firstYellow);
+
+  const red = {...source, profile: "06", rate: 20, seed: 670425550, startColor: {
+    rgb: [[0, .7264150977134705, .6489201784133911, .2912513315677643], [29141, 1, 1, 1],
+      [65535, 1, .4575471878051758, .5265886187553406]],
+    alpha: [[0, 1], [65535, 1]],
+  }};
+  assert.equal(createLeaves({...red, seed: -1}), null);
+  assert.equal(createLeaves({...red, seed: undefined}), null);
+  const firstRed = createLeaves(red), secondRed = createLeaves({...red, seed: 8958});
+  const finaleRed = createLeaves({...red, seed: 2336});
+  const warm = sample(firstRed, 0, 60);
+  assert.equal(warm.length, 126);
+  matchesNative(warm[0], [.5765321254730225, 3.1425230503082275, 3.474757671356201,
+    .659930944442749, -.47279468178749084, 1.4611642360687256, 3.9852848052978516, 204, 190, 124, 255]);
+  assert.deepEqual(sample(firstRed, 0, 30), warm);
+  // The warm remainder follows the first full display update in either mode.
+  const twoTicks = sample(firstRed, 2, 60), groupedTicks = sample(firstRed, 1, 30);
+  assert.equal(twoTicks.length, 124);
+  assert.equal(groupedTicks.length, 124);
+  matchesNative(twoTicks[3], [3.8315510749816895, 3.5062804222106934, -2.5263102054595947,
+    .7407283186912537, 1.2374897003173828, 4.251684188842773, 4.16989803314209, 255, 149, 163, 255]);
+  matchesNative(groupedTicks[3], [3.8315510749816895, 3.5062804222106934, -2.526310443878174,
+    .7407283186912537, 1.2374897003173828, 4.251684188842773, 4.16989803314209, 255, 149, 163, 255]);
+  const longRed = sample(firstRed, 625, 30);
+  assert.equal(longRed.length, 125);
+  matchesNative(longRed[80], [4.3906660079956055, .03859996795654297, .8465116024017334,
+    .7504371404647827, -7.97491455078125, -15.896864891052246, 2.595726728439331, 220, 210, 164, 42]);
+  assert.deepEqual(sample(firstRed, 2, 60), twoTicks);
+  assert.deepEqual(sample(firstRed, 625, 30), longRed);
+  assert.deepEqual(sample(createLeaves(red), 0, 30), warm);
+
+  const secondWarm = sample(secondRed, 0, 60), finaleEnd = sample(finaleRed, 331, 60);
+  assert.equal(secondWarm.length, 129);
+  matchesNative(secondWarm[0], [-6.121110916137695, 4.732097625732422, -2.984006643295288,
+    .7801257967948914, -.20978125929832458, 2.689093828201294, 5.500187873840332, 255, 175, 185, 255]);
+  assert.equal(finaleEnd.length, 125);
+  matchesNative(finaleEnd[14], [-4.124294757843018, 2.072416067123413, -1.3240665197372437,
+    .6866532564163208, 2.9302151203155518, 17.458295822143555, 21.145315170288086, 255, 143, 157, 178]);
 }
 
 testAionRain();

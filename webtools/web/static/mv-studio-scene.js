@@ -410,7 +410,7 @@
       stageDisplayLights?.sort(camera);
       stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
       stageButterfly?.sort(camera);
-      stageLeaves?.sort(camera, stageRain?.sortEntries());
+      stageLeaves?.sort(camera, stageRain?.sortEntries(), stageButterfly?.sortEntries());
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;

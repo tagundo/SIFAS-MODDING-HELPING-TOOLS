@@ -404,6 +404,51 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened.get("stageLeaves"), expected)
                 self.assertEqual(reopened["tracks"], saved_tracks)
 
+    def test_saved_early_leaves_add_compatible_red_cues_without_replacing_saved_rows(self):
+        from webtools.core import mv_studio_leaves
+
+        project = mv_studio._blank("Edited red leaves")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        green = {"id": "green:0", "label": "Edited green", "start": 44, "duration": 12, "values": {}}
+        red = [{"id": f"red:{index}", "label": f"Edited red {index}", "start": 64 + 2 * index, "duration": 2,
+                "values": {"clipIn": 3 + index, "offset": {"x": 1, "y": 0, "z": -2}}} for index in range(4)]
+        green_track = {"id": "green", "kind": "effects", "nativeClass": "CustomControlTrack",
+                       "label": next(iter(mv_studio_leaves.PROFILES)), "events": [green]}
+        red_track = {"id": "red", "kind": "effects", "nativeClass": "CustomControlTrack",
+                     "label": mv_studio_leaves.RED_TRACK}
+        cue = {"profile": "03", "trackId": "green", "eventId": green["id"], "position": [0, 0, 0]}
+        red_rows = [{"profile": "06", "trackId": "red", "eventId": event["id"], "seed": seed}
+                    for event, seed in zip(red, (670425550, 8958, 670425550, 2336))]
+        legacy = {"schema": 1, "cues": [cue], "geometry": {"positions": []}, "texture": [{"png": "authentic"}],
+                  "alphaKeys": [[0, 0]], "material": {"blend": "alpha"}}
+        rebuilt = {**legacy, "cues": [cue, *red_rows]}
+        custom_atlas = {**legacy, "texture": [{"png": "custom"}]}
+        previous = {**legacy, "cues": [cue, {**red_rows[1], "seed": 99}]}
+        merged = {**previous, "cues": [*previous["cues"], red_rows[0], red_rows[2], red_rows[3]]}
+        for saved, red_events, source, expected, reparses in (
+                (legacy, red, self.original, rebuilt, True),
+                (legacy, red[1::2], self.original, {**legacy, "cues": [cue, red_rows[1], red_rows[3]]}, True),
+                (legacy, [], self.original, legacy, False),
+                (legacy, red, None, legacy, False),
+                (custom_atlas, red, self.original, custom_atlas, True),
+                (previous, red, self.original, merged, True),
+                (rebuilt, red, self.original, rebuilt, False)):
+            with self.subTest(saved=saved, red_events=red_events, source=source):
+                tracks = [green_track, {**red_track, "events": red_events}]
+                document = {**project, "tracks": tracks, "stageLeaves": saved}
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLeaves": rebuilt},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited red leaves", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_leaves=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageLeaves"], expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

@@ -3,6 +3,7 @@
 
   const f32 = Math.fround;
   const seed = 3279275062, cycle = 10, ageScale = f32(.01), birthBias = f32(1e-6);
+  const fixedStep = f32(.02), catchUpStep = f32(.2);
   const velocitySalt = 0xe0fbd834, speedSalt = 0x96aa4de3;
   const rotationSalt = 0x6aed452e, rotationBySpeedSalt = 0xdec4aea1, rotationSignSalt = 0xff2bb1a4;
   const maxSize = f32(.8), quarterPi = f32(.7853981256484985);
@@ -21,15 +22,15 @@
   }
 
   function supported(row) {
-    if (!row || (row.profile !== "03" && row.profile !== "04")) return false;
-    const {position, rotation, startColor, alphaKeys} = row, green = row.profile === "03";
-    return row.rate === (green ? 12 : 10) && vector(position, 3) &&
+    if (!row || !["03", "04", "06"].includes(row.profile)) return false;
+    const {position, rotation, startColor, alphaKeys} = row, red = row.profile === "06", yellow = row.profile === "04";
+    return row.rate === (red ? 20 : yellow ? 10 : 12) &&
+      (!red || (Number.isInteger(row.seed) && row.seed >= 0 && row.seed <= 0xffffffff)) && vector(position, 3) &&
       position[0] === f32(.65) && position[1] === 5 && position[2] === f32(-.46) &&
       vector(rotation, 4) && !rotation[1] && !rotation[2] &&
       Math.abs(rotation[0] - Math.SQRT1_2) < 1e-6 && Math.abs(rotation[3] - Math.SQRT1_2) < 1e-6 &&
-      keysValid(alphaKeys, 4, 1) && (green ?
-        keysValid(startColor?.rgb, 3, 3) && keysValid(startColor?.alpha, 2, 1) :
-        vector(startColor, 4) && startColor.every(unit));
+      keysValid(alphaKeys, 4, 1) && (yellow ? vector(startColor, 4) && startColor.every(unit) :
+        keysValid(startColor?.rgb, 3, 3) && keysValid(startColor?.alpha, 2, 1));
   }
 
   function inverse(value) {
@@ -76,12 +77,17 @@
     if (!particles || !supported(row)) return null;
     const {nativeFrame, nativeStep, nativeStepRate, nativeRandom, nativeUnit, nativeColorAtTime} = particles;
     const {rate, position, startColor, alphaKeys} = row;
-    const green = row.profile === "03", constant = green ? null : startColor.map(byte);
+    const red = row.profile === "06", constant = row.profile === "04" ? startColor.map(byte) : null;
     const gradient = alphaKeys.map(([time, alpha]) => [f32(time / 65535), 255, 255, 255, byte(alpha)]);
-    const initial = nativeRandom(seed), shape = nativeRandom(seed);
-    const birthGroups = [], checkpoints = [{clock: 0, carry: 0, group: 0, active: []}];
+    const streams = Array.from({length: red ? 4 : 1}, (_, lane) => {
+      const word = red ? (row.seed + 367 * lane) >>> 0 : seed;
+      return {initial: nativeRandom(word), shape: nativeRandom(word)};
+    });
+    const birthGroups = [];
     const stepMotion = orbit(nativeStep), stepGravity = gravity(nativeStep);
     let frame = 0, clock = 0, carry = 0, group = 0, active = [];
+    let displayFps, firstFrameRemainder = 0, warmRemainder = 0;
+    let checkpoints;
 
     function random(word, salt) {
       return nativeUnit(nativeRandom((word + salt) >>> 0)());
@@ -91,13 +97,11 @@
       return f32(f32(f32(9.81) * step) * f32(.01));
     }
 
-    function prepareBirth() {
-      // At the checked rates a batch requests one particle. The remaining
-      // lanes advance different streams and never become visible.
-      const word = initial(), life = inverse(lerp(6, 7, nativeUnit(initial())));
+    function prepareBirth({initial, shape}) {
+      const word = initial(), life = inverse(lerp(red ? 5.5 : 6, 7, nativeUnit(initial())));
       const size = lerp(.5, maxSize, nativeUnit(initial()));
       const roll = lerp(-quarterPi, quarterPi, nativeUnit(initial()));
-      initial(); // The InitialModule color draw exists even for fixed color.
+      const colorPhase = nativeUnit(initial()); // InitialModule also draws for fixed color.
       const x = f32(f32(nativeUnit(shape()) - .5) * 13);
       const y = f32(f32(nativeUnit(shape()) - .5) * 10);
       const z = f32(f32(nativeUnit(shape()) - .5) * 2);
@@ -109,7 +113,7 @@
       const sign = random(word, rotationSignSalt) > 0 ? 1 : -1;
       const [ax, ay, az] = lifeRates.map(([a, b], axis) =>
         f32(sign * f32(lerp(a, b, rotationWeight) + lerp(...speedRates[axis], speedWeight))));
-      return {x, y, z, roll, life, size, velocityX, velocityY, ax, ay, az, speed: random(word, speedSalt)};
+      return {x, y, z, roll, life, size, colorPhase, velocityX, velocityY, ax, ay, az, speed: random(word, speedSalt)};
     }
 
     function advance(particle, step, speedGain, [cosine, sine, inverseStep]) {
@@ -143,45 +147,78 @@
       }
     }
 
-    function step() {
-      for (const particle of active) advance(particle, nativeStep, stepGravity, stepMotion);
+    function step(delta) {
+      const motion = delta === nativeStep ? stepMotion : orbit(delta);
+      const gain = delta === nativeStep ? stepGravity : gravity(delta);
+      for (const particle of active) advance(particle, delta, gain, motion);
       cull();
-      const previous = clock, next = f32(clock + nativeStep);
+      const previous = clock, next = f32(clock + delta);
       clock = next > cycle ? f32(next - cycle) : next;
       const amount = next > cycle ?
         f32(f32(f32(cycle - previous) * rate) + f32(clock * rate)) : f32(f32(clock - previous) * rate);
       const combined = f32(amount + carry), count = Math.trunc(combined);
       carry = f32(combined - count);
       if (!count) return;
-      if (group === birthGroups.length) birthGroups.push(prepareBirth());
-      const source = birthGroups[group++], phase = f32(clock / cycle);
-      const color = constant || [...palette(startColor.rgb, phase), ...palette(startColor.alpha, phase)];
-      const partial = f32(nativeStep * Math.max(birthBias, Math.min(1, f32(carry * f32(1 / amount)))));
-      // ShapeModule samples speed at birth. InitialModule's color uses the step's end phase.
-      const speedTime = f32(f32(clock - partial) / cycle);
-      const vz = lerp(decreasing(speedTime), speedCeiling(speedTime), source.speed);
-      const atom = {source, color, x: source.x, y: source.y, z: source.z, vz, rx: 0, ry: 0, rz: source.roll, age: 0};
-      advance(atom, partial, gravity(partial), orbit(partial));
-      active.push(atom);
+      if (group === birthGroups.length) birthGroups.push(streams.map(prepareBirth));
+      const sources = birthGroups[group++], reciprocal = f32(1 / amount);
+      for (let lane = 0; lane < count; lane++) {
+        const source = sources[lane], phase = red ? source.colorPhase : f32(clock / cycle);
+        const color = constant || [...palette(startColor.rgb, phase), ...palette(startColor.alpha, phase)];
+        const fraction = Math.max(birthBias, Math.min(1, f32(f32(lane + carry) * reciprocal)));
+        const partial = f32(delta * fraction);
+        // ShapeModule samples speed at birth. Green InitialModule colors use the step's end phase.
+        const speedTime = f32(f32(clock - partial) / cycle);
+        const vz = lerp(decreasing(speedTime), speedCeiling(speedTime), source.speed);
+        const atom = {source, color, x: source.x, y: source.y, z: source.z, vz, rx: 0, ry: 0, rz: source.roll, age: 0};
+        advance(atom, partial, gravity(partial), orbit(partial));
+        active.push(atom);
+      }
     }
+
+    function snapshot() {
+      return {clock, carry, group, active: active.map(particle => ({...particle}))};
+    }
+
+    function restore(saved, savedFrame) {
+      ({clock, carry, group} = saved);
+      frame = savedFrame;
+      active = saved.active.map(particle => ({...particle}));
+    }
+
+    if (red) {
+      // The original bounds prepass seeds this rate remainder seven seconds before activation.
+      clock = 3;
+      carry = .9992798566818237;
+      warmRemainder = 7;
+      for (let stepSize = catchUpStep; warmRemainder >= stepSize;
+          stepSize = warmRemainder > 5 ? catchUpStep : fixedStep) {
+        step(stepSize);
+        warmRemainder = f32(warmRemainder - stepSize);
+      }
+    }
+    const initialState = snapshot();
+    checkpoints = [initialState];
 
     return {sample(elapsed, fps, emit) {
       const target = nativeFrame(elapsed, fps);
       if (target < 0 || elapsed > 60) return;
+      const firstFrameSteps = nativeStepRate / fps;
+      if (red && displayFps !== fps) {
+        displayFps = fps;
+        restore(initialState, 0);
+        checkpoints = [initialState];
+        firstFrameRemainder = f32(f32(1 / fps) + warmRemainder);
+        for (let i = 0; i < firstFrameSteps; i++) firstFrameRemainder = f32(firstFrameRemainder - nativeStep);
+      }
       const index = Math.min(checkpoints.length - 1, Math.floor(target / nativeStepRate));
       const savedFrame = index * nativeStepRate;
-      if (target < frame || savedFrame > frame) {
-        const saved = checkpoints[index];
-        ({clock, carry, group} = saved);
-        frame = savedFrame;
-        active = saved.active.map(particle => ({...particle}));
-      }
+      if (target < frame || savedFrame > frame) restore(checkpoints[index], savedFrame);
       while (frame < target) {
-        step();
+        step(nativeStep);
         frame++;
-        if (frame === checkpoints.length * nativeStepRate) {
-          checkpoints.push({clock, carry, group, active: active.map(particle => ({...particle}))});
-        }
+        // Run the remaining warm-up time after the first display's full particle steps.
+        if (frame === firstFrameSteps && firstFrameRemainder >= birthBias) step(firstFrameRemainder);
+        if (frame === checkpoints.length * nativeStepRate) checkpoints.push(snapshot());
       }
       const [px, py, pz] = position;
       for (const atom of active) {

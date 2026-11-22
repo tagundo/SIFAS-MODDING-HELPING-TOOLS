@@ -23,6 +23,7 @@
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
   const finiteVector = (value, count) => Array.isArray(value) && value.length === count && value.every(Number.isFinite);
   const capacity = 200;
+  const atlasColumns = new Map([["03", 0], ["04", .5], ["06", .25]]);
 
   function checked(source, title) {
     const {geometry, material, cues} = source || {};
@@ -33,14 +34,16 @@
       geometry.indices.every(index => Number.isInteger(index) && index >= 0 && index < 22) &&
       material?.queue === 3010 && material.cull === 0 && material.blend === "alpha" && material.premultiply === false &&
       finiteVector(material.tint, 4) && material.tint.every(value => value === 1) &&
-      Array.isArray(cues) && cues.length >= 1 && cues.length <= 2 && cues.every(cue => id(cue?.trackId) &&
-        id(cue.eventId) && (cue.profile === "03" || cue.profile === "04") &&
+      Array.isArray(cues) && cues.length >= 1 && cues.length <= 6 && cues.every(cue => id(cue?.trackId) &&
+        id(cue.eventId) && atlasColumns.has(cue.profile) &&
         finiteVector(cue.position, 3) && finiteVector(cue.rotation, 4) && finiteVector(cue.uv, 4) &&
-        cue.uv[0] === .25 && cue.uv[1] === .25 && cue.uv[2] === (cue.profile === "03" ? 0 : .5) && cue.uv[3] === .25) &&
-      new Set(cues.map(cue => cue.profile)).size === cues.length;
+        cue.uv[0] === .25 && cue.uv[1] === .25 && cue.uv[2] === atlasColumns.get(cue.profile) && cue.uv[3] === .25) &&
+      new Set(cues.map(cue => JSON.stringify([cue.trackId, cue.eventId]))).size === cues.length &&
+      cues.filter(cue => cue.profile === "03").length <= 1 && cues.filter(cue => cue.profile === "04").length <= 1 &&
+      cues.filter(cue => cue.profile === "06").length <= 4;
   }
 
-  function make(T, source, texture, cue) {
+  function make(T, source, texture, cue, name) {
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.Float32BufferAttribute(source.geometry.positions.flat(), 3));
     geometry.setAttribute("uv", new T.Float32BufferAttribute(source.geometry.uv.flat(), 2));
@@ -59,7 +62,7 @@
         uTint: {value: new T.Vector4().fromArray(source.material.tint)}},
     });
     const mesh = new T.InstancedMesh(geometry, material, capacity);
-    mesh.name = `Native Aion falling leaves ${cue.profile}`;
+    mesh.name = name;
     mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
     mesh.renderOrder = source.material.queue;
     mesh.frustumCulled = false;
@@ -82,8 +85,12 @@
     } catch {
       return null;
     }
+    let redCue = 0;
     const entries = candidates.map(({cue, stream}) => {
-      const packet = make(T, source, texture, cue);
+      // Native PrefabControl has its own clone and clock for every clip,
+      // including adjacent clips that reuse the same red-leaf prefab.
+      const clip = cue.profile === "06" ? `06 ${++redCue}` : cue.profile;
+      const packet = make(T, source, texture, cue, `Native Aion falling leaves ${clip}`);
       root.add(packet.mesh);
       return {cue, stream, ...packet, frame: -1, fps: 0,
         emitterRotation: new T.Quaternion().fromArray(cue.rotation), center: new T.Vector3()};
@@ -149,14 +156,14 @@
           update(entry, frame, fps);
         }
       },
-      sort(camera, rain = []) {
+      sort(camera, rain = [], butterfly = []) {
         if (disposed) return;
         const leaves = entries.filter(entry => entry.mesh.visible);
         if (!leaves.length) {
           for (const {mesh} of rain) mesh.renderOrder = source.material.queue;
           return;
         }
-        if (leaves.length === 1 && !rain.length) {
+        if (leaves.length === 1 && !rain.length && !butterfly.length) {
           leaves[0].mesh.renderOrder = source.material.queue;
           return;
         }
@@ -164,7 +171,7 @@
         eye.setFromMatrixPosition(camera.matrixWorld);
         // The leaves use alpha-over. Preserve the native camera order
         // against other transparent renderers in this part of the song.
-        const visible = [...rain, ...leaves].map((entry, order) => {
+        const visible = [...rain, ...butterfly, ...leaves].map((entry, order) => {
           entry.mesh.updateWorldMatrix(true, false);
           center.copy(entry.center).applyMatrix4(entry.mesh.matrixWorld);
           const distance = camera.isOrthographicCamera ? Math.fround(-center.applyMatrix4(camera.matrixWorldInverse).z) :

@@ -1,4 +1,4 @@
-"""Read the native green and yellow autumn leaves in Aion Expert."""
+"""Read the native green, yellow and red autumn leaves in Aion Expert."""
 
 from . import model_viewer as viewer, mv_studio_butterfly_glow as billboard, mv_studio_butterfly_shine as shine
 from . import mv_studio_stage_particles as particles, mv_studio_stage_title as title, mv_studio_timeline as timeline
@@ -6,13 +6,16 @@ from .model_rig import _authored_trs
 from .mv_studio_stage_title_particles import _constant, _float32
 
 
+RED_TRACK = "StageEffect/Expert/Control/par_06_momij_red"
 PROFILES = {
     "StageEffect/Expert/Control/par_03_momij_green": ("03", "green", 12, 0),
     "StageEffect/Expert/Control/par_04_momij_yellow": ("04", "yellow", 10, .5),
+    RED_TRACK: ("06", "red", 20, .25),
 }
 _POSITION = [_float32(.65), 5, -_float32(.46)]
 _ROTATION = [.7071067811865475, 0, 0, .7071067811865475]
 _SEED = -1015692234
+_RED_SEED = 670425550
 _MESH = 7538295215578040852
 _ROLL = .7853981256484985
 _PI_OVER_TWO = 1.570796251296997
@@ -69,7 +72,7 @@ def _motion(source):
         ("x", (-10, 1), (-1, 1), (1, -1)), ("y", (-5, 1), (1, -1), (-1, 1)), ("z", (0, 0), (1, -1), (-1, 1))))
 
 
-def _colors(source, green):
+def _colors(source, profile):
     start = source["InitialModule"]["startColor"]
     life = source["ColorModule"]["gradient"]
     if life["minMaxState"] != 1:
@@ -79,11 +82,11 @@ def _colors(source, green):
     alpha = shine._gradient(maximum, "atime", 4, "a")
     if rgb != [[0, 1, 1, 1], [65535, 1, 1, 1]] or alpha != [[0, 0], [6554, 1], [58982, 1], [65535, 0]]:
         return None
-    if green:
+    if profile != "04":
         initial = start["maxGradient"]
         rgb = shine._gradient(initial, "ctime", 3, "rgb")
         initial_alpha = shine._gradient(initial, "atime", 2, "a")
-        if (start["minMaxState"] != 1 or not rgb or rgb[0][0] != 0 or rgb[-1][0] != 65535
+        if (start["minMaxState"] != (1 if profile == "03" else 4) or not rgb or rgb[0][0] != 0 or rgb[-1][0] != 65535
                 or initial_alpha != [[0, 1], [65535, 1]]):
             return None
         color = {"rgb": rgb, "alpha": initial_alpha}
@@ -94,15 +97,17 @@ def _colors(source, green):
     return color, alpha
 
 
-def _system(source, rate, atlas_x):
+def _system(source, profile, rate, atlas_x):
+    red = profile == "06"
+    settings = {**_SETTINGS, "playOnAwake": False, "prewarm": True, "randomSeed": _RED_SEED} if red else _SETTINGS
     enabled = {name for name, fields in source.items() if name.endswith("Module") and fields.get("enabled")}
-    if enabled != _MODULES or not billboard._matches(source, _SETTINGS) or _constant(source["startDelay"]) != 0:
+    if enabled != _MODULES or not billboard._matches(source, settings) or _constant(source["startDelay"]) != 0:
         return None
     initial = source["InitialModule"]
     if (not billboard._matches(initial, {"size3D": False, "rotation3D": False, "maxNumParticles": 200,
                                         "randomizeRotationDirection": 0})
             or any(not shine._range(initial[name], first, last) for name, first, last in (
-                ("startLifetime", 6, 7), ("startSize", .5, .8), ("startRotation", -_ROLL, _ROLL),
+                ("startLifetime", 5.5 if red else 6, 7), ("startSize", .5, .8), ("startRotation", -_ROLL, _ROLL),
                 ("startRotationX", 0, 3.1415927410125732), ("startRotationY", 0, 3.1415927410125732)))
             or _constant(initial["gravityModifier"]) != _float32(.01)
             or not _minmax(initial["startSpeed"], (5, 1), (1, 0), (.00040886178612709045, 1))
@@ -117,7 +122,7 @@ def _system(source, rate, atlas_x):
                                        "tilesY": 4, "flipU": 0, "flipV": 0}) or not sheet["uvChannelMask"] & 1
             or _constant(sheet["frameOverTime"]) != 0 or _constant(sheet["startFrame"]) != .25 + atlas_x / 4):
         return None
-    return _colors(source, rate == 12)
+    return _colors(source, profile)
 
 
 def _geometry(mesh, deadline):
@@ -168,7 +173,7 @@ def _prefab(objects, game, profile, deadline):
     renderer, fields = parts["ParticleSystemRenderer"]
     if not billboard._matches(fields, _RENDERER):
         return None
-    state = _system(parts["ParticleSystem"][1], rate, atlas_x)
+    state = _system(parts["ParticleSystem"][1], number, rate, atlas_x)
     atlas = billboard._material_texture(objects, renderer, fields, alpha=True)
     mesh = title._local(objects, renderer, fields["m_Mesh"], "Mesh")
     if state is None or atlas is None or mesh is None:
@@ -177,6 +182,40 @@ def _prefab(objects, game, profile, deadline):
     cue = {"profile": number, "position": pose["translation"], "rotation": pose["rotation"], "rate": rate,
            "uv": [.25, .25, atlas_x, .25], "startColor": start}
     return cue, alpha, atlas, mesh
+
+
+def _track_cues(objects, owner, fields, track, profile, deadline):
+    red = profile[0] == "06"
+    limit = 4 if red else 1
+    if (fields["m_Name"] != track["label"].rsplit("/", 1)[1] or not fields["m_Enabled"]
+            or not 1 <= len(fields["m_Clips"]) <= limit or not 1 <= len(track["events"]) <= limit
+            or not title._declared(objects, owner, fields, (*title._NAMESPACE, "CustomControlTrack"))
+            or not title._group(objects, owner, fields, "control")):
+        return []
+    result, prefabs = [], {}
+    for event in track["events"]:
+        try:
+            control = particles._source(objects, owner, fields, event)
+            overwrite = red and control is None
+            if overwrite:
+                control = particles._source(objects, owner, fields, event, overwrite_seed=True)
+            if control is None:
+                continue
+            game, seed = control
+            key = viewer._key(game)
+            if key not in prefabs:
+                prefabs[key] = _prefab(objects, game, profile, deadline)
+            effect = prefabs[key]
+            if effect is None:
+                continue
+            cue, alpha, texture, mesh = effect
+            info = {**cue, "trackId": track["id"], "eventId": event["id"]}
+            if red:
+                info.update({"seed": seed if overwrite else _RED_SEED, "overwriteRandomSeed": overwrite})
+            result.append((event["start"], info, alpha, texture, mesh))
+        except title._UNSUPPORTED:
+            continue
+    return result
 
 
 def read(objects, mono, tracks, deadline):
@@ -190,28 +229,19 @@ def read(objects, mono, tracks, deadline):
             continue
         owner, fields = source
         try:
-            if (fields["m_Name"] != track["label"].rsplit("/", 1)[1] or not fields["m_Enabled"]
-                    or len(fields["m_Clips"]) != 1
-                    or not title._declared(objects, owner, fields, (*title._NAMESPACE, "CustomControlTrack"))
-                    or not title._group(objects, owner, fields, "control")):
-                continue
-            event, = track["events"]
-            control = particles._source(objects, owner, fields, event)
-            effect = _prefab(objects, control[0], profile, deadline) if control is not None else None
+            effects = _track_cues(objects, owner, fields, track, profile, deadline)
         except title._UNSUPPORTED:
             continue
-        if effect is not None:
+        if effects:
             label = track["label"]
-            accepted[label] = None if label in accepted else (track["id"], event["id"], effect)
+            accepted[label] = [] if label in accepted else effects
     cues, alpha, atlas, mesh = [], None, None, None
-    for effect in accepted.values():
-        if effect is None:
-            continue
-        track_id, event_id, (cue, fade, texture, source_mesh) = effect
+    effects = sorted((effect for group in accepted.values() for effect in group), key=lambda effect: effect[0])
+    for _, cue, fade, texture, source_mesh in effects:
         if (alpha is not None and alpha != fade or atlas is not None and viewer._key(atlas) != viewer._key(texture)
                 or mesh is not None and viewer._key(mesh) != viewer._key(source_mesh)):
             continue
-        cues.append({**cue, "trackId": track_id, "eventId": event_id})
+        cues.append(cue)
         alpha, atlas, mesh = fade, texture, source_mesh
     if not cues:
         return None

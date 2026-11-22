@@ -816,10 +816,10 @@ def _restore_butterfly_companion(saved, rebuilt, field, tracks, authentic_atlas)
     return recovered
 
 
-def _rain_cues(saved):
+def _saved_particle_cues(saved, maximum):
     if isinstance(saved, dict) and type(saved.get("schema")) is int and saved["schema"] == 1:
         cues = saved.get("cues")
-        if isinstance(cues, list) and 1 <= len(cues) <= 2 and all(
+        if isinstance(cues, list) and 1 <= len(cues) <= maximum and all(
                 isinstance(row, dict) and all(isinstance(row.get(key), str) for key in ("trackId", "eventId", "profile"))
                 for row in cues):
             return cues
@@ -839,7 +839,7 @@ def _restore_rain_impacts(project, rebuilt, existing):
         return
     impacts = {(cue["trackId"], cue["eventId"], cue["profile"]): cue["impact"] for cue in cues if "impact" in cue}
     restored = []
-    for cue in _rain_cues(saved):
+    for cue in _saved_particle_cues(saved, 2):
         identity = cue["trackId"], cue["eventId"], cue["profile"]
         impact = impacts.get(identity)
         if "impact" in cue and "impactTextures" not in saved and cue["impact"] != impact:
@@ -847,6 +847,21 @@ def _restore_rain_impacts(project, rebuilt, existing):
         restored.append({**cue, "impact": impact} if impact is not None and "impact" not in cue else cue)
     if restored and restored != saved["cues"]:
         project["stageRain"] = {**saved, "cues": restored, "impactTextures": atlas}
+
+
+def _restore_leaves(project, rebuilt, available, missing_red):
+    cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in available]
+    if not cues:
+        return
+    if "stageLeaves" not in project:
+        project["stageLeaves"] = {**rebuilt, "cues": cues}
+        return
+    saved = project["stageLeaves"]
+    if any(key not in saved or saved[key] != rebuilt.get(key) for key in ("geometry", "texture", "alphaKeys", "material")):
+        return
+    red = [cue for cue in cues if cue["profile"] == "06" and (cue["trackId"], cue["eventId"]) in missing_red]
+    if red:
+        project["stageLeaves"] = {**saved, "cues": [*saved["cues"], *red]}
 
 
 def _open_saved(archive, entries):
@@ -904,11 +919,16 @@ def _open_saved(archive, entries):
                  for event in track["events"]}
     restore_rain = bool(rain_cues) and ("stageRain" not in project or any(
         (cue["trackId"], cue["eventId"]) in rain_cues and "impact" not in cue
-        for cue in _rain_cues(project["stageRain"])))
+        for cue in _saved_particle_cues(project["stageRain"], 2)))
     leaf_cues = {(track["id"], event["id"]) for track in project["tracks"]
                  if track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")) in mv_studio_leaves.PROFILES
                  for event in track["events"]}
-    restore_leaves = "stageLeaves" not in project and bool(leaf_cues)
+    red_leaf_cues = {(track["id"], event["id"]) for track in project["tracks"]
+                     if track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_leaves.RED_TRACK
+                     for event in track["events"]}
+    saved_leaves = _saved_particle_cues(project.get("stageLeaves"), 6)
+    missing_red_leaves = red_leaf_cues - {(cue["trackId"], cue["eventId"]) for cue in saved_leaves}
+    restore_leaves = bool(leaf_cues) and ("stageLeaves" not in project or bool(saved_leaves and missing_red_leaves))
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
@@ -1020,10 +1040,7 @@ def _open_saved(archive, entries):
             if restore_rain and "stageRain" in original:
                 _restore_rain_impacts(project, original["stageRain"], rain_cues)
             if restore_leaves and "stageLeaves" in original:
-                rebuilt = original["stageLeaves"]
-                cues = [cue for cue in rebuilt["cues"] if (cue["trackId"], cue["eventId"]) in leaf_cues]
-                if cues:
-                    project["stageLeaves"] = {**rebuilt, "cues": cues}
+                _restore_leaves(project, original["stageLeaves"], leaf_cues, missing_red_leaves)
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background
