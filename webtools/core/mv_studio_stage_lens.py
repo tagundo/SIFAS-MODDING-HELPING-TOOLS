@@ -5,21 +5,25 @@ import time
 
 from . import model_viewer as viewer, mv_studio_butterfly_glow as billboard
 from . import mv_studio_butterfly_shine as shine, mv_studio_leaves as leaves
-from . import mv_studio_stage_dust as dust
+from . import mv_studio_stage_burst as burst, mv_studio_stage_dust as dust
 from . import mv_studio_stage_glow as glow, mv_studio_stage_particles as particles, mv_studio_stage_title as title
 from . import mv_studio_timeline as timeline
 from .model_rig import _authored_trs, _trs
 from .mv_studio_stage_title_particles import _constant, _float32
 
 
-SCHEMA = 3
-_LEGACY_SCHEMAS = (1, 2, SCHEMA)
+SCHEMA = 4
+_LEGACY_SCHEMAS = (1, 2, 3, SCHEMA)
 _SECTIONS = {"control": "stage_control", "display": "stage_display"}
 _STATE = {**billboard._SETTINGS, "looping": True, "prewarm": True, "ringBufferLoopRange": {"x": 0, "y": 1}}
 _RENDERER = {**billboard._RENDERER, "m_MaxParticleSize": .5, "m_Flip": billboard._ZERO}
 _MODULES = {"ColorModule", "EmissionModule", "InitialModule", "ShapeModule", "UVModule"}
 _SHARED = ("material", "tiles", "maxViewportWidth", "sortMode")
 _MAX_CUES = 16
+_MAX_EMITTERS = 16
+_MAX_GROUP = 8
+_MAX_INSTANCES = 64
+_MAX_NODES = 64
 _MAX_ATLASES = 8
 
 
@@ -88,13 +92,23 @@ def _system(source):
 
 
 def _prefab(objects, game, deadline):
-    transform_stack = []
-    for level in range(6):
+    layer = game.read_typetree()["m_Layer"]
+    if layer not in (1, 20):
+        return None
+    stack = [(game, ())]
+    layouts, visited = [], set()
+    while stack:
         viewer._remaining(deadline)
-        fields = game.read_typetree()
-        refs = fields["m_Component"]
-        kinds = {"Transform"} if len(refs) == 1 else {"Transform", "ParticleSystem", "ParticleSystemRenderer"}
-        body = title._components(objects, game, kinds, layer=1)
+        game, ancestors = stack.pop()
+        key = viewer._key(game)
+        if key in visited:
+            return None
+        if len(ancestors) >= 6 or len(visited) >= _MAX_NODES:
+            raise ValueError("The stage billboard prefab tree limit was reached.")
+        visited.add(key)
+        component_count = len(game.read_typetree()["m_Component"])
+        kinds = {"Transform"} if component_count == 1 else {"Transform", "ParticleSystem", "ParticleSystemRenderer"}
+        body = title._components(objects, game, kinds, layer=layer)
         if body is None:
             return None
         parts = body[1]
@@ -102,32 +116,45 @@ def _prefab(objects, game, deadline):
         pose = _authored_trs(transform)
         if (pose["scale"] != title._IDENTITY["scale"]
                 or any(abs(axis) > 1000 for axis in pose["translation"])
-                or level == 0 and transform["m_Father"] != billboard._NULL):
+                or not ancestors and transform["m_Father"] != billboard._NULL):
             return None
-        transform_stack.append(transform)
+        transforms = (*ancestors, transform)
         children = transform["m_Children"]
-        if "ParticleSystem" in parts and not children:
-            return _emitter(objects, parts, transform_stack)
-        if "ParticleSystem" in parts or len(children) != 1:
-            return None
-        game = title._transform_child(objects, node, children[0])
-        if game is None:
-            return None
-    return None
+        if "ParticleSystem" in parts:
+            if children:
+                return None
+            if len(layouts) >= _MAX_GROUP:
+                raise ValueError("The stage billboard emitter count limit was reached.")
+            layout = _emitter(objects, parts, transforms, layer)
+            if layout is None:
+                return None
+            layouts.append((parts["ParticleSystem"][0].path_id, layout))
+        else:
+            if not children:
+                return None
+            if len(children) > _MAX_GROUP:
+                raise ValueError("The stage billboard prefab child count limit was reached.")
+            for ref in reversed(children):
+                child = title._transform_child(objects, node, ref)
+                if child is None:
+                    return None
+                stack.append((child, transforms))
+    return layouts or None
 
 
-def _emitter(objects, parts, transforms):
+def _emitter(objects, parts, transforms, layer):
     renderer, fields = parts["ParticleSystemRenderer"]
     source = parts["ParticleSystem"][1]
-    if billboard._matches(fields, _RENDERER):
+    if layer == 1 and billboard._matches(fields, _RENDERER):
         system = _system(source)
-    elif billboard._matches(fields, dust.RENDERER):
+    elif layer == 1 and billboard._matches(fields, dust.RENDERER):
         system = dust.read(source, max_viewport_width=fields["m_MaxParticleSize"])
     else:
-        return None
+        system = burst.read(source, fields, layer)
     if system is None:
         return None
-    atlas = glow.read_additive_atlas(objects, renderer, fields)
+    atlas = glow.read_particle_atlas(objects, renderer, fields, blend=system.get("blend", "add"),
+                                    max_dimension=512 if layer == 20 else 256)
     if atlas is None:
         return None
     world = viewer._trs(transforms[0])
@@ -142,6 +169,8 @@ def _emitter(objects, parts, transforms):
         if (any(_authored_trs(node)["rotation"] != title._IDENTITY["rotation"] for node in transforms[:-1])
                 or transforms[-1]["m_LocalRotation"] != dict(zip("xyzw", (diagonal, 0, 0, diagonal)))):
             return None
+    elif system.get("kind") == "stationaryBurst":
+        row["sortCenter"] = pose["translation"]
     else:
         # Unity builds local bounds before applying the unit-scale emitter pose.
         center = world @ [0, system["shapeScale"][2] / 2, 0, 1]
@@ -177,7 +206,7 @@ def read(objects, mono, tracks, deadline):
     controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
                 if kind == "CustomControlTrack"}
     cues, emitters, layouts, rejected, textures, atlas_indices = [], {}, {}, set(), [], {}
-    complete = True
+    complete, instances = True, 0
     for track in tracks:
         source = controls.get(track["id"])
         section = _section(track)
@@ -211,25 +240,39 @@ def read(objects, mono, tracks, deadline):
                     continue
                 if identity not in layouts:
                     layouts[identity] = _prefab(objects, prefab, deadline)
-                layout = layouts[identity]
-                if layout is None:
+                group = layouts[identity]
+                if group is None:
                     rejected.add(identity)
                     continue
-                if event["duration"] > 60 and layout[0].get("kind") != "boxDust":
+                if event["duration"] > 60 and any(layout[0].get("kind") != "boxDust" for _, layout in group):
                     continue
-                if identity not in emitters:
-                    emitter = _load_emitter(layout, deadline, atlas_indices, textures)
-                    if emitter is None:
+                if instances + len(group) > _MAX_INSTANCES:
+                    complete = False
+                    continue
+                ids = [identity] if len(group) == 1 else [f"{identity}@{slot}" for slot, _ in group]
+                additional = [(member, layout) for member, (_, layout) in zip(ids, group) if member not in emitters]
+                if len(emitters) + len(additional) > _MAX_EMITTERS:
+                    complete = False
+                    continue
+                if additional:
+                    # A cue is admitted only if every member and its atlas can be loaded.
+                    trial_textures, trial_indices = list(textures), dict(atlas_indices)
+                    imported = {member: _load_emitter(layout, deadline, trial_indices, trial_textures)
+                                for member, layout in additional}
+                    if any(row is None for row in imported.values()):
                         rejected.add(identity)
+                        complete = False
                         continue
-                    emitters[identity] = {"id": identity, **emitter}
+                    textures, atlas_indices = trial_textures, trial_indices
+                    emitters.update({member: {"id": member, **row} for member, row in imported.items()})
             except title._UNSUPPORTED:
                 complete = False
                 if identity is not None:
                     rejected.add(identity)
                 continue
-            cues.append({"trackId": track["id"], "eventId": event["id"], "emitterId": identity,
-                         "quality": _SECTIONS[section]})
+            members = {"emitterId": ids[0]} if len(ids) == 1 else {"emitterIds": ids}
+            cues.append({"trackId": track["id"], "eventId": event["id"], **members, "quality": _SECTIONS[section]})
+            instances += len(ids)
     if not cues and not complete:
         return None
     return {"schema": SCHEMA, "scanComplete": complete, "textures": textures, "material": glow._MATERIAL,
@@ -264,20 +307,35 @@ def known_schema(descriptor):
             and descriptor["schema"] in _LEGACY_SCHEMAS)
 
 
+def _emitter_ids(cue):
+    def usable(value):
+        return isinstance(value, str) and 0 < len(value) <= 128
+
+    if "emitterIds" in cue:
+        ids = cue["emitterIds"]
+        if ("emitterId" in cue or not isinstance(ids, list) or not 2 <= len(ids) <= _MAX_GROUP
+                or not all(map(usable, ids)) or len(set(ids)) != len(ids)):
+            return ()
+        return tuple(ids)
+    identity = cue.get("emitterId")
+    return (identity,) if usable(identity) else ()
+
+
 def saved_cues(descriptor):
     if not known_schema(descriptor):
         return ()
     cues = descriptor.get("cues")
     if not isinstance(cues, list) or not 1 <= len(cues) <= _MAX_CUES:
         return ()
-    if any(not isinstance(cue, dict) or not all(isinstance(cue.get(key), str) for key in ("trackId", "eventId", "emitterId"))
-           or cue.get("quality") not in _SECTIONS.values() for cue in cues):
+    if any(not isinstance(cue, dict) or not all(isinstance(cue.get(key), str) for key in ("trackId", "eventId"))
+           or cue.get("quality") not in _SECTIONS.values()
+           or (descriptor["schema"] < 4 and "emitterIds" in cue) or not _emitter_ids(cue) for cue in cues):
         return ()
-    return cues
+    return cues if sum(len(_emitter_ids(cue)) for cue in cues) <= _MAX_INSTANCES else ()
 
 
 def restore_saved(saved, original, active, current):
-    """Restore supported cues backed by the original data without discarding saved edits."""
+    """Restore complete source-backed cue groups without discarding saved edits."""
     present = {(cue["trackId"], cue["eventId"]) for cue in current}
     candidates = [cue for cue in original["cues"] if (key := (cue["trackId"], cue["eventId"])) in active and key not in present]
     complete = original.get("scanComplete") is True
@@ -291,36 +349,46 @@ def restore_saved(saved, original, active, current):
         if any(not isinstance(saved.get(key), list) for key in ("textures", "emitters")):
             return None
         textures, emitters = list(saved["textures"]), list(saved["emitters"])
-    if (len(present) != len(current) or len(textures) > _MAX_ATLASES or len(emitters) > _MAX_CUES
+    if (len(present) != len(current) or len(textures) > _MAX_ATLASES or len(emitters) > _MAX_EMITTERS
             or any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or type(row.get("texture")) is not int
                    or not 0 <= row["texture"] < len(textures) for row in emitters)):
         return None
     saved_emitters = {row["id"]: row for row in emitters}
-    if len(saved_emitters) != len(emitters) or any(cue["emitterId"] not in saved_emitters for cue in current):
+    if len(saved_emitters) != len(emitters) or any(member not in saved_emitters
+                                                  for cue in current for member in _emitter_ids(cue)):
         return None
     source = {row["id"]: row for row in original["emitters"]}
     cues = list(current)
+    instances = sum(len(_emitter_ids(cue)) for cue in current)
     for cue in candidates:
         if len(cues) >= _MAX_CUES:
             break
-        identity = cue["emitterId"]
-        emitter = source[identity]
-        atlas = original["textures"][emitter["texture"]]
-        if identity in saved_emitters:
-            row = saved_emitters[identity]
-            if {**emitter, "texture": row["texture"]} != row or textures[row["texture"]] != atlas:
-                continue
+        members = _emitter_ids(cue)
+        if instances + len(members) > _MAX_INSTANCES:
+            continue
+        trial_textures, added_emitters = list(textures), {}
+        for identity in members:
+            emitter = source[identity]
+            atlas = original["textures"][emitter["texture"]]
+            if identity in saved_emitters:
+                row = saved_emitters[identity]
+                if {**emitter, "texture": row["texture"]} != row or textures[row["texture"]] != atlas:
+                    break
+            else:
+                if len(saved_emitters) + len(added_emitters) >= _MAX_EMITTERS:
+                    break
+                if atlas not in trial_textures:
+                    if len(trial_textures) >= _MAX_ATLASES:
+                        break
+                    trial_textures.append(atlas)
+                added_emitters[identity] = {**emitter, "texture": trial_textures.index(atlas)}
         else:
-            if len(emitters) >= _MAX_CUES or atlas not in textures and len(textures) >= _MAX_ATLASES:
-                continue
-            if atlas not in textures:
-                textures.append(atlas)
-            row = {**emitter, "texture": textures.index(atlas)}
-            emitters.append(row)
-            saved_emitters[identity] = row
-        cues.append(cue)
+            textures = trial_textures
+            saved_emitters.update(added_emitters)
+            cues.append(cue)
+            instances += len(members)
     added = len(cues) - len(current)
     if added or complete:
         return {**base, "schema": SCHEMA, "scanComplete": complete and added == len(candidates),
-                "textures": textures, "emitters": emitters, "cues": cues}
+                "textures": textures, "emitters": list(saved_emitters.values()), "cues": cues}
     return None

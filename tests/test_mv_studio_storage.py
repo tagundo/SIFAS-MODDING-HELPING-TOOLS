@@ -721,6 +721,49 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened.get("stageLensFlare"), expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_stage_billboards_restore_multi_emitter_cue_atomically(self):
+        project = mv_studio._blank("Grouped stage billboards")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        track = {"id": "stage", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": "StageEffect/Expert/Control/edited group"}
+        event = {"id": "stage:1", "label": "Moved group", "start": 22, "duration": 2,
+                 "values": {"playableClass": "CustomControlClip", "prefabGameObject": {"m_FileID": 0, "m_PathID": "42"},
+                            "offset": {"x": 2, "y": 1, "z": 5}}}
+        opening = {**event, "id": "stage:0", "start": 1}
+        tracks = [{**track, "events": [opening, event]}]
+        singleton = {"trackId": "stage", "eventId": "stage:0", "emitterId": "old", "quality": "stage_control"}
+        group = {"trackId": "stage", "eventId": "stage:1", "emitterIds": ["left", "right"], "quality": "stage_control"}
+        textures = [[{"png": "prior"}], [{"png": "both"}]]
+        old = {"id": "old", "texture": 0, "position": [0, 1, 2]}
+        left = {"id": "left", "texture": 1, "layer": 20, "blend": "alpha", "kind": "stationaryBurst"}
+        right = {**left, "id": "right"}
+        original = {"schema": mv_studio_stage_lens.SCHEMA, "scanComplete": True,
+                    "textures": textures, "material": {"blend": "add"}, "tiles": [2, 1],
+                    "maxViewportWidth": .5, "sortMode": 0, "emitters": [old, left, right], "cues": [singleton, group]}
+        edited = {**old, "position": [4, 2, 1]}
+        partial = {**original, "schema": 3, "textures": textures[:1], "emitters": [edited], "cues": [singleton]}
+        expected = {**original, "emitters": [edited, left, right]}
+        incompatible = {**partial, "emitters": [edited, {**right, "texture": 0}]}
+        for saved, source, result, reparses in (
+                (partial, self.original, expected, True),
+                (partial, None, partial, False),
+                (incompatible, self.original, {**incompatible, "schema": original["schema"], "scanComplete": False}, True),
+                (expected, self.original, expected, False)):
+            with self.subTest(saved=saved, source=source):
+                document = {**project, "tracks": tracks, "stageLensFlare": saved}
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageLensFlare": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, project["name"], preview_split=False,
+                                                  preview_stage_title=False, preview_stage_lens=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened["stageLensFlare"], result)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_stage_lens_does_not_repeat_a_completed_empty_scan(self):
         project = mv_studio._blank("Examined control track")
         project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}

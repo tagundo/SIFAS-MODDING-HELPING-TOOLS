@@ -73,13 +73,19 @@ def _color_keys(source, prefix, channels):
     return rows if rows and rows[0][0] == 0 and rows[-1][0] == 65535 else None
 
 
-def _sprite_fields(source):
-    color = source["ColorModule"]["gradient"]
+def color_over_life(color):
     if color["minMaxState"] != 1:
         return None
     gradient = color["maxGradient"]
     rgb, alpha = _color_keys(gradient, "ctime", "rgb"), _color_keys(gradient, "atime", "a")
     if rgb is None or alpha is None:
+        return None
+    return {"rgb": rgb, "alpha": alpha}
+
+
+def _sprite_fields(source):
+    color = color_over_life(source["ColorModule"]["gradient"])
+    if color is None:
         return None
     uv = source["UVModule"]
     if (not billboard._matches(uv, {"mode": 0, "timeMode": 0, "animationType": 0, "cycles": 1, "tilesX": 2, "tilesY": 2,
@@ -91,8 +97,7 @@ def _sprite_fields(source):
     start = [fixed, fixed] if _number(fixed, 0, 1) else _range(uv["startFrame"], 0, 1)
     if frames is None or start is None:
         return None
-    return {"tiles": [2, 2], "colorOverLife": {"rgb": rgb, "alpha": alpha},
-            "atlas": {"start": start, "frame": frames}}
+    return {"tiles": [2, 2], "colorOverLife": color, "atlas": {"start": start, "frame": frames}}
 
 
 def read(source, *, max_viewport_width=1):

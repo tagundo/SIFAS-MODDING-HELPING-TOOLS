@@ -97,6 +97,32 @@
     });
   }
 
+  function nativePackedGradient({rgb, alpha}, start) {
+    const f32 = Math.fround;
+    function at(keys, stamp) {
+      const index = keys.findIndex(row => row[0] > stamp);
+      const right = keys[index < 0 ? keys.length - 1 : index];
+      const left = index > 0 ? keys[index - 1] : right;
+      const t = right === left ? 0 : f32((stamp - left[0]) / (right[0] - left[0]));
+      return left.slice(1).map((value, i) => {
+        const blended = f32(value + f32(f32(right[i + 1] - value) * t));
+        return Math.trunc(f32(f32(blended * 255) + .5));
+      });
+    }
+    // The native compiler packs one gradient over the union of RGB and alpha stamps.
+    const stamps = [...new Set([...rgb, ...alpha].map(row => row[0]))].sort((a, b) => a - b);
+    return {start, keys: stamps.map(stamp => [f32(stamp / 65535), ...at(rgb, stamp), ...at(alpha, stamp)])};
+  }
+
+  function nativeInverseLifetime(value) {
+    // The ARM worker refines its reciprocal estimate with two Newton updates.
+    const f32 = Math.fround;
+    const scale = 2 ** -Math.floor(Math.log2(value)), bin = Math.floor(value * scale * 256);
+    let reciprocal = Math.floor((Math.floor(524288 / (2 * bin + 1)) + 1) / 2) * scale / 512;
+    for (let i = 0; i < 2; i++) reciprocal = f32(reciprocal * f32(2 - value * reciprocal));
+    return reciprocal;
+  }
+
   const nativeStepRate = 60;
   const nativeStep = Math.fround(1 / nativeStepRate);
 
@@ -389,5 +415,6 @@
   global.MVStudioStageParticles = {
     apply, activeOffset, activeControlFrame, autoSeed, nativeRandom, nativeUnit, nativeColor, nativeColorAtTime, validNativeColor,
     nativeFrame, nativeStep, nativeStepRate, nativeSpherePosition, nativeHemispherePosition, nativeCurve,
+    nativePackedGradient, nativeInverseLifetime,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -387,8 +387,11 @@
         if (!(useLive && split?.draw(renderView, hasShot ? liveCamera : null))) {
           renderView(useLive && hasShot ? liveCamera : editorCamera);
         }
-        if (useLive && settings.stage_overlay_effect !== false && records.some((record) => record.stageOverlay?.hasVisible())) {
-          overlay?.draw(scene);
+        if (useLive && settings.stage_overlay_effect !== false) {
+          const particles = stageLens?.sortEntries(20);
+          if (particles?.length || records.some((record) => record.stageOverlay?.hasVisible())) {
+            overlay?.draw(scene, particles?.length ? camera => sortTransparentParticles(camera, particles) : undefined);
+          }
         }
       }
     }
@@ -436,6 +439,10 @@
         return;
       }
       const entries = [...rain, ...(stageButterfly?.sortEntries() || []), ...leaves, ...confetti, ...glow, ...lens];
+      sortTransparentParticles(camera, entries);
+    }
+
+    function sortTransparentParticles(camera, entries) {
       camera.updateMatrixWorld();
       displayEye.setFromMatrixPosition(camera.matrixWorld);
       const visible = entries.map(({mesh, center}, order) => {

@@ -86,7 +86,7 @@ def _system(source):
     return _color(source, initial)
 
 
-def read_additive_atlas(objects, renderer, fields, *, surface=None, atlas=None):
+def read_particle_atlas(objects, renderer, fields, *, surface=None, atlas=None, blend="add", max_dimension=256):
     refs = fields["m_Materials"]
     if surface is not None:
         if len(refs) != 2 or refs[0] != refs[1]:
@@ -98,11 +98,12 @@ def read_additive_atlas(objects, renderer, fields, *, surface=None, atlas=None):
         return None
     tree = material.read_typetree()
     keywords = set(tree["m_ShaderKeywords"].split())
+    render_values = {**_SURFACE, "_BlendDst": 10} if blend == "alpha" else _SURFACE
     if (surface is not None and (material.path_id, tree["m_Name"], tree["m_ShaderKeywords"]) != surface
             or keywords not in ({"_VERTEX_COLOR_ON"}, {"_VERTEX_COLOR_ON", "_VERTEX_COLOR_OFF"})
             or not billboard._matches(tree, {"m_CustomRenderQueue": 3010, "stringTagMap": [], "disabledShaderPasses": []})
             or not _shader_matches(material, tree, "AS/General/Transparent")
-            or not billboard._matches(viewer._properties(tree, "m_Floats"), _SURFACE)
+            or not billboard._matches(viewer._properties(tree, "m_Floats"), render_values)
             or viewer._properties(tree, "m_Colors").get("_TintColor") != billboard._WHITE):
         return None
     textures = viewer._properties(tree, "m_TexEnvs")
@@ -118,7 +119,7 @@ def read_additive_atlas(objects, renderer, fields, *, surface=None, atlas=None):
     settings = native.m_TextureSettings
     if (atlas is not None and (texture.path_id, native.m_Name, width, height) != atlas
             or any(side not in (2, 4, 8, 16, 32, 64, 128, 256, 512) for side in (width, height))
-            or (atlas is None and max(width, height) > 256)
+            or (atlas is None and max(width, height) > max_dimension)
             or (native.m_TextureFormat, native.m_MipCount, native.m_ColorSpace, native.m_ImageCount,
                 native.m_TextureDimension, native.m_StreamingMipmaps)
             != (65, max(width, height).bit_length(), 1, 1, 2, False)
@@ -157,7 +158,7 @@ def _prefab(objects, game, deadline):
     system = _system(parts["ParticleSystem"][1])
     if system is None:
         return None
-    source = read_additive_atlas(objects, renderer, fields,
+    source = read_particle_atlas(objects, renderer, fields,
                                  surface=(_MATERIAL_ID, "mat_par_gen_add_24", "_VERTEX_COLOR_ON"),
                                  atlas=(_TEXTURE_ID, "tex_par_gen_15", *_DIMENSIONS))
     levels = particles._texture(source[0], deadline, dimensions=source[1]) if source is not None else None

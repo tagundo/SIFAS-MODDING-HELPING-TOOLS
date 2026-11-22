@@ -106,7 +106,7 @@
     camera.layers.set(layer);
     let lastAspect = 1;
     return {
-      draw(scene) {
+      draw(scene, beforeDraw) {
         const { width, height } = renderer.domElement;
         if (!width || !height) return;
         const aspect = width / height;
@@ -120,8 +120,10 @@
         scene.background = null;
         renderer.autoClear = false;
         scene.autoUpdate = false;
-        try { renderer.render(scene, camera); }
-        finally {
+        try {
+          beforeDraw?.(camera);
+          renderer.render(scene, camera);
+        } finally {
           scene.background = background;
           renderer.autoClear = autoClear;
           scene.autoUpdate = autoUpdate;

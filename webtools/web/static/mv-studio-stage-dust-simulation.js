@@ -47,26 +47,6 @@
         key.slice(2).every(slope => slope === null || range(slope, -4096, 4096)));
   }
 
-  function packedGradient({rgb, alpha}, start) {
-    function at(keys, stamp) {
-      const index = keys.findIndex(row => row[0] > stamp);
-      const right = keys[index < 0 ? keys.length - 1 : index];
-      const left = index > 0 ? keys[index - 1] : right;
-      const t = right === left ? 0 : f32((stamp - left[0]) / (right[0] - left[0]));
-      return left.slice(1).map((value, i) => byte(lerp(value, right[i + 1], t)));
-    }
-    const stamps = [...new Set([...rgb, ...alpha].map(row => row[0]))].sort((a, b) => a - b);
-    return {start, keys: stamps.map(stamp => [f32(stamp / maxStamp), ...at(rgb, stamp), ...at(alpha, stamp)])};
-  }
-
-  function inverseLifetime(value) {
-    // Native reciprocal estimate with two Newton updates.
-    const scale = 2 ** -Math.floor(Math.log2(value)), bin = Math.floor(value * scale * 256);
-    let reciprocal = Math.floor((Math.floor(524288 / (2 * bin + 1)) + 1) / 2) * scale / 512;
-    for (let i = 0; i < 2; i++) reciprocal = f32(reciprocal * f32(2 - value * reciprocal));
-    return reciprocal;
-  }
-
   function cull(active) {
     for (let first = 0; first < active.length;) {
       let removed = false;
@@ -83,13 +63,14 @@
   function create(row, seed) {
     const particles = global.MVStudioStageParticles;
     if (!particles?.nativeCurve || !supported(row, seed)) return null;
-    const {nativeRandom, nativeUnit, nativeFrame, nativeStep, nativeStepRate, nativeCurve, nativeColorAtTime} = particles;
+    const {nativeRandom, nativeUnit, nativeFrame, nativeStep, nativeStepRate, nativeCurve,
+      nativeColorAtTime, nativePackedGradient, nativeInverseLifetime} = particles;
     const {duration: cycle} = row;
     const rate = f32(row.rate), gravityRange = row.gravityRange?.map(f32);
     const gravity = gravityRange ? 1 : f32(row.gravity), multiplier = f32(row.sizeMultiplier);
     const [lifeMin, lifeMax] = row.lifetime.map(f32), [sizeMin, sizeMax] = row.size.map(f32);
     const [sx, sy, sz] = row.shapeScale.map(f32), startColor = row.startColor.map(byte);
-    const gradient = row.colorOverLife && packedGradient(row.colorOverLife, startColor);
+    const gradient = row.colorOverLife && nativePackedGradient(row.colorOverLife, startColor);
     const atlas = row.atlas && {start: row.atlas.start.map(f32), frame: row.atlas.frame.map(f32)};
     const sizeAt = nativeCurve(row.sizeKeys.map(([time, value, incoming, outgoing]) =>
       [f32(time), f32(value), incoming === null ? null : f32(incoming), outgoing === null ? null : f32(outgoing)]));
@@ -115,7 +96,7 @@
 
     function birth({initial, shape}) {
       const word = initial();
-      const life = inverseLifetime(lerp(lifeMin, lifeMax, nativeUnit(initial())));
+      const life = nativeInverseLifetime(lerp(lifeMin, lifeMax, nativeUnit(initial())));
       const width = lerp(sizeMin, sizeMax, nativeUnit(initial()));
       initial(); initial(); // Fixed starting roll and color still consume stream words.
       const box = span => f32(f32(nativeUnit(shape()) - .5) * span);
