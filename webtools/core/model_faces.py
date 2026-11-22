@@ -1234,12 +1234,12 @@ class FacePlan:
         return material
 
     def native_merge_bindings(self, scene, selected, facial_sources):
-        """Return the exact costume carrier and head material for merged face surfaces."""
+        """Read the native face material, geometry bindings, and relocated transforms."""
         import numpy as np
-        from .model_viewer import _key, _member_depth_material, _ref, _remaining, _source_path
+        from .model_viewer import _key, _member_depth_material, _ref, _remaining, _source_path, _trs
 
         if not facial_sources:
-            return {}
+            return {}, {}
 
         def typed(owner, pointer, kind, *, local=True):
             target = _ref(owner, pointer)
@@ -1319,7 +1319,41 @@ class FacePlan:
             return (reference.get("m_FileID") == 0 and reference.get("m_PathID") == 952725256833404699
                     and typed(material, reference, "Shader") is not None)
 
-        bindings = {}
+        def donor_surface(transform, material):
+            row = surface(transform)
+            if row is None:
+                return None
+            renderer, placeholder = row
+            if not stock_placeholder(placeholder) or self.material_bindings.get(_key(renderer)) is not material:
+                return None
+            return renderer
+
+        def eye_mounts(renderer, donor_head, costume_head):
+            face_root = children(donor_head).get("Face_Root")
+            eye_root = children(face_root).get("Eye_Root")
+            bones = [donor_head, face_root, eye_root]
+            for side in ("Left", "Right"):
+                side_root = children(eye_root).get(f"{side}Eye_Root")
+                first = children(side_root).get(f"{side}Eye1")
+                second = children(first).get(f"{side}Eye2")
+                bones.extend((side_root, first, second))
+            if any(transform is None for transform in bones):
+                return None
+            tree = scene.tree(renderer)
+            if typed(renderer, tree.get("m_RootBone"), "Transform") is not donor_head:
+                return None
+            authored = [typed(renderer, pointer, "Transform") for pointer in tree.get("m_Bones", ())]
+            if authored != bones:
+                return None
+            result = {_key(donor_head): (costume_head, True), _key(face_root): (costume_head, False)}
+            for transform in bones[2:]:
+                parent = typed(transform, scene.tree(transform).get("m_Father"), "Transform")
+                if parent is None or _key(parent) not in result:
+                    return None
+                result[_key(transform)] = (parent, False)
+            return result
+
+        bindings, mounts = {}, {}
         for component in scene.env.objects:
             if component.type.name != "MonoBehaviour" or _source_path(component) not in selected:
                 continue
@@ -1360,7 +1394,8 @@ class FacePlan:
                 if (carrier is None or costume_nodes.get("Head_Face") is None
                         or "mesh_facedots" in children(costume_nodes["Head_Face"])):
                     continue
-                donor = children(scene.transforms.get(_key(prefab))).get("mesh_face")
+                donor_root = children(scene.transforms.get(_key(prefab)))
+                donor = donor_root.get("mesh_face")
                 costume_parts = merged_surfaces(carrier)
                 donor_parts = merged_surfaces(donor)
                 if (not costume_parts or not donor_parts
@@ -1379,10 +1414,36 @@ class FacePlan:
                     continue
                 for (_, renderer, _), world in zip([*costume_parts, *donor_parts], worlds, strict=True):
                     key = _key(renderer)
-                    bindings[key] = None if key in bindings else (carrier, world, material)
+                    bindings[key] = None if key in bindings else ((carrier, world), material, "merge")
+
+                # RepairRootBone keeps Eye separate and replaces its donor Head_Face
+                # joint with the selected costume's joint. Face_Root retains its local TRS.
+                eye = donor_surface(children(donor).get("Eye"), material)
+                if eye is not None:
+                    eye_nodes = eye_mounts(eye, donor_root.get("Head_Face"), costume_nodes["Head_Face"])
+                    if eye_nodes is not None and not mounts.keys() & eye_nodes.keys():
+                        mounts.update(eye_nodes)
+                        key = _key(eye)
+                        bindings[key] = None if key in bindings else (None, material, "eye")
+
+                # The source moves display_OnOff with worldPositionStays=false.
+                display = donor_root.get("display_OnOff")
+                if display is not None and _key(display) not in mounts:
+                    display_world = scene.world(head_all_tr) @ _trs(scene.tree(display))
+                    for name in ("LeftEyeWhiteLine", "RightEyeWhiteLine"):
+                        transform = children(display).get(name)
+                        line = donor_surface(transform, material)
+                        if line is None:
+                            continue
+                        world = display_world @ _trs(scene.tree(transform))
+                        if not np.isfinite(world).all():
+                            continue
+                        key = _key(line)
+                        bindings[key] = None if key in bindings else ((display, world), material, "line")
+                        mounts[_key(display)] = (head_all_tr, False)
             except (AttributeError, KeyError, TypeError, ValueError, np.linalg.LinAlgError, OSError):
                 continue
-        return bindings
+        return bindings, mounts
 
     def metadata(self):
         return {"enabled": self.enabled, "status": self.status, "added": self.added,

@@ -462,6 +462,27 @@ def _merge_visibility(tracks, deadline):
     return output
 
 
+def _white_line_scalar_keys(track, clip):
+    """Keep the source Float32 cubic for the native facial visibility mixer."""
+    mode, keys = track["curves"][0]
+    if mode != "cubic" or not 1 <= len(keys) <= 16:
+        return None
+    start, stop = clip["start"], clip["start"] + clip["duration"]
+    rows = [[stamp - start, *coefficients] for stamp, coefficients in keys if start <= stamp <= stop]
+    if not rows or rows[0][0] > 0:
+        prior = [key for key in keys if key[0] < start]
+        if not prior:
+            return None
+        stamp, coefficients = prior[-1]
+        # The native negative sentinel initializes a constant before t=0.
+        if stamp > -1e20 and any(coefficients[:3]):
+            return None
+        rows.insert(0, [0, 0, 0, 0, coefficients[3]])
+    if any(a[0] >= b[0] for a, b in zip(rows, rows[1:])):
+        return None
+    return rows
+
+
 def _multiply(a, b):
     x, y, z, w = a
     X, Y, Z, W = b
@@ -618,6 +639,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
         checkpoint = (len(glb.data), len(glb.doc["accessors"]), len(glb.doc["bufferViews"]))
         try:
             clip = decode_clip(scene.tree(obj), deadline)
+            source_role = source_roles.get(_object_key(obj), "unknown") if hasattr(obj, "assets_file") else "unknown"
             times, outputs, morph_outputs, rebound, unbound, ambiguous = clip["times"], [], {}, False, 0, False
             visibility_tracks = []
             planned_frames, planned_values = 0, 0
@@ -643,8 +665,18 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     for node in targets:
                         if not 0 <= int(node) < len(glb.doc["nodes"]) or "mesh" not in glb.doc["nodes"][int(node)]:
                             raise AnimationError("Visibility animation must target an exported mesh, never a skeleton bone.")
-                        visibility_tracks.append({"node": int(node), "times": stamps, "values": states,
-                                                  "interpolation": "STEP", "sourceProperty": "GameObject.m_IsActive" if mode == "gameObject" else "Renderer.m_Enabled"})
+                        row = {"node": int(node), "times": stamps, "values": states,
+                               "interpolation": "STEP", "sourceProperty": "GameObject.m_IsActive" if mode == "gameObject" else "Renderer.m_Enabled"}
+                        target = glb.doc["nodes"][int(node)]
+                        if (source_role == "facial" and mode == "renderer" and track["attribute"] == 3305885265
+                                and target["name"] in ("LeftEyeWhiteLine", "RightEyeWhiteLine")):
+                            primitives = glb.doc["meshes"][target["mesh"]]["primitives"]
+                            if (len(primitives) == 1 and
+                                    primitives[0].get("extras", {}).get("mvStageCameraDepth", {}).get("kind") == "memberFace"):
+                                keys = _white_line_scalar_keys(track, clip)
+                                if keys is not None:
+                                    row["sourceScalarKeys"] = keys
+                        visibility_tracks.append(row)
                     continue
                 if track["kind"] == "weights":
                     matches, moved = _morphs(morph_bindings, track["path"], track["attribute"])
@@ -708,7 +740,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             if used_channels + channels > MAX_CHANNELS:
                 raise AnimationError("The supplied animations exceed the preview channel limit.")
             frames = len(times) * len(outputs) + sum(len(row["times"]) for row in visibility_tracks)
-            values = sum(len(row) for _, _, rows in outputs for row in rows) + sum(len(row["values"]) for row in visibility_tracks)
+            values = sum(len(row) for _, _, rows in outputs for row in rows) + sum(
+                len(row["values"]) + 5 * len(row.get("sourceScalarKeys", ())) for row in visibility_tracks)
             if used_frames + frames > MAX_KEYFRAMES or used_values + values > MAX_VALUES:
                 raise AnimationError("The supplied animations exceed the mobile preview keyframe limit.")
             if any(not 0 <= node < len(glb.doc["nodes"]) for node, _, _ in outputs):
@@ -742,7 +775,7 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
             metadata.append({"index": index, "name": exported_name, "sourceName": clip["name"], "duration": clip["duration"],
                              "channels": len(outputs), "loop": clip["loop"], "visibility": visibility_tracks,
                              "sourceId": source_identifier, "sourceHash": source_hash, "sourceTracks": len(clip["tracks"]),
-                             "sourceRole": source_roles.get(_object_key(obj), "unknown") if hasattr(obj, "assets_file") else "unknown",
+                             "sourceRole": source_role,
                              "unsupportedTracks": clip["unsupported"], "unboundTracks": unbound,
                              "unsupportedKinds": clip["unsupportedKinds"],
                              "bindingComplete": not (clip["unsupported"] or unbound or ambiguous)})

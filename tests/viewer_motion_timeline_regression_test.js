@@ -102,4 +102,71 @@ check('shared facial tracks retain each source clip endpoint and repeated-time c
   s.face.morphTargetInfluences.splice(0, 2, .2, .4); player.evaluate(2.5);
   close(s.face.morphTargetInfluences[0], .6, 'a new evaluation at the same time observes current authored segment values');
 });
+check('native MV eye poses synchronize source time and mixer weight for the animated renderer', () => {
+  const s = setup(), white = new THREE.Mesh(), eye = new THREE.Mesh();
+  white.name = 'LeftEyeWhiteLine'; white.userData.elichika_node = 3; white.morphTargetInfluences = [0, 0];
+  white.geometry.userData.mvStageCameraDepth = { kind: 'memberFace' };
+  const display = new THREE.Bone(); display.userData.originalName = 'display_OnOff'; white.skeleton = new THREE.Skeleton([display]);
+  eye.name = 'eye'; eye.userData.elichika_node = 4; eye.morphTargetInfluences = [0]; eye.morphTargetDictionary = { iris: 0 };
+  s.root.add(white, eye);
+  const clip = new THREE.AnimationClip('native-wink', 1, [
+    new THREE.NumberKeyframeTrack('LeftEyeWhiteLine.morphTargetInfluences', [0, .75, 1], [0, 0, 0, .5, 1, 1]),
+    new THREE.NumberKeyframeTrack('eye.morphTargetInfluences[0]', [0, 1], [0, 1])
+  ]);
+  s.metadata.clips.push({ name: clip.name, sourceName: 'ch0201_LiveFacial_eye_018', sourceRole: 'facial',
+    bindingComplete: true, duration: 1, visibility: [{ node: 3, sourceProperty: 'Renderer.m_Enabled',
+      interpolation: 'STEP', times: [0, 1], values: [false, true] }] });
+  function event(start, weight, id) { return { kind: 'eyes', index: 18, start, duration: 1, weight, nativeEventId: 'original:' + id }; }
+  s.descriptor.facial.events = [event(0, .75, 0), event(2, .4, 1), event(2, .6, 2), event(4, .75, 3), event(4, .75, 4)];
+  const controller = factory.create(s.root, [s.body, clip], s.metadata, s.descriptor, { indexTiming: true });
+  function frame(time) { controller.evaluatePose(time); controller.applyVisibility(time); }
+  frame(.5);
+  close(white.morphTargetInfluences[0], 0, 'stock WhiteLine ramp is still zero at source weight .75');
+  close(white.morphTargetInfluences[1], .375, 'sampled morph is still scaled by the playable input weight');
+  assert.equal(white.visible, false, 'display_OnOff initializes disabled and this source sample is still zero');
+  close(eye.morphTargetInfluences[0], .75, 'the unbound iris renderer keeps the existing static pose');
+  frame(2.5);
+  close(white.morphTargetInfluences[0], 1, 'two active references to the same pose synchronize to their summed input weight');
+  assert.equal(white.visible, true, 'the full-weight source sample enables the renderer');
+  frame(4.5);
+  close(white.morphTargetInfluences[0], 1.5, 'the native eye mixer does not normalize overlapping inputs');
+  frame(1.5);
+  assert.equal(white.visible, false, 'an idle sample after an enabled frame restores the game-initialized disabled state');
+  frame(.5);
+  assert.equal(white.visible, false, 'rewind restores the earlier source visibility');
+  close(white.morphTargetInfluences[0], 0, 'rewind samples the earlier source pose');
+  frame(1.5);
+  assert.equal(white.visible, false, 'a neutral gap restores the game-initialized disabled state');
+  close(white.morphTargetInfluences[1], 0, 'a neutral gap restores the authored morph state');
+
+  const standalone = factory.create(s.root, [s.body, clip], s.metadata, s.descriptor);
+  standalone.evaluatePose(.5); standalone.applyVisibility(.5);
+  close(white.morphTargetInfluences[0], .75, 'standalone tools retain endpoint facial poses');
+  assert.equal(white.visible, true);
+
+  const track = s.metadata.clips.at(-1).visibility[0];
+  track.sourceScalarKeys = [[0, 0, 0, 0, 0], [0.9999898672103882, 17737904553984, -2660685568, 98689.5078125, 0], [1, 0, 0, 0, 1]];
+  s.descriptor.facial.events = [event(0, .9999952912330627, 0), event(2, .9999898672103882, 1)];
+  const packed = factory.create(s.root, [s.body, clip], s.metadata, s.descriptor, { indexTiming: true });
+  packed.applyVisibility(.5);
+  assert.equal(white.visible, true, 'the original pre-endpoint cubic crosses the native visibility threshold');
+  packed.applyVisibility(2.5);
+  assert.equal(white.visible, false, 'the original transition key starts at zero');
+  packed.applyVisibility(.5);
+  assert.equal(white.visible, true, 'backward seeking samples the packed visibility curve again');
+
+  s.metadata.clips.at(-1).visibility = [];
+  white.morphTargetInfluences.fill(0);
+  s.descriptor.facial.events = [event(0, .75, 0)];
+  const morphOnly = factory.create(s.root, [s.body, clip], s.metadata, s.descriptor, { indexTiming: true });
+  morphOnly.evaluatePose(.5); morphOnly.applyVisibility(.5);
+  close(white.morphTargetInfluences[1], .375, 'native WhiteLine morphs synchronize without an enable lane');
+  assert.equal(white.visible, false, 'a verified renderer without an enable lane uses the native default');
+
+  white.visible = true;
+  s.descriptor.facial.events = [];
+  const noEyes = factory.create(s.root, [s.body, clip], s.metadata, s.descriptor, { indexTiming: true });
+  noEyes.applyVisibility(.5);
+  assert.equal(white.visible, false, 'removing every eye event still initializes native WhiteLine visibility');
+});
 if (failures.length) { console.error(JSON.stringify(failures, null, 2)); process.exitCode = 1; }

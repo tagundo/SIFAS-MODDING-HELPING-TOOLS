@@ -132,6 +132,7 @@ class RigBuilder:
             owners.update(source_owner(scene, source, manifests.get(source)))
         self.owner = next(iter(owners)) if len(owners) == 1 else None
         self.nodes, self.worlds, self.names = {}, {}, defaultdict(list)
+        self.face_mounts = {}
         self._path_cache = {}
         self.bones, self.morphs, self.node_bindings, self.morph_bindings = [], [], {}, {}
         self.source_positions = {}
@@ -206,7 +207,7 @@ class RigBuilder:
 
     def ensure(self, transform, renderer=None):
         import numpy as np
-        from .model_viewer import _key, _ref, _source_path, _source_hash, _remaining
+        from .model_viewer import _key, _ref, _source_path, _source_hash, _remaining, _trs as authored_matrix
         _remaining(self.deadline)
         key = _key(transform)
         if key in self.nodes:
@@ -214,10 +215,21 @@ class RigBuilder:
         tree = self.scene.local_tree(transform)
         obj = _ref(transform, tree.get("m_GameObject"))
         name = self.scene.name(obj) if obj is not None else "Bone"
-        world = self.scene.world(transform)
         source = _source_path(transform)
         primary = source in self.selected and source not in self.facial_sources
-        if not primary and renderer is not None:
+        mounted = self.face_mounts.get(key)
+        parent = _ref(transform, tree.get("m_Father"))
+        if mounted is not None:
+            parent, reuses_parent = mounted
+            parent_index = self.ensure(parent, renderer)
+            if reuses_parent:
+                self.nodes[key] = parent_index
+                self._binding(self._path(transform), parent_index)
+                return parent_index
+            world = self.worlds[parent_index] @ authored_matrix(tree)
+        else:
+            world = self.scene.world(transform)
+        if mounted is None and not primary and renderer is not None:
             world = self.faces.world(self.scene, renderer, world)
             matching = self.names.get(name, [])
             if len(matching) == 1 and name not in ("Face", "Hair", "Body", "Reference", "Move"):
@@ -226,11 +238,11 @@ class RigBuilder:
                     self.nodes[key] = node
                     self._binding(self._path(transform), node)
                     return node
-        parent = _ref(transform, tree.get("m_Father"))
-        parent_index = self.ensure(parent, renderer) if parent is not None else self.root
+        if mounted is None:
+            parent_index = self.ensure(parent, renderer) if parent is not None else self.root
         parent_world = self.worlds.get(parent_index, np.eye(4))
-        local = np.linalg.inv(parent_world) @ world
-        node = self._node(name, _authored_trs(tree) if primary else _trs(local), "bone")
+        local = _authored_trs(tree) if primary or mounted is not None else _trs(np.linalg.inv(parent_world) @ world)
+        node = self._node(name, local, "bone")
         if key in self.scene.runtime_positions:
             self.source_positions[node] = _authored_trs(self.scene.tree(transform))["translation"]
         self.nodes[key], self.worlds[node] = node, world

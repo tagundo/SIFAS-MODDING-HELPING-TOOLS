@@ -231,6 +231,8 @@
     var restoreFace = indexTiming && descriptor.category === "mv";
     var faceWrites = restoreFace ? [] : null, morphWrites = restoreFace ? [] : null;
     var visibilityWrites = restoreFace ? new Map() : null;
+    var nativeEyePoses = new Map(), nativeEyeEvents = [], nativeEyeMeshes = new Map(), nativeEyeVisibility = new Map(), nativeEyeRevision = -1;
+    var rendererEnabledEpsilon = Math.fround(.001);
     var timingSpecs = indexTiming ? new WeakMap() : null, timingIndexes = indexTiming ? new WeakMap() : null;
     function getTiming(segment) {
       if (!indexTiming) return timing(segment.timing);
@@ -271,6 +273,31 @@
     clips.forEach(function (entry) { if (!animationByName[entry.name]) return; var key = JSON.stringify([entry.sourceHash, entry.sourceName]);
       if (!clipIdentities.has(key)) clipIdentities.set(key, []); clipIdentities.get(key).push(entry); });
     root.traverse(function (node) { if (node.userData && node.userData.elichika_node !== undefined) nodeByIndex[String(node.userData.elichika_node)] = node; });
+    function isNativeRendererTrack(track) {
+      return track.sourceProperty === "Renderer.m_Enabled" && track.interpolation === "STEP" &&
+        track.times && track.times.length && track.values && track.times.length === track.values.length;
+    }
+    if (restoreFace) {
+      var sourceWhiteLines = new Set();
+      clips.forEach(function (entry) {
+        if (entry.sourceRole !== "facial" || entry.bindingComplete !== true || !/(?:^|_)LiveFacial_eye_\d+(?:__\d+)?$/.test(entry.sourceName || entry.name)) return;
+        (entry.visibility || []).forEach(function (track) { if (isNativeRendererTrack(track)) sourceWhiteLines.add(String(track.node)); });
+      });
+      Object.keys(nodeByIndex).forEach(function (id) {
+        var node = nodeByIndex[id], meshes = [];
+        // The original display_OnOff leaves are flattened into the actor mesh
+        // list. The source catalog also identifies them on older GLB exports.
+        if (!/^(?:Left|Right)EyeWhiteLine$/.test(node.userData.originalName || node.name.replace(/__\d+$/, ""))) return;
+        node.traverse(function (child) { if (child.isMesh) meshes.push(child); });
+        if (!sourceWhiteLines.has(id) && !meshes.some(function (mesh) {
+          var depth = mesh.geometry.userData.mvStageCameraDepth, bones = mesh.skeleton && mesh.skeleton.bones;
+          return depth && depth.kind === "memberFace" && bones && bones.length === 1 &&
+            bones[0] && bones[0].userData.originalName === "display_OnOff";
+        })) return;
+        nativeEyeMeshes.set(id, meshes);
+        meshes.forEach(function (mesh) { nativeEyeVisibility.set(mesh, []); });
+      });
+    }
     (expressions.rawChannels || []).forEach(function (channel) {
       var node = nodeByIndex[String(channel.node)], targets = [];
       if (node) node.traverse(function (target) {
@@ -312,7 +339,7 @@
       if (matches.some(function (entry) { return entry.bindingComplete === false; })) warn("Some original Animator parameters or unmatched tracks are unavailable. The compatible character tracks are playing.");
       return animationByName[matches[0].name];
     }
-    function register(collection, clip, segment, staticPose, gazeOnly) {
+    function register(collection, clip, segment, staticPose, gazeOnly, eyePose) {
       var registered = 0;
       clip.tracks.forEach(function (track) {
         var key = track.name, group = collection[key], binding = group && group.binding || bindingsByName.get(key);
@@ -320,24 +347,32 @@
         if (gazeOnly && (!binding.node || !binding.node.isBone || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(binding.node.userData.originalName || binding.node.name.replace(/__\d+$/, "")))) return;
         var base = new Array(track.getValueSize()); binding.getValue(base, 0);
         if (!denseFinite(base)) return;
+        var node = binding.targetObject || binding.node;
+        var morph = collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences";
+        var synchronized = morph && eyePose && nativeEyeVisibility.has(node);
+        if (synchronized && eyePose.tracks.has(track)) { registered += 1; return; }
         var staticValue = null;
-        if (staticPose) {
+        if (staticPose && !synchronized) {
           var endpoints = staticSamples.get(track);
           if (!endpoints) { endpoints = new Map(); staticSamples.set(track, endpoints); }
           staticValue = endpoints.get(clip.duration);
           if (!staticValue) { staticValue = track.createInterpolant().evaluate(clip.duration); endpoints.set(clip.duration, staticValue); }
         }
-        var record = { segment: segment, interpolant: staticPose ? null : track.createInterpolant(), staticValue: staticValue, duration: clip.duration, staticPose: !!staticPose,
+        var record = { segment: segment, interpolant: !staticPose || synchronized ? track.createInterpolant() : null, staticValue: staticValue, duration: clip.duration, staticPose: !!staticPose,
           weightedSample: { value: null, weight: 0 } };
-        if (collection === facialGroups && binding.parsedPath && binding.parsedPath.propertyName === "morphTargetInfluences") {
-          var node = binding.targetObject || binding.node, channel = binding.propertyIndex;
+        if (morph) {
+          var channel = binding.propertyIndex;
           if (!node || !node.morphTargetInfluences) return;
-          if (channel !== undefined) {
-            channel = Number(channel); if (!Number.isInteger(channel) || !isFinite(node.morphTargetInfluences[channel])) return;
-            morphGroup(node, channel).tracks.push({ record: record, component: 0 });
-          } else {
-            if (base.length !== node.morphTargetInfluences.length) return;
-            for (var index = 0; index < base.length; index += 1) morphGroup(node, index).tracks.push({ record: record, component: index });
+          var first = channel === undefined ? 0 : Number(channel), count = channel === undefined ? base.length : 1;
+          if (!Number.isInteger(first) || !isFinite(node.morphTargetInfluences[first]) || (channel === undefined && count !== node.morphTargetInfluences.length)) return;
+          if (synchronized) eyePose.tracks.add(track);
+          for (var index = 0; index < count; index += 1) {
+            var groupForMorph = morphGroup(node, first + index), row = { record: record, component: index };
+            if (synchronized) {
+              if (!groupForMorph.nativeEyeTracks) groupForMorph.nativeEyeTracks = [];
+              row.pose = eyePose;
+              groupForMorph.nativeEyeTracks.push(row);
+            } else groupForMorph.tracks.push(row);
           }
           registered += 1; return;
         }
@@ -362,6 +397,53 @@
     var gaze = createGaze(root, animations, info, {
       aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [], restorePose: restoreFace
     });
+    function getNativeEyePose(event, entry, identity) {
+      if (!nativeEyeVisibility.size || event.kind !== "eyes" || typeof event.nativeEventId !== "string" ||
+          entry.sourceRole !== "facial" || entry.bindingComplete !== true) return null;
+      if (nativeEyePoses.has(identity)) return nativeEyePoses.get(identity);
+      var pose = { duration: Math.fround(number(entry.duration, animationByName[entry.name].duration)),
+        visibility: new Set(), tracks: new Set(), weight: 0, time: 0 };
+      nativeEyePoses.set(identity, pose);
+      (entry.visibility || []).forEach(function (track) {
+        var meshes = nativeEyeMeshes.get(String(track.node));
+        if (!meshes || !isNativeRendererTrack(track)) return;
+        pose.visibility.add(track);
+        var keys = track.sourceScalarKeys;
+        if (!Array.isArray(keys) || !keys.length || !keys.every(function (key, index) {
+          return Array.isArray(key) && key.length === 5 && denseFinite(key) && (!index || keys[index - 1][0] < key[0]);
+        })) keys = null;
+        meshes.forEach(function (mesh) {
+          nativeEyeVisibility.get(mesh).push({ pose: pose, track: track, keys: keys });
+        });
+      });
+      return pose;
+    }
+    function sampleNativeEyes(time) {
+      if (!nativeEyeEvents.length || nativeEyeRevision === sampleRevision) return;
+      nativeEyeRevision = sampleRevision;
+      nativeEyePoses.forEach(function (pose) { pose.weight = 0; });
+      timedRecords(nativeEyeEvents, time, visibilitySegment).forEach(function (row) {
+        var pose = row.pose, amount = Math.fround(sampleWeight(row.event, time));
+        if (amount > 0) pose.weight = Math.fround(pose.weight + amount);
+      });
+      // The native eye mixer uses the accumulated input for both its
+      // playable weight and its absolute time within the source clip.
+      nativeEyePoses.forEach(function (pose) { pose.time = Math.fround(pose.duration * pose.weight); });
+    }
+    function nativeRendererValue(row, time) {
+      var index = 0;
+      var keys = row.keys, track = row.track;
+      if (keys) {
+        var phase = clamp(time, 0, row.pose.duration);
+        while (index + 1 < keys.length && keys[index + 1][0] <= phase) index += 1;
+        var key = keys[index], delta = Math.fround(phase - key[0]);
+        var value = Math.fround(Math.fround(key[1] * delta) + key[2]);
+        value = Math.fround(Math.fround(value * delta) + key[3]);
+        return Math.fround(Math.fround(value * delta) + key[4]);
+      }
+      while (index + 1 < track.times.length && track.times[index + 1] <= time) index += 1;
+      return track.values[index] ? 1 : 0;
+    }
     events.slice(0, 12000).forEach(function (event) {
       if (event.kind === "gaze") {
         gazeEvents.push(event);
@@ -377,9 +459,12 @@
         });
         facialMatches.set(identity, matches);
       }
-      if (matches.length === 1 && register(facialGroups, animationByName[matches[0].name], event, true)) {
-        var entry = matches[0];
-        (entry.visibility || []).forEach(function (track) { visibility.push({ event: event, track: track }); });
+      var entry = matches.length === 1 ? matches[0] : null, eyePose = entry && getNativeEyePose(event, entry, identity);
+      if (entry && register(facialGroups, animationByName[entry.name], event, true, false, eyePose)) {
+        if (eyePose) nativeEyeEvents.push({ event: event, pose: eyePose });
+        (entry.visibility || []).forEach(function (track) {
+          if (!eyePose || !eyePose.visibility.has(track)) visibility.push({ event: event, track: track });
+        });
         nativeEvents.add(event);
       } else {
         var preset = facePresets[(kind === "mouth" ? 10000 : 0) + event.index];
@@ -453,6 +538,7 @@
     function applyShapes(time) {
       var active = { eyes: [], mouth: [] }, contributions = {};
       sampleFrame += 1;
+      sampleNativeEyes(time);
       shapeGroups.forEach(function (group) {
         var key = group.node.uuid + ":" + group.index;
         timedRecords(group.tracks, time, morphSegment).forEach(function (track) {
@@ -460,6 +546,13 @@
           if (record.sampleFrame !== sampleFrame) { record.sample = record.staticValue; record.sampleFrame = sampleFrame; }
           if (!contributions[key]) contributions[key] = [];
           contributions[key].push({ value: record.sample[track.component], weight: amount });
+        });
+        if (group.nativeEyeTracks) group.nativeEyeTracks.forEach(function (track) {
+          var pose = track.pose, record = track.record;
+          if (pose.weight <= 0) return;
+          if (record.sampleFrame !== sampleFrame) { record.sample = record.interpolant.evaluate(pose.time); record.sampleFrame = sampleFrame; }
+          if (!contributions[key]) contributions[key] = [];
+          contributions[key].push({ value: record.sample[track.component], weight: pose.weight, nativeEye: true });
         });
       });
       var activeEvents = timedRecords(events, time);
@@ -496,9 +589,14 @@
       // remainder, regardless of track name or original semantic alias.
       Object.keys(contributions).forEach(function (key) {
         var group = morphGroups[key], total = 0, value = 0;
-        contributions[key].forEach(function (entry) { total += entry.weight; value += entry.value * entry.weight; });
+        var entries = contributions[key], nativeEye = group.nativeEyeTracks && entries.every(function (entry) { return entry.nativeEye; });
+        entries.forEach(function (entry) {
+          total = nativeEye ? Math.fround(total + entry.weight) : total + entry.weight;
+          value = nativeEye ? Math.fround(value + Math.fround(entry.value * entry.weight)) : value + entry.value * entry.weight;
+        });
         var remainder = Math.max(0, 1 - total);
-        group.node.morphTargetInfluences[group.index] = (group.base * remainder + value) / Math.max(1, total);
+        group.node.morphTargetInfluences[group.index] = nativeEye ? Math.fround(Math.fround(group.base * Math.fround(remainder)) + value) :
+          (group.base * remainder + value) / Math.max(1, total);
         if (morphWrites) morphWrites.push(group);
       });
     }
@@ -574,6 +672,19 @@
             if (visibilityWrites && !visibilityWrites.has(child)) visibilityWrites.set(child, child.visible);
             child.visible = value;
           });
+        });
+        sampleNativeEyes(time);
+        nativeEyeVisibility.forEach(function (rows, mesh) {
+          var value = 0;
+          rows.forEach(function (row) {
+            var pose = row.pose;
+            if (pose.weight <= 0) return;
+            value = Math.fround(value + Math.fround(nativeRendererValue(row, pose.time) * pose.weight));
+          });
+          // InitializeDefault disables display_OnOff before binding the eye
+          // playables. An idle or unbound input contributes the disabled state.
+          if (!visibilityWrites.has(mesh)) visibilityWrites.set(mesh, mesh.visible);
+          mesh.visible = Math.abs(value) > rendererEnabledEpsilon;
         });
       }
     };

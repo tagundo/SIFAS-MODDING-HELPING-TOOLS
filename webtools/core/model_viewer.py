@@ -712,6 +712,25 @@ def _member_face_depth_vertices(raw, tree):
     return True
 
 
+def _member_face_depth_binding(raw, tree, role):
+    import numpy as np
+
+    if role == "merge":
+        return _member_face_depth_vertices(raw, tree)
+    colors = np.asarray(raw["colors"])
+    if role == "line":
+        return (_member_face_depth_vertices(raw, tree) and len(getattr(raw["mesh"].m_Shapes, "channels", ())) == 3
+                and np.all(colors == [0, 255, 255, 255]))
+    mesh = raw["mesh"]
+    weights, indices = np.asarray(raw["weights"]), np.asarray(raw["indices"])
+    if (not raw["authored_normals"] or not _member_depth_vertices(mesh, raw, tree.get("m_Quality"))
+            or len(mesh.m_BindPose) != 9 or indices.shape != weights.shape
+            or not np.all(colors == 255) or not np.all((weights == 0) | (weights == 1))
+            or not np.all(weights.sum(axis=1) == 1)):
+        return False
+    return set(indices[weights == 1]) == {5, 8}
+
+
 def _png_texture(image, deadline):
     """Encode unchanged RGBA pixels with fixed SUB filtering in 64-row strips."""
     _remaining(deadline)
@@ -1298,7 +1317,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     penlights, audience_points, detached_templates, shaft_sources, area_sources = {}, set(), set(), [], []
     stage_materials = getattr(scene, "preview_stage", False) and not auto_only and rig is None
     member_depth = faces.context.get("_mv_performer") is True and rig is not None and not auto_only
-    face_depth_bindings = faces.native_merge_bindings(scene, rig.selected, facial_sources) if member_depth else {}
+    face_depth_bindings = {}
+    if member_depth:
+        face_depth_bindings, rig.face_mounts = faces.native_merge_bindings(scene, rig.selected, facial_sources)
     stage_nodes = None
     if stage_materials and getattr(scene, "stage_motion_bindings", ()):
         from .mv_studio_stage_nodes import StageNodes
@@ -1645,7 +1666,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             skin_attributes, skin = stage_skin
             attributes.update(skin_attributes)
         face_depth_bind = face_depth_bindings.get(_key(renderer))
-        if face_depth_bind is not None and (len(submeshes) != 1 or not _member_face_depth_vertices(raw, tree)):
+        if face_depth_bind is not None and (
+                len(submeshes) != 1 or not _member_face_depth_binding(raw, tree, face_depth_bind[2])):
             face_depth_bind = None
         if rig is not None:
             rig.record_bounds(positions)
@@ -1653,7 +1675,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             checkpoint = (len(glb.data), {key: len(glb.doc.get(key, [])) for key in ("accessors", "bufferViews", "skins")})
             try:
                 attributes, skin = rig.attributes(renderer, tree, game_object, raw, positions,
-                                                  rigid_bind=face_depth_bind[:2] if face_depth_bind is not None else None)
+                                                  rigid_bind=face_depth_bind[0] if face_depth_bind is not None else None)
                 targets, target_names, target_hashes, target_weights = rig.morph_targets(raw, renderer, game_object)
             except ValueError as error:
                 rig.warnings.append(str(error))
@@ -1758,10 +1780,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     primitives[-1]["extras"]["mvStageCameraDepth"] = depth
             if (face_depth_bind is not None and skin is not None and "_SIFAS_COLOR" in attributes
                     and len(targets) == len(getattr(raw["mesh"].m_Shapes, "channels", ()))
-                    and material_obj is face_depth_bind[2]):
+                    and material_obj is face_depth_bind[1]):
                 depth = _member_depth_material(scene, material_obj)
                 if depth is not None:
-                    primitives[-1]["extras"]["mvStageCameraDepth"] = {**depth, "kind": "memberFace"}
+                    if face_depth_bind[2] != "eye":
+                        depth["kind"] = "memberFace"
+                    primitives[-1]["extras"]["mvStageCameraDepth"] = depth
             if soft_billboard is not None:
                 primitives[-1]["extras"]["mvStageSoftBillboard"] = soft_billboard
             if flash is not None:
