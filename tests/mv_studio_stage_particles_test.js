@@ -5,6 +5,7 @@ const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 require("../webtools/web/static/mv-studio-stage-motion.js");
 require("../webtools/web/static/mv-studio-title.js");
 require("../webtools/web/static/mv-studio-stage-particles.js");
+require("../webtools/web/static/mv-studio-confetti-air-simulation.js");
 require("../webtools/web/static/mv-studio-rain-simulation.js");
 require("../webtools/web/static/mv-studio-rain-floor-simulation.js");
 require("../webtools/web/static/mv-studio-autumn-leaves-simulation.js");
@@ -699,12 +700,52 @@ function testAionMomijiFan() {
   assert.deepEqual(sample(1), first);
 }
 
+function testAionAirConfetti() {
+  const row = {
+    role: "air", seed: 1425677110, rate: 70, position: [0, 15, 0], rotation: [0, 0, 0, 1],
+    startColors: [[1, .7585158348083496, .34433960914611816, 1], [1, .8903166651725769, .43867921829223633, 1]],
+    alphaKeys: [[0, 0], [6554, 1], [62258, 1], [65535, 0]],
+  };
+  const create = globalThis.MVStudioConfettiAirSimulation.create;
+  assert.equal(create({...row, seed: 8392}), null);
+  const stream = create(row);
+  const sample = (frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...packet) => rows.push(packet));
+    return rows;
+  };
+  const native = (packet, source) => {
+    assert.ok(packet.slice(0, 3).every((value, i) => Math.abs(value - source[i]) <= 4e-6));
+    assert.deepEqual(packet.slice(3), source.slice(3));
+  };
+  const warmed = sample(0, 60);
+  assert.equal(warmed.length, 574);
+  native(warmed[0], [11.995593070983887, -4.8703932762146, .3671360909938812, .6030478477478027,
+    -4.634464263916016, -1.0106258392333984, 77.15988159179688, 255, 201, 93, 120]);
+  const first = sample(1, 60);
+  assert.equal(first.length, 574);
+  native(first[0], [11.99647045135498, -4.886133193969727, .3810846209526062, .5480924248695374,
+    -4.634464263916016, -1.0106258392333984, 77.31837463378906, 255, 201, 93, 109]);
+  // 30 Hz consumes the warm fraction after its second ordinary step.
+  assert.equal(sample(1, 30).length, 573);
+  assert.equal(sample(1, 30)[200][6], 32.062110900878906);
+  assert.equal(sample(2, 60)[200][6], 32.06211471557617);
+  const finale = sample(1581, 60);
+  assert.equal(finale.length, 574);
+  native(finale[185], [.19686438143253326, -13.3834810256958, 2.1080939769744873, 1.0108728408813477,
+    .5450973510742188, .9530658721923828, 55.910926818847656, 255, 204, 96, 255]);
+  assert.deepEqual(sample(0, 30), warmed);
+  assert.deepEqual(sample(1, 60), first);
+  assert.deepEqual(sample(1581, 60), finale);
+}
+
 testAionRain();
 testAionRainFloor();
 testAionAutumnLeaves();
 testAionAutumnFloor();
 testAionRedBurst();
 testAionLeafBursts();
+testAionAirConfetti();
 testAionMomijiDisplayLeaves();
 testAionMomijiFan();
 test().then(testFinaleFlash).catch(error => {console.error(error); process.exitCode = 1;});

@@ -244,6 +244,19 @@ class MVStudioPropBindingsTests(unittest.TestCase):
                                      [(1, "alpha"), (0, "add"), (0, "alpha"), (0, "alpha")])
                     self.assertTrue(all(row["material"]["queue"] == 2900 and row["material"]["stencilRef"] == 2
                                         for row in momiji["emitters"]))
+                    confetti = project["stageConfetti"]
+                    confetti_track = tracks[confetti["cues"][0]["trackId"]]
+                    self.assertEqual(confetti_track["label"], "StageEffect/Expert/Control/par_08_confetti")
+                    self.assertEqual([cue["eventId"] for cue in confetti["cues"]],
+                                     [event["id"] for event in confetti_track["events"]])
+                    self.assertEqual(confetti["texture"], leaves["texture"])
+                    self.assertEqual(confetti["uv"], [.5, .5, 0, .5])
+                    self.assertEqual({key: len(values) for key, values in confetti["geometry"].items()},
+                                     {"positions": 16, "uv": 16, "indices": 42})
+                    self.assertEqual([(row["role"], row["seed"], row["rate"]) for row in confetti["emitters"]],
+                                     [("air", 1425677110, 70), ("floor", 3279275062, 3)])
+                    self.assertEqual((confetti["material"]["queue"], confetti["material"]["blend"],
+                                      confetti["material"]["stencil"]), (3010, "add", "always"))
                     stage_glb, _ = mv_studio.media(stages[0]["stage"]["glb"].rsplit("/", 1)[-1])
                     stage_bytes = stage_glb.read_bytes()
                     stage_length = int.from_bytes(stage_bytes[12:16], "little")

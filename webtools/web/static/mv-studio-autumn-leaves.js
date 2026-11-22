@@ -140,7 +140,7 @@
       return {cue, stream, anisotropic, capacity, ...packet, frame: -1, fps: 0,
         emitterRotation: new T.Quaternion().fromArray(pose.rotation), center: new T.Vector3()};
     });
-    const center = new T.Vector3(), scale = new T.Vector3(), eye = new T.Vector3();
+    const center = new T.Vector3(), scale = new T.Vector3();
     const matrix = new T.Matrix4(), spin = new T.Euler(), orientation = new T.Quaternion();
     const bounds = new T.Box3();
     let tracks, disposed = false;
@@ -205,31 +205,7 @@
           update(entry, frame, fps);
         }
       },
-      sort(camera, rain = [], butterfly = []) {
-        if (disposed) return;
-        const leaves = entries.filter(entry => entry.mesh.visible);
-        if (!leaves.length) {
-          for (const {mesh} of rain) mesh.renderOrder = source.material.queue;
-          return;
-        }
-        if (leaves.length === 1 && !rain.length && !butterfly.length) {
-          leaves[0].mesh.renderOrder = source.material.queue;
-          return;
-        }
-        camera.updateMatrixWorld();
-        eye.setFromMatrixPosition(camera.matrixWorld);
-        // The leaves use alpha-over. Preserve the native camera order
-        // against other transparent renderers in this part of the song.
-        const visible = [...rain, ...butterfly, ...leaves].map((entry, order) => {
-          entry.mesh.updateWorldMatrix(true, false);
-          center.copy(entry.center).applyMatrix4(entry.mesh.matrixWorld);
-          const distance = camera.isOrthographicCamera ? Math.fround(-center.applyMatrix4(camera.matrixWorldInverse).z) :
-            Math.fround(eye.distanceToSquared(center));
-          return {mesh: entry.mesh, order, distance};
-        });
-        visible.sort((a, b) => b.distance - a.distance || a.order - b.order);
-        visible.forEach(({mesh}, index) => { mesh.renderOrder = source.material.queue + .01 * index; });
-      },
+      sortEntries() { return disposed ? [] : entries.filter(entry => entry.mesh.visible); },
       dispose() {
         if (disposed) return;
         disposed = true;

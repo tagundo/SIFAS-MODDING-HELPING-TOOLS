@@ -585,6 +585,53 @@ class MVStudioStorageTests(unittest.TestCase):
                 self.assertEqual(reopened.get("stageMomiji"), expected)
                 self.assertEqual(reopened["tracks"], tracks)
 
+    def test_saved_confetti_restores_original_cues_and_only_missing_compatible_roles(self):
+        from webtools.core import mv_studio_confetti
+
+        project = mv_studio._blank("Edited confetti")
+        project["stageParticles"] = {"schema": mv_studio_stage_particles.SCHEMA}
+        track = {"id": "confetti", "kind": "effects", "nativeClass": "CustomControlTrack",
+                 "label": mv_studio_confetti.TRACK}
+        event = {"id": "confetti:1", "label": "Edited cue", "start": 71, "duration": 3,
+                 "values": {"clipIn": 8, "offset": {"x": 2, "y": 1, "z": 5}}}
+        original = {"schema": 1, "cues": [{"trackId": track["id"], "eventId": f"confetti:{i}"} for i in range(3)],
+                    "geometry": {"positions": []}, "texture": [{"png": "source"}],
+                    "material": {"blend": "add"}, "uv": [.5, .5, 0, .5],
+                    "emitters": [{"role": "air", "seed": 1}, {"role": "floor", "seed": 2}]}
+        selected = {**original, "cues": [original["cues"][1]]}
+        edited_floor = {"role": "floor", "seed": 123}
+        partial = {**selected, "emitters": [edited_floor]}
+        merged = {**selected, "emitters": [original["emitters"][0], edited_floor]}
+        incompatible = {**partial, "texture": [{"png": "custom"}]}
+        stale_cues = {**partial, "cues": original["cues"]}
+        mismatched_cues = {**partial, "cues": original["cues"][:1]}
+        for saved, events, source, expected, reparses in (
+                (None, [event], self.original, selected, True),
+                (partial, [event], self.original, merged, True),
+                (stale_cues, [event], self.original, {**merged, "cues": original["cues"]}, True),
+                (mismatched_cues, [event], self.original, mismatched_cues, True),
+                (incompatible, [event], self.original, incompatible, True),
+                (partial, [], self.original, partial, False),
+                (partial, [event], None, partial, False),
+                (selected, [event], self.original, selected, False)):
+            with self.subTest(saved=saved, events=events, source=source):
+                tracks = [{**track, "events": events}]
+                document = {**project, "tracks": tracks}
+                if saved is not None:
+                    document["stageConfetti"] = saved
+                archive_path = mv_studio.save(mv_studio._register(document, source))["path"]
+                with ZipFile(archive_path) as archive, patch(
+                    "webtools.core.mv_studio_timeline.parse_timeline", return_value={"stageConfetti": original},
+                ) as parse:
+                    reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+                if reparses:
+                    parse.assert_called_once_with(self.original, "Edited confetti", preview_split=False,
+                                                  preview_stage_title=False, preview_stage_confetti=True)
+                else:
+                    parse.assert_not_called()
+                self.assertEqual(reopened.get("stageConfetti"), expected)
+                self.assertEqual(reopened["tracks"], tracks)
+
     def test_saved_speed_background_uses_original_binding_after_event_rename(self):
         project = mv_studio._blank("Edited display")
         project["stageTitle"] = {"particleSchema": 2}

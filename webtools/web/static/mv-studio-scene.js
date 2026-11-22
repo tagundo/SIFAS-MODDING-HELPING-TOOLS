@@ -347,7 +347,7 @@
     let disposed = false, visible = options?.visible !== false, generation = 0, request = null, project = null;
     let preparation = null;
     let stageTitle = null, stageRibbons = null, stageShine = null, stageParticles = null, stageSpotlight = null;
-    let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null;
+    let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let activeSplitGazeCameras = null;
@@ -426,13 +426,37 @@
       displayOrder.forEach(({mesh}, rank) => { mesh.renderOrder = 2900 + rank * .01; });
     }
 
+    function sortControlParticles(camera) {
+      if (!stageLeaves && !stageConfetti) return;
+      const leaves = stageLeaves?.sortEntries() || [], confetti = stageConfetti?.sortEntries() || [];
+      const rain = stageRain?.sortEntries() || [];
+      if (!leaves.length && !confetti.length) {
+        for (const {mesh} of rain) mesh.renderOrder = 3010;
+        return;
+      }
+      const entries = [...rain, ...(stageButterfly?.sortEntries() || []), ...leaves, ...confetti];
+      camera.updateMatrixWorld();
+      displayEye.setFromMatrixPosition(camera.matrixWorld);
+      const visible = entries.map(({mesh, center}, order) => {
+        mesh.updateWorldMatrix(true, false);
+        displayPoint.copy(center).applyMatrix4(mesh.matrixWorld);
+        const depth = camera.isOrthographicCamera ? -displayPoint.applyMatrix4(camera.matrixWorldInverse).z :
+          displayEye.distanceToSquared(displayPoint);
+        return {mesh, order, distance: Math.fround(depth)};
+      });
+      // These particle renderers share queue 3010, where alpha-over leaves
+      // can obscure additive particles depending on the camera.
+      visible.sort((a, b) => b.distance - a.distance || a.order - b.order);
+      visible.forEach(({mesh}, rank) => { mesh.renderOrder = 3010 + rank * .01; });
+    }
+
     function renderScene(camera) {
       if (!stageBreak?.sort(camera, stageSpeedBack?.displaySortEntries)) stageSpeedBack?.sort(camera);
       stageDisplayLights?.sort(camera);
       stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
       sortRibbonDisplay(camera);
       stageButterfly?.sort(camera);
-      stageLeaves?.sort(camera, stageRain?.sortEntries(), stageButterfly?.sortEntries());
+      sortControlParticles(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
       for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
       const projection = camera.projectionMatrix.elements;
@@ -565,6 +589,8 @@
       stageSpotlight = null;
       stageLeaves?.dispose();
       stageLeaves = null;
+      stageConfetti?.dispose();
+      stageConfetti = null;
       stageMomiji?.dispose();
       stageMomiji = null;
       stageRain?.dispose();
@@ -1113,6 +1139,12 @@
         return;
       }
       stageLeaves = leaves;
+      const confetti = await global.MVStudioConfetti?.apply(T, scene, value.stageConfetti, butterfly?.billboardAtlas);
+      if (!active()) {
+        confetti?.dispose();
+        return;
+      }
+      stageConfetti = confetti;
       const momiji = await global.MVStudioMomiji?.apply(T, scene, value.stageMomiji, butterfly?.billboardAtlas);
       if (!active()) {
         momiji?.dispose();
@@ -1375,6 +1407,7 @@
       stageButterfly?.invalidate();
       stageRain?.invalidate();
       stageLeaves?.invalidate();
+      stageConfetti?.invalidate();
       stageMomiji?.invalidate();
       stageSpeedBack?.invalidate();
       stageDisplayLights?.invalidate();
@@ -1457,6 +1490,7 @@
       stageButterfly?.update(currentTime, project);
       stageRain?.update(currentTime, project);
       stageLeaves?.update(currentTime, project);
+      stageConfetti?.update(currentTime, project);
       stageMomiji?.update(currentTime, project);
       stageSpeedBack?.update(currentTime, project);
       stageDisplayLights?.update(currentTime, project);

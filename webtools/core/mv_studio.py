@@ -288,7 +288,7 @@ def _timeline(path):
                                                preview_stage_particles=True, preview_stage_ribbons=True,
                                                preview_stage_spotlight=True, preview_stage_butterfly=True,
                                                preview_stage_rain=True, preview_stage_leaves=True, preview_stage_momiji=True,
-                                               preview_stage_speed_back=True,
+                                               preview_stage_confetti=True, preview_stage_speed_back=True,
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
@@ -466,7 +466,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             project.update({field: parsed[field] for field in
                             ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
-                             "stageSpeedBack",
+                             "stageConfetti", "stageSpeedBack",
                              "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
                              "stageSparksA", "stageSparksB", "stageSparksRoop")
                             if field in parsed})
@@ -932,7 +932,7 @@ def _restore_momiji(project, rebuilt, active):
 
 
 def _open_saved(archive, entries):
-    from . import mv_studio_leaves, mv_studio_momiji, mv_studio_rain, mv_studio_stage_particles
+    from . import mv_studio_confetti, mv_studio_leaves, mv_studio_momiji, mv_studio_rain, mv_studio_stage_particles
 
     entry = entries["project.json"]
     if entry.file_size > PROJECT_BYTES:
@@ -1010,6 +1010,13 @@ def _open_saved(archive, entries):
     restore_momiji = bool(momiji_cues) and ("stageMomiji" not in project or (
         momiji_roles is not None and not mv_studio_momiji.ROLES.keys() <= momiji_roles
         and (saved_momiji.get("trackId"), saved_momiji.get("eventId")) in momiji_cues))
+    confetti_cues = {(track["id"], event["id"]) for track in project["tracks"]
+                     if track.get("nativeClass") == "CustomControlTrack" and track.get("label") == mv_studio_confetti.TRACK
+                     for event in track["events"]}
+    saved_confetti = project.get("stageConfetti")
+    confetti_roles = mv_studio_confetti.saved_roles(saved_confetti)
+    restore_confetti = bool(confetti_cues) and ("stageConfetti" not in project or (
+        confetti_roles is not None and confetti_roles != set(mv_studio_confetti.ROLES.values())))
     speed_back = project.get("stageSpeedBack")
     restore_speed_back = (not isinstance(speed_back, dict) or
                           not {"centerStars", "movingCompanions"} <= speed_back.keys()) and any(
@@ -1065,7 +1072,7 @@ def _open_saved(archive, entries):
         } for event in track["events"]) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
-                               or restore_speed_back
+                               or restore_confetti or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
                                or restore_sparks_roop):
@@ -1087,6 +1094,8 @@ def _open_saved(archive, entries):
                 options["preview_stage_leaves"] = True
             if restore_momiji:
                 options["preview_stage_momiji"] = True
+            if restore_confetti:
+                options["preview_stage_confetti"] = True
             if restore_speed_back:
                 options["preview_stage_speed_back"] = True
             if restore_display_lights:
@@ -1127,6 +1136,10 @@ def _open_saved(archive, entries):
                 _restore_leaves(project, original["stageLeaves"], leaf_cues, missing_leaves)
             if restore_momiji and "stageMomiji" in original:
                 _restore_momiji(project, original["stageMomiji"], momiji_cues)
+            if restore_confetti and "stageConfetti" in original:
+                restored = mv_studio_confetti.restore_saved(saved_confetti, original["stageConfetti"], confetti_cues)
+                if restored is not None:
+                    project["stageConfetti"] = restored
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
                 project["stageSpeedBack"] = rebuilt_background
@@ -1178,7 +1191,7 @@ def _mod_files(project, files):
                 project.update({field: parsed[field] for field in
                                 ("duration", "tracks", "splitScreen", "stageMotion", "stageTitle", "stageParticles",
                                  "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
-                                 "stageSpeedBack",
+                                 "stageConfetti", "stageSpeedBack",
                                  "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
                                  "stageSparksA", "stageSparksB", "stageSparksRoop")
                                 if field in parsed})
