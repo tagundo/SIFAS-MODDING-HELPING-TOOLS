@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 require("../webtools/web/static/mv-studio-stage-particles.js");
 require("../webtools/web/static/mv-studio-butterfly-simulation.js");
 require("../webtools/web/static/mv-studio-butterfly-glow-simulation.js");
+require("../webtools/web/static/mv-studio-butterfly-shine-simulation.js");
 
 const {create} = MVStudioButterflySimulation;
 assert.equal(create(-1), null);
@@ -167,4 +168,86 @@ async function checkCuePlayback() {
   assert.equal(root.children.length, 0);
 }
 
+function checkShineSimulation() {
+  // Original Expert par_shine source curves and packed gradient keys from the paired bundles.
+  const source = {
+    sizeKeys: [
+      [[0, 1], [.04789190739393234, .5412497520446777], [.10946407914161682, .9522058367729187],
+        [.15849487483501434, .38295912742614746], [.21892815828323364, .8736255764961243],
+        [.2827822268009186, .5016687512397766], [.38198402523994446, .20885176956653595],
+        [.44127708673477173, .5412388443946838], [.5245153903961182, .3038196265697479],
+        [.5883444547653198, .49571478366851807], [.6727480292320251, .6995182633399963],
+        [.8072975873947144, .2642497420310974], [.8642685413360596, .6303539276123047],
+        [.9245991706848145, .09368271380662918], [1, 0]],
+      [[0, 1], [.015933051705360413, .2490587681531906], [.08008640259504318, .7750393152236938],
+        [.13226911425590515, .5217978358268738], [.1948753297328949, 1],
+        [.24826061725616455, .2736821174621582], [.311288446187973, .8118323087692261],
+        [.36898064613342285, .5886486768722534], [.4104903042316437, .8339818120002747],
+        [.46387240290641785, .15667565166950226], [.5051339268684387, .8610309958457947],
+        [.5537682175636292, .08005019277334213], [.6152468919754028, .8574442863464355],
+        [.6465222239494324, .9790809154510498], [.7056977152824402, .2867186367511749],
+        [.7662485837936401, .4924817681312561], [.8360212445259094, .92377769947052],
+        [.8866571187973022, .4357251822948456], [.9496652483940125, .77158522605896], [1, 0]],
+    ],
+    startRGB: [
+      [1349, .9201741814613342, 1, .6367924213409424], [12529, .75, .9375, 1],
+      [26792, 1, .7594339847564697, .954177975654602], [40670, .8518779873847961, .8349056243896484, 1],
+      [54548, .5896226167678833, .9650065898895264, 1], [65535, .9450549483299255, 1, .75],
+    ],
+    alphaKeys: [
+      [[0, 0], [7903, 255], [21588, 119], [33924, 255], [36623, 123], [39321, 255], [47224, 255], [65535, 0]],
+      [[0, 0], [9059, 255], [14264, 255], [16962, 95], [19275, 255], [31033, 185], [47224, 255], [65535, 0]],
+    ],
+  };
+  const stationaryOrigin = () => [-.02, -.0369, 0];
+  const simulate = MVStudioButterflyShineSimulation.create;
+  assert.equal(simulate("finale", stationaryOrigin, source), null);
+  assert.equal(simulate("opening", stationaryOrigin, {...source, alphaKeys: {length: 2}}), null);
+  assert.equal(simulate("opening", stationaryOrigin, {...source, sizeKeys: {length: 2}}), null);
+  const stationary = simulate("opening", stationaryOrigin, source);
+  const sample = (stream, frame, fps) => {
+    const rows = [];
+    stream.sample(frame / fps, fps, (...row) => rows.push(row));
+    return rows;
+  };
+  const matchNative = (row, expected) => {
+    assert.ok(row);
+    for (let axis = 0; axis < 3; axis++) {
+      assert.ok(Math.abs(row[axis] - expected[axis]) <= 5e-8, `position export axis ${axis}`);
+    }
+    assert.deepEqual(row.slice(3), expected.slice(3));
+  };
+  assert.deepEqual(sample(stationary, 0, 60), []);
+  assert.deepEqual(sample(stationary, 1, 120), []);
+  const birth = sample(stationary, 1, 60);
+  assert.equal(birth.length, 10);
+  matchNative(birth[0], [-.010669597424566746, -.05559857189655304, .003236304270103574,
+    .03309192508459091, 229, 253, 174, 0]);
+  const next = sample(stationary, 2, 60);
+  assert.deepEqual(sample(stationary, 1, 30), next);
+  matchNative(next[0], [-.011299611069262028, -.056183844804763794, .003236304270103574,
+    .03309192508459091, 229, 253, 174, 26]);
+
+  // Compare worker output for the first continuing birth under a moving emitter.
+  // Grouped 30 Hz uses the previous and current display centers around both steps.
+  const moving = simulate("opening", (index, fps) => {
+    const time = index / fps;
+    return [-time, .25 * time, -.5 * time];
+  }, source);
+  assert.equal(sample(moving, 6, 60).length, 10);
+  const firstContinuous = sample(moving, 7, 60);
+  assert.equal(firstContinuous.length, 11);
+  matchNative(firstContinuous[10], [-.10366445779800415, .0139396321028471, -.06300190091133118,
+    .034015558660030365, 211, 246, 212, 22]);
+  const grouped = sample(moving, 4, 30);
+  assert.equal(grouped.length, 11);
+  matchNative(grouped[10], [-.08840207010507584, .009437602013349533, -.05466856807470322,
+    .008831566199660301, 211, 246, 212, 45]);
+  assert.deepEqual(sample(moving, 60, 60).length, 19);
+  assert.deepEqual(sample(moving, 7, 60), firstContinuous);
+  assert.deepEqual(sample(moving, 4, 30), grouped);
+  assert.deepEqual(sample(moving, 1000, 60), []);
+}
+
+checkShineSimulation();
 checkCuePlayback().catch(error => { console.error(error); process.exitCode = 1; });

@@ -58,6 +58,7 @@
   const vector = (values, count, bound) => Array.isArray(values) && values.length === count &&
     values.every(value => Number.isFinite(value) && Math.abs(value) <= bound);
   const id = value => typeof value === "string" && value.length > 0 && value.length <= 128;
+  const f32 = Math.fround;
   const timelineTick = time => Math.trunc(time / 1e-12 + .5);
   function checked(source, title, motion, finale) {
     if (source?.schema !== 1 || !id(source.trackId) || !id(source.eventId) || !title.validMipChain(source.texture) ||
@@ -117,38 +118,83 @@
     return {mesh, uniforms, stream, source, clip, finale};
   }
 
-  function checkedGlow({source, finale}) {
-    const glow = source.glow, material = glow?.material;
-    return glow?.profile === (finale ? "finale" : "opening") &&
-      glow.activation === (finale ? Math.fround(5 + 5 / 60) : 0) && glow.activation <= source.animation.duration &&
-      glow.maxViewportWidth === (finale ? 1 : .5) && vector(glow.position, 3, 1) &&
-      vector(glow.uv, 4, 1) && glow.uv.every(value => value === .5) && material?.queue === 3010 &&
+  function checkedBillboard(row) {
+    const material = row?.material;
+    return vector(row?.position, 3, 1) && vector(row.uv, 4, 1) && material?.queue === 3010 &&
       material.cull === 0 && material.blend === "add" && material.premultiply === false && vector(material.tint, 4, 8);
   }
 
-  async function prepareGlows(T, entries, levels, title) {
-    const renderer = global.MVStudioDisplayLights, simulation = global.MVStudioButterflyGlowSimulation;
-    if (!renderer || !simulation || !title.validMipChain(levels) || levels[0].width !== 256) return null;
-    const candidates = entries.filter(checkedGlow);
-    if (!candidates.length) return null;
+  function checkedGlow({source, finale}) {
+    const glow = source.glow;
+    return glow?.profile === (finale ? "finale" : "opening") &&
+      glow.activation === (finale ? Math.fround(5 + 5 / 60) : 0) && glow.activation <= source.animation.duration &&
+      glow.maxViewportWidth === (finale ? 1 : .5) && checkedBillboard(glow) && glow.uv.every(value => value === .5);
+  }
+
+  function checkedShine({source, finale}) {
+    const row = source.shine;
+    return !finale && row?.profile === "opening" && row.maxViewportWidth === .5 && checkedBillboard(row) &&
+      row.uv[0] === .25 && row.uv[1] === .25 && row.uv[2] === .75 && row.uv[3] === 0;
+  }
+
+  async function prepareBillboards(T, entries, levels, title) {
+    const renderer = global.MVStudioDisplayLights, glowSimulation = global.MVStudioButterflyGlowSimulation;
+    const shineSimulation = global.MVStudioButterflyShineSimulation;
+    if (!renderer || !title.validMipChain(levels) || levels[0].width !== 256) return null;
+    const glows = glowSimulation ? entries.filter(checkedGlow) : [];
+    const shine = shineSimulation && entries.find(checkedShine);
+    if (!glows.length && !shine) return null;
     let texture;
     try {
       texture = await title.loadTexture(T, new T.TextureLoader(), levels);
     } catch { return null; }
-    for (const entry of candidates) {
-      const row = entry.source.glow;
-      const stream = simulation.create(row.profile);
-      if (!stream) continue;
-      const name = `${entry.mesh.name} glow`;
-      const draw = renderer.localBillboards(T, {texture, rotation: new T.Quaternion(), capacity: 1,
+    function make(entry, kind, capacity) {
+      const row = entry.source[kind], name = `${entry.mesh.name} ${kind}`;
+      const draw = renderer.localBillboards(T, {texture, rotation: new T.Quaternion(), capacity,
         maxViewportWidth: row.maxViewportWidth, atlas: row.uv, additive: true, viewAligned: true,
         tint: row.material.tint, name});
       draw.mesh.name = name;
       draw.mesh.renderOrder = row.material.queue;
       draw.mesh.material.stencilFunc = T.AlwaysStencilFunc;
-      entry.glow = {...draw, row, stream};
+      return {...draw, row};
+    }
+    for (const entry of glows) {
+      const stream = glowSimulation.create(entry.source.glow.profile);
+      if (stream) entry.glow = {...make(entry, "glow", 1), stream};
+    }
+    if (shine) {
+      // The short initial burst overlaps up to fifteen continuously emitted particles.
+      shine.shine = make(shine, "shine", 32);
     }
     return texture;
+  }
+
+  function updateShine(shine, animation, clip, motion, cueStart, start, fps, elapsed, offset) {
+    if (shine.cueStart !== cueStart || shine.fps !== fps ||
+        offset.some((value, axis) => value !== shine.offset?.[axis])) {
+      shine.cueStart = cueStart;
+      shine.fps = fps;
+      shine.offset = offset;
+      const [sx, sy, sz] = shine.row.position;
+      shine.stream = global.MVStudioButterflyShineSimulation.create(shine.row.profile, index => {
+        const stamp = motion.sampleTime(clip, (start + index) / fps - cueStart);
+        const [x, y, z] = animation.curves.map(curve => motion.evaluate(curve, stamp));
+        // The decoder already reflects the emitter's local X. Record the
+        // Animator pose at birth so the emitted particles stay in world space.
+        return [f32(f32(offset[0] - f32(x)) + sx), f32(f32(offset[1] + f32(y)) + sy),
+          f32(f32(offset[2] + f32(z)) + sz)];
+      }, shine.row);
+    }
+    let count = 0;
+    shine.stream?.sample(elapsed, fps, (x, y, z, size, r, g, b, a) => {
+      if (!(size > 0) || !a || count >= shine.centers.count) return;
+      shine.centers.setXYZW(count, x, y, z, 0);
+      shine.sizes.setXY(count, size, size);
+      shine.colors.setXYZW(count++, r, g, b, a);
+    });
+    if (count) shine.centers.needsUpdate = shine.sizes.needsUpdate = shine.colors.needsUpdate = true;
+    shine.mesh.geometry.instanceCount = count;
+    shine.mesh.visible = count > 0;
   }
 
   function glowBirth(glow, clip, motion, cueStart, firstFrame, fps) {
@@ -177,10 +223,11 @@
     ]);
     const entries = prepared.filter(Boolean);
     if (!entries.length) return null;
-    const glowTexture = await prepareGlows(T, entries, source.glowTexture, title);
-    for (const {mesh, glow} of entries) {
+    const billboardTexture = await prepareBillboards(T, entries, source.glowTexture, title);
+    for (const {mesh, glow, shine} of entries) {
       root.add(mesh);
       if (glow) root.add(glow.mesh);
+      if (shine) root.add(shine.mesh);
     }
     let tracks, disposed = false;
     return {
@@ -197,11 +244,15 @@
         const enabled = quality?.stage_control !== false;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         const frame = Math.floor(time * fps + 1e-9), tick = timelineTick(time);
-        for (const {mesh, uniforms, stream, source, track, clip, finale, glow} of entries) {
+        for (const {mesh, uniforms, stream, source, track, clip, finale, glow, shine} of entries) {
           mesh.visible = false;
           if (glow) {
             glow.mesh.visible = false;
             glow.mesh.geometry.instanceCount = 0;
+          }
+          if (shine) {
+            shine.mesh.visible = false;
+            shine.mesh.geometry.instanceCount = 0;
           }
           const event = enabled && !track?.muted && track?.events.find(row => row.id === source.eventId);
           if (!event) continue;
@@ -216,6 +267,7 @@
           const firstFrame = Math.ceil(event.start * fps);
           const start = timelineTick((firstFrame - 1) / fps) === firstTick ? firstFrame - 1 : firstFrame;
           const elapsed = (frame - start + 1) / fps;
+          if (shine) updateShine(shine, source.animation, clip, motion, event.start, start, fps, elapsed, offset);
           const drift = stream.sample(elapsed, fps);
           const light = glow && glow.stream.sample((frame - glowBirth(glow, clip, motion, event.start, start, fps) + 1) / fps, fps);
           if (!drift && !light) continue;
@@ -249,7 +301,7 @@
       dispose() {
         if (disposed) return;
         disposed = true;
-        for (const {mesh, uniforms, glow} of entries) {
+        for (const {mesh, uniforms, glow, shine} of entries) {
           root.remove(mesh);
           mesh.geometry.dispose();
           mesh.material.dispose();
@@ -259,8 +311,13 @@
             glow.mesh.geometry.dispose();
             glow.mesh.material.dispose();
           }
+          if (shine) {
+            root.remove(shine.mesh);
+            shine.mesh.geometry.dispose();
+            shine.mesh.material.dispose();
+          }
         }
-        glowTexture?.dispose();
+        billboardTexture?.dispose();
       },
     };
   }

@@ -173,6 +173,10 @@ def _texture(objects, renderer, fields, *, finale):
     maximum, flip = (1, _ZERO) if finale else (.5, {**_ZERO, "z": 1})
     if not _matches(fields, _RENDERER) or (fields["m_MaxParticleSize"], fields["m_Flip"]) != (maximum, flip):
         return None
+    return _material_texture(objects, renderer, fields)
+
+
+def _material_texture(objects, renderer, fields):
     refs = fields["m_Materials"]
     if refs != [{"m_FileID": 0, "m_PathID": _MATERIAL}] * 2:
         return None

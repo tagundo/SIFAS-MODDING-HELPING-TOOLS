@@ -846,9 +846,10 @@ def _open_saved(archive, entries):
     butterfly = project.get("stageButterfly")
     butterfly = butterfly if isinstance(butterfly, dict) else {}
     saved_finale = butterfly.get("finale")
-    missing_butterflies = tuple(suffix for row, suffix in (
-        (butterfly, "/Control/par_13_butterfly"), (saved_finale, "/Control/par_14_butterfly"),
-    ) if not isinstance(row, dict) or "trackId" not in row or "glow" not in row or "glowTexture" not in butterfly)
+    missing_butterflies = tuple(suffix for row, suffix, required in (
+        (butterfly, "/Control/par_13_butterfly", {"trackId", "eventId", "glow", "shine"}),
+        (saved_finale, "/Control/par_14_butterfly", {"trackId", "eventId", "glow"}),
+    ) if not isinstance(row, dict) or not required <= row.keys() or "glowTexture" not in butterfly)
     restore_butterfly = bool(missing_butterflies) and any(
         track.get("nativeClass") == "CustomControlTrack" and str(track.get("label", "")).endswith(missing_butterflies)
         for track in project["tracks"])
@@ -948,9 +949,16 @@ def _open_saved(archive, entries):
                     project[field] = original[field]
             if "stageButterfly" in original:
                 rebuilt = original["stageButterfly"]
-                recovered = {**rebuilt, **butterfly}
+                recovered = {**{key: value for key, value in rebuilt.items() if key != "shine"}, **butterfly}
                 if isinstance(saved_finale, dict) and "finale" in rebuilt:
                     recovered["finale"] = {**rebuilt["finale"], **saved_finale}
+                # The shine must share the native atlas and follow the same
+                # cue after an edit. Keep existing custom descriptors intact.
+                if ("shine" in rebuilt and recovered.get("glowTexture") == rebuilt.get("glowTexture")
+                        and all(recovered.get(key) == rebuilt.get(key) for key in ("trackId", "eventId"))
+                        and any(track["id"] == rebuilt["trackId"] and any(event["id"] == rebuilt["eventId"] for event in track["events"])
+                                for track in project["tracks"])):
+                    recovered.setdefault("shine", rebuilt["shine"])
                 project["stageButterfly"] = recovered
             rebuilt_background = original.get("stageSpeedBack")
             if rebuilt_background and not isinstance(speed_back, dict):
