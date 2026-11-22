@@ -363,6 +363,7 @@
     const memberShaftTracks = new Map(), memberAreaTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
+    const displayOrder = [], displayEye = new T.Vector3(), displayPoint = new T.Vector3();
     const bounds = new T.Box3(), skinMatrix = new T.Matrix4(), boneMatrix = new T.Matrix4();
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
@@ -405,11 +406,31 @@
       return point?.getWorldPosition(focusPosition).distanceTo(mainCameraPosition);
     }
 
+    function sortRibbonDisplay(camera) {
+      for (const {mesh} of displayOrder) mesh.renderOrder = 2900;
+      displayOrder.length = 0;
+      if (!stageMomiji && !stageShine) return;
+      camera.updateMatrixWorld();
+      const transition = stageMomiji?.sortEntries(camera), shine = stageShine?.sortEntries();
+      if (!transition?.length && !shine?.length) return;
+      displayOrder.push(...(transition || []), ...(stageRibbons?.ribbonSortEntries() || []), ...(shine || []));
+      displayEye.setFromMatrixPosition(camera.matrixWorld);
+      for (const entry of displayOrder) {
+        const depth = camera.isOrthographicCamera ? -displayPoint.copy(entry.center).applyMatrix4(camera.matrixWorldInverse).z :
+          displayEye.distanceToSquared(entry.center);
+        entry.distance = Math.fround(depth);
+      }
+      // The ribbon sheets and separate particle renderers share the same
+      // Unity queue. Sort their whole bounds before drawing this camera.
+      displayOrder.sort((a, b) => b.distance - a.distance || a.order - b.order);
+      displayOrder.forEach(({mesh}, rank) => { mesh.renderOrder = 2900 + rank * .01; });
+    }
+
     function renderScene(camera) {
       if (!stageBreak?.sort(camera, stageSpeedBack?.displaySortEntries)) stageSpeedBack?.sort(camera);
       stageDisplayLights?.sort(camera);
       stageFallingEffects?.sort(camera, stageTitle?.displaySortEntries);
-      stageMomiji?.sort(camera, stageRibbons?.ribbonSortEntries);
+      sortRibbonDisplay(camera);
       stageButterfly?.sort(camera);
       stageLeaves?.sort(camera, stageRain?.sortEntries(), stageButterfly?.sortEntries());
       // AxisBillboard follows the camera currently drawing each split layer.
@@ -531,6 +552,7 @@
 
     function clear() {
       physicsClock?.reset();
+      displayOrder.length = 0;
       stageTitle?.dispose();
       stageTitle = null;
       stageRibbons?.dispose();

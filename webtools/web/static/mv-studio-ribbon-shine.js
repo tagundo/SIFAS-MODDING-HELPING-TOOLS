@@ -13,7 +13,8 @@
     "  float size = min(particleSize, uMaxViewportWidth * width);",
     "  center.xy += position.xy * size;",
     "  gl_Position = projectionMatrix * center;",
-    "  vShine = uv;",
+    // Unity’s camera-facing quad places U=0 on the right after X reflection.
+    "  vShine = vec2(1.0 - uv.x, uv.y);",
     "}"
   ].join("\n");
   const fragmentShader = [
@@ -41,9 +42,9 @@
       cue.sizeCurves.every(curve => title.boundedCurve(curve, curves.validCurve));
   }
 
-  function spawn(cue) {
-    const {autoSeed, nativeRandom, nativeUnit} = global.MVStudioStageParticles;
-    const seed = autoSeed(), initial = nativeRandom(seed), shape = nativeRandom(seed);
+  function spawn(cue, seed) {
+    const {nativeRandom, nativeUnit} = global.MVStudioStageParticles;
+    const initial = nativeRandom(seed), shape = nativeRandom(seed);
     const f32 = Math.fround;
     const lerp = ([min, max], word) => f32(min + f32(f32(max - min) * nativeUnit(word)));
     const sin = f32(Math.sin(cue.shapeYaw)), cos = f32(Math.cos(cue.shapeYaw));
@@ -99,13 +100,18 @@
     // scale. Its position still inherits the parent's transform.
     mesh.position.fromArray(cue.parent.position.map((value, axis) =>
       Math.fround(value + Math.fround(cue.position[axis] * cue.parent.scale[axis]))));
-    return {cue, mesh, positions, sizes, records: spawn(cue)};
+    const seed = global.MVStudioStageParticles.autoSeed();
+    const stream = global.MVStudioRibbonShineSimulation?.create(cue, seed);
+    // A simple stock box emitter sorts by its fixed procedural bounds, not
+    // by the distribution of the current random particles.
+    const center = stream?.boundsCenter && new T.Vector3().fromArray(stream.boundsCenter).add(mesh.position);
+    if (center) center.set(Math.fround(center.x), Math.fround(center.y), Math.fround(center.z));
+    return {cue, mesh, positions, sizes, stream, records: stream ? null : spawn(cue, seed),
+      frame: -1, fps: 0, center};
   }
 
-  function updateBatch(batch, elapsed, evaluate) {
-    const {cue, mesh, positions, sizes, records} = batch;
+  function sampleLegacy(cue, records, elapsed, evaluate, emit) {
     const [small, large] = cue.sizeCurves, f32 = Math.fround;
-    let count = 0;
     const first = Math.max(0, Math.floor(elapsed * cue.rate) - 1);
     for (let index = first; index < records.length; index++) {
       const item = records[index], age = elapsed - item.birth;
@@ -114,14 +120,32 @@
       const time = f32(f32(f32(age / item.life) * 100) * f32(.01));
       const min = f32(evaluate(small, time)), max = f32(evaluate(large, time));
       const width = f32(item.size * f32(min + f32(f32(max - min) * item.weight)));
-      if (!(width > 0)) continue;
-      positions.setXYZ(count, item.x + item.dx * age, item.y, item.z + item.dz * age);
-      sizes.setX(count, width);
-      count++;
+      emit(item.x + item.dx * age, item.y, item.z + item.dz * age, width);
     }
+  }
+
+  function updateBatch(batch, elapsed, evaluate, timing, fps) {
+    const {cue, mesh, positions, sizes, stream, records} = batch;
+    let count = 0;
+    function write(x, y, z, width) {
+      if (!(width > 0) || count >= sizes.count) return;
+      positions.setXYZ(count, x, y, z);
+      sizes.setX(count++, width);
+    }
+    if (stream) {
+      if (batch.frame === timing.frame && batch.fps === fps) return;
+      batch.frame = timing.frame;
+      batch.fps = fps;
+      stream.sample(timing.frame / fps, fps, write);
+    } else {
+      sampleLegacy(cue, records, elapsed, evaluate, write);
+    }
+
     mesh.geometry.instanceCount = count;
-    positions.needsUpdate = true;
-    sizes.needsUpdate = true;
+    if (!count) return;
+    positions.updateRange.count = count * positions.itemSize;
+    sizes.updateRange.count = count;
+    positions.needsUpdate = sizes.needsUpdate = true;
   }
 
   async function apply(T, root, descriptor) {
@@ -146,6 +170,7 @@
       texture = await title.loadTexture(T, new T.TextureLoader(), descriptor.texture);
       for (const cue of descriptor.cues) {
         const batch = makeBatch(T, cue, texture);
+        batch.order = 20 + batches.length;
         batches.push(batch);
         root.add(batch.mesh);
       }
@@ -155,6 +180,10 @@
     }
     return {
       invalidate() { tracks = null; },
+      sortEntries() {
+        return disposed ? [] : batches.filter(batch => batch.center &&
+          batch.mesh.visible && batch.mesh.geometry.instanceCount);
+      },
       update(time, project) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
@@ -165,11 +194,16 @@
             batch.track = matches.length === 1 ? matches[0] : null;
           }
         }
+        const quality = project?.quality?.values;
+        const fps = quality?.frame_rate_60fps === true ? 60 : 30;
         for (const batch of batches) {
           const event = !batch.track?.muted && batch.track?.events.find(row => row.id === batch.cue.eventId);
-          const enabled = project?.quality?.values?.stage_display !== false;
-          batch.mesh.visible = Boolean(enabled && title.ribbonClipActive(event, time) && event.duration <= durationLimit);
-          if (batch.mesh.visible) updateBatch(batch, Math.max(0, time - event.start), curves.evaluate);
+          const active = quality?.stage_display !== false && title.ribbonClipActive(event, time) && event.duration <= durationLimit;
+          const timing = active && batch.stream ? global.MVStudioStageParticles.activeControlFrame(event, time, fps) : null;
+          batch.mesh.visible = Boolean(active && (!batch.stream || timing));
+          if (batch.mesh.visible) {
+            updateBatch(batch, Math.max(0, time - event.start), curves.evaluate, timing, fps);
+          }
         }
       },
       dispose,

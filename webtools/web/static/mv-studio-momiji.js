@@ -85,7 +85,6 @@
     const bounds = new T.Box3();
     const visible = [];
     let disposed = false, tracks, track, event;
-    let ribbons = [];
 
     function dispose() {
       if (disposed) return;
@@ -129,7 +128,7 @@
           index, position: new T.Vector3(), size: new T.Vector3(), rotation: new T.Quaternion(), color: [0, 0, 0, 0],
         }));
         entries.push({...packet, row, origin, basis, records, stream, isLeaf, live: [], center: new T.Vector3(),
-          frame: -1, fps: 0, order: [...roles.keys()].indexOf(row.role)});
+          frame: -1, fps: 0, sortEntry: {mesh: packet.mesh, center: new T.Vector3(), order: [...roles.keys()].indexOf(row.role)}});
       }
     } catch {
       dispose();
@@ -232,33 +231,21 @@
           updateEntry(entry, timing.frame, fps);
         }
       },
-      sort(camera, ribbonPeers) {
-        if (disposed) return;
+      sortEntries(camera) {
         visible.length = 0;
-        for (const entry of entries) if (entry.mesh.visible) visible.push(entry);
-        for (const {mesh} of ribbons) mesh.renderOrder = 2900;
-        if (!visible.length) {
-          ribbons = [];
-          return;
-        }
-        ribbons = ribbonPeers?.() || [];
-        camera.updateMatrixWorld();
+        if (disposed) return visible;
         eye.setFromMatrixPosition(camera.matrixWorld);
-        for (const entry of visible) {
+        for (const entry of entries) {
+          if (!entry.mesh.visible) continue;
           centerOffset.copy(entry.mesh.position);
           drawPacket(entry, center => {
             world.copy(center).add(centerOffset);
             return f32(camera.isOrthographicCamera ? -world.applyMatrix4(camera.matrixWorldInverse).z : eye.distanceToSquared(world));
           });
+          entry.sortEntry.center.copy(entry.center).add(centerOffset);
+          visible.push(entry.sortEntry);
         }
-        visible.push(...ribbons);
-        for (const entry of visible) {
-          world.copy(entry.center);
-          if (entry.live) world.add(entry.mesh.position);
-          entry.distance = f32(camera.isOrthographicCamera ? -world.applyMatrix4(camera.matrixWorldInverse).z : eye.distanceToSquared(world));
-        }
-        visible.sort((a, b) => b.distance - a.distance || a.order - b.order);
-        visible.forEach(({mesh}, rank) => { mesh.renderOrder = 2900 + rank * .01; });
+        return visible;
       },
       dispose,
     };
