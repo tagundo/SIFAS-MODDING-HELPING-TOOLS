@@ -544,6 +544,9 @@ class StageTintMaterialTests(unittest.TestCase):
         self.assertEqual(self.factor(tint, resolved=particles), self.GREY, "not an AS/* shader")
         soft = ("AS/SoftParticleBillboard", [("_Color", 0, (1, 1, 1, 1))])
         self.assertEqual(self.factor(tint, resolved=soft), self.GREY, "AS/* shaders that read _Color")
+        # AS/MatCap/Transparent also declares _TintColor without _Color, but its GLSL use is unverified.
+        matcap = ("AS/MatCap/Transparent", [("_TintColor", 0, (1, 1, 1, 1))])
+        self.assertEqual(self.factor(tint, resolved=matcap), self.GREY, "loaded or not, only verified AS/* shaders tint")
         self.assertEqual(self.factor({"_Color": (.25, .5, .75, 1), **tint}), [.25, .5, .75, 1], "a saved _Color is kept")
 
 

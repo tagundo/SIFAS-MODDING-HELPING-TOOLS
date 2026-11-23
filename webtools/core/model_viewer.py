@@ -654,11 +654,14 @@ _AS_TINT_SHADERS = {
     ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
     ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
 }
+# Only these verified shaders tint, loaded or not: other AS/* shaders that
+# declare _TintColor without _Color (AS/MatCap/*, AS/Member) are not checked.
+_AS_TINT_NAMES = frozenset(_AS_TINT_SHADERS.values())
 _WHITE = {"r": 1., "g": 1., "b": 1., "a": 1.}
 
 
 def _as_tint_default(scene, obj, tree):
-    """ShaderLab default _TintColor of an AS/* shader whose tint is _TintColor; None otherwise."""
+    """ShaderLab default _TintColor of a verified AS/* shader whose tint is _TintColor; None otherwise."""
     if obj is None:
         return None
     pointer = tree.get("m_Shader") or {}
@@ -669,8 +672,8 @@ def _as_tint_default(scene, obj, tree):
         form = scene.tree(shader).get("m_ParsedForm") or {}
         props = {item.get("m_Name"): item for item in (form.get("m_PropInfo") or {}).get("m_Props", [])
                  if isinstance(item, dict)}
-        tint = props.get("_TintColor")
-        if not str(form.get("m_Name") or "").startswith("AS/") or "_Color" in props or not tint or tint.get("m_Type") != 0:
+        tint, name = props.get("_TintColor"), form.get("m_Name")
+        if not isinstance(name, str) or name not in _AS_TINT_NAMES or "_Color" in props or not tint or tint.get("m_Type") != 0:
             return None
         default = {axis: tint.get(f"m_DefValue[{index}]", 1.) for index, axis in enumerate("rgba")}
         return default if all(type(value) in (int, float) for value in default.values()) else None
