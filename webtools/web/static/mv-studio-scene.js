@@ -379,7 +379,7 @@
     let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
-    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
+    let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1, adaptivePreview = true;
     let lastShaftFrame = null, resetShafts = true;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
     // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
@@ -1757,7 +1757,7 @@
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
       // missed several 30 fps frames. Pausing restores the selected quality.
-      if (playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
+      if (adaptivePreview && playing && Number.isFinite(frameTimestamp) && previewScale > 0.5) {
         if (lastPlaybackFrame !== null && frameTimestamp - lastPlaybackFrame > 40) slowFrames++;
         else slowFrames = 0;
         lastPlaybackFrame = frameTimestamp;
@@ -2276,6 +2276,17 @@
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
+      // Fixed-step captures play on slow timestamps: with the adaptive preview off, the slow-frame
+      // downscale is undone and not applied again. Playback, the physics clock and the shaft
+      // damping clock are left as they are.
+      setAdaptivePreview(enabled) {
+        adaptivePreview = enabled !== false;
+        slowFrames = 0;
+        if (!adaptivePreview && previewScale !== 1) {
+          previewScale = 1;
+          viewportDirty = true;
+        }
+      },
       // The player's anti-aliasing option (default off): with it, Max and High 3D draw at the
       // screen height (nativeRenderHeight).
       setAntiAliasing(enabled) {
@@ -2310,7 +2321,7 @@
             aspectCorrection: live ? (nativeMainLens ? global.MVStudioSplit?.aspectCorrection(camera.aspect) ?? 1 : 1) : null,
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
-          renderHeight, previewScale, playing, antiAliasing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          renderHeight, previewScale, adaptivePreview, playing, antiAliasing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
           constraints: records.filter((record) => record.constraints)
             .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
           controlPrefabs: stageControlPrefabs?.inspect() ?? null,

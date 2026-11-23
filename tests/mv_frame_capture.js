@@ -355,6 +355,11 @@ async function renderFrame(page, time, preroll, rate, warmup = 0) {
     const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
     const start = time - steps / rate;
     const warm = steps === available ? warmup : 0;
+    // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) would trip
+    // the playback's slow-frame preview downscale and draw below the pinned size. A fixed-step
+    // capture turns that off; playback, the physics clock and the shaft damping clock are kept.
+    if (typeof scene.setAdaptivePreview !== 'function') throw new Error('This editor build has no MVStudioScene.setAdaptivePreview()');
+    scene.setAdaptivePreview(false);
     scene.resize(false);
     // The editor's own seek path resets physics only when the time changes.
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / rate, undefined, true);
@@ -363,18 +368,13 @@ async function renderFrame(page, time, preroll, rate, warmup = 0) {
     try {
       for (let step = 0; step < warm; step++) scene.playbackFrame(start, step * 1000 / rate, true);
       for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, (warm + step) * 1000 / rate, true);
-      // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) trips
-      // the playback's slow-frame preview downscale, which would draw this frame below the
-      // pinned size: restart playback so the preview scale returns to 1 (the physics clock
-      // still steps once on the drawn frame).
-      const previewRestored = (scene.inspect().previewScale ?? 1) !== 1;
-      if (previewRestored) { scene.setPlaying(false); scene.setPlaying(true); }
       scene.playbackFrame(time, (warm + steps) * 1000 / rate, false);
       const canvas = document.querySelector('#mv-scene canvas');
       const png = canvas.toDataURL('image/png');
-      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start, previewRestored };
+      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start };
     } finally {
       scene.setPlaying(false);
+      scene.setAdaptivePreview(true);
     }
   }, { time, preroll, rate, warmup });
 }

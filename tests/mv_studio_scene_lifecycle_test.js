@@ -239,6 +239,34 @@ async function checkNativeRenderHeight() {
   f.app.dispose();
 }
 
+// The playback's slow-frame preview downscale, and the capture switch that turns it off without
+// touching playback.
+async function checkAdaptivePreview() {
+  const f = fixture();
+  const value = project(74);
+  value.quality = { mode: 10, values: { quality_mode: 10, rendering_resolution: 1080 } };
+  await f.app.load(value);
+  f.app.resize();
+  assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.setPlaying(true);
+  for (let step = 0; step <= 4; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, .75, 'four slow frames scale the playback buffer down');
+  f.app.playbackFrame(2.2, 5 * 205, true);
+  assert.equal(f.renderer.getPixelRatio(), .75);
+  f.app.setAdaptivePreview(false);
+  let state = f.app.inspect();
+  assert.deepEqual([state.previewScale, state.adaptivePreview, state.playing], [1, false, true], 'playback keeps running');
+  for (let step = 6; step <= 12; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, 1, 'slow frames no longer scale the buffer down');
+  assert.equal(f.renderer.getPixelRatio(), 1, 'the next frame resizes back to the selected resolution');
+  f.app.setAdaptivePreview(true);
+  for (let step = 13; step <= 17; step++) f.app.playbackFrame(1 + step * .2, step * 205, true);
+  assert.equal(f.app.inspect().previewScale, .75, 'the adaptive preview comes back');
+  f.app.setPlaying(false);
+  assert.equal(f.app.inspect().previewScale, 1);
+  f.app.dispose();
+}
+
 async function checkNativeCamera() {
   const f = fixture();
   const track = { kind: 'camera', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera', events: [
@@ -734,6 +762,7 @@ function checkAssetDumpHelpers() {
 (async () => {
   checkResizeDraws();
   await checkNativeRenderHeight();
+  await checkAdaptivePreview();
   await checkAssetDump();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();

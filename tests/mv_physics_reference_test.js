@@ -72,7 +72,8 @@ function fakePage() {
   const calls = [];
   globalThis.document = { querySelector: () => ({ toDataURL: () => 'data:image/png;base64,' }) };
   globalThis.mvFrameProbe = { scene: {
-    time: -1, resize() {}, inspect() { return { time: this.time }; },
+    time: -1, resize() { calls.push(['resize']); }, inspect() { return { time: this.time }; },
+    setAdaptivePreview(value) { calls.push(['adaptive', value]); },
     seek(time) { this.time = time; calls.push(['seek', time]); }, setPlaying(value) { calls.push(['playing', value]); },
     playbackFrame(time, stamp, deferred) { this.time = time; calls.push(['frame', time, stamp, deferred]); },
   } };
@@ -121,17 +122,25 @@ function fakePage() {
   assert.equal(result.warmupSteps, 0, 'a preroll that starts mid-song has no warm-up');
   assert.equal(page.calls.filter(([kind]) => kind === 'frame').length, 181);
   assert.equal(result.prerollStart, 14.85 - 3);
-  assert.equal(result.previewRestored, false);
 
-  // A 4.87 Hz device grid trips the playback's slow-frame preview downscale: playback restarts
-  // before the drawn frame so it is drawn at the pinned size.
+  // A 4.87 Hz device grid would trip the playback's slow-frame preview downscale: the capture
+  // turns the adaptive preview off before the preroll and keeps playing through the drawn frame
+  // (no playback restart, which would reset the physics and shaft damping clocks).
   page = fakePage();
-  globalThis.mvFrameProbe.scene.inspect = function () { return { time: this.time, previewScale: .75 }; };
   result = await capture.renderFrame(page, 49.649, 3, 4.87);
-  const restart = page.calls.slice(-4, -1);
-  assert.deepEqual(restart.map(([kind, value]) => [kind, kind === 'frame' ? Math.round(value * 1e3) / 1e3 : value]),
-    [['playing', false], ['playing', true], ['frame', 49.649]]);
-  assert.equal(result.previewRestored, true);
+  const kinds = page.calls.map(([kind]) => kind);
+  assert.deepEqual(page.calls[0], ['adaptive', false], 'the adaptive preview is off before anything is evaluated');
+  assert.equal(kinds.indexOf('resize'), 1);
+  const played = page.calls.filter(([kind]) => kind === 'playing');
+  assert.deepEqual(played, [['playing', true], ['playing', false]], 'playback starts once and stops after the drawn frame');
+  const first = kinds.indexOf('frame'), drawn = kinds.lastIndexOf('frame');
+  assert(kinds.indexOf('playing') < first && kinds.lastIndexOf('playing') > drawn, 'every frame, the drawn one included, plays in one run');
+  assert.deepEqual(page.calls.at(-1), ['adaptive', true], 'the editor gets its adaptive preview back');
+  assert.equal(page.calls[drawn][3], false, 'the drawn frame is not deferred');
+  assert.equal(Math.round(page.calls[drawn][1] * 1e3) / 1e3, 49.649);
+  page = fakePage();
+  globalThis.mvFrameProbe.scene.setAdaptivePreview = undefined;
+  await assert.rejects(capture.renderFrame(page, 1, 3, 60), /setAdaptivePreview/);
 
   // Real-time runtime dumps step at the achieved frame rate, capped by the requested rate.
   const clock = (directorTime, frameCount, deltaTime = .1) => ({ clock: { directorTime, frameCount, deltaTime } });
