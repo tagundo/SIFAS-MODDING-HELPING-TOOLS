@@ -1645,6 +1645,14 @@
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
+      // Unity's ConstraintManagerUpdate (PreLateUpdate) runs after the Animator
+      // and before every LateUpdate script: LiveMemberEyeContact, ShadowComponent
+      // and the member manager's AllSafeCorrect. A swing-bone source holds the
+      // local rotation this frame's Update job wrote (simulatedPose), unless the
+      // timeline animates it. The targets keep the result until the next update
+      // hook, whose job reads them as the parents of their swing chains.
+      for (const record of records) record.constraints?.apply(record.physics?.simulatedPose?.() || null,
+        () => record.motion?.animatedProperties?.(currentTime));
       // Native performers look at the other actor's animated Eye_Root, so
       // prepare every actor at this timestamp before resolving any gaze.
       const targets = gazeContext();
@@ -1652,10 +1660,6 @@
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
-      // Unity's ConstraintManagerUpdate runs after the Animator and before the
-      // member manager's LateUpdate, so swing-bone sources read last frame's result.
-      for (const record of records) record.constraints?.apply(record.physics?.simulatedPose?.() || null,
-        () => record.motion?.animatedProperties?.(currentTime));
       for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;

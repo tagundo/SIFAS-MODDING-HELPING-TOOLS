@@ -164,9 +164,14 @@
       engine?.resetSimulation(reason);
     }
 
-    // Unity keeps the LateUpdate swing-bone result in the transforms until the
-    // next frame's Animator. Constraints evaluated before that LateUpdate read
-    // it, while restorePose() has already put the animated pose back here.
+    // The swing-bone local pose Unity's transforms hold when
+    // ConstraintManagerUpdate (PreLateUpdate, after the Animator) reads them.
+    // Game order: LiveCoreMemberManager.Update -> UpdateMultiThread scheduled
+    // this frame's job, which wrote world rotations against the parents the
+    // previous frame ended with, so update() takes the copy right after the
+    // step, before LateUpdate's AllSafeCorrect. The same-frame order runs its
+    // job after the timeline, so its solve reads the previous apply() result.
+    // The copy survives restorePose(), which puts the authored pose back.
     function captureSimulated() {
       simulated ||= new Map();
       for (const [id, { object, position, quaternion }] of dynamic) {
@@ -221,6 +226,7 @@
       engine.captureAnimationPose({ time: pose.time, advancing: true, animatedProperties: pose.animatedProperties });
       stepped = engine.step(delta, settings) === true;
       active = true;
+      if (stepped) captureSimulated();
       return stepped;
     }
 

@@ -59,7 +59,8 @@ model.restorePose();
 assert.deepEqual(bone.quaternion.toArray(), [0,0,0,1]);
 model.apply(0, 0, {});
 assert.deepEqual(bone.quaternion.toArray(), physical, 'pause retains the last physics pose without a step');
-// Constraints read the last LateUpdate result even after restorePose().
+// Same-frame order: the next constraint solve reads the last apply() result,
+// even after restorePose() has put the authored pose back.
 model.restorePose();
 assert.deepEqual(model.simulatedPose().get(1).quaternion.toArray(), physical, 'simulated pose survives restorePose');
 assert.equal(model.simulatedPose().get(1).position, null, 'only the properties the solver owns');
@@ -214,6 +215,28 @@ const close = (a, b, message, tolerance = 1e-6) =>
   const held = display60.dyna.quaternion.toArray();
   display60.frame('game', { parent: angle(13 / 30 - 1 / 60) }, 0);
   assert.deepEqual(display60.dyna.quaternion.toArray(), held, 'a displayed in-between frame holds the local rotation');
+}
+{
+  // Game order: ConstraintManagerUpdate (PreLateUpdate) reads the swing bones as this
+  // frame's Update job left them, so simulatedPose() is the step output, taken before
+  // the timeline and LateUpdate, and kept through restorePose().
+  const rig = springRig(), motion = { animatedProperties: () => ({ 0: { quaternion: true } }) };
+  rig.model.frame('update', 0, 0, {}, motion, 'game');
+  assert.equal(rig.model.simulatedPose(), null, 'no job yet');
+  rig.model.frame('update', 1 / 30, 1 / 30, {}, motion, 'game');
+  const job = rig.dyna.quaternion.toArray();
+  assert.notDeepEqual(job, [0, 0, 0, 1]);
+  rig.model.restorePose();
+  assert.deepEqual(rig.dyna.quaternion.toArray(), [0, 0, 0, 1], 'the timeline sees the authored pose');
+  assert.deepEqual(rig.model.simulatedPose().get(1).quaternion.toArray(), job, 'this frame\'s job output survives restorePose');
+  rig.model.frame('late', 1 / 30, 1 / 30, {}, motion, 'game');
+  assert.deepEqual(rig.dyna.quaternion.toArray(), job, 'LateUpdate shows the same job output (no correction here)');
+  // A displayed frame without a game frame keeps the last job output.
+  rig.model.frame('update', 1.5 / 30, 0, {}, motion, 'game');
+  assert.deepEqual(rig.model.simulatedPose().get(1).quaternion.toArray(), job);
+  rig.model.frame('late', 1.5 / 30, 0, {}, motion, 'game');
+  rig.model.reset('seek');
+  assert.equal(rig.model.simulatedPose(), null, 'a seek discards it');
 }
 {
   // Properties the timeline animates are written after the job, so they win.
