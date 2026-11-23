@@ -155,6 +155,9 @@ async function importOriginal(page, source, download) {
   await choose('#mv-game-platform', source.platform);
   await choose('#mv-game-song', String(source.liveId));
   await choose('#mv-game-variant', String(source.assetId));
+  // A catalog reload still in flight re-syncs the variants and clears the download box when it
+  // ends; the load button stays disabled until then.
+  await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled, null, { timeout: 60000 });
   await page.locator('#mv-game-download').setChecked(Boolean(download));
   await page.locator('#mv-game-load').click();
   // The import operation disables the button synchronously and re-enables it when it ends.
