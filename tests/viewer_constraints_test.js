@@ -52,6 +52,18 @@ close(U.solve(position(), [], current, parent, local).position, [0, 0, 1], 0, 'n
 close(U.solve(position({ weight: 1, offset: [0, 0, 0] }), [source([2, 1, 0])], current, null, local).position, [2, 1, 0], 1e-12, 'no parent: world is local');
 const scaled = { ...parent, s: [2, 4, 1] };
 close(U.solve(position({ weight: 1, offset: [0, 0, 0] }), [source([2, 3, 0])], current, scaled, local).position, [0, .5, 2], 1e-12, 'parent scale divides');
+// Source world positions compose one level at a time (p = r * (s * p) + t per
+// ancestor, job loop 0x71b4bc): a non-uniformly scaled grandparent above a turned
+// parent scales the turned offset, not the child's local axes.
+{
+  const grand = { p: [1, 2, 3], r: [0, 0, 0, 1], s: [2, 1, 1], parent: null };
+  const turned = { p: [0, 0, 0], r: U.euler([0, 0, 90]), s: [1, 1, 1], parent: grand };
+  const leaf = node([1, 0, 0], [0, 0, 0, 1], turned);
+  const pose = U.world(leaf, local);
+  close(pose.position, [1, 3, 3], 1e-12, 'level-by-level world position');
+  sameRotation(pose.rotation, U.euler([0, 0, 90]), 1e-9, 'world rotation');
+  close(U.inversePoint(turned, pose.position, local), [1, 0, 0], 1e-12, 'InverseTransformPoint undoes it');
+}
 
 // Rotation: into the parent's space, * Euler(offset), nlerp from Euler(rest).
 const rotation = (overrides = {}) => ({ kind: 'rotation', atRest: [0, 0, 0], offset: [0, 0, 0], weight: .5, axes: [true, true, true], ...overrides });

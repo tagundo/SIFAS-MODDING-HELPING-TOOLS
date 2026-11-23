@@ -59,16 +59,18 @@
   function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 
   function chain(node) { var nodes = []; while (node) { nodes.push(node); node = node.parent; } return nodes.reverse(); }
-  // Unity TransformHierarchy composition: position = parent position +
-  // parent rotation * (parent scale * local position).
+  // Unity TransformHierarchy composition, one level at a time from the node up
+  // to the root, as the job's source loop (0x71b4bc..0x71b540) does:
+  // p = parent rotation * (parent scale * p) + parent position. With
+  // non-uniform scale under a rotated child this differs from scaling by the
+  // accumulated component-wise scale.
   function world(node, local) {
-    var position = [0, 0, 0], rotation = [0, 0, 0, 1], scale = [1, 1, 1];
-    chain(node).forEach(function (item) {
-      var row = local(item), offset = rotate(rotation, [scale[0] * row.p[0], scale[1] * row.p[1], scale[2] * row.p[2]]);
-      position = [position[0] + offset[0], position[1] + offset[1], position[2] + offset[2]];
-      rotation = quatMul(rotation, row.r);
-      scale = [scale[0] * row.s[0], scale[1] * row.s[1], scale[2] * row.s[2]];
-    });
+    var row = local(node), position = row.p.slice(), rotation = row.r;
+    for (var item = node.parent; item; item = item.parent) {
+      var up = local(item), turned = rotate(up.r, [up.s[0] * position[0], up.s[1] * position[1], up.s[2] * position[2]]);
+      position = [turned[0] + up.p[0], turned[1] + up.p[1], turned[2] + up.p[2]];
+      rotation = quatMul(up.r, rotation);
+    }
     return { position: position, rotation: rotation };
   }
   // TransformHierarchy InverseTransformPoint / InverseTransformRotation into
