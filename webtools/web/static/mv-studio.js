@@ -743,7 +743,8 @@
 
   function ensureScene() {
     if (!scene && global.MVStudioScene) {
-      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden });
+      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden,
+        screenFade: byId("mv-screen-fade").checked });
       scene.setVisible(visible && !document.hidden);
       if (refreshRateMode) applyRefreshRateMode();
     }
@@ -1154,6 +1155,7 @@
     byId("mv-rewind").addEventListener("click", () => { pause(); seek(0); });
     byId("mv-play").addEventListener("click", togglePlayback);
     byId("mv-camera-mode").addEventListener("change", (event) => { if (scene) scene.setCamera(event.target.value); });
+    byId("mv-screen-fade").addEventListener("change", (event) => { if (scene) scene.setScreenFade(event.target.checked); });
     byId("mv-frame-scene").addEventListener("click", () => {
       if (!scene) return;
       byId("mv-camera-mode").value = "orbit";

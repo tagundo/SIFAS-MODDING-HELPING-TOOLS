@@ -315,6 +315,9 @@
     const physicsClock = global.MVStudioPhysics?.createClock();
     let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
+    // LiveMvDarkFilterField and the live-end overlay blur (see mv-studio-screen-fade.js).
+    const screenFade = global.MVStudioScreenFade?.create(T, renderer);
+    let screenFadeEnabled = options?.screenFade !== false;
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
@@ -404,6 +407,11 @@
           if (particles?.length || records.some((record) => record.stageOverlay?.hasVisible())) {
             overlay?.draw(scene, particles?.length ? camera => sortTransparentParticles(camera, particles) : undefined);
           }
+        }
+        if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
+          // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
+          const end = Number.isFinite(project.soundtrack?.duration) ? project.soundtrack.duration : project.duration;
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, end));
         }
       }
     }
@@ -2055,6 +2063,7 @@
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2099,6 +2108,7 @@
         clear();
         split?.dispose();
         post?.dispose();
+        screenFade?.dispose();
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();

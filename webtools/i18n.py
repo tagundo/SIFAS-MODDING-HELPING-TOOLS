@@ -2570,6 +2570,7 @@ _MV_STUDIO_TRANSLATIONS = {
     "This MV has no visual assets available for preview.": ("이 MV에서 미리 볼 수 있는 모델을 찾지 못했습니다.", "このMVにはプレビューできるモデルがありません。"),
     "Preview camera": ("미리보기 카메라", "プレビューカメラ"),
     "Game camera": ("게임 카메라", "ゲームカメラ"),
+    "Start and end fade": ("시작·종료 페이드", "開始・終了フェード"),
     "Free camera": ("자유 카메라", "自由カメラ"),
     "Frame scene": ("무대 전체 보기", "ステージ全体を表示"),
     "MV assets": ("MV 에셋", "MVアセット"),
