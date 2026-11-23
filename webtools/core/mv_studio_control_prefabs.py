@@ -43,6 +43,7 @@ from . import unity_builtin_meshes
 
 SCHEMA = 1
 _MAX_TEMPLATES = 64
+_MAX_CUES = 512  # MVStudioControlPrefabs.validDescriptor refuses a longer cue list.
 _MAX_RENDERERS = 64
 _MAX_VERTICES = 120_000
 _MAX_BYTES = 12 * 1024 * 1024
@@ -413,12 +414,20 @@ def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
                 gaps.append(f"prefab meshes: {str(error)[:120] or type(error).__name__}")
             if outcomes is None:
                 gaps.append("particle systems are not read by this import")
-            prefabs[key] = index, drawn + meshes, gaps, quiet
-        index, drawn, gaps, quiet = prefabs[key]
-        dropped = identity in ((outcomes or {}).get(key) or {}).get("dropped", ())
-        cue_gaps = gaps + (["particle cue budget of the preview"] if dropped else [])
+            prefabs[key] = index, drawn, meshes, gaps, quiet
+        index, systems, meshes, gaps, quiet = prefabs[key]
+        cue_gaps = list(gaps)
+        if identity in ((outcomes or {}).get(key) or {}).get("dropped", ()):
+            # The particle reader left this cue out of its own budget: its systems are not drawn.
+            cue_gaps.append("particle cue budget of the preview")
+            systems = 0
         if index is not None:
-            cues.append({**entry, "template": index, "offset": row["offset"], "quality": row["quality"]})
+            if len(cues) < _MAX_CUES:
+                cues.append({**entry, "template": index, "offset": row["offset"], "quality": row["quality"]})
+            else:
+                cue_gaps.append("prefab cue budget of the preview")
+                meshes = 0
+        drawn = systems + meshes
         if drawn and not cue_gaps:
             status, note = RENDERED, "The effect prefab is drawn by the common CustomControl rule."
         elif drawn:

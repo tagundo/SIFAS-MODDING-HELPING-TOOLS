@@ -186,6 +186,32 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(rows, {("rendered", "drawn"): 1, ("partial", "part"): 1, ("no effect", "nothing"): 1})
         self.assertEqual([row["status"] for row in coverage.report(project)["gaps"]], ["partial"])
 
+    def test_cue_budgets_are_ledgered(self):
+        # The runtime refuses more than 512 cues; the extra clips are ledgered, not
+        # reported as drawn. A cue the particle reader dropped draws no systems.
+        rows = [{"track": {"id": "t"}, "event": {"id": f"t:{index}"}, "prefab": object(), "offset": [0, 0, 0],
+                 "quality": "stage_control"} for index in range(3)]
+        outcomes = {"k": {"systems": [26], "walked": [], "dropped": {("t", "t:1")}}}
+        with mock.patch.object(prefabs, "_MAX_CUES", 2), \
+                mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", return_value=({"name": "fx"}, 1, [], [])):
+            descriptor, ledger = prefabs.read({}, None, [], float("inf"), outcomes=outcomes)
+        self.assertEqual([cue["eventId"] for cue in descriptor["cues"]], ["t:0", "t:1"])
+        self.assertEqual([(row["eventId"], row["status"]) for row in ledger],
+                         [("t:0", "rendered"), ("t:1", "partial"), ("t:2", "partial")])
+        self.assertIn("particle cue budget of the preview", ledger[1]["note"])
+        self.assertIn("prefab cue budget of the preview", ledger[2]["note"])
+        outcomes["k"]["dropped"].add(("t", "t:2"))
+        with mock.patch.object(prefabs, "_MAX_CUES", 2), \
+                mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", return_value=({"name": "fx"}, 1, [], [])):
+            _, ledger = prefabs.read({}, None, [], float("inf"), outcomes=outcomes)
+        self.assertEqual(ledger[2]["status"], "not rendered", "neither the systems nor the meshes are drawn")
+        self.assertEqual(ledger[2]["note"], "The effect prefab is not previewed: particle cue budget of the preview, "
+                                            "prefab cue budget of the preview.")
+
     def test_warning_lists_mesh_gaps_once_per_prefab(self):
         ledger = [{"meshGaps": ["Animator animates _TintColor through both its vector and color lanes"] * 2},
                   {"status": "rendered"}]
