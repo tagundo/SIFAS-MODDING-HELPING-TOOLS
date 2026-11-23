@@ -95,29 +95,43 @@ async function controller() {
   coloring.update(5, { tracks: project.tracks.map(track => ({ ...track, muted: true })) });
   assert.equal(main(shafted), "tex7");
 
-  // StageColoring off mutes the StageEffect Coloring category only.
+  // StageColoring off mutes only the direct child tracks of the StageEffect
+  // Coloring category (ApplyMuteToChildTracks is not recursive). A track in a
+  // nested sub-GroupTrack (12023: Coloring/LightShaft, Led_p, Led_l) keeps its
+  // mixer: the muted sub-group does not stop the tracks compiled under it.
   const half = (start, duration, textureIndex) => {
     const event = clip(start, duration, textureIndex);
     return { ...event, values: { ...event.values, tintColor: [.5, .5, .5, 1], speed: 3 } };
   };
   const gated = { quality: { values: { stage_coloring: false } }, tracks: [
-    { ...project.tracks[0], label: "StageEffect/Expert/Coloring/LightShaft/Live Coloring Track", events: [half(0, 2, 1)] },
-    { ...project.tracks[1], label: "StageEffect/Expert/Animation/litB_All", events: [half(0, 2, 1)] },
+    { ...project.tracks[0], label: "StageEffect/Expert/Coloring/Live Coloring Track", events: [half(0, 2, 1)] },
+    { ...project.tracks[1], label: "StageEffect/Expert/Coloring/LightShaft/Live Coloring Track (1)", events: [half(0, 2, 1)] },
   ] };
   coloring.update(1, gated);
   assert.equal(main(shafted), "tex7");
   assert.deepEqual(shafted.material.uniforms.uTint.value.toArray(), fields.tint, "the material keeps its own _TintColor");
   assert.equal(shafted.material.uniforms.uSpeed.value, fields.speed);
   assert.equal(shafted.material.visible, true);
-  assert.deepEqual(plain.material.uniforms.uTint.value.toArray(), [.5, .5, .5, 1], "other categories keep their mixer");
+  assert.deepEqual(plain.material.uniforms.uTint.value.toArray(), [.5, .5, .5, 1], "a nested sub-group track keeps its mixer");
   assert.equal(plain.material.uniforms.uSpeed.value, 3);
   gated.quality.values.stage_coloring = true;
   coloring.update(1, gated);
   assert.equal(main(shafted), "tex9");
   assert.deepEqual(shafted.material.uniforms.uTint.value.toArray(), [.5, .5, .5, 1]);
-  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Normal/ Coloring /x" }, { stage_coloring: false }), true);
-  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Normal/Coloring" }, { stage_coloring: false }), false);
-  assert.equal(MVStudioStageColoring.qualityMuted({ label: "PropEffect/Prop Coloring/x/y" }, { stage_coloring: false }), false);
+  assert.deepEqual(plain.material.uniforms.uTint.value.toArray(), [.5, .5, .5, 1]);
+  // The nested track moved directly under Coloring is muted as well.
+  gated.quality.values.stage_coloring = false;
+  coloring.update(1, { ...gated, tracks: [gated.tracks[0], { ...gated.tracks[1], label: "StageEffect/Expert/Coloring/Led_p" }] });
+  assert.deepEqual(plain.material.uniforms.uTint.value.toArray(), fields.tint);
+  assert.equal(plain.material.uniforms.uSpeed.value, fields.speed);
+  const off = { stage_coloring: false };
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Normal/ Coloring /x" }, off), true);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Expert/Coloring/Led_p/Live Coloring Track" }, off), false);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Expert/Coloring/LightShaft/Sub/x" }, off), false);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Normal/Coloring" }, off), false);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Expert/Animation/litB_All" }, off), false);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "PropEffect/Prop Coloring/x/y" }, off), false);
+  assert.equal(MVStudioStageColoring.qualityMuted({ label: "StageEffect/Expert/Coloring/x" }, { stage_coloring: true }), false);
   coloring.dispose();
 }
 

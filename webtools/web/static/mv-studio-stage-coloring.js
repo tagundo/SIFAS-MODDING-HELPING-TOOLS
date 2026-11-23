@@ -69,15 +69,21 @@
     return true;
   }
 
-  // LiveQualityOperator.ApplyLiveQualityToStageEffectTrack mutes every track
-  // under a StageEffect/<difficulty>/<category> group whose name, without
-  // spaces and lower-cased (NormalizeTrackName), is "coloring" while
-  // StageColoring is off. A muted non-Animation track keeps its binding active
-  // (RemainsInMuted) but runs no mixer, so the material keeps its own values.
+  // While StageColoring is off, LiveQualityOperator.ApplyLiveQualityToStageEffectTrack
+  // mutes the StageEffect/<difficulty>/<category> group whose name, without
+  // spaces and lower-cased (NormalizeTrackName), is "coloring". Its
+  // ApplyMuteToChildTracks (0x20f348c) is not recursive: it set_muted's only
+  // the group's direct child tracks. A sub-GroupTrack there is muted itself,
+  // but this Timeline compiles every output track by its own m_Muted only
+  // (TrackAsset.compilable = !muted && !isEmpty; GroupTrack is never compiled),
+  // so a LiveColoringTrack nested in it keeps its mixer (12023's
+  // Coloring/LightShaft, Led_p and Led_l). A muted non-Animation track keeps
+  // its binding active (RemainsInMuted) but runs no mixer, so the material
+  // keeps its own values.
   function qualityMuted(track, values) {
     if (values?.stage_coloring !== false) return false;
     const parts = typeof track?.label === "string" ? track.label.split("/") : [];
-    return parts.length >= 4 && parts[0] === "StageEffect" && parts[2].replace(/ /g, "").toLowerCase() === "coloring";
+    return parts.length === 4 && parts[0] === "StageEffect" && parts[2].replace(/ /g, "").toLowerCase() === "coloring";
   }
 
   function customize(source, result, colors) {
