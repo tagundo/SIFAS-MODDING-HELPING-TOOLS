@@ -824,12 +824,12 @@ def template(objects, prefab, textures, deadline):
     if not walked:
         raise _Unsupported("prefab has no Transform")
     name = str(walked[0]["tree"].get("m_Name", ""))[:128]
-    animated, moving, unresolved, notes = _animators(objects, walked, deadline)
+    switched, moving, unresolved, notes = _animators(objects, walked, deadline)
     nodes, systems, unsupported, remap = [], [], [], {}
     live, reasons = [], []
     for own, node in enumerate(walked):
         parent = node["parent"]
-        on = animated.get(own, node["self"] or parent is None)
+        on = switched.get(own, node["self"] or parent is None)
         live.append(on and (parent is None or live[parent]))
         # Why a system on this node is not drawn although the prefab says so.
         inherited = list(reasons[parent]) if parent is not None else []
@@ -868,7 +868,7 @@ def template(objects, prefab, textures, deadline):
                 raise _Unsupported("ParticleSystem has no renderer")
             if len(systems) >= _MAX_SYSTEMS_PER_TEMPLATE:
                 raise _Unsupported("too many systems in one prefab")
-            scaling = (components["ParticleSystem"].read_typetree().get("scalingMode"))
+            scaling = components["ParticleSystem"].read_typetree().get("scalingMode")
             if not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling):
                 blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
             row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked,
