@@ -415,7 +415,8 @@ def run(arguments):
         fov = (state.get("camera") or {}).get("fov")
         record = {"time": time, "label": frame.get("label"), "editorImage": str(capture_path.parent / frame["image"]),
                   "editorCamera": state.get("camera"), "cameraEvent": state.get("cameraEvent"),
-                  "liveShot": state.get("liveShot"), "splitCameras": state.get("splitCameras")}
+                  "liveShot": state.get("liveShot"), "splitCameras": state.get("splitCameras"),
+                  "cutDistance": frame.get("cutDistance")}
         if manual:
             if _key(time) not in manual:
                 continue
@@ -456,7 +457,9 @@ def run(arguments):
         "alignment": alignment, "scope": _scope(capture, game_info, alignment), "frames": frames,
         "summary": {"frames": len(scored), "meanSSIM": float(np.mean([f["metrics"]["ssim"] for f in scored])) if scored else None,
                     "minSSIM": min((f["metrics"]["ssim"] for f in scored), default=None),
-                    "timingSuspects": [f["time"] for f in scored if f.get("timingSuspect")]},
+                    "timingSuspects": [f["time"] for f in scored if f.get("timingSuspect")],
+                    # Within two 30 fps frames of a camera cut, a timing error compares different shots.
+                    "nearCut": [f["time"] for f in scored if f.get("cutDistance") is not None and f["cutDistance"] < 2 / 30]},
     }
     if arguments.baseline:
         baseline = json.loads(Path(arguments.baseline).read_text("utf-8"))

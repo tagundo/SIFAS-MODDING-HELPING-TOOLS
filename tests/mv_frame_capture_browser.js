@@ -66,7 +66,26 @@ async function boot(library) {
   throw new Error('Isolated MV editor did not start');
 }
 
+function planning() {
+  const tracks = [{ kind: 'camera', events: [{ start: 0, duration: 2 }, { start: 2, duration: 0.6 }, { start: 2.6, duration: 4 }, { start: 6.6, duration: 3 }] },
+    { kind: 'lighting', events: [{ start: 1, duration: 1 }] }, { kind: 'camera', muted: true, events: [{ start: 0.5, duration: 1 }] }];
+  assert.deepEqual(capture.cameraCuts(tracks), [0, 2, 2.6, 6.6, 9.6], 'only unmuted game camera clips define cuts');
+  // The 0.6 s shot cannot keep 0.5 s from both cuts; the rest are spread and on the 30 fps grid.
+  assert.deepEqual(capture.midShotTimes(tracks, { count: 9, grid: 30, margin: 0.5 }), [1, 4.6, 8.1]);
+  assert.deepEqual(capture.midShotTimes(tracks, { count: 2, grid: 30, margin: 0.5 }), [1, 8.1]);
+  assert(Math.abs(capture.cutDistance(capture.cameraCuts(tracks), 2.05) - 0.05) < 1e-9);
+  assert.throws(() => capture.readManifest(writeManifest({ autoFrames: { count: 3, grid: 25 } })), /grid/);
+  assert.equal(capture.readManifest(writeManifest({ autoFrames: { count: 3 } })).frames.length, 0);
+}
+
+function writeManifest(extra) {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-manifest-')), 'frames.json');
+  fs.writeFileSync(file, JSON.stringify({ source: { region: 'gl', platform: 'ios', liveId: 1, assetId: 2 }, quality: { mode: 30 }, ...extra }));
+  return file;
+}
+
 async function run() {
+  planning();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-frame-capture-'));
   const library = path.join(work, 'library'), out = path.join(work, 'capture');
   fs.mkdirSync(library); fs.mkdirSync(out);

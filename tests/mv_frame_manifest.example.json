@@ -6,6 +6,7 @@
     { "time": 35.2167, "label": "eyelid curve switch" },
     { "time": 50.3333, "label": "full eye blend" }
   ],
+  "autoFrames": { "count": 6, "grid": 30, "margin": 0.5 },
   "physics": { "preroll": 3 },
   "download": false,
   "game": {

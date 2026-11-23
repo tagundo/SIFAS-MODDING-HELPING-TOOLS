@@ -42,13 +42,46 @@ function readManifest(file) {
   assert(Number.isSafeInteger(source.liveId) && Number.isSafeInteger(source.assetId), 'source.liveId and source.assetId are integers');
   const quality = manifest.quality || {};
   assert(Number.isSafeInteger(quality.mode), 'quality.mode is the game quality mode (10, 20, 30 or 40)');
-  assert(Array.isArray(manifest.frames) && manifest.frames.length, 'frames lists at least one time');
-  const frames = manifest.frames.map((frame) => typeof frame === 'number' ? { time: frame } : { ...frame });
+  const auto = manifest.autoFrames ? { count: 6, grid: 30, margin: 0.5, ...manifest.autoFrames } : null;
+  if (auto) {
+    assert(Number.isSafeInteger(auto.count) && auto.count > 0 && auto.count <= 64, 'autoFrames.count is 1-64');
+    assert([30, 60].includes(auto.grid), 'autoFrames.grid is the export frame rate (30 or 60)');
+    assert(Number.isFinite(auto.margin) && auto.margin >= 0, 'autoFrames.margin is seconds from a camera cut');
+  }
+  assert(auto || (Array.isArray(manifest.frames) && manifest.frames.length), 'frames lists at least one time, or set autoFrames');
+  const frames = (manifest.frames || []).map((frame) => typeof frame === 'number' ? { time: frame } : { ...frame });
   for (const frame of frames) assert(Number.isFinite(frame.time) && frame.time >= 0, 'every frame needs a time >= 0');
   const physics = manifest.physics || {};
   const preroll = physics.preroll ?? 3;
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), 'physics.preroll is seconds or "full"');
-  return { ...manifest, source, quality, frames, physics: { ...physics, preroll } };
+  return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll } };
+}
+
+// Camera clip boundaries of the game camera tracks, in timeline seconds.
+function cameraCuts(tracks) {
+  const cuts = new Set();
+  for (const track of tracks) if (track.kind === 'camera' && !track.muted) {
+    for (const event of track.events) { cuts.add(event.start); cuts.add(event.start + event.duration); }
+  }
+  return [...cuts].sort((a, b) => a - b);
+}
+
+function cutDistance(cuts, time) {
+  return cuts.reduce((best, cut) => Math.min(best, Math.abs(cut - time)), Infinity);
+}
+
+// Mid-shot times spread across the song, on the export frame grid and away
+// from cuts, so a one-frame timing error cannot land in a different shot.
+function midShotTimes(tracks, { count, grid, margin }) {
+  const cuts = cameraCuts(tracks);
+  const shots = [];
+  for (let index = 1; index < cuts.length; index++) {
+    const start = cuts[index - 1], end = cuts[index];
+    const time = Math.round((start + end) / 2 * grid) / grid;
+    if (time - start >= margin && end - time >= margin) shots.push({ time, start, end });
+  }
+  if (shots.length <= count) return shots.map(({ time }) => time);
+  return Array.from({ length: count }, (_, index) => shots[Math.floor((index + 0.5) * shots.length / count)].time);
 }
 
 function probeVideo(file) {
@@ -258,14 +291,20 @@ async function run() {
         fs.writeFileSync(path.join(out, soundtrack), await response.body());
       }
     }
+    const tracks = await page.evaluate(() => MVStudio.getState().project.tracks
+      .filter(track => track.kind === 'camera').map(({ kind, muted, events }) => ({ kind, muted,
+        events: events.map(({ start, duration }) => ({ start, duration })) })));
+    const cuts = cameraCuts(tracks);
+    const planned = manifest.autoFrames ? midShotTimes(tracks, manifest.autoFrames).map(time => ({ time, label: 'auto mid-shot' })) : [];
+    const wanted = [...manifest.frames, ...planned.filter(auto => !manifest.frames.some(frame => Math.abs(frame.time - auto.time) < 1e-6))];
     const frames = [];
-    for (const frame of [...manifest.frames].sort((a, b) => a.time - b.time)) {
+    for (const frame of wanted.sort((a, b) => a.time - b.time)) {
       const { png, state, steps, prerollStart } = await renderFrame(page, frame.time, manifest.physics.preroll, rate);
       const file = frameName(frame.time);
       fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
       assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');
       assert.equal(state.canvas.height, renderHeight, 'The editor canvas height does not match the requested render size');
-      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, state });
+      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, cutDistance: cutDistance(cuts, frame.time), state });
     }
     const capture = {
       schema: 1, kind: 'elichika-mv-editor-frames', createdAt: new Date().toISOString(),
@@ -288,4 +327,4 @@ async function run() {
 }
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { readManifest, frameName, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs };
+module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs };
