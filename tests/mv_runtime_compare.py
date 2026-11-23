@@ -780,14 +780,21 @@ class Comparison:
                 values.update((event["start"], event["start"] + event["duration"]))
         return sorted(values)
 
+    def timing_uncertain(self, record, phase):
+        """Any record (frame or full part) whose Time.deltaTime was clamped to maximumDeltaTime while the director
+        followed the music clock: the pose phase t + phase * deltaTime is not the neighbouring frame's time, so the
+        record is timing-uncertain at every phase but 0. Each record is noted once."""
+        dt = (record.get("clock") or {}).get("deltaTime")
+        if self.identity or phase == 0 or not number(dt) or dt < MAX_DELTA_TIME - 1e-6:
+            return False
+        if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
+            self.notes["timing.clampedDeltaTime"].append(record.get("id"))
+        return True
+
     def near_cut(self, record, phase, cuts):
         clock = record.get("clock") or {}
         t, dt = clock.get("directorTime"), clock.get("deltaTime") or 1 / 30
-        if not self.identity and record.get("kind") == "frame" and number(dt) and dt >= MAX_DELTA_TIME - 1e-6 and phase != 0:
-            # Time.deltaTime was clamped to maximumDeltaTime while the director followed the music clock: the
-            # pose phase t - deltaTime is not the previous frame's time, so the record is timing-uncertain.
-            if record.get("id") not in self.notes["timing.clampedDeltaTime"]:
-                self.notes["timing.clampedDeltaTime"].append(record.get("id"))
+        if self.timing_uncertain(record, phase):
             return True
         if number(t) and any(abs(t - cut) <= dt + 1e-9 for cut in cuts):
             return True
@@ -1408,7 +1415,7 @@ class Comparison:
         match = re.match(r"^/(.+?) \[Timeline\]/(.*)$", path or "")
         return f"{match.group(1)}/{match.group(2)}" if match else None
 
-    def compare_particles(self, record, partner):
+    def compare_particles(self, record, partner, near=False):
         particles = record.get("particles")
         if isinstance(particles, list):
             self.notes["particles.game"].append({"record": record.get("id"), "systems": len(particles),
@@ -1423,17 +1430,18 @@ class Comparison:
                 continue          # SkillCutin and stopped systems; a game chunk lists only part of the systems
             match = editor.get(key)
             self.add("particles", "particleSystemPlaying", f"particles:{key}", record, True, match is not None,
-                     int(match is None), 0, exact=True)
+                     int(match is None), 0, exact=True, near_cut=near)
             if match is None:
                 continue
             game_count, editor_count = item.get("particleCount"), match.get("alive")
             if number(game_count) and number(editor_count):
                 tol = max(self.tol["particleCountAbs"], self.tol["particleCountRel"] * max(game_count, editor_count))
                 self.add("particles", "particleCount", f"particles:{key}", record, game_count, editor_count,
-                         abs(game_count - editor_count), tol, field=f"seed game {item.get('randomSeed')} editor {match.get('seed')}")
+                         abs(game_count - editor_count), tol, near_cut=near,
+                         field=f"seed game {item.get('randomSeed')} editor {match.get('seed')}")
             if number(item.get("randomSeed")) and number(match.get("seed")) and not item.get("useAutoRandomSeed"):
                 self.add("particles", "particleSeed", f"particles:{key}", record, item["randomSeed"], match["seed"],
-                         int(int(item["randomSeed"]) & 0xFFFFFFFF != int(match["seed"]) & 0xFFFFFFFF), 0, exact=True)
+                         int(int(item["randomSeed"]) & 0xFFFFFFFF != int(match["seed"]) & 0xFFFFFFFF), 0, exact=True, near_cut=near)
 
     def census(self, records):
         for record in records:
@@ -1592,14 +1600,15 @@ class Comparison:
                 self.compare_globals(record, self.partner(record, globals_phase) or partner, False)
                 self.compare_member_identity(record, partner)
                 continue
-            part = record.get("part")
+            # Full parts are not camera-derived: only a clamped deltaTime keeps them out of the ranking.
+            part, uncertain = record.get("part"), self.timing_uncertain(record, phase)
             handler = {"renderers": self.compare_renderers, "materials": self.compare_materials, "stageNodes": self.compare_stage_nodes,
                        "members": self.compare_members, "springs": self.compare_springs, "post": self.compare_post,
                        "quality": self.compare_quality}.get(part)
             if handler:
-                handler(record, partner, False)
+                handler(record, partner, uncertain)
             elif part == "particles":
-                self.compare_particles(record, partner)
+                self.compare_particles(record, partner, uncertain)
         # Camera hypothesis: the one with the lower median residual score (error / tolerance) over all frames.
         fitted, medians = None, {}
         if hypotheses:

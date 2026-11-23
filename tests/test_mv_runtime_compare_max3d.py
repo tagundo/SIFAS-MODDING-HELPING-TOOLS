@@ -80,6 +80,35 @@ class ClampedDeltaTest(unittest.TestCase):
         # Phase 0 reads the frame itself: the clamp does not matter.
         self.assertFalse(result.near_cut(game["records"][0], 0, []))
 
+    def test_clamped_full_part_record_is_not_ranked(self):
+        # dump3b p3-renderers-08 (frame 9804): deltaTime clamped to 1/3 s, compared at phase -1.
+        def renderers(ident, dt):
+            return {"kind": "full", "part": "renderers", "id": ident, "clock": {"directorTime": 60.0, "deltaTime": dt},
+                    "renderers": [{"key": "renderer:/x/microphone", "scope": "effect", "mesh": "mic", "path": "/x/microphone",
+                                   "enabled": True, "activeInHierarchy": True, "isVisible": True, "layer": 0}]}
+
+        def editor(ident):
+            return {"id": "e-" + ident, "sourceRecord": ident, "phase": -1, "clock": {"directorTime": 59.7},
+                    "renderers": [{"key": "renderer:effect:mic", "scope": "effect", "mesh": "mic", "visible": False}]}
+
+        records = [frame(5.0, 0.2), renderers("p3-renderers-08", 0.333333343), renderers("p3-renderers-07", 0.2)]
+        game, editor_doc = documents(records, [editor("p3-renderers-08"), editor("p3-renderers-07")])
+        result = C.Comparison(game, editor_doc, phase=-1)
+        report = result.run()
+        visible = {item["record"]: item for item in result.items if item["metric"] == "rendererVisible"}
+        self.assertEqual(set(visible), {"p3-renderers-08", "p3-renderers-07"})
+        self.assertTrue(visible["p3-renderers-08"]["nearCut"], "a clamped full record is timing-uncertain")
+        self.assertFalse(visible["p3-renderers-07"]["nearCut"])
+        self.assertEqual(result.notes["timing.clampedDeltaTime"], ["p3-renderers-08"])
+        self.assertEqual(report["types"]["visibility"]["nearCut"], 1)
+        # Particles carry the flag too.
+        result = comparison()
+        record = {"id": "p1-particles-00", "clock": {"directorTime": 21.98, "deltaTime": 1 / 3},
+                  "particles": [{"path": "/fx_a [Timeline]/root/kira", "isPlaying": True, "particleCount": 31}]}
+        result.compare_particles(record, {"particles": [{"path": "fx_a/root/kira", "alive": 45}]}, result.timing_uncertain(record, -1))
+        self.assertTrue(all(item["nearCut"] for item in result.items))
+        self.assertEqual(result.notes["timing.clampedDeltaTime"], ["p1-particles-00"])
+
 
 class ParticleTest(unittest.TestCase):
     def test_control_track_instance_path(self):
