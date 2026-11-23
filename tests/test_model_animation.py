@@ -246,6 +246,49 @@ class AnimationTests(unittest.TestCase):
         mirror = np.diag([-1, 1, 1])
         np.testing.assert_allclose(actual, mirror @ (ry @ rx @ rz) @ mirror, atol=1e-12)
 
+    def test_euler_binding_honours_unity_rotation_order_from_custom_type(self):
+        import numpy as np
+        x, y, z = (math.radians(value) for value in (30, 60, 90))
+        rx = np.array([[1, 0, 0], [0, math.cos(x), -math.sin(x)], [0, math.sin(x), math.cos(x)]])
+        ry = np.array([[math.cos(y), 0, math.sin(y)], [0, 1, 0], [-math.sin(y), 0, math.cos(y)]])
+        rz = np.array([[math.cos(z), -math.sin(z), 0], [math.sin(z), math.cos(z), 0], [0, 0, 1]])
+        mirror = np.diag([-1, 1, 1])
+        # Unity RotationOrder names the axes in the order they apply: OrderXYZ = Rz Ry Rx.
+        expected = {0: rz @ ry @ rx, 1: ry @ rz @ rx, 2: rx @ rz @ ry, 3: rz @ rx @ ry, 4: ry @ rx @ rz, 5: rx @ ry @ rz}
+        for order, matrix in expected.items():
+            with self.subTest(order=order):
+                quaternion = dict(zip("xyzw", animation._quaternion([30, 60, 90], euler=True, order=order)))
+                np.testing.assert_allclose(viewer._trs({"m_LocalRotation": quaternion})[:3, :3], mirror @ matrix @ mirror,
+                                           atol=1e-12)
+                tree = clip([binding(1, 4, custom=order)], constant=[30, 60, 90], duration=.1)
+                self.assertEqual(animation.decode_clip(tree)["tracks"][0]["rotationOrder"], order)
+                glb = builder()
+                animation.append_animations(scene([tree]), glb, {1: 1})
+                row = values(glb, glb.doc["animations"][0]["samplers"][0]["output"])[0]
+                np.testing.assert_allclose(viewer._trs({"m_LocalRotation": dict(zip("xyzw", row))})[:3, :3],
+                                           mirror @ matrix @ mirror, atol=1e-6)
+        self.assertEqual(animation._quaternion([30, 60, 90], euler=True), animation._quaternion([30, 60, 90], True, 4))
+        missing = clip([dict(path=1, attribute=4, typeID=4, isPPtrCurve=0)], constant=[30, 60, 90], duration=.1)
+        self.assertEqual(animation.decode_clip(missing)["tracks"][0]["rotationOrder"], 4, "Unity's default is ZXY")
+        for invalid in (6, -1, 1.5, True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(animation.AnimationError, "rotation order"):
+                animation.decode_clip(clip([binding(1, 4, custom=invalid)], constant=[30, 60, 90], duration=.1))
+
+    def test_editor_euler_curves_keep_their_animation_curve_rotation_order(self):
+        keys = [{"time": 0, "value": {"x": 30, "y": 60, "z": 90}}, {"time": 1, "value": {"x": 30, "y": 60, "z": 90}}]
+        for order in (0, 4, None):
+            curve = {"m_Curve": keys} if order is None else {"m_Curve": keys, "m_RotationOrder": order}
+            tree = {"m_Name": "Editor Euler", "m_SampleRate": 4, "m_EulerCurves": [{"path": "Root/Bone", "curve": curve}]}
+            with self.subTest(order=order):
+                track, = animation.decode_clip(tree)["tracks"]
+                self.assertEqual(track["rotationOrder"], 4 if order is None else order)
+                glb = builder()
+                animation.append_animations(scene([tree]), glb, {"Root/Bone": 1})
+                row = values(glb, glb.doc["animations"][0]["samplers"][0]["output"])[0]
+                expected = animation._quaternion([30, 60, 90], True, track["rotationOrder"])
+                for actual, wanted in zip(row, expected):
+                    self.assertAlmostEqual(actual, wanted, places=6)
+
     def test_duplicate_clip_names_stay_independently_selectable(self):
         first = clip([binding(1, 1)], constant=[0, 0, 0], name="Authored pose")
         second = clip([binding(1, 1)], constant=[1, 0, 0], name="Authored pose")

@@ -287,7 +287,10 @@ def _editor_curves(tree, deadline=None):
                 raise AnimationError("An editor animation has too many keys.")
             components = [_editor_scalar(keys, axis, deadline) for axis in axes]
             if keys:
-                tracks.append({"path": item.get("path", ""), "kind": kind, "curves": components})
+                track = {"path": item.get("path", ""), "kind": kind, "curves": components}
+                if kind == "euler":
+                    track["rotationOrder"] = euler_order(item.get("curve", {}).get("m_RotationOrder", DEFAULT_EULER_ORDER))
+                tracks.append(track)
     for item in tree.get("m_FloatCurves", []):
         attribute = str(item.get("attribute", ""))
         visibility = ("renderer" if attribute == "m_Enabled" and int(item.get("classID", 0)) in (23, 25, 137)
@@ -380,8 +383,12 @@ def decode_clip(tree, deadline=None):
                                                      or (typ == 1 and attribute == 2086281974)):
                 kind = "visibility"
             if kind:
-                tracks.append({"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
-                               "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected})
+                track = {"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
+                         "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected}
+                if kind == "euler":
+                    # A Transform Euler binding keeps its Unity RotationOrder in customType.
+                    track["rotationOrder"] = euler_order(binding.get("customType", DEFAULT_EULER_ORDER))
+                tracks.append(track)
             else:
                 unsupported += 1
                 key = typ, attribute, int(binding.get("customType", 0))
@@ -489,11 +496,40 @@ def _multiply(a, b):
     return (w*X+x*W+y*Z-z*Y, w*Y-x*Z+y*W+z*X, w*Z+x*Y-y*X+z*W, w*W-x*X-y*Y-z*Z)
 
 
-def _quaternion(values, euler=False):
+# Unity math::RotationOrder, as an animated Euler rotation stores it: the
+# customType of a Transform Euler GenericBinding (attribute 4) and the
+# m_RotationOrder of an editor m_EulerCurves AnimationCurve. Each name lists the
+# axes in the order they are applied, so OrderXYZ is q = qZ * qY * qX. ZXY
+# (q = qY * qX * qZ, the Transform.eulerAngles convention) is Unity's default.
+EULER_ORDERS = {0: "xyz", 1: "xzy", 2: "yzx", 3: "yxz", 4: "zxy", 5: "zyx"}
+DEFAULT_EULER_ORDER = 4
+
+
+def euler_order(value):
+    """Validate a Unity RotationOrder value; reject what the preview cannot reproduce."""
+    if type(value) is bool or type(value) not in (int, float) or value != int(value) or int(value) not in EULER_ORDERS:
+        raise AnimationError("An animated Euler rotation has an unknown rotation order.")
+    return int(value)
+
+
+def _axis_quaternion(axis, half):
+    values = [0., 0., 0., math.cos(half)]
+    values["xyz".index(axis)] = math.sin(half)
+    return tuple(values)
+
+
+def unity_euler_quaternion(values, order=DEFAULT_EULER_ORDER):
+    """Unity Euler degrees -> unnormalized Unity-handed quaternion (x, y, z, w) in `order`."""
+    half = dict(zip("xyz", (math.radians(value) * .5 for value in values)))
+    result = (0., 0., 0., 1.)
+    for axis in EULER_ORDERS[euler_order(order)]:
+        result = _multiply(_axis_quaternion(axis, half[axis]), result)  # A later axis applies on the left.
+    return result
+
+
+def _quaternion(values, euler=False, order=DEFAULT_EULER_ORDER):
     if euler:
-        x, y, z = (math.radians(value) * .5 for value in values)
-        values = _multiply(_multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
-                           (0, 0, math.sin(z), math.cos(z)))  # Unity intrinsic Z-X-Y
+        values = unity_euler_quaternion(values, order)
     length = math.sqrt(sum(value * value for value in values))
     if not math.isfinite(length) or length < 1e-12:
         raise AnimationError("An animated rotation is invalid.")
@@ -718,7 +754,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     values.append([_evaluate(curve, stamp) for curve in track["curves"]])
                 kind = track["kind"]
                 if kind in ("rotation", "euler"):
-                    values = [_quaternion(row, kind == "euler") for row in values]
+                    order = track.get("rotationOrder", DEFAULT_EULER_ORDER)
+                    values = [_quaternion(row, kind == "euler", order) for row in values]
                     for previous, current in zip(values, values[1:]):
                         if sum(a*b for a, b in zip(previous, current)) < 0:
                             current[:] = [-value for value in current]

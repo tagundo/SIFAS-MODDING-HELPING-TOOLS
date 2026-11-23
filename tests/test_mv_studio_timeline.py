@@ -63,6 +63,20 @@ class TimelineContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "camera bindings"):
                     studio._camera_sample_order(amended)
 
+    def test_stage_motion_euler_channels_carry_the_binding_rotation_order(self):
+        from webtools.core import mv_studio_stage_motion as stage
+        bindings = {"genericBindings": []}
+        tree = {"m_ClipBindingConstant": bindings, "m_MuscleClip": {
+            "m_StartTime": 0, "m_StopTime": 2, "m_Clip": {"m_ConstantClip": {"data": [30., 60., 90.]}}}}
+        reader = SimpleNamespace(read_typetree=lambda: tree)
+        for order in (0, 4):
+            with self.subTest(order=order):
+                bindings["genericBindings"] = [{"path": 77, "typeID": 4, "attribute": 4, "customType": order,
+                                                "isPPtrCurve": 0, "script": {"m_FileID": 0, "m_PathID": 0}}]
+                declaration, _ = stage._read_clip(reader, None)
+                self.assertEqual(declaration["channels"], [{"path": 77, "kind": "euler", "rotationOrder": order,
+                                                            "curves": [("constant", 30.), ("constant", 60.), ("constant", 90.)]}])
+
     def test_overlay_material_distinguishes_native_color_and_vector_lanes(self):
         from webtools.core.mv_studio_stage_overlay import material_channels
         from zlib import crc32
