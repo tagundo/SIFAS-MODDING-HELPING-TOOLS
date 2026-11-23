@@ -127,6 +127,25 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual(ios["audio"]["acb"]["pack_name"], "acbpack")
         self.assertEqual(ios["missing"][0]["asset"], "unavailable")
 
+    def test_explicit_costumes_replace_the_member_mapping_suit(self):
+        # A recorded game performance may wear another suit than m_live_member_mapping
+        # (12035 runtime dump: 102111001 instead of 102112001). The import can pin it.
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.execute("INSERT INTO m_suit VALUES (52, 101, 'k.costume', 'costume2'), (61, 102, 'k.costume', 'other')")
+        for platform in ("a", "i"):
+            with closing(sqlite3.connect(self.root / f"assets/db/gl/asset_{platform}_en.db")) as db, db:
+                db.execute("INSERT INTO member_model VALUES ('costume2', ?, 4, ?, 7, 11)",
+                           ("androidpack" if platform == "a" else "iospack", len(self.plain)))
+        pinned = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                costumes={"1": 52})["performers"][0]
+        self.assertEqual((pinned["costumeId"], pinned["model"]["asset"]), (52, "costume2"))
+        self.assertEqual([choice["id"] for choice in pinned["costumes"]], [52, 51])
+        self.assertEqual(self.selection()["performers"][0]["costumeId"], 51, "the mapping suit stays the default")
+        for costumes, error in (({"1": 61}, "not a costume of the member at position 1"), ({"2": 51}, "no member at its position"),
+                                ({"x": 52}, "valid costumes"), ({"1": "52"}, "valid costumes"), ([52], "valid costumes")):
+            with self.subTest(costumes=costumes), self.assertRaisesRegex(ValueError, error):
+                studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en", costumes=costumes)
+
     def test_reads_exact_local_pack_or_metapack_without_implicit_download(self):
         descriptor = self.selection()["timeline"]
         with patch.object(studio.game, "_remote_pack", side_effect=AssertionError("No implicit network")):

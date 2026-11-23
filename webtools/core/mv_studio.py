@@ -407,8 +407,11 @@ def _stage_snapshot(project, assets, performers):
     })
 
 
-def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None):
-    """Import the complete project, optionally publishing its renderable stage first."""
+def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None):
+    """Import the complete project, optionally publishing its renderable stage first.
+
+    `costumes` ({position: suit id}) dresses members in explicit suits instead of the
+    member mapping's, e.g. the suits a recorded game performance wore."""
     from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
 
     if type(download) is not bool:
@@ -419,7 +422,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
     try:
         selected = mv_studio_game.resolve(repo_root, region=region, platform=platform,
-                                          live_id=live_id, asset_id=asset_id, language=language)
+                                          live_id=live_id, asset_id=asset_id, language=language, costumes=costumes)
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
                   "registered": selected.get("registered", False)}
