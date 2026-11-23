@@ -454,12 +454,49 @@
     });
     var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
       Number.isInteger(modelGaze.owner) && Number.isInteger(descriptor.targetCharacter) && modelGaze.owner !== descriptor.targetCharacter);
+    // LiveCoreMemberHead gives LiveMemberLipSync the face's own
+    // MemberFaceData.animationTableMouth, and LiveMemberEyeAnimation and
+    // LiveMemberEyeContact its animationTableEye (rig memberHead.facialTables,
+    // rows in serialized order). A motion's explicit table for a kind wins.
+    var faceTables = {};
+    ["eyes", "mouth"].forEach(function (kind) {
+      var rows = head.facialTables && head.facialTables[kind];
+      if (!Array.isArray(rows) || (descriptor.facialClips || []).some(function (entry) { return entry.kind === kind; })) return;
+      faceTables[kind] = rows.slice(0, 256).map(function (row) { return Object.assign({ kind: kind }, row); });
+    });
     // Direction indices are the game's common six-pose semantics. When a
     // retained motion belongs to another character, use this face's verified
     // endpoints instead of writing the old character's absolute iris positions.
     var gaze = createGaze(root, animations, info, {
-      aliases: retargetedGaze ? modelGaze.clips : descriptor.facialClips || [], restorePose: restoreFace
+      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace
     });
+    // Live heads create playables only for MemberEyeClip / MemberLipSyncClip
+    // AnimationIndex values (Initialize walks Enum.GetValues of that enum).
+    function liveFacialId(kind, index) {
+      return kind === "mouth" ? index >= 0 && index <= 20 || index === 101 || index === 102 || index === 999 :
+        index >= 1 && index <= 5 || index >= 12 && index <= 25 || index === 101 || index === 102 || index === 900 || index === 999;
+    }
+    var silentEvents = new Set(), fallbackIndexes = new Map();
+    function resolveFacial(event, kind) {
+      if (descriptor.category === "mv" && !liveFacialId(event.kind, event.index)) return { none: true };
+      var table = faceTables[event.kind], alias;
+      if (table) {
+        // CreateAnimationClip plays the first row with this index (FirstOrDefault),
+        // whatever its customIndex; no row means no playable for the index.
+        alias = table.filter(function (row) { return row.index === event.index; }).slice(0, 1);
+        if (!alias.length) { warn("Some original facial indices are not in this face's animation table and are not played."); return { none: true }; }
+      } else alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
+      // An original row whose clip is null creates no playable either.
+      if (alias.length && alias.every(function (entry) { return !entry.sourceHash; })) return { none: true };
+      var pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
+      var matches = clips.filter(function (entry) {
+        return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
+      });
+      // Should the clip itself be unavailable, a shape fallback follows the
+      // clip the row names (mouth 13 -> mouth_004), not the timeline index.
+      var named = alias.length && /(?:^|_)LiveFacial_(?:eye|mouth)_0*(\d+)(?:__\d+)?$/.exec(alias[0].sourceName || "");
+      return { matches: matches, index: named ? Number(named[1]) : event.index };
+    }
     function getNativeEyePose(event, entry, identity) {
       if (!nativeEyeVisibility.size || event.kind !== "eyes" || typeof event.nativeEventId !== "string" ||
           entry.sourceRole !== "facial" || entry.bindingComplete !== true) return null;
@@ -517,15 +554,11 @@
         return;
       }
       if (event.kind !== "eyes" && event.kind !== "mouth") return;
-      var kind = event.kind === "eyes" ? "eye" : "mouth", identity = event.kind + ":" + event.index, matches = facialMatches.get(identity);
-      if (!matches) {
-        var pattern = new RegExp("(?:^|_)LiveFacial_" + kind + "_0*" + event.index + "(?:__\\d+)?$");
-        var alias = (descriptor.facialClips || []).filter(function (entry) { return entry.kind === event.kind && entry.index === event.index; });
-        matches = clips.filter(function (entry) {
-          return animationByName[entry.name] && (alias.length ? alias.some(function (facial) { return facial.sourceHash === entry.sourceHash && facial.sourceName === entry.sourceName; }) : pattern.test(entry.sourceName || entry.name));
-        });
-        facialMatches.set(identity, matches);
-      }
+      var kind = event.kind === "eyes" ? "eye" : "mouth", identity = event.kind + ":" + event.index, resolution = facialMatches.get(identity);
+      if (!resolution) facialMatches.set(identity, resolution = resolveFacial(event, kind));
+      if (resolution.none) { silentEvents.add(event); return; }
+      if (resolution.index !== event.index) fallbackIndexes.set(event, resolution.index);
+      var matches = resolution.matches;
       var entry = matches.length === 1 ? matches[0] : null, eyePose = entry && getNativeEyePose(event, entry, identity);
       if (entry && register(facialGroups, animationByName[entry.name], event, true, false, eyePose)) {
         if (eyePose) nativeEyeEvents.push({ event: event, pose: eyePose });
@@ -534,10 +567,10 @@
         });
         nativeEvents.add(event);
       } else {
-        var preset = facePresets[(kind === "mouth" ? 10000 : 0) + event.index];
+        var preset = facePresets[(kind === "mouth" ? 10000 : 0) + resolution.index];
         var presetBound = preset && (preset.targets || []).some(function (target) { return !!faceChannels[target.node + ":" + target.index]; });
         var rawMatch = (expressions.rawChannels || []).some(function (channel) {
-          var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + event.index).slice(-3);
+          var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + resolution.index).slice(-3);
           return channel.name.toLowerCase() === expected.toLowerCase() && !!faceChannels[channel.node + ":" + channel.index];
         });
         if (!presetBound && !rawMatch) warn("Some original facial shapes are unavailable for this model.");
@@ -595,11 +628,14 @@
       var semantic = (kind === "mouth" ? 10000 : 0) + index;
       if (fallbackTargets[semantic]) return fallbackTargets[semantic];
       var preset = facePresets[semantic];
-      return fallbackTargets[semantic] = preset && preset.targets || (expressions.rawChannels || []).filter(function (channel) {
-        return channel.group === kind;
-      }).map(function (channel) {
-        var expected = (kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + index).slice(-3);
-        return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected.toLowerCase() ? 1 : 0 };
+      if (preset && preset.targets) return fallbackTargets[semantic] = preset.targets;
+      var expected = ((kind === "mouth" ? "MouthBlendShape.mouth_facial_" : "EyeBlendShape.eye_facial_") + ("00" + index).slice(-3)).toLowerCase();
+      var channels = (expressions.rawChannels || []).filter(function (channel) { return channel.group === kind; });
+      // An index without a shape of its own is unresolved: it contributes
+      // nothing, rather than a zero pose that closes every other channel.
+      if (!channels.some(function (channel) { return channel.name.toLowerCase() === expected; })) return fallbackTargets[semantic] = [];
+      return fallbackTargets[semantic] = channels.map(function (channel) {
+        return { node: channel.node, index: channel.index, value: channel.name.toLowerCase() === expected ? 1 : 0 };
       });
     }
     function applyShapes(time) {
@@ -623,7 +659,7 @@
         });
       });
       var activeEvents = timedRecords(events, time);
-      activeEvents.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
+      activeEvents.forEach(function (event) { if (active[event.kind] && !nativeEvents.has(event) && !silentEvents.has(event)) { var w = sampleWeight(event, time); if (w > 0) active[event.kind].push({ event: event, weight: w }); } });
       // Navi speech follows decoded voice amplitude between authored mouth
       // poses. MV songs always use their original vowel timeline.
       var hasAuthoredMouth = (!indexTiming || descriptor.category !== "mv") && activeEvents.some(function (event) {
@@ -641,7 +677,7 @@
       }
       Object.keys(active).forEach(function (kind) {
         active[kind].forEach(function (record) {
-          var targets = targetsFor(kind, record.event.index);
+          var targets = targetsFor(kind, fallbackIndexes.has(record.event) ? fallbackIndexes.get(record.event) : record.event.index);
           targets.forEach(function (target) {
             (faceChannels[target.node + ":" + target.index] || []).forEach(function (channel) {
               var key = channel.node.uuid + ":" + channel.index;

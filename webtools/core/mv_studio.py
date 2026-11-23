@@ -329,7 +329,7 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
     facial_clips = []
     for item in facial_entries:
         key = item["key"]
-        facial_clips.append({name: value for name, value in item.items() if name != "key"} | identities[key])
+        facial_clips.append({name: value for name, value in item.items() if name != "key"} | (identities[key] if key is not None else {}))
     native_events = {}
     for track in tracks:
         if track["kind"] == "dance":
