@@ -21,6 +21,14 @@ One common rule for every song, taken from the client and the serialized assets:
   curve, or whose ParticleSystem/renderer properties are animated, are listed
   as not previewed instead of being drawn statically.
 
+* Billboard renderers draw 3D start rotation: the quad turns by the negated
+  start angles in Unity's Euler order (Z, X, Y) inside its alignment frame
+  (camera, world or emitter), the rule mv-studio-display-lights.js draws its
+  Local strokes with. Other render modes with an X/Y start angle are reported.
+* Local scaling mode applies the node's own localScale to local-space
+  billboards: positions through the scaled transform, quad X/Y sizes times the
+  scale's X/Y (_scaled_billboard). Other scaled cases are reported.
+
 This module only normalizes serialized data. ``mv-studio-particle-systems.js``
 simulates and draws it. Textures keep their authored pixels and mip levels.
 """
@@ -225,11 +233,7 @@ def _main(source):
     if result["size3D"]:
         result["sizeY"], result["sizeZ"] = curve(initial["startSizeY"]), curve(initial["startSizeZ"])
     if result["rotation3D"]:
-        # The runtime turns a particle quad about its Z axis only. No native
-        # reader reproduces a 3D-rotated billboard, so X/Y start rotation is
-        # reported (center_stars, butterfly_glow reject it as well).
-        if not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"])):
-            raise _Unsupported("3D start rotation (X/Y axes)")
+        # X/Y start rotation is drawn on Billboard quads only (see system()).
         result["rotationX"], result["rotationY"] = curve(initial["startRotationX"]), curve(initial["startRotationY"])
     return result
 
@@ -519,9 +523,9 @@ def _turns_about_y(walked, own):
 def _unit_scale(walked, own, scaling):
     """The transform scale the scaling mode applies is the identity.
 
-    The runtime scales particle positions by it but never particle size, and
-    Shape mode's emitter-only scale is not reproduced; no native reader has a
-    scaled emitter to take the rule from (falling_display requires identity).
+    Shape mode's emitter-only scale and Hierarchy mode's lossy scale are not
+    reproduced; Local mode's own scale is, on the billboards _scaled_billboard
+    accepts.
     """
     unit = lambda node: all(abs(value - 1) <= 1e-6 for value in node["scale"])
     if scaling == 1:
@@ -532,6 +536,25 @@ def _unit_scale(walked, own, scaling):
             return False
         index = walked[index]["parent"]
     return True
+
+
+def _scaled_billboard(source, render_tree, scale):
+    """A Local-mode transform scale the runtime applies as Unity does.
+
+    Local scaling uses the system's own localScale (no parent): local-space
+    particle positions go through the scaled transform and each billboard
+    quad's X/Y size is multiplied by the scale's X/Y, whatever the alignment
+    (the fx_dis_par_so2035_02 display clouds are 1-unit particles on 5x3 and
+    6x3 nodes). Only that evidenced set-up is accepted: a Billboard renderer,
+    local simulation space, a positive scale, and no world-space force or
+    velocity whose conversion into the scaled space is unknown.
+    """
+    initial = source.get("InitialModule") or {}
+    velocity, clamp = source.get("VelocityModule") or {}, source.get("ClampVelocityModule") or {}
+    return (render_tree.get("m_RenderMode") == 0 and source.get("moveWithTransform") == 0
+            and all(value > 1e-6 for value in scale) and _zero(initial.get("gravityModifier") or {})
+            and not (velocity.get("enabled") and velocity.get("inWorldSpace"))
+            and not (clamp.get("enabled") and clamp.get("inWorldSpace")))
 
 
 def _alive_bound(row):
@@ -593,6 +616,12 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
               "renderer": drawn}
     if result["shape"] and result["shape"]["alignToDirection"] and not (upright and _planar_alignment(result)):
         raise _Unsupported("ShapeModule.alignToDirection")
+    initial = source["InitialModule"]
+    tilted = result["main"]["rotation3D"] and not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"]))
+    if tilted and drawn["mode"] != 0:
+        # The X/Y turn is reproduced on Billboard quads (View, World and Local
+        # alignment) only; stretched and horizontal/vertical quads are reported.
+        raise _Unsupported("3D start rotation (X/Y axes)")
     if result["main"]["maxParticles"] > _MAX_PARTICLES:
         bound = _alive_bound(result)
         if bound is None or bound >= _MAX_PARTICLES:
@@ -868,8 +897,10 @@ def template(objects, prefab, textures, deadline):
                 raise _Unsupported("ParticleSystem has no renderer")
             if len(systems) >= _MAX_SYSTEMS_PER_TEMPLATE:
                 raise _Unsupported("too many systems in one prefab")
-            scaling = components["ParticleSystem"].read_typetree().get("scalingMode")
-            if not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling):
+            source = components["ParticleSystem"].read_typetree()
+            scaling = source.get("scalingMode")
+            if (not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling)
+                    and not (scaling == 1 and _scaled_billboard(source, renderer.read_typetree(), node["scale"]))):
                 blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
             row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked,
                          upright=_turns_about_y(walked, own))

@@ -219,7 +219,7 @@ class NormalizationTests(unittest.TestCase):
             self.assertIsNone(systems.system({}, None, particle, Reader({**RENDERER, "m_Enabled": 0}),
                                              systems._Textures(0)))
 
-    def test_three_dimensional_rotation_is_reported(self):
+    def test_three_dimensional_rotation_is_drawn_on_billboards_only(self):
         self.assertTrue(systems._zero(constant(0.0)))
         self.assertFalse(systems._zero(constant(0.5)))
         self.assertTrue(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0), key(1, 0)]}}))
@@ -228,10 +228,21 @@ class NormalizationTests(unittest.TestCase):
         initial = particle_system()["InitialModule"]
         flat = systems._main(particle_system(InitialModule={**initial, "rotation3D": True}))
         self.assertTrue(flat["rotation3D"])
-        for axis in ("startRotationX", "startRotationY"):
-            tumbling = particle_system(InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
-            with self.assertRaisesRegex(systems._Unsupported, "3D start rotation"):
-                systems._main(tumbling)
+        with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            for axis in ("startRotationX", "startRotationY"):
+                tumbling = particle_system(InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
+                self.assertEqual(systems._main(tumbling)["rotationX" if axis.endswith("X") else "rotationY"]["scalar"],
+                                 math.pi)
+                # Billboard quads (View, World and Local alignment) take the X/Y turn.
+                for alignment in (0, 1, 2):
+                    row = systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
+                                         systems._Textures(0))
+                    self.assertTrue(row["main"]["rotation3D"])
+                # Stretched, horizontal and vertical quads are reported.
+                for mode in (1, 2, 3):
+                    with self.assertRaisesRegex(systems._Unsupported, "3D start rotation"):
+                        systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderMode": mode}),
+                                       systems._Textures(0))
         # Unity keeps serialized X/Y values while 3D rotation is off; only Z is used then.
         self.assertFalse(systems._main(particle_system(InitialModule={**initial, "startRotationX": constant(1.0)}))
                          ["rotation3D"])
@@ -274,9 +285,11 @@ class NormalizationTests(unittest.TestCase):
                 node["authored"] = True
             return rows
 
+        local = "non-unit transform scale (Local scaling mode)"
         cases = {(0, (2, 2, 2), (1, 1, 1)): "non-unit transform scale (Hierarchy scaling mode)",
                  (2, (1, 1, 1), (1, 1, 0)): "non-unit transform scale (Shape scaling mode)",
-                 (1, (1, 1, 1), (5, 3, 1)): "non-unit transform scale (Local scaling mode)",
+                 # Local mode sizes a billboard by its own scale (the display clouds' 5x3 nodes).
+                 (1, (1, 1, 1), (5, 3, 1)): None, (1, (1, 1, 1), (-5, 3, 1)): local,
                  (1, (2, 2, 2), (1, 1, 1)): None, (0, (1, 1, 1), (1, 1, 1)): None}
         with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
             for (scaling, parent, own), reason in cases.items():
@@ -284,6 +297,20 @@ class NormalizationTests(unittest.TestCase):
                     row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
                 self.assertEqual([item["reason"] for item in unsupported], [reason] if reason else [])
                 self.assertEqual(len(row["systems"]), 0 if reason else 1)
+            # Only billboards in local simulation space without world-space forces.
+            velocity = {"enabled": True, "inWorldSpace": True, "speedModifier": constant(1.0),
+                        **{name: constant(0.0) for name in ("x", "y", "z", "orbitalX", "orbitalY", "orbitalZ",
+                                                            "orbitalOffsetX", "orbitalOffsetY", "orbitalOffsetZ", "radial")}}
+            for change in ({"moveWithTransform": 1},
+                           {"InitialModule": {**particle_system()["InitialModule"], "gravityModifier": constant(0.5)}},
+                           {"VelocityModule": velocity}, {"renderer": {**RENDERER, "m_RenderMode": 2}}):
+                rows = walked(1, (1, 1, 1), (5, 3, 1))
+                renderer = change.pop("renderer", RENDERER)
+                rows[2]["components"].update(ParticleSystem=Reader(particle_system(scalingMode=1, **change)),
+                                             ParticleSystemRenderer=Reader(renderer))
+                with mock.patch.object(systems, "_walk", return_value=rows):
+                    row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
+                self.assertEqual([item["reason"] for item in unsupported], [local])
 
     def test_claimed_cues_and_warning(self):
         result = {"tracks": [{"trackId": "ignored", "eventId": "ignored"}],
@@ -463,17 +490,25 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        # The light beams and the display clouds tilt their quads on X/Y or sit on a
-        # scaled node; they are reported and their two cues are left out.
-        reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
-        tilted, scaled = "3D start rotation (X/Y axes)", "non-unit transform scale (Local scaling mode)"
-        self.assertEqual(reasons, {
-            ("fx_par_so2035_04", "light_01"): tilted, ("fx_par_so2035_04", "light_02"): tilted,
-            ("fx_dis_par_so2035_02", "main_dis/cloud_L"): scaled, ("fx_dis_par_so2035_02", "main_dis/cloud_R"): scaled,
-            **{("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): tilted for side in "LR" for cloud in "LR"}})
-        self.assertEqual(len(source["cues"]), 12)
+        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the
+        # display clouds (View billboards on 5x3..7x3 nodes, the side ones tilted on Y)
+        # are drawn; nothing in 12035 is reported any more.
+        self.assertEqual(source["unsupported"], [])
+        self.assertEqual(len(source["cues"]), 14)
         names = {template["name"]: template for template in source["templates"]}
-        self.assertEqual(len(names), 8)
+        self.assertEqual(len(names), 10)
+        clouds = {row["path"].rsplit("/root/", 1)[1]: row for row in names["fx_dis_par_so2035_02"]["systems"]}
+        self.assertEqual(sorted(clouds), [f"{part}/cloud_{cloud}" for part in ("main_dis", "sub_dis_L", "sub_dis_R")
+                                          for cloud in "LR"])
+        nodes = names["fx_dis_par_so2035_02"]["nodes"]
+        self.assertEqual(nodes[clouds["main_dis/cloud_R"]["node"]]["scale"], [6.0, 3.0, 1.0])
+        self.assertEqual((clouds["sub_dis_L/cloud_L"]["main"]["rotationY"]["scalar"],
+                          clouds["sub_dis_L/cloud_L"]["renderer"]["alignment"]), (0.3490658402442932, 0))
+        self.assertEqual(clouds["main_dis/cloud_L"]["material"]["stencil"], [3, 2, 0, 0])
+        lights = {row["path"].rsplit("/root/", 1)[1]: row for row in names["fx_par_so2035_04"]["systems"]}
+        self.assertEqual({path: (row["renderer"]["alignment"], row["main"]["rotationY"]["scalar"])
+                          for path, row in lights.items()},
+                         {"light_01": (2, 0.0872664600610733), "light_02": (2, 0.0872664600610733)})
         # fx_flo_so2035_03 holds 35 systems, but 20 sit under inactive GameObjects that no clip
         # or Animator activates, so the clone never plays them.
         self.assertEqual({name: len(row["systems"]) for name, row in names.items() if name.startswith("fx_flo")},

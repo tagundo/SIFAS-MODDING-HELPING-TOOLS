@@ -23,10 +23,19 @@
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
+  //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z
+  //    angles in Unity's Euler order (Z, then X, then Y) inside their
+  //    alignment frame: the camera (View), the world (World) or the emitter
+  //    (Local), as mv-studio-display-lights.js draws its Local strokes.
+  //  * Local scaling mode applies the system's own localScale: local-space
+  //    positions go through the scaled transform and billboard quad X/Y sizes
+  //    are multiplied by the scale's X/Y.
+  //
   // Not reproduced, so the importer reports these systems and this runtime
-  // refuses them as well: X/Y particle rotation (quads turn about Z only),
-  // ShapeModule.alignToDirection except where a horizontal billboard cannot
-  // show it, and a transform scale the scaling mode would apply to particles.
+  // refuses them as well: X/Y rotation on other render modes and X/Y rotation
+  // over lifetime, ShapeModule.alignToDirection except where a horizontal
+  // billboard cannot show it, and any other transform scale the scaling mode
+  // would apply to particles (Hierarchy, Shape, world-space forces).
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -180,12 +189,20 @@
 
   const unitScale = scale => scale.every(value => Math.abs(value - 1) <= 1e-6);
 
-  // The transform scale the scaling mode applies (Local: the node's own,
-  // Hierarchy and Shape: every node up to the clone root) must be the identity:
-  // positions would scale but sizes would not, and Shape's emitter-only scale
-  // is not modeled. alignToDirection also needs an emitter turned about Y only.
+  // Local mode's own scale is applied to billboards in local simulation space
+  // without world-space forces (core/mv_studio_particle_systems.py
+  // _scaled_billboard). Any other transform scale the scaling mode applies
+  // (Hierarchy and Shape: every node up to the clone root) must be the
+  // identity. alignToDirection also needs an emitter turned about Y only.
+  function scaledBillboard(system, pose) {
+    const {main, renderer, velocity, clamp} = system;
+    return main.scalingMode === 1 && renderer.mode === 0 && !main.worldSpace && zeroCurve(main.gravity) &&
+      !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6);
+  }
+
   function reproducible(system, pose) {
-    const scaled = system.main.scalingMode === 1 ? !unitScale(pose.local) : !pose.unitChain;
+    const scaled = system.main.scalingMode === 1 ? !unitScale(pose.local) && !scaledBillboard(system, pose) :
+      !pose.unitChain;
     const tilted = Math.abs(pose.rotation[0]) > 1e-6 || Math.abs(pose.rotation[2]) > 1e-6;
     return !scaled && !(system.shape?.alignToDirection && tilted);
   }
@@ -245,12 +262,15 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
-    if ((main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY))) ||
+    if ((tilted(system) && renderer.mode !== 0) ||
         (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
         (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
+
+  // X/Y start rotation: drawn on Billboard quads only (validSimulation).
+  const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
 
   function validSystem(system, textures) {
     const material = system?.material;
@@ -448,7 +468,8 @@
       const weights = Array.from({length: orbital || speedModifier ? 11 : 3}, () => nativeUnit(stream()));
       const threshold = f32(main.randomizeRotationDirection * .5);
       return {
-        word, life: nativeInverseLifetime(life), size, roll: angles[0], rgba, speed, weights,
+        word, life: nativeInverseLifetime(life), size, roll: angles[0], tilt: angles.length === 3 ? [angles[1], angles[2]] : null,
+        rgba, speed, weights,
         gravity: gravityModifier.sample(systemTime, salted(word, salts.gravity)),
         sizeWeight: salted(word, salts.size), colorWeight: salted(word, salts.color),
         spinWeight: salted(word, salts.rotation), spinSign: salted(word, salts.rotationSign) > threshold ? 1 : -1,
@@ -757,8 +778,8 @@
             row = uv.randomRow ? Math.min(rows - 1, Math.floor(source.row * rows)) : Math.min(rows - 1, Math.max(0, uv.rowIndex));
           }
         }
-        return {position: [atom.x, atom.y, atom.z], velocity: [atom.mx, atom.my, atom.mz], size, roll: atom.roll, rgba,
-          column, row, flipU: source.flipU, flipV: source.flipV, age: atom.age};
+        return {position: [atom.x, atom.y, atom.z], velocity: [atom.mx, atom.my, atom.mz], size, roll: atom.roll,
+          tilt: source.tilt, rgba, column, row, flipU: source.flipU, flipV: source.flipV, age: atom.age};
       },
     };
   }
@@ -790,6 +811,10 @@
     uniform vec3 uAxisX;
     uniform vec3 uAxisY;
     uniform vec2 uPivot;
+    #ifdef TILTED
+    attribute vec2 particleTilt;
+    uniform vec3 uAxisZ;
+    #endif
     #ifdef STRETCHED
     attribute vec3 particleVelocity;
     uniform vec2 uStretch;
@@ -832,7 +857,20 @@
       float c = cos(particleFrame.z), s = sin(particleFrame.z);
       // Positive particle rotation turns the quad clockwise.
       local = vec2(c * local.x + s * local.y, -s * local.x + c * local.y);
+      #if defined(TILTED)
+      // 3D start rotation: the negated Z, X, Y angles in Unity's Euler order,
+      // in the alignment frame (Z above, then X, then Y).
+      float cx = cos(particleTilt.x), sx = sin(particleTilt.x);
+      float cy = cos(particleTilt.y), sy = sin(particleTilt.y);
+      vec3 turned = vec3(local.x, cx * local.y, -sx * local.y);
+      turned = vec3(cy * turned.x - sy * turned.z, turned.y, sy * turned.x + cy * turned.z);
       #if defined(VIEW_FACING)
+      // Unity camera space looks along +Z; three.js view space along -Z.
+      point.xyz += vec3(turned.xy, -turned.z);
+      #else
+      point.xyz += mat3(modelViewMatrix) * (uAxisX * turned.x + uAxisY * turned.y + uAxisZ * turned.z);
+      #endif
+      #elif defined(VIEW_FACING)
       point.xy += local;
       #elif defined(VERTICAL)
       // Camera right in world space, kept horizontal; world up stays vertical.
@@ -909,6 +947,7 @@
     if (renderer.mode === 1) defines.STRETCHED = 1;
     else if (renderer.mode === 3) defines.VERTICAL = 1;
     else if (renderer.mode === 0 && renderer.alignment === 0) defines.VIEW_FACING = 1;
+    if (renderer.mode === 0 && tilted(system)) defines.TILTED = 1;
     const depthFunc = depthFunction(T, material.zTest);
     return new T.ShaderMaterial({
       name: `Original particle ${material.name}`, vertexShader, fragmentShader, defines,
@@ -928,6 +967,7 @@
         uSizeLimit: {value: new T.Vector2(renderer.minParticleSize, renderer.maxParticleSize)},
         uPlaneScale: {value: renderer.mode === 2 ? Math.fround(Math.SQRT1_2) : 1},
         uAxisX: {value: new T.Vector3(1, 0, 0)}, uAxisY: {value: new T.Vector3(0, 1, 0)},
+        uAxisZ: {value: new T.Vector3(0, 0, 1)},
         uPivot: {value: new T.Vector2(renderer.pivot[0], renderer.pivot[1])},
         ...(renderer.mode === 1 ? {uStretch: {value: new T.Vector2(renderer.lengthScale, renderer.velocityScale)}} : {}),
       },
@@ -944,12 +984,14 @@
       centers: attribute(new Float32Array(capacity * 3), 3), sizes: attribute(new Float32Array(capacity * 3), 3),
       colors: attribute(new Uint8Array(capacity * 4), 4, true), frames: attribute(new Float32Array(capacity * 4), 4),
       velocities: system.renderer.mode === 1 ? attribute(new Float32Array(capacity * 3), 3) : null,
+      tilts: system.renderer.mode === 0 && tilted(system) ? attribute(new Float32Array(capacity * 2), 2) : null,
     };
     geometry.setAttribute("particleCenter", buffers.centers);
     geometry.setAttribute("particleSize", buffers.sizes);
     geometry.setAttribute("particleColor", buffers.colors);
     geometry.setAttribute("particleFrame", buffers.frames);
     if (buffers.velocities) geometry.setAttribute("particleVelocity", buffers.velocities);
+    if (buffers.tilts) geometry.setAttribute("particleTilt", buffers.tilts);
     geometry.instanceCount = 0;
     const mesh = new T.Mesh(geometry, materialFor(T, system, texture));
     mesh.name = name;
@@ -1036,6 +1078,7 @@
         if (axes) {
           entry.packet.mesh.material.uniforms.uAxisX.value.fromArray(axes[0]);
           entry.packet.mesh.material.uniforms.uAxisY.value.fromArray(axes[1]);
+          entry.packet.mesh.material.uniforms.uAxisZ.value.fromArray(axes[2]);
         }
       }
       return entry.packet;
@@ -1044,11 +1087,12 @@
     function fixedAxes(system, pose) {
       // Unity world axes of world/local/horizontal quads, reflected along X like the stage.
       const mirror = ([x, y, z]) => [-x, y, z];
+      // The third axis is the quad normal that X/Y start rotation turns into.
       const {mode, alignment} = system.renderer;
-      if (mode === 2) return [mirror([1, 0, 0]), mirror([0, 0, 1])];
-      if (mode === 0 && alignment === 1) return [mirror([1, 0, 0]), mirror([0, 1, 0])];
+      if (mode === 2) return [mirror([1, 0, 0]), mirror([0, 0, 1]), mirror([0, -1, 0])];
+      if (mode === 0 && alignment === 1) return [mirror([1, 0, 0]), mirror([0, 1, 0]), mirror([0, 0, 1])];
       if (mode === 0 && alignment === 2) {
-        return [mirror(quatRotate(pose.rotation, [1, 0, 0])), mirror(quatRotate(pose.rotation, [0, 1, 0]))];
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(axis => mirror(quatRotate(pose.rotation, axis)));
       }
       return null;
     }
@@ -1069,6 +1113,8 @@
       const packet = packetOf(entry, cue), {buffers, mesh} = packet, {system, pose} = entry;
       const {mode, sortMode} = system.renderer;
       const scale = system.main.scalingMode === 0 ? pose.scale : system.main.scalingMode === 1 ? pose.local : [1, 1, 1];
+      // Local scaling also sizes the billboard quads (reproducible() admits no other scaled case).
+      const grow = system.main.scalingMode === 1 && !unitScale(pose.local) ? pose.local : null;
       const toWorld = position => {
         const scaled = position.map((value, i) => value * scale[i]);
         const world = quatRotate(pose.rotation, scaled).map((value, i) => value + pose.position[i]);
@@ -1086,10 +1132,11 @@
       let count = 0;
       for (const row of rows) {
         if (count >= packet.capacity) break;
-        const [sx, sy, sz] = row.size;
+        const [sx, sy, sz] = grow ? row.size.map((value, i) => f32(value * grow[i])) : row.size;
         if (!(Math.max(sx, sy) > 0) || !row.rgba[3] && system.material.vertexColor) continue;
         local.fromArray(row.world).sub(center);
         buffers.centers.setXYZ(count, local.x, local.y, local.z);
+        if (buffers.tilts) buffers.tilts.setXY(count, row.tilt?.[0] ?? 0, row.tilt?.[1] ?? 0);
         buffers.sizes.setXYZ(count, sx, sy, sz);
         buffers.colors.setXYZW(count, ...row.rgba);
         buffers.frames.setXYZW(count, row.column, row.row, row.roll, (row.flipU ? 1 : 0) + (row.flipV ? 2 : 0));
