@@ -29,10 +29,18 @@ at 0x2629608) with the deck type the deck-select screen passes:
   (otherwise 1). Facial overrides are looked up by (member, that view status). The
   attach key is m_suit_attach.attach_key or "" (see mv_studio_suit_attach).
 
-m_live_difficulty_override_member_mapping is not on this path: its readers are the
-gameplay Live3DDM.GetSortedMembers / GetLiveSuitIds (with the player's live deck)
-and Live3DDM.GetLiveMvDeckSuitIds, which has no caller. u_member.suit_master_id is
-also only read by the gameplay GetLiveSuitIds; the MV path reads m_member_init.
+The MV scene uses the deck-select tab: its OnEnter coroutine (<OnEnter>d__16.MoveNext
+0x223fadc) calls Live3DDM.GetMvLive3DAssetVO (0x210e93c), which passes
+State.LiveMv.LiveMvDeckType into GetMvLiveMember3DAssetVOs and then sorts the result
+with Live3DDM.GetSortedMembers (0x210dce0). GetSortedMembers reads
+m_live_member_mapping, m_live_override_member_mapping and, when
+State.Live.LiveStage.LiveDifficultyId has a value,
+m_live_difficulty_override_member_mapping, but only their position / card_position
+(ordering), never a member or a suit. So no performer or suit on the MV path comes
+from m_live_difficulty_override_member_mapping: its suits are read only by the
+gameplay Live3DDM.GetLiveSuitIds (0x2627130, together with the player's live deck)
+and by Live3DDM.GetLiveMvDeckSuitIds, which has no caller. u_member.suit_master_id
+is also only read by the gameplay GetLiveSuitIds; the MV path reads m_member_init.
 
 Without a player database the editor resolves like a new Elichika player: no saved
 MV decks, every m_suit owned (Elichika's account creation inserts all of m_suit into
