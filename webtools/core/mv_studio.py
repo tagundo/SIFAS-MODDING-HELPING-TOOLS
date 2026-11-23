@@ -219,6 +219,15 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             # Optional source physics is independent of the usable body model.
             pass
+        from . import model_constraints
+
+        try:
+            constraints = model_constraints.catalogue_preview(models, rig["bones"])
+            if constraints.get("available"):
+                rig = {**rig, "constraints": constraints}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Unity constraints are optional rig data, like source physics.
+            pass
     if key is not None:
         if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
             model_viewer._conversion_put(

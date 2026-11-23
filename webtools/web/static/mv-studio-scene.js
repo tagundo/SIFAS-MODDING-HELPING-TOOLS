@@ -613,6 +613,7 @@
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
       record.physics?.dispose();
+      record.constraints?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
       release(record.root);
@@ -977,6 +978,7 @@
           }
           record.physics = global.MVStudioPhysics?.create(record.root, entry.spec.rig?.physics,
             entry.spec.motion?.physics ?? project?.motionPhysics);
+          record.constraints = global.ViewerConstraints?.create(record.root, entry.spec.rig?.constraints);
           record.memberShadow = await global.MVStudioMemberShadow?.apply(T, record.root, gltf.parser, memberShadows);
           if (!active()) return null;
         }
@@ -1011,6 +1013,7 @@
       for (const record of records) {
         if (record.group !== actors) continue;
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         if (record.initialPose) restoreActorPose(record.initialPose);
         actors.add(record.root);
       }
@@ -1641,6 +1644,7 @@
         record.root.visible = record.actorVisible && !culled;
         record.materials?.setLiveLighting?.(lighting?.member(record.position));
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
@@ -1651,6 +1655,14 @@
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
+      // Unity's ConstraintManagerUpdate (PreLateUpdate) runs after the Animator
+      // and before every LateUpdate script: LiveMemberEyeContact, ShadowComponent
+      // and the member manager's AllSafeCorrect. A swing-bone source holds the
+      // local rotation this frame's Update job wrote (simulatedPose), unless the
+      // timeline animates it. The targets keep the result until the next update
+      // hook, whose job reads them as the parents of their swing chains.
+      for (const record of records) record.constraints?.apply(record.physics?.simulatedPose?.() || null,
+        () => record.motion?.animatedProperties?.(currentTime));
       // Native performers look at the other actor's animated Eye_Root, so
       // prepare every actor at this timestamp before resolving any gaze.
       const targets = gazeContext();
@@ -2062,6 +2074,8 @@
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
           renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          constraints: records.filter((record) => record.constraints)
+            .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
         };
       },
       assetDump,
