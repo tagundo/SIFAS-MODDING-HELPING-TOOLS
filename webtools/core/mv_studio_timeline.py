@@ -14,6 +14,9 @@ _MAX_CAMERA_FRAMES = 72_000
 _MAX_WARNINGS = 96
 _MAX_VALUE_ITEMS = 256
 _FOV = 2282594708
+# Kept for parses without the timeline's dependency packs (mods, reopen, export).
+# A game import resolves these clips in mv_studio_external_clips instead.
+EXTERNAL_CLIP_WARNING = "Some original animation clips need their exact companion asset packs."
 _PERFORMER_MODEL = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model")
 _MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9])")
 _COMMON = {"m_GameObject", "m_Enabled", "m_Script", "m_Name", "m_PrefabInstance", "m_PrefabAsset"}
@@ -311,7 +314,7 @@ def _event(track_obj, clip, key, index, kind, objects, mono, references, animati
                     except (ValueError, KeyError, TypeError) as error:
                         warnings.add(f"Camera clip '{label}' could not be sampled: {error}")
             elif animation_key is not None:
-                warnings.add("Some original animation clips need their exact companion asset packs.")
+                warnings.add(EXTERNAL_CLIP_WARNING)
         elif references[asset] == 1:
             editable.extend(sorted(_EDITABLE_VALUES.get(playable_class, set()) & values.keys()))
     elif asset is not None:

@@ -337,13 +337,17 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
     return [item["path"] for item in files], descriptor
 
 
-def _cast_in_timeline_order(performers, tracks):
+def _cast_in_timeline_order(performers, tracks, clip_names=None):
+    # The AnimationClip a slot plays identifies its member. m_DisplayName is
+    # only a fallback: in 12035/12036 it carries the other Mia/Lanzhu code.
+    clip_names = clip_names or {}
     members = {}
     for track in tracks:
         if track["kind"] != "dance" or not (slot := re.fullmatch(r"/EntryPoint/Live/Members/Member(\d+)/Model", track.get("binding", ""))):
             continue
         for event in track["events"]:
-            identity = re.match(r"ch(\d{4})(?:_|$)", event["values"].get("animationName") or event["label"])
+            name = clip_names.get(event.get("id")) or event["values"].get("animationName") or event["label"]
+            identity = re.match(r"ch(\d{4})(?:_|$)", name)
             if identity:
                 members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
     latest = {performer["memberId"]: performer for performer in performers}
@@ -431,6 +435,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
             directory = Path(name)
             local, rows = {}, {}
+            from . import mv_studio_external_clips
+            read_asset = mv_studio_external_clips.SharedReads(
+                lambda descriptor: mv_studio_game.load_asset(repo_root, descriptor, download=download, deadline=deadline))
 
             def describe(descriptor, kind, label=None):
                 if not descriptor:
@@ -448,7 +455,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     return None, None
                 if row["id"] not in local:
                     try:
-                        raw = mv_studio_game.load_asset(repo_root, descriptor, download=download, deadline=deadline)
+                        raw = read_asset(descriptor)
                         if not raw:
                             row["status"] = "missing"
                             return row, None
@@ -475,7 +482,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
-            performers = _cast_in_timeline_order(original_cast, project["tracks"])
+            # Dance clips live in the timeline's choreography packs (exact CAB/PathID).
+            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline)
+            performers = _cast_in_timeline_order(original_cast, project["tracks"], clip_names)
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
