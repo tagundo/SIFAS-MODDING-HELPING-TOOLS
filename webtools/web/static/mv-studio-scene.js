@@ -355,7 +355,7 @@
     let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null, stageLens = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
-    let stageParticleSystems = null;
+    let stageParticleSystems = null, stageControlPrefabs = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null, defaultMemberShadows = false;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -649,6 +649,8 @@
       stageSparksRoop = null;
       stageParticleSystems?.dispose();
       stageParticleSystems = null;
+      stageControlPrefabs?.dispose();
+      stageControlPrefabs = null;
       stageSparksA?.dispose();
       stageSparksA = null;
       stageSparksB?.dispose();
@@ -1303,6 +1305,12 @@
         return;
       }
       stageParticleSystems = particleSystems;
+      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs);
+      if (!active()) {
+        controlPrefabs?.dispose();
+        return;
+      }
+      stageControlPrefabs = controlPrefabs;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1617,6 +1625,7 @@
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
       stageParticleSystems?.update(currentTime, project);
+      stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
@@ -2062,6 +2071,7 @@
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
           renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          controlPrefabs: stageControlPrefabs?.inspect() ?? null,
         };
       },
       assetDump,
