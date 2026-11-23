@@ -34,6 +34,10 @@
   let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
+  // Device option of the original client (off by default): Live3DScene requests
+  // the display refresh rate instead of the preset's 30/60 fps, and the swing
+  // physics step once per frame at that rate.
+  let refreshRateMode = 0;
   const timelineLanes = new Map();
   const audio = document.createElement("audio");
   audio.preload = "metadata";
@@ -487,6 +491,20 @@
       else if (option.type === "number" && finite(value)) box.append(field(option.label || key, numberInput(value, data, update)));
       else if (value != null) box.append(field(option.label || key, make("output", text(value))));
     }
+    if (!global.MVStudioPhysics) return;
+    const refresh = make("select", null, { id: "mv-refresh-rate-mode" });
+    replaceOptions(refresh, [{ id: 0, label: "Off" }, ...global.MVStudioPhysics.REFRESH_RATES.map((rate) => ({ id: rate, label: `${rate} Hz` }))],
+      refreshRateMode);
+    refresh.addEventListener("change", () => {
+      refreshRateMode = Number(refresh.value) || 0;
+      applyRefreshRateMode();
+      seek(time, false);
+    });
+    box.append(field("Refresh-rate mode", refresh));
+  }
+
+  function applyRefreshRateMode() {
+    scene?.setPhysicsTiming?.({ device: refreshRateMode ? { refreshRateMode: true, displayRate: refreshRateMode } : {} });
   }
 
   function gameSource() {
@@ -727,6 +745,7 @@
     if (!scene && global.MVStudioScene) {
       scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden });
       scene.setVisible(visible && !document.hidden);
+      if (refreshRateMode) applyRefreshRateMode();
     }
     return scene;
   }
@@ -798,8 +817,9 @@
 
   function importAsset(kind, replaceActor = null) {
     if (!project || pending) return;
-    if (kind === "outfit" && replaceActor == null && (project.performers || []).length >= 9) {
-      report(t("This MV already has nine performers. Choose an existing performer to replace their outfit."), true);
+    // LiveCoreMemberManager.MemberMax: an MV has up to 12 performers.
+    if (kind === "outfit" && replaceActor == null && (project.performers || []).length >= 12) {
+      report(t("This MV already has twelve performers. Choose an existing performer to replace their outfit."), true);
       return;
     }
     const activeProject = project;

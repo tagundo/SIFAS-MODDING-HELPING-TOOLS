@@ -8,6 +8,12 @@
    game camera after a fixed-step preroll so physics has a defined history, and is
    saved as a PNG with the scene state that drew it. Nothing here reads game files
    directly: the editor's own catalog and game-stream import load the assets.
+
+   Springs step at the reference's rate: game.exporter "fovmod" means the video is a
+   FOVMOD MP4 export, which ticked the game at 60 Hz (120 Hz for 120 fps videos) with
+   3*tick warm-up steps at the start pose; otherwise the game's own rule applies
+   (quality frame_rate_60fps, optional manifest.device). physics.order is "game"
+   (default) or "same-frame". capture.json records the rate, reference and order.
 */
 'use strict';
 const assert = require('node:assert/strict');
@@ -18,6 +24,9 @@ const { spawn, execFileSync } = require('node:child_process');
 const { chromium } = require('playwright');
 
 const MODTOOLS = path.resolve(__dirname, '..');
+// The spring frame-rate rule shared with the editor (globalThis.MVStudioPhysics).
+require('../webtools/web/static/mv-studio-physics.js');
+const SPRINGS = globalThis.MVStudioPhysics;
 
 function parseArgs(argv) {
   const options = {};
@@ -54,7 +63,40 @@ function readManifest(file) {
   const physics = manifest.physics || {};
   const preroll = physics.preroll ?? 3;
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), 'physics.preroll is seconds or "full"');
-  return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll } };
+  const order = physics.order ?? 'game';
+  assert(SPRINGS.ORDERS.includes(order), 'physics.order is "game" or "same-frame"');
+  const exporter = manifest.game?.exporter;
+  assert(exporter === undefined || exporter === 'fovmod', 'game.exporter is "fovmod" when the reference is a FOVMOD MP4 export');
+  if (manifest.device !== undefined) SPRINGS.normalizeTiming({ device: manifest.device });
+  return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll, order } };
+}
+
+// "30/1" or "30000/1001" (ffprobe avg_frame_rate) -> frames per second.
+function videoFps(rate) {
+  const [num, den = '1'] = String(rate ?? '').split('/');
+  const fps = Number(num) / Number(den);
+  return Number.isFinite(fps) && fps > 0 ? fps : null;
+}
+
+// Which spring rate reproduces the reference. A FOVMOD MP4 export ticked the game at
+// exportTickRate(fps) (60 Hz for 30 fps videos) and warmed the springs up for 3*tick
+// steps at the start pose (libfovmod warmup_springs); any other reference ran the
+// game's own rule, MVStudioPhysics.gameFrameRate(quality, device).
+function physicsReference(manifest, qualityValues, video = null) {
+  const order = manifest.physics?.order ?? 'game';
+  if (manifest.game?.exporter === 'fovmod') {
+    const probed = videoFps(video?.rate), stated = manifest.game.export?.fps ?? null;
+    const fps = probed !== null ? Math.round(probed) : stated;
+    assert(probed === null || Math.abs(probed - fps) < 1e-3, `The FOVMOD export frame rate ${video?.rate} is not a whole number`);
+    assert(stated === null || stated === fps, `game.export.fps ${stated} does not match the video (${fps} fps)`);
+    const rate = SPRINGS.exportTickRate(fps);
+    return { source: 'fovmod-export', rate, order, exportFps: fps, device: null, warmupSteps: 3 * rate,
+      timing: { order, exportFps: fps, device: {} } };
+  }
+  const device = manifest.device || {};
+  const rate = SPRINGS.gameFrameRate(qualityValues, device);
+  return { source: 'game', rate, order, exportFps: null, device: manifest.device || null, warmupSteps: 0,
+    timing: { order, exportFps: null, device } };
 }
 
 // Camera clip boundaries of the game camera tracks, in timeline seconds.
@@ -155,6 +197,9 @@ async function importOriginal(page, source, download) {
   await choose('#mv-game-platform', source.platform);
   await choose('#mv-game-song', String(source.liveId));
   await choose('#mv-game-variant', String(source.assetId));
+  // A catalog reload still in flight re-syncs the variants and clears the download box when it
+  // ends; the load button stays disabled until then.
+  await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled, null, { timeout: 60000 });
   await page.locator('#mv-game-download').setChecked(Boolean(download));
   await page.locator('#mv-game-load').click();
   // The import operation disables the button synchronously and re-enables it when it ends.
@@ -205,27 +250,40 @@ async function pinViewport(page, width, height) {
 
 // Fixed-step playback on a grid that ends exactly at `time`, then one
 // synchronous draw and readback. Physics advances once per stepped frame.
-async function renderFrame(page, time, preroll, rate) {
-  return page.evaluate(({ time, preroll, rate }) => {
+// When the preroll reaches the song start, `warmup` extra frames are first
+// played at the start pose (FOVMOD warmup_springs).
+async function renderFrame(page, time, preroll, rate, warmup = 0) {
+  return page.evaluate(({ time, preroll, rate, warmup }) => {
     const scene = mvFrameProbe.scene;
     const available = Math.floor(time * rate + 1e-6);
     const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
     const start = time - steps / rate;
+    const warm = steps === available ? warmup : 0;
     scene.resize(false);
     // The editor's own seek path resets physics only when the time changes.
     if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / rate, undefined, true);
     scene.seek(start, undefined, true);
     scene.setPlaying(true);
     try {
-      for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, step * 1000 / rate, true);
-      scene.playbackFrame(time, steps * 1000 / rate, false);
+      for (let step = 0; step < warm; step++) scene.playbackFrame(start, step * 1000 / rate, true);
+      for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, (warm + step) * 1000 / rate, true);
+      scene.playbackFrame(time, (warm + steps) * 1000 / rate, false);
       const canvas = document.querySelector('#mv-scene canvas');
       const png = canvas.toDataURL('image/png');
-      return { png, state: scene.inspect(), steps, prerollStart: start };
+      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start };
     } finally {
       scene.setPlaying(false);
     }
-  }, { time, preroll, rate });
+  }, { time, preroll, rate, warmup });
+}
+
+// Applies the reference's spring timing to the scene and returns what it applied.
+async function applyPhysicsReference(page, reference) {
+  const applied = await page.evaluate((timing) => mvFrameProbe.scene.setPhysicsTiming(timing), reference.timing);
+  assert(applied, 'The editor scene has no spring timing control');
+  assert.equal(applied.rate, reference.rate, 'The editor did not apply the reference spring rate');
+  assert.equal(applied.order, reference.order, 'The editor did not apply the reference spring order');
+  return applied;
 }
 
 async function rendererInfo(page) {
@@ -277,7 +335,9 @@ async function run() {
       select.value = 'live';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    const rate = quality.values.frame_rate_60fps === true ? 60 : 30;
+    const physics = physicsReference(manifest, quality.values, target);
+    await applyPhysicsReference(page, physics);
+    const rate = physics.rate;
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [],
@@ -299,16 +359,19 @@ async function run() {
     const wanted = [...manifest.frames, ...planned.filter(auto => !manifest.frames.some(frame => Math.abs(frame.time - auto.time) < 1e-6))];
     const frames = [];
     for (const frame of wanted.sort((a, b) => a.time - b.time)) {
-      const { png, state, steps, prerollStart } = await renderFrame(page, frame.time, manifest.physics.preroll, rate);
+      const { png, state, steps, warmupSteps, prerollStart } = await renderFrame(page, frame.time, manifest.physics.preroll, rate,
+        physics.warmupSteps);
       const file = frameName(frame.time);
       fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
       assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');
       assert.equal(state.canvas.height, renderHeight, 'The editor canvas height does not match the requested render size');
-      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, cutDistance: cutDistance(cuts, frame.time), state });
+      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, warmupSteps, cutDistance: cutDistance(cuts, frame.time), state });
     }
     const capture = {
       schema: 1, kind: 'elichika-mv-editor-frames', createdAt: new Date().toISOString(),
       manifest, project, soundtrack, physicsRate: rate,
+      physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
+        warmupSteps: physics.warmupSteps },
       render: { width: renderWidth, height: renderHeight, aspect, video: target },
       quality: { mode: quality.mode, values: quality.values },
       environment: {
@@ -327,4 +390,5 @@ async function run() {
 }
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty };
+module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
+  videoFps, physicsReference, applyPhysicsReference };

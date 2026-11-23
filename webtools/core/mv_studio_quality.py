@@ -3,7 +3,7 @@
     Resolution and frame rate set the render budget. Stage flags apply to the
     stage, its effect bundle and the timeline. Member and prop flags control
     their own models and lighting. Split screen follows the authored timeline.
-    The stock 2D mode has a separate settings set.
+    An MV never plays in the stock 2D mode: the game swaps in a 3D mode.
 """
 
 from contextlib import closing
@@ -17,6 +17,12 @@ _LANGUAGES = {"en": 0, "ko": 1, "ja": 2}
 _NORMAL_3D = 30
 _STOCK_2D = 50
 _TWO_DIMENSIONS = "k.m_live_quality_mode_2d"
+# LiveMvVO..ctor (0x25eb2d0): when the player's quality mode is 50, the MV runs
+# with LiveSettingDM.GetRecommendLiveQualityMode() instead, or with 40 when that
+# is 50 too. GetRecommendLiveQualityMode (0x2658248) returns 40 when the device
+# has no recommendation. Studio has no device to recommend for, so 50 plays the
+# selected stage preset's mode 40 row.
+_MV_2D_FALLBACK = 40
 
 # SQL names and ordering match m_live_quality_setting. Each tuple holds the
 # English, Korean and Japanese labels for the controls specific to Studio.
@@ -56,6 +62,14 @@ _2D_HELP = (
     "Choose a 3D quality mode to render the stage and performers.",
     "무대와 멤버를 3D로 렌더링하려면 3D 품질을 선택하세요.",
     "ステージとメンバーを描画するには3D画質を選んでください。",
+)
+_MV_2D_HELP = (
+    "MVs do not play in 2D: the game uses the device's recommended 3D mode, or {mode} when there is none. "
+    "Studio shows {mode}.",
+    "MV는 2D로 재생되지 않습니다. 게임은 기기 권장 3D 품질을, 권장 품질이 없으면 {mode}을(를) 사용합니다. "
+    "스튜디오는 {mode}(으)로 표시합니다.",
+    "MVは2Dでは再生されません。ゲームは端末の推奨3D画質を使い、推奨がない場合は{mode}を使います。"
+    "スタジオでは{mode}で表示します。",
 )
 _MODE_LABELS = {
     10: ("Max 3D", "3D 매우 높음", "3D最高"),
@@ -108,9 +122,15 @@ def _read_rows(repo_root, region, quality_set):
         if not selected:
             raise ValueError("The selected stage quality preset is unavailable.")
         rows = {row["quality_mode"]: row for row in selected}
+        if any(mode["quality_mode"] == _STOCK_2D for mode in modes):
+            # The MV swaps mode 50 for 40 of the same stage preset (LiveMvVO..ctor).
+            # Without that row the game's MV values are unknown, so 50 is not offered.
+            rows.pop(_STOCK_2D, None)
+            if _MV_2D_FALLBACK in rows:
+                rows[_STOCK_2D] = rows[_MV_2D_FALLBACK]
         for mode in modes:
             identity = mode["quality_mode"]
-            if identity not in rows and (identity == _STOCK_2D or mode["dimension_name"] == _TWO_DIMENSIONS):
+            if identity not in rows and identity != _STOCK_2D and mode["dimension_name"] == _TWO_DIMENSIONS:
                 row = db.execute("SELECT * FROM m_live_quality_setting WHERE quality_mode=? ORDER BY set_id LIMIT 1",
                                  (identity,)).fetchone()
                 if row:
@@ -132,13 +152,18 @@ def read_quality(repo_root, *, region, language, quality_set=None):
         options = []
         choices = []
         try:
+            labels = {mode["quality_mode"]: _dictionary_text(dictionary, mode["name"]) or
+                      _MODE_LABELS.get(mode["quality_mode"], (str(mode["quality_mode"]),) * 3)[column] for mode in modes}
             for mode in modes:
                 identity = mode["quality_mode"]
                 if identity not in rows:
                     continue
-                label = _dictionary_text(dictionary, mode["name"]) or _MODE_LABELS.get(identity, (str(identity),) * 3)[column]
+                label = labels[identity]
                 description = _dictionary_text(dictionary, mode["description"])
-                if identity == _STOCK_2D or mode["dimension_name"] == _TWO_DIMENSIONS:
+                if identity == _STOCK_2D:
+                    fallback = labels.get(_MV_2D_FALLBACK) or _MODE_LABELS[_MV_2D_FALLBACK][column]
+                    description = " ".join(filter(None, (description, _MV_2D_HELP[column].format(mode=fallback))))
+                elif mode["dimension_name"] == _TWO_DIMENSIONS:
                     description = " ".join(filter(None, (description, _2D_HELP[column])))
                 choices.append({"id": identity, "label": label, "description": description, "values": _values(rows[identity])})
         finally:

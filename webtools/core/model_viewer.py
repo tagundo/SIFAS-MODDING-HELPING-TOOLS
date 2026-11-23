@@ -641,6 +641,52 @@ def _as_member_material(scene, obj, tree):
     return False
 
 
+# Original SIFAS AS/* shaders that tint with _TintColor and declare no _Color
+# (shader bundle serialized file, path ID). Each declares _TintColor with the
+# ShaderLab default (1, 1, 1, 1) in m_ParsedForm.m_PropInfo.
+_AS_TINT_SHADERS = {
+    ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "AS/General/Opaque",
+    ("cab-adf9ba7b61bd035c754bf74ae44927cb", 7151384334892346267): "AS/General/Transparent",
+    ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372): "AS/Rimlight/Opaque",
+    ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "AS/Color/Opaque",
+    ("cab-da18667fd7e5e991d56b5d877869e6c6", 7366096703533297961): "AS/Coloring/Transparent",
+    ("cab-a44cd34f6481b592fc0475c6e5d23bfa", 9060382612279247893): "AS/FlashLight",
+    ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
+    ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
+}
+# Only these verified shaders tint, loaded or not: other AS/* shaders that
+# declare _TintColor without _Color (AS/MatCap/*, AS/Member) are not checked.
+_AS_TINT_NAMES = frozenset(_AS_TINT_SHADERS.values())
+_WHITE = {"r": 1., "g": 1., "b": 1., "a": 1.}
+
+
+def _as_tint_default(scene, obj, tree):
+    """ShaderLab default _TintColor of a verified AS/* shader whose tint is _TintColor; None otherwise."""
+    if obj is None:
+        return None
+    pointer = tree.get("m_Shader") or {}
+    shader = _ref(obj, pointer)
+    if shader is not None:
+        if shader.type.name != "Shader":
+            return None
+        form = scene.tree(shader).get("m_ParsedForm") or {}
+        props = {item.get("m_Name"): item for item in (form.get("m_PropInfo") or {}).get("m_Props", [])
+                 if isinstance(item, dict)}
+        tint, name = props.get("_TintColor"), form.get("m_Name")
+        if not isinstance(name, str) or name not in _AS_TINT_NAMES or "_Color" in props or not tint or tint.get("m_Type") != 0:
+            return None
+        default = {axis: tint.get(f"m_DefValue[{index}]", 1.) for index, axis in enumerate("rgba")}
+        return default if all(type(value) in (int, float) for value in default.values()) else None
+    # The stage preview loads no shader bundles: match the verified external identity.
+    try:
+        file_id = int(pointer.get("m_FileID", 0))
+        external = obj.assets_file.externals[file_id - 1] if file_id > 0 else None
+        identity = (ntpath.basename(external.name).lower(), int(pointer["m_PathID"])) if external else None
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+    return dict(_WHITE) if identity in _AS_TINT_SHADERS else None
+
+
 def _member_depth_material(scene, material):
     """Admit the exact opaque wrapper that imports the member depth pass."""
     if material.type.name != "Material":
@@ -969,7 +1015,11 @@ class _Materials:
         # values into glTF incorrectly darkens real outfit heads. Lighting/tint
         # shader parity remains outside this unlit texture preview.
         color = ({"r": 1, "g": 1, "b": 1, "a": 1} if _as_member_material(self.scene, obj, tree)
-                 else colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1}))
+                 else colors.get("_Color"))
+        if color is None:
+            # AS/* stage shaders tint with _TintColor (ShaderLab default white), never a generic grey.
+            tint = _as_tint_default(self.scene, obj, tree)
+            color = colors.get("_TintColor", tint) if tint is not None else {"r": .72, "g": .74, "b": .78, "a": 1}
         factor = [float(color.get(a, 1)) for a in "rgba"]
         if not all(math.isfinite(v) for v in factor):
             raise ModelViewerError("A model material contains invalid colors.")
@@ -1331,11 +1381,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
-        from . import mv_studio_soft_billboards
+        from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
+        axis_billboards, stage_props = set(), []
     shadow_stages = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
@@ -1403,6 +1454,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if flash is not None:
                 identity, entry = flash
                 stage_flashes[identity] = None if identity in stage_flashes else entry
+            axis_billboards.update(mv_studio_axis_billboard.owners(scene, obj, tree))
+            stage_props.extend(mv_studio_stage_props.props(scene, obj, tree))
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
@@ -1496,6 +1549,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
                     stage_motion = binding
         overlay = overlay and stage_motion is not None
+        # AxisBillboard turns its own transform toward the camera, so a static
+        # billboard keeps its authored hierarchy instead of baked world vertices.
+        axis_node = (stage_materials and stage_motion is None and renderer_type == "MeshRenderer"
+                     and _key(game_object) in axis_billboards)
         flash_binding = stage_flashes.get(_key(renderer)) if stage_materials else None
         renderer_enabled = tree.get("m_Enabled", True)
         if (not renderer_enabled and flash_binding is None) or (stage_motion is None and not scene.active(game_object)):
@@ -1507,15 +1564,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             mesh_obj = _ref(renderer, tree.get("m_Mesh"))
         else:
             mesh_obj = scene.filters.get(_key(game_object))
-        builtin_plane = (mesh_obj is None and (overlay or stage_transparent and stage_transparent.get("depthWrite"))
-                         and mv_studio_stage_overlay.builtin_plane(scene, game_object))
-        if not builtin_plane and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
+        # A MeshFilter may point at Unity's built-in Plane or Quad, which no
+        # bundle contains. Unity draws it with the renderer's own material.
+        builtin_mesh = (unity_builtin_meshes.mesh_id(scene, game_object)
+                        if stage_materials and mesh_obj is None and renderer_type == "MeshRenderer" else None)
+        if not builtin_mesh and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
             scene.warn("linked_mesh_missing", game_name)
             continue
-        if not builtin_plane and not faces.include(scene, renderer, game_object, mesh_obj):
+        if not builtin_mesh and not faces.include(scene, renderer, game_object, mesh_obj):
             continue
-        mesh_source = renderer if builtin_plane else mesh_obj
-        mesh_name = "Plane" if builtin_plane else scene.name(mesh_obj)
+        mesh_source = renderer if builtin_mesh else mesh_obj
+        mesh_name = unity_builtin_meshes.MESHES[builtin_mesh][0] if builtin_mesh else scene.name(mesh_obj)
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
@@ -1524,7 +1583,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         skin_material = (stage_opaque or stage_transparent) if renderer_type == "SkinnedMeshRenderer" else None
         native_skin = stage_beam is not None or skin_material is not None
         needs_sort_bounds = (
-            stage_motion is not None and not builtin_plane and (
+            stage_motion is not None and not builtin_mesh and (
                 stage_soft is not None or stage_transparent is not None
                 and (stage_transparent.get("alphaBlend") or stage_transparent.get("depthWrite"))
             )
@@ -1561,6 +1620,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     coloring_for_renderer[identity] = coloring
                     if stage_inputs is None:
                         stage_inputs = {}
+        # LivePropBasic swaps its own material instances into the renderers below it.
+        prop_light = mv_studio_stage_props.renderer_entry(scene, game_object, stage_props) if stage_materials else None
+        if prop_light is not None and stage_inputs is None:
+            stage_inputs = {}
         bones, skin_warnings, stage_skin = None, [], None
         transparent_skin_material = None
         try:
@@ -1575,7 +1638,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     for ref in refs:
                         transform = _ref(renderer, ref)
                         bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
-                if stage_motion is None:
+                if stage_motion is None and not axis_node:
                     world = faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object))))
                 else:
                     import numpy as np
@@ -1590,8 +1653,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if any(tree.get("m_BlendShapeWeights", [])):
                     keywords["morph_weights"] = tree["m_BlendShapeWeights"]
                     keywords["deadline"] = deadline
-                if builtin_plane:
-                    name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
+                if builtin_mesh:
+                    name, positions, normals, uv, submeshes = unity_builtin_meshes.geometry(builtin_mesh, world)
+                    if stage_inputs is not None:
+                        stage_inputs["colorAbsent"] = True  # Plane and Quad have no COLOR stream.
                 else:
                     name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
                 overlay_inputs_ready = uv is not None
@@ -1607,7 +1672,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                    and len(submeshes) > 1 and len(material_refs) == len(submeshes))
                 if (overlay_inputs_ready
                         and (stage_beam is None and stage_transparent is None or len(submeshes) == 1 or merge_submeshes)
-                        and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
+                        and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs
+                             or stage_inputs.get("colorAbsent"))):
                     if stage_transparent is not None:
                         try:
                             transparent_skin_material = mv_studio_stage_overlay.export_material(
@@ -1725,7 +1791,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             else:
                 position_matrix = position_matrix @ world
         mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_source.assets_file), 0),
-                         "id": "10209" if builtin_plane else str(mesh_obj.path_id)}
+                         "id": str(builtin_mesh) if builtin_mesh else str(mesh_obj.path_id)}
         penlight_attributes, penlight_transform = None, None
         if native_attributes:
             penlight_transform = {"bindingSuffix": penlight[1],
@@ -1812,7 +1878,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
                                             if overlay else mv_studio_stage_overlay.export_material(
                                                 materials, stage_transparent, renderer_tree=tree,
-                                                mesh=(raw or {}).get("mesh"), builtin_plane=builtin_plane))
+                                                mesh=(raw or {}).get("mesh"), builtin_mesh=bool(builtin_mesh)))
                     except ValueError:
                         pass
                 if overlay_material is not None:
@@ -1829,7 +1895,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if descriptor and (not stage_opaque or stage_skin is not None):
                 descriptor = dict(descriptor)
                 if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
-                    descriptor = None
+                    # Unity feeds opaque white to COLOR when the mesh has no color stream.
+                    if stage_inputs is not None and stage_inputs.get("colorAbsent"):
+                        descriptor["vertexColorAbsent"] = True
+                    else:
+                        descriptor = None
                 if descriptor and descriptor["shader"] == "stage":
                     if stage_uv is None and "lightUV" in stage_inputs:
                         info = mv_studio_stage_materials.lightmap_for(scene, renderer, tree, lightmap_settings)
@@ -1874,7 +1944,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             stage_emissive_uv = glb.attribute(coords, "VEC2")
                 if descriptor:
                     custom = {}
-                    if descriptor.get("vertexColor"):
+                    if descriptor.get("vertexColor") and not descriptor.get("vertexColorAbsent"):
                         if stage_color is None:
                             stage_color = glb.attribute(stage_inputs["color"], "VEC4")
                         custom["_STAGE_COLOR"] = stage_color
@@ -1911,6 +1981,21 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
                     primitives[-1]["extras"]["mvStageColoring"] = descriptor
+            prop = (mv_studio_stage_props.light(prop_light, scene.name(material_obj))
+                    if prop_light is not None and material_obj is not None else None)
+            if prop is not None:
+                primitives[-1]["extras"]["mvPropLight"] = prop
+                rimlight = mv_studio_stage_props.rimlight_material(scene, material_obj) if uv is not None else None
+                try:
+                    rimlight = mv_studio_stage_props.export_rimlight(materials, rimlight) if rimlight else None
+                except ValueError:
+                    rimlight = None
+                if rimlight is not None:
+                    if "color" in stage_inputs:
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
+                    primitives[-1]["extras"]["mvStageRimlight"] = rimlight
             first_face += len(triangles)
             if targets:
                 primitives[-1]["targets"] = targets
@@ -1926,13 +2011,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             glb.doc["nodes"][-1]["extras"]["viewerFacialRole"] = "mouth"
         if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
             glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
-        if stage_motion is None:
+        if stage_motion is None and not axis_node:
             glb.doc["scenes"][0]["nodes"].append(node_index)
         else:
             if stage_skin is not None:
                 glb.doc["nodes"][node_index]["skin"] = skin
                 if skin_material is not None:
                     glb.doc["nodes"][node_index]["extras"]["mvStageSkin"] = True
+            if stage_nodes is None:
+                from .mv_studio_stage_nodes import StageNodes
+
+                stage_nodes = StageNodes(scene, glb, ())
             stage_nodes.attach(game_object, node_index)
         if rig is not None and skin is not None:
             rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
@@ -1941,6 +2030,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             from .model_faces import renderer_role
             faces.rendered_roles.add(renderer_role(scene, renderer, game_object, mesh_obj,
                                                    _source_path(renderer) in faces.dynamic_sources))
+    if stage_materials and axis_billboards:
+        mv_studio_axis_billboard.tag(glb, stage_nodes, axis_billboards)
     return materials
 
 

@@ -84,36 +84,6 @@ def world_layer(scene, game_object):
     return type(index) is int and 0 <= index < 32 and bool(_MAIN_CAMERA_MASK & (1 << index))
 
 
-def builtin_plane(scene, game_object):
-    """Recognize the exact external Unity default-resource Mesh Plane pointer."""
-    tree = scene.tree(game_object)
-    for entry in tree.get("m_Component", []):
-        mesh_filter = viewer._ref(game_object, entry.get("component"))
-        if mesh_filter is None or mesh_filter.type.name != "MeshFilter":
-            continue
-        pointer = scene.tree(mesh_filter).get("m_Mesh", {})
-        file_id = pointer.get("m_FileID", 0)
-        externals = mesh_filter.assets_file.externals
-        if pointer.get("m_PathID") == 10209 and 0 < file_id <= len(externals):
-            return externals[file_id - 1].path.replace("\\", "/").lower() == "library/unity default resources"
-    return False
-
-
-def plane_geometry():
-    """Recreate the 10 m XZ plane with Unity's 11x11 UV lattice in glTF coordinates."""
-    import numpy as np
-
-    vertices = np.asarray([(u - 5, 0, 5 - v) for v in range(11) for u in range(11)], dtype=np.float32)
-    normals = np.tile(np.asarray([0, 1, 0], dtype=np.float32), (121, 1))
-    uv = np.asarray([(u / 10, 1 - v / 10) for v in range(11) for u in range(11)], dtype=np.float32)
-    triangles = []
-    for row in range(10):
-        for column in range(10):
-            base = row * 11 + column
-            triangles.extend(((base, base + 12, base + 11), (base, base + 1, base + 12)))
-    return "Plane", vertices, normals, uv, [np.asarray(triangles, dtype=np.int64)]
-
-
 def _is_matcap(material, tree):
     pointer = tree.get("m_Shader", {})
     if pointer.get("m_PathID") != _MATCAP_SHADER[0]:
@@ -203,7 +173,7 @@ def read_material(scene, original, *, world=False):
     return fields
 
 
-def _sort_bounds(tree, mesh, skinned=False, *, builtin_plane=False):
+def _sort_bounds(tree, mesh, skinned=False, *, builtin_mesh=False):
     if tree is None or any(tree.get(field, 0) for field in
                            ("m_RendererPriority", "m_SortingLayerID", "m_SortingLayer", "m_SortingOrder")):
         return None
@@ -217,8 +187,8 @@ def _sort_bounds(tree, mesh, skinned=False, *, builtin_plane=False):
         fields["sortJoint"] = joints.index(root)
         center = tree.get("m_AABB", {}).get("m_Center", {})
         values = [center.get(axis) for axis in "xyz"]
-    elif builtin_plane:
-        # Unity's built-in Plane (10209) is centered on its local origin.
+    elif builtin_mesh:
+        # Unity's built-in Plane (10209) and Quad (10210) are centered on their local origin.
         values = [0., 0., 0.]
     else:
         center = getattr(getattr(mesh, "m_LocalAABB", None), "m_Center", None)
@@ -229,11 +199,11 @@ def _sort_bounds(tree, mesh, skinned=False, *, builtin_plane=False):
     return fields
 
 
-def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False, builtin_plane=False):
+def export_material(materials, fields, *, renderer_tree=None, mesh=None, skinned=False, builtin_mesh=False):
     if fields is None:
         return None
     if fields.get("alphaBlend") or fields.get("depthWrite") and not skinned:
-        bounds = _sort_bounds(renderer_tree, mesh, skinned, builtin_plane=builtin_plane)
+        bounds = _sort_bounds(renderer_tree, mesh, skinned, builtin_mesh=builtin_mesh)
         if bounds is not None:
             fields = {**fields, **bounds}
         elif fields.get("alphaBlend"):

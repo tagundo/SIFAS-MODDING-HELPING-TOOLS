@@ -287,7 +287,10 @@ def _editor_curves(tree, deadline=None):
                 raise AnimationError("An editor animation has too many keys.")
             components = [_editor_scalar(keys, axis, deadline) for axis in axes]
             if keys:
-                tracks.append({"path": item.get("path", ""), "kind": kind, "curves": components})
+                track = {"path": item.get("path", ""), "kind": kind, "curves": components}
+                if kind == "euler":
+                    track["rotationOrder"] = euler_order(item.get("curve", {}).get("m_RotationOrder", DEFAULT_EULER_ORDER))
+                tracks.append(track)
     for item in tree.get("m_FloatCurves", []):
         attribute = str(item.get("attribute", ""))
         visibility = ("renderer" if attribute == "m_Enabled" and int(item.get("classID", 0)) in (23, 25, 137)
@@ -380,8 +383,12 @@ def decode_clip(tree, deadline=None):
                                                      or (typ == 1 and attribute == 2086281974)):
                 kind = "visibility"
             if kind:
-                tracks.append({"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
-                               "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected})
+                track = {"path": int(binding.get("path", 0)), "kind": kind, "attribute": attribute,
+                         "visibilityType": "gameObject" if typ == 1 else "renderer", "curves": selected}
+                if kind == "euler":
+                    # A Transform Euler binding keeps its Unity RotationOrder in customType.
+                    track["rotationOrder"] = euler_order(binding.get("customType", DEFAULT_EULER_ORDER))
+                tracks.append(track)
             else:
                 unsupported += 1
                 key = typ, attribute, int(binding.get("customType", 0))
@@ -489,11 +496,115 @@ def _multiply(a, b):
     return (w*X+x*W+y*Z-z*Y, w*Y-x*Z+y*W+z*X, w*Z+x*Y-y*X+z*W, w*W-x*X-y*Y-z*Z)
 
 
-def _quaternion(values, euler=False):
+# Unity math::RotationOrder, as an animated Euler rotation stores it: the
+# customType of a Transform Euler GenericBinding (attribute 4) and the
+# m_RotationOrder of an editor m_EulerCurves AnimationCurve. Each name lists the
+# axes in the order they are applied, so OrderXYZ is q = qZ * qY * qX. ZXY
+# (q = qY * qX * qZ, the Transform.eulerAngles convention) is Unity's default.
+EULER_ORDERS = {0: "xyz", 1: "xzy", 2: "yzx", 3: "yxz", 4: "zxy", 5: "zyx"}
+DEFAULT_EULER_ORDER = 4
+
+
+def euler_order(value):
+    """Validate a Unity RotationOrder value; reject what the preview cannot reproduce."""
+    if type(value) is bool or type(value) not in (int, float) or value != int(value) or int(value) not in EULER_ORDERS:
+        raise AnimationError("An animated Euler rotation has an unknown rotation order.")
+    return int(value)
+
+
+def _axis_quaternion(axis, half):
+    values = [0., 0., 0., math.cos(half)]
+    values["xyz".index(axis)] = math.sin(half)
+    return tuple(values)
+
+
+def unity_euler_quaternion(values, order=DEFAULT_EULER_ORDER):
+    """Unity Euler degrees -> unnormalized Unity-handed quaternion (x, y, z, w) in `order`."""
+    half = dict(zip("xyz", (math.radians(value) * .5 for value in values)))
+    result = (0., 0., 0., 1.)
+    for axis in EULER_ORDERS[euler_order(order)]:
+        result = _multiply(_axis_quaternion(axis, half[axis]), result)  # A later axis applies on the left.
+    return result
+
+
+# The inverse direction, for writing Euler samples (camera point edits). These live here, not
+# only in live_timeline.sifas_timeline_inject, so the webtools import cannot be shadowed by an
+# older top-level live_timeline package (for example an elichika checkout's pinned modtools).
+def quat_to_unity_euler(q, order=4):
+    """Unity quaternion -> Unity Euler degrees in rotation `order` (default ZXY).
+
+    Applying axes a, b, c in this order gives R = Rc * Rb * Ra; the middle axis b is
+    the asin one. Even permutations (xyz, yzx, zxy) and odd ones differ only in sign.
+    """
+    if order not in EULER_ORDERS:
+        raise ValueError(f"unknown Unity rotation order {order!r}")
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    m = ((1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+         (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+         (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    s = 1.0 if EULER_ORDERS[order] in ("xyz", "yzx", "zxy") else -1.0
+    cb = math.hypot(m[c][b], m[c][c])  # |cos b|: atan2 instead of asin stays exact near +-90 deg.
+    angles = [0.0, 0.0, 0.0]
+    angles[b] = math.atan2(-s * m[c][a], cb)
+    if cb > 1e-9:
+        angles[a] = math.atan2(s * m[c][b], m[c][c])
+        angles[c] = math.atan2(s * m[b][a], m[a][a])
+    else:  # Gimbal lock: keep the first axis at 0 and put the rest on the last axis.
+        angles[c] = math.atan2(-s * m[a][b], m[b][b])
+    return tuple(math.degrees(value) for value in angles)
+
+
+def unity_euler_branches(euler, order=4):
+    """The two Euler solutions of the same rotation: as is, and (a+180, 180-b, c+180)."""
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    other = list(euler)
+    other[a] += 180.0
+    other[b] = 180.0 - other[b]
+    other[c] += 180.0
+    return [list(euler), other]
+
+
+def _euler_qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+
+def unity_euler_near(q, order=4, reference=None):
+    """The Euler angles (degrees) of the same rotation nearest to `reference`.
+
+    A DenseClip interpolates Euler values linearly between samples, so pick the
+    solution nearest the previous sample, unwrapped by whole turns. At the middle-axis
+    +-90 deg gimbal (yaw +-90 for XYZ cameras), pin the first axis to the previous
+    value and solve the last one.
+    """
+    euler = quat_to_unity_euler(q, order)
+    if reference is None:
+        return list(euler)
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    candidates = unity_euler_branches(euler, order)
+    if abs(math.cos(math.radians(euler[b]))) < 1e-6:
+        # q = qc * qb * qa: with the first axis a pinned, qc = q * (qb * qa)^-1.
+        half_a, half_b = math.radians(reference[a]) / 2, math.radians(euler[b]) / 2
+        qa, qb = [0.0, 0.0, 0.0, math.cos(half_a)], [0.0, 0.0, 0.0, math.cos(half_b)]
+        qa[a], qb[b] = math.sin(half_a), math.sin(half_b)
+        x, y, z, w = _euler_qmul(qb, qa)
+        qc = _euler_qmul(q, (-x, -y, -z, w))
+        pinned = list(euler)
+        pinned[a], pinned[c] = reference[a], math.degrees(2 * math.atan2(qc[c], qc[3]))
+        candidates.append(pinned)
+    candidates = [[value + 360.0 * round((previous - value) / 360.0) for value, previous in zip(branch, reference)]
+                  for branch in candidates]
+    return min(candidates, key=lambda branch: sum((value - previous) ** 2 for value, previous in zip(branch, reference)))
+
+
+def _quaternion(values, euler=False, order=DEFAULT_EULER_ORDER):
     if euler:
-        x, y, z = (math.radians(value) * .5 for value in values)
-        values = _multiply(_multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
-                           (0, 0, math.sin(z), math.cos(z)))  # Unity intrinsic Z-X-Y
+        values = unity_euler_quaternion(values, order)
     length = math.sqrt(sum(value * value for value in values))
     if not math.isfinite(length) or length < 1e-12:
         raise AnimationError("An animated rotation is invalid.")
@@ -718,7 +829,8 @@ def append_animations(scene, glb, node_bindings, morph_bindings=None, *, deadlin
                     values.append([_evaluate(curve, stamp) for curve in track["curves"]])
                 kind = track["kind"]
                 if kind in ("rotation", "euler"):
-                    values = [_quaternion(row, kind == "euler") for row in values]
+                    order = track.get("rotationOrder", DEFAULT_EULER_ORDER)
+                    values = [_quaternion(row, kind == "euler", order) for row in values]
                     for previous, current in zip(values, values[1:]):
                         if sum(a*b for a, b in zip(previous, current)) < 0:
                             current[:] = [-value for value in current]

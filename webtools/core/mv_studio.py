@@ -35,6 +35,8 @@ _NATIVE_DIGEST = re.compile(rb"[a-f0-9]{64}\Z")
 _MEDIA_URL = "/api/mv-studio/media/"
 _UNITY_SUFFIXES = {".unity", ".unity3d", ".assets", ".bundle", ".bytes"}
 _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"}
+# LiveCoreMemberManager.MemberMax and LiveConstants.MaxMember: an MV has up to 12 performers.
+_MEMBER_MAX = 12
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
 _ACTOR_PREVIEWS = OrderedDict()
@@ -309,7 +311,7 @@ def _timeline(path):
 
 
 def _motion(timeline, dependencies, facial, directory, position, owner, tracks, deadline):
-    from . import game_motion_selection, game_motion_timeline
+    from . import game_motion_selection
     selected = game_motion_selection.select(timeline, dependencies, performer=position, deadline=deadline)
     facial_selection, facial_entries = game_motion_selection.facial_banks(facial, deadline=deadline)
     selected["selected"].update(facial_selection["selected"])
@@ -329,7 +331,16 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
         matches = native_events.get((segment["track"], segment["start"], segment["duration"]), ())
         if len(matches) == 1:
             segment["nativeTrackId"], segment["nativeEventId"] = matches[0]
-    native_face = game_motion_timeline.parse_timeline(str(timeline), position, segments=segments)
+    descriptor = {"version": 2, "category": "mv", "performerPosition": position, "targetCharacter": owner,
+                  "clipSources": sources, "bodySegments": segments, "facialClips": facial_clips}
+    return [item["path"] for item in files], descriptor
+
+
+def _facial(timeline, descriptor, position, tracks, head):
+    """Add the facial events once the loaded head is known (see member_head)."""
+    from . import game_motion_timeline
+    native_face = game_motion_timeline.parse_timeline(str(timeline), position, segments=descriptor["bodySegments"],
+                                                      face_dots=(head or {}).get("faceDots"))
     facial_events = {}
     for track in tracks:
         if track["kind"] not in {"mouth", "eyes", "gaze", "cheek"} or f"Member{position}" not in track["label"].split("/"):
@@ -341,9 +352,7 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
         matches = facial_events.get((event["kind"], event["start"], event["duration"], event["label"]), ())
         if len(matches) == 1:
             event["nativeEventId"] = matches[0]
-    descriptor = {"version": 2, "category": "mv", "performerPosition": position, "targetCharacter": owner,
-                  "clipSources": sources, "bodySegments": segments, "facialClips": facial_clips, "facial": native_face}
-    return [item["path"] for item in files], descriptor
+    return {**descriptor, "facial": native_face}
 
 
 def _cast_in_timeline_order(performers, tracks):
@@ -416,8 +425,11 @@ def _stage_snapshot(project, assets, performers):
     })
 
 
-def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None):
-    """Import the complete project, optionally publishing its renderable stage first."""
+def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None):
+    """Import the complete project, optionally publishing its renderable stage first.
+
+    `costumes` ({position: suit id}) dresses members in explicit suits instead of the
+    member mapping's, e.g. the suits a recorded game performance wore."""
     from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
 
     if type(download) is not bool:
@@ -428,7 +440,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
     try:
         selected = mv_studio_game.resolve(repo_root, region=region, platform=platform,
-                                          live_id=live_id, asset_id=asset_id, language=language)
+                                          live_id=live_id, asset_id=asset_id, language=language, costumes=costumes)
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
                   "registered": selected.get("registered", False)}
@@ -483,7 +495,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                              "stageSparksA", "stageSparksB", "stageSparksRoop")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
-            original_cast = selected.get("performers", [])[:9]
+            original_cast = selected.get("performers", [])[:_MEMBER_MAX]
             performers = _cast_in_timeline_order(original_cast, project["tracks"])
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
@@ -585,6 +597,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             warnings.append(f"{label} choreography: {error}")
                         try:
                             url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
+                            if motion is not None:
+                                try:
+                                    motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))
+                                except (ValueError, OSError) as error:
+                                    warnings.append(f"{label} facial timeline: {error}")
                             result.update(glb=url, rig=rig, motion=motion)
                             if key is not None:
                                 actor_cache.put(key, url.removeprefix(_MEDIA_URL), rig, motion)
@@ -654,7 +671,7 @@ def _document(value):
     duration = value.get("duration")
     if type(duration) not in (int, float) or not math.isfinite(duration) or not 0 <= duration <= 3600:
         raise ValueError("The MV project has an invalid duration.")
-    counts = {"tracks": 512, "assets": 256, "performers": 9, "warnings": 1024}
+    counts = {"tracks": 512, "assets": 256, "performers": _MEMBER_MAX, "warnings": 1024}
     for field, maximum in counts.items():
         items = value.get(field)
         if not isinstance(items, list) or len(items) > maximum:
@@ -1098,12 +1115,13 @@ def _open_saved(archive, entries):
             "m_FileID": 0, "m_PathID": "1069439206166195116",
         } for event in track["events"]) for track in project["tracks"])
     restore_emissive_tracks = any(mv_studio_timeline.needs_emissive_track_metadata(track) for track in project["tracks"])
+    restore_camera_points = any(mv_studio_timeline.needs_camera_keyframe_check(track) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
                                or restore_confetti or restore_glow or restore_lens or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
-                               or restore_sparks_roop or restore_emissive_tracks):
+                               or restore_sparks_roop or restore_emissive_tracks or restore_camera_points):
         try:
             options = {}
             if restore_particles:
@@ -1149,6 +1167,13 @@ def _open_saved(archive, entries):
         else:
             if restore_emissive_tracks:
                 project["tracks"] = mv_studio_timeline.restore_emissive_track_metadata(project["tracks"], original["tracks"])
+            if restore_camera_points and isinstance(original.get("tracks"), list):
+                # Unedited camera points saved before camera Euler rotation orders preview as the game does.
+                try:
+                    project["tracks"] = mv_studio_timeline.restore_legacy_camera_keyframes(
+                        source, project["name"], project["tracks"], original["tracks"])
+                except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
+                    pass
             for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageDisplayLights"):
                 if field in original:
                     project[field] = original[field]
@@ -1261,7 +1286,7 @@ def _mod_files(project, files):
         if "soundtrack" in result:
             project["soundtrack"] = result["soundtrack"]
             project["duration"] = max(project["duration"], project["soundtrack"].get("duration", 0))
-        if "performer" in result and len(project["performers"]) < 9:
+        if "performer" in result and len(project["performers"]) < _MEMBER_MAX:
             project["performers"].append(result["performer"])
     if native is None and not project["stage"] and not project["performers"] and not project["soundtrack"]:
         raise ValueError("No supported live timeline, stage model, character or soundtrack was found in this mod.")

@@ -198,6 +198,8 @@ def _read_clip(reader, deadline, *, overlay=False, world=False, resident_laser=F
             return None
         cost += channel_cost
         channel = {"path": path, "kind": kind, "curves": curves}
+        if kind == "euler":
+            channel["rotationOrder"] = track.get("rotationOrder", animation.DEFAULT_EULER_ORDER)
         if kind == "visibility":
             channel["visibilityType"] = "gameObject"
         if kind == "overlayScalar":
