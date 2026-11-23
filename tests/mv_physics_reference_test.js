@@ -15,9 +15,14 @@ const base = {
   source: { region: 'gl', platform: 'android', liveId: 12035, assetId: 1203503 }, quality: { mode: 30 }, frames: [14.85],
 };
 function manifest(extra) {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mv-physics-')), 'manifest.json');
-  fs.writeFileSync(file, JSON.stringify({ ...base, ...extra }));
-  return capture.readManifest(file);
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-physics-'));
+  try {
+    const file = path.join(folder, 'manifest.json');
+    fs.writeFileSync(file, JSON.stringify({ ...base, ...extra }));
+    return capture.readManifest(file);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 }
 const q30 = { frame_rate_60fps: false }, q10 = { frame_rate_60fps: true };
 
