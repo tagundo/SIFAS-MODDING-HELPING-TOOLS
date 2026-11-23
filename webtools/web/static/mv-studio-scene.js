@@ -1797,6 +1797,18 @@
         return best ? best[1] : null;
       }
 
+      // A renderer the editor builds at runtime for a game GameObject: its path below the record root
+      // (the first segment stands for the record root), from the node's own path or its name below a rig bone.
+      function runtimeObjectPath(owner, record) {
+        const data = owner.userData || {};
+        if (typeof data.mvGameObjectPath === "string") return { path: `${D.nodeName(record.root) || "root"}/${data.mvGameObjectPath}`, pathSource: "runtime" };
+        if (typeof data.mvGameObjectName !== "string" || record.group !== actors) return null;
+        for (const [path, node] of boneIndex(record)) {
+          if (node === owner.parent) return { path: `${D.nodeName(record.root) || "root"}/${path}/${data.mvGameObjectName}`, pathSource: "runtime" };
+        }
+        return null;
+      }
+
       function rendererEntries() {
         if (cache.renderers) return cache.renderers;
         const entries = [], counts = new Map();
@@ -1805,7 +1817,7 @@
           for (const [owner, meshes] of D.renderersOf(record.root)) {
             const mesh = D.nodeName(owner), count = (counts.get(scope + "\n" + mesh) || 0) + 1;
             counts.set(scope + "\n" + mesh, count);
-            const { path, pathSource } = D.gameObjectPath(owner, record.root);
+            const { path, pathSource } = runtimeObjectPath(owner, record) || D.gameObjectPath(owner, record.root);
             entries.push({ key: D.keyFor("renderer", { scope, mesh, index: count }), scope, mesh, path, pathSource, owner, meshes, record });
           }
         }
@@ -1816,6 +1828,31 @@
       // GameObject path (the editor path below its prefab root is a suffix of
       // the game path) or by mesh name in the same scope. This is a superset;
       // the comparator makes the actual join.
+      // AxisBillboard turns its nodes in renderScene(); a deferred seek never draws, so
+      // the transforms hold the rest (or last drawn) rotation. Report what the live
+      // camera's draw gives, computed read-only from the rest rotation.
+      function billboardOf(entry) {
+        if (!cache.billboards) {
+          cache.billboards = new Map();
+          const world = viewOf(liveCamera).world, eye = new T.Vector3(world[12], world[13], world[14]);
+          for (const record of records) {
+            for (const [node, rotation] of record.axisBillboard?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+            for (const [node, rotation] of record.shaft?.preview?.(eye) || []) cache.billboards.set(node, rotation);
+          }
+        }
+        let node = entry.owner;
+        while (node && !cache.billboards.has(node)) node = node.parent;
+        return node || null;
+      }
+
+      function rendererWorld(entry) {
+        const node = billboardOf(entry);
+        if (!node) return entry.owner.matrixWorld;
+        const turned = new T.Matrix4().multiplyMatrices(node.parent.matrixWorld,
+          new T.Matrix4().compose(node.position, cache.billboards.get(node), node.scale));
+        return node === entry.owner ? turned : turned.multiply(new T.Matrix4().copy(node.matrixWorld).invert().multiply(entry.owner.matrixWorld));
+      }
+
       function rendererWanted(item, entry) {
         if (item.key === entry.key) return true;
         if (item.scope !== entry.scope) return false;
@@ -1901,6 +1938,8 @@
             if (u.uSelfTime) take("_SelfTime", u.uSelfTime.value, "uSelfTime" + where + " (per material)", { perMaterial: true });
           }
         });
+        const buffer = renderer.getDrawingBufferSize(new T.Vector2());
+        take("_RenderTextureResolution", 0, "renderer.getDrawingBufferSize", { v: [buffer.x, buffer.y, 0, 0] });
         return Object.fromEntries(names.map((name) => [`global:${name}`, found[name] || null]));
       });
       read("renderSettings", "renderSettings", () => ({ modeled: false }));
@@ -1926,10 +1965,21 @@
         visible: entry.meshes.some((mesh) => nodeVisible(mesh, entry.record)),
         culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
         materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
-        transform: D.decompose(entry.owner.matrixWorld, temp),
+        transform: D.decompose(rendererWorld(entry), temp), axisBillboard: billboardOf(entry) !== null,
         materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
-          editorName: material?.name ?? null, kind: D.materialProperties(material).kind })),
+          editorName: material?.name ?? null, kind: D.materialProperties(material).kind, visible: material?.visible !== false })),
       })));
+      // Uniforms an AnimationTrack curve drives (MVStudioStageMotion material channels): the game applies those
+      // through a MaterialPropertyBlock, which its dump does not read, so the comparator never scores them.
+      function curveDriven(material) {
+        if (!cache.curveTargets) {
+          cache.curveTargets = new Set();
+          for (const record of records) for (const value of record.stageMotion?.curveTargets?.() || []) cache.curveTargets.add(value);
+        }
+        return Object.entries(material?.uniforms || {}).filter(([, holder]) =>
+          cache.curveTargets.has(holder) || (holder?.value !== null && typeof holder?.value === "object" && cache.curveTargets.has(holder.value)))
+          .map(([name]) => name).sort();
+      }
       read("materials", "materials", () => {
         const materials = [];
         for (const entry of selectedRenderers()) {
@@ -1937,7 +1987,8 @@
             if (materials.length >= maxMaterials) { truncated.push("materials"); return materials; }
             const properties = D.materialProperties(material);
             materials.push({ key: D.keyFor("material", { renderer: entry.key, slot }), renderer: entry.key, slot,
-              name: D.materialName(material), editorName: material?.name ?? null, ...properties });
+              name: D.materialName(material), editorName: material?.name ?? null, visible: material?.visible !== false,
+              curveDriven: curveDriven(material), ...properties });
           }
         }
         return materials;

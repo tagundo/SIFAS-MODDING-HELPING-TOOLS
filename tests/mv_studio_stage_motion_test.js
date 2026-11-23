@@ -136,6 +136,8 @@ project.stageMotion = {
 };
 controller.update(1, project);
 assert(controller.accepts(fogEvent));
+// The curve-bound material values (MaterialPropertyBlocks in the game) for the runtime value dump.
+assert.deepEqual(new Set(controller.curveTargets()), new Set([fogColor, density, movement, floorTint]));
 assert.deepEqual(fogColor.toArray(), [.5, .5, .5, .75]);
 assert.deepEqual(floorTint.toArray(), [.5, .5, .5, .5]);
 assert.equal(density.value, 3);
@@ -156,6 +158,7 @@ hasFloor = false;
 project.stageMotion = { ...project.stageMotion };
 controller.update(3, project);
 assert(!controller.accepts(fogEvent));
+assert.equal(controller.curveTargets().size, 0, "a rejected clip binds no material value");
 assert.deepEqual(fogColor.toArray(), [1, 1, 1, .5]);
 assert.deepEqual(pivot.position.toArray(), [0, 1, 0], "missing material holder rejects the entire native clip");
 assert.equal(density.value, 2);

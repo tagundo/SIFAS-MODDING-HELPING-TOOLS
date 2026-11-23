@@ -70,6 +70,8 @@
     material.name = "Native member spotlight shaft";
     const mesh = new T.Mesh(template.geometry, material);
     mesh.name = "Native member spotlight shaft";
+    // The renderer's GameObject below the performer (fx_spo_sha_0N/root/spotlight_0N) for the runtime value dump.
+    mesh.userData.mvGameObjectPath = template.nodes.map(source => source.name).join("/");
     mesh.renderOrder = template.material.queue;
     mesh.visible = false;
     // The mesh is the AxisBillboard rotation target. Its parent preserves the
@@ -217,6 +219,19 @@
 
     return {
       frame,
+      // Read-only: the local rotation billboard() would give the shown shaft for an eye position (no
+      // node, matrix or camera is written); empty when no shaft is shown.
+      preview(eye) {
+        const result = new Map();
+        if (!selected?.mesh.visible || !eye) return result;
+        const mesh = selected.mesh, turned = new T.Quaternion(), parent = new T.Quaternion(), direction = new T.Vector3();
+        const upAxis = new T.Vector3(0, 1, 0).applyQuaternion(axis.worldRotation(mesh, new T.Quaternion())).normalize();
+        direction.copy(eye).sub(new T.Vector3().setFromMatrixPosition(mesh.matrixWorld));
+        if (axis.axisRotation(upAxis, direction, turned, axis.scratch(T))) {
+          result.set(mesh, axis.worldRotation(mesh.parent, parent).invert().multiply(turned));
+        }
+        return result;
+      },
       billboard(camera) {
         if (!selected?.mesh.visible || !camera) return;
         const mesh = selected.mesh;
