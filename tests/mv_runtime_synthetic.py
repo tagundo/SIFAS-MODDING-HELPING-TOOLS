@@ -152,8 +152,9 @@ def _mirror_frame(record, editor, hypothesis, screen, duration):
                             for corrector in editor.get("correctors") or []]
     result["cameraWork"] = [{"key": work["key"], "path": "/EntryPoint/Live/Cameras/MainCamera", "class": "LLAS.Scene.Live.Components.LiveCoreCameraWork",
                              "fields": {"fieldOfView": {"t": "f32", "v": work["authoredFov"]}}} for work in editor.get("cameraWork") or []]
-    result["globals"] = {key: {"f": value["f"], "v": [value["f"], 0, 0, 0]} for key, value in (editor.get("globals") or {}).items()
-                         if isinstance(value, dict)}
+    # Shader.SetGlobalVector globals (e.g. _RenderTextureResolution) keep their vector; float globals read .x.
+    result["globals"] = {key: {"f": value["f"], "v": list(value["v"]) if isinstance(value.get("v"), list) else [value["f"], 0, 0, 0]}
+                         for key, value in (editor.get("globals") or {}).items() if isinstance(value, dict)}
     result["renderSettings"] = {"fog": False, "ambientIntensity": 1}
     result["lights"] = []
     result["members"] = [{"slot": member.get("slot"), "formationPosition": member.get("slot"), "memberId": member.get("memberId"),
