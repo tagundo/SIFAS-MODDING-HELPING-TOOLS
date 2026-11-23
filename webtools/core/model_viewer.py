@@ -1331,12 +1331,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
-        from . import mv_studio_axis_billboard, mv_studio_soft_billboards, unity_builtin_meshes
+        from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
-        axis_billboards = set()
+        axis_billboards, stage_props = set(), []
     shadow_stages = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
@@ -1405,6 +1405,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 identity, entry = flash
                 stage_flashes[identity] = None if identity in stage_flashes else entry
             axis_billboards.update(mv_studio_axis_billboard.owners(scene, obj, tree))
+            stage_props.extend(mv_studio_stage_props.props(scene, obj, tree))
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
@@ -1569,6 +1570,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     coloring_for_renderer[identity] = coloring
                     if stage_inputs is None:
                         stage_inputs = {}
+        # LivePropBasic swaps its own material instances into the renderers below it.
+        prop_light = mv_studio_stage_props.renderer_entry(scene, game_object, stage_props) if stage_materials else None
+        if prop_light is not None and stage_inputs is None:
+            stage_inputs = {}
         bones, skin_warnings, stage_skin = None, [], None
         transparent_skin_material = None
         try:
@@ -1919,6 +1924,21 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         coloring_uv = glb.attribute(stage_inputs["lightUV"], "VEC2")
                     primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR_INDEX": coloring_uv}
                     primitives[-1]["extras"]["mvStageColoring"] = descriptor
+            prop = (mv_studio_stage_props.light(prop_light, scene.name(material_obj))
+                    if prop_light is not None and material_obj is not None else None)
+            if prop is not None:
+                primitives[-1]["extras"]["mvPropLight"] = prop
+                rimlight = mv_studio_stage_props.rimlight_material(scene, material_obj) if uv is not None else None
+                try:
+                    rimlight = mv_studio_stage_props.export_rimlight(materials, rimlight) if rimlight else None
+                except ValueError:
+                    rimlight = None
+                if rimlight is not None:
+                    if "color" in stage_inputs:
+                        if stage_color is None:
+                            stage_color = glb.attribute(stage_inputs["color"], "VEC4")
+                        primitives[-1]["attributes"] = {**primitives[-1]["attributes"], "_STAGE_COLOR": stage_color}
+                    primitives[-1]["extras"]["mvStageRimlight"] = rimlight
             first_face += len(triangles)
             if targets:
                 primitives[-1]["targets"] = targets

@@ -599,6 +599,7 @@
       record.penlight?.dispose();
       record.stageFlash?.dispose();
       record.stageMaterial?.dispose();
+      record.stagePropLight?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
@@ -876,6 +877,8 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stagePropLight = await global.MVStudioPropLight?.apply?.(T, record.root, gltf.parser, { active });
+          if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
@@ -1051,6 +1054,8 @@
           record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
+          record.stagePropLight?.setProject(preview);
+          record.stagePropLight?.update(0);
           record.stageColoring?.update(0, preview);
           record.stageDisplay?.update(0, preview);
           pending.records.push(record);
@@ -1505,6 +1510,7 @@
         record.materials?.setRimlight?.(settings.member_rim_light !== false);
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
+        record.stagePropLight?.setProject(project);
       }
     }
 
@@ -1587,7 +1593,10 @@
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
-      for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
+      for (const record of records) {
+        record.stageMaterial?.update(currentTime, project, lighting);
+        record.stagePropLight?.update(currentTime);
+      }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
       for (const record of records) {
