@@ -14,16 +14,10 @@ _SHADERS = {
 
 
 def _shader_matches(material, tree, name):
-    pointer = tree.get("m_Shader", {})
-    shader = viewer._ref(material, pointer)
-    if shader is not None:
-        return shader.type.name == "Shader" and shader.read_typetree().get("m_ParsedForm", {}).get("m_Name") == name
-    path_id, serialized_file = _SHADERS[name]
-    file_id = pointer.get("m_FileID", 0)
-    references = material.assets_file.externals
-    if pointer.get("m_PathID") != path_id or not 0 < file_id <= len(references):
-        return False
-    return references[file_id - 1].path.replace("\\", "/").rsplit("/", 1)[-1].lower() == serialized_file
+    # Shader identity is the ShaderLab name (an embedded copy counts as the shader).
+    from .mv_studio_shader_identity import matches
+
+    return matches(material, tree, name)
 
 
 def binding(scene, component, tree):

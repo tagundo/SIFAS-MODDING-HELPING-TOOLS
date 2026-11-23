@@ -514,13 +514,23 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertEqual(sorted(hidden), sorted(
             f"fx_par_so2036_0{prefab}/root/joint_all/Joint_root_0{joint}/{side}/core"
             for prefab, joints in ((6, (1, 2)), (7, (1, 3))) for joint in joints for side in "LR"))
-        # Clouds and dragons that the Animator moves or blinks are reported, not drawn statically.
+        # Clouds the Animator blinks are reported, not drawn statically.
         self.assertNotIn("fx_dis_par_so2036_06", drawn)
         self.assertEqual(len(reasons["animated by the prefab Animator (activation)"]), 4)
-        self.assertEqual(sorted(reasons["animated by the prefab Animator (Transform)"]),
-                         [f"fx_dis_par_so2036_05/root/{name}" for name in ("kumo_01", "kumo_02", "kumo_03", "kumo_04",
-                                                                           "ryuu_01")])
-        self.assertNotIn("fx_dis_par_so2036_05", drawn)
+        self.assertNotIn("animated by the prefab Animator (Transform)", reasons)
+        # The dragon's Animator moves its local-space emitter: it is drawn with that curve.
+        # The clouds it also moves sit on scaled nodes, which stay reported.
+        self.assertEqual(drawn["fx_dis_par_so2036_05"], ["ryuu_01"])
+        self.assertEqual(sorted(path for path in reasons["non-unit transform scale (Local scaling mode)"]
+                                if "so2036_05" in path),
+                         [f"fx_dis_par_so2036_05/root/kumo_0{index}" for index in range(1, 5)])
+        dragon = next(template for template in source["templates"] if template["name"] == "fx_dis_par_so2036_05")
+        self.assertEqual(dragon["animation"]["clips"],
+                         [{"name": "clip_dis_so2036_02", "start": 0.0, "duration": 4.0, "loop": True}])
+        moved, = dragon["animation"]["channels"]
+        self.assertEqual((dragon["nodes"][moved["node"]]["path"].rsplit("/", 1)[1], moved["kind"], moved["clip"]),
+                         ("ryuu_01", "translation", 0))
+        self.assertEqual([curve[0] for curve in moved["curves"]], ["cubic"] * 3)
 
 
 if __name__ == "__main__":

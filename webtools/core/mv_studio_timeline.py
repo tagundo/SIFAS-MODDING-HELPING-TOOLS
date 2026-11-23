@@ -357,7 +357,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_stage_display_lights=False, preview_stage_falling_effects=False,
                    preview_stage_break=False, preview_stage_finale_floor=False,
                    preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False,
-                   preview_particle_systems=False) -> dict:
+                   preview_particle_systems=False, preview_control_prefabs=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -596,16 +596,32 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         sparks_roop = mv_studio_sparks_roop.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_roop:
             result["stageSparksRoop"] = sparks_roop
+    outcomes = {} if preview_particle_systems else None
+    if preview_control_prefabs:
+        from . import mv_studio_control_prefabs as control_prefabs
+
+        legacy = control_prefabs.claims(result)
     if preview_particle_systems:
         from . import mv_studio_particle_systems as particle_systems
 
         # After the per-prefab readers, so a cue one of them draws is not drawn twice.
-        systems = particle_systems.read(objects, mono, tracks, deadline, claimed=particle_systems.claimed_cues(result))
-        note = particle_systems.warning(systems)
+        systems = particle_systems.read(objects, mono, tracks, deadline, claimed=particle_systems.claimed_cues(result),
+                                        outcomes=outcomes)
+        note = particle_systems.warning(systems, meshes_elsewhere=preview_control_prefabs)
         if note:
             result["warnings"].append(note)
         if systems and systems["cues"]:
             result["stageParticleSystems"] = systems
+    if preview_control_prefabs:
+        # The meshes of the same clones, and one coverage row for every CustomControlClip.
+        prefabs, ledger = control_prefabs.read(objects, mono, tracks, deadline, claimed=legacy, outcomes=outcomes)
+        note = control_prefabs.warning(ledger)
+        if note:
+            result["warnings"].append(note)
+        if prefabs:
+            result["stageControlPrefabs"] = prefabs
+        if ledger:
+            result["controlCoverage"] = ledger
     return result
 
 
