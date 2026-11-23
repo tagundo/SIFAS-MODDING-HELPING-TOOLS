@@ -274,6 +274,10 @@
     if (!T || !root || !renderer) throw new Error("The shader renderer is unavailable.");
     var enabled = options.enabled !== false;
     var memberProp = options.memberProp === true;
+    // A live MV performer: CommonCoreMember.Initialize runs
+    // LiveCoreMemberRimlight.Initialize then ApplyIntensity(0), so the rim
+    // starts at intensity 0 (outline stencil Always) and the timeline decides.
+    var liveMember = options.liveMember === true && !memberProp;
     var rimlightEnabled = memberProp || options.rimlight !== false;
     var mouthCentroidDepth = options.mouthCentroidDepth === true &&
       !!(renderer.capabilities && renderer.capabilities.isWebGL2);
@@ -366,6 +370,25 @@
       });
     });
 
+    function stencilFunction(comparison) {
+      return [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,
+        T.EqualStencilFunc, T.LessEqualStencilFunc, T.GreaterStencilFunc,
+        T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][comparison] || T.AlwaysStencilFunc;
+    }
+
+    function setOutlineStencil(pair, comparison) {
+      if (pair.outlineStencilComp === comparison) return;
+      pair.outlineStencilComp = comparison;
+      pair.outline.stencilFunc = stencilFunction(comparison);
+      pair.main.userData.sifasRuntime.outlineStencilComp = comparison;
+    }
+
+    function cheekLayer(pair, index) {
+      var layer = Math.floor(finite(index, 0) + .5);
+      if (pair.cheekDepth > 0) layer = Math.min(pair.cheekDepth - 1, Math.max(0, layer));
+      return pair.cheekLayers[layer] || null;
+    }
+
     function constantTexture(value) {
       var key = "constant:" + value.join(",");
       if (textureCache.has(key)) return textureCache.get(key);
@@ -424,6 +447,10 @@
         if (propSize && originals.some((item, level) => item.image?.width !== (propSize >> level) ||
             item.image?.height !== (propSize >> level))) throw new Error("Invalid prop mip dimensions");
         var texture = original.clone();
+        // The Unity asset this texture holds (an array slice keeps its array's
+        // name and layer), reported by the MV asset dump.
+        if (typeof info.name === "string" && info.name) texture.name = info.name;
+        if (Number.isInteger(info.arrayLayer)) (texture.userData || (texture.userData = {})).sifasArrayLayer = info.arrayLayer;
         // Pixel bytes and wrapping are shared unchanged. Only the sampling
         // color-space flag differs: the source APK calculates in Gamma space.
         texture.encoding = T.LinearEncoding;
@@ -504,9 +531,16 @@
         _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekTexArrayIndex: 0, _CheekIntensity: 0 };
       Object.keys(defaults).forEach(function (name) { uniforms["u" + name.slice(1)] = { value: finite(floats[name], defaults[name]) }; });
       if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
+      if (liveMember) uniforms.uRimglightIntensity.value = 0;
       var defines = {};
+      // A cheek array present without the authored _CHEEK_ON keyword is only
+      // available to the runtime cheek (setCheek); the static variant follows
+      // the material's own keyword.
+      var cheekKeyword = !Array.isArray(data.keywords) || data.keywords.indexOf("_CHEEK_ON") >= 0;
       if (!memberProp) ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
-        if (features[name] && (name !== "rimlight" || rimlightEnabled)) defines["SIFAS_" + name.toUpperCase()] = 1;
+        if (features[name] && (name !== "rimlight" || rimlightEnabled) && (name !== "cheek" || cheekKeyword)) {
+          defines["SIFAS_" + name.toUpperCase()] = 1;
+        }
       });
       var parameters = { vertexShader: memberProp ? PROP_VERTEX : mouthDepth ? MOUTH_VERTEX : VERTEX,
         fragmentShader: memberProp ? PROP_FRAGMENT : mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
@@ -521,14 +555,16 @@
       main.userData.sifas = data;
       if (!memberProp && options.nativeMemberDepth) main.userData.mvStageMemberDepthRim = { value: 0 };
       main.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
+      // _OutlineStencilComp (UnityEngine.Rendering.CompareFunction): the
+      // OUTLINE pass is Stencil Ref 1 Comp [_OutlineStencilComp] Pass Keep.
+      var outlineStencilComp = liveMember ? 8 : Math.floor(finite(floats._OutlineStencilComp, 8));
+      main.userData.sifasRuntime = { outlineStencilComp: outlineStencilComp };
       var outlineParameters = Object.assign({}, parameters, {
         vertexShader: memberProp ? PROP_OUTLINE_VERTEX : mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
         fragmentShader: memberProp ? PROP_OUTLINE_FRAGMENT : mouthDepth ? MOUTH_OUTLINE_FRAGMENT : OUTLINE_FRAGMENT,
         uniforms: uniforms, side: T.BackSide, defines: {},
         stencilZPass: T.KeepStencilOp,
-        stencilFunc: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,
-          T.EqualStencilFunc, T.LessEqualStencilFunc, T.GreaterStencilFunc,
-          T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][Math.floor(finite(floats._OutlineStencilComp, 8))] || T.AlwaysStencilFunc
+        stencilFunc: stencilFunction(outlineStencilComp)
       });
       var outline = new T.ShaderMaterial(outlineParameters);
       outline.name = original.name + " (" + data.shader + " outline)";
@@ -537,7 +573,7 @@
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
-        sourceName: original.name, cheek: null, cheekLayer: null,
+        sourceName: original.name, cheek: null, cheekLayers: [], cheekDepth: 0, outlineStencilComp: outlineStencilComp,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
@@ -552,11 +588,24 @@
         if (features.rimlight) names.push("_RimlightTex");
         if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
         if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
-        if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
-        // Only a loaded, exported array slice can show a blush; the white placeholder never tints.
+        if (features.cheek) names.push("_CheekTex");
+        // Every exported slice of the cheek array, by array layer, for
+        // MemberCheekBase.ApplyCheek's _CheekTexArrayIndex. Only a loaded,
+        // exported slice can show a blush; the white placeholder never tints.
         var cheekSlot = textures._CheekTex;
-        if (names.indexOf("_CheekTex") >= 0 && cheekSlot && Number.isInteger(cheekSlot.index) &&
-            Number.isInteger(cheekSlot.arrayLayer)) pair.cheekLayer = cheekSlot.arrayLayer;
+        if (features.cheek && cheekSlot && !cheekSlot.default) {
+          var layers = Array.isArray(cheekSlot.layers) ? cheekSlot.layers : [cheekSlot];
+          // sampler2DArray clamps the rounded layer into the array; only a
+          // complete export (every slice, in order) can be clamped here.
+          if (Array.isArray(cheekSlot.layers) && cheekSlot.depth === layers.length &&
+              layers.every(function (layer, slice) { return layer && layer.arrayLayer === slice; })) pair.cheekDepth = layers.length;
+          layers.forEach(function (layer) {
+            if (!layer || !Number.isInteger(layer.index) || !Number.isInteger(layer.arrayLayer) || layer.arrayLayer < 0) return;
+            pending.push(loadTexture(layer, [1, 1, 1, 1]).then(function (texture) {
+              if (!disposed && texture && texture !== constantTexture([1, 1, 1, 1])) pair.cheekLayers[layer.arrayLayer] = texture;
+            }));
+          });
+        }
       }
       names.forEach(function (name) {
         var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
@@ -742,6 +791,11 @@
           // BaseLight and Member Rim Light write their current values.
           var depthRim = pair.main.userData.mvStageMemberDepthRim;
           if (depthRim) depthRim.value = finite(rim?.intensity, 0);
+          // LiveCoreMemberRimlight.ApplyIntensity -> ApplyEnable(final > 0); on
+          // the current (non-legacy) shader that only sets _OutlineStencilComp:
+          // 3 (Equal, the outline is kept over stencil-1 member pixels) while
+          // the rim is lit, 8 (Always) otherwise.
+          if (liveMember) setOutlineStencil(pair, uniforms.uRimglightIntensity.value > 0 ? 3 : 8);
         });
       },
       // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll
@@ -768,8 +822,15 @@
             uniforms.uCheekIntensity.value = intensity;
           }
           var enabled = !!state && state.enabled !== false;
-          var shown = enabled && pair.cheekLayer !== null && pair.cheekLayer === uniforms.uCheekTexArrayIndex.value;
-          if (enabled && pair.cheekLayer !== null && !shown) limitations.add("A selected cheek array slice is unavailable in this preview.");
+          // tex2DArray(_CheekTex, (uv, _CheekTexArrayIndex)): bind the slice
+          // the index selects; an unexported slice is never substituted.
+          var layer = enabled ? cheekLayer(pair, uniforms.uCheekTexArrayIndex.value) : null;
+          var shown = !!layer;
+          if (layer && uniforms.uCheekTex.value !== layer) { uniforms.uCheekTex.value = layer; changed = true; }
+          if (enabled && !layer) {
+            limitations.add(pair.cheekLayers.length ? "A selected cheek array slice is unavailable in this preview."
+              : "This head carries no cheek array; the game binds its shared Live/Characters/facialAssets/cheek_array.");
+          }
           pair.cheek.enabled = enabled;
           if (!!pair.main.defines.SIFAS_CHEEK !== shown) {
             if (shown) pair.main.defines.SIFAS_CHEEK = 1;

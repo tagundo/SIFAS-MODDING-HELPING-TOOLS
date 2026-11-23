@@ -948,7 +948,7 @@
             record.shaftAnchor = nodes.get(shaftAnchor);
           }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
-            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
+            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw, liveMember: true,
             mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, nativeMemberDepth: true, releaseParserAfterLoad: true
           });
           if (record.materials && record.materials.ready) await record.materials.ready;

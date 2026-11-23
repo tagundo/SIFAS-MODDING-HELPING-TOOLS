@@ -84,14 +84,35 @@
     return texture.userData?.placeholder === true || (texture.isDataTexture === true && image?.width === 1 && image?.height === 1);
   }
 
+  // Name (the Unity asset name the importer exported, e.g. "ch0212_co0002_head_rim";
+  // an array slice keeps its array's name and reports arrayLayer), size and
+  // mip level count (authored levels uploaded with the texture, else 1).
   function textureIdentity(texture) {
     if (!texture || !texture.isTexture) return null;
     const image = Array.isArray(texture.image) ? texture.image[0] : texture.image;
     const identity = texture.userData?.viewerTexture;
     const result = { name: texture.name || (typeof identity?.id === "string" ? identity.id : null),
-      width: Number.isFinite(image?.width) ? image.width : null, height: Number.isFinite(image?.height) ? image.height : null };
+      width: Number.isFinite(image?.width) ? image.width : null, height: Number.isFinite(image?.height) ? image.height : null,
+      mips: Array.isArray(texture.mipmaps) && texture.mipmaps.length ? texture.mipmaps.length : 1 };
+    if (Number.isInteger(texture.userData?.sifasArrayLayer)) result.arrayLayer = texture.userData.sifasArrayLayer;
     if (placeholderTexture(texture, image)) result.placeholder = true;
     return result;
+  }
+
+  // The compiled Hidden/AS/Member/Main variant keywords the editor reproduces
+  // with SifasMaterial defines. Every variant evaluates the rim (no keyword).
+  const MEMBER_VARIANTS = { SIFAS_CHEEK: "_CHEEK_ON", SIFAS_MATCAP: "_MATCAP_ON", SIFAS_EMISSIVE: "_EMISSIVE_ON" };
+
+  // Effective Unity keywords of an AS/Member material: the authored keywords
+  // with each variant keyword replaced by the state the editor draws, as
+  // Material.shaderKeywords reads in the game (the runtime only toggles
+  // _CHEEK_ON there; the legacy _RIMLIGHT_ON is left as authored).
+  function memberKeywords(material) {
+    const authored = Array.isArray(material.userData?.sifas?.keywords) ? material.userData.sifas.keywords : [];
+    const variants = new Set(Object.values(MEMBER_VARIANTS));
+    const result = authored.filter((keyword) => typeof keyword === "string" && !variants.has(keyword));
+    for (const [define, keyword] of Object.entries(MEMBER_VARIANTS)) if (material.defines?.[define]) result.push(keyword);
+    return result.sort();
   }
 
   function uniformValue(value) {
@@ -141,7 +162,11 @@
       const color = read.t === "vector" && /Color|Col$/.test(name);
       properties[name] = { t: color ? "color" : read.t, v: read.v, from: uniform };
     }
-    return { kind: "member", properties, unmapped: unmapped.sort(), editorOnly: editorOnly.sort(), globals };
+    // The OUTLINE pass stencil comparison (LiveCoreMemberRimlight.ApplyEnable).
+    const stencil = material.userData?.sifasRuntime?.outlineStencilComp;
+    if (Number.isInteger(stencil)) properties._OutlineStencilComp = { t: "float", v: stencil, from: "outline stencilFunc" };
+    return { kind: "member", properties, unmapped: unmapped.sort(), editorOnly: editorOnly.sort(), globals,
+      keywords: memberKeywords(material), rimlightEvaluated: !!material.defines?.SIFAS_RIMLIGHT };
   }
 
   function stageUniforms(material) {
@@ -277,7 +302,7 @@
   }
 
   global.MVStudioAssetDump = { SCHEMA, CONVENTIONS, STAGE_TABLE, COLORING_TABLE, EDITOR_ONLY: Array.from(EDITOR_ONLY),
-    temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, uniformValue,
+    temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, memberKeywords, uniformValue,
     memberUniforms, stageUniforms, coloringUniforms, materialProperties, rendererScope, renderersOf, gameObjectPath, keyFor, round,
     finalize, finiteArray, aspectCorrection };
 })(typeof window !== "undefined" ? window : globalThis);
