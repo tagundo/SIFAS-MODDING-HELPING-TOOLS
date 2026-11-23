@@ -355,6 +355,7 @@
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null, defaultMemberShadows = false;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
+    let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
     let lastShaftFrame = null, resetShafts = true;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
@@ -1359,6 +1360,7 @@
     function useCameraEvent(event, time, track) {
       if (!poseCamera(event, time, track)) return;
       hasShot = true;
+      liveCameraEvent = { track: track.id ?? null, event: event.id ?? null, start: event.start, duration: event.duration };
       mainCameraPosition.copy(liveCamera.position);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
@@ -1544,6 +1546,7 @@
         }
       }
       hasShot = false;
+      liveCameraEvent = null;
       frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
       post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
@@ -1657,6 +1660,25 @@
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       frameAll,
+      // Read-only state of the last evaluated frame for frame comparisons.
+      inspect() {
+        const live = useLive && hasShot, camera = live ? liveCamera : editorCamera;
+        camera.updateMatrixWorld();
+        const { width, height } = renderer.domElement;
+        return {
+          time: currentTime, cameraMode: useLive ? "live" : "orbit", liveShot: live,
+          cameraEvent: live && liveCameraEvent ? { ...liveCameraEvent } : null,
+          splitCameras: activeSplitGazeCameras ? Object.keys(activeSplitGazeCameras).length : 0,
+          camera: {
+            position: camera.getWorldPosition(new T.Vector3()).toArray(),
+            quaternion: camera.getWorldQuaternion(new T.Quaternion()).toArray(),
+            fov: camera.fov, aspect: camera.aspect, near: camera.near, far: camera.far,
+            projection: Array.from(camera.projectionMatrix.elements),
+          },
+          canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
+          renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+        };
+      },
       setVisible(value) {
         const changed = visible !== Boolean(value);
         visible = Boolean(value);

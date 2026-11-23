@@ -1,0 +1,291 @@
+/* Render editor frames for a game-vs-editor comparison through the real MV import path.
+
+   node tests/mv_frame_capture.js --manifest frames.json --out DIR [--url http://127.0.0.1:PORT]
+     [--server-root ../] [--library SUKUSTA_DIR] [--video game.mp4] [--chromium PATH] [--software true]
+
+   The manifest names the original MV (region, platform, liveId, assetId), the game
+   quality mode and the timeline times to render. Each frame is produced with the
+   game camera after a fixed-step preroll so physics has a defined history, and is
+   saved as a PNG with the scene state that drew it. Nothing here reads game files
+   directly: the editor's own catalog and game-stream import load the assets.
+*/
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn, execFileSync } = require('node:child_process');
+const { chromium } = require('playwright');
+
+const MODTOOLS = path.resolve(__dirname, '..');
+
+function parseArgs(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index++) {
+    const key = argv[index];
+    if (!key.startsWith('--')) throw new Error(`Unexpected argument ${key}`);
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${key} needs a value`);
+    options[key.slice(2)] = value;
+    index++;
+  }
+  if (!options.manifest || !options.out) throw new Error('Usage: --manifest FILE --out DIR [--url URL | --server-root DIR --library DIR]');
+  return options;
+}
+
+// Validates the manifest and fills the defaults the comparison relies on.
+function readManifest(file) {
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const source = manifest.source || {};
+  assert(['gl', 'jp'].includes(source.region), 'source.region must be gl or jp');
+  assert(['android', 'ios'].includes(source.platform), 'source.platform must be android or ios');
+  assert(Number.isSafeInteger(source.liveId) && Number.isSafeInteger(source.assetId), 'source.liveId and source.assetId are integers');
+  const quality = manifest.quality || {};
+  assert(Number.isSafeInteger(quality.mode), 'quality.mode is the game quality mode (10, 20, 30 or 40)');
+  assert(Array.isArray(manifest.frames) && manifest.frames.length, 'frames lists at least one time');
+  const frames = manifest.frames.map((frame) => typeof frame === 'number' ? { time: frame } : { ...frame });
+  for (const frame of frames) assert(Number.isFinite(frame.time) && frame.time >= 0, 'every frame needs a time >= 0');
+  const physics = manifest.physics || {};
+  const preroll = physics.preroll ?? 3;
+  assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), 'physics.preroll is seconds or "full"');
+  return { ...manifest, source, quality, frames, physics: { ...physics, preroll } };
+}
+
+function probeVideo(file) {
+  const output = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
+    'stream=width,height,avg_frame_rate', '-of', 'json', file], { encoding: 'utf8' });
+  const stream = JSON.parse(output).streams?.[0];
+  assert(stream && stream.width > 0 && stream.height > 0, 'The game video has no readable video stream');
+  return { width: stream.width, height: stream.height, rate: stream.avg_frame_rate };
+}
+
+function gitHead(directory) {
+  try { return execFileSync('git', ['-C', directory, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch (_) { return null; }
+}
+
+function gitDirty(directory) {
+  try { return execFileSync('git', ['-C', directory, 'status', '--porcelain'], { encoding: 'utf8' }).trim().length > 0; } catch (_) { return null; }
+}
+
+async function freePort() {
+  const socket = net.createServer();
+  await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
+  const port = socket.address().port;
+  await new Promise(resolve => socket.close(resolve));
+  return port;
+}
+
+async function bootEditor(serverRoot, library, logFile) {
+  const port = await freePort();
+  const log = fs.openSync(logFile, 'w');
+  const env = { ...process.env, PYTHONPATH: [MODTOOLS, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) };
+  if (library) env.SUKUSTA_DIR = library;
+  const child = spawn(process.env.VIEWER_PYTHON || 'python3', ['-B', '-m', 'webtools', '--no-browser', '--port', String(port)],
+    { cwd: serverRoot, env, stdio: ['ignore', log, log] });
+  fs.closeSync(log);
+  const url = 'http://127.0.0.1:' + port;
+  for (let tries = 0; tries < 200; tries++) {
+    try { if ((await fetch(url + '/api/tools')).ok) return { child, url }; } catch (_) {}
+    if (child.exitCode !== null) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  child.kill();
+  throw new Error(`The MV editor did not start; see ${logFile}`);
+}
+
+// Keeps the scene the editor creates so frames can be stepped and inspected.
+function attachSceneProbe() {
+  const probe = window.mvFrameProbe = { scene: null };
+  let factory;
+  Object.defineProperty(window, 'MVStudioScene', {
+    configurable: true,
+    get() { return factory; },
+    set(value) {
+      factory = { ...value, create(...options) {
+        const scene = value.create(...options);
+        probe.scene = scene;
+        return scene;
+      } };
+    },
+  });
+}
+
+async function importOriginal(page, source, download) {
+  await page.waitForFunction(() => window.MVStudio && MVStudio.getState().visible);
+  await page.locator('#mv-import-game').click();
+  const choose = async (selector, value) => {
+    await page.waitForFunction(({ selector, value }) =>
+      [...document.querySelector(selector).options].some(option => option.value === value), { selector, value }, { timeout: 60000 });
+    await page.selectOption(selector, value);
+  };
+  await choose('#mv-game-region', source.region);
+  await choose('#mv-game-platform', source.platform);
+  await choose('#mv-game-song', String(source.liveId));
+  await choose('#mv-game-variant', String(source.assetId));
+  await page.locator('#mv-game-download').setChecked(Boolean(download));
+  await page.locator('#mv-game-load').click();
+  // The import operation disables the button synchronously and re-enables it when it ends.
+  await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled, null, { timeout: 30 * 60 * 1000, polling: 500 });
+  const result = await page.evaluate(() => ({ source: MVStudio.getState().project?.source || null,
+    status: document.querySelector('#mv-status')?.textContent?.trim() || '' }));
+  const imported = result.source || {};
+  if (imported.kind !== 'game' || imported.liveId !== source.liveId || imported.assetId !== source.assetId ||
+      imported.region !== source.region || imported.platform !== source.platform) {
+    throw new Error(`The editor did not import ${source.region}/${source.platform} ${source.liveId}/${source.assetId}` +
+      (result.status ? `: ${result.status}` : '') + ` (imported ${JSON.stringify(result.source)})`);
+  }
+}
+
+async function applyQuality(page, quality) {
+  const applied = await page.evaluate(({ mode, overrides }) => {
+    const select = document.querySelector('#mv-quality-mode');
+    if (!select || ![...select.options].some(option => option.value === String(mode))) return { error: `Quality mode ${mode} is not offered by this stage.` };
+    select.value = String(mode);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    for (const [key, value] of Object.entries(overrides || {})) {
+      const input = document.querySelector(`[data-mv-quality="${key}"]`);
+      if (!input) return { error: `Quality value ${key} has no editor control.` };
+      if (input.type === 'checkbox') input.checked = Boolean(value); else input.value = String(value);
+      input.dispatchEvent(new Event(input.type === 'checkbox' ? 'change' : 'input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const project = MVStudio.getState().project;
+    return { mode: project.quality.mode, values: project.quality.values };
+  }, quality);
+  if (applied.error) throw new Error(applied.error);
+  assert.equal(applied.mode, quality.mode, 'The editor did not apply the requested quality mode');
+  for (const [key, value] of Object.entries(quality.overrides || {})) assert.deepEqual(applied.values[key], value, `Quality value ${key} was not applied`);
+  return applied;
+}
+
+// Pins the preview mount to the game's aspect at the native render height.
+async function pinViewport(page, width, height) {
+  await page.evaluate(({ width, height }) => {
+    const mount = document.querySelector('#mv-scene');
+    Object.assign(mount.style, { position: 'fixed', left: '0', top: '0', width: width + 'px', height: height + 'px', zIndex: '2147483646' });
+  }, { width, height });
+  await page.waitForFunction(({ width, height }) => {
+    const mount = document.querySelector('#mv-scene');
+    return mount.clientWidth === width && mount.clientHeight === height;
+  }, { width, height });
+}
+
+// Fixed-step playback on a grid that ends exactly at `time`, then one
+// synchronous draw and readback. Physics advances once per stepped frame.
+async function renderFrame(page, time, preroll, rate) {
+  return page.evaluate(({ time, preroll, rate }) => {
+    const scene = mvFrameProbe.scene;
+    const available = Math.floor(time * rate + 1e-6);
+    const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
+    const start = time - steps / rate;
+    scene.resize(false);
+    // The editor's own seek path resets physics only when the time changes.
+    if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / rate, undefined, true);
+    scene.seek(start, undefined, true);
+    scene.setPlaying(true);
+    try {
+      for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, step * 1000 / rate, true);
+      scene.playbackFrame(time, steps * 1000 / rate, false);
+      const canvas = document.querySelector('#mv-scene canvas');
+      const png = canvas.toDataURL('image/png');
+      return { png, state: scene.inspect(), steps, prerollStart: start };
+    } finally {
+      scene.setPlaying(false);
+    }
+  }, { time, preroll, rate });
+}
+
+async function rendererInfo(page) {
+  return page.evaluate(() => {
+    const gl = document.querySelector('#mv-scene canvas')?.getContext('webgl2');
+    const debug = gl?.getExtension('WEBGL_debug_renderer_info');
+    return debug ? { vendor: gl.getParameter(debug.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) } :
+      { vendor: gl?.getParameter(gl.VENDOR) ?? null, renderer: gl?.getParameter(gl.RENDERER) ?? null };
+  });
+}
+
+// Hardware WebGL by default so a Mac capture uses its GPU; --software true forces SwiftShader.
+function browserArgs(software) {
+  return ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader', ...(software ? ['--disable-gpu'] : [])];
+}
+
+function frameName(time) {
+  return 'editor-' + time.toFixed(4).replace('.', '_') + '.png';
+}
+
+async function run() {
+  const options = parseArgs(process.argv.slice(2));
+  const manifest = readManifest(options.manifest);
+  const out = path.resolve(options.out);
+  fs.mkdirSync(out, { recursive: true });
+  const video = options.video ? path.resolve(options.video) :
+    manifest.game?.video ? path.resolve(path.dirname(options.manifest), manifest.game.video) : null;
+  const target = video ? probeVideo(video) : null;
+  const aspect = target ? target.width / target.height : (manifest.aspect ?? 16 / 9);
+  const serverRoot = path.resolve(options['server-root'] || path.join(MODTOOLS, '..'));
+  let server = null, browser = null;
+  try {
+    const url = options.url || (server = await bootEditor(serverRoot, options.library, path.join(out, 'editor-server.log'))).url;
+    browser = await chromium.launch({ executablePath: options.chromium || process.env.CHROMIUM_EXECUTABLE || undefined, headless: true,
+      args: browserArgs(options.software === 'true') });
+    const page = await browser.newPage({ viewport: { width: 2600, height: 1600 }, deviceScaleFactor: 1 });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(attachSceneProbe);
+    await page.goto(url + '/#mv');
+    await importOriginal(page, manifest.source, manifest.download === true);
+    const quality = await applyQuality(page, manifest.quality);
+    // The game draws at the preset's native height; the export then scales to the video size.
+    const renderHeight = quality.values.rendering_resolution;
+    const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
+    await pinViewport(page, renderWidth, renderHeight);
+    await page.evaluate(() => {
+      const select = document.querySelector('#mv-camera-mode');
+      select.value = 'live';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const rate = quality.values.frame_rate_60fps === true ? 60 : 30;
+    const project = await page.evaluate(() => {
+      const value = MVStudio.getState().project;
+      return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [],
+        soundtrack: value.soundtrack ? { url: value.soundtrack.url, offset: value.soundtrack.offset ?? 0 } : null };
+    });
+    let soundtrack = null;
+    if (project.soundtrack?.url) {
+      const response = await page.request.get(new URL(project.soundtrack.url, url).href);
+      if (response.ok()) {
+        soundtrack = 'soundtrack' + (path.extname(new URL(project.soundtrack.url, url).pathname) || '.wav');
+        fs.writeFileSync(path.join(out, soundtrack), await response.body());
+      }
+    }
+    const frames = [];
+    for (const frame of [...manifest.frames].sort((a, b) => a.time - b.time)) {
+      const { png, state, steps, prerollStart } = await renderFrame(page, frame.time, manifest.physics.preroll, rate);
+      const file = frameName(frame.time);
+      fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
+      assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');
+      assert.equal(state.canvas.height, renderHeight, 'The editor canvas height does not match the requested render size');
+      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, state });
+    }
+    const capture = {
+      schema: 1, kind: 'elichika-mv-editor-frames', createdAt: new Date().toISOString(),
+      manifest, project, soundtrack, physicsRate: rate,
+      render: { width: renderWidth, height: renderHeight, aspect, video: target },
+      quality: { mode: quality.mode, values: quality.values },
+      environment: {
+        modtools: { commit: gitHead(MODTOOLS), dirty: gitDirty(MODTOOLS) },
+        server: { root: serverRoot, commit: options.url ? null : gitHead(serverRoot) },
+        url: options.url || null, browser: browser.version(), webgl: await rendererInfo(page), platform: process.platform,
+      },
+      pageErrors: errors, frames,
+    };
+    fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(capture, null, 2) + '\n');
+    console.log(JSON.stringify({ out, frames: frames.length, webgl: capture.environment.webgl, warnings: project.warnings.length, pageErrors: errors.length }));
+  } finally {
+    if (browser) await browser.close();
+    if (server) server.child.kill();
+  }
+}
+
+if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
+module.exports = { readManifest, frameName, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs };

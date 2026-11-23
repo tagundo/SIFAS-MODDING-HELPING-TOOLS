@@ -1,0 +1,21 @@
+{
+  "source": { "region": "gl", "platform": "ios", "liveId": 12035, "assetId": 1203503 },
+  "quality": { "mode": 30, "overrides": {} },
+  "frames": [
+    { "time": 14.85, "label": "eyelid curve switch" },
+    { "time": 35.2167, "label": "eyelid curve switch" },
+    { "time": 50.3333, "label": "full eye blend" }
+  ],
+  "physics": { "preroll": 3 },
+  "download": false,
+  "game": {
+    "video": "game-12035-1203503-ios-q30.mp4",
+    "client": "SIFAS_GL_Local_3.12.0_PlayCover_2026.11.21.2-test",
+    "device": "Apple Silicon Mac, PlayCover",
+    "platform": "ios",
+    "qualityMode": 30,
+    "angle": "Default",
+    "fov": "game default",
+    "export": { "size": [1920, 1080], "fps": 30, "codec": "h264" }
+  }
+}
