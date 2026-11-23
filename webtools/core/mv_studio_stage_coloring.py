@@ -72,8 +72,15 @@ def binding(scene, component, tree):
     keywords = set(str(original.get("m_ShaderKeywords", "")).split())
     floats = viewer._properties(original, "m_Floats")
     if (keywords - {"_VERTEXCOLOR_OFF"} or any(floats.get(option) for option in ("_AUTO_PLAY", "_VERTEX_COLOR", "_SATURATE"))
-            or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)
-            or tree.get("lightShaftTextures")):
+            or (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1)) != (5, 1)):
+        return None
+    # LiveCoreStageColoring.ApplyTextureIndex swaps _MainTex for
+    # lightShaftTextures[LiveColoringClip.textureIndex] (keeping _MainTex_ST).
+    shafts = tree.get("lightShaftTextures") or []
+    if not isinstance(shafts, list) or len(shafts) > 64:
+        return None
+    shafts = [_texture(component, pointer) for pointer in shafts]
+    if any(shaft is None for shaft in shafts):
         return None
     cull = floats.get("_CullMode", 0)
     queue = original.get("m_CustomRenderQueue", -1)
@@ -93,7 +100,7 @@ def binding(scene, component, tree):
         "target": _ROOT + "/".join(path[1:]), "tint": rgba, "speed": speed, "shift": shift,
         "cull": cull, "queue": 3000 if queue == -1 else queue, "mainUV": main_uv,
         "indexScale": id_uv[0], "indexOffset": id_uv[2],
-    })
+    }, tuple(shafts))
 
 
 def renderer_binding(scene, game, candidates):
@@ -105,7 +112,7 @@ def renderer_binding(scene, game, candidates):
 
 
 def export(glb, materials, binding, palettes):
-    _, palette, texture, fields = binding
+    _, palette, texture, fields, shafts = binding
     key = viewer._key(palette)
     if key not in palettes:
         original = palette.read()
@@ -120,4 +127,5 @@ def export(glb, materials, binding, palettes):
     saved = palettes[key]
     if saved is None:
         return None
-    return {**fields, "palette": saved, "main": materials.texture(texture)}
+    return {**fields, "palette": saved, "main": materials.texture(texture),
+            "shaftTextures": [materials.texture(shaft) for shaft in shafts]}

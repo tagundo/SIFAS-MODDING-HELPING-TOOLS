@@ -51,7 +51,22 @@
         selfTime = (fields.clipIn || 0) + (time - event.start) * (fields.timeScale ?? 1);
       }
     }
-    return { tint, shift: primary?.shift || 0, speed: primary?.speed || 0, selfTime };
+    // LiveColoringMixer: PreProcess resets textureIndex to 0 and Process keeps
+    // the strictly heaviest input's LiveColoringClip.textureIndex.
+    const textureIndex = primary ? primary.textureIndex ?? 0 : 0;
+    return { tint, shift: primary?.shift || 0, speed: primary?.speed || 0, selfTime, textureIndex };
+  }
+
+  // LiveCoreStageColoring.ApplyTextureIndex: nothing without light shaft
+  // textures or when the index is current; otherwise _MainTex becomes
+  // lightShaftTextures[index]. currentTextureIndex starts at int.MinValue, so
+  // index 0 replaces the material texture on the first mixer frame. An index
+  // outside the list throws in the client before currentTextureIndex changes.
+  function applyTextureIndex(state, shafts, index) {
+    if (!shafts?.length || state.currentIndex === index) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= shafts.length) return false;
+    state.currentIndex = index;
+    return true;
   }
 
   function customize(source, result, colors) {
@@ -107,7 +122,9 @@
     try {
       for (const { fields } of meshes) {
         if (groups.has(fields.target)) continue;
-        const [base, colors] = await Promise.all([main(fields.main), palette(fields.palette)]);
+        const shaftIndices = Array.isArray(fields.shaftTextures) ? fields.shaftTextures : [];
+        const [base, colors, ...shafts] = await Promise.all([main(fields.main), palette(fields.palette),
+          ...shaftIndices.map(main)]);
         const [sx, sy, ox, oy] = fields.mainUV;
         const uniforms = {
           uMain: { value: base }, uPalette: { value: colors.texture },
@@ -123,7 +140,8 @@
           blendSrcAlpha: T.SrcAlphaFactor, blendDstAlpha: T.OneFactor
         });
         material.name = "AS/Coloring/Transparent";
-        groups.set(fields.target, { fields, material, uniforms, track: null, palette: colors });
+        groups.set(fields.target, { fields, material, uniforms, track: null, palette: colors, base, shafts,
+          currentIndex: null });
       }
       for (const { node, fields } of meshes) {
         node.material = groups.get(fields.target).material;
@@ -160,8 +178,16 @@
           for (const [target, group] of groups) group.track = tracks.get(target);
           lastProject = project;
         }
-        for (const { track, fields, material, uniforms } of groups.values()) {
+        for (const group of groups.values()) {
+          const { track, fields, material, uniforms } = group;
           const value = track ? sample(track, seconds) : { ...fields, selfTime: 0 };
+          if (!track) {
+            // Without a bound mixer the client never calls ApplyTextureIndex.
+            group.currentIndex = null;
+            uniforms.uMain.value = group.base;
+          } else if (applyTextureIndex(group, group.shafts, value.textureIndex)) {
+            uniforms.uMain.value = group.shafts[group.currentIndex];
+          }
           uniforms.uTint.value.fromArray(value.tint);
           uniforms.uShift.value = value.shift;
           uniforms.uSpeed.value = value.speed;
@@ -181,5 +207,5 @@
     };
   }
 
-  global.MVStudioStageColoring = { apply, sample, customize };
+  global.MVStudioStageColoring = { apply, sample, customize, applyTextureIndex };
 })(window);
