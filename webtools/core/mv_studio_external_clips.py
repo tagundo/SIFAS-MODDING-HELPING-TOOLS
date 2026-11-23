@@ -19,12 +19,14 @@ identify a clip. The resolved names are kept in a top-level preview map keyed
 by event id; event values stay byte-for-byte what native export expects.
 """
 import json
+import struct
 
 from . import game_motion_selection as selection
 from .mv_studio_timeline import EXTERNAL_CLIP_WARNING
 
 _MAX_NOTES = 32
-_ERRORS = (ValueError, OSError, KeyError, TypeError, EOFError)
+# A corrupt serialized file can fail inside UnityPy with any of these.
+_ERRORS = (ValueError, OSError, KeyError, TypeError, EOFError, IndexError, OverflowError, struct.error)
 
 
 class SharedReads:
@@ -187,7 +189,10 @@ def apply(project, timeline_raw, descriptors, reads, deadline):
     dependencies = [(_label(item), reads.peek(item)) for item in descriptors]
     try:
         result = resolve(project["tracks"], timeline_raw, dependencies, deadline)
-    except _ERRORS:
+    except Exception:
+        # Clip names are advisory. An import that does not otherwise parse
+        # these packs (an actor-cache hit) must not fail on them: keep the
+        # generic warning and cast as before.
         return {}
     if result is None:
         return {}

@@ -8,6 +8,7 @@ are optional (ELICHIKA_STUDIO_TIMELINE_DIR), see RealDependencyClipTests.
 from copy import deepcopy
 import os
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 import time
 import unittest
@@ -110,6 +111,22 @@ class ExternalClipResolutionTests(unittest.TestCase):
         self.assertEqual(result["clips"], {})
         self.assertIn("conflicting serialized identities", result["warnings"][0])
 
+    def test_corrupt_pack_is_reported_unavailable_and_others_still_resolve(self):
+        def read(raw, label, deadline):
+            if label == "timeline":
+                return self.timeline
+            if label == "corrupt":
+                raise struct.error("unpack requires a buffer of 4 bytes")
+            return self.dance
+
+        with patch.object(external, "_source", side_effect=read):
+            result = external.resolve(self.tracks, b"timeline", [("corrupt", b"bundle"), ("UGp", b"bundle")],
+                                      time.monotonic() + 30)
+        self.assertEqual(result["clips"]["timeline-track:0"]["animationName"], "ch0212_so2035")
+        with patch.object(external, "_source", side_effect=read):
+            result = external.resolve(self.tracks, b"timeline", [("corrupt", b"bundle")], time.monotonic() + 30)
+        self.assertIn("Unavailable dependency packs: corrupt.", result["warnings"][0])
+
     def test_no_external_reference_needs_no_dependency(self):
         tracks = deepcopy(self.tracks)
         tracks[0]["events"][0]["values"]["animationName"] = "ch0212_so2035"
@@ -179,6 +196,17 @@ class ApplyToProjectTests(unittest.TestCase):
         with patch.object(external, "resolve", side_effect=ValueError("broken")):
             self.assertEqual(external.apply(project, b"timeline", [], external.SharedReads(bytes), 0), {})
         self.assertEqual(project["warnings"], ["first", GENERIC, "last"])
+
+    def test_any_resolver_failure_keeps_the_import_going_with_the_generic_warning(self):
+        for error in (struct.error("unpack requires a buffer"), IndexError("list index out of range"),
+                      RuntimeError("unexpected")):
+            with self.subTest(error=type(error).__name__):
+                project = self.project()
+                with patch.object(external, "resolve", side_effect=error):
+                    self.assertEqual(external.apply(project, b"timeline", [{"asset": "UGp"}],
+                                                    external.SharedReads(lambda descriptor: b"pack"), 0), {})
+                self.assertEqual(project["warnings"], ["first", GENERIC, "last"])
+                self.assertNotIn("companionClips", project)
 
 
 class CastByClipTests(unittest.TestCase):
