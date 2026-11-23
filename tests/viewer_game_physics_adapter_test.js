@@ -127,4 +127,31 @@ function setup(skirt = false) {
   s.engine.captureAnimationPose({animatedProperties:{2:{position:true}}});s.engine.apply(1/30,s.live);
   assert.deepStrictEqual(s.child.position.toArray(),animated,'current animation-owned child position is not replaced by prior physical output');
 }
+{
+  // step() + late() on an unchanged pose is exactly apply(): the split only lets a
+  // caller run the timeline between the group job and LateUpdate.
+  for(const skirt of [false,true]) {
+    const a=setup(skirt),b=setup(skirt);
+    const settings=s=>skirt?{...s.live,safeSwingBone:true}:s.navi;
+    a.capture();b.capture();
+    for(const delta of [1/30,1/30,0,1/30]) {
+      a.capture();a.engine.apply(delta,settings(a));
+      b.capture();b.engine.step(delta,settings(b));b.engine.late(settings(b),{});
+    }
+    assert.deepStrictEqual(b.engine.getState().bones,a.engine.getState().bones);
+    assert.deepStrictEqual(b.bone.quaternion.toArray(),a.bone.quaternion.toArray());
+    assert.deepStrictEqual(b.child.position.toArray(),a.child.position.toArray());
+    assert.equal(b.engine.getState().totalNativeSteps,3);
+    assert.equal(b.engine.getTimingState().safeCorrections,a.engine.getTimingState().safeCorrections);
+  }
+  const s=setup();s.capture();
+  assert.equal(s.engine.step(0,s.navi),false,'no job without a positive delta');
+  assert.equal(s.engine.step(1/30,s.navi),true);
+  const stepped=s.bone.quaternion.toArray();s.bone.quaternion.identity();
+  s.engine.late(s.navi,{});assert.deepStrictEqual(s.bone.quaternion.toArray(),stepped,'LateUpdate keeps the job rotation on an unanimated bone');
+  s.bone.quaternion.identity();s.engine.late(s.navi,{});
+  assert.deepStrictEqual(s.bone.quaternion.toArray(),stepped,'a frame without a job holds the last output');
+  s.engine.resetSimulation('seek');s.bone.quaternion.identity();s.engine.late(s.navi,{});
+  assert.deepStrictEqual(s.bone.quaternion.toArray(),[0,0,0,1],'a reset discards the held output');
+}
 console.log('GAME_PHYSICS_ADAPTER_PASS: pause/history, one-step clock, rest/seek lifecycle, MV forced child sync, strict flags, affine preservation, scale-independent rotation');

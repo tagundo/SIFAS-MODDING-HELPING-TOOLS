@@ -132,7 +132,7 @@
     return { coreAvailable: !missing.length, missing: missing, skirtCorrectionMissing: skirt };
   }
   function create(root, catalog, current, options) {
-    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, profile = 'navi', missing = [], skirtCorrectionMissing = [], configuredCorrectionMissing = [];
+    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, lateDue = false, profile = 'navi', missing = [], skirtCorrectionMissing = [], configuredCorrectionMissing = [];
     var stats = { mode: 'game', profile: profile, nativeSteps: 0, totalNativeSteps: 0, resets: 0, initializationGeneration: 0, dynamicGeneration: 0, contacts: 0, safeCorrections: 0, delta: 0, substeps: 0, frameMs: 0 };
     function helper(o) { while (o) { if (o.userData && o.userData.viewerHelper) return true; o = o.parent; } return false; }
     root.traverse(function (o) { if (!helper(o) && o.userData && o.userData.elichika_node !== undefined) nodes[String(o.userData.elichika_node)] = o; });
@@ -151,7 +151,7 @@
     function setWorldPosition(o, position) { var p = new THREE.Vector3().fromArray(mirrored(position)); if (o.parent) o.parent.worldToLocal(p); o.position.copy(p); if (o.matrixAutoUpdate === false) o.updateMatrix(); o.updateMatrixWorld(true); }
     function depth(o) { var d = 0; while (o.parent) { d++; o = o.parent; } return d; }
     function currentValues(record) { return current ? current(record) : record.values; }
-    function resetSimulation(reason) { pending = true; stats.resets++; stats.resetReason = reason || 'reset'; if (/author|model|load|initialization/.test(reason || '')) pendingBase = true; }
+    function resetSimulation(reason) { pending = true; lateDue = false; stats.resets++; stats.resetReason = reason || 'reset'; if (/author|model|load|initialization/.test(reason || '')) pendingBase = true; }
     function obtainRest() { return options.initializationPose || (typeof options.getInitializationPose === 'function' ? options.getInitializationPose() : null); }
     function buildBase() {
       var rest = obtainRest();
@@ -255,18 +255,20 @@
       });
     }
     function now() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
-    function apply(delta, settings) {
-      if (disposed) return; var start = now(); settings = settings || {}; stats.nativeSteps = 0; stats.substeps = 0; stats.contacts = 0; stats.safeCorrections = 0; stats.delta = Number(delta) || 0; profile = settings.profile || 'navi'; stats.profile = profile;
-      if (!settings.bones) return;
+    function prepare(delta, settings) {
+      stats.nativeSteps = 0; stats.substeps = 0; stats.contacts = 0; stats.safeCorrections = 0; stats.delta = Number(delta) || 0; profile = settings.profile || 'navi'; stats.profile = profile;
+      if (!settings.bones) return false;
       if (!captured) captureAnimationPose({});
       // Native Update/group jobs do not depend on the song's LateUpdate
       // correction switch. Unknown caller metadata disables only that optional
       // non-forced correction; it must not freeze hair, ribbons or colliders.
       var nextSignature = JSON.stringify([profile, settings.enableLod !== false, settings.skirtsafeDisableBySource || {}, settings.skirtsafeDisableByComponent || {}]);
       if (nextSignature !== signature) { pending = true; initialized = false; startupCorrection = profile === 'live'; signature = nextSignature; }
-      if (pending && !initialize(settings)) return;
+      if (pending && !initialize(settings)) return false;
       refreshCorrectionMissing(settings);
-      if (!(delta > 0)) { reapplyOutput(); stats.frameMs = now() - start; return; }
+      return true;
+    }
+    function runJob(settings) {
       refreshInputs();
       if (profile === 'live') { var result = stepJob(data, buffers, colliders, matrices, { kind: 'group', math: math, colliders: settings.colliders !== false }); stats.contacts += result.contacts; }
       else managers.forEach(function (manager) {
@@ -274,16 +276,50 @@
         var result = stepJob(data.slice(start, end), buffers.slice(start, end), colliders.slice(manager.colliderOffset, manager.colliderOffset + manager.colliderIds.length), matrices.slice(manager.colliderOffset, manager.colliderOffset + manager.colliderIds.length), { kind: 'single', math: math, colliders: settings.colliders !== false }); stats.contacts += result.contacts;
       });
       applyRotations();
+    }
+    function finish(settings) {
       if (profile === 'live') { correctSkirts(settings, startupCorrection || !!settings.forceCorrect); startupCorrection = false; }
       saveOutput(); root.updateMatrixWorld(true); root.traverse(function (o) { if (o.isSkinnedMesh && !helper(o)) o.skeleton.update(); });
+    }
+    // One job and its LateUpdate on the pose the caller has just animated.
+    function apply(delta, settings) {
+      if (disposed) return; var start = now(); settings = settings || {};
+      if (!prepare(delta, settings)) return;
+      if (!(delta > 0)) { lateDue = false; reapplyOutput(); stats.frameMs = now() - start; return; }
+      lateDue = false; runJob(settings); finish(settings);
       stats.nativeSteps = 1; stats.substeps = 1; stats.totalNativeSteps++; stats.frameMs = now() - start;
+    }
+    // Game order, split around the director evaluation. LiveCoreMemberManager
+    // .Update captures the transforms as the previous frame left them, runs the
+    // group job and writes world rotations against those parents (step). The
+    // timeline then animates the parents and the bones keep their local
+    // rotations; LateUpdate runs AllSafeCorrect with this frame's knees (late).
+    function step(delta, settings) {
+      if (disposed) return false; var start = now(); settings = settings || {};
+      if (!prepare(delta, settings) || !(delta > 0)) return false;
+      runJob(settings); saveOutput(); lateDue = true;
+      stats.nativeSteps = 1; stats.substeps = 1; stats.totalNativeSteps++; stats.frameMs = now() - start;
+      return true;
+    }
+    function late(settings, nextContext) {
+      settings = settings || {};
+      if (disposed || pending || !initialized || !settings.bones) return;
+      var start = now();
+      // A frame without a job (paused, or the clock did not advance) holds the
+      // last output, exactly like apply(0).
+      if (!lateDue) { reapplyOutput(); return; }
+      lateDue = false;
+      if (nextContext) context = Object.assign({}, context, nextContext);
+      refreshCorrectionMissing(settings);
+      reapplyOutput(true); finish(settings);
+      stats.frameMs += now() - start;
     }
     function state() {
       var boneRows = initialized ? entries.map(function (entry) { var b = buffers[entry.index], d = data[entry.index]; return { id: entry.record.id, node: entry.record.node, childNode: (entry.record.simulation || {}).childNode, origin: mirrored(b.position), tip: mirrored(b.currentTipPosition), radius: d.radius, colliders: (entry.record.simulation || {}).colliders || [] }; }) : [];
       var capsuleRows = initialized ? colliders.map(function (d, index) { var a = point(matrices[index], d.offset), base = d.managerOffset || 0, sibling = d.siblingIndex >= 0 ? colliders[base + d.siblingIndex] : null, b = sibling ? point(matrices[base + d.siblingIndex], sibling.offset) : a; return { id: d.record.id, a: mirrored(a), b: mirrored(b), ra: d.radius, rb: sibling ? d.siblingRadius : d.radius }; }) : [];
       return Object.assign({}, stats, { available: missing.length === 0 && catalogReadiness(catalog).coreAvailable, nativeCatalogAvailable: !!(catalog.native && catalog.native.available), initialized: initialized, initializationMissing: missing.slice(), unsupported: missing.slice(), skirtCorrectionMissing: skirtCorrectionMissing.slice(), mode: 'game', profile: profile, dynamicBones: entries.length, components: (catalog.components || []).length, bones: boneRows, capsules: capsuleRows, runtimeProfile: { job: profile === 'live' ? 'SwingBoneGroupJob' : 'SwingBoneJob', callerFlags: true } });
     }
-    return { captureAnimationPose: captureAnimationPose, resetSimulation: resetSimulation, setInitializationPose: function (pose) { options.initializationPose = pose; pendingBase = true; resetSimulation('initialization-pose'); }, apply: apply, getState: state, getTimingState: function () { return Object.assign({}, stats); }, dispose: function () { disposed = true; output = {}; captured = null; buffers = []; data = []; entries = []; } };
+    return { captureAnimationPose: captureAnimationPose, resetSimulation: resetSimulation, setInitializationPose: function (pose) { options.initializationPose = pose; pendingBase = true; resetSimulation('initialization-pose'); }, apply: apply, step: step, late: late, getState: state, getTimingState: function () { return Object.assign({}, stats); }, dispose: function () { disposed = true; output = {}; captured = null; buffers = []; data = []; entries = []; } };
   }
   global.ViewerGamePhysics = { create: create, catalogReadiness: catalogReadiness, profiles: { navi: { job: 'single', enableJob: true, enableLod: true, skirtsafeDisable: true }, live: { job: 'group', flagsFromCaller: true } }, reference: { stepJob: stepJob, constraint: constraint, quatMul: quatMul, quatRotate: quatRotate, point: point, classify: classify, safeCorrect: safeCorrect } };
 }(typeof window !== 'undefined' ? window : globalThis));
