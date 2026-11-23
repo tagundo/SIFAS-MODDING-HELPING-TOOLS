@@ -621,6 +621,7 @@
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
       record.memberShadowPrefabs?.dispose();
+      record.lossyScale?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -937,6 +938,7 @@
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
+          record.lossyScale = global.MVStudioLossyScale?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -1651,6 +1653,8 @@
       stageParticleSystems?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      // LiveCoreLossyScale.LateUpdate follows the animators.
+      for (const record of records) record.lossyScale?.apply();
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);

@@ -1382,11 +1382,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
         from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
+        from . import mv_studio_lossy_scale
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
-        axis_billboards, stage_props = set(), []
+        axis_billboards, stage_props, lossy_scales = set(), [], {}
     shadow_stages = shadow_prefabs = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
@@ -1458,6 +1459,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 identity, entry = flash
                 stage_flashes[identity] = None if identity in stage_flashes else entry
             axis_billboards.update(mv_studio_axis_billboard.owners(scene, obj, tree))
+            for key, values in mv_studio_lossy_scale.offsets(scene, obj, tree).items():
+                lossy_scales[key] = None if key in lossy_scales else values
             stage_props.extend(mv_studio_stage_props.props(scene, obj, tree))
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
@@ -2039,6 +2042,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                                    _source_path(renderer) in faces.dynamic_sources))
     if stage_materials and axis_billboards:
         mv_studio_axis_billboard.tag(glb, stage_nodes, axis_billboards)
+    if stage_materials and lossy_scales:
+        from . import mv_studio_lossy_scale
+        mv_studio_lossy_scale.tag(glb, stage_nodes, lossy_scales)
     return materials
 
 
