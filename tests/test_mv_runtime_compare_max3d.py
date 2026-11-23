@@ -367,5 +367,48 @@ class PartCoverageTest(unittest.TestCase):
         self.assertIn("Blend shapes (per member slot, joined by channel name): 0 samples", text)
 
 
+class NegativeControlTest(unittest.TestCase):
+    RS = "UnityEngine.RenderSettings: engine icall not registered (its managed wrapper is stripped from the client)"
+    LIGHT = "UnityEngine.Light has no type definition in the client's global-metadata (stripped)"
+    HPB = "UnityEngine.Renderer::HasPropertyBlock: engine icall not registered (its managed wrapper is stripped from the client)"
+
+    def test_unavailable_values_are_not_measurable(self):
+        record = dict(frame(1.0, 0.2, ident="f1"), renderSettings=None, lights=None,
+                      unavailable={"renderSettings": self.RS, "lights": self.LIGHT})
+        renderers = {"kind": "full", "part": "renderers", "id": "p0-renderers-00", "clock": {"directorTime": 1.0},
+                     "renderers": [], "unavailable": {"hasPropertyBlock": self.HPB}}
+        game, editor = documents([record, renderers])
+        report = C.Comparison(game, editor).run()
+        negative = report["negativeControls"]
+        self.assertEqual(negative["renderSettings"], "not measurable: " + self.RS)
+        self.assertEqual(negative["lights"], "not measurable: " + self.LIGHT)
+        self.assertEqual(negative["lightsWithIntensity"], "not measurable: " + self.LIGHT)
+        self.assertEqual(negative["propertyBlocks"], "not measurable: " + self.HPB)
+        self.assertEqual(negative["unavailable"]["lights"], {"reason": self.LIGHT, "records": 1})
+        report.pop("_worst")
+        with tempfile.TemporaryDirectory() as folder:
+            C.write_markdown(report, Path(folder) / "report.md")
+            text = (Path(folder) / "report.md").read_text("utf-8")
+        self.assertIn("- RenderSettings: not measurable: " + self.RS, text)
+        self.assertIn("- MaterialPropertyBlocks (Renderer.HasPropertyBlock): not measurable: " + self.HPB, text)
+        self.assertIn("lights not measurable: " + self.LIGHT, text)
+
+    def test_read_values_are_reported(self):
+        record = dict(frame(1.0, 0.2, ident="f1"), renderSettings={"source": "icall", "fog": False},
+                      lights=[{"key": "light:/a", "intensity": 1.5}, {"key": "light:/b", "intensity": 0}])
+        renderers = {"kind": "full", "part": "renderers", "id": "p0-renderers-00", "clock": {"directorTime": 1.0}, "renderers": [
+            {"key": "renderer:/ground", "hasPropertyBlock": True}, {"key": "renderer:/body", "hasPropertyBlock": False}]}
+        game, editor = documents([record, renderers])
+        negative = C.Comparison(game, editor).run()["negativeControls"]
+        self.assertEqual(negative["renderSettings"], {"source": "icall", "fog": False})
+        self.assertEqual((negative["lights"], negative["lightsWithIntensity"]), (2, ["light:/a"]))
+        self.assertEqual(negative["propertyBlocks"], {"renderers": 2, "withPropertyBlock": ["renderer:/ground"]})
+        self.assertEqual(negative["unavailable"], {})
+        # An older dump: empty light lists and no renderSettings or property-block fields.
+        game, editor = documents([dict(frame(1.0, 0.2, ident="f1"), lights=[])])
+        negative = C.Comparison(game, editor).run()["negativeControls"]
+        self.assertEqual((negative["renderSettings"], negative["lights"], negative["propertyBlocks"]), (None, 0, None))
+
+
 if __name__ == "__main__":
     unittest.main()

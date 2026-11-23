@@ -1676,6 +1676,57 @@ class Comparison:
         fov = self.fov_verdict(frames, phase)
         return self.report(phase_info, {"fitted": fitted, "medianResidual": medians}, joined, missing, time_errors, cuts, fov)
 
+    @staticmethod
+    def unavailable(records, field, nested=None):
+        """Reasons the game dump gives for a value it could not read: record.unavailable[field], and with nested
+        also record[nested][].unavailable[field] (a stripped class or an unregistered engine icall)."""
+        reasons = Counter()
+        for record in records:
+            holders = [record] + [item for item in (record.get(nested) or []) if isinstance(item, dict)] if nested else [record]
+            for holder in holders:
+                reason = (holder.get("unavailable") or {}).get(field) if isinstance(holder.get("unavailable"), dict) else None
+                if isinstance(reason, str) and reason:
+                    reasons[reason] += 1
+        return reasons
+
+    def negative_controls(self, frames):
+        """Game-only negative controls. A value the game dump reports unavailable (and never read) is not measurable:
+        the reason is reported instead of an empty list or a null that would read as 'nothing there'."""
+        def not_measurable(reasons):
+            return "not measurable: " + reasons.most_common(1)[0][0]
+
+        unavailable = {}
+        settings = next((record.get("renderSettings") for record in frames if isinstance(record.get("renderSettings"), dict)
+                         and "modeled" not in record.get("renderSettings")), None)
+        reasons = self.unavailable(frames, "renderSettings")
+        if reasons:
+            unavailable["renderSettings"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if settings is None:
+                settings = not_measurable(reasons)
+        lights = [light for record in frames for light in (record.get("lights") or []) if isinstance(light, dict)]
+        lights_read = any(isinstance(record.get("lights"), list) for record in frames)
+        reasons = self.unavailable(frames, "lights")
+        light_count = len({light.get("key") for light in lights})
+        with_intensity = sorted({light.get("key") for light in lights if number(light.get("intensity")) and light["intensity"] > 0})
+        if reasons:
+            unavailable["lights"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if not lights_read:
+                light_count = with_intensity = not_measurable(reasons)
+        renderer_records = [record for record in self.game["records"] if record.get("part") == "renderers"]
+        renderers = [item for record in renderer_records for item in (record.get("renderers") or []) if isinstance(item, dict)]
+        blocks = [item for item in renderers if isinstance(item.get("hasPropertyBlock"), bool)]
+        reasons = self.unavailable(renderer_records, "hasPropertyBlock", nested="renderers")
+        property_blocks = ({"renderers": len({item.get("key") for item in blocks}),
+                            "withPropertyBlock": sorted({item.get("key") for item in blocks if item["hasPropertyBlock"]})[:40]}
+                           if blocks else None)
+        if reasons:
+            unavailable["hasPropertyBlock"] = {"reason": reasons.most_common(1)[0][0], "records": sum(reasons.values())}
+            if property_blocks is None:
+                property_blocks = not_measurable(reasons)
+        return {"renderSettings": settings, "lights": light_count, "lightsWithIntensity": with_intensity,
+                "propertyBlocks": property_blocks, "unavailable": unavailable,
+                "info": "game-only negative controls: no SIFAS shader reads RenderSettings or Unity lights"}
+
     def timing(self):
         frames = [record for record in self.game["records"] if record.get("kind") == "frame"]
         single = [record for record in frames if number((record.get("clock") or {}).get("frameCount"))
@@ -1868,12 +1919,7 @@ class Comparison:
                 notes[name] = values[:40]
         game_header = self.game.get("header") or {}
         frames = [record for record in self.game["records"] if record.get("kind") == "frame"]
-        lights = [light for record in frames for light in (record.get("lights") or []) if isinstance(light, dict)]
-        negative = {"renderSettings": next((record.get("renderSettings") for record in frames if isinstance(record.get("renderSettings"), dict)
-                                            and "modeled" not in record.get("renderSettings")), None),
-                    "lights": len({light.get("key") for light in lights}),
-                    "lightsWithIntensity": sorted({light.get("key") for light in lights if number(light.get("intensity")) and light["intensity"] > 0}),
-                    "info": "game-only negative controls: no SIFAS shader reads RenderSettings or Unity lights"}
+        negative = self.negative_controls(frames)
         per_type_top = {type_: [group for group in ranked if group["type"] == type_][:5] for type_ in TYPES}
         validity = self.quality_validity()
         report = {
@@ -2006,8 +2052,18 @@ def write_markdown(report, path):
     lines += [
               "## Negative controls", "", f"{report['negativeControls']['info']}; lights {report['negativeControls']['lights']}, "
               f"with intensity > 0: {report['negativeControls']['lightsWithIntensity']}.", "",
+              f"- RenderSettings: {_negative(report['negativeControls'].get('renderSettings'))}",
+              f"- MaterialPropertyBlocks (Renderer.HasPropertyBlock): {_negative(report['negativeControls'].get('propertyBlocks'))}", "",
               "## Timing", "", f"{report['timing']}", ""]
     Path(path).write_text("\n".join(lines) + "\n", "utf-8")
+
+
+def _negative(value):
+    if value is None:
+        return "not in the game dump"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)[:400]
 
 
 def write_csv(groups, path):
