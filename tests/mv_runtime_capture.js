@@ -204,12 +204,16 @@ function checkCostumes(plan, performers) {
     const performer = byPosition.get(position);
     if (!performer) problems.push(`position ${position} has no performer`);
     else if (performer.costumeId !== suit) problems.push(`position ${position} wears ${performer.costumeId}, not ${suit}`);
+    else if (performer.loaded === false) {
+      problems.push(`position ${position} has no model for suit ${suit} (its asset pack is not local; set "download": true in the manifest)`);
+    }
     else if (plan.members[position] != null && performer.memberId !== plan.members[position]) {
       problems.push(`position ${position} is member ${performer.memberId}, the game had ${plan.members[position]}`);
     }
   }
   if (problems.length) throw new Error(`The editor did not dress the pinned suits: ${problems.join('; ')}`);
-  return [...byPosition.values()].map(({ position, memberId, costumeId }) => ({ position, memberId: memberId ?? null, costumeId: costumeId ?? null }));
+  return [...byPosition.values()].map(({ position, memberId, costumeId, loaded }) => ({ position, memberId: memberId ?? null,
+    costumeId: costumeId ?? null, ...(loaded === undefined ? {} : { loaded }) }));
 }
 
 // ------------------------------------------------------------- evaluation plan
@@ -589,7 +593,7 @@ async function run() {
     }
     const importSeconds = (Date.now() - importStart) / 1000;
     const dressed = await page.evaluate(() => (MVStudio.getState().project?.performers || [])
-      .map(({ position, memberId, costumeId }) => ({ position, memberId, costumeId })));
+      .map(({ position, memberId, costumeId, glb }) => ({ position, memberId, costumeId, loaded: typeof glb === 'string' && glb.length > 0 })));
     const performers = suits ? { source: suits.source, pinned: suits.costumes, dressed: checkCostumes(suits, dressed) }
       : { source: 'mapping', pinned: null, dressed };
     const quality = await applyGameQuality(page, game.header.quality, manifest.quality);

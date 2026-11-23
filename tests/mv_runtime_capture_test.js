@@ -52,6 +52,11 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   assert.throws(() => capture.checkCostumes(plan, [{ position: 1, memberId: 211, costumeId: 102112001 }]), /wears 102112001, not 102111001/);
   assert.throws(() => capture.checkCostumes(plan, [{ position: 1, memberId: 212, costumeId: 102111001 }]), /the game had 211/);
   assert.throws(() => capture.checkCostumes(plan, []), /position 1 has no performer/);
+  // A pinned suit whose pack is not local leaves the member without a model: never capture that silently.
+  assert.throws(() => capture.checkCostumes(plan, [{ position: 1, memberId: 211, costumeId: 102111001, loaded: false }]),
+    /no model for suit 102111001.*"download": true/);
+  assert.deepEqual(capture.checkCostumes(plan, [{ position: 1, memberId: 211, costumeId: 102111001, loaded: true }]),
+    [{ position: 1, memberId: 211, costumeId: 102111001, loaded: true }]);
 
   // The import request (game and game-stream) carries the pinned costumes; nothing else is touched.
   const routes = [];
