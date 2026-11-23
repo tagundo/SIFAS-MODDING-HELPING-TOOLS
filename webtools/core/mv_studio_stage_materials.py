@@ -416,12 +416,16 @@ def export_reflection(scene, glb, materials, material, cube_cache):
 
 def read_vertex_inputs(handler, output, count):
     color = np.asarray(handler.m_Colors, dtype=np.float32)
+    channels = getattr(handler.src.m_VertexData, "m_Channels", ())
     if color.shape == (count, 4) and np.isfinite(color).all():
-        channels = getattr(handler.src.m_VertexData, "m_Channels", ())
         normalization = ({0: 1, 1: 1, 2: 255}.get(channels[3].format)
                          if channels and len(channels) > 3 and channels[3].dimension else None)
         if normalization:
             output["color"] = color / normalization
+    elif (len(channels) > 3 and not channels[3].dimension and not getattr(
+            getattr(getattr(handler.src, "m_CompressedMesh", None), "m_Colors", None), "m_NumItems", 0)):
+        # Neither the vertex streams nor the compressed data hold COLOR.
+        output["colorAbsent"] = True
     uv = np.asarray(handler.m_UV1, dtype=np.float32)
     if uv.shape == (count, 2) and np.isfinite(uv).all():
         output["lightUV"] = uv

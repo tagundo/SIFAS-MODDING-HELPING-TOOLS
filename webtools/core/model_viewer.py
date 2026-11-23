@@ -1605,6 +1605,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     keywords["deadline"] = deadline
                 if builtin_mesh:
                     name, positions, normals, uv, submeshes = unity_builtin_meshes.geometry(builtin_mesh, world)
+                    if stage_inputs is not None:
+                        stage_inputs["colorAbsent"] = True  # Plane and Quad have no COLOR stream.
                 else:
                     name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
                 overlay_inputs_ready = uv is not None
@@ -1620,7 +1622,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                    and len(submeshes) > 1 and len(material_refs) == len(submeshes))
                 if (overlay_inputs_ready
                         and (stage_beam is None and stage_transparent is None or len(submeshes) == 1 or merge_submeshes)
-                        and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs)):
+                        and (not stage_opaque or not stage_opaque.get("vertexColor") or "color" in stage_inputs
+                             or stage_inputs.get("colorAbsent"))):
                     if stage_transparent is not None:
                         try:
                             transparent_skin_material = mv_studio_stage_overlay.export_material(
@@ -1842,7 +1845,11 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if descriptor and (not stage_opaque or stage_skin is not None):
                 descriptor = dict(descriptor)
                 if descriptor.get("vertexColor") and (stage_inputs is None or "color" not in stage_inputs):
-                    descriptor = None
+                    # Unity feeds opaque white to COLOR when the mesh has no color stream.
+                    if stage_inputs is not None and stage_inputs.get("colorAbsent"):
+                        descriptor["vertexColorAbsent"] = True
+                    else:
+                        descriptor = None
                 if descriptor and descriptor["shader"] == "stage":
                     if stage_uv is None and "lightUV" in stage_inputs:
                         info = mv_studio_stage_materials.lightmap_for(scene, renderer, tree, lightmap_settings)
@@ -1887,7 +1894,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                             stage_emissive_uv = glb.attribute(coords, "VEC2")
                 if descriptor:
                     custom = {}
-                    if descriptor.get("vertexColor"):
+                    if descriptor.get("vertexColor") and not descriptor.get("vertexColorAbsent"):
                         if stage_color is None:
                             stage_color = glb.attribute(stage_inputs["color"], "VEC4")
                         custom["_STAGE_COLOR"] = stage_color
