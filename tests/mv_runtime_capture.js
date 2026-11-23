@@ -356,9 +356,12 @@ const MAX_DELTA_TIME = 1 / 3;
 // that carries clock.frameCount. A record is a rendered frame; the frame
 // before it is at directorTime - deltaTime unless deltaTime was clamped to
 // maximumDeltaTime; the other frames between two records are spread evenly
-// over the director time between them. Springs step once per rendered frame
-// (SwingBoneGroupJob has no time step), so this grid is what the game's
-// springs saw, including its frame-time jitter on a slow device.
+// over the director time between them. While the director does not advance
+// (pinned at the song end) every frame between two records shows that time;
+// a director that goes back leaves its frames out. Springs step once per
+// rendered frame (SwingBoneGroupJob has no time step), so this grid is what
+// the game's springs saw, including its frame-time jitter on a slow device.
+// The same rule as mv_frame_compare.py game_frame_times.
 function gameFrameTimes(doc) {
   const anchors = new Map();
   for (const record of doc.records || []) {
@@ -370,6 +373,10 @@ function gameFrameTimes(doc) {
   const times = sorted.length ? [sorted[0].t] : [];
   for (let index = 1; index < sorted.length; index++) {
     const a = sorted[index - 1], b = sorted[index], frames = b.frame - a.frame;
+    if (Math.abs(b.t - a.t) <= 1e-9) {
+      for (let k = 1; k <= frames; k++) times.push(a.t);
+      continue;
+    }
     if (!(b.t > a.t)) continue;
     const before = Number.isFinite(b.dt) && b.dt > 0 && b.dt < MAX_DELTA_TIME - 1e-6 && b.t - b.dt > a.t + 1e-9 && frames >= 2 ? b.t - b.dt : null;
     const end = before ?? b.t, spread = before === null ? frames : frames - 1;

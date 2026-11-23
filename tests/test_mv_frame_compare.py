@@ -254,6 +254,24 @@ class ScreencapGameFrames(unittest.TestCase):
         self.assertEqual([(item["shot"], item["frame"], item["time"]) for item in times],
                          [(1, 0, 11.6), (1, 1, 11.3), (1, 2, 11.0), (1, 3, 10.7), (2, 0, 0.0)])
 
+    def test_pinned_director_at_song_end_shows_its_last_time(self):
+        # dump3b shot 48: frames 9870-9878 all at 106.666 while the director holds the song end.
+        dump = runtime_dump([("e0", 196, 19.4, 0.2), ("e1", 199, 20.0, 0.2), ("e2", 200, 20.0, 1 / 3), ("e3", 204, 20.0, 0.12),
+                             ("r1", 300, 30.0, 0.2), ("r2", 302, 29.0, 0.2)])
+        frames = compare.game_frame_times(dump)
+        self.assertEqual([frames[frame] for frame in range(199, 205)], [20.0] * 6)
+        self.assertAlmostEqual(frames[198], 20.0 - 0.2)
+        self.assertNotIn(301, frames, "a director that goes back leaves its frames unknown")
+        self.assertEqual((frames[300], frames[302]), (30.0, 29.0))
+        shots = [{"n": 48, "before": {"id": "e3", "directorTime": 20.0}}, {"n": 47, "before": {"id": "e1", "directorTime": 20.0}},
+                 {"n": 50, "before": {"id": "r2", "directorTime": 29.0}}]
+        times = compare.shot_candidates(shots, dump, frames_back=3)
+        self.assertEqual([(item["shot"], item["frame"], item["time"]) for item in times],
+                         [(48, 0, 20.0), (47, 0, 20.0), (47, 1, 19.8), (47, 2, 19.6), (47, 3, 19.4), (50, 0, 29.0), (50, 2, 30.0), (50, 3, 29.8)],
+                         "no times the game never showed and no repeats; the fallback spacing only before the first frame")
+        times = compare.shot_candidates([{"n": 1, "before": {"id": "e0", "directorTime": 19.4}}], dump, frames_back=2)
+        self.assertEqual([item["time"] for item in times], [19.4, 19.2, 19.0], "before the first reconstructed frame")
+
     def test_screencap_mode_compares_only_game_frame_candidates(self):
         root = Path(tempfile.mkdtemp(prefix="mv-frame-shots-"))
         try:

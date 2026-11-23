@@ -400,20 +400,24 @@ def load_game_dump(path):
 def game_frame_times(dump):
     """Rendered game frames (frameCount -> director seconds) rebuilt from every record that carries
     clock.frameCount: a record is a frame; the frame before it is at directorTime - deltaTime unless
-    deltaTime was clamped to maximumDeltaTime; the other frames between two records are spread evenly
-    (the same rule as mv_runtime_capture.js gameFrameTimes)."""
+    deltaTime was clamped to maximumDeltaTime; the other frames between two records are spread evenly.
+    While the director does not advance between two records (pinned at the song end), every frame
+    between them shows that time. A director that goes back leaves its frames unknown. The same rule
+    as mv_runtime_capture.js gameFrameTimes."""
     anchors = {}
     for record in dump.get("records") or []:
         clock = record.get("clock") or {}
         frame, t = clock.get("frameCount"), clock.get("directorTime")
         if isinstance(frame, int) and isinstance(t, (int, float)) and t > 0:
             anchors.setdefault(frame, (float(t), clock.get("deltaTime")))
-    frames = {}
     ordered = sorted(anchors.items())
-    if ordered:
-        frames[ordered[0][0]] = ordered[0][1][0]
+    frames = {frame: t for frame, (t, _) in ordered}      # every record is a frame it showed
     for (f0, (t0, _)), (f1, (t1, dt1)) in zip(ordered, ordered[1:]):
         count = f1 - f0
+        if abs(t1 - t0) <= 1e-9:
+            for k in range(1, count):
+                frames[f0 + k] = t0
+            continue
         if not t1 > t0:
             continue
         before = t1 - dt1 if (isinstance(dt1, (int, float)) and 0 < dt1 < MAX_DELTA_TIME - 1e-6 and t1 - dt1 > t0 + 1e-9
@@ -434,16 +438,21 @@ def shot_candidates(shots, dump, frames_back=3):
     before it on the game frame grid (frameCount -> director time)."""
     records = {record.get("id"): record for record in dump.get("records") or []}
     grid = game_frame_times(dump)
+    first = min(grid) if grid else None
     result = []
     for shot in shots:
         clock = (records.get(shot["before"]["id"]) or {}).get("clock") or {}
         frame, tb, dt = clock.get("frameCount"), float(shot["before"]["directorTime"]), clock.get("deltaTime")
+        listed = set()
         for k in range(frames_back + 1):
             t = grid.get(frame - k) if isinstance(frame, int) else None
-            if t is None and isinstance(dt, (int, float)) and dt > 0:
-                t = tb - k * dt          # no reconstructed frame: the before record's own spacing
-            if t is not None and t >= 0:
-                result.append({"shot": shot.get("n"), "frame": k, "time": round(t, 4)})
+            if t is None and (not isinstance(frame, int) or first is None or frame - k < first) and \
+                    isinstance(dt, (int, float)) and dt > 0:
+                t = tb - k * dt          # before the first reconstructed frame: the before record's own spacing
+            if t is None or t < 0 or round(t, 4) in listed:
+                continue                 # unknown, before the song, or a time the screen already showed (pinned director)
+            listed.add(round(t, 4))
+            result.append({"shot": shot.get("n"), "frame": k, "time": round(t, 4)})
     return result
 
 
