@@ -68,8 +68,10 @@ def _material(scene, materials, material, transparent):
     cull, queue = floats.get("_CullMode", 0), tree.get("m_CustomRenderQueue", -1)
     stencil = (floats.get("_StencilComp", 8), floats.get("_StencilRef", 2),
                floats.get("_StencilPassOp", 0), floats.get("_StencilZFailOp", 0))
+    # The opaque backgrounds write the reference on pass; some (12035, 12036)
+    # also replace it when the depth test fails (_StencilZFailOp 2).
     if (cull not in (0, 1, 2) or type(queue) is not int or
-            stencil != (8, 2, 0 if transparent else 2, 0)):
+            stencil[:3] != (8, 2, 0 if transparent else 2) or stencil[3] not in ((0,) if transparent else (0, 2))):
         return None
     if transparent and (floats.get("_BlendSrc", 5), floats.get("_BlendDst", 1),
                         floats.get("_ZTestMode", 4), floats.get("_ZWriteParam", 0)) != (5, 10, 4, 0):
@@ -92,7 +94,8 @@ def _material(scene, materials, material, transparent):
             return None
         texture = materials.texture(original)
     fields = {"texture": texture, "uv": tex_st, "tint": tint, "ambient": ambient, "cull": cull,
-              "stencil": int(stencil[1]), "queue": (3000 if transparent else 2000) if queue == -1 else queue}
+              "stencil": int(stencil[1]), "stencilZFail": int(stencil[3]),
+              "queue": (3000 if transparent else 2000) if queue == -1 else queue}
     if vertex_color:
         fields["vertexColor"] = True
     return fields

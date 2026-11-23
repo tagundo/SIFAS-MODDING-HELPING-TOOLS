@@ -32,7 +32,7 @@
     uTint: { name: "_TintColor", t: "color" },
     uShift: { name: "_Shift", t: "float" },
     uSpeed: { name: "_Speed", t: "float" },
-    uMainTex: { name: "_MainTex", t: "tex" },
+    uMain: { name: "_MainTex", t: "tex" },
   };
   // Uniforms that carry a Unity shader global rather than a material property.
   const GLOBAL_UNIFORMS = { uSelfTime: "_SelfTime", uMusicTime: "_MusicTime", _MusicTime: "_MusicTime" };

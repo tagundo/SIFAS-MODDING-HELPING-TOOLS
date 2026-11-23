@@ -367,7 +367,15 @@ def read(objects, mono, tracks, deadline):
                 has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
                 has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS for channel in material_channels)
                 if material_scope == "world":
-                    if has_skin or has_soft_billboard:
+                    # A MeshRenderer _MainTex_ST curve (e.g. 12025 Anim_root's
+                    # speaker) animates that renderer only, and the runtime binds
+                    # it to the renderer's own stage material (MVStudioStageMaterial
+                    # serves overlayUV only) or skips the whole event. Any other
+                    # MeshRenderer channel (_TintColor) has no world holder there,
+                    # so such a clip stays rejected instead of exporting a binding
+                    # root that never animates.
+                    renderer_uv = all(channel["kind"] == "overlayUV" for channel in material_channels)
+                    if has_skin or has_soft_billboard or renderer_uv and not resident_laser:
                         timing["materialScope"] = "world"
                         timing_cost += 1
                         requires_material = True
