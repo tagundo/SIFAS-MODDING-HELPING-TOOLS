@@ -902,6 +902,23 @@ class MemberVariantTest(unittest.TestCase):
                          [("textureMips", True, 0), ("textureSize", True, 0)])
         self.assertEqual(report["summary"]["beyondTolerance"], 0)
 
+    def test_gpu_generated_mip_chain_is_a_note_not_a_mip_mismatch(self):
+        game, editor = self.docs({"keywords": [], "rimlightEvaluated": True})
+        for record in records_of(editor, "materials"):
+            for material in record["materials"]:
+                if material["kind"] == "member":
+                    material["properties"]["_RimlightTex"]["v"] = {"name": "ch0212_co0002_body_rim", "width": 128,
+                                                                   "height": 128, "mips": 8, "mipsGenerated": True}
+        for record in records_of(game, "materials"):
+            for material in record["materials"]:
+                if "_RimlightTex" in material["properties"]:
+                    material["properties"]["_RimlightTex"]["v"]["mipCount"] = 1
+        report = run(game, editor)
+        rim = [group for group in items_of(report, "materials") if group["field"] == "_RimlightTex"]
+        self.assertEqual([group["metric"] for group in rim], ["textureSize"])
+        notes = report["notes"]["materials.generatedMips"]
+        self.assertTrue(notes and "authored mips not uploaded" in str(notes))
+
     def test_variant_keywords_rim_term_and_outline_stencil(self):
         game, editor = self.docs({"keywords": ["_RIMLIGHT_ON"], "rimlightEvaluated": False,
                                   "properties": None}, {"keywords": ["_CHEEK_ON", "_RIMLIGHT_ON"]})

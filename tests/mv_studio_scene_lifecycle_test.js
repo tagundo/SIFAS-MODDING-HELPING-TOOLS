@@ -587,6 +587,16 @@ function checkAssetDumpHelpers() {
   real.userData = { sifasArrayLayer: 1 };
   assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2, mips: 2, arrayLayer: 1 },
     'authored mip levels and the array slice are part of the identity');
+  // An image texture with no uploaded levels gets its chain from the GPU.
+  const gpu = new THREE.Texture({ width: 128, height: 64 });
+  gpu.name = 'rim';
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 8, mipsGenerated: true },
+    'a GPU-generated chain is reported as generated, not as authored mips');
+  gpu.minFilter = THREE.LinearFilter;
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 1 }, 'a non-mip filter samples one level');
+  gpu.minFilter = THREE.LinearMipmapLinearFilter;
+  gpu.mipmaps = [{ width: 128, height: 64 }, { width: 64, height: 32 }, { width: 32, height: 16 }];
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 3 }, 'uploaded levels are authored');
   // AS/Member: effective keywords (authored, with variant keywords as drawn),
   // the rim evaluation and the outline stencil comparison.
   const member = new THREE.ShaderMaterial({ uniforms: { uRimglightIntensity: { value: .5 }, uOutlineScale: { value: 1 } },

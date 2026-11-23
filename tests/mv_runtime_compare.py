@@ -1034,8 +1034,14 @@ class Comparison:
                 self.add("materials", "textureSize", key, record, game_value, editor_value, int(not same), 0, exact=True, near_cut=near, field=name)
                 game_mips = game_value.get("mipCount", game_value.get("mips"))
                 if isinstance(game_mips, int) and isinstance(editor_value.get("mips"), int):
-                    self.add("materials", "textureMips", key, record, game_mips, editor_value["mips"],
-                             int(game_mips != editor_value["mips"]), 0, exact=True, near_cut=near, field=name)
+                    if editor_value.get("mipsGenerated") is True:
+                        # The GPU built the editor's chain: authored mips were not uploaded, so the
+                        # count says nothing about the asset's levels. Noted, never scored.
+                        self.notes["materials.generatedMips"].append(
+                            f"{name}: game {game_mips} authored, editor {editor_value['mips']} generated (authored mips not uploaded)")
+                    else:
+                        self.add("materials", "textureMips", key, record, game_mips, editor_value["mips"],
+                                 int(game_mips != editor_value["mips"]), 0, exact=True, near_cut=near, field=name)
                 game_name, editor_name = game_value.get("name"), editor_value.get("name")
                 if game_name and editor_name and Conventions.object_name(game_name) != Conventions.object_name(editor_name):
                     self.notes["materials.textureNames"].append(f"{name}: game {game_name!r}, editor {editor_name!r}")
