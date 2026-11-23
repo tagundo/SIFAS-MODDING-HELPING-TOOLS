@@ -54,8 +54,9 @@ const shot = (start, z) => ({ start, duration: 2, values: { position: [0, 1.5, z
 const close = (actual, expected, message) => assert(Math.abs(actual - expected) < 1e-5, `${message}: ${actual} vs ${expected}`);
 
 (async () => {
+  const warnings = [];
   const scene = window.MVStudioScene.create({ clientWidth: 1280, clientHeight: 720, appendChild() {} }, {
-    visible: true, onError(message) { throw new Error(message); } });
+    visible: true, onError(message) { throw new Error(message); }, onWarning(message) { warnings.push(message); } });
   const track = { binding: camera, nativeClass: 'LiveDepthOfFieldTrack', events: [dof(0, 4, 0)] };
   const project = { token: 'dof-lag', quality: { mode: 10, values: { posteffect: true } },
     performers: [{ id: 'solo', position: 1, glb: '/api/mv-studio/media/' + '1'.padStart(32, '0') + '.glb',
@@ -85,6 +86,43 @@ const close = (actual, expected, message) => assert(Math.abs(actual - expected) 
   track.events = [dof(0, 4, 3)];
   scene.seek(2.6, project, true);
   close(focus(), 1, 'a missing part keeps the clip focusDistance');
+  assert.equal(warnings.length, 1, 'the studio hears about the missing part once');
+  assert.match(warnings[0], /body part 3 of member 1/);
+  scene.seek(2.7, project, true);
+  assert.equal(warnings.length, 1, 'a repeated warning is not reported again');
+
+  // Members[memberPosition - 1] for a member the MV does not have: the client
+  // throws in CalcFocusDistance, ProcessFrame skips PostProcess and the camera
+  // keeps the depth of field the previous frame applied.
+  const absent = dof(2.2, 1.8, 0);
+  absent.values.memberPosition = 2;
+  track.events = [dof(0, 2.2, 0), absent];
+  scene.seek(2.0, project, true);
+  close(focus(), 10 - 0.1, 'member 1 before the clip that targets member 2');
+  scene.setPlaying(true);
+  scene.playbackFrame(2.0, 1000, true);
+  scene.playbackFrame(2.3, 1100, true);
+  close(focus(), 10 - 0.1, 'a missing member keeps the previous frame depth of field');
+  scene.playbackFrame(2.5, 1200, true);
+  close(focus(), 10 - 0.1, 'and keeps it on the frames after');
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[1], /member 2, which this MV does not have/);
+  scene.seek(2.6, undefined, true);
+  assert.equal(scene.assetDump({ sections: ['post'] }).post.dof, null, 'a seek has no earlier frame to keep');
+  // A reload reports the project's notes again.
+  await scene.load(project);
+  scene.seek(2.5, project, true);
+  assert.equal(warnings.length, 3);
+  assert.match(warnings[2], /member 2, which this MV does not have/);
+  // A performer of the MV that has not loaded is not a timeline problem: its
+  // load error is reported, the previous frame's depth of field stays.
+  const late = { ...project, performers: [...project.performers, { id: 'late', position: 2 }] };
+  await scene.load(late);
+  scene.seek(2.0, late, true);
+  scene.playbackFrame(2.0, 2000, true);
+  scene.playbackFrame(2.3, 2100, true);
+  close(focus(), 10 - 0.1, 'an unloaded performer keeps the previous frame depth of field');
+  assert.equal(warnings.length, 3, 'an unloaded performer is not reported as a missing member');
   scene.dispose();
 
   // cameraAutoDistanceMode 2: the member nearest the view axis, with the
@@ -110,5 +148,5 @@ const close = (actual, expected, message) => assert(Math.abs(actual - expected) 
     close(axisFocus(), expected - 0.1, `mode 2 at ${time}`);
   });
   axisScene.dispose();
-  console.log('MV Studio DOF focus wiring: BodyPartType parts, fixed Face point, previous-frame transforms on continuing playback, mode-2 transition per frame.');
+  console.log('MV Studio DOF focus wiring: BodyPartType parts, fixed Face point, previous-frame transforms on continuing playback, the exception path keeping the previous frame, deduplicated studio warnings, mode-2 transition per frame.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

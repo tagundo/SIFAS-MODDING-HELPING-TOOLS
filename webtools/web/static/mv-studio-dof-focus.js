@@ -16,6 +16,14 @@
   // CalcFocusDistance returns the member distance plus -0.1f (0x56f5e14).
   const FOCUS_OFFSET = Math.fround(-0.1);
   const f32 = Math.fround;
+  // CalcFocusDistance reads Members[memberPosition - 1] behind an array bounds
+  // check (IndexOutOfRangeException, 0x2924148) and GetPart(bodyPart).transform
+  // behind a null check (NullReferenceException, 0x29241a0). Nothing in
+  // LiveMixerBase`2.ProcessFrame (0x2b3996c; its only landing pad ends in
+  // _Unwind_Resume) or the DOF mixer catches it, so PostProcess, the only
+  // writer of SetDepthOfFieldEnabled/Settings, is skipped and the camera keeps
+  // the depth of field the previous frame applied.
+  const KEEP_PREVIOUS = Symbol("keep the previous frame's depth of field");
 
   function clipValue(value, key) {
     const native = value[key];
@@ -63,11 +71,21 @@
   // 1 takes the nearest member and 2 the member closest to the view axis; every
   // other value uses memberPosition. Only mode 2 runs the focusTransitionTime
   // lerp, when the chosen member changes; modes 0 and 1 reset it every call.
+  // Returns the focus distance, undefined when this preview lacks a part the
+  // client would have (the caller keeps focusDistance), or KEEP_PREVIOUS where
+  // the client throws: a body part partMap never holds, a memberPosition with
+  // no performer in the MV, or a performer that is not loaded (yet).
   function memberFocus(value, local, distance, options, state) {
     const part = clipValue(value, "bodyPart"), mode = clipValue(value, "cameraAutoDistanceMode");
-    if (!BODY_PARTS.has(part)) return undefined;
-    const members = Array.isArray(options.members) ? options.members : [];
+    if (!BODY_PARTS.has(part)) {
+      options.warn?.(`A depth-of-field clip targets body part ${part}, which BodyPartManager never holds; ` +
+        "the game keeps the previous frame's depth of field, and so does this preview.");
+      return KEEP_PREVIOUS;
+    }
+    const loaded = Array.isArray(options.members);
+    const members = loaded ? options.members : [];
     let focus;
+    if ((mode === 1 || mode === 2) && loaded && !members.length) return KEEP_PREVIOUS;
     if (mode === 1) {
       focus = Infinity;
       for (const slot of members) {
@@ -111,7 +129,16 @@
         }
       }
     } else {
-      focus = distance(clipValue(value, "memberPosition"), part);
+      const slot = clipValue(value, "memberPosition");
+      if (loaded && !members.includes(slot)) {
+        // A performer of this MV that has not loaded has its own load error.
+        if (Array.isArray(options.performers) && !options.performers.includes(slot)) {
+          options.warn?.(`A depth-of-field clip targets member ${slot}, which this MV does not have; ` +
+            "the game keeps the previous frame's depth of field, and so does this preview.");
+        }
+        return KEEP_PREVIOUS;
+      }
+      focus = distance(slot, part);
       if (!Number.isFinite(focus)) return undefined;
       settle(state, -1, f32(focus));
     }
@@ -119,9 +146,12 @@
   }
 
   // memberDistance(slot, part): distance from the main camera rig to the
-  // member's BodyPartManager part. options: members (slots in Members order),
-  // angle(slot, part) (Vector3.Angle between the view axis and the part),
-  // state (createState(), persists the mode-2 transition) and warn(message).
+  // member's BodyPartManager part. options: members (loaded slots in Members
+  // order), performers (every slot the MV has), angle(slot, part)
+  // (Vector3.Angle between the view axis and the part), state (createState(),
+  // persists the mode-2 transition), previous (the result the previous
+  // evaluated frame applied, returned on the client's exception path) and
+  // warn(message).
   function sample(project, time, fov, memberDistance, options = {}) {
     if (project?.quality?.values?.posteffect !== true || !global.MVStudioLighting?.nativeWeight) return null;
     const tracks = project.tracks.filter(track => !track.muted && track.binding === mainCamera &&
@@ -139,6 +169,7 @@
       if (enabled(clipValue(value, "useMemberDistance"))) {
         const member = typeof memberDistance === "function"
           ? memberFocus(value, localTime(event, time), memberDistance, options, state) : undefined;
+        if (member === KEEP_PREVIOUS) return options.previous ?? null;
         if (Number.isFinite(member)) focus = member;
         else {
           options.warn?.(`A depth-of-field clip targets body part ${clipValue(value, "bodyPart")} of member ` +
