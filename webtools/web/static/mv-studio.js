@@ -34,6 +34,7 @@
   let hidden = [], trackKind = "", assetKind = "stage", performerId = "", resizeObserver, timelineResizer;
   let registered = null, registrationTitle = "", chartTemplates = [], chartTemplate = "", chartPath = "";
   let registrationTimelines = {}, registrationAudio = {}, latestNativeTimeline = null;
+  let lastGamePayload = null;
   // Device option of the original client (off by default): Live3DScene requests
   // the display refresh rate instead of the preset's 30/60 fps, and the swing
   // physics step once per frame at that rate.
@@ -333,9 +334,44 @@
         seek(time, false);
       })));
     }
+    const costume = gameCostumeControl(actor);
+    if (costume) box.append(field("Game costume", costume));
     const change = button(t("Replace outfit"), () => importAsset("outfit", actor.id), { id: "mv-replace-outfit" });
     change.disabled = !!pending;
     box.append(change);
+  }
+
+  // The costume override of a game MV member: re-imports the MV with that suit (and
+  // m_suit_view model) pinned at the performer's position, keeping earlier pins.
+  function gameCostumeControl(actor) {
+    const choices = Array.isArray(actor.costumes) ? actor.costumes : [];
+    if (!project || project.source?.kind !== "game" || !choices.length || !samePayload(lastGamePayload)) return null;
+    const view = (value) => Number.isInteger(value) && value > 1 ? value : 1;
+    const options = choices.map((choice, index) => ({ id: String(index), label: text(choice.name || choice.id) + " (" +
+      text(choice.id) + (view(choice.viewStatus) > 1 ? " · " + t("View status") + " " + choice.viewStatus : "") + ")" }));
+    const control = make("select", null, { id: "mv-performer-costume" });
+    const current = choices.findIndex((choice) => choice.id === actor.costumeId && view(choice.viewStatus) === view(actor.viewStatus));
+    replaceOptions(control, options, String(current));
+    control.disabled = !!pending;
+    control.addEventListener("change", () => {
+      const choice = choices[Number(control.value)];
+      if (!choice) return;
+      const costumes = {};
+      for (const performer of project.performers || []) {
+        if (performer.suitSource === "pinned" && Number.isInteger(performer.costumeId)) {
+          costumes[performer.position] = { suit: performer.costumeId, viewStatus: view(performer.viewStatus) };
+        }
+      }
+      costumes[actor.position] = { suit: choice.id, viewStatus: view(choice.viewStatus) };
+      runGameImport({ ...lastGamePayload, costumes });
+    });
+    return control;
+  }
+
+  function samePayload(payload) {
+    const source = project && project.source || {};
+    return !!payload && payload.region === source.region && payload.platform === source.platform &&
+      String(payload.liveId) === String(source.liveId) && String(payload.assetId) === String(source.assetId);
   }
 
   function renderSoundtrack() {
@@ -743,7 +779,8 @@
 
   function ensureScene() {
     if (!scene && global.MVStudioScene) {
-      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden });
+      scene = global.MVStudioScene.create(byId("mv-scene"), { onError: showError, visible: visible && !document.hidden,
+        screenFade: byId("mv-screen-fade").checked });
       scene.setVisible(visible && !document.hidden);
       if (refreshRateMode) applyRefreshRateMode();
     }
@@ -905,6 +942,13 @@
       if (catalogRequest !== controller || !dialog.open) return;
       replaceOptions(region, data.regions || [], data.region || region.value);
       replaceOptions(platform, data.platforms || [], data.platform || platform.value);
+      // A local Elichika player database: follow that player's saved MV decks. A lone
+      // player is preselected until one is chosen; a reload never overrides a choice,
+      // including "New player". The import records the deck and player it used.
+      const players = Array.isArray(data.players) ? data.players : [], player = byId("mv-game-player");
+      replaceOptions(player, players.map((item) => ({ id: item.id, label: text(item.name) + " (" + text(item.id) + ")" })),
+        !player.dataset.chosen && players.length === 1 ? players[0].id : player.value, t("New player"));
+      byId("mv-game-player-field").hidden = !players.length;
       catalogIndex = (Array.isArray(data.songs) ? data.songs : []).map((song) => ({ song,
         search: foldSearch([song.id, song.title, ...(song.variants || []).flatMap((variant) => [variant.id, variant.label])].join("\n")) }));
       catalogRequest = null;
@@ -986,7 +1030,16 @@
     if (!choice || !version) return;
     const payload = { region: byId("mv-game-region").value, platform: byId("mv-game-platform").value,
       liveId: choice.id, assetId: version.id ?? version.value, download: byId("mv-game-download").checked };
+    // The client's first deck tab is Customize; only another choice is sent.
+    const deckType = Number(byId("mv-game-deck").value) || 2, player = Number(byId("mv-game-player").value) || 0;
+    if (deckType !== 2 || player) payload.deck = { deckType, ...(player ? { userId: player } : {}) };
     byId("mv-game-picker").close();
+    runGameImport(payload);
+  }
+
+  function runGameImport(payload) {
+    if (pending) return;
+    lastGamePayload = payload;
     operation("Preparing MV from game…", async (signal) => {
       const load = { controller: pending, stageRequested: false, stageReady: false, finishing: false };
       gameImport = load;
@@ -1154,6 +1207,7 @@
     byId("mv-rewind").addEventListener("click", () => { pause(); seek(0); });
     byId("mv-play").addEventListener("click", togglePlayback);
     byId("mv-camera-mode").addEventListener("change", (event) => { if (scene) scene.setCamera(event.target.value); });
+    byId("mv-screen-fade").addEventListener("change", (event) => { if (scene) scene.setScreenFade(event.target.checked); });
     byId("mv-frame-scene").addEventListener("click", () => {
       if (!scene) return;
       byId("mv-camera-mode").value = "orbit";
@@ -1167,6 +1221,7 @@
     byId("mv-game-platform").addEventListener("change", loadCatalog);
     byId("mv-game-song").addEventListener("change", syncVariants);
     byId("mv-game-variant").addEventListener("change", () => { byId("mv-game-download").checked = false; });
+    byId("mv-game-player").addEventListener("change", (event) => { event.target.dataset.chosen = "1"; });
     byId("mv-game-search").addEventListener("input", filterCatalog);
     byId("mv-game-load").addEventListener("click", importGame);
     byId("mv-game-picker").addEventListener("close", () => {

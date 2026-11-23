@@ -464,6 +464,7 @@
               <option value="live" data-i18n="Game camera">Game camera</option>
               <option value="orbit" data-i18n="Free camera">Free camera</option>
             </select></label>
+            <label class="mv-check"><input id="mv-screen-fade" type="checkbox" checked><span data-i18n="Start and end fade">Start and end fade</span></label>
             <button id="mv-frame-scene" type="button" data-i18n="Frame scene">Frame scene</button>
           </div>
         </div>
@@ -557,6 +558,8 @@
       <label><span data-i18n="Search MVs">Search MVs</span><input id="mv-game-search" type="search" maxlength="120"></label>
       <label><span data-i18n="Song">Song</span><select id="mv-game-song"></select></label>
       <label><span data-i18n="MV variant">MV variant</span><select id="mv-game-variant"></select></label>
+      <label><span data-i18n="MV deck">MV deck</span><select id="mv-game-deck"><option value="2" data-i18n="Customize">Customize</option><option value="1" data-i18n="Original">Original</option></select></label>
+      <label id="mv-game-player-field" hidden><span data-i18n="Player">Player</span><select id="mv-game-player"></select></label>
     </div>
     <label class="mv-check"><input id="mv-game-download" type="checkbox"><span data-i18n="Download missing assets">Download missing assets</span></label>
     <p id="mv-game-status" class="mv-status" role="status"></p>
@@ -657,6 +660,7 @@
   <script src="/static/mv-studio-stage-lens-simulation.js"></script>
   <script src="/static/mv-studio-stage-dust-simulation.js"></script>
   <script src="/static/mv-studio-particle-systems.js"></script>
+  <script src="/static/mv-studio-control-prefabs.js"></script>
   <script src="/static/mv-studio-stage-burst-simulation.js"></script>
   <script src="/static/mv-studio-stage-lens.js"></script>
   <script src="/static/mv-studio-momiji-leaves-simulation.js"></script>
@@ -682,6 +686,7 @@
   <script src="/static/mv-studio-moving-burst-simulation.js"></script>
   <script src="/static/mv-studio-stationary-bursts.js"></script>
   <script src="/static/mv-studio-axis-billboard.js"></script>
+  <script src="/static/mv-studio-lossy-scale.js"></script>
   <script src="/static/mv-studio-shaft.js"></script>
   <script src="/static/mv-studio-spotlight-area.js"></script>
   <script src="/static/mv-studio-stage-display.js"></script>
@@ -689,6 +694,7 @@
   <script src="/static/mv-studio-physics.js"></script>
   <script src="/static/viewer-constraints.js"></script>
   <script src="/static/mv-studio-member-shadow.js"></script>
+  <script src="/static/mv-studio-screen-fade.js"></script>
   <script src="/static/mv-studio-hdr.js"></script>
   <script src="/static/mv-studio-dof.js"></script>
   <script src="/static/mv-studio-flare.js"></script>

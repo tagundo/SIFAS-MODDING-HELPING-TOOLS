@@ -15,11 +15,14 @@ of a track is one of:
 
 The table follows the preview consumers in web/static (by nativeClass or by
 the clip's playableClass) and the Python readers that feed them. Clip-level
-coverage is given where the preview decides per clip: CustomControl cues are
-counted as drawn when a stage preview descriptor names their (trackId,
-eventId), and stage-node clips when the stage-motion reader accepted them
-(AnimationTrack events in stageMotion.mix, ActivationTrack events in
-stageMotion.activations).
+coverage is given where the preview decides per clip: every CustomControl
+clip has a row in the import's ``controlCoverage`` ledger
+(mv_studio_control_prefabs: drawn by a per-effect stage reader, drawn in full
+or in part by the particle and prefab rules, drawing nothing in the original,
+or not previewed with the reasons; an import without the ledger counts a cue
+as drawn when a stage preview descriptor names its (trackId, eventId)), and
+stage-node clips when the stage-motion reader accepted them (AnimationTrack
+events in stageMotion.mix, ActivationTrack events in stageMotion.activations).
 
 Performer prop tracks (mv_studio_props.bindings) play only through an
 attached prop: a ``props`` asset with a preview and an ``attachment``, the
@@ -80,8 +83,7 @@ CLASSES = {
     "LivePropRimlightTrack": (RENDERED, "Prop rim light."),
     "LiveMemberCullerTrack": (RENDERED, "Performer culling."),
     "LiveMemberScalingTrack": (RENDERED, "Performer height scaling."),
-    "LiveMemberShadowTrack": (PARTIAL, "Only turns the stage's default member shadows off; "
-                                       "shadowIndex and scale clips are not applied."),
+    "LiveMemberShadowTrack": (RENDERED, "Member foot shadow scales and the stage's shadow prefab index."),
     "LiveMemberIKTrack": (NOT_RENDERED, "Arm IK (TimelineAssetBindingInfo.ikInfo) is not implemented."),
     "LiveDisplayCameraTrack": (NOT_RENDERED, "The display camera that draws onto the stage screens is not implemented."),
     "LivePropColoringTrack": (NOT_RENDERED, "Prop colouring is not implemented."),
@@ -128,6 +130,10 @@ PROP_NO_BUNDLE = "The catalog lists no stage props bundle for this stage."
 PROP_SEVERAL = "More than one performer prop binding; the preview attaches a single prop only."
 PROP_UNAVAILABLE = "The stage props bundle is unavailable."
 PROP_PREVIEW_FAILED = "The performer prop preview could not be built from the props bundle."
+# load_game's reason when the stage effect has member-shadow prefabs that could not be exported:
+# the costume shadows are removed for them (ShadowComponent.Initialize), so no shadow is drawn.
+SHADOW_PREFABS_UNAVAILABLE = ("The stage's member shadow prefabs could not be exported, so no performer "
+                              "shadow is drawn for the shadow index and scales.")
 PROP_NOT_ATTACHED = "No performer prop is attached to this import."
 _PROP_NO_CURVE = "Prop clips without a playable native opening curve."
 
@@ -159,6 +165,20 @@ _REJECTED = "Clips the stage-motion reader rejects."
 # MVStudioStageMotion drives a stage binding only through exactly one track of each class.
 _SHARED = {"AnimationTrack": "More than one AnimationTrack on this stage binding; none is animated.",
            "ActivationTrack": "More than one accepted ActivationTrack on this stage binding; none is switched."}
+
+
+_LEDGER_STATUSES = {RENDERED, PARTIAL, NOT_RENDERED, NO_EFFECT, MUTED}
+
+
+def _control_ledger(project):
+    """(trackId, eventId) -> (status, note) of every CustomControl clip, from the import's ledger."""
+    rows = project.get("controlCoverage")
+    found = {}
+    for row in rows if isinstance(rows, list) else ():
+        if (isinstance(row, dict) and row.get("status") in _LEDGER_STATUSES and isinstance(row.get("note"), str)
+                and isinstance(row.get("trackId"), str) and isinstance(row.get("eventId"), str)):
+            found[row["trackId"], row["eventId"]] = row["status"], row["note"]
+    return found
 
 
 def _split(total, rendered, rendered_note, missing_note):
@@ -219,6 +239,16 @@ def _classify(track, project, context):
             return _split(len(events), sum(event.get("id") in accepted for event in events),
                           "Stage-node visibility.", _REJECTED)
     elif native == "CustomControlTrack":
+        ledger = context["control"]
+        if ledger:
+            # One row per clip from mv_studio_control_prefabs: what the stage readers,
+            # the particle rule and the prefab rule draw of the clip's clone, or why nothing.
+            grouped = {}
+            for event in events:
+                status, reason = ledger.get((track.get("id"), event.get("id")),
+                                            (NOT_RENDERED, "Effect cues no stage effect reader draws."))
+                grouped[status, reason] = grouped.get((status, reason), 0) + 1
+            return [(status, count, reason) for (status, reason), count in grouped.items()] or [(RENDERED, 0, note)]
         drawn = sum((track.get("id"), event.get("id")) in context["cues"] for event in events)
         rows = []
         if drawn:
@@ -226,15 +256,18 @@ def _classify(track, project, context):
         if drawn < len(events):
             rows.append((NOT_RENDERED, len(events) - drawn, "Effect cues no stage effect reader draws."))
         return rows or [(RENDERED, 0, note)]
+    if native == "LiveMemberShadowTrack" and context.get("shadow"):
+        status, note = NOT_RENDERED, context["shadow"]
     if status == RENDERED and slot is not None and slot not in context["performers"]:
         status, note = NOT_RENDERED, _NO_PERFORMER
     return [(status, len(events), note)]
 
 
-def report(project, prop_gap=None):
+def report(project, prop_gap=None, shadow_gap=None):
     """Return per (native class, status) counts of tracks and clips, and the reported gaps.
 
-    ``prop_gap`` is load_game's reason for attaching no performer prop.
+    ``prop_gap`` is load_game's reason for attaching no performer prop, ``shadow_gap``
+    its reason when the stage's member-shadow prefabs are not drawn.
     """
     tracks = [track for track in project.get("tracks") or () if isinstance(track, dict)]
     motion = project.get("stageMotion") or {}
@@ -254,8 +287,10 @@ def report(project, prop_gap=None):
         "switched": switched,
         "props": _prop_tracks(project, tracks, prop_gap),
         "cues": claimed_cues(project),
+        "control": _control_ledger(project),
         "performers": {row.get("position") for row in project.get("performers") or ()
                        if isinstance(row, dict) and (row.get("motion") or row.get("glb"))},
+        "shadow": shadow_gap,
     }
     rows = {}
     for track in tracks:
@@ -290,12 +325,12 @@ def warnings(coverage):
     return notes
 
 
-def apply(project, prop_gap=None):
+def apply(project, prop_gap=None, shadow_gap=None):
     """Attach the coverage report to a game import and add its gap warnings.
 
     Run it once ``project["assets"]`` is final, so an attached performer prop is seen.
     """
-    coverage = report(project, prop_gap)
+    coverage = report(project, prop_gap, shadow_gap)
     project["importCoverage"] = coverage
     project["warnings"].extend(warnings(coverage))
     return coverage

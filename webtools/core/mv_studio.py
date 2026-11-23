@@ -180,7 +180,12 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False):
+             native_stage_effect=False, attach="", warnings=None):
+    """Return (media URL, rig) of a model preview; ``warnings`` receives its conversion warnings.
+
+    ``attach`` is the performer's m_suit_attach key. A stage preview is reused
+    from the cache only when it converted without warnings.
+    """
     models = [path, *companions]
     key = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
@@ -189,7 +194,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
                tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings),
-               native_stage_effect)
+               native_stage_effect) + ((attach,) if attach else ())
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
@@ -203,11 +208,14 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
                       "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer,
-                      "_mv_native_stage_effect": native_stage_effect},
+                      "_mv_native_stage_effect": native_stage_effect,
+                      **({"_mv_attach_key": attach} if performer and attach else {})},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
         raise ValueError("The 3D preview expired. Reopen the asset.")
+    if warnings is not None:
+        warnings.extend(item for item in prepared.get("warnings") or () if isinstance(item, dict))
     url, rig = _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
     if rig.get("bones"):
         from . import viewer_physics
@@ -304,7 +312,8 @@ def _timeline(path):
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
-                                               preview_stage_sparks_roop=True, preview_particle_systems=True)
+                                               preview_stage_sparks_roop=True, preview_particle_systems=True,
+                                               preview_control_prefabs=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -320,7 +329,7 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
     facial_clips = []
     for item in facial_entries:
         key = item["key"]
-        facial_clips.append({name: value for name, value in item.items() if name != "key"} | identities[key])
+        facial_clips.append({name: value for name, value in item.items() if name != "key"} | (identities[key] if key is not None else {}))
     native_events = {}
     for track in tracks:
         if track["kind"] == "dance":
@@ -431,12 +440,15 @@ def _stage_snapshot(project, assets, performers):
     })
 
 
-def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None):
+def load_game(repo_root, *, region, platform, live_id, asset_id, language, download=False, on_stage=None, costumes=None,
+              deck=None):
     """Import the complete project, optionally publishing its renderable stage first.
 
-    `costumes` ({position: suit id}) dresses members in explicit suits instead of the
-    member mapping's, e.g. the suits a recorded game performance wore."""
-    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
+    Performers follow the client's MV deck chain (mv_studio_suits); `deck` gives the
+    player state (deck type, local Elichika player). `costumes` ({position: suit id or
+    {"suit", "viewStatus"}}) dresses members in explicit suits instead, e.g. the suits a
+    recorded game performance wore."""
+    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality, mv_studio_suits
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
@@ -446,10 +458,14 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         raise ValueError("An MV is already being prepared. Try again when it finishes.")
     try:
         selected = mv_studio_game.resolve(repo_root, region=region, platform=platform,
-                                          live_id=live_id, asset_id=asset_id, language=language, costumes=costumes)
+                                          live_id=live_id, asset_id=asset_id, language=language, costumes=costumes,
+                                          deck=deck)
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
-                  "registered": selected.get("registered", False)}
+                  "registered": selected.get("registered", False),
+                  # The deck tab / local player and every position's suit source, so a saved
+                  # project or a frame capture says which player state dressed the members.
+                  **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
         project = _blank(selected["name"], source)
         project["quality"] = mv_studio_quality.read_quality(repo_root, region=source["region"], language=language,
                                                              quality_set=selected.get("qualitySet"))
@@ -501,7 +517,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                              "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                              "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                             "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
+                             "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems",
+                             "stageControlPrefabs", "controlCoverage")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:_MEMBER_MAX]
@@ -511,13 +528,20 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
+            from . import mv_studio_import_coverage
+            shadow_gap = None
             for row, preview_path in ((stage_row, stage_file), (effect_row, effect_file)):
                 if preview_path is None:
                     continue
                 try:
                     bindings = project.get("stageMotion", {}).get("bindings", ()) if row is effect_row else ()
+                    converted = []
                     row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings,
-                                                    native_stage_effect=row is effect_row)
+                                                    native_stage_effect=row is effect_row, warnings=converted)
+                    for item in converted:
+                        if item.get("code") == "member_shadow_prefabs_unavailable":
+                            warnings.append(f"{row['label']}: {item.get('message')}")
+                            shadow_gap = mv_studio_import_coverage.SHADOW_PREFABS_UNAVAILABLE
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):
@@ -529,7 +553,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original stage model is unavailable for preview.")
             describe(stage.get("background"), "background", "2D stage background")
             describe(stage.get("thumbnail"), "other", "Stage thumbnail")
-            from . import mv_studio_import_coverage, mv_studio_props
+            from . import mv_studio_props
             prop_bindings = mv_studio_props.bindings(project["tracks"]) if stage.get("props") else []
             performer_prop = prop_bindings[0] if len(prop_bindings) == 1 else None
             # Why the timeline's performer prop tracks do not play, for the coverage report.
@@ -585,8 +609,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 _, model = load(entry.get("model"), "outfit", entry.get("costumeName") or label)
                 # Position is a workbench starting pose until native rig
                 # translations replace it. Never treat it as a stage bind.
+                attach = entry.get("attachKey") or ""
                 result = {"id": f"member-{number}", "position": number, "label": label,
                           "memberId": entry.get("memberId"), "costumeId": entry.get("costumeId"),
+                          **{field: entry[field] for field in ("viewStatus", "suitSource", "costumes")
+                             if field in entry}, **({"attachKey": attach} if attach else {}),
                           "transform": {"position": [0 if entry.get("isCenter") else ((-1 if number % 2 == 0 else 1) * ((number + 1) // 2)), 0, 0]}}
                 if "themeColor" in entry:
                     result["themeColor"] = entry["themeColor"]
@@ -600,7 +627,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         _, facial_file = load(descriptor, "eyes", f"{label} facial clips")
                         if facial_file is not None:
                             facial_files.append(facial_file)
-                    key = actor_cache.key(motion_inputs, number, result["memberId"], model, companions, facial_files) if actor_cache else None
+                    key = actor_cache.key(motion_inputs, number, result["memberId"], model, companions, facial_files,
+                                          attach=attach) if actor_cache else None
                     saved = actor_cache.get(key) if key is not None else None
                     if saved is not None:
                         name, rig, motion = saved
@@ -613,7 +641,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                         except (ValueError, OSError) as error:
                             warnings.append(f"{label} choreography: {error}")
                         try:
-                            url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
+                            url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True,
+                                                attach=attach)
                             if motion is not None:
                                 try:
                                     motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))
@@ -676,7 +705,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             for item in selected.get("missing", []))
             project["assets"] = list(rows.values())
             # After the assets: only an attached performer prop plays its tracks.
-            mv_studio_import_coverage.apply(project, prop_gap)
+            mv_studio_import_coverage.apply(project, prop_gap, shadow_gap)
         return _register(project, native)
     finally:
         _IMPORT.release()
@@ -1278,7 +1307,8 @@ def _mod_files(project, files):
                                  "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                                  "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                                  "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                                 "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
+                                 "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems",
+                                 "stageControlPrefabs", "controlCoverage")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

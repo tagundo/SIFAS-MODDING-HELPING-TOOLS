@@ -279,6 +279,29 @@
       Number.isInteger(system.node) && Number.isInteger(system.layer);
   }
 
+  // Prefab Animator curves the runtime plays (mv_studio_prefab_animator): a node
+  // translation over local-space systems, and a system renderer's _TintColor or _MainTex_ST.
+  function validAnimation({animation, nodes, systems}) {
+    const curves = global.MVStudioStageMotion?.validCurve;
+    if (!curves || !Array.isArray(animation?.clips) || !Array.isArray(animation.channels) ||
+        !animation.clips.every(clip => finite(clip?.start) && finite(clip.duration) && clip.duration >= 0 &&
+          typeof clip.loop === "boolean")) return false;
+    return animation.channels.every(row => Number.isInteger(row?.clip) && !!animation.clips[row.clip] &&
+      Array.isArray(row.curves) && row.curves.every(curves) &&
+      (row.kind === "translation" ? Number.isInteger(row.node) && !!nodes[row.node] && row.curves.length === 3 :
+        (row.kind === "tint" || row.kind === "uv") && Number.isInteger(row.system) && !!systems[row.system] &&
+          row.curves.length === 4));
+  }
+
+  // State time of a prefab Animator whose clone was activated `frames` display frames
+  // ago: it plays its default state on the player clock from the activation (clipIn
+  // does not reach it), wrapped by m_LoopTime or held at the clip end.
+  function animatorTime(clip, frames, fps) {
+    const elapsed = frames / fps;
+    const local = clip.loop && clip.duration > 0 ? elapsed % clip.duration : Math.min(elapsed, clip.duration);
+    return clip.start + local;
+  }
+
   function validDescriptor(source) {
     const {textures, templates, cues} = source || {};
     if (source?.schema !== 1 || !Array.isArray(textures) || !Array.isArray(templates) || !Array.isArray(cues) ||
@@ -290,7 +313,8 @@
     return templates.every(template => Array.isArray(template?.nodes) && Array.isArray(template.systems) &&
       template.nodes.every((node, index) => vector(node?.position, 3) && vector(node.rotation, 4) &&
         vector(node.scale, 3) && (node.parent === null || (Number.isInteger(node.parent) && node.parent < index))) &&
-      template.systems.every(system => validSystem(system, textures) && template.nodes[system.node])) &&
+      template.systems.every(system => validSystem(system, textures) && template.nodes[system.node]) &&
+      (template.animation === undefined || validAnimation(template))) &&
       cues.every(cue => id(cue?.trackId) && id(cue.eventId) && Number.isInteger(cue.template) &&
         !!templates[cue.template] && vector(cue.offset, 3) && typeof cue.quality === "string");
   }
@@ -937,20 +961,13 @@
       T.InvertStencilOp, T.IncrementWrapStencilOp, T.DecrementWrapStencilOp][value] ?? T.KeepStencilOp;
   }
 
-  function materialFor(T, system, texture) {
-    const {material, renderer} = system;
+  // AS/General/Transparent render state from the material: blend, cull, depth and stencil
+  // (shared with mv-studio-control-prefabs.js, whose meshes use the same shader).
+  function renderState(T, material) {
     const [comparison, reference, pass, zFail] = material.stencil;
     const stencil = !(comparison === 0 || comparison === 8) || pass !== 0 || zFail !== 0;
-    const defines = {};
-    if (material.vertexColor) defines.VERTEX_COLOR = 1;
-    if (material.saturate) defines.SATURATE = 1;
-    if (renderer.mode === 1) defines.STRETCHED = 1;
-    else if (renderer.mode === 3) defines.VERTICAL = 1;
-    else if (renderer.mode === 0 && renderer.alignment === 0) defines.VIEW_FACING = 1;
-    if (renderer.mode === 0 && tilted(system)) defines.TILTED = 1;
     const depthFunc = depthFunction(T, material.zTest);
-    return new T.ShaderMaterial({
-      name: `Original particle ${material.name}`, vertexShader, fragmentShader, defines,
+    return {
       // Cull Off draws both faces; camera-facing quads are wound to face the camera.
       transparent: true, toneMapped: false, side: [T.DoubleSide, T.BackSide, T.FrontSide][material.cull] ?? T.DoubleSide,
       depthTest: depthFunc !== null, depthFunc: depthFunc ?? T.AlwaysDepth, depthWrite: material.zWrite === 1,
@@ -960,6 +977,21 @@
       stencilWrite: stencil, stencilRef: reference, stencilFunc: stencilFunction(T, comparison),
       stencilFuncMask: 255, stencilWriteMask: 255, stencilFail: T.KeepStencilOp,
       stencilZFail: stencilOperation(T, zFail), stencilZPass: stencilOperation(T, pass),
+    };
+  }
+
+  function materialFor(T, system, texture) {
+    const {material, renderer} = system;
+    const defines = {};
+    if (material.vertexColor) defines.VERTEX_COLOR = 1;
+    if (material.saturate) defines.SATURATE = 1;
+    if (renderer.mode === 1) defines.STRETCHED = 1;
+    else if (renderer.mode === 3) defines.VERTICAL = 1;
+    else if (renderer.mode === 0 && renderer.alignment === 0) defines.VIEW_FACING = 1;
+    if (renderer.mode === 0 && tilted(system)) defines.TILTED = 1;
+    return new T.ShaderMaterial({
+      name: `Original particle ${material.name}`, vertexShader, fragmentShader, defines,
+      ...renderState(T, material),
       uniforms: {
         uTexture: {value: texture}, uTint: {value: new T.Vector4().fromArray(material.tint)},
         uMainST: {value: new T.Vector4().fromArray(material.st)},
@@ -1054,7 +1086,7 @@
             (Math.imul((cue.clipSeed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) + Math.imul(systemIndex + 1, 0xc2b2ae35) + cueIndex) >>> 0 :
             system.main.randomSeed >>> 0};
       });
-      return {cue, cueIndex, template, systems};
+      return {cue, cueIndex, template, systems, frames: -1};
     });
     const local = new T.Vector3(), center = new T.Vector3();
     let tracks, disposed = false;
@@ -1097,6 +1129,33 @@
       return null;
     }
 
+    // Sample the prefab Animator curves at the clone's state time: moved nodes give
+    // the systems below them a new pose; renderer curves replace tint and _MainTex_ST.
+    function animate(entry, frames, fps) {
+      const {template, cue, systems} = entry, animation = template.animation;
+      if (!animation || entry.frames === frames) return;
+      entry.frames = frames;
+      const evaluate = global.MVStudioStageMotion.evaluate;
+      const times = animation.clips.map(clip => animatorTime(clip, frames, fps));
+      const moved = template.nodes.map(node => ({...node}));
+      let posed = false;
+      for (const item of systems) item.tint = item.st = null;
+      for (const row of animation.channels) {
+        const values = row.curves.map(curve => evaluate(curve, times[row.clip]));
+        if (row.kind === "translation") {
+          moved[row.node].position = values;
+          posed = true;
+        } else {
+          const item = systems[row.system];
+          if (row.kind === "tint") item.tint = values;
+          else item.st = values;
+        }
+      }
+      if (!posed) return;
+      const poses = nodePoses(moved, cue.offset);
+      for (const item of systems) item.pose = poses[item.system.node];
+    }
+
     function hide(entry) {
       if (entry.packet) {
         entry.packet.mesh.visible = false;
@@ -1111,6 +1170,9 @@
       if (!stream) return hide(entry);
       const active = stream.sample(frames, fps);
       const packet = packetOf(entry, cue), {buffers, mesh} = packet, {system, pose} = entry;
+      const uniforms = mesh.material.uniforms;
+      uniforms.uTint.value.fromArray(entry.tint || system.material.tint);
+      uniforms.uMainST.value.fromArray(entry.st || system.material.st);
       const {mode, sortMode} = system.renderer;
       const scale = system.main.scalingMode === 0 ? pose.scale : system.main.scalingMode === 1 ? pose.local : [1, 1, 1];
       // Local scaling also sizes the billboard quads (reproducible() admits no other scaled case).
@@ -1169,6 +1231,8 @@
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
             track.events.find(row => row.id === cue.eventId);
           const frames = event ? activeFrames(event, time, fps) : 0;
+          if (frames) animate(entry, frames, fps);
+          else entry.frames = -1;
           for (const item of systems) {
             if (!frames || !item.drawn) {
               hide(item);
@@ -1207,7 +1271,7 @@
   }
 
   global.MVStudioParticleSystems = {
-    apply, create, activeFrames, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt, nodePoses, eulerQuaternion,
-    blendFactor, depthFunction, mainCameraMask, salts,
+    apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
+    nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
   };
 })(typeof window !== "undefined" ? window : globalThis);

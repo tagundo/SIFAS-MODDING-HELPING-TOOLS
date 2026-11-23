@@ -154,7 +154,11 @@ def _attach_fan_material(scene, materials, obj, tree, exported):
     try:
         metadata = model_materials.attach_member_metadata(
             scene, obj, tree, {}, materials.texture, mip_resolver=materials.mip_textures)
-        complete = (metadata["features"]["rimlight"] and not metadata["limitations"]
+        # The hand-prop export keeps the rule it was verified with (the fan's
+        # authored rim switch plus a resolved rim texture); it does not follow
+        # the AS/Member rule that exports the rim texture for every material.
+        complete = (model_materials.authored_rimlight(metadata) and metadata["features"]["rimlight"]
+                    and not metadata["limitations"]
                     and all(len(metadata["textures"].get(name, {}).get("mipmaps", ())) == size.bit_length()
                             for name, size in _FAN_TEXTURES.items()))
     finally:

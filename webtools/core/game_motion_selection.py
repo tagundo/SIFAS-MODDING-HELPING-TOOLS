@@ -321,7 +321,8 @@ def facial_banks(paths, *, deadline):
 
     Semantic ids are the client's FacialAnimationId values: eyes below 10000,
     mouth in the 10000 range. This preserves aliases such as eye101 -> eye005
-    without guessing a clip filename from an event's index.
+    without guessing a clip filename from an event's index. A row with a null
+    clip is reported with key None.
     """
     sources = [_read(path, deadline) for path in paths]
     objects = {_object_key(obj): (obj, source) for source in sources for obj in source["objects"]}
@@ -342,7 +343,12 @@ def facial_banks(paths, *, deadline):
                     continue
                 kind = "eyes" if 0 < summary < 10000 else "mouth" if 10000 <= summary < 20000 else None
                 pointer = data.get("clip", {})
-                if kind is None or pointer.get("m_PathID", 0) == 0:
+                if kind is None:
+                    continue
+                if pointer.get("m_PathID", 0) == 0:
+                    # CreateAnimationClip makes no playable for a null clip: the
+                    # index plays nothing, which the viewer must know (key None).
+                    entries.append({"key": None, "kind": kind, "index": index, "customIndex": data.get("customIndex", 0), "summary": summary})
                     continue
                 key = _pointer_key(obj, pointer)
                 resolved = objects.get(key)

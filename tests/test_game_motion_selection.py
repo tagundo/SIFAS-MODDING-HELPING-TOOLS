@@ -66,7 +66,8 @@ class OriginalGameMotionSelectionTests(unittest.TestCase):
     def test_original_facial_table_preserves_aliases_instead_of_guessing_names(self):
         selected, entries = selection.facial_banks([SAMPLES / "ayumu-animations1.unity", SAMPLES / "ayumu-animations2.unity"],
                                                    deadline=self.deadline())
-        resolved = {(entry["kind"], entry["index"]): selected["selected"][entry["key"]]["object"].peek_name() for entry in entries}
+        resolved = {(entry["kind"], entry["index"]): selected["selected"][entry["key"]]["object"].peek_name() if entry["key"] else None
+                    for entry in entries}
         self.assertTrue(resolved["eyes", 101].endswith("LiveFacial_eye_005"))
         self.assertTrue(resolved["eyes", 102].endswith("LiveFacial_eye_004"))
         self.assertTrue(resolved["mouth", 13].endswith("LiveFacial_mouth_004"))

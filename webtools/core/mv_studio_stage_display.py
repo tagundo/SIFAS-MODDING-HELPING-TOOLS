@@ -3,27 +3,20 @@
 import math
 
 from . import model_viewer as viewer
+from .mv_studio_shader_identity import KNOWN, matches
 from .mv_studio_stage_coloring import _path
 
 
 _STAGE = "/EntryPoint/Live/Stages/MainStage/Effect/"
-_SHADERS = {
-    "AS/General/Opaque": (8330475765356442367, "cab-618a998abe328b9a2b05b370a5907b3e"),
-    "AS/General/Transparent": (7151384334892346267, "cab-adf9ba7b61bd035c754bf74ae44927cb"),
-}
+# (path ID, CAB) of the shared shader bundle copies, derived from the one verified
+# table; the per-effect stage readers match a material's shader pointer against it.
+_SHADERS = {name: (path_id, cab) for (cab, path_id), name in KNOWN.items()
+            if name in ("AS/General/Opaque", "AS/General/Transparent")}
 
 
 def _shader_matches(material, tree, name):
-    pointer = tree.get("m_Shader", {})
-    shader = viewer._ref(material, pointer)
-    if shader is not None:
-        return shader.type.name == "Shader" and shader.read_typetree().get("m_ParsedForm", {}).get("m_Name") == name
-    path_id, serialized_file = _SHADERS[name]
-    file_id = pointer.get("m_FileID", 0)
-    references = material.assets_file.externals
-    if pointer.get("m_PathID") != path_id or not 0 < file_id <= len(references):
-        return False
-    return references[file_id - 1].path.replace("\\", "/").rsplit("/", 1)[-1].lower() == serialized_file
+    # Shader identity is the ShaderLab name (an embedded copy counts as the shader).
+    return matches(material, tree, name)
 
 
 def binding(scene, component, tree):

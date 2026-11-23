@@ -39,6 +39,7 @@ import time
 import zlib
 
 from . import decode, model_animation as animation, model_viewer as viewer
+from . import mv_studio_prefab_animator as animator
 from . import mv_studio_stage_motion as motion, mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 from .mv_studio_stage_display import _shader_matches
@@ -83,8 +84,8 @@ _UNSUPPORTED_MODULES = ("InheritVelocityModule", "ForceModule", "ExternalForcesM
 _SHADER = "AS/General/Transparent"
 
 
-class _Unsupported(Exception):
-    """A system feature the runtime does not reproduce; reported, never approximated."""
+# A system feature the runtime does not reproduce; reported, never approximated.
+_Unsupported = animator.Unsupported
 
 
 def _number(value, low=-1e6, high=1e6):
@@ -389,9 +390,17 @@ def _renderer(tree):
 
 def _material(objects, renderer, tree):
     materials = tree.get("m_Materials") or []
-    if not materials or not (materials[0] or {}).get("m_PathID"):
+    return surface(objects, renderer, materials[0] if materials else None)
+
+
+def surface(objects, owner, pointer):
+    """(surface, texture reader) of one AS/General/Transparent material, or raise _Unsupported.
+
+    Shared with mv_studio_control_prefabs, whose meshes use the same shader.
+    """
+    if not (pointer or {}).get("m_PathID"):
         raise _Unsupported("renderer material is empty (nothing is drawn)")
-    material = viewer._ref(renderer, materials[0])
+    material = viewer._ref(owner, pointer)
     if material is None or material.type.name != "Material":
         raise _Unsupported("material is unavailable")
     fields = material.read_typetree()
@@ -684,130 +693,54 @@ def _walk(objects, prefab, deadline):
     return walked
 
 
-def _flat(curve):
-    """The value of a packed clip curve that never changes, else None."""
-    mode, keys = curve
-    if mode == "constant":
-        return keys
-    if not keys:
-        return None
-    if mode == "cubic":
-        values = {coefficients[3] for _, coefficients in keys}
-        flat = all(coefficients[0] == coefficients[1] == coefficients[2] == 0 for _, coefficients in keys)
-        return values.pop() if flat and len(values) == 1 else None
-    values = {value for _, value in keys}
-    return values.pop() if len(values) == 1 else None
-
-
-def _default_clip(objects, animator, fields):
-    """The clip of a single-state controller's default state, None without a controller.
-
-    Anything else (several layers or states, transitions, blend trees, culling
-    other than AlwaysAnimate, object-reference curves) raises _Unsupported.
-    """
-    controller = title._local(objects, animator, fields.get("m_Controller"))
-    if controller is None:
-        return None
-    if controller.type.name != "AnimatorController":
-        raise _Unsupported(f"Animator {controller.type.name}")
-    if fields.get("m_CullingMode", 0) != 0:
-        raise _Unsupported(f"Animator culling mode {fields.get('m_CullingMode')}")
-    tree = controller.read_typetree()
-    graph = tree["m_Controller"]
-    layers, machines = graph["m_LayerArray"], graph["m_StateMachineArray"]
-    if len(layers) != 1 or len(machines) != 1 or layers[0]["data"]["m_StateMachineIndex"] != 0:
-        raise _Unsupported("Animator controller with several layers")
-    machine = machines[0]["data"]
-    states = machine["m_StateConstantArray"]
-    if len(states) != 1 or machine["m_DefaultState"] != 0 or machine["m_AnyStateTransitionConstantArray"]:
-        raise _Unsupported("Animator controller with several states")
-    state = states[0]["data"]
-    trees = state["m_BlendTreeConstantArray"]
-    if state["m_TransitionConstantArray"] or len(trees) != 1:
-        raise _Unsupported("Animator state with transitions or blend trees")
-    leaves = trees[0]["data"]["m_NodeArray"]
-    if len(leaves) != 1 or leaves[0]["data"].get("m_ChildIndices"):
-        raise _Unsupported("Animator state with a blend tree")
-    clips = tree.get("m_AnimationClips") or []
-    index = leaves[0]["data"].get("m_ClipID")
-    if type(index) is not int or not 0 <= index < len(clips):
-        raise _Unsupported("Animator state without a clip")
-    clip = title._local(objects, controller, clips[index], "AnimationClip")
-    if clip is None:
-        raise _Unsupported("Animator clip is unavailable")
-    return clip.read_typetree()
-
-
-def _bindings(clip, deadline):
-    """(binding, per-channel constant or None) for every generic binding of a packed clip."""
-    bindings = (clip.get("m_ClipBindingConstant") or {}).get("genericBindings") or []
-    if any(binding.get("isPPtrCurve") for binding in bindings):
-        raise _Unsupported("Animator clip with object reference curves")
-    if not bindings:
-        if any(clip.get(field) for field in ("m_PositionCurves", "m_RotationCurves", "m_ScaleCurves",
-                                             "m_EulerCurves", "m_FloatCurves")):
-            raise _Unsupported("Animator clip with editor curves")
-        return []
-    try:
-        curves = animation._packed_curves(clip, deadline)
-    except animation.AnimationError as error:
-        raise _Unsupported(f"Animator clip ({error})") from None
-    rows, offset = [], 0
-    for binding in bindings:
-        width = animation._width(binding)
-        selected = curves[offset:offset + width]
-        offset += width
-        if len(selected) != width:
-            raise _Unsupported("Animator clip curves do not match their bindings")
-        rows.append((binding, [_flat(curve) for curve in selected]))
-    if offset != len(curves):
-        raise _Unsupported("Animator clip curves do not match their bindings")
-    return rows
-
-
-def _euler(values):
-    # Unity's Quaternion.Euler applies Z, then X, then Y (Unity space, degrees).
-    x, y, z = (math.radians(value) * .5 for value in values)
-    return list(animation._multiply(animation._multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
-                                    (0, 0, math.sin(z), math.cos(z))))
+# The Animator reader is shared with the prefab instancer (mv_studio_control_prefabs).
+_flat, _default_clip, _bindings, _euler = animator.flat, animator.default_clip, animator.bindings, animator.euler
 
 
 def _animators(objects, walked, deadline):
     """Apply what each in-prefab Animator's default state does to the particle nodes.
 
-    Returns (active, moving, unresolved, notes): ``active`` maps a node to a
-    constant m_IsActive; ``moving`` maps a node to the curve kinds that change
-    over time on it (activation, Transform) or animate its particle components;
-    ``unresolved`` maps an Animator node to the reason its controller is not read.
-    Constant Transform curves are written into the walked node's local pose.
+    Returns (active, moving, unresolved, notes, driven): ``active`` maps a node
+    to a constant m_IsActive; ``moving`` maps a node to the curve kinds that
+    change over time on it (activation, Transform, translation) or animate its
+    particle components; ``unresolved`` maps an Animator node to the reason its
+    controller is not read. Constant Transform curves are written into the
+    walked node's local pose. ``driven`` holds the time-varying curves the
+    runtime plays (mv_studio_prefab_animator): node translations and the
+    renderer's _TintColor/_MainTex_ST, with the clip timing of their Animator;
+    ``driven["unsupported"]`` maps a node to the reason a renderer material
+    binding on it is not reproduced, worded as mv_studio_prefab_animator.channels
+    reports a mesh renderer's.
     """
     active, moving, unresolved, notes, posed = {}, {}, {}, set(), {}
+    driven = {"clips": [], "nodes": {}, "renderers": {}, "unsupported": {}}
     for own, node in enumerate(walked):
         legacy = node["components"].get("Animation")
         if legacy is not None and node["authored"] and legacy.read_typetree().get("m_Enabled", True):
             # Legacy Animation clips are not read at all.
             unresolved[own] = "legacy Animation component"
-        animator = node["components"].get("Animator")
-        if animator is None or not node["authored"]:
+        component = node["components"].get("Animator")
+        if component is None or not node["authored"]:
             continue
-        fields = animator.read_typetree()
+        fields = component.read_typetree()
         if not fields.get("m_Enabled", True):
             continue
         try:
-            clip = _default_clip(objects, animator, fields)
+            clip = _default_clip(objects, component, fields)
             if clip is None:
                 continue
             rows = _bindings(clip, deadline)
+            # A stand-in clip without a muscle range only plays its constants.
+            timing = animator.timing(clip) if "m_MuscleClip" in clip else None
         except (_Unsupported, *title._UNSUPPORTED) as error:
             unresolved[own] = str(error)[:120] or type(error).__name__
             notes.add("Animator")
             continue
+        clip_index = None
         # Binding paths are CRC32 hashes of the path below the Animator's GameObject.
-        prefix, targets = node["parts"], {}
-        for index, other in enumerate(walked):
-            if other["parts"][:len(prefix)] == prefix:
-                targets.setdefault(zlib.crc32("/".join(other["parts"][len(prefix):]).encode("utf-8")), index)
-        for binding, values in rows:
+        targets, lanes, both_families = animator.targets(walked, own), {}, set()
+        for binding, values, *rest in rows:
+            curves = rest[0] if rest else None
             target = targets.get(binding.get("path"))
             kind, attribute = binding.get("typeID", binding.get("classID")), binding.get("attribute")
             if target is None:
@@ -822,7 +755,18 @@ def _animators(objects, walked, deadline):
             elif kind == _TRANSFORM and attribute in (_POSITION, _ROTATION, _SCALE, _EULER):
                 channel = {_POSITION: "position", _SCALE: "scale"}.get(attribute, "rotation")
                 if any(value is None for value in values) or (target, channel) in posed:
-                    moving.setdefault(target, set()).add("Transform")
+                    # A moving position is played at runtime under local-space systems.
+                    playable = (attribute == _POSITION and curves is not None and timing is not None
+                                and (target, channel) not in posed)
+                    if playable:
+                        if clip_index is None:
+                            clip_index = len(driven["clips"])
+                            driven["clips"].append(timing)
+                        driven["nodes"].setdefault(target, []).append(
+                            {"clip": clip_index, "kind": "translation",
+                             "curves": [animator.json_curve(curve) for curve in curves]})
+                    posed[target, channel] = True
+                    moving.setdefault(target, set()).add("translation" if playable else "Transform")
                     continue
                 posed[target, channel] = True
                 if channel == "rotation":
@@ -834,28 +778,53 @@ def _animators(objects, walked, deadline):
                 else:
                     walked[target][channel] = [_number(value) for value in values]
             elif kind in _PARTICLE_CLASSES:
-                if _PARTICLE_CLASSES[kind] in components:
+                if _PARTICLE_CLASSES[kind] not in components:
+                    continue
+                lane = animator.material_lane(binding) if kind == 199 else None
+                if lane is not None and curves is not None and timing is not None:
+                    found = lanes.setdefault((target, lane[0]), {})
+                    if lane[1] in found:
+                        both_families.add((target, lane[0]))
+                    found[lane[1]] = curves[0]
+                else:
                     moving.setdefault(target, set()).add(f"{_PARTICLE_CLASSES[kind]} properties")
             else:
-                # Mesh renderer material curves and the like: content this preview does not draw.
+                # Mesh renderer material curves and the like: drawn by mv_studio_control_prefabs.
                 notes.add("Animator")
-    return active, moving, unresolved, notes
+        for (target, prop), found in lanes.items():
+            if (target, prop) in both_families or set(found) != {0, 1, 2, 3}:
+                moving.setdefault(target, set()).add("ParticleSystemRenderer properties")
+                driven["unsupported"].setdefault(target, animator.lane_reason(prop, (target, prop) in both_families))
+                continue
+            if prop in {row["kind"] for row in driven["renderers"].get(target, ())}:
+                moving.setdefault(target, set()).add("ParticleSystemRenderer properties")
+                continue
+            if clip_index is None:
+                clip_index = len(driven["clips"])
+                driven["clips"].append(timing)
+            driven["renderers"].setdefault(target, []).append(
+                {"clip": clip_index, "kind": prop, "curves": [animator.json_curve(found[i]) for i in range(4)]})
+    return active, moving, unresolved, notes, driven
 
 
-def template(objects, prefab, textures, deadline):
+def template(objects, prefab, textures, deadline, walked=None):
     """Walk the prefab as Unity's GetComponentsInChildren does (pre-order, child order).
 
     Nodes keep their local TRS (with any constant Animator pose) and parent
     index so the runtime can rebuild the clone's transforms. PrefabControl
-    activates the clone root but no inactive GameObject below it.
+    activates the clone root but no inactive GameObject below it. A system
+    under an Animator that moves a node's position over time (and nothing
+    else) is drawn when it simulates in local space: ``animation`` lists those
+    translation curves and the renderer _TintColor/_MainTex_ST curves, which
+    the runtime samples at the Animator's time since activation.
     """
-    walked = _walk(objects, prefab, deadline)
+    walked = _walk(objects, prefab, deadline) if walked is None else walked
     if not walked:
         raise _Unsupported("prefab has no Transform")
     name = str(walked[0]["tree"].get("m_Name", ""))[:128]
-    switched, moving, unresolved, notes = _animators(objects, walked, deadline)
+    switched, moving, unresolved, notes, driven = _animators(objects, walked, deadline)
     nodes, systems, unsupported, remap = [], [], [], {}
-    live, reasons = [], []
+    live, reasons, translated = [], [], []
     for own, node in enumerate(walked):
         parent = node["parent"]
         on = switched.get(own, node["self"] or parent is None)
@@ -868,6 +837,10 @@ def template(objects, prefab, textures, deadline):
         if kinds:
             inherited.append(f"animated by the prefab Animator ({', '.join(kinds)})")
         reasons.append(inherited)
+        # Nodes on the chain whose position the Animator moves over time.
+        translated.append((translated[parent] if parent is not None else []) +
+                          ([own] if "translation" in moving.get(own, ()) else []))
+    played_nodes, played_systems = set(), []
     for own, node in enumerate(walked):
         components = node["components"]
         if live[own]:
@@ -891,7 +864,8 @@ def template(objects, prefab, textures, deadline):
         try:
             animated_parts = sorted(kind for kind in moving.get(own, ()) if kind.endswith("properties"))
             blocked = ("activated by the prefab Animator" if not node["authored"] else reasons[own][0] if reasons[own]
-                       else f"animated by the prefab Animator ({', '.join(animated_parts)})" if animated_parts else None)
+                       else driven["unsupported"].get(own)
+                       or (f"animated by the prefab Animator ({', '.join(animated_parts)})" if animated_parts else None))
             renderer = components.get("ParticleSystemRenderer")
             if renderer is None:
                 raise _Unsupported("ParticleSystem has no renderer")
@@ -902,15 +876,28 @@ def template(objects, prefab, textures, deadline):
             if (not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling)
                     and not (scaling == 1 and _scaled_billboard(source, renderer.read_typetree(), node["scale"]))):
                 blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
+            if not blocked and translated[own] and source.get("moveWithTransform") != 0:
+                # World-space particles keep the emitter position of their birth step.
+                blocked = "world-space particles under an Animator that moves the emitter"
             row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked,
                          upright=_turns_about_y(walked, own))
             if row is not None:
                 index = remap[own]
                 row.update(node=index, path=node["path"], layer=nodes[index]["layer"])
+                played_nodes.update(translated[own])
+                if own in driven["renderers"]:
+                    played_systems.append((len(systems), own))
                 systems.append(row)
         except (_Unsupported, *title._UNSUPPORTED) as error:
             unsupported.append({"path": node["path"], "reason": str(error)[:160] or type(error).__name__})
-    return {"name": name, "nodes": nodes, "systems": systems}, unsupported, sorted(notes)
+    result = {"name": name, "nodes": nodes, "systems": systems}
+    channels = [{"node": remap[own], **row} for own in sorted(played_nodes) for row in driven["nodes"][own]]
+    channels += [{"system": index, **row} for index, own in played_systems for row in driven["renderers"][own]]
+    if channels:
+        used = sorted({row["clip"] for row in channels})
+        result["animation"] = {"clips": [driven["clips"][index] for index in used],
+                               "channels": [{**row, "clip": used.index(row["clip"])} for row in channels]}
+    return result, unsupported, sorted(notes)
 
 
 def _muted(objects, owner, tree):
@@ -943,6 +930,75 @@ def _clip(objects, owner, tree, event):
     return prefab, _vector(fields.get("offset"), low=-1e4, high=1e4), seed if type(seed) is int else 0
 
 
+def _missing(objects, owner, tree, event):
+    """Why a CustomControl clip resolves to no prefab in this bundle."""
+    if event["values"].get("playableClass") != "CustomControlClip":
+        return "the clip is not a CustomControlClip"
+    clip = tree["m_Clips"][int(event["id"].rsplit(":", 1)[1])]
+    asset = title._local(objects, owner, clip.get("m_Asset"), "MonoBehaviour")
+    if asset is None:
+        return "the clip asset is missing"
+    pointer = asset.read_typetree().get("prefabGameObject") or {}
+    file_id, path_id = pointer.get("m_FileID"), pointer.get("m_PathID")
+    if not path_id:
+        return NO_PREFAB
+    externals = asset.assets_file.externals
+    if type(file_id) is int and 0 < file_id <= len(externals):
+        name = externals[file_id - 1].path.replace("\\", "/").rsplit("/", 1)[-1]
+        return f"the prefab is in another asset bundle ({name[:64]}) that the timeline import does not load"
+    return "the prefab GameObject is missing from the bundle"
+
+
+# Why the client plays no clip of a CustomControlTrack (mv_studio_control_prefabs reports these).
+MUTED, NO_CATEGORY, BOUND, DISABLED = (
+    "muted in the timeline", "outside the StageEffect Control, Display and OverlayEffect groups (no quality category)",
+    "bound to a scene object", "the track is disabled")
+NO_PREFAB = "the clip names no prefab (the game instantiates nothing)"
+
+
+def control_clips(objects, mono, tracks):
+    """Every CustomControlClip of the timeline, as the client starts it.
+
+    Yields dicts with ``track``, ``event``, ``quality`` and either ``prefab``,
+    ``offset`` and ``seed`` or a ``reason`` the clip instantiates nothing here.
+    The particle reader and the prefab instancer share this one extraction.
+    """
+    controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
+                if kind == "CustomControlTrack"}
+    for track in tracks:
+        if track.get("nativeClass") != "CustomControlTrack":
+            continue
+        source = controls.get(track["id"])
+        quality = motion._quality(track["label"])
+        reason = None
+        if source is None or not title._declared(objects, source[0], source[1],
+                                                 (*title._NAMESPACE, "CustomControlTrack")):
+            reason = "the track is not the original CustomControlTrack"
+        elif quality not in _CATEGORIES:
+            reason = NO_CATEGORY
+        elif track.get("binding") or track.get("bindings"):
+            reason = BOUND
+        elif not source[1].get("m_Enabled", True):
+            reason = DISABLED
+        elif _muted(objects, *source):
+            reason = MUTED
+        for event in track["events"]:
+            row = {"track": track, "event": event, "quality": quality}
+            if reason is not None:
+                yield {**row, "reason": reason}
+                continue
+            try:
+                found = _clip(objects, *source, event)
+                missing = None if found is not None else _missing(objects, *source, event)
+            except (_Unsupported, *title._UNSUPPORTED) as error:
+                found, missing = None, f"the clip asset is unreadable ({str(error)[:80]})"
+            if found is None:
+                yield {**row, "reason": missing}
+            else:
+                prefab, offset, seed = found
+                yield {**row, "prefab": prefab, "offset": offset, "seed": seed}
+
+
 def claimed_cues(result):
     """(trackId, eventId) pairs that a per-prefab legacy reader already draws."""
     found, stack = set(), [value for key, value in result.items() if key.startswith("stage")]
@@ -957,65 +1013,73 @@ def claimed_cues(result):
     return found
 
 
-def read(objects, mono, tracks, deadline, *, claimed=frozenset()):
-    """Return the particle templates and cues of every CustomControlTrack, or None."""
-    controls = {timeline._id(key): (owner, fields) for key, (owner, fields, kind) in mono.items()
-                if kind == "CustomControlTrack"}
-    textures = _Textures(deadline)
+def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None, textures=None):
+    """Return the particle templates and cues of every CustomControlTrack, or None.
+
+    ``outcomes``, when given, receives per prefab (viewer._key) what this reader
+    did with it: the walked hierarchy, the drawn systems' layers, the rejected
+    systems or the reason no template exists. mv_studio_control_prefabs reuses it.
+    ``textures``, when given, is the _Textures table shared with that reader, so
+    a texture both use is exported once; the descriptor lists the levels this
+    reader added (indices 0..n-1 of the shared table).
+    """
+    textures = _Textures(deadline) if textures is None else textures
     templates, cues, unsupported, notes = [], [], [], {}
     prefab_ids = {}
-    for track in tracks:
-        source = controls.get(track["id"])
-        quality = motion._quality(track["label"])
-        if source is None or quality not in _CATEGORIES or track.get("binding") or track.get("bindings"):
+    outcomes = {} if outcomes is None else outcomes
+    for row in control_clips(objects, mono, tracks):
+        track, event = row["track"], row["event"]
+        if "reason" in row or (track["id"], event["id"]) in claimed:
             continue
-        owner, fields = source
-        if (not fields.get("m_Enabled", True) or _muted(objects, owner, fields)
-                or not title._declared(objects, owner, fields, (*title._NAMESPACE, "CustomControlTrack"))):
-            continue
-        for event in track["events"]:
-            if (track["id"], event["id"]) in claimed:
+        prefab, offset, seed, quality = row["prefab"], row["offset"], row["seed"], row["quality"]
+        key = viewer._key(prefab)
+        if key not in prefab_ids:
+            prefab_ids[key] = None
+            outcome = outcomes.setdefault(key, {"systems": [], "rejected": [], "error": None})
+            if time.monotonic() > deadline - _RESERVE_SECONDS or len(templates) >= _MAX_TEMPLATES:
+                outcome["error"] = "import time budget"
+                unsupported.append({"template": event["label"][:128], "path": "", "reason": "import time budget"})
                 continue
             try:
-                found = _clip(objects, owner, fields, event)
-            except (_Unsupported, *title._UNSUPPORTED):
-                found = None
-            if found is None:
+                outcome["walked"] = _walk(objects, prefab, deadline)
+                found, rejected, kinds = template(objects, prefab, textures, deadline, walked=outcome["walked"])
+            except (_Unsupported, *title._UNSUPPORTED) as error:
+                outcome["error"] = str(error)[:160]
+                unsupported.append({"template": event["label"][:128], "path": "", "reason": str(error)[:160]})
                 continue
-            prefab, offset, seed = found
-            key = viewer._key(prefab)
-            if key not in prefab_ids:
-                prefab_ids[key] = None
-                if time.monotonic() > deadline - _RESERVE_SECONDS or len(templates) >= _MAX_TEMPLATES:
-                    unsupported.append({"template": event["label"][:128], "path": "", "reason": "import time budget"})
-                    continue
-                try:
-                    row, rejected, kinds = template(objects, prefab, textures, deadline)
-                except (_Unsupported, *title._UNSUPPORTED) as error:
-                    unsupported.append({"template": event["label"][:128], "path": "", "reason": str(error)[:160]})
-                    continue
-                for item in rejected:
-                    unsupported.append({"template": row["name"], **item})
-                if kinds:
-                    notes[row["name"]] = kinds
-                if row["systems"] and sum(len(item["systems"]) for item in templates) + len(row["systems"]) <= _MAX_SYSTEMS:
-                    prefab_ids[key] = len(templates)
-                    templates.append(row)
-            index = prefab_ids[key]
-            if index is None or len(cues) >= _MAX_CUES:
-                continue
-            cues.append({"trackId": track["id"], "eventId": event["id"], "template": index,
-                         "offset": offset, "quality": quality, "clipSeed": seed & 0xFFFFFFFF})
+            outcome.update(name=found["name"], rejected=rejected)
+            for item in rejected:
+                unsupported.append({"template": found["name"], **item})
+            if kinds:
+                notes[found["name"]] = kinds
+            if found["systems"] and sum(len(item["systems"]) for item in templates) + len(found["systems"]) <= _MAX_SYSTEMS:
+                prefab_ids[key] = len(templates)
+                templates.append(found)
+                outcome["systems"] = [system["layer"] for system in found["systems"]]
+            elif found["systems"]:
+                outcome["error"] = "particle system budget of the preview"
+        index = prefab_ids[key]
+        if index is None:
+            continue
+        if len(cues) >= _MAX_CUES:
+            outcomes[key].setdefault("dropped", set()).add((track["id"], event["id"]))
+            continue
+        cues.append({"trackId": track["id"], "eventId": event["id"], "template": index,
+                     "offset": offset, "quality": quality, "clipSeed": seed & 0xFFFFFFFF})
     if not cues and not unsupported:
         return None
-    return {"schema": SCHEMA, "textures": textures.levels, "templates": templates, "cues": cues,
+    return {"schema": SCHEMA, "textures": list(textures.levels), "templates": templates, "cues": cues,
             "unsupported": unsupported, "otherComponents": notes}
 
 
-def warning(descriptor):
-    """One project warning that lists what the original prefabs use and the preview leaves out."""
+def warning(descriptor, *, meshes_elsewhere=False):
+    """One project warning that lists what the original prefabs use and the preview leaves out.
+
+    ``meshes_elsewhere``: mv_studio_control_prefabs draws (or reports) the prefabs'
+    mesh renderers and Animators, so they are not listed here.
+    """
     rows = (descriptor or {}).get("unsupported") or []
-    others = (descriptor or {}).get("otherComponents") or {}
+    others = {} if meshes_elsewhere else (descriptor or {}).get("otherComponents") or {}
     parts = []
     if rows:
         reasons = {}

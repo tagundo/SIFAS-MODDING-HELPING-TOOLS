@@ -539,6 +539,8 @@ class _Scene:
             "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
             "rig_unavailable": "This model uses a static preview because its rig could not be loaded.",
             "stage_hidden_transform": "An animated stage mesh starts at zero scale and is hidden in this preview.",
+            "member_shadow_prefabs_unavailable": "The stage's member shadow prefabs could not be exported, so the "
+                                                 "performers draw no shadows in this preview.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -1010,6 +1012,8 @@ class _Materials:
         if key in self.materials:
             return self.materials[key]
         tree = self.scene.tree(obj) if obj is not None else {}
+        if obj is not None and getattr(self.scene, "member_attach", None) is not None:
+            obj, tree = self.scene.member_attach.material(self.scene, obj, tree)  # suit attach data
         colors = _properties(tree, "m_Colors")
         # AS/Member never consumes _Color; carrying stale Unity generic shader
         # values into glTF incorrectly darkens real outfit heads. Lighting/tint
@@ -1382,12 +1386,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
         from . import mv_studio_axis_billboard, mv_studio_soft_billboards, mv_studio_stage_props, unity_builtin_meshes
+        from . import mv_studio_lossy_scale
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
-        axis_billboards, stage_props = set(), []
-    shadow_stages = None
+        axis_billboards, stage_props, lossy_scales = set(), [], {}
+    shadow_stages = shadow_prefabs = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
 
@@ -1418,6 +1423,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             defaults = mv_studio_member_shadow.stage_default(scene, obj, tree)
             if defaults is not None:
                 shadow_stages.append(defaults)
+                shadow_prefabs = mv_studio_member_shadow.stage_prefabs(scene, obj, tree)
+                # The prefab assets are only instantiated under the members.
+                detached_templates.update(_key(game) for game in shadow_prefabs or () if game is not None)
         if stage_materials:
             excluded, shaft_source = mv_studio_shaft.references(scene, obj, tree)
             detached_templates.update(excluded)
@@ -1455,6 +1463,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 identity, entry = flash
                 stage_flashes[identity] = None if identity in stage_flashes else entry
             axis_billboards.update(mv_studio_axis_billboard.owners(scene, obj, tree))
+            for key, values in mv_studio_lossy_scale.offsets(scene, obj, tree).items():
+                lossy_scales[key] = None if key in lossy_scales else values
             stage_props.extend(mv_studio_stage_props.props(scene, obj, tree))
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
@@ -1466,6 +1476,13 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     cubemap_owner = stage_cubemap_owners[0] if stage_materials and len(stage_cubemap_owners) == 1 else None
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
+    if shadow_stages == [False] and shadow_prefabs:
+        exported = mv_studio_member_shadow.export_prefabs(scene, glb, materials, shadow_prefabs, deadline)
+        if exported is not None:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadowPrefabs"] = exported
+        else:
+            # The game deletes the costume shadows for these prefabs, so nothing stands in for them.
+            scene.warn("member_shadow_prefabs_unavailable")
     if animated_effect:
         from . import mv_studio_stage_laser_cores, mv_studio_stationary_bursts
 
@@ -2032,6 +2049,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                                                    _source_path(renderer) in faces.dynamic_sources))
     if stage_materials and axis_billboards:
         mv_studio_axis_billboard.tag(glb, stage_nodes, axis_billboards)
+    if stage_materials and lossy_scales:
+        from . import mv_studio_lossy_scale
+        mv_studio_lossy_scale.tag(glb, stage_nodes, lossy_scales)
     return materials
 
 
@@ -2113,6 +2133,9 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     scene.preview_stage = bool((face_context or {}).get("_mv_stage"))
     scene.stage_motion_bindings = (face_context or {}).get("_mv_stage_motion_bindings", ())
     scene.native_stage_effect = (face_context or {}).get("_mv_native_stage_effect") is True
+    if (face_context or {}).get("_mv_attach_key"):
+        from .mv_studio_suit_attach import MemberAttach
+        scene.member_attach = MemberAttach.read(scene, face_context["_mv_attach_key"])
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:

@@ -429,6 +429,47 @@ class AnimatorTests(unittest.TestCase):
         self.assertNotIn("fx/root/hidden", [node["path"] for node in row["nodes"]])
         self.assertEqual(notes, ["Animator"])
 
+    def test_renderer_lane_families_are_reported_like_mesh_renderers(self):
+        # mv_studio_prefab_animator.channels reports a mesh renderer whose _TintColor
+        # binds both .xyzw and .rgba (or part of a vector); the particle renderer
+        # gets the same reason instead of keeping whichever binding comes last.
+        import zlib
+
+        ps = ("ParticleSystem", "ParticleSystemRenderer")
+        walked = [walked_node("fx", None), walked_node("fx/root", 0, kinds=("Animator",)),
+                  walked_node("fx/root/both", 1, kinds=ps), walked_node("fx/root/part", 1, kinds=ps),
+                  walked_node("fx/root/whole", 1, kinds=ps)]
+        for node in walked:
+            node["authored"] = True
+
+        def lane(path, name, index):
+            item = binding(path, 199, (zlib.crc32(name.encode()) & 0x0FFFFFFF) | (index << 28))
+            return {**item, "customType": 22}
+
+        moving = ("linear", [(0.0, 0.0), (1.0, 1.0)])
+        rows = [*[(lane("both", "_TintColor", index), [None], [moving]) for index in range(4)],
+                *[(lane("both", "_TintColor", 4 + index), [None], [moving]) for index in range(4)],
+                *[(lane("part", "_MainTex_ST", index), [None], [moving]) for index in range(2)],
+                *[(lane("whole", "_TintColor", 4 + index), [None], [moving]) for index in range(4)]]
+        clip = {"m_Name": "clip", "m_MuscleClip": {"m_StartTime": 0.0, "m_StopTime": 1.0, "m_LoopTime": 1}}
+
+        def drawn(objects, game, particle, renderer, textures, blocked=None, **_):
+            if blocked:
+                raise systems._Unsupported(blocked)
+            return {"main": {}}
+
+        with mock.patch.object(systems, "_walk", return_value=walked), \
+                mock.patch.object(systems, "_default_clip", return_value=clip), \
+                mock.patch.object(systems, "_bindings", return_value=rows), \
+                mock.patch.object(systems, "system", side_effect=drawn):
+            row, unsupported, _ = systems.template({}, None, None, 0)
+        self.assertEqual({item["path"]: item["reason"] for item in unsupported}, {
+            "fx/root/both": "Animator animates _TintColor through both its vector and color lanes",
+            "fx/root/part": "Animator animates part of _MainTex_ST"})
+        self.assertEqual([system["path"] for system in row["systems"]], ["fx/root/whole"])
+        channel, = row["animation"]["channels"]
+        self.assertEqual((channel["kind"], channel["system"]), ("tint", 0))
+
     def test_inactive_prefab_root_is_activated_by_the_clip(self):
         ps = ("ParticleSystem", "ParticleSystemRenderer")
         walked = [walked_node("fx", None, active=False, kinds=ps), walked_node("fx/root", 0, kinds=ps),
@@ -549,13 +590,23 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertEqual(sorted(hidden), sorted(
             f"fx_par_so2036_0{prefab}/root/joint_all/Joint_root_0{joint}/{side}/core"
             for prefab, joints in ((6, (1, 2)), (7, (1, 3))) for joint in joints for side in "LR"))
-        # Clouds and dragons that the Animator moves or blinks are reported, not drawn statically.
+        # Clouds the Animator blinks are reported, not drawn statically.
         self.assertNotIn("fx_dis_par_so2036_06", drawn)
         self.assertEqual(len(reasons["animated by the prefab Animator (activation)"]), 4)
-        self.assertEqual(sorted(reasons["animated by the prefab Animator (Transform)"]),
-                         [f"fx_dis_par_so2036_05/root/{name}" for name in ("kumo_01", "kumo_02", "kumo_03", "kumo_04",
-                                                                           "ryuu_01")])
-        self.assertNotIn("fx_dis_par_so2036_05", drawn)
+        self.assertNotIn("animated by the prefab Animator (Transform)", reasons)
+        # The dragon's Animator moves its local-space emitter: it is drawn with that curve.
+        # The clouds beside it are Local billboards on scaled nodes (Local scaling sizes their quads).
+        self.assertEqual(drawn["fx_dis_par_so2036_05"], [f"kumo_0{index}" for index in range(1, 5)] + ["ryuu_01"])
+        self.assertFalse([path for path in reasons.get("non-unit transform scale (Local scaling mode)", ())
+                          if "so2036_05" in path])
+        dragon = next(template for template in source["templates"] if template["name"] == "fx_dis_par_so2036_05")
+        self.assertEqual(dragon["animation"]["clips"],
+                         [{"name": "clip_dis_so2036_02", "start": 0.0, "duration": 4.0, "loop": True}])
+        moved = dragon["animation"]["channels"]
+        self.assertEqual([(dragon["nodes"][channel["node"]]["path"].rsplit("/", 1)[1], channel["kind"], channel["clip"])
+                          for channel in moved],
+                         [(name, "translation", 0) for name in ("kumo_01", "kumo_02", "kumo_03", "kumo_04", "ryuu_01")])
+        self.assertEqual({curve[0] for channel in moved for curve in channel["curves"]}, {"cubic"})
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import sys
 from .game_models import _sha
 
 
-_PREVIEW_VERSION = 14  # Bump when actor motion selection, GLB conversion or rig metadata changes.
+_PREVIEW_VERSION = 18  # Bump when actor motion selection, GLB conversion, suit attach materials or rig metadata changes.
 _MAX_RECEIPTS = 24
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 _MAX_DATABASE_BYTES = 8 * 1024 * 1024
@@ -129,11 +129,13 @@ class ActorCache:
         except _CACHE_ERRORS:
             return None
 
-    def key(self, shared, position, member, model, companions, facial):
+    def key(self, shared, position, member, model, companions, facial, attach=""):
         if shared is None or not companions:
             return None
         try:
-            recipe = (self.recipe, self.context, shared, position, member, _sources([model, *companions]), _sources(facial))
+            # A suit attach key (m_suit_attach) re-dresses the same model bundle.
+            recipe = (self.recipe, self.context, shared, position, member, _sources([model, *companions]), _sources(facial),
+                      *((attach,) if attach else ()))
             return sha256(_encode(recipe)).hexdigest()
         except _CACHE_ERRORS:
             return None
