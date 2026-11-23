@@ -55,6 +55,61 @@ def _class(source, obj, tree):
         return ""
 
 
+def _serialized_files(source):
+    files = {}
+    for obj in source["objects"]:
+        assets_file = getattr(obj, "assets_file", None)
+        if assets_file is not None:
+            files.setdefault(id(assets_file), assets_file)
+    return list(files.values())
+
+
+def dependency_closure(timeline, sources):
+    """Return the CABs a timeline can reach through serialized externals.
+
+    Unity resolves a PPtr with m_FileID > 0 through the referencing
+    SerializedFile's externals[m_FileID - 1], which names a CAB in a loaded
+    dependency bundle. The closure starts at the timeline's own CABs and
+    follows the externals of every loaded file it reaches, so a bundle the
+    timeline never names cannot supply an object identity.
+    """
+    loaded = {}
+    for source in sources:
+        for assets_file in _serialized_files(source):
+            loaded.setdefault(_cab(assets_file.name), []).append(assets_file)
+    pending = _serialized_files(timeline)
+    reachable = {_cab(assets_file.name) for assets_file in pending}
+    while pending:
+        assets_file = pending.pop()
+        for external in getattr(assets_file, "externals", ()):
+            cab = _cab(external.path)
+            if cab and cab not in reachable:
+                reachable.add(cab)
+                pending.extend(loaded.get(cab, ()))
+    return reachable
+
+
+def dependency_objects(timeline, sources):
+    """Map exact (CAB, PathID) identities to objects of the timeline's dependency closure.
+
+    Returns ``(objects, owners)``. Objects of loaded bundles outside the
+    closure are ignored. The same identity with different serialized bytes
+    in two loaded files is refused, as before.
+    """
+    reachable = dependency_closure(timeline, sources)
+    object_map, source_map = {}, {}
+    for source in [timeline] + list(sources):
+        for obj in source["objects"]:
+            key = _object_key(obj)
+            if key[0] not in reachable:
+                continue
+            if key in object_map and object_map[key].get_raw_data() != obj.get_raw_data():
+                raise ValueError("Two motion dependencies have conflicting serialized identities.")
+            object_map[key] = obj
+            source_map[key] = source
+    return object_map, source_map
+
+
 def _number(value, label, *, minimum=0, maximum=600):
     if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
         raise ValueError("The motion timeline has an invalid " + label + ".")
@@ -165,14 +220,7 @@ def select(timeline_path, candidate_paths, *, performer=1, category="mv", deadli
     """
     timeline = _read(timeline_path, deadline)
     sources = [_read(path, deadline) for path in candidate_paths]
-    object_map, source_map = {}, {}
-    for source in [timeline] + sources:
-        for obj in source["objects"]:
-            key = _object_key(obj)
-            if key in object_map and object_map[key].get_raw_data() != obj.get_raw_data():
-                raise ValueError("Two motion dependencies have conflicting serialized identities.")
-            object_map[key] = obj
-            source_map[key] = source
+    object_map, source_map = dependency_objects(timeline, sources)
     mono, classes = {}, {}
     for obj in timeline["objects"]:
         if obj.type.name == "MonoBehaviour":
