@@ -115,6 +115,28 @@ class MVGameCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no longer available"):
             self.selection(live=14)
 
+    def test_stage_model_follows_the_3d_asset_not_the_mv_picker_stage(self):
+        # Like 11072 position 3: m_live_mv lists picker stage bg0001 (1000101), but the
+        # client loads m_live_3d_asset.live_stage_master_id (bg0018, 1001801).
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.executescript("""
+                INSERT INTO m_live VALUES (14, 'k.third', 6, NULL, NULL, 9, NULL);
+                INSERT INTO m_live_3d_asset VALUES (33, 'timeline', 18, NULL, NULL, 3, NULL);
+                INSERT INTO m_live_stage VALUES (1, 'k.picker', 'bg0001_01_s1', 'pickerModel', NULL, 'pickerBg'),
+                    (18, 'k.special', 'bg0018_01_s1', 'specialModel', NULL, 'specialBg');
+                INSERT INTO m_live_mv VALUES (14, 1, 3, 33), (14, 7, 1, 31);
+            """)
+        song = next(row for row in studio.catalog(self.root, region="gl", platform="android", language="en")["songs"]
+                    if row["id"] == 14)
+        self.assertEqual([(row["id"], row["stageId"], row["pickerStageId"], row["sceneName"], row["position"])
+                          for row in song["variants"]],
+                         [(31, 7, 7, "scene_stage", 1), (33, 18, 1, "bg0018_01_s1", 3)])
+        selected = studio.resolve(self.root, region="gl", platform="android", live_id=14, asset_id=33, language="en")
+        self.assertEqual((selected["stage"]["id"], selected["stage"]["sceneName"]), (18, "bg0018_01_s1"))
+        self.assertEqual(selected["stageModel"]["asset"], "specialModel")
+        self.assertEqual(selected["stage"]["background"]["asset"], "specialBg")
+        self.assertNotIn("pickerModel", {row["asset"] for row in selected["missing"]})
+
     def test_resolves_same_platform_dependencies_costume_and_music(self):
         android, ios = self.selection(), self.selection("ios")
         self.assertEqual(android["timeline"]["pack_name"], "androidpack")

@@ -817,8 +817,9 @@
 
   function importAsset(kind, replaceActor = null) {
     if (!project || pending) return;
-    if (kind === "outfit" && replaceActor == null && (project.performers || []).length >= 9) {
-      report(t("This MV already has nine performers. Choose an existing performer to replace their outfit."), true);
+    // LiveCoreMemberManager.MemberMax: an MV has up to 12 performers.
+    if (kind === "outfit" && replaceActor == null && (project.performers || []).length >= 12) {
+      report(t("This MV already has twelve performers. Choose an existing performer to replace their outfit."), true);
       return;
     }
     const activeProject = project;

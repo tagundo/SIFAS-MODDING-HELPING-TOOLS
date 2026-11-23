@@ -15,7 +15,7 @@ _MAX_WARNINGS = 96
 _MAX_VALUE_ITEMS = 256
 _FOV = 2282594708
 _PERFORMER_MODEL = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model")
-_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9])")
+_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)")
 _COMMON = {"m_GameObject", "m_Enabled", "m_Script", "m_Name", "m_PrefabInstance", "m_PrefabAsset"}
 _CLIP_TIMING = {
     "m_ClipIn": "clipIn", "m_TimeScale": "timeScale", "m_EaseInDuration": "easeIn",

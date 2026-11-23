@@ -35,6 +35,8 @@ _NATIVE_DIGEST = re.compile(rb"[a-f0-9]{64}\Z")
 _MEDIA_URL = "/api/mv-studio/media/"
 _UNITY_SUFFIXES = {".unity", ".unity3d", ".assets", ".bundle", ".bytes"}
 _PREVIEW_KIND = {"stage", "effect", "props", "background", "performer", "outfit"}
+# LiveCoreMemberManager.MemberMax and LiveConstants.MaxMember: an MV has up to 12 performers.
+_MEMBER_MAX = 12
 _ROLES = _PREVIEW_KIND | {"audio", "timeline", "camera", "lighting", "display", "dance", "mouth", "eyes", "gaze", "cheek", "shader", "crowd", "split", "other"}
 _IMPORT = threading.BoundedSemaphore(1)
 _ACTOR_PREVIEWS = OrderedDict()
@@ -484,7 +486,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                              "stageSparksA", "stageSparksB", "stageSparksRoop")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
-            original_cast = selected.get("performers", [])[:9]
+            original_cast = selected.get("performers", [])[:_MEMBER_MAX]
             performers = _cast_in_timeline_order(original_cast, project["tracks"])
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
@@ -660,7 +662,7 @@ def _document(value):
     duration = value.get("duration")
     if type(duration) not in (int, float) or not math.isfinite(duration) or not 0 <= duration <= 3600:
         raise ValueError("The MV project has an invalid duration.")
-    counts = {"tracks": 512, "assets": 256, "performers": 9, "warnings": 1024}
+    counts = {"tracks": 512, "assets": 256, "performers": _MEMBER_MAX, "warnings": 1024}
     for field, maximum in counts.items():
         items = value.get(field)
         if not isinstance(items, list) or len(items) > maximum:
@@ -1275,7 +1277,7 @@ def _mod_files(project, files):
         if "soundtrack" in result:
             project["soundtrack"] = result["soundtrack"]
             project["duration"] = max(project["duration"], project["soundtrack"].get("duration", 0))
-        if "performer" in result and len(project["performers"]) < 9:
+        if "performer" in result and len(project["performers"]) < _MEMBER_MAX:
             project["performers"].append(result["performer"])
     if native is None and not project["stage"] and not project["performers"] and not project["soundtrack"]:
         raise ValueError("No supported live timeline, stage model, character or soundtrack was found in this mod.")
