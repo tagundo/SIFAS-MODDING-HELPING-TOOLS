@@ -2,6 +2,7 @@
 
    node tests/mv_frame_capture.js --manifest frames.json --out DIR [--url http://127.0.0.1:PORT]
      [--server-root ../] [--library SUKUSTA_DIR] [--video game.mp4] [--chromium PATH] [--software true]
+     [--game-dump mv-runtime-dump.json.gz]
 
    The manifest names the original MV (region, platform, liveId, assetId), the game
    quality mode and the timeline times to render. Each frame is produced with the
@@ -13,7 +14,10 @@
    FOVMOD MP4 export, which ticked the game at 60 Hz (120 Hz for 120 fps videos) with
    3*tick warm-up steps at the start pose; otherwise the game's own rule applies
    (quality frame_rate_60fps, optional manifest.device). physics.order is "game"
-   (default) or "same-frame". capture.json records the rate, reference and order.
+   (default) or "same-frame". With --game-dump (a real-time runtime dump of the same
+   run) or manifest physics.grid (its frame times), the springs preroll on the game's
+   own rendered frames wherever they cover the preroll window, as mv_runtime_capture.js
+   does. capture.json records the rate, reference, order and grid.
 
    Members follow the client's MV deck chain; source.deck "original" picks the
    Original tab instead of Customize, source.player picks a local Elichika player of
@@ -79,6 +83,12 @@ function readManifest(file) {
   // run below its requested rate (mv_runtime_capture.gameClockRate().rate, ~4.9 at Max 3D).
   assert(physics.rate === undefined || (Number.isFinite(physics.rate) && physics.rate > 0 && physics.rate <= 120),
     'physics.rate is the game frame rate (frames per second, at most 120)');
+  // physics.grid: the game's own rendered-frame times (director seconds, mv_runtime_capture.gameFrameTimes);
+  // the springs preroll on those frames where they cover the preroll window.
+  assert(physics.grid === undefined || (Array.isArray(physics.grid) && physics.grid.length > 0 &&
+    physics.grid.every((value, index) => Number.isFinite(value) && value >= 0 && (index === 0 || value >= physics.grid[index - 1]))),
+    'physics.grid is the ascending list of game frame times in seconds');
+  assert(physics.grid === undefined || manifest.game?.exporter !== 'fovmod', 'physics.grid is for a real-time game run, not a FOVMOD export');
   // screen: the device screen the game drew on; the 3D view's height follows the client rule
   // (MVStudioScene.nativeRenderHeight) for that screen instead of the preset's height.
   assert(manifest.screen === undefined || (Number.isSafeInteger(manifest.screen?.width) && Number.isSafeInteger(manifest.screen?.height) &&
@@ -344,17 +354,43 @@ async function pinViewport(page, width, height) {
   }, { width, height });
 }
 
-// Fixed-step playback on a grid that ends exactly at `time`, then one
-// synchronous draw and readback. Physics advances once per stepped frame.
-// When the preroll reaches the song start, `warmup` extra frames are first
-// played at the start pose (FOVMOD warmup_springs).
-async function renderFrame(page, time, preroll, rate, warmup = 0) {
-  return page.evaluate(({ time, preroll, rate, warmup }) => {
+// Unity Time.maximumDeltaTime (default 1/3 s).
+const MAX_DELTA_TIME = 1 / 3;
+
+// The preroll frames before `time` and their clock stamps (ms). With `grid` (the game's own rendered-frame
+// times, mv_runtime_capture.gameFrameTimes) covering the preroll window, the frames are the game's frames;
+// each stamp advances by that frame's Time.deltaTime (its director interval clamped to maximumDeltaTime)
+// and at least one spring-clock interval (1 / stampRate), so the springs step once per game frame, as the
+// SwingBoneGroupJob does, and the shaft damping sees the game's frame time. Otherwise the frames are a
+// fixed-step grid at `rate` ending exactly at `time`; when that preroll reaches the song start, `warmup`
+// extra frames are first played at the start pose (FOVMOD warmup_springs).
+function prerollPlan(time, preroll, rate, warmup = 0, grid = null, stampRate = rate) {
+  if (grid?.length) {
+    const plan = require('./mv_runtime_capture').prerollTimes(time, preroll, rate, grid);
+    if (plan.source === 'game-frames') {
+      const all = [...plan.times, time], stamps = [0];
+      for (let index = 1; index < all.length; index++) {
+        stamps.push(stamps[index - 1] + Math.max(Math.min(all[index] - all[index - 1], MAX_DELTA_TIME), 1 / stampRate) * 1000);
+      }
+      return { source: 'game-frames', start: all[0], nudge: 1 / stampRate, times: plan.times, stamps: stamps.slice(0, -1),
+        drawStamp: stamps.at(-1), steps: plan.times.length, warmupSteps: 0 };
+    }
+  }
+  const available = Math.floor(time * rate + 1e-6);
+  const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
+  const start = time - steps / rate;
+  const warm = steps === available ? warmup : 0;
+  const times = [...Array.from({ length: warm }, () => start), ...Array.from({ length: steps }, (_, step) => start + step / rate)];
+  return { source: 'fixed-rate', start, nudge: 1 / rate, times, stamps: times.map((_, index) => index * 1000 / rate),
+    drawStamp: (warm + steps) * 1000 / rate, steps, warmupSteps: warm };
+}
+
+// Playback over the preroll plan (prerollPlan), then one synchronous draw and readback at `time`.
+// Physics advances once per stepped frame.
+async function renderFrame(page, time, preroll, rate, warmup = 0, grid = null, stampRate = rate) {
+  const plan = prerollPlan(time, preroll, rate, warmup, grid, stampRate);
+  const result = await page.evaluate(({ time, plan }) => {
     const scene = mvFrameProbe.scene;
-    const available = Math.floor(time * rate + 1e-6);
-    const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
-    const start = time - steps / rate;
-    const warm = steps === available ? warmup : 0;
     // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) would trip
     // the playback's slow-frame preview downscale and draw below the pinned size. A fixed-step
     // capture turns that off; playback, the physics clock and the shaft damping clock are kept.
@@ -362,21 +398,34 @@ async function renderFrame(page, time, preroll, rate, warmup = 0) {
     scene.setAdaptivePreview(false);
     scene.resize(false);
     // The editor's own seek path resets physics only when the time changes.
-    if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / rate, undefined, true);
-    scene.seek(start, undefined, true);
+    if (Math.abs(scene.inspect().time - plan.start) <= 1e-9) scene.seek(plan.start + plan.nudge, undefined, true);
+    scene.seek(plan.start, undefined, true);
     scene.setPlaying(true);
     try {
-      for (let step = 0; step < warm; step++) scene.playbackFrame(start, step * 1000 / rate, true);
-      for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, (warm + step) * 1000 / rate, true);
-      scene.playbackFrame(time, (warm + steps) * 1000 / rate, false);
+      plan.times.forEach((value, index) => scene.playbackFrame(value, plan.stamps[index], true));
+      scene.playbackFrame(time, plan.drawStamp, false);
       const canvas = document.querySelector('#mv-scene canvas');
       const png = canvas.toDataURL('image/png');
-      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start };
+      return { png, state: scene.inspect() };
     } finally {
       scene.setPlaying(false);
       scene.setAdaptivePreview(true);
     }
-  }, { time, preroll, rate, warmup });
+  }, { time, plan });
+  return { ...result, steps: plan.steps, warmupSteps: plan.warmupSteps, prerollStart: plan.start, prerollSource: plan.source };
+}
+
+// The game frame grid the springs preroll on: the game's rendered-frame times rebuilt from a runtime
+// dump (--game-dump, mv_runtime_capture.gameFrameTimes) or listed in manifest physics.grid; null otherwise.
+function gameFrameGrid(manifest, gameDump = null) {
+  assert(!(gameDump && manifest.physics?.grid), 'Give the game frame grid as --game-dump or manifest physics.grid, not both');
+  if (gameDump) {
+    const runtime = require('./mv_runtime_capture');
+    const grid = runtime.gameFrameTimes(runtime.readDump(path.resolve(gameDump)).doc);
+    assert(grid.length, `${gameDump} has no records with clock.frameCount to rebuild the game frames from`);
+    return { source: 'game-dump', file: path.basename(gameDump), times: grid };
+  }
+  return manifest.physics?.grid ? { source: 'manifest physics.grid', file: null, times: manifest.physics.grid } : null;
 }
 
 // Applies the reference's spring timing to the scene and returns what it applied.
@@ -456,8 +505,10 @@ async function run() {
       }
     }, manifest.screenFade === true);
     const physics = physicsReference(manifest, quality.values, target);
+    const grid = gameFrameGrid(manifest, options['game-dump']);
+    assert(!grid || physics.source !== 'fovmod-export', 'A game frame grid is for a real-time game run, not a FOVMOD export');
     await applyPhysicsReference(page, physics);
-    const rate = physics.rate;
+    const rate = physics.rate, stampRate = physics.ruleRate ?? physics.rate;
     const project = await projectRecord(page);
     let soundtrack = null;
     if (project.soundtrack?.url) {
@@ -475,19 +526,21 @@ async function run() {
     const wanted = [...manifest.frames, ...planned.filter(auto => !manifest.frames.some(frame => Math.abs(frame.time - auto.time) < 1e-6))];
     const frames = [];
     for (const frame of wanted.sort((a, b) => a.time - b.time)) {
-      const { png, state, steps, warmupSteps, prerollStart } = await renderFrame(page, frame.time, manifest.physics.preroll, rate,
-        physics.warmupSteps);
+      const { png, state, steps, warmupSteps, prerollStart, prerollSource } = await renderFrame(page, frame.time, manifest.physics.preroll, rate,
+        physics.warmupSteps, grid?.times ?? null, stampRate);
       const file = frameName(frame.time);
       fs.writeFileSync(path.join(out, file), Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
       assert.equal(state.canvas.width, renderWidth, 'The editor canvas width does not match the requested render size');
       assert.equal(state.canvas.height, renderHeight, 'The editor canvas height does not match the requested render size');
-      frames.push({ ...frame, image: file, prerollStart, physicsSteps: steps, warmupSteps, cutDistance: cutDistance(cuts, frame.time), state });
+      frames.push({ ...frame, image: file, prerollStart, prerollSource, physicsSteps: steps, warmupSteps, cutDistance: cutDistance(cuts, frame.time), state });
     }
     const capture = {
       schema: 1, kind: 'elichika-mv-editor-frames', createdAt: new Date().toISOString(),
-      manifest, project, soundtrack, physicsRate: rate,
+      manifest: grid?.source === 'manifest physics.grid' ? { ...manifest, physics: { ...manifest.physics, grid: `${grid.times.length} times` } } : manifest,
+      project, soundtrack, physicsRate: rate,
       physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
-        warmupSteps: physics.warmupSteps },
+        warmupSteps: physics.warmupSteps, ruleRate: stampRate,
+        grid: grid ? { source: grid.source, file: grid.file, frames: grid.times.length } : null },
       render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
       quality: { mode: quality.mode, values: quality.values },
       environment: {
@@ -507,4 +560,4 @@ async function run() {
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
-  videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing };
+  videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing, prerollPlan, gameFrameGrid, MAX_DELTA_TIME };

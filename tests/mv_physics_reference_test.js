@@ -142,6 +142,43 @@ function fakePage() {
   globalThis.mvFrameProbe.scene.setAdaptivePreview = undefined;
   await assert.rejects(capture.renderFrame(page, 1, 3, 60), /setAdaptivePreview/);
 
+  // A game frame grid (--game-dump or manifest physics.grid): the springs preroll on the game's own
+  // frames inside the window. Each stamp advances by the frame's Time.deltaTime (clamped to 1/3 s)
+  // and at least one spring-clock interval, so the springs step once per game frame.
+  const gameGrid = [45.9, 46.1, 46.3, 46.8, 47.4, 47.6, 47.6, 47.81, 48.02, 48.2, 48.4, 48.6, 48.8, 49.0, 49.2, 49.4, 49.649, 49.85];
+  page = fakePage();
+  result = await capture.renderFrame(page, 49.649, 3, 4.87, 0, gameGrid, 60);
+  const gridFrames = page.calls.filter(([kind]) => kind === 'frame');
+  assert.deepEqual([result.prerollSource, result.steps, result.warmupSteps, result.prerollStart], ['game-frames', 13, 0, 46.8]);
+  assert.deepEqual(gridFrames.slice(0, -1).map(([, time]) => time), gameGrid.slice(3, 16), 'the game frames inside [t - 3 s, t)');
+  assert(gridFrames.slice(0, -1).every((call) => call[3] === true), 'preroll frames are deferred');
+  assert.deepEqual(gridFrames.at(-1).slice(1, 2).concat(gridFrames.at(-1)[3]), [49.649, false], 'then the drawn frame');
+  const intervals = gridFrames.slice(1).map(([, , stamp], index) => Math.round((stamp - gridFrames[index][2]) * 1e3) / 1e3);
+  assert.deepEqual(intervals.slice(0, 4), [333.333, 200, 16.667, 210],
+    'clamped at 1/3 s; a repeated (pinned) time still steps one spring-clock interval');
+  assert.equal(intervals.at(-1), 249, 'the drawn frame follows the last game frame by its own interval');
+  assert.equal(gridFrames[0][2], 0);
+  // A window the grid does not cover keeps the fixed-rate grid.
+  assert.equal((await capture.renderFrame(fakePage(), 10, 3, 4.87, 0, gameGrid, 60)).prerollSource, 'fixed-rate');
+  assert.equal(capture.prerollPlan(49.649, 3, 4.87).source, 'fixed-rate');
+  // The grid comes from manifest physics.grid or a runtime dump, never both.
+  assert.deepEqual(manifest({ physics: { grid: [1, 1.2, 1.2] } }).physics.grid, [1, 1.2, 1.2]);
+  assert.throws(() => manifest({ physics: { grid: [1.2, 1] } }), /physics.grid/);
+  assert.throws(() => manifest({ physics: { grid: [1] }, game: { exporter: 'fovmod' } }), /physics.grid is for a real-time game run/);
+  assert.deepEqual(capture.gameFrameGrid(manifest({ physics: { grid: [1, 2] } })), { source: 'manifest physics.grid', file: null, times: [1, 2] });
+  assert.equal(capture.gameFrameGrid(manifest({})), null);
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-grid-'));
+  try {
+    const file = path.join(folder, 'dump.json');
+    const frame = (frameCount, directorTime, deltaTime) => ({ id: `f${frameCount}`, kind: 'frame', clock: { frameCount, directorTime, deltaTime } });
+    fs.writeFileSync(file, JSON.stringify({ schema: runtime.SCHEMA, side: 'game', header: {},
+      records: [frame(100, 10, .2), frame(102, 10.5, .25), frame(103, 10.7, .2)] }));
+    assert.deepEqual(capture.gameFrameGrid(manifest({}), file), { source: 'game-dump', file: 'dump.json', times: [10, 10.25, 10.5, 10.7] });
+    assert.throws(() => capture.gameFrameGrid(manifest({ physics: { grid: [1] } }), file), /not both/);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+
   // Real-time runtime dumps step at the achieved frame rate, capped by the requested rate.
   const clock = (directorTime, frameCount, deltaTime = .1) => ({ clock: { directorTime, frameCount, deltaTime } });
   const slow = { records: [clock(0, 900), clock(1, 1000), clock(3, 1021), clock(5, 1042), clock(10, 1100), clock(10, 1104)] };
