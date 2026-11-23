@@ -1331,7 +1331,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
-        from . import mv_studio_soft_billboards
+        from . import mv_studio_soft_billboards, unity_builtin_meshes
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
@@ -1507,15 +1507,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             mesh_obj = _ref(renderer, tree.get("m_Mesh"))
         else:
             mesh_obj = scene.filters.get(_key(game_object))
-        builtin_plane = (mesh_obj is None and (overlay or stage_transparent and stage_transparent.get("depthWrite"))
-                         and mv_studio_stage_overlay.builtin_plane(scene, game_object))
-        if not builtin_plane and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
+        # A MeshFilter may point at Unity's built-in Plane or Quad, which no
+        # bundle contains. Unity draws it with the renderer's own material.
+        builtin_mesh = (unity_builtin_meshes.mesh_id(scene, game_object)
+                        if stage_materials and mesh_obj is None and renderer_type == "MeshRenderer" else None)
+        if not builtin_mesh and (mesh_obj is None or mesh_obj.type.name != "Mesh"):
             scene.warn("linked_mesh_missing", game_name)
             continue
-        if not builtin_plane and not faces.include(scene, renderer, game_object, mesh_obj):
+        if not builtin_mesh and not faces.include(scene, renderer, game_object, mesh_obj):
             continue
-        mesh_source = renderer if builtin_plane else mesh_obj
-        mesh_name = "Plane" if builtin_plane else scene.name(mesh_obj)
+        mesh_source = renderer if builtin_mesh else mesh_obj
+        mesh_name = unity_builtin_meshes.MESHES[builtin_mesh][0] if builtin_mesh else scene.name(mesh_obj)
         # These game-specific ground helpers can be ten metres wide and would
         # dwarf the character when fitting the camera. They are not body parts.
         if re.search(r"(?:foot.?shadow|dropshadow|shadowtoe)", mesh_name + " " + game_name, re.I):
@@ -1524,7 +1526,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         skin_material = (stage_opaque or stage_transparent) if renderer_type == "SkinnedMeshRenderer" else None
         native_skin = stage_beam is not None or skin_material is not None
         needs_sort_bounds = (
-            stage_motion is not None and not builtin_plane and (
+            stage_motion is not None and not builtin_mesh and (
                 stage_soft is not None or stage_transparent is not None
                 and (stage_transparent.get("alphaBlend") or stage_transparent.get("depthWrite"))
             )
@@ -1590,8 +1592,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if any(tree.get("m_BlendShapeWeights", [])):
                     keywords["morph_weights"] = tree["m_BlendShapeWeights"]
                     keywords["deadline"] = deadline
-                if builtin_plane:
-                    name, positions, normals, uv, submeshes = mv_studio_stage_overlay.plane_geometry()
+                if builtin_mesh:
+                    name, positions, normals, uv, submeshes = unity_builtin_meshes.geometry(builtin_mesh, world)
                 else:
                     name, positions, normals, uv, submeshes = _geometry(mesh_obj, world, bones, skin_warnings, **keywords)
                 overlay_inputs_ready = uv is not None
@@ -1725,7 +1727,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             else:
                 position_matrix = position_matrix @ world
         mesh_identity = {"source": source_index, "file": source_files.get(source, {}).get(id(mesh_source.assets_file), 0),
-                         "id": "10209" if builtin_plane else str(mesh_obj.path_id)}
+                         "id": str(builtin_mesh) if builtin_mesh else str(mesh_obj.path_id)}
         penlight_attributes, penlight_transform = None, None
         if native_attributes:
             penlight_transform = {"bindingSuffix": penlight[1],
@@ -1812,7 +1814,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                         overlay_material = (mv_studio_stage_overlay.material(scene, materials, material_obj)
                                             if overlay else mv_studio_stage_overlay.export_material(
                                                 materials, stage_transparent, renderer_tree=tree,
-                                                mesh=(raw or {}).get("mesh"), builtin_plane=builtin_plane))
+                                                mesh=(raw or {}).get("mesh"), builtin_mesh=bool(builtin_mesh)))
                     except ValueError:
                         pass
                 if overlay_material is not None:
