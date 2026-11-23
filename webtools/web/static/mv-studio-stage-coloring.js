@@ -69,6 +69,17 @@
     return true;
   }
 
+  // LiveQualityOperator.ApplyLiveQualityToStageEffectTrack mutes every track
+  // under a StageEffect/<difficulty>/<category> group whose name, without
+  // spaces and lower-cased (NormalizeTrackName), is "coloring" while
+  // StageColoring is off. A muted non-Animation track keeps its binding active
+  // (RemainsInMuted) but runs no mixer, so the material keeps its own values.
+  function qualityMuted(track, values) {
+    if (values?.stage_coloring !== false) return false;
+    const parts = typeof track?.label === "string" ? track.label.split("/") : [];
+    return parts.length >= 4 && parts[0] === "StageEffect" && parts[2].replace(/ /g, "").toLowerCase() === "coloring";
+  }
+
   function customize(source, result, colors) {
     result.set(source);
     for (let offset = 0; offset < source.length; offset += 4) {
@@ -179,7 +190,8 @@
           lastProject = project;
         }
         for (const group of groups.values()) {
-          const { track, fields, material, uniforms } = group;
+          const { fields, material, uniforms } = group;
+          const track = group.track && !qualityMuted(group.track, project?.quality?.values) ? group.track : null;
           const value = track ? sample(track, seconds) : { ...fields, selfTime: 0 };
           if (!track) {
             // Without a bound mixer the client never calls ApplyTextureIndex.
@@ -207,5 +219,5 @@
     };
   }
 
-  global.MVStudioStageColoring = { apply, sample, customize, applyTextureIndex };
+  global.MVStudioStageColoring = { apply, sample, customize, applyTextureIndex, qualityMuted };
 })(window);
