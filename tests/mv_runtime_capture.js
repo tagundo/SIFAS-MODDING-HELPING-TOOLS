@@ -3,6 +3,7 @@
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
+        [--physics-grid clock|rule]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -17,7 +18,8 @@
    deferred seek for pure parts, a fixed-step physics preroll ending exactly at
    t for members and springs. The preroll grid is the frame rate the game
    achieved (frames per director second, capped by the requested rate), since
-   the game steps its springs once per rendered frame. The read-only
+   the game steps its springs once per rendered frame (--physics-grid rule
+   uses the requested rate instead, for A/B checks). The read-only
    MVStudioScene.assetDump() supplies
    the values; DIR/editor-dump.json.gz is written in the same schema with
    side "editor". Values stay in editor space: tests/mv_runtime_compare.py
@@ -217,8 +219,10 @@ function planRequests(doc, phases) {
 // is reproduced at the frame rate the game achieved: frames per director second
 // between the first and last records taken while the director advanced
 // (clock.frameCount and clock.directorTime), capped by the rate the game
-// requested (MVStudioPhysics.gameFrameRate). Without a usable clock the
-// requested rate is used.
+// requested (MVStudioPhysics.gameFrameRate). When the frame counter does not
+// agree with the recorded deltaTime (within 25%; e.g. a synthetic document whose
+// frameCount is a record counter) the mean deltaTime gives the rate instead.
+// Without a usable clock the requested rate is used.
 function gameClockRate(doc, qualityValues, device) {
   const target = SPRINGS.gameFrameRate(qualityValues, device);
   const clocks = (doc.records || []).map((record) => record.clock)
@@ -230,9 +234,10 @@ function gameClockRate(doc, qualityValues, device) {
   const frames = last && last.frameCount - first.frameCount, seconds = last && last.directorTime - first.directorTime;
   if (!(frames > 0 && seconds > 0)) return { source: 'game-rule', rate: target, target, achieved: null, frames: 0, seconds: 0, meanDeltaTime: null };
   const deltas = advancing.map((clock) => clock.deltaTime).filter((value) => Number.isFinite(value) && value > 0);
-  const achieved = frames / seconds;
-  return { source: 'game-clock', rate: Math.min(achieved, target), target, achieved, frames, seconds,
-    meanDeltaTime: deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null };
+  const meanDeltaTime = deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null;
+  let achieved = frames / seconds, source = 'game-clock';
+  if (meanDeltaTime && Math.abs(achieved * meanDeltaTime - 1) > 0.25) { achieved = 1 / meanDeltaTime; source = 'game-deltaTime'; }
+  return { source, rate: Math.min(achieved, target), target, achieved, frames, seconds, meanDeltaTime };
 }
 
 // ------------------------------------------------------------- browser side
@@ -499,6 +504,8 @@ async function run() {
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), '--preroll is seconds or "full"');
   const order = options['physics-order'] ?? 'game';
   assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
+  const gridMode = options['physics-grid'] ?? 'clock';
+  assert(['clock', 'rule'].includes(gridMode), '--physics-grid is clock or rule');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -530,8 +537,8 @@ async function run() {
     const clock = gameClockRate(game, quality.values, manifest.device);
     await capture.applyPhysicsReference(page, { rate: clock.target, order,
       timing: { order, exportFps: null, device: manifest.device || {} } });
-    const rate = clock.rate;
-    const physics = { ...clock, reference: clock.source, order };
+    const rate = gridMode === 'rule' ? clock.target : clock.rate;
+    const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : clock.source, order };
     const pinned = await prepareLiveView(page, viewport);
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;

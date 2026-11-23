@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const capture = require('./mv_frame_capture');
 const runtime = require('./mv_runtime_capture');
+const check = require('./mv_spring_order_check');
 
 const base = {
   source: { region: 'gl', platform: 'android', liveId: 12035, assetId: 1203503 }, quality: { mode: 30 }, frames: [14.85],
@@ -19,6 +20,12 @@ function manifest(extra) {
   return capture.readManifest(file);
 }
 const q30 = { frame_rate_60fps: false }, q10 = { frame_rate_60fps: true };
+
+// mv_spring_order_check: a scaled bone's decomposed rotation is not a unit quaternion.
+assert(check.angle([0, 0, .3826834 * .998, .9238795 * .998], [0, 0, .3826834, .9238795]) < 1e-4, "scale is not an angle");
+assert(Math.abs(check.angle([0, 0, 0, 1], [0, 0, Math.sin(Math.PI / 36), Math.cos(Math.PI / 36)]) - 10) < 1e-9);
+assert.deepEqual(check.parseConfig('game@60'), { name: 'game@60', order: 'game', grid: 60 });
+assert.throws(() => check.parseConfig('lagged'), /order is game or same-frame/);
 
 assert.equal(capture.videoFps('30/1'), 30);
 assert.equal(capture.videoFps('120/1'), 120);
@@ -83,7 +90,12 @@ function fakePage() {
   assert.equal(rate.target, 30);
   assert(Math.abs(rate.rate - 21 / 2) < 1e-12, 'frames per director second while the director advances');
   assert(Math.abs(rate.meanDeltaTime - .1) < 1e-12);
-  const fast = { records: [clock(1, 0), clock(2, 200), clock(3, 400)] };
+  // A synthetic document counts records, not frames: its deltaTime gives the rate.
+  const synthetic = { records: [clock(11.5, 1000, 1 / 20), clock(14.85, 1001, 1 / 20), clock(50.3, 1002, 1 / 20), clock(97, 1003, 1 / 20)] };
+  rate = runtime.gameClockRate(synthetic, q30);
+  assert.equal(rate.source, 'game-deltaTime');
+  assert(Math.abs(rate.rate - 20) < 1e-9);
+  const fast = { records: [clock(1, 0, .005), clock(2, 200, .005), clock(3, 400, .005)] };
   assert.equal(runtime.gameClockRate(fast, q10).rate, 60, 'never faster than the requested rate');
   rate = runtime.gameClockRate({ records: [clock(0, 1), clock(0, 2)] }, q30);
   assert.deepEqual([rate.source, rate.rate], ['game-rule', 30]);
