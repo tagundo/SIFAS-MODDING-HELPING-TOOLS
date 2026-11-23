@@ -69,8 +69,9 @@ def _b64(array, dtype):
 class _Builder:
     """Shared textures and meshes of every template, within the preview budget."""
 
-    def __init__(self, deadline):
-        self.textures = particles._Textures(deadline)
+    def __init__(self, deadline, textures=None):
+        # The particle reader's table when given: a texture both use is exported once.
+        self.textures = particles._Textures(deadline) if textures is None else textures
         self.meshes, self.index, self.vertices, self.bytes = [], {}, 0, 0
 
     def mesh(self, renderer, kind, node, need_colors, skin_quality=0):
@@ -369,15 +370,21 @@ def _particle_summary(outcome):
     return drawn, gaps, quiet
 
 
-def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
+def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None, textures=None, shared=0):
     """Return (descriptor or None, coverage ledger) for every CustomControlClip.
 
     ``claimed`` maps (trackId, eventId) to the per-effect stage reader that draws
     the cue; those cues are left to it. ``outcomes`` is what
     mv_studio_particle_systems.read did with each prefab (None: no particles).
+    ``textures`` is the particle reader's texture table; its first ``shared``
+    entries are carried by the stageParticleSystems descriptor, so this
+    descriptor lists only the entries after them ("sharedTextures": shared) and
+    a material index below ``shared`` names that descriptor's texture.
     """
     claimed = claimed or {}
-    builder = _Builder(deadline)
+    builder = _Builder(deadline, textures)
+    if not 0 <= shared <= len(builder.textures.levels):
+        raise ValueError("shared texture count outside the texture table")
     templates, cues, ledger, prefabs, mesh_reasons = [], [], [], {}, {}
     for row in particles.control_clips(objects, mono, tracks):
         track, event = row["track"], row["event"]
@@ -450,8 +457,10 @@ def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
         mesh.pop("_center", None)
     descriptor = None
     if cues:
-        descriptor = {"schema": SCHEMA, "textures": builder.textures.levels, "meshes": builder.meshes,
+        descriptor = {"schema": SCHEMA, "textures": builder.textures.levels[shared:], "meshes": builder.meshes,
                       "templates": templates, "cues": cues}
+        if shared:
+            descriptor["sharedTextures"] = shared
     return descriptor, ledger
 
 

@@ -63,9 +63,23 @@
       row.curves.length === (row.kind === "enabled" ? 1 : 4);
   }
 
-  function validDescriptor(source) {
+  // The texture table a descriptor's material indices name: the first
+  // `sharedTextures` entries are the stageParticleSystems descriptor's (one export
+  // for a texture both use), the rest are the descriptor's own.
+  function textureTable(source, shared) {
+    if (!Array.isArray(source?.textures)) return null;
+    if (source.sharedTextures === undefined) return source.textures;
+    const count = source.sharedTextures;
+    if (!Number.isInteger(count) || count < 1 || !Array.isArray(shared?.textures) || shared.textures.length !== count) {
+      return null;
+    }
+    return shared.textures.concat(source.textures);
+  }
+
+  function validDescriptor(source, shared) {
     const stage = motion();
-    const {textures, meshes, templates, cues} = source || {};
+    const {meshes, templates, cues} = source || {};
+    const textures = textureTable(source, shared);
     if (!stage || source?.schema !== 1 || !Array.isArray(textures) || !Array.isArray(meshes) ||
         !Array.isArray(templates) || !Array.isArray(cues) || cues.length > 512 || templates.length > 64) return false;
     if (!textures.every(texture => Array.isArray(texture?.levels) && texture.levels.length >= 1 &&
@@ -178,20 +192,27 @@
     return geometry;
   }
 
-  async function apply(T, root, descriptor) {
+  // `shared`: the stageParticleSystems descriptor whose textures a descriptor with
+  // `sharedTextures` indexes first.
+  async function apply(T, root, descriptor, shared) {
     const systems = global.MVStudioParticleSystems, stage = motion();
     if (!root?.isObject3D || !systems?.loadTexture || !systems.renderState || !systems.activeFrames ||
         !systems.animatorTime || !stage ||
-        !global.MVStudioTitle?.loadTexture || !validDescriptor(descriptor)) return null;
-    const textures = [];
+        !global.MVStudioTitle?.loadTexture || !validDescriptor(descriptor, shared)) return null;
+    // Only the textures this descriptor's materials sample are uploaded.
+    const table = textureTable(descriptor, shared), used = new Set();
+    for (const template of descriptor.templates) for (const renderer of template.renderers) {
+      for (const material of renderer.materials) if (material.texture !== null) used.add(material.texture);
+    }
+    const textures = new Array(table.length).fill(null);
+    let white = null;
     try {
-      for (const source of descriptor.textures) textures.push(await systems.loadTexture(T, global.MVStudioTitle, source));
-      textures.push(await systems.loadTexture(T, global.MVStudioTitle, null));
+      for (const index of used) textures[index] = await systems.loadTexture(T, global.MVStudioTitle, table[index]);
+      white = await systems.loadTexture(T, global.MVStudioTitle, null);
     } catch {
-      for (const texture of textures) texture.dispose();
+      for (const texture of textures) texture?.dispose();
       return null;
     }
-    const white = textures[textures.length - 1];
     const group = new T.Group();
     group.name = "Original control prefabs";
     root.add(group);
@@ -428,7 +449,8 @@
         root.remove(group);
         for (const geometry of geometries) geometry.dispose();
         group.traverse(object => object.material?.dispose?.());
-        for (const texture of textures) texture.dispose();
+        for (const texture of textures) texture?.dispose();
+        white.dispose();
       },
     };
   }

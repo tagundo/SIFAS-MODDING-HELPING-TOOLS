@@ -64,6 +64,39 @@ async function run() {
   rogue.templates[0].renderers[0].draws = [[3, 0]];
   assert.equal(C.validDescriptor(rogue), false, "a draw must name a submesh");
 
+  // One texture table with the particle systems: indices below sharedTextures name the
+  // stageParticleSystems descriptor's textures, the rest this descriptor's own.
+  const png = (width, height) => {
+    const header = Buffer.alloc(24); header.writeUInt32BE(width, 16); header.writeUInt32BE(height, 20);
+    return header.toString("base64");
+  };
+  const level = (width) => ({levels: [{png: png(width, width), width, height: width}], filter: 1, wrap: [0, 0]});
+  const particleSide = {textures: [level(4), level(8)]};
+  const sharing = descriptor();
+  sharing.textures = [level(16)];
+  sharing.sharedTextures = 2;
+  sharing.templates[0].renderers[0].materials = [material({texture: 1})];
+  sharing.templates[0].renderers[1].materials = [material({texture: 2})];
+  assert.equal(C.validDescriptor(sharing, particleSide), true);
+  assert.equal(C.validDescriptor(sharing), false, "shared indices need the particle descriptor");
+  assert.equal(C.validDescriptor(sharing, {textures: [level(4)]}), false, "the shared count must match");
+  const outside = structuredClone(sharing);
+  outside.templates[0].renderers[1].materials = [material({texture: 3})];
+  assert.equal(C.validDescriptor(outside, particleSide), false);
+  const loaded = [];
+  const loadTexture = P.loadTexture;
+  P.loadTexture = async (T, title, source) => { loaded.push(source?.levels[0].width ?? "white"); return loadTexture(T, title, source); };
+  const sharedScene = new T.Scene();
+  const sharedPrefabs = await C.apply(T, sharedScene, sharing, particleSide);
+  P.loadTexture = loadTexture;
+  assert.ok(sharedPrefabs);
+  assert.deepEqual(loaded, [8, 16, "white"], "only the sampled textures are uploaded: shared index 1 and own index 0");
+  sharedPrefabs.update(10.6, project());
+  const sampled = [];
+  sharedScene.traverse(object => { if (object.isMesh) sampled.push(object.material.uniforms.uTexture.value.image?.width); });
+  assert.deepEqual(sampled.sort((a, b) => a - b), [8, 16]);
+  sharedPrefabs.dispose();
+
   // The state time runs from the activation frame (clipIn does not reach the Animator),
   // wraps for a looping clip and holds the end otherwise.
   const clip = {start: 0, duration: 1, loop: true};

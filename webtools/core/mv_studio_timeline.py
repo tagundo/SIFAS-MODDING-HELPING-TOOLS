@@ -597,6 +597,7 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         if sparks_roop:
             result["stageSparksRoop"] = sparks_roop
     outcomes = {} if preview_particle_systems else None
+    textures, shared = None, 0
     if preview_control_prefabs:
         from . import mv_studio_control_prefabs as control_prefabs
 
@@ -604,17 +605,21 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
     if preview_particle_systems:
         from . import mv_studio_particle_systems as particle_systems
 
+        # One texture table for the particle systems and the prefab meshes of the same clones.
+        textures = particle_systems._Textures(deadline)
         # After the per-prefab readers, so a cue one of them draws is not drawn twice.
         systems = particle_systems.read(objects, mono, tracks, deadline, claimed=particle_systems.claimed_cues(result),
-                                        outcomes=outcomes)
+                                        outcomes=outcomes, textures=textures)
         note = particle_systems.warning(systems, meshes_elsewhere=preview_control_prefabs)
         if note:
             result["warnings"].append(note)
         if systems and systems["cues"]:
             result["stageParticleSystems"] = systems
+            shared = len(systems["textures"])
     if preview_control_prefabs:
         # The meshes of the same clones, and one coverage row for every CustomControlClip.
-        prefabs, ledger = control_prefabs.read(objects, mono, tracks, deadline, claimed=legacy, outcomes=outcomes)
+        prefabs, ledger = control_prefabs.read(objects, mono, tracks, deadline, claimed=legacy, outcomes=outcomes,
+                                               textures=textures, shared=shared)
         note = control_prefabs.warning(ledger)
         if note:
             result["warnings"].append(note)

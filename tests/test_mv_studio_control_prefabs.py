@@ -221,6 +221,33 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(ledger[2]["note"], "The effect prefab is not previewed: particle cue budget of the preview, "
                                             "prefab cue budget of the preview.")
 
+    def test_texture_table_is_shared_with_the_particle_reader(self):
+        # The particle reader's table: its first two entries travel in stageParticleSystems,
+        # this descriptor carries only what the prefab meshes added after them.
+        table = prefabs.particles._Textures(float("inf"))
+        table.levels.extend([{"name": "particle_a"}, {"name": "particle_b"}])
+        rows = [{"track": {"id": "t"}, "event": {"id": "t:0"}, "prefab": object(), "offset": [0, 0, 0],
+                 "quality": "stage_control"}]
+
+        used = []
+
+        def template(objects, walked, builder, deadline):
+            used.append(builder.textures)
+            builder.textures.levels.append({"name": "mesh_only"})
+            return {"name": "fx"}, 1, [], []
+
+        with mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", side_effect=template):
+            descriptor, _ = prefabs.read({}, None, [], float("inf"), outcomes={"k": {"walked": []}},
+                                         textures=table, shared=2)
+            self.assertEqual((descriptor["textures"], descriptor["sharedTextures"]), ([{"name": "mesh_only"}], 2))
+            self.assertIs(used[0], table, "the prefab meshes add to the particle reader's table")
+            alone, _ = prefabs.read({}, None, [], float("inf"), outcomes={"k": {"walked": []}})
+            self.assertNotIn("sharedTextures", alone)
+            with self.assertRaises(ValueError):
+                prefabs.read({}, None, [], float("inf"), outcomes={}, textures=table, shared=9)
+
     def test_warning_lists_mesh_gaps_once_per_prefab(self):
         ledger = [{"meshGaps": ["Animator animates _TintColor through both its vector and color lanes"] * 2},
                   {"status": "rendered"}]
@@ -287,6 +314,11 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertTrue({"euler", "scale", "tint"} <= kinds)
         self.assertEqual({source["templates"][cue["template"]]["name"] for cue in source["cues"]}, set(names))
         self.assertEqual({cue["quality"] for cue in source["cues"]}, {"stage_control", "stage_display"})
+        # One texture table with the particle systems: nothing is exported twice.
+        particles = _parse("12036")["stageParticleSystems"]["textures"]
+        self.assertEqual(source.get("sharedTextures"), len(particles))
+        names = [texture["name"] for texture in particles + source["textures"]]
+        self.assertEqual(len(names), len(set(names)))
         # Authored pixels and mip levels only: each level halves, nothing is resampled.
         from PIL import Image
         for texture in source["textures"]:

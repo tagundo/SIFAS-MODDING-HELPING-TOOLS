@@ -983,14 +983,17 @@ def claimed_cues(result):
     return found
 
 
-def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None):
+def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None, textures=None):
     """Return the particle templates and cues of every CustomControlTrack, or None.
 
     ``outcomes``, when given, receives per prefab (viewer._key) what this reader
     did with it: the walked hierarchy, the drawn systems' layers, the rejected
     systems or the reason no template exists. mv_studio_control_prefabs reuses it.
+    ``textures``, when given, is the _Textures table shared with that reader, so
+    a texture both use is exported once; the descriptor lists the levels this
+    reader added (indices 0..n-1 of the shared table).
     """
-    textures = _Textures(deadline)
+    textures = _Textures(deadline) if textures is None else textures
     templates, cues, unsupported, notes = [], [], [], {}
     prefab_ids = {}
     outcomes = {} if outcomes is None else outcomes
@@ -1035,7 +1038,7 @@ def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None)
                      "offset": offset, "quality": quality, "clipSeed": seed & 0xFFFFFFFF})
     if not cues and not unsupported:
         return None
-    return {"schema": SCHEMA, "textures": textures.levels, "templates": templates, "cues": cues,
+    return {"schema": SCHEMA, "textures": list(textures.levels), "templates": templates, "cues": cues,
             "unsupported": unsupported, "otherComponents": notes}
 
 

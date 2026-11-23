@@ -1338,7 +1338,8 @@
         return;
       }
       stageParticleSystems = particleSystems;
-      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs);
+      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs,
+        value.stageParticleSystems);
       if (!active()) {
         controlPrefabs?.dispose();
         return;
