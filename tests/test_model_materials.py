@@ -63,6 +63,52 @@ class MemberMetadataTests(unittest.TestCase):
         self.assertTrue(all(second["features"][name] for name in ("matcap", "emissive", "cheek")))
         self.assertEqual(second["textures"]["_EmissiveTex"]["default"], [0, 0, 0, 1])
 
+    def test_cheek_array_exports_every_slice_as_exact_bytes(self):
+        # A stock head: no _CHEEK_ON, _CheekIntensity 0, a 2-slice array
+        # (Clamp, 1 mip) that MemberCheekMixer drives at runtime.
+        slices = [bytes([index] * 16 * 4) for index in (17, 230)]
+        obj, array = fake_texture(width=4, height=4, count=1, depth=2, pixels=b"".join(slices), wrap=1, name="cheek_array")
+        tree = self.tree(_CheekIntensity=0, _CheekTexArrayIndex=1)
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_CheekTex", {"m_Texture": {"m_PathID": 7}})]
+        exported, by_key = [], {}
+
+        def export(image):
+            key = image.path_id
+            if key not in by_key:
+                texture = image.read()
+                by_key[key] = len(exported)
+                exported.append((texture.get_image_data(), texture.m_TextureSettings.m_WrapU,
+                                 texture.m_TextureSettings.m_WrapV, texture.m_Width, texture.m_Height))
+            return by_key[key]
+
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            metadata = materials.attach_member_metadata(None, object(), tree, {}, export)
+        cheek = metadata["textures"]["_CheekTex"]
+        self.assertTrue(metadata["features"]["cheek"])
+        self.assertEqual([layer["arrayLayer"] for layer in cheek["layers"]], [0, 1])
+        self.assertEqual([exported[layer["index"]][0] for layer in cheek["layers"]], slices)
+        self.assertTrue(all(row[1:] == (1, 1, 4, 4) for row in exported), "Clamp and the original size are kept")
+        self.assertEqual(len(exported), 2, "the authored slice reuses its exported layer")
+        self.assertEqual((cheek["arrayLayer"], cheek["index"], cheek["depth"], cheek["name"]),
+                         (1, cheek["layers"][1]["index"], 2, "cheek_array"))
+        self.assertTrue(all("mipmaps" not in layer for layer in cheek["layers"]))
+        self.assertEqual(array.image_data, b"".join(slices))
+        self.assertEqual(metadata["limitations"], [])
+
+    def test_cheek_slot_without_array_keeps_authored_feature(self):
+        none = materials.attach_member_metadata(None, object(), self.tree(), {}, lambda _: self.fail("No image expected"))
+        self.assertFalse(none["features"]["cheek"])
+        self.assertNotIn("_CheekTex", none["textures"])
+        obj, _ = fake_texture()
+        tree = self.tree()
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_CheekTex", {"m_Texture": {"m_PathID": 7}})]
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            flat = materials.attach_member_metadata(None, object(), tree, {}, lambda _: self.fail("No image expected"))
+        # Only a Texture2DArray feeds MemberCheekBase; an authored-off 2D slot stays unused.
+        self.assertFalse(flat["features"]["cheek"])
+        self.assertNotIn("_CheekTex", flat["textures"])
+        self.assertEqual(flat["limitations"], [])
+
     def test_missing_nonzero_dependency_disables_only_that_feature(self):
         tree = self.tree("_MATCAP_ON", _RimglightIntensity=1)
         tree["m_SavedProperties"]["m_TexEnvs"] = [("_RimlightTex", {"m_Texture": {"m_PathID": 12}})]
