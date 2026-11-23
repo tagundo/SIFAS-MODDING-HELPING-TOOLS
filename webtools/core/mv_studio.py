@@ -293,7 +293,7 @@ def _timeline(path):
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
-                                               preview_stage_sparks_roop=True)
+                                               preview_stage_sparks_roop=True, preview_particle_systems=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -471,7 +471,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                              "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                              "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                             "stageSparksA", "stageSparksB", "stageSparksRoop")
+                             "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:9]
@@ -1225,7 +1225,7 @@ def _mod_files(project, files):
                                  "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                                  "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                                  "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                                 "stageSparksA", "stageSparksB", "stageSparksRoop")
+                                 "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

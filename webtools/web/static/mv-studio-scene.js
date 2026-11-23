@@ -352,6 +352,7 @@
     let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null, stageLens = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
+    let stageParticleSystems = null;
     let activeSplitGazeCameras = null;
     let loadedProjectToken = null, defaultMemberShadows = false;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
@@ -638,6 +639,8 @@
       stageButterfly = null;
       stageSparksRoop?.dispose();
       stageSparksRoop = null;
+      stageParticleSystems?.dispose();
+      stageParticleSystems = null;
       stageSparksA?.dispose();
       stageSparksA = null;
       stageSparksB?.dispose();
@@ -1273,6 +1276,12 @@
         return;
       }
       stageSparksRoop = sparksRoop;
+      const particleSystems = await global.MVStudioParticleSystems?.apply(T, scene, value.stageParticleSystems);
+      if (!active()) {
+        particleSystems?.dispose();
+        return;
+      }
+      stageParticleSystems = particleSystems;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1576,6 +1585,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
+      stageParticleSystems?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
@@ -1968,7 +1978,8 @@
         }
         return { nodes };
       });
-      for (const name of ["particles", "lightingRefs", "fovmodNative", "propertyBlocks"]) read(name, name, () => ({ modeled: false }));
+      read("particles", "particles", () => stageParticleSystems?.inspect() ?? { modeled: false });
+      for (const name of ["lightingRefs", "fovmodNative", "propertyBlocks"]) read(name, name, () => ({ modeled: false }));
 
       const nonFinite = [];
       const result = D.finalize(out, nonFinite);
