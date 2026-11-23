@@ -2162,8 +2162,12 @@
           for (const [slot, { material }] of slots(entry).entries()) {
             if (materials.length >= maxMaterials) { truncated.push("materials"); return materials; }
             const properties = D.materialProperties(material);
+            // A hidden material draws nothing; its uniforms are the module's current state unless the
+            // module marks them stale (mvHiddenUniforms, e.g. a penlight without clip input).
+            const hidden = material?.visible === false;
             materials.push({ key: D.keyFor("material", { renderer: entry.key, slot }), renderer: entry.key, slot,
-              name: D.materialName(material), editorName: material?.name ?? null, visible: material?.visible !== false,
+              name: D.materialName(material), editorName: material?.name ?? null, visible: !hidden,
+              ...(hidden ? { hiddenUniforms: material.userData?.mvHiddenUniforms === "stale" ? "stale" : "current" } : {}),
               curveDriven: curveDriven(material), ...properties });
           }
         }

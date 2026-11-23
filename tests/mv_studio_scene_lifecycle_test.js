@@ -661,6 +661,19 @@ async function checkAssetDump() {
   assert.equal(first.renderers[0].path, null, 'a rig-root mesh node carries no GameObject chain');
   assert.equal(first.renderers[0].pathSource, 'flattened');
   assert.deepEqual(first.materials.map((m) => m.key), ['material:renderer:member1:model-71#0']);
+  assert.deepEqual([first.renderers[0].materialVisible, first.materials[0].visible, first.materials[0].hiddenUniforms],
+    [true, true, undefined]);
+  // A hidden material draws nothing: its uniforms are current unless its module marks them stale.
+  const shown = f.models.get(71).mesh.material;
+  shown.visible = false;
+  let hidden = dump({ sections: ['renderers', 'materials'] });
+  assert.deepEqual([hidden.renderers[0].visible, hidden.renderers[0].materialVisible], [true, false]);
+  assert.deepEqual([hidden.materials[0].visible, hidden.materials[0].hiddenUniforms], [false, 'current']);
+  shown.userData.mvHiddenUniforms = 'stale';
+  hidden = dump({ sections: ['materials'] });
+  assert.equal(hidden.materials[0].hiddenUniforms, 'stale');
+  shown.visible = true;
+  delete shown.userData.mvHiddenUniforms;
   const bones = first.members.find((m) => m.bones)?.bones || [];
   assert.deepEqual(bones.map((bone) => bone.key), ['member:1:Reference/Move']);
   assert.deepEqual(first.census.nodes.map((node) => node.kind).sort(), ['bone', 'renderer']);

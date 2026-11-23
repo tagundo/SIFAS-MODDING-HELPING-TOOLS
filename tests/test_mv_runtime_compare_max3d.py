@@ -166,6 +166,64 @@ class ShaderMaterialTest(unittest.TestCase):
         result.compare_materials(game, editor, False)
         self.assertEqual(result.items, [])
 
+    def test_hidden_materials_with_stale_uniforms_check_only_that_the_game_draws_nothing(self):
+        game = material_record("mat_aud_gen_add_01", {"_TintColor": {"t": "color", "v": [0, 0, 0, 0]}})
+        stale = editor_material(visible=False, hiddenUniforms="stale",
+                                values={"uTint": {"t": "vector", "v": [1, 0.5, 0.2, 1]}})
+        result = comparison()
+        result.compare_materials(game, stale, False)
+        self.assertEqual([(item["metric"], item["score"]) for item in result.items], [("hiddenTintAlpha", 0.0)],
+                         "the stale tint is not compared, the game's zero alpha agrees with the hidden draw")
+        self.assertEqual(result.notes["materials.hiddenStale"], ["None for mat_aud_gen_add_01"])
+        result = comparison()
+        result.compare_materials(material_record("mat", {"_TintColor": {"t": "color", "v": [1, 1, 1, 0.5]}}), stale, False)
+        self.assertGreater(result.items[0]["score"], 1, "the game draws a penlight the editor hides")
+        result = comparison()
+        result.compare_materials(material_record("mat", {"_Color": {"t": "color", "v": [1, 1, 1, 1]}}), stale, False)
+        self.assertEqual(result.items, [])
+        self.assertEqual(len(result.notes["materials.hiddenNotMeasurable"]), 1)
+
+    def test_hidden_coloring_materials_compare_their_current_tint(self):
+        game = material_record("AS/Coloring/Transparent", {"_TintColor": {"t": "color", "v": [1, 0.8, 0.4, 0.698]}})
+        editor = editor_material(kind="coloring", visible=False, hiddenUniforms="current",
+                                 properties={"_TintColor": {"t": "color", "v": [1, 0.8, 0.4, 0], "from": "uTint"}})
+        result = comparison()
+        result.compare_materials(game, editor, False)
+        found = {item["field"]: item for item in result.items}
+        self.assertGreater(found["_TintColor"]["score"], 1, "the editor hides a coloring light the game draws at alpha 0.698")
+        self.assertEqual(result.notes["materials.hiddenCurrent"], ["None for AS/Coloring/Transparent"])
+        game["materials"][0]["properties"]["_TintColor"]["v"][3] = 0
+        result = comparison()
+        result.compare_materials(game, editor, False)
+        self.assertEqual([item["score"] for item in result.items if item["field"] == "_TintColor"], [0.0])
+
+    def test_renderer_drawn_only_with_visible_materials(self):
+        def renderers(enabled):
+            return {"id": "r", "clock": {"directorTime": 5.0}, "renderers": [
+                {"key": "renderer:/x/microphone", "scope": "effect", "mesh": "mic", "path": "/x/microphone", "enabled": enabled,
+                 "activeInHierarchy": True, "layer": 0}]}
+
+        def editor(material_visible):
+            return {"renderers": [{"key": "renderer:effect:mic", "visible": True, "culled": False, "materialVisible": material_visible}]}
+
+        def scored(game, partner):
+            result = comparison()
+            result.joins["renderer:/x/microphone"] = ("renderer:effect:mic", "path")
+            result.join_renderer = lambda renderer: "renderer:effect:mic"
+            result.compare_renderers(game, partner, False)
+            return result, [(item["game"], item["editorConverted"], item["score"]) for item in result.items
+                            if item["metric"] == "rendererVisible"]
+
+        result, items = scored(renderers(False), editor(False))
+        self.assertEqual(items, [(False, False, 0.0)], "a disabled game renderer agrees with an editor renderer whose materials are hidden")
+        result, items = scored(renderers(False), editor(True))
+        self.assertEqual(items, [(False, True, C.EXACT_SCORE)])
+        result, items = scored(renderers(True), editor(False))
+        self.assertEqual(items, [], "the game draws, the editor hides the materials: left to the hidden material check")
+        self.assertEqual(result.notes["visibility.materialHidden"], ["renderer:effect:mic"])
+        result, items = scored(renderers(True), editor(True))
+        self.assertEqual(items, [(True, True, 0.0)])
+
     def test_flash_light_aliases_and_texture_st_spaces(self):
         game = material_record("mat_fla_01", {"_Speed": {"t": "float", "v": 0.7}, "_Length": {"t": "float", "v": 8},
                                               "_TintColor": {"t": "color", "v": [1, 1, 1, 1]},

@@ -1058,13 +1058,26 @@ class Comparison:
                 continue
             game_visible, why = self.game_drawn(game_renderer, record)
             editor_visible = editor_renderer.get("visible")
+            material_hidden = False
             if isinstance(editor_visible, bool):
+                # An editor renderer is drawn only when its node is visible and not culled and its materials are
+                # visible (three.js skips a mesh whose material.visible is false).
                 editor_visible = editor_visible and editor_renderer.get("culled") is not True
+                material_hidden = editor_visible and editor_renderer.get("materialVisible") is False
+                editor_visible = editor_visible and not material_hidden
             if isinstance(game_visible, bool) and isinstance(editor_visible, bool):
-                editor_why = f"visible={editor_renderer.get('visible')} culled={editor_renderer.get('culled') is True}"
-                self.add("visibility", "rendererVisible", key, record, game_visible, editor_visible,
-                         int(game_visible != editor_visible), 0, exact=True, near_cut=near,
-                         field=f"{match} ({self.joins[key][1]}; game {why}; editor {editor_why})" if why else match)
+                if game_visible and material_hidden and not self.identity:
+                    # The editor hides materials whose draw adds nothing (coloring tint alpha 0, a penlight without
+                    # clip input) while the game still draws them: the materials comparison checks the game's draw
+                    # adds nothing either (hidden material tint), so the renderer is not scored here.
+                    if match not in self.notes["visibility.materialHidden"]:
+                        self.notes["visibility.materialHidden"].append(match)
+                else:
+                    editor_why = (f"visible={editor_renderer.get('visible')} culled={editor_renderer.get('culled') is True} "
+                                  f"materialVisible={editor_renderer.get('materialVisible')}")
+                    self.add("visibility", "rendererVisible", key, record, game_visible, editor_visible,
+                             int(game_visible != editor_visible), 0, exact=True, near_cut=near,
+                             field=f"{match} ({self.joins[key][1]}; game {why}; editor {editor_why})" if why else match)
             billboard_offscreen = (not self.identity and editor_renderer.get("axisBillboard") is True
                                    and game_renderer.get("isVisible") is False)
             if billboard_offscreen:
@@ -1229,10 +1242,21 @@ class Comparison:
                     if unity:
                         editor_properties[unity] = prop
                 values = editor_material.get("values") or {}
+                key = f"material:{renderer_key}#{slot}"
                 if editor_material.get("visible") is False:
-                    # A hidden editor material (e.g. a penlight with no active clip) keeps stale uniforms.
-                    self.notes["materials.hiddenInEditor"].append(f"{editor_material.get('editorName')} for {game_material.get('name')}")
-                    continue
+                    label = f"{editor_material.get('editorName')} for {game_material.get('name')}"
+                    hidden_uniforms = editor_material.get("hiddenUniforms")
+                    if hidden_uniforms != "current":
+                        # Stale uniforms (a penlight without clip input keeps the last clip's values), or a dump that does
+                        # not say: only the claim that the draw adds nothing is checked against the game.
+                        if label not in self.notes["materials.hiddenStale"]:
+                            self.notes["materials.hiddenStale"].append(label)
+                        if hidden_uniforms == "stale":
+                            self.compare_hidden_draw(key, record, game_material, near)
+                        continue
+                    # Current uniforms (coloring hidden at tint alpha 0): compared like a drawn material.
+                    if label not in self.notes["materials.hiddenCurrent"]:
+                        self.notes["materials.hiddenCurrent"].append(label)
                 if not self.identity:
                     self.editor_material_properties(editor_material, game_material, editor_properties)
                 if not self.identity and editor_material.get("kind") == "gltf" and vector(values.get("color"), 3):
@@ -1246,7 +1270,6 @@ class Comparison:
                         self.notes["materials.unmappedUniforms"].append(name)
                 for name in editor_material.get("editorOnly") or []:
                     self.notes["materials.editorOnlyUniforms"].append(name)
-                key = f"material:{renderer_key}#{slot}"
                 sampled = member_sampled_slots(editor_material)
                 self.compare_member_variant(key, record, game_material, editor_material, near)
                 for name, game_property in (game_material.get("properties") or {}).items():
@@ -1255,6 +1278,18 @@ class Comparison:
                         self.notes["materials.notModeled"].append(f"{editor_material.get('kind')}:{name}")
                         continue
                     self.compare_property(key, name, record, game_property, editor_property, near, sampled=name in sampled)
+
+    def compare_hidden_draw(self, key, record, game_material, near):
+        """A hidden editor material draws nothing. The AS effect shaders the editor hides (coloring, penlight) multiply
+        their output by _TintColor under SrcAlpha blending, so the game's draw adds nothing when its _TintColor alpha
+        is 0; without that property the claim is not measurable."""
+        tint = (game_material.get("properties") or {}).get("_TintColor")
+        alpha = tint.get("v")[3] if isinstance(tint, dict) and vector(tint.get("v"), 4) else None
+        if not number(alpha):
+            self.notes["materials.hiddenNotMeasurable"].append(f"{key}: the game material has no _TintColor")
+            return
+        self.add("materials", "hiddenTintAlpha", key, record, alpha, 0.0, abs(alpha), self.tol["color"], near_cut=near,
+                 field="_TintColor alpha (editor hides the material)")
 
     def compare_member_variant(self, key, record, game_material, editor_material, near):
         """AS/Member variant state: the keywords that select a compiled variant and the rim term."""
