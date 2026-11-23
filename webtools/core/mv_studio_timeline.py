@@ -732,7 +732,7 @@ def _camera_vector(value, length, label):
 
 
 def _write_camera(tree, clip, old_event, new_event):
-    from live_timeline.sifas_timeline_inject import unity_euler_near
+    unity_euler_near = animation.unity_euler_near
 
     before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
     span = old_event["duration"]

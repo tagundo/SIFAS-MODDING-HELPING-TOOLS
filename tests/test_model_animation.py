@@ -485,3 +485,30 @@ class ActualAnimationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EulerWriteHelpersTest(unittest.TestCase):
+    """The Euler write helpers used by camera point edits live in webtools (model_animation),
+    so an older top-level live_timeline package earlier on sys.path cannot shadow them."""
+
+    def test_helpers_match_the_live_timeline_copy_for_every_order(self):
+        from webtools.core import model_animation as animation
+        from live_timeline import sifas_timeline_inject as inject
+        import random
+        rng = random.Random(7)
+        for order in range(6):
+            previous = None
+            for _ in range(200):
+                q = [rng.uniform(-1, 1) for _ in range(4)]
+                ours, theirs = animation.quat_to_unity_euler(q, order), inject.quat_to_unity_euler(q, order)
+                self.assertTrue(all(abs(a - b) < 1e-9 for a, b in zip(ours, theirs)), (order, q))
+                self.assertEqual(animation.unity_euler_branches(list(ours), order), inject.unity_euler_branches(list(ours), order))
+                near_ours = animation.unity_euler_near(q, order, previous)
+                near_theirs = inject.unity_euler_near(q, order, previous)
+                self.assertTrue(all(abs(a - b) < 1e-9 for a, b in zip(near_ours, near_theirs)), (order, q, previous))
+                previous = near_ours
+
+    def test_camera_writer_does_not_import_live_timeline(self):
+        source = (Path(__file__).resolve().parents[1] / 'webtools' / 'core' / 'mv_studio_timeline.py').read_text(encoding='utf-8')
+        self.assertNotIn('from live_timeline', source)
+        self.assertNotIn('import live_timeline', source)

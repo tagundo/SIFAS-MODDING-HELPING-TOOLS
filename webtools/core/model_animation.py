@@ -527,6 +527,81 @@ def unity_euler_quaternion(values, order=DEFAULT_EULER_ORDER):
     return result
 
 
+# The inverse direction, for writing Euler samples (camera point edits). These live here, not
+# only in live_timeline.sifas_timeline_inject, so the webtools import cannot be shadowed by an
+# older top-level live_timeline package (for example an elichika checkout's pinned modtools).
+def quat_to_unity_euler(q, order=4):
+    """Unity quaternion -> Unity Euler degrees in rotation `order` (default ZXY).
+
+    Applying axes a, b, c in this order gives R = Rc * Rb * Ra; the middle axis b is
+    the asin one. Even permutations (xyz, yzx, zxy) and odd ones differ only in sign.
+    """
+    if order not in EULER_ORDERS:
+        raise ValueError(f"unknown Unity rotation order {order!r}")
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    m = ((1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+         (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+         (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    s = 1.0 if EULER_ORDERS[order] in ("xyz", "yzx", "zxy") else -1.0
+    cb = math.hypot(m[c][b], m[c][c])  # |cos b|: atan2 instead of asin stays exact near +-90 deg.
+    angles = [0.0, 0.0, 0.0]
+    angles[b] = math.atan2(-s * m[c][a], cb)
+    if cb > 1e-9:
+        angles[a] = math.atan2(s * m[c][b], m[c][c])
+        angles[c] = math.atan2(s * m[b][a], m[a][a])
+    else:  # Gimbal lock: keep the first axis at 0 and put the rest on the last axis.
+        angles[c] = math.atan2(-s * m[a][b], m[b][b])
+    return tuple(math.degrees(value) for value in angles)
+
+
+def unity_euler_branches(euler, order=4):
+    """The two Euler solutions of the same rotation: as is, and (a+180, 180-b, c+180)."""
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    other = list(euler)
+    other[a] += 180.0
+    other[b] = 180.0 - other[b]
+    other[c] += 180.0
+    return [list(euler), other]
+
+
+def _euler_qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+
+def unity_euler_near(q, order=4, reference=None):
+    """The Euler angles (degrees) of the same rotation nearest to `reference`.
+
+    A DenseClip interpolates Euler values linearly between samples, so pick the
+    solution nearest the previous sample, unwrapped by whole turns. At the middle-axis
+    +-90 deg gimbal (yaw +-90 for XYZ cameras), pin the first axis to the previous
+    value and solve the last one.
+    """
+    euler = quat_to_unity_euler(q, order)
+    if reference is None:
+        return list(euler)
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    candidates = unity_euler_branches(euler, order)
+    if abs(math.cos(math.radians(euler[b]))) < 1e-6:
+        # q = qc * qb * qa: with the first axis a pinned, qc = q * (qb * qa)^-1.
+        half_a, half_b = math.radians(reference[a]) / 2, math.radians(euler[b]) / 2
+        qa, qb = [0.0, 0.0, 0.0, math.cos(half_a)], [0.0, 0.0, 0.0, math.cos(half_b)]
+        qa[a], qb[b] = math.sin(half_a), math.sin(half_b)
+        x, y, z, w = _euler_qmul(qb, qa)
+        qc = _euler_qmul(q, (-x, -y, -z, w))
+        pinned = list(euler)
+        pinned[a], pinned[c] = reference[a], math.degrees(2 * math.atan2(qc[c], qc[3]))
+        candidates.append(pinned)
+    candidates = [[value + 360.0 * round((previous - value) / 360.0) for value, previous in zip(branch, reference)]
+                  for branch in candidates]
+    return min(candidates, key=lambda branch: sum((value - previous) ** 2 for value, previous in zip(branch, reference)))
+
+
 def _quaternion(values, euler=False, order=DEFAULT_EULER_ORDER):
     if euler:
         values = unity_euler_quaternion(values, order)
