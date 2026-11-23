@@ -178,6 +178,16 @@ def material_lane(binding):
     return (kind, lane) if kind is not None and (family == 0 or family == 1 and kind == "tint") else None
 
 
+def lane_reason(prop, both_families=False):
+    """Why a renderer _TintColor/_MainTex_ST binding is not reproduced (mesh and particle renderers)."""
+    name = "_TintColor" if prop == "tint" else "_MainTex_ST"
+    # Both the .xyzw and the .rgba lanes of one color: the order Unity writes
+    # them in (and whether both bind) is not established. A partial vector
+    # keeps the authored value in the other lanes, which is not reproduced.
+    return (f"Animator animates {name} through both its vector and color lanes" if both_families
+            else f"Animator animates part of {name}")
+
+
 def channels(walked, own, rows):
     """Typed channels of one Animator, resolved to walked node indices.
 
@@ -205,10 +215,7 @@ def channels(walked, own, rows):
             prop, lane = material_lane(binding)
             lanes = material.setdefault((target, RENDERERS[kind], prop), {})
             if lane in lanes:
-                # Both the .xyzw and the .rgba lanes of one color: the order Unity
-                # writes them in (and whether both bind) is not established.
-                unsupported[target] = (f"Animator animates {'_TintColor' if prop == 'tint' else '_MainTex_ST'} "
-                                       "through both its vector and color lanes")
+                unsupported[target] = lane_reason(prop, both_families=True)
             lanes[lane] = curves[0]
             continue
         else:
@@ -224,8 +231,7 @@ def channels(walked, own, rows):
         result.append(row)
     for (target, renderer, prop), lanes in material.items():
         if set(lanes) != {0, 1, 2, 3}:
-            # A partial vector keeps the authored value in the other lanes; not reproduced.
-            unsupported[target] = f"Animator animates part of {'_TintColor' if prop == 'tint' else '_MainTex_ST'}"
+            unsupported[target] = lane_reason(prop)
             continue
         result.append({"node": target, "kind": prop, "renderer": renderer, "curves": [lanes[i] for i in range(4)]})
     return result, unsupported
