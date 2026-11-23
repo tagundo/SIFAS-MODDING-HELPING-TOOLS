@@ -274,6 +274,10 @@
     if (!T || !root || !renderer) throw new Error("The shader renderer is unavailable.");
     var enabled = options.enabled !== false;
     var memberProp = options.memberProp === true;
+    // A live MV performer: CommonCoreMember.Initialize runs
+    // LiveCoreMemberRimlight.Initialize then ApplyIntensity(0), so the rim
+    // starts at intensity 0 (outline stencil Always) and the timeline decides.
+    var liveMember = options.liveMember === true && !memberProp;
     var rimlightEnabled = memberProp || options.rimlight !== false;
     var mouthCentroidDepth = options.mouthCentroidDepth === true &&
       !!(renderer.capabilities && renderer.capabilities.isWebGL2);
@@ -365,6 +369,19 @@
         });
       });
     });
+
+    function stencilFunction(comparison) {
+      return [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,
+        T.EqualStencilFunc, T.LessEqualStencilFunc, T.GreaterStencilFunc,
+        T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][comparison] || T.AlwaysStencilFunc;
+    }
+
+    function setOutlineStencil(pair, comparison) {
+      if (pair.outlineStencilComp === comparison) return;
+      pair.outlineStencilComp = comparison;
+      pair.outline.stencilFunc = stencilFunction(comparison);
+      pair.main.userData.sifasRuntime.outlineStencilComp = comparison;
+    }
 
     function constantTexture(value) {
       var key = "constant:" + value.join(",");
@@ -504,6 +521,7 @@
         _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekTexArrayIndex: 0, _CheekIntensity: 0 };
       Object.keys(defaults).forEach(function (name) { uniforms["u" + name.slice(1)] = { value: finite(floats[name], defaults[name]) }; });
       if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
+      if (liveMember) uniforms.uRimglightIntensity.value = 0;
       var defines = {};
       if (!memberProp) ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
         if (features[name] && (name !== "rimlight" || rimlightEnabled)) defines["SIFAS_" + name.toUpperCase()] = 1;
@@ -521,14 +539,16 @@
       main.userData.sifas = data;
       if (!memberProp && options.nativeMemberDepth) main.userData.mvStageMemberDepthRim = { value: 0 };
       main.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
+      // _OutlineStencilComp (UnityEngine.Rendering.CompareFunction): the
+      // OUTLINE pass is Stencil Ref 1 Comp [_OutlineStencilComp] Pass Keep.
+      var outlineStencilComp = liveMember ? 8 : Math.floor(finite(floats._OutlineStencilComp, 8));
+      main.userData.sifasRuntime = { outlineStencilComp: outlineStencilComp };
       var outlineParameters = Object.assign({}, parameters, {
         vertexShader: memberProp ? PROP_OUTLINE_VERTEX : mouthDepth ? MOUTH_OUTLINE_VERTEX : OUTLINE_VERTEX,
         fragmentShader: memberProp ? PROP_OUTLINE_FRAGMENT : mouthDepth ? MOUTH_OUTLINE_FRAGMENT : OUTLINE_FRAGMENT,
         uniforms: uniforms, side: T.BackSide, defines: {},
         stencilZPass: T.KeepStencilOp,
-        stencilFunc: [T.AlwaysStencilFunc, T.NeverStencilFunc, T.LessStencilFunc,
-          T.EqualStencilFunc, T.LessEqualStencilFunc, T.GreaterStencilFunc,
-          T.NotEqualStencilFunc, T.GreaterEqualStencilFunc, T.AlwaysStencilFunc][Math.floor(finite(floats._OutlineStencilComp, 8))] || T.AlwaysStencilFunc
+        stencilFunc: stencilFunction(outlineStencilComp)
       });
       var outline = new T.ShaderMaterial(outlineParameters);
       outline.name = original.name + " (" + data.shader + " outline)";
@@ -537,7 +557,7 @@
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
-        sourceName: original.name, cheek: null, cheekLayer: null,
+        sourceName: original.name, cheek: null, cheekLayer: null, outlineStencilComp: outlineStencilComp,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
@@ -742,6 +762,11 @@
           // BaseLight and Member Rim Light write their current values.
           var depthRim = pair.main.userData.mvStageMemberDepthRim;
           if (depthRim) depthRim.value = finite(rim?.intensity, 0);
+          // LiveCoreMemberRimlight.ApplyIntensity -> ApplyEnable(final > 0); on
+          // the current (non-legacy) shader that only sets _OutlineStencilComp:
+          // 3 (Equal, the outline is kept over stencil-1 member pixels) while
+          // the rim is lit, 8 (Always) otherwise.
+          if (liveMember) setOutlineStencil(pair, uniforms.uRimglightIntensity.value > 0 ? 3 : 8);
         });
       },
       // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll
