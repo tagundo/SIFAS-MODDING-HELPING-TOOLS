@@ -18,6 +18,13 @@ the clip's playableClass) and the Python readers that feed them. Clip-level
 coverage is given where the preview decides per clip: CustomControl cues are
 counted as drawn when a stage preview descriptor names their (trackId,
 eventId).
+
+Performer prop tracks (mv_studio_props.bindings) play only through an
+attached prop: a ``props`` asset with a preview and an ``attachment``, the
+same test the scene uses before it creates MVStudioProps. load_game attaches
+one only when the catalog lists a stage props bundle, the timeline has
+exactly one prop binding and the prop preview succeeds; in every other case
+the prop tracks are reported as not rendered with load_game's reason.
 """
 import re
 
@@ -27,6 +34,7 @@ _REPORTED = (NOT_RENDERED, PARTIAL, UNCLASSIFIED)
 _MAX_ITEMS = 24
 
 _SLOT = re.compile(r"/EntryPoint/Live/Members/Member(\d+)(?:/|$)")
+_PROP_SLOT = re.compile(r"/EntryPoint/Live/Members/ske_[A-Za-z0-9_]+/Member(\d+)/")
 _LABEL_SLOT = re.compile(r"Member(\d+)")
 _MAIN_CAMERA = re.compile(r"/EntryPoint/Live/Cameras/MainCamera")
 _SPLIT_CAMERA = re.compile(r"/EntryPoint/Live/Cameras/SplitScreenEffect/Cameras/SubCamera[1-4]")
@@ -85,6 +93,12 @@ def _slot(track):
     return None
 
 
+def _reported_slot(track):
+    # A performer prop binding names its member slot below the skeleton root.
+    found = _PROP_SLOT.match(track.get("binding") or "")
+    return int(found[1]) if found else _slot(track)
+
+
 def claimed_cues(project):
     """(trackId, eventId) pairs that a stage preview descriptor draws."""
     found, stack = set(), [value for key, value in project.items() if key.startswith("stage")]
@@ -99,16 +113,58 @@ def claimed_cues(project):
     return found
 
 
-def _prop_tracks(tracks):
+# Why load_game attached no performer prop (mv_studio.load_game picks one).
+PROP_NO_BUNDLE = "The catalog lists no stage props bundle for this stage."
+PROP_SEVERAL = "More than one performer prop binding; the preview attaches a single prop only."
+PROP_UNAVAILABLE = "The stage props bundle is unavailable."
+PROP_PREVIEW_FAILED = "The performer prop preview could not be built from the props bundle."
+PROP_NOT_ATTACHED = "No performer prop is attached to this import."
+_PROP_NO_CURVE = "Prop clips without a playable native opening curve."
+
+
+def _attached_props(project):
+    """Prop specs the scene animates: a props asset with a preview and an attachment."""
+    return [asset["attachment"] for asset in project.get("assets") or ()
+            if isinstance(asset, dict) and asset.get("kind") == "props" and asset.get("previewUrl")
+            and isinstance(asset.get("attachment"), dict)]
+
+
+def _prop_tracks(project, tracks, gap):
+    """Track id -> the attached prop spec that plays it, or why no prop plays it."""
     from . import mv_studio_props
     try:
         rows = mv_studio_props.bindings(tracks)
     except (KeyError, TypeError, ValueError):
-        return set()
-    return {row["track"] for row in rows} | {identity for row in rows for identity in row["activation"]}
+        rows = []
+    found = {identity: gap or PROP_NOT_ATTACHED for row in rows for identity in (row["track"], *row["activation"])}
+    for spec in _attached_props(project):
+        for identity in (spec.get("track"), *(spec.get("activation") or ())):
+            if isinstance(identity, str):
+                found[identity] = spec
+    return found
 
 
 _NO_PERFORMER = "No performer is loaded at its member slot."
+
+
+def _split(total, rendered, rendered_note, missing_note):
+    rows = [(RENDERED, rendered, rendered_note)] if rendered or not total else []
+    if rendered < total:
+        rows.append((NOT_RENDERED, total - rendered, missing_note))
+    return rows
+
+
+def _prop_rows(native, events, prop, context):
+    if isinstance(prop, str):
+        return [(NOT_RENDERED, len(events), prop)]
+    if prop.get("member") not in context["performers"]:
+        return [(NOT_RENDERED, len(events), _NO_PERFORMER)]
+    if native == "ActivationTrack":
+        return [(RENDERED, len(events), "Performer prop visibility.")]
+    # MVStudioProps plays a clip only through its opening curve; others keep the default angle.
+    curves = prop.get("curves") if isinstance(prop.get("curves"), dict) else {}
+    played = sum(event.get("id") in curves for event in events)
+    return _split(len(events), played, "Performer prop animation.", _PROP_NO_CURVE)
 
 
 def _classify(track, project, context):
@@ -120,6 +176,9 @@ def _classify(track, project, context):
         return [(MUTED, len(events), "Muted in the original timeline.")]
     slot = _slot(track)
     binding = track.get("binding") or ""
+    prop = context["props"].get(track.get("id")) if native in ("AnimationTrack", "ActivationTrack") else None
+    if prop is not None:
+        return _prop_rows(native, events, prop, context)
     if native == "AnimationTrack":
         if track.get("kind") == "dance" or (slot is not None and binding.endswith("/Model")):
             status, note = RENDERED, "Performer dance from the timeline's choreography pack."
@@ -128,13 +187,13 @@ def _classify(track, project, context):
         elif _SPLIT_CAMERA.fullmatch(binding):
             status, note = (RENDERED, "Split-screen sub camera.") if project.get("splitScreen") else (
                 NOT_RENDERED, "Split-screen sub camera without a split-screen layout.")
-        elif binding in context["motion"] or track.get("id") in context["props"]:
-            status, note = RENDERED, "Stage-node or prop animation."
+        elif binding in context["motion"]:
+            status, note = RENDERED, "Stage-node animation."
         else:
             status, note = NOT_RENDERED, "No preview module animates this binding."
     elif native == "ActivationTrack":
-        if track.get("id") in context["activations"] or track.get("id") in context["props"]:
-            status, note = RENDERED, "Stage-node or prop visibility."
+        if track.get("id") in context["activations"]:
+            status, note = RENDERED, "Stage-node visibility."
         else:
             status, note = NOT_RENDERED, "No preview module switches this binding."
     elif native == "CustomControlTrack":
@@ -150,14 +209,17 @@ def _classify(track, project, context):
     return [(status, len(events), note)]
 
 
-def report(project):
-    """Return per (native class, status) counts of tracks and clips, and the reported gaps."""
+def report(project, prop_gap=None):
+    """Return per (native class, status) counts of tracks and clips, and the reported gaps.
+
+    ``prop_gap`` is load_game's reason for attaching no performer prop.
+    """
     tracks = [track for track in project.get("tracks") or () if isinstance(track, dict)]
     motion = project.get("stageMotion") or {}
     context = {
         "motion": set(motion.get("bindings") or ()),
         "activations": set(motion.get("activations") or ()),
-        "props": _prop_tracks(tracks),
+        "props": _prop_tracks(project, tracks, prop_gap),
         "cues": claimed_cues(project),
         "performers": {row.get("position") for row in project.get("performers") or ()
                        if isinstance(row, dict) and (row.get("motion") or row.get("glb"))},
@@ -170,7 +232,7 @@ def report(project):
             row["tracks"] += 1
             row["clips"] += clips
             if note == _NO_PERFORMER:
-                row["slots"] = sorted({*row.get("slots", ()), _slot(track)})
+                row["slots"] = sorted({*row.get("slots", ()), _reported_slot(track)} - {None})
     ordered = sorted(rows.values(), key=lambda row: (row["nativeClass"], row["status"], row["note"]))
     return {"tracks": ordered, "gaps": [row for row in ordered if row["status"] in _REPORTED and row["clips"]]}
 
@@ -195,9 +257,12 @@ def warnings(coverage):
     return notes
 
 
-def apply(project):
-    """Attach the coverage report to a game import and add its gap warnings."""
-    coverage = report(project)
+def apply(project, prop_gap=None):
+    """Attach the coverage report to a game import and add its gap warnings.
+
+    Run it once ``project["assets"]`` is final, so an attached performer prop is seen.
+    """
+    coverage = report(project, prop_gap)
     project["importCoverage"] = coverage
     project["warnings"].extend(warnings(coverage))
     return coverage

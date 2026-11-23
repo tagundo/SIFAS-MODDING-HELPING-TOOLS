@@ -1,5 +1,9 @@
 """Every original timeline track class is classified; gaps are reported, never dropped."""
+from copy import deepcopy
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from webtools.core import mv_studio_import_coverage as coverage
 
@@ -24,6 +28,28 @@ def _track(identity, native, *, clips=1, binding=None, label=None, **fields):
     if binding:
         track["binding"] = binding
     return track
+
+
+_HAND = "Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/RightShoulder/RightArm/RightForeArm/RightHand"
+
+
+def _prop_target(member=1, prop="chp0001"):
+    return f"/EntryPoint/Live/Members/ske_so2028/Member{member}/Model/{_HAND}/{prop}"
+
+
+def _prop_tracks(member=1, prop="chp0001", name="prop"):
+    """A performer prop binding: an AnimationTrack and an ActivationTrack on the same exact target."""
+    motion = _track(f"{name}-motion", "AnimationTrack", clips=2, binding=_prop_target(member, prop))
+    for index, event in enumerate(motion["events"]):
+        event["values"] = {"animation": f"cab-prop:{index + 1}"}
+    return [motion, _track(f"{name}-on", "ActivationTrack", binding=_prop_target(member, prop))]
+
+
+def _prop_asset(member=1, name="prop", **fields):
+    attachment = {"kind": "fan", "member": member, "bone": _HAND, "track": f"{name}-motion",
+                  "activation": [f"{name}-on"], "curves": {f"{name}-motion:0": {"mode": "constant", "keys": 90.}}}
+    return {"id": "9", "kind": "props", "label": "Performer prop", "status": "loaded",
+            "previewUrl": "/api/mv-studio/media/prop.glb", "attachment": attachment, **fields}
 
 
 def _rows(report, native):
@@ -56,7 +82,7 @@ class ImportCoverageTests(unittest.TestCase):
         rows = _rows(coverage.report(project), "AnimationTrack")
         self.assertEqual(rows[coverage.RENDERED, "Main camera."], (1, 3))
         self.assertEqual(rows[coverage.RENDERED, "Performer dance from the timeline's choreography pack."], (1, 1))
-        self.assertEqual(rows[coverage.RENDERED, "Stage-node or prop animation."], (1, 1))
+        self.assertEqual(rows[coverage.RENDERED, "Stage-node animation."], (1, 1))
         self.assertEqual(rows[coverage.NOT_RENDERED, "No preview module animates this binding."], (1, 2))
         self.assertEqual(rows[coverage.NOT_RENDERED, "Split-screen sub camera without a split-screen layout."], (1, 1))
         project["splitScreen"] = {"masks": []}
@@ -66,8 +92,45 @@ class ImportCoverageTests(unittest.TestCase):
         project = self.project(_track("on", "ActivationTrack", clips=2), _track("off", "ActivationTrack"),
                                stageMotion={"bindings": [], "activations": {"on": ["on:0", "on:1"]}})
         rows = _rows(coverage.report(project), "ActivationTrack")
-        self.assertEqual(rows[coverage.RENDERED, "Stage-node or prop visibility."], (1, 2))
+        self.assertEqual(rows[coverage.RENDERED, "Stage-node visibility."], (1, 2))
         self.assertEqual(rows[coverage.NOT_RENDERED, "No preview module switches this binding."], (1, 1))
+
+    def test_performer_prop_tracks_count_only_through_an_attached_prop(self):
+        project = self.project(*_prop_tracks(), assets=[_prop_asset()])
+        report = coverage.report(project)
+        self.assertEqual(_rows(report, "AnimationTrack"), {
+            (coverage.RENDERED, "Performer prop animation."): (1, 1),
+            (coverage.NOT_RENDERED, "Prop clips without a playable native opening curve."): (1, 1)})
+        self.assertEqual(_rows(report, "ActivationTrack"), {(coverage.RENDERED, "Performer prop visibility."): (1, 1)})
+        # The scene creates the prop only from a previewed props asset with an attachment.
+        for asset in (_prop_asset(previewUrl=None), _prop_asset(kind="effect"), {**_prop_asset(), "attachment": None}):
+            with self.subTest(asset=asset):
+                rows = _rows(coverage.report(dict(project, assets=[asset])), "AnimationTrack")
+                self.assertEqual(rows, {(coverage.NOT_RENDERED, coverage.PROP_NOT_ATTACHED): (1, 2)})
+
+    def test_attached_prop_needs_a_performer_at_its_member_slot(self):
+        project = self.project(*_prop_tracks(member=2), assets=[_prop_asset(member=2)])
+        report = coverage.report(project)
+        self.assertEqual({row["nativeClass"]: (row["status"], row["note"], row["slots"]) for row in report["tracks"]}, {
+            "AnimationTrack": (coverage.NOT_RENDERED, "No performer is loaded at its member slot.", [2]),
+            "ActivationTrack": (coverage.NOT_RENDERED, "No performer is loaded at its member slot.", [2])})
+
+    def test_unattached_prop_tracks_are_reported_with_the_import_reason(self):
+        tracks = (*_prop_tracks(), *_prop_tracks(member=2, prop="chp0002", name="other"))
+        project = self.project(*tracks, performers=[{"position": 1, "glb": "/1.glb"}, {"position": 2, "glb": "/2.glb"}])
+        for gap in (coverage.PROP_SEVERAL, coverage.PROP_NO_BUNDLE, coverage.PROP_UNAVAILABLE,
+                    coverage.PROP_PREVIEW_FAILED, None):
+            with self.subTest(gap=gap):
+                case = deepcopy(project)
+                coverage.apply(case, gap)
+                note = gap or coverage.PROP_NOT_ATTACHED
+                self.assertEqual({(row["nativeClass"], row["status"], row["note"]): (row["tracks"], row["clips"])
+                                  for row in case["importCoverage"]["tracks"]},
+                                 {("AnimationTrack", coverage.NOT_RENDERED, note): (2, 4),
+                                  ("ActivationTrack", coverage.NOT_RENDERED, note): (2, 2)})
+                self.assertEqual(case["warnings"], [
+                    f"Original timeline tracks MV Studio does not reproduce: ActivationTrack x2 (2 clips: "
+                    f"{note.rstrip('.')}); AnimationTrack x2 (4 clips: {note.rstrip('.')})."])
 
     def test_custom_control_cues_count_per_clip_by_their_stage_descriptor(self):
         project = self.project(_track("control", "CustomControlTrack", clips=3),
@@ -121,6 +184,71 @@ class ImportCoverageTests(unittest.TestCase):
         project = self.project()
         self.assertEqual(coverage.apply(project), {"tracks": [], "gaps": []})
         self.assertEqual(project["warnings"], [])
+
+
+class LoadGamePropCoverageTests(unittest.TestCase):
+    """load_game credits performer prop tracks only when it attached the prop."""
+
+    def setUp(self):
+        from webtools.core import mv_studio, mv_studio_actor_cache, mv_studio_game, mv_studio_props, mv_studio_quality
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.tracks = list(_prop_tracks())
+        asset = lambda name: {"table": "live_timeline", "asset": name, "available": True}
+        self.selection = {
+            "name": "Fixture", "region": "gl", "platform": "ios", "liveId": 1, "assetId": 2,
+            "timeline": asset("timeline"), "stage": {"model": asset("stage"), "props": asset("props")},
+            "performers": [{"position": 1, "memberId": 208, "model": asset("actor-208")}],
+        }
+        self.attachment = _prop_asset()["attachment"]
+        self.preview = patch.object(mv_studio_props, "preview", return_value=(b"glTF", self.attachment)).start()
+        self.addCleanup(patch.stopall)
+        patch.object(mv_studio_game, "resolve", side_effect=lambda *a, **k: deepcopy(self.selection)).start()
+        self.missing = set()
+        patch.object(mv_studio_game, "load_asset", side_effect=lambda root, descriptor, **_: (
+            None if descriptor["asset"] in self.missing else descriptor["asset"].encode())).start()
+        patch.object(mv_studio_quality, "read_quality", return_value={"values": {}}).start()
+        patch.object(mv_studio_actor_cache, "open_cache", return_value=None).start()
+        patch.object(mv_studio, "_root", return_value=self.root).start()
+        patch.object(mv_studio, "_timeline", side_effect=lambda path: (path.read_bytes(), {
+            "duration": 10.0, "tracks": deepcopy(self.tracks), "warnings": []})).start()
+        patch.object(mv_studio, "_preview", return_value=("/api/mv-studio/media/" + "a" * 32 + ".glb", {})).start()
+        patch.object(mv_studio, "_media", return_value="/api/mv-studio/media/" + "b" * 32 + ".glb").start()
+        patch.object(mv_studio, "_motion", return_value=([], {"bodySegments": []})).start()
+        patch.object(mv_studio, "_register", side_effect=lambda project, native: project).start()
+        self.mv_studio = mv_studio
+
+    def import_rows(self):
+        project = self.mv_studio.load_game(self.root, region="gl", platform="ios", live_id=1, asset_id=2, language="en")
+        return {(row["nativeClass"], row["status"], row["note"]): row["clips"] for row in project["importCoverage"]["tracks"]}
+
+    def test_attached_prop_plays_its_tracks(self):
+        self.assertEqual(self.import_rows(), {
+            ("AnimationTrack", coverage.RENDERED, "Performer prop animation."): 1,
+            ("AnimationTrack", coverage.NOT_RENDERED, "Prop clips without a playable native opening curve."): 1,
+            ("ActivationTrack", coverage.RENDERED, "Performer prop visibility."): 1})
+        self.preview.assert_called_once()
+
+    def test_each_case_without_an_attached_prop_names_its_reason(self):
+        def expect(note):
+            self.assertEqual(self.import_rows(), {("AnimationTrack", coverage.NOT_RENDERED, note): 2,
+                                                  ("ActivationTrack", coverage.NOT_RENDERED, note): 1})
+
+        self.preview.side_effect = ValueError("The selected hand prop has no native fan renderer.")
+        expect(coverage.PROP_PREVIEW_FAILED)
+        self.preview.reset_mock(side_effect=True)
+        self.tracks += _prop_tracks(prop="chp0002", name="other")
+        self.assertEqual(self.import_rows(), {("AnimationTrack", coverage.NOT_RENDERED, coverage.PROP_SEVERAL): 4,
+                                              ("ActivationTrack", coverage.NOT_RENDERED, coverage.PROP_SEVERAL): 2})
+        self.preview.assert_not_called()
+        self.tracks = list(_prop_tracks())
+        self.missing.add("props")
+        expect(coverage.PROP_UNAVAILABLE)
+        self.missing.clear()
+        del self.selection["stage"]["props"]
+        expect(coverage.PROP_NO_BUNDLE)
 
 
 if __name__ == "__main__":

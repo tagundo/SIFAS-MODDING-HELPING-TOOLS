@@ -506,9 +506,12 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original stage model is unavailable for preview.")
             describe(stage.get("background"), "background", "2D stage background")
             describe(stage.get("thumbnail"), "other", "Stage thumbnail")
-            from . import mv_studio_props
+            from . import mv_studio_import_coverage, mv_studio_props
             prop_bindings = mv_studio_props.bindings(project["tracks"]) if stage.get("props") else []
             performer_prop = prop_bindings[0] if len(prop_bindings) == 1 else None
+            # Why the timeline's performer prop tracks do not play, for the coverage report.
+            prop_gap = (mv_studio_import_coverage.PROP_NO_BUNDLE if not stage.get("props") else
+                        mv_studio_import_coverage.PROP_SEVERAL if len(prop_bindings) > 1 else None)
             if performer_prop is None:
                 prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
                 if prop_file is not None:
@@ -520,15 +523,18 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 on_stage(_stage_snapshot(project, rows.values(), performers))
             if performer_prop is not None:
                 prop_row, prop_file = load(stage.get("props"), "props", "Performer prop")
+                prop_gap = mv_studio_import_coverage.PROP_UNAVAILABLE
                 if prop_file is not None:
                     try:
                         glb, attachment = mv_studio_props.preview(
                             prop_file, native, timeline.name, performer_prop, deadline,
                         )
                         prop_row.update(previewUrl=_media(glb, "glb"), attachment=attachment)
+                        prop_gap = None
                     except (ValueError, OSError) as error:
                         prop_row["status"] = "unavailable"
                         warnings.append(f"{prop_row['label']}: {error}")
+                        prop_gap = mv_studio_import_coverage.PROP_PREVIEW_FAILED
             describe(selected.get("songBackground"), "background", "Song background")
             movie = selected.get("movie") or {}
             describe(movie.get("source"), "display", "MV screen video")
@@ -640,9 +646,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original soundtrack is unavailable for preview.")
             warnings.extend(f"{item['role']}: {item['reason']}" if isinstance(item, dict) else str(item)
                             for item in selected.get("missing", []))
-            from . import mv_studio_import_coverage
-            mv_studio_import_coverage.apply(project)
             project["assets"] = list(rows.values())
+            # After the assets: only an attached performer prop plays its tracks.
+            mv_studio_import_coverage.apply(project, prop_gap)
         return _register(project, native)
     finally:
         _IMPORT.release()
