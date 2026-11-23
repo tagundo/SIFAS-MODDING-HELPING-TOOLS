@@ -311,6 +311,7 @@
     mount.appendChild(renderer.domElement);
     const split = global.MVStudioSplit?.create(T, renderer);
     const physicsClock = global.MVStudioPhysics?.createClock();
+    let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
@@ -1503,6 +1504,11 @@
       }
     }
 
+    // The spring rate the original frame-rate rule gives (MVStudioPhysics.frameRate).
+    function physicsRate() {
+      return global.MVStudioPhysics?.frameRate?.(settings, physicsTiming) ?? (settings.frame_rate_60fps === true ? 60 : 30);
+    }
+
     function resetPhysics(reason) {
       physicsClock?.reset();
       resetShafts = true;
@@ -1585,6 +1591,10 @@
       for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
+      // LiveCoreMemberManager.Update steps the springs before the director evaluates.
+      const physicsStep = playing && visible && records.some((record) => record.physics)
+        ? physicsClock?.step(frameTimestamp, physicsRate()) || 0 : 0;
+      for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       for (const record of records) {
         if (record.group !== actors) continue;
         // Both native camera paths exclude the member's Invisible layer.
@@ -1609,9 +1619,7 @@
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
-      const physicsStep = playing && visible && records.some((record) => record.physics)
-        ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
-      for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
+      for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
       if (shaftTemplates) {
@@ -1794,7 +1802,7 @@
         return point ? temp.point.setFromMatrixPosition(point.matrixWorld).distanceTo(mainCameraPosition) : undefined;
       }
 
-      read("clock", "clock", () => ({ directorTime: currentTime, rate: settings.frame_rate_60fps === true ? 60 : 30 }));
+      read("clock", "clock", () => ({ directorTime: currentTime, rate: physicsRate() }));
       read("directors", "directors", () => [{ key: "director:main", time: currentTime,
         duration: Number.isFinite(project?.duration) ? project.duration : null }]);
       read("cameras", "cameras", () => {
@@ -1987,6 +1995,12 @@
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
+      setPhysicsTiming(value) {
+        physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
+        resetPhysics("physics-timing");
+        return physicsTiming && { ...physicsTiming, rate: physicsRate() };
+      },
       frameAll,
       // Read-only state of the last evaluated frame for frame comparisons.
       inspect() {
