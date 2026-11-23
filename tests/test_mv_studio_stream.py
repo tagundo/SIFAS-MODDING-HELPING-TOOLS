@@ -101,6 +101,14 @@ class MVStudioStreamTests(unittest.TestCase):
         self.assertEqual(legacy.kwargs, {"language": "ko", "region": "gl", "platform": "android",
                                         "live_id": 12002, "asset_id": 1200203, "download": True})
 
+    def test_explicit_costumes_reach_the_import(self):
+        # mv_runtime_capture.js --suits pins the suits a recorded game performance wore.
+        for action in ("game", "game-stream"):
+            with self.subTest(action=action), self.connect(action, payload={**self.request, "costumes": {"1": 102111001}}) as response:
+                self.assertEqual(response.status, 200)
+                response.read()
+            self.assertEqual(self.load.call_args.kwargs["costumes"], {"1": 102111001})
+
     def test_complete_without_stage(self):
         with self.connect() as response:
             self.assertEqual(response.status, 200)

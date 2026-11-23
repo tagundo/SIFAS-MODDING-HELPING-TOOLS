@@ -455,6 +455,32 @@ class ToleranceTest(unittest.TestCase):
         self.assertEqual(self.beyond(0.2499), 1)
 
 
+class WorldToCameraToleranceTest(unittest.TestCase):
+    """worldToCamera's translation (column-major elements 12-14, metres) uses the camera position tolerance."""
+
+    def perturbed(self, index, delta):
+        editor = editor_doc()
+        game = synthetic.game_from_editor(editor)
+        for record in frames(game):
+            main_camera(record)["worldToCamera"][index] += delta
+        report = run(game, editor)
+        self.assertEqual(report["join"]["hypothesis"]["fitted"], "H180")
+        beyond = {group["metric"] for group in report["_worst"] if group["type"] == "camera" and group["beyond"]}
+        return report["types"]["camera"]["metrics"], beyond
+
+    def test_translation_and_basis_have_their_own_tolerances(self):
+        metrics, beyond = self.perturbed(12, 5e-4)  # 0.5 mm: inside cameraPositionM, 5x the basis tolerance.
+        self.assertEqual(beyond, set())
+        self.assertAlmostEqual(metrics["worldToCameraTranslationM"]["max"], 5e-4, places=9)
+        self.assertLess(metrics["worldToCameraMaxAbs"]["max"], 1e-9)
+        metrics, beyond = self.perturbed(14, 2e-3)  # Moves the projected anchors too.
+        self.assertIn("worldToCameraTranslationM", beyond)
+        self.assertNotIn("worldToCameraMaxAbs", beyond)
+        metrics, beyond = self.perturbed(0, 5e-4)
+        self.assertEqual(beyond, {"worldToCameraMaxAbs"})
+        self.assertLess(metrics["worldToCameraTranslationM"]["max"], 1e-9)
+
+
 class InputTest(unittest.TestCase):
     """(g) rejections and (h) job-log input."""
 
@@ -940,6 +966,169 @@ class SpringJoinTest(unittest.TestCase):
                 del member["rootPath"]
         report = run(game, editor)
         self.assertGreater(report["types"]["springs"]["n"], 0)
+
+
+class RealDumpConventionsTest(unittest.TestCase):
+    """Conventions measured on the real 12035 dump (CI run 2) that the synthetic mirror did not exercise."""
+
+    def test_stage_scene_roots_and_editor_shader_slot_names(self):
+        self.assertEqual(Conventions.game_scope("/Model/ground", "other"), ("stage", "ground"))
+        self.assertEqual(Conventions.game_scope("/Model/sub/ground", "other"), ("stage", "sub/ground"))
+        for path, scope in (("/EntryPoint/Live/Stages/x", "other"), ("/Model", "other"), ("/Model/ground", "effect"), (None, "other")):
+            self.assertEqual(Conventions.game_scope(path, scope), (scope, None), (path, scope))
+        self.assertEqual(Conventions.editor_slot_name({"name": "AS/Coloring/Transparent", "kind": "coloring",
+                                                       "sourceName": "mat_led_p01_bg0006_add_01"}), "mat_led_p01_bg0006_add_01")
+        self.assertIsNone(Conventions.editor_slot_name({"name": "AS/Coloring/Transparent", "kind": "coloring"}))
+        self.assertIsNone(Conventions.editor_slot_name({"name": "Native stage flash lighting", "kind": "shader"}))
+        self.assertEqual(Conventions.editor_slot_name({"name": "mat_lamp", "kind": "coloring"}), "mat_lamp")
+        self.assertEqual(Conventions.editor_slot_name({"name": "AS/Odd", "kind": "gltf"}), "AS/Odd")
+
+    def renderer_docs(self):
+        editor = editor_doc(full_at=(3.3,), parts=("census", "quality", "renderers", "materials"))
+        return synthetic.game_from_editor(editor), editor
+
+    def test_stage_scene_root_renderer_joins_the_stage_scope(self):
+        game, editor = self.renderer_docs()
+        for record in records_of(game, "renderers"):
+            for renderer in record["renderers"]:
+                if renderer["scope"] == "stage":  # bg0006_01_s1 is loaded additively: /Model/ground, outside /EntryPoint
+                    renderer.update(key="renderer:/Model/ground", path="/Model/ground", scope="other")
+        for record in records_of(game, "materials"):
+            for material in record["materials"]:
+                material["usedBy"] = [use.replace(f"renderer:{synthetic.STAGE_ROOT}/ground", "renderer:/Model/ground") for use in material["usedBy"]]
+        comparison = compare.Comparison(game, editor)
+        report = comparison.run()
+        self.assertEqual(comparison.joins["renderer:/Model/ground"], ("renderer:stage:ground", "mesh"))
+        self.assertIn("/Model/ground -> stage:ground", [entry["value"] for entry in report["notes"]["renderers.stageSceneRoot"]["unique"]])
+        self.assertNotIn("other:/Model/ground", report["coverage"]["renderers"]["missingInEditor"])
+        self.assertGreater(len(items_of(report, "materials")), 0)
+        self.assertEqual(report["summary"]["beyondTolerance"], 0)
+
+    def test_null_mesh_renderers_draw_nothing_and_leave_coverage(self):
+        game, editor = self.renderer_docs()
+        for record in records_of(game, "renderers"):
+            record["renderers"].append({"key": f"renderer:{EFFECT}/lit_01/litD_01", "path": f"{EFFECT}/lit_01/litD_01", "scope": "effect",
+                                        "mesh": None, "class": "UnityEngine.MeshRenderer", "enabled": True, "activeInHierarchy": True,
+                                        "layer": 0, "transform": transform([0, 0, 0]), "materials": []})
+        comparison = compare.Comparison(game, editor)
+        report = comparison.run()
+        self.assertEqual(comparison.joins[f"renderer:{EFFECT}/lit_01/litD_01"], (None, "gameNullMesh"))
+        self.assertEqual(report["coverage"]["renderers"]["missingInEditor"], [])
+        self.assertIn("renderers.gameNullMesh", report["notes"])
+
+    def test_flattened_editor_renderers_skip_node_transforms(self):
+        game, editor = self.renderer_docs()
+        for record in records_of(game, "renderers"):
+            for renderer in record["renderers"]:
+                if renderer["scope"] == "stage":  # flattened by the server: the editor transform is identity
+                    renderer["transform"]["position"] = [3.62, 0, 0]
+                if renderer["scope"] == "effect":  # a real hierarchy keeps being compared
+                    renderer["transform"]["position"][1] += 0.5
+        report = run(game, editor)
+        keys = {item["key"] for item in items_of(report, "transforms")}
+        self.assertEqual(keys, {LAMP_KEY})
+        self.assertIn("transforms.flattenedEditor", report["notes"])
+
+    def test_gltf_editor_materials_compare_their_color_as_tint(self):
+        editor = editor_doc(full_at=(3.3,), parts=("census", "quality", "renderers", "materials"))
+        for record in records_of(editor, "materials"):
+            ground = next(item for item in record["materials"] if item["renderer"] == "renderer:stage:ground")
+            ground.update(kind="gltf", properties={}, unmapped=["map", "color"],
+                          values={"color": [1, 1, 1], "opacity": 1, "map": {"name": "bg_ground_col", "width": 1024, "height": 1024}})
+        game = synthetic.game_from_editor(editor)
+        for record in records_of(game, "materials"):
+            ground = next(item for item in record["materials"] if item["name"] == "bg_ground_mt")
+            ground["properties"] = {"_TintColor": {"t": "color", "v": [1, 1, 1, 1]},
+                                    "_MainTex": {"t": "tex", "v": {"name": "bg_ground_col", "width": 1024, "height": 1024}, "st": [1, 1, 0, 0]}}
+        report = run(game, editor)
+        self.assertEqual(report["summary"]["beyondTolerance"], 0)
+        metrics = report["types"]["materials"]["metrics"]
+        self.assertGreaterEqual(metrics["colorAbs"]["n"], 2, "the glTF tint is compared")
+        self.assertGreaterEqual(metrics["textureSize"]["n"], 1, "the glTF map is compared")
+        self.assertNotIn("color", [entry["value"] for entry in (report["notes"].get("materials.unmappedUniforms") or {}).get("unique", [])])
+        for record in records_of(editor, "materials"):  # the generic grey fallback is a real color difference
+            next(item for item in record["materials"] if item["renderer"] == "renderer:stage:ground")["values"]["color"] = [.72, .74, .78]
+        report = run(game, editor)
+        grey = top(report, "materials")
+        self.assertEqual((grey["key"], grey["metric"], grey["field"]), (f"material:{GROUND_KEY}#0", "colorAbs", "_TintColor"))
+        self.assertAlmostEqual(grey["error"], 0.28, places=6)
+
+    def frame_docs(self, phase=-1):
+        """The game shows transforms one frame late (pose phase -1) but sets _MusicTime for its own time."""
+        editor = editor_doc()
+        for record in frames(editor):
+            t = record["clock"]["directorTime"]
+            record["globals"] = {"global:_MusicTime": {"f": t, "from": "uMusicTime@penlight"},
+                                 "global:_Beat": {"f": 1.5 * t, "from": "uBeat@penlight"}}
+            record["members"] = [{"slot": 1, "memberId": 211, "costumeId": 102111001}]
+        game = synthetic.game_from_editor(editor, source_phase=phase)
+        for record in frames(game):
+            record["globals"]["global:_MusicTime"] = {"f": record["clock"]["directorTime"], "v": [record["clock"]["directorTime"], 0, 0, 0]}
+            record["globals"]["global:_Beat"] = {"f": 1.5 * record["clock"]["directorTime"], "v": [0, 0, 0, 0]}
+        return game, editor
+
+    def test_shader_time_globals_use_their_own_phase(self):
+        game, editor = self.frame_docs()
+        report = run(game, editor)
+        self.assertEqual(report["join"]["phase"]["chosen"], -1)
+        self.assertEqual(report["join"]["phase"]["globals"], 0)
+        self.assertLess(report["types"]["globals"]["metrics"]["globalAbs"]["max"], 1e-9)
+        self.assertEqual(report["types"]["globals"]["beyondTolerance"], 0)
+
+    def test_beat_tolerance_is_opt_in_for_device_dumps(self):
+        game, editor = self.frame_docs(phase=0)
+        for record in frames(game):
+            record["globals"]["global:_Beat"]["f"] -= 0.15  # CRI beat callback latency on the device
+        self.assertGreater(run(game, editor)["types"]["globals"]["beyondTolerance"], 0)
+        self.assertEqual(run(game, editor, tolerances={"beatAbs": 0.25})["types"]["globals"]["beyondTolerance"], 0)
+
+    def test_music_time_is_milliseconds(self):
+        game, editor = self.frame_docs(phase=0)
+        self.assertLess(abs(run(game, editor)["timing"]["directorMinusMusic"]["max"]), 1e-9)
+
+    def test_a_different_member_suit_is_partial_and_its_member_groups_diagnostic(self):
+        game, editor = self.frame_docs(phase=0)
+        for record in records_of(game, "materials"):
+            body = next(item for item in record["materials"] if item["name"] == "ch0212_co0001_body")
+            body["properties"]["_TintColor"]["v"] = [value + 0.1 for value in body["properties"]["_TintColor"]["v"]]
+        member_groups = lambda report: [item["key"] for item in items_of(report, "materials") if "/Live/Members/Member1" in item["key"]]  # noqa: E731
+        report = run(game, editor)
+        self.assertEqual(report["validity"]["status"], "valid")
+        self.assertTrue(member_groups(report), "with the same suit, member material differences rank")
+        for record in frames(game):
+            record["members"][0]["suitId"] = 102112001
+        report = run(game, editor)
+        self.assertEqual(report["validity"]["status"], "partial:performer")
+        self.assertEqual(report["validity"]["performers"],
+                         ["slot 1: game member 211 suit 102112001, editor member 211 costume 102111001"])
+        self.assertEqual(member_groups(report), [], "another suit's materials are diagnostic only")
+
+    def test_game_missing_stage_nodes_and_unresolved_post_are_noted(self):
+        editor = editor_doc(full_at=(3.3,), parts=("census", "quality", "stageNodes", "post"))
+        game = synthetic.game_from_editor(editor)
+        for record in records_of(game, "stageNodes"):
+            record["stageNodes"] = [{"binding": BINDING, "missing": True}]
+        for record in records_of(game, "post"):
+            record["post"]["enablePostEffect"] = None
+        report = run(game, editor)
+        self.assertIn("stageNodes.gameMissing", report["notes"])
+        self.assertIn("post.gameUnresolved", report["notes"])
+
+
+class CaptureRunnerTest(unittest.TestCase):
+    """mv_runtime_capture.js helpers that need no browser (tests/mv_runtime_capture_test.js)."""
+
+    def test_capture_helpers(self):
+        node = shutil.which("node") or ("/opt/node22/bin/node" if Path("/opt/node22/bin/node").exists() else None)
+        if not node:
+            self.skipTest("node is not installed")
+        env = dict(os.environ)
+        env.setdefault("NODE_PATH", "/usr/local/lib/node_modules_global")
+        result = subprocess.run([node, str(CAPTURE_JS.with_name("mv_runtime_capture_test.js"))], capture_output=True, text=True, env=env)
+        if result.returncode != 0 and "Cannot find module" in result.stderr:
+            self.skipTest(f"the capture runner cannot be loaded here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MV_RUNTIME_CAPTURE_PASS", result.stdout)
 
 
 class ProbeBlobTest(unittest.TestCase):

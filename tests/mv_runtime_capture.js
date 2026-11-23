@@ -2,7 +2,8 @@
 
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
-        [--software true] [--chromium PATH] [--keys FILE] [--batch 100]
+        [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
+        [--physics-grid clock|rule] [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -12,10 +13,17 @@
    name by name; the manifest quality is only the fallback when the game
    recorded none) and marks the dump invalid:quality when a difference
    remains. It then pins the game's viewport and switches to the
-   live camera. Every game record is then evaluated at
+   live camera. With --suits the members wear explicit suits instead of the
+   member mapping's: "dump" pins the suit each game slot wore (frame
+   members[].suitId), or list POSITION:SUIT pairs; the import fails unless the
+   editor dresses every pinned slot so. Every game record is then evaluated at
    t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
    deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The read-only MVStudioScene.assetDump() supplies
+   t for members and springs. The preroll grid is the frame rate the game
+   achieved (frames per director second, capped by the requested rate), since
+   the game steps its springs once per rendered frame (--physics-grid rule
+   uses the requested rate instead, for A/B checks). The read-only
+   MVStudioScene.assetDump() supplies
    the values; DIR/editor-dump.json.gz is written in the same schema with
    side "editor". Values stay in editor space: tests/mv_runtime_compare.py
    owns every conversion. Pixels are never read back or resampled.
@@ -27,6 +35,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const capture = require('./mv_frame_capture');
+const SPRINGS = globalThis.MVStudioPhysics;
 
 const SCHEMA = 'sifas-mv-runtime-dump/1';
 const MODTOOLS = path.resolve(__dirname, '..');
@@ -141,6 +150,78 @@ function readDump(file) {
   return { doc, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), auxiliary: docs.auxiliary || {} };
 }
 
+// ------------------------------------------------------------- member suits
+
+// The suit each slot wore in the game (frame members[] {slot, memberId, suitId}).
+function gameSuits(doc) {
+  const suits = new Map(), changed = new Set();
+  for (const record of doc.records) {
+    if (record.kind !== 'frame') continue;
+    for (const member of Array.isArray(record.members) ? record.members : []) {
+      if (!Number.isInteger(member?.slot) || !Number.isInteger(member?.suitId)) continue;
+      const seen = suits.get(member.slot);
+      if (seen && (seen.suitId !== member.suitId || seen.memberId !== (member.memberId ?? null))) changed.add(member.slot);
+      else if (!seen) suits.set(member.slot, { suitId: member.suitId, memberId: member.memberId ?? null });
+    }
+  }
+  if (changed.size) throw new Error(`The game dump changes the member or suit of slot ${[...changed].join(', ')} during the performance`);
+  return suits;
+}
+
+// --suits: "dump" or POSITION:SUIT[,POSITION:SUIT...] -> { source, costumes: { "<position>": suitId } }, or null.
+function suitPlan(text, doc) {
+  if (text === undefined) return null;
+  if (text === 'dump') {
+    const suits = gameSuits(doc);
+    if (!suits.size) throw new Error('--suits dump: the game dump records no member suits (frame members[].suitId)');
+    return { source: 'dump', costumes: Object.fromEntries([...suits].sort((a, b) => a[0] - b[0]).map(([slot, item]) => [String(slot), item.suitId])),
+      members: Object.fromEntries([...suits].map(([slot, item]) => [String(slot), item.memberId])) };
+  }
+  const costumes = {};
+  for (const item of String(text).split(',')) {
+    const match = /^\s*(\d+)\s*:\s*(\d+)\s*$/.exec(item);
+    const position = match && String(Number(match[1]));
+    if (!match || !(Number(position) >= 1 && Number(position) <= 64) || position in costumes || !(Number(match[2]) > 0)) {
+      throw new Error('--suits is "dump" or POSITION:SUIT[,POSITION:SUIT...] with positions 1-64');
+    }
+    costumes[position] = Number(match[2]);
+  }
+  return { source: 'option', costumes, members: {} };
+}
+
+// The editor's game import request carries the pinned costumes (server option `costumes`).
+async function pinCostumes(page, plan) {
+  const pattern = /\/api\/mv-studio\/game(?:-stream)?(?:\?|$)/;
+  const handler = async (route) => {
+    const request = route.request();
+    if (request.method() !== 'POST') return route.continue();
+    const body = JSON.parse(request.postData() || '{}');
+    return route.continue({ postData: JSON.stringify({ ...body, costumes: plan.costumes }) });
+  };
+  await page.route(pattern, handler);
+  return () => page.unroute(pattern, handler);
+}
+
+// Every pinned slot must be dressed as requested (and by the member the game had there).
+function checkCostumes(plan, performers) {
+  const byPosition = new Map((performers || []).map((item) => [String(item.position), item]));
+  const problems = [];
+  for (const [position, suit] of Object.entries(plan.costumes)) {
+    const performer = byPosition.get(position);
+    if (!performer) problems.push(`position ${position} has no performer`);
+    else if (performer.costumeId !== suit) problems.push(`position ${position} wears ${performer.costumeId}, not ${suit}`);
+    else if (performer.loaded === false) {
+      problems.push(`position ${position} has no model for suit ${suit} (its asset pack is not local; set "download": true in the manifest)`);
+    }
+    else if (plan.members[position] != null && performer.memberId !== plan.members[position]) {
+      problems.push(`position ${position} is member ${performer.memberId}, the game had ${plan.members[position]}`);
+    }
+  }
+  if (problems.length) throw new Error(`The editor did not dress the pinned suits: ${problems.join('; ')}`);
+  return [...byPosition.values()].map(({ position, memberId, costumeId, loaded }) => ({ position, memberId: memberId ?? null,
+    costumeId: costumeId ?? null, ...(loaded === undefined ? {} : { loaded }) }));
+}
+
 // ------------------------------------------------------------- evaluation plan
 
 function stageNodeKey(node) {
@@ -151,8 +232,13 @@ function stageNodeKey(node) {
 
 // What assetDump needs to select the editor counterparts of a game renderer:
 // key, scope, GameObject path and mesh name (schema 1.5 renderer join).
+// A renderer outside /EntryPoint belongs to the additively loaded stage scene (e.g. /Model/ground
+// of bg0006_01_s1): its editor counterpart is in scope "stage" (mv_runtime_compare.Conventions.game_scope).
 function rendererSelector(renderer) {
-  return { key: renderer.key, scope: renderer.scope, mesh: renderer.mesh ?? null, path: renderer.path ?? null };
+  const outside = renderer.scope === 'other' && typeof renderer.path === 'string' && renderer.path.startsWith('/') &&
+    !renderer.path.startsWith('/EntryPoint/') && renderer.path.split('/').length >= 3;
+  return { key: renderer.key, scope: outside ? 'stage' : renderer.scope, mesh: renderer.mesh ?? null,
+    path: outside ? renderer.path.split('/').slice(2).join('/') : renderer.path ?? null };
 }
 
 function rendererIndex(records) {
@@ -207,6 +293,31 @@ function planRequests(doc, phases) {
     }
   }
   return requests.sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
+}
+
+// The real-time game steps its springs once per rendered frame, so a runtime dump
+// is reproduced at the frame rate the game achieved: frames per director second
+// between the first and last records taken while the director advanced
+// (clock.frameCount and clock.directorTime), capped by the rate the game
+// requested (MVStudioPhysics.gameFrameRate). When the frame counter does not
+// agree with the recorded deltaTime (within 25%; e.g. a synthetic document whose
+// frameCount is a record counter) the mean deltaTime gives the rate instead.
+// Without a usable clock the requested rate is used.
+function gameClockRate(doc, qualityValues, device) {
+  const target = SPRINGS.gameFrameRate(qualityValues, device);
+  const clocks = (doc.records || []).map((record) => record.clock)
+    .filter((clock) => Number.isFinite(clock?.frameCount) && Number.isFinite(clock?.directorTime));
+  const end = clocks.reduce((max, clock) => Math.max(max, clock.directorTime), -Infinity);
+  const advancing = clocks.filter((clock) => clock.directorTime > 0 && clock.directorTime < end)
+    .sort((a, b) => a.frameCount - b.frameCount);
+  const first = advancing[0], last = advancing.at(-1);
+  const frames = last && last.frameCount - first.frameCount, seconds = last && last.directorTime - first.directorTime;
+  if (!(frames > 0 && seconds > 0)) return { source: 'game-rule', rate: target, target, achieved: null, frames: 0, seconds: 0, meanDeltaTime: null };
+  const deltas = advancing.map((clock) => clock.deltaTime).filter((value) => Number.isFinite(value) && value > 0);
+  const meanDeltaTime = deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null;
+  let achieved = frames / seconds, source = 'game-clock';
+  if (meanDeltaTime && Math.abs(achieved * meanDeltaTime - 1) > 0.25) { achieved = 1 / meanDeltaTime; source = 'game-deltaTime'; }
+  return { source, rate: Math.min(achieved, target), target, achieved, frames, seconds, meanDeltaTime };
 }
 
 // ------------------------------------------------------------- browser side
@@ -358,10 +469,19 @@ function viewportFor(doc) {
   const camera = doc.records.filter((record) => record.kind === 'frame')
     .flatMap((record) => record.cameras || []).find((item) => item?.key === 'camera:main');
   const target = camera?.targetTexture;
+  // RenderingResolution scales the screen to its height and Unity rounds the width
+  // (1280x720 at 640 -> 1138x640, aspect 1.778125): no width at the screen height
+  // reproduces that aspect, so pin the camera's own pixel size when it gives the aspect.
+  const pixel = [camera?.pixelWidth, camera?.pixelHeight];
+  const pixelAspect = pixel.every((value) => Number.isInteger(value) && value > 0) ? pixel[0] / pixel[1] : null;
   if (target && Number.isInteger(target.width) && Number.isInteger(target.height) &&
       Math.abs(target.width / target.height - width / height) > 1e-4) {
     notes.push(`main camera renders to ${target.width}x${target.height}; pinned to that aspect instead of the screen`);
     width = Math.round(height * target.width / target.height);
+  } else if (pixelAspect !== null && (!Number.isFinite(camera?.aspect) || Math.abs(pixelAspect - camera.aspect) <= 1e-5 * camera.aspect) &&
+      (pixel[0] !== width || pixel[1] !== height)) {
+    notes.push(`main camera draws ${pixel[0]}x${pixel[1]} (aspect ${pixelAspect}) on the ${width}x${height} screen; pinned to the camera pixel size`);
+    [width, height] = pixel;
   } else if (Number.isFinite(camera?.aspect) && Math.abs(camera.aspect - width / height) > 1e-4) {
     notes.push(`main camera aspect ${camera.aspect} differs from the screen ${width}x${height}; pinned to the camera aspect`);
     width = Math.round(height * camera.aspect);
@@ -382,6 +502,7 @@ function editorRecord(request, result, rate) {
   if (source.kind === 'full') Object.assign(record, { pass: source.pass ?? null, part: source.part, chunk: source.chunk ?? 0 });
   record.clock = { directorTime: request.t, sourceDirectorTime: source.clock.directorTime, phase: request.phase,
     phaseSeconds: request.phase * request.deltaTime, deltaTime: request.deltaTime, rate: values.clock?.rate ?? rate };
+  if (request.physics) record.clock.physicsRate = rate;
   if (Math.abs((values.clock?.directorTime ?? NaN) - request.t) > 1e-9) {
     (values.errors ||= []).push({ at: 'clock', error: `editor time ${values.clock?.directorTime} != requested ${request.t}` });
   }
@@ -441,7 +562,7 @@ async function capturePage(page, game, { phases, preroll, rate, batchSize = 100,
 }
 
 function editorDocument({ game, gameFile, sha256, auxiliary = {}, records, timing, conventions, manifest, viewport, quality, phases, preroll, rate,
-  batchSize, keysFile, producer, errors, began }) {
+  physics = null, batchSize, keysFile, producer, errors, began, performers = null }) {
   const elapsedSeconds = (Date.now() - began) / 1000;
   return {
     schema: SCHEMA, side: 'editor',
@@ -452,7 +573,9 @@ function editorDocument({ game, gameFile, sha256, auxiliary = {}, records, timin
       quality: { mode: quality.mode, values: quality.values, source: quality.source ?? 'manifest', request: quality.request ?? null,
         status: quality.status ?? 'invalid:quality', reasons: quality.reasons ?? ['quality was not taken from the game dump'],
         gameOnly: quality.gameOnly ?? [], gameDifferences: qualityDifferences(game.header.quality, quality.values) },
+      ...(performers ? { performers } : {}),
       limits: { phases, physicsPrerollSeconds: preroll, rate, batch: batchSize },
+      physics,
       keys: keysFile ? { file: path.basename(keysFile), sha256: crypto.createHash('sha256').update(fs.readFileSync(keysFile)).digest('hex') } : null,
       gameDump: { sha256, file: gameFile ? path.basename(gameFile) : null, schema: game.schema, records: game.records.length,
         producer: game.header.producer?.name ?? null, budgets: game.header.budgets ?? null, auxiliaryBlobs: Object.keys(auxiliary).sort() },
@@ -469,6 +592,10 @@ async function run() {
   const phases = parsePhases(options.phases);
   const preroll = options.preroll === 'full' ? 'full' : Number(options.preroll ?? 3);
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), '--preroll is seconds or "full"');
+  const order = options['physics-order'] ?? 'game';
+  assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
+  const gridMode = options['physics-grid'] ?? 'clock';
+  assert(['clock', 'rule'].includes(gridMode), '--physics-grid is clock or rule');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -481,6 +608,7 @@ async function run() {
   fs.mkdirSync(out, { recursive: true });
   const serverRoot = path.resolve(options['server-root'] || path.join(MODTOOLS, '..'));
   const viewport = viewportFor(game);
+  const suits = suitPlan(options.suits, game);
   let server = null, browser = null;
   try {
     const { chromium } = require('playwright');
@@ -494,10 +622,23 @@ async function run() {
     await page.addInitScript(capture.attachSceneProbe);
     await page.goto(url + '/#mv');
     const importStart = Date.now();
-    await capture.importOriginal(page, manifest.source, manifest.download === true);
+    const unpin = suits ? await pinCostumes(page, suits) : null;
+    try {
+      await capture.importOriginal(page, manifest.source, manifest.download === true);
+    } finally {
+      if (unpin) await unpin();
+    }
     const importSeconds = (Date.now() - importStart) / 1000;
+    const dressed = await page.evaluate(() => (MVStudio.getState().project?.performers || [])
+      .map(({ position, memberId, costumeId, glb }) => ({ position, memberId, costumeId, loaded: typeof glb === 'string' && glb.length > 0 })));
+    const performers = suits ? { source: suits.source, pinned: suits.costumes, dressed: checkCostumes(suits, dressed) }
+      : { source: 'mapping', pinned: null, dressed };
     const quality = await applyGameQuality(page, game.header.quality, manifest.quality);
-    const rate = quality.values.frame_rate_60fps === true ? 60 : 30;
+    const clock = gameClockRate(game, quality.values, manifest.device);
+    await capture.applyPhysicsReference(page, { rate: clock.target, order,
+      timing: { order, exportFps: null, device: manifest.device || {} } });
+    const rate = gridMode === 'rule' ? clock.target : clock.rate;
+    const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : clock.source, order };
     const pinned = await prepareLiveView(page, viewport);
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
@@ -511,11 +652,12 @@ async function run() {
       browser: browser.version(), webgl };
     const conventions = await page.evaluate(() => ({ ...MVStudioAssetDump.CONVENTIONS }));
     const editor = editorDocument({ game, gameFile: options.dump, sha256, auxiliary, records, timing, conventions, manifest, viewport, quality,
-      phases, preroll, rate, batchSize, keysFile, producer, errors, began });
+      phases, preroll, rate, physics, batchSize, keysFile, producer, errors, began, performers });
     const body = zlib.gzipSync(Buffer.from(JSON.stringify(editor)), { level: 9 });
     fs.writeFileSync(path.join(out, 'editor-dump.json.gz'), body);
     const environment = { schema: 1, kind: 'elichika-mv-runtime-capture', createdAt: editor.header.createdAt, manifest, project,
-      gameDump: editor.header.gameDump, render: { ...viewport, pinned }, quality: editor.header.quality,
+      physicsRate: rate, physics,
+      gameDump: editor.header.gameDump, render: { ...viewport, pinned }, quality: editor.header.quality, performers,
       environment: { ...producer, platform: process.platform }, timing, elapsedSeconds: editor.trailer.elapsedSeconds, pageErrors: errors,
       output: { file: 'editor-dump.json.gz', bytes: body.length, records: records.length } };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(environment, null, 2) + '\n');
@@ -531,6 +673,7 @@ async function run() {
 }
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord,
+module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
+  gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  prepareLiveView, capturePage, editorDocument, FRAME_SECTIONS, SCHEMA };
+  prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

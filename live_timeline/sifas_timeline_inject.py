@@ -373,22 +373,95 @@ def inject_face(bundle_in: Path, entries, bundle_out: Path, dry_run=False, verbo
 # SIFAS 카메라 = AnimationTrack "Camera1" 의 AnimationClip. 7커브 바인딩:
 #   Transform.position(attr1) + Transform.euler(attr4) + LiveCoreCameraWork.FOV.
 # 기존 카메라 클립 하나를 DenseClip 으로 덮어써 전곡을 커버, 나머지 컷은 길이 0.
-# 회전: 쿼터니언 → Unity 오일러(ZXY). JSON 입력은 noesis 불필요(자기완결).
+# 회전: 쿼터니언 → Unity 오일러 (Euler 바인딩 customType 의 회전 순서, SIFAS 카메라는 XYZ).
+# JSON 입력은 noesis 불필요(자기완결).
 # .bscam → JSON 추출만 noesis sifac_camera.py 사용.
 
-def quat_to_unity_euler(q):
+# Unity RotationOrder (Transform Euler 바인딩의 customType): 축 적용 순서.
+# 0 = XYZ (q = qZ*qY*qX, SIFAS 카메라 클립), 4 = ZXY (q = qY*qX*qZ, Unity 기본값).
+EULER_ORDERS = {0: "xyz", 1: "xzy", 2: "yzx", 3: "yxz", 4: "zxy", 5: "zyx"}
+
+
+def quat_to_unity_euler(q, order=4):
+    """Unity 쿼터니언 → Unity 오일러(도), `order` 회전 순서 (기본 ZXY).
+
+    축 a, b, c 를 이 순서로 적용하면 R = Rc * Rb * Ra 이고, 가운데 축 b 가
+    asin 으로 정해진다. 짝치환(xyz, yzx, zxy)과 홀치환은 부호만 다르다.
+    """
+    if order not in EULER_ORDERS:
+        raise ValueError(f"unknown Unity rotation order {order!r}")
     x, y, z, w = q
     n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
     x, y, z, w = x / n, y / n, z / n, w / n
-    m12 = 2 * (y * z - w * x); m02 = 2 * (x * z + w * y); m22 = 1 - 2 * (x * x + y * y)
-    m10 = 2 * (x * y + w * z); m11 = 1 - 2 * (x * x + z * z)
-    m20 = 2 * (x * z - w * y); m00 = 1 - 2 * (y * y + z * z)
-    sx = max(-1.0, min(1.0, -m12)); ex = math.asin(sx)
-    if abs(sx) < 0.9999999:
-        ey = math.atan2(m02, m22); ez = math.atan2(m10, m11)
-    else:
-        ey = math.atan2(-m20, m00); ez = 0.0
-    return math.degrees(ex), math.degrees(ey), math.degrees(ez)
+    m = ((1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+         (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+         (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    s = 1.0 if EULER_ORDERS[order] in ("xyz", "yzx", "zxy") else -1.0
+    cb = math.hypot(m[c][b], m[c][c])  # |cos b|: asin 대신 atan2 로 ±90도 근처도 정확하게.
+    angles = [0.0, 0.0, 0.0]
+    angles[b] = math.atan2(-s * m[c][a], cb)
+    if cb > 1e-9:
+        angles[a] = math.atan2(s * m[c][b], m[c][c])
+        angles[c] = math.atan2(s * m[b][a], m[a][a])
+    else:  # 짐벌 락: 첫 축을 0 으로 두고 마지막 축에 몰아준다.
+        angles[c] = math.atan2(-s * m[a][b], m[b][b])
+    return tuple(math.degrees(value) for value in angles)
+
+
+def unity_euler_branches(euler, order=4):
+    """같은 회전을 주는 두 오일러 해: 그대로, 그리고 (a+180, 180-b, c+180)."""
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    other = list(euler)
+    other[a] += 180.0
+    other[b] = 180.0 - other[b]
+    other[c] += 180.0
+    return [list(euler), other]
+
+
+def _qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+
+def unity_euler_near(q, order=4, reference=None):
+    """`reference` 에 가장 가까운 같은 회전의 오일러 (도).
+
+    DenseClip 은 샘플 사이를 오일러 값 그대로 선형 보간하므로, 두 해 중 이전
+    샘플에 가까운 쪽을 360도 단위까지 맞춰 고른다. 가운데 축이 ±90도(짐벌 락,
+    XYZ 카메라에서는 yaw ±90도)이면 첫 축을 이전 값으로 두고 마지막 축을 푼다.
+    """
+    euler = quat_to_unity_euler(q, order)
+    if reference is None:
+        return list(euler)
+    a, b, c = ("xyz".index(axis) for axis in EULER_ORDERS[order])
+    candidates = unity_euler_branches(euler, order)
+    if abs(math.cos(math.radians(euler[b]))) < 1e-6:
+        # q = qc * qb * qa: 첫 축 a 를 이전 값으로 고정하면 qc = q * (qb * qa)^-1.
+        half_a, half_b = math.radians(reference[a]) / 2, math.radians(euler[b]) / 2
+        qa, qb = [0.0, 0.0, 0.0, math.cos(half_a)], [0.0, 0.0, 0.0, math.cos(half_b)]
+        qa[a], qb[b] = math.sin(half_a), math.sin(half_b)
+        x, y, z, w = _qmul(qb, qa)
+        qc = _qmul(q, (-x, -y, -z, w))
+        pinned = list(euler)
+        pinned[a], pinned[c] = reference[a], math.degrees(2 * math.atan2(qc[c], qc[3]))
+        candidates.append(pinned)
+    candidates = [[value + 360.0 * round((previous - value) / 360.0) for value, previous in zip(branch, reference)]
+                  for branch in candidates]
+    return min(candidates, key=lambda branch: sum((value - previous) ** 2 for value, previous in zip(branch, reference)))
+
+
+def _euler_order_of(generic_bindings):
+    """카메라 Euler 바인딩의 회전 순서 (없으면 Unity 기본 ZXY)."""
+    for b in generic_bindings:
+        if b.get("attribute") == 4 and b.get("typeID", 4) == 4:
+            order = int(b.get("customType", 4))
+            if order not in EULER_ORDERS:
+                raise ValueError(f"camera Euler binding has unknown rotation order {order}")
+            return order
+    return 4
 
 
 def _nlerp(qa, qb, t):
@@ -420,25 +493,29 @@ def resample_60(frames, fps_out=60.0):
     return out
 
 
-def build_sample_array(samples, scale=1.0, z_flip=False, yaw180=False, order=None):
+def build_sample_array(samples, scale=1.0, z_flip=False, yaw180=False, order=None, euler_order=4):
     """samples → DenseClip flat float array × N.
 
     `order` 는 클립의 genericBindings 순서를 따른 ['pos','euler','fov'] 리스트.
     클립마다 바인딩 순서가 다를 수 있어(예: pos,FOV,euler) 반드시 실제 순서대로 써야
     FOV/회전이 안 뒤섞인다. 기본값은 가장 흔한 pos,euler,fov.
+    `euler_order` 는 Euler 바인딩의 customType (Unity RotationOrder). SIFAS 카메라
+    클립은 0 (XYZ) 이므로 그 순서로 써야 게임이 같은 회전을 재생한다.
     """
     if order is None:
         order = ["pos", "euler", "fov"]
-    arr = []
+    arr, previous = [], None
     for _t, pos, rot, fov in samples:
         px, py, pz = pos[0] * scale, pos[1] * scale, pos[2] * scale
         if z_flip:
             pz = -pz
-        ex, ey, ez = quat_to_unity_euler(rot)
+        x, y, z, w = rot
         if z_flip:
-            ey = -ey; ez = -ez
+            # 오일러 (ex, -ey, -ez) 와 같은 거울상: 어느 회전 순서에서도 축별 부호 반전.
+            x, y, z, w = x, -y, -z, w
         if yaw180:
-            ey += 180.0
+            x, y, z, w = z, w, -x, -y  # qY(180) * q: 월드 Y 180도 (ZXY 의 ey += 180).
+        ex, ey, ez = previous = unity_euler_near((x, y, z, w), euler_order, previous)
         for b in order:
             if b == "pos":
                 arr.extend([px, py, pz])
@@ -499,9 +576,10 @@ def inject_camera(camera_json: Path, bundle_in: Path, bundle_out: Path,
 
     # 이 클립의 실제 바인딩 순서대로 써야 FOV/회전이 안 뒤섞인다(클립마다 다름).
     order = _binding_order(ct["m_ClipBindingConstant"]["genericBindings"])
+    euler_order = _euler_order_of(ct["m_ClipBindingConstant"]["genericBindings"])
     n_curves = sum(3 if b in ("pos", "euler") else 1 for b in order)
     sample_array = build_sample_array(samples, scale=scale, z_flip=z_flip,
-                                      yaw180=yaw180, order=order)
+                                      yaw180=yaw180, order=order, euler_order=euler_order)
 
     clip = ct["m_MuscleClip"]["m_Clip"]["data"]
     clip["m_StreamedClip"]["data"] = []; clip["m_StreamedClip"]["curveCount"] = 0

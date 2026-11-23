@@ -1,6 +1,7 @@
 /* The game's selected dancer and facial tracks share one authored playhead. */
 (function (global) {
   "use strict";
+  var MASK_MIN_RATE = Math.fround(.51);
   function number(value, fallback) { return typeof value === "number" && isFinite(value) ? value : fallback; }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
   function curve(keys, position, fallback) {
@@ -256,13 +257,45 @@
     function beginSample(time, fresh) {
       if (fresh || sampleTime !== time) { sampleTime = time; sampleRevision += 1; }
     }
+    // A masked head whose timeline has no Rina tracks runs InitializeMask's
+    // LiveMemberAnimationMask instead of the default facial blend. Its eye and
+    // lip mixers sum each index's input weight; ProcessFrameMask ignores sums
+    // below minRateToActive (0x3f028f5c), and UpdateAnimationMask resets every
+    // input and sets the requested clip to 1. The last qualifying index wins;
+    // without one every input stays 0 and the head keeps its default dots.
+    var selection = descriptor.facial && descriptor.facial.trackSelection;
+    var maskEvents = selection && selection.mask === true ? { eyes: [], mouth: [] } : null;
+    var maskMembers = maskEvents ? new Set() : null, maskWinners = {}, maskRevision = -1;
+    function maskWinner(kind, time) {
+      if (maskRevision !== sampleRevision) { maskRevision = sampleRevision; maskWinners = {}; }
+      if (maskWinners[kind]) return maskWinners[kind];
+      var sums = new Map(), first = new Map(), winner = null;
+      timedRecords(maskEvents[kind], time).forEach(function (event) {
+        var amount = weightWithTiming(event, time, getTiming(event));
+        if (!(amount > 0)) return;
+        sums.set(event.index, Math.fround(Math.fround(sums.get(event.index) || 0) + Math.fround(amount)));
+        if (!first.has(event.index)) first.set(event.index, event);
+      });
+      sums.forEach(function (rate, index) { if (!(MASK_MIN_RATE > rate)) winner = first.get(index); });
+      return maskWinners[kind] = { event: winner };
+    }
+    // LiveMemberLipSync.Initialize stores WeightRate = MemberFaceData.LipSync.Weight
+    // for AnimationForLipsync (A, I, U, E, O, N = 1..6) and 1 for every other
+    // index; ProcessFrameDefault sets each input weight to w * WeightRate.
+    var head = info.memberHead || {}, lipSyncRate = typeof head.lipSyncWeight === "number" && isFinite(head.lipSyncWeight) ?
+      Math.fround(clamp(head.lipSyncWeight, 0, 1)) : 1;
+    function inputRate(segment) {
+      return lipSyncRate !== 1 && segment.kind === "mouth" && segment.index >= 1 && segment.index <= 6 ? lipSyncRate : 1;
+    }
     function sampleSegment(segment, time) {
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
       if (sample.revision !== sampleRevision) {
         var spec = getTiming(segment);
         sample.revision = sampleRevision;
-        sample.weight = weightWithTiming(segment, time, spec);
+        var rate = inputRate(segment);
+        sample.weight = maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
+          rate === 1 ? weightWithTiming(segment, time, spec) : Math.fround(Math.fround(weightWithTiming(segment, time, spec)) * rate);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
       }
@@ -388,7 +421,10 @@
       if (register(groups, clip, segment, false)) used += 1;
       else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
-    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
+    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [], cheekEvents = [];
+    if (maskEvents) events.slice(0, 12000).forEach(function (event) {
+      if (maskEvents[event.kind]) { maskEvents[event.kind].push(event); maskMembers.add(event); }
+    });
     var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
       Number.isInteger(modelGaze.owner) && Number.isInteger(descriptor.targetCharacter) && modelGaze.owner !== descriptor.targetCharacter);
     // Direction indices are the game's common six-pose semantics. When a
@@ -447,6 +483,10 @@
     events.slice(0, 12000).forEach(function (event) {
       if (event.kind === "gaze") {
         gazeEvents.push(event);
+        return;
+      }
+      if (event.kind === "cheek") {
+        cheekEvents.push(event);
         return;
       }
       if (event.kind !== "eyes" && event.kind !== "mouth") return;
@@ -653,6 +693,32 @@
       evaluate: function (time) {
         evaluatePose(time);
         evaluateGaze(time);
+      },
+      // MemberCheekMixer.Process runs per active input: ApplyEnable(true), then
+      // ApplyCheek(cheekType, intensity * weight) overwrites the material, so the
+      // last active input wins. PostProcess only disables _CHEEK_ON when no input
+      // ran; the floats keep the last applied values. During playback that is the
+      // end of the latest finished clip, which is used here so a seek gives the
+      // same values. Before any clip ResetAll's 0/0 stays (null).
+      cheek: function (time) {
+        beginSample(time, false);
+        var state = null;
+        function applied(event, amount, enabled) {
+          return { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)), enabled: enabled };
+        }
+        timedRecords(cheekEvents, time).forEach(function (event) {
+          var amount = sampleWeight(event, time);
+          if (amount > 0) state = applied(event, amount, true);
+        });
+        if (state) return state;
+        var latest = -Infinity;
+        cheekEvents.forEach(function (event) {
+          var end = event.start + event.duration;
+          if (!(end <= time) || end < latest || !(number(event.weight, 1) > 0)) return;
+          latest = end;
+          state = applied(event, weightWithTiming(event, end, getTiming(event)), false);
+        });
+        return state;
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },

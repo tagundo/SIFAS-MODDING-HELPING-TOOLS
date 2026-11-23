@@ -204,6 +204,13 @@ async function localAndGame(page, url) {
   await page.locator('#mv-quality summary').click();
   const shadow = page.locator('[data-mv-quality=shadow]');
   await shadow.uncheck();
+  // The device option is offered off by default and is not saved with the project.
+  const refresh = page.locator('#mv-refresh-rate-mode');
+  assert.equal(await refresh.inputValue(), '0');
+  assert.deepEqual(await refresh.locator('option').evaluateAll(options => options.map(option => option.value)), ['0', '60', '90', '120']);
+  await refresh.selectOption('120');
+  assert.equal(await page.locator('#mv-refresh-rate-mode').inputValue(), '120');
+  await page.locator('#mv-refresh-rate-mode').selectOption('0');
   await page.locator('#mv-panel-menu summary').click();
   await page.locator('[data-mv-panel-option=quality]').uncheck();
   assert(!(await shadow.isVisible()));

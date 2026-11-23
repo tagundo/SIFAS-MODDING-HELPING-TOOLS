@@ -351,7 +351,7 @@
       if (!node.isMesh || !["stage", "general", "solid"].includes(meta?.shader) || !isColor(meta.colors?._TintColor)) return;
       if (meta.shader !== "solid" && (!node.material?.map || !isColor(meta.uvTransform) ||
           !isColor(meta.colors._AmbientColor))) return;
-      if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) return;
+      if (meta.vertexColor && !node.geometry.getAttribute("_stage_color") && meta.vertexColorAbsent !== true) return;
       if (meta.shader === "stage" && (!parser || !Number.isSafeInteger(meta.lightmap) ||
           meta.lightmap < 0 || !node.geometry.getAttribute("_stage_light_uv") ||
           !isColor(meta.colors._BlendColor) || !Number.isFinite(meta.mipBias))) return;
@@ -430,8 +430,15 @@
         name: original.name, defines, uniforms, vertexShader, fragmentShader, skinning, toneMapped: false,
         side: meta.cull === 0 ? T.DoubleSide : meta.cull === 1 ? T.BackSide : T.FrontSide,
       });
+      // A mesh without a COLOR stream reads opaque white.
+      if (meta.vertexColor && !node.geometry.getAttribute("_stage_color")) material.defaultAttributeValues._stage_color = [1, 1, 1, 1];
       if (!meta.reflectionToggle || uniforms.useReflection) node.material = material;
-      records.push({...entry, material, reflectionCube});
+      // LivePropBasic swaps in its own material instance, which only the prop's
+      // LivePropAmbient changes; stage ambient components keep the original asset.
+      const propLight = node.geometry.userData?.mvPropLight;
+      const prop = propLight?.ambient === true && uniforms.ambient &&
+        global.MVStudioPropLight?.create(propLight.binding) || null;
+      records.push({...entry, material, reflectionCube, prop});
     }
 
     // The animated GameObject's node owns the renderer's mesh. Only a renderer
@@ -453,9 +460,13 @@
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
     const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
     const singleTracks = new Map(), samples = new Map();
-    let sourceTracks, ambientTrack, emissiveTrack;
+    let sourceTracks, ambientTrack, emissiveTrack, propProject;
     return {
       update(seconds, project, lighting) {
+        if (propProject !== project) {
+          propProject = project;
+          for (const {prop} of records) prop?.setProject(project);
+        }
         if (sourceTracks !== project?.tracks) {
           sourceTracks = project?.tracks;
           const matches = sourceTracks?.filter(track => track.nativeClass === "LiveStageAmbientTrack" &&
@@ -480,7 +491,7 @@
         const emissive = stageEmissive(project, seconds, emissiveTrack);
         samples.clear();
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
-        for (const {node, original, meta, material, reflectionCube} of records) {
+        for (const {node, original, meta, material, reflectionCube, prop} of records) {
           if (meta.reflectionToggle) {
             const enable = meta.reflectionQualityControlled === false ||
               project?.quality?.values?.stage_cubemap !== false;
@@ -496,6 +507,12 @@
             const {color, intensity} = emissive || meta.emissive;
             material.uniforms.emissiveColor.value.fromArray(color);
             material.uniforms.emissiveIntensity.value = intensity;
+          }
+          if (prop) {
+            const sample = prop.sample(seconds);
+            material.uniforms.ambient.value.fromArray(sample?.ambient || meta.colors._AmbientColor);
+            material.uniforms.tint.value.fromArray(sample?.ambient ? sample.tint : meta.colors._TintColor);
+            continue;
           }
           if (!meta.ambientDefaults) continue;
           const singleTrack = singleTracks.get(meta.singleAmbientBinding);

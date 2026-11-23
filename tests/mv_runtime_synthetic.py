@@ -78,7 +78,7 @@ def game_header(source, screen, quality_values=None, producer="mv_runtime_synthe
 
 def clock(t, delta, seq):
     return {"directorTime": t, "frameCount": 1000 + seq, "unityTime": 100 + t, "unscaledTime": 100 + t, "deltaTime": delta,
-            "timeScale": 1, "realtimeSinceStartup": 200 + t, "musicTime": t, "musicPlaying": True}
+            "timeScale": 1, "realtimeSinceStartup": 200 + t, "musicTime": t * 1000, "musicPlaying": True}  # LiveMusicMachine ms
 
 
 def envelope(rid, kind, seq, t, delta, extra=None):

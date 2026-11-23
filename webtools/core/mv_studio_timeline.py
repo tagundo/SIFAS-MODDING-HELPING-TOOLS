@@ -15,7 +15,7 @@ _MAX_WARNINGS = 96
 _MAX_VALUE_ITEMS = 256
 _FOV = 2282594708
 _PERFORMER_MODEL = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)/Model")
-_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9])")
+_MEMBER_SHAFT = re.compile(r"/EntryPoint/Live/Members/Member([1-9][0-9]*)")
 _COMMON = {"m_GameObject", "m_Enabled", "m_Script", "m_Name", "m_PrefabInstance", "m_PrefabAsset"}
 _CLIP_TIMING = {
     "m_ClipIn": "clipIn", "m_TimeScale": "timeScale", "m_EaseInDuration": "easeIn",
@@ -219,9 +219,19 @@ def _camera_channels(tree, deadline):
             if channel in channels:
                 raise ValueError("The camera clip has conflicting channel bindings.")
             channels[channel] = group
+            if channel == "euler":
+                # GenericBinding.customType is the Unity RotationOrder (SIFAS cameras use 0, XYZ).
+                channels["eulerOrder"] = _camera_euler_order(bind)
     if len(curves) != offset or "position" not in channels or not {"rotation", "euler"} & channels.keys():
         raise ValueError("The camera clip has unsupported native channel bindings.")
     return channels
+
+
+def _camera_euler_order(binding):
+    try:
+        return animation.euler_order(binding.get("customType", animation.DEFAULT_EULER_ORDER))
+    except animation.AnimationError as error:
+        raise ValueError("The camera clip has an unsupported Euler rotation order.") from error
 
 
 def _camera_binding(binding):
@@ -235,7 +245,8 @@ def _camera_binding(binding):
     return None
 
 
-def _camera_frames(obj, clip, duration, deadline, remaining_frames):
+def _camera_frames(obj, clip, duration, deadline, remaining_frames, euler_order=None):
+    """Sample a camera shot. `euler_order` overrides an Euler binding's own order (legacy project checks only)."""
     if duration <= 0:
         return []
     tree = obj.read_typetree()
@@ -246,6 +257,8 @@ def _camera_frames(obj, clip, duration, deadline, remaining_frames):
     if count > remaining_frames:
         raise ValueError("The project camera sample limit was reached.")
     channels = _camera_channels(tree, deadline)
+    if euler_order is None:
+        euler_order = channels.get("eulerOrder", animation.DEFAULT_EULER_ORDER)
     muscle = tree.get("m_MuscleClip") or {}
     first = _time(muscle.get("m_StartTime", 0), "camera source start")
     last = _time(muscle.get("m_StopTime", first), "camera source end", minimum=first)
@@ -260,7 +273,7 @@ def _camera_frames(obj, clip, duration, deadline, remaining_frames):
         position = [animation._finite(evaluate(value, stamp)) for value in channels["position"]]
         orientation = channels.get("rotation") or channels["euler"]
         rotation = animation._quaternion([evaluate(value, stamp) for value in orientation],
-                                         euler="rotation" not in channels)
+                                         euler="rotation" not in channels, order=euler_order)
         # The viewer helper returns glTF handedness. This descriptor exposes
         # Unity coordinates, keeping handedness conversion with the renderer.
         rotation[1] = -rotation[1]
@@ -719,7 +732,7 @@ def _camera_vector(value, length, label):
 
 
 def _write_camera(tree, clip, old_event, new_event):
-    from live_timeline.sifas_timeline_inject import quat_to_unity_euler
+    unity_euler_near = animation.unity_euler_near
 
     before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
     span = old_event["duration"]
@@ -734,6 +747,11 @@ def _write_camera(tree, clip, old_event, new_event):
         raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
     order = _camera_sample_order(tree)
     sample_array, previous_euler = [], None
+    if "euler" in order:
+        channels = _camera_channels(tree, None)
+        euler_order = channels["eulerOrder"]
+        # Start from the original first sample's angles; later samples follow their predecessor.
+        previous_euler = [animation._evaluate(curve, first) for curve in channels["euler"]]
     for index, (old_point, point) in enumerate(zip(before, after)):
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
                 or point["time"] != old_point["time"] or abs(point["time"] - index / rate) > 1e-5):
@@ -747,10 +765,9 @@ def _write_camera(tree, clip, old_event, new_event):
         fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99)]
         values = {"position": position, "rotation": rotation, "fov": fov}
         if "euler" in order:
-            euler = quat_to_unity_euler(rotation)
-            if previous_euler is not None:
-                euler = [axis + 360 * round((previous - axis) / 360) for axis, previous in zip(euler, previous_euler)]
-            values["euler"] = previous_euler = euler
+            # Write the binding's own rotation order. The dense clip lerps Euler
+            # samples, so keep the equivalent angles nearest the previous sample.
+            values["euler"] = previous_euler = unity_euler_near(rotation, euler_order, previous_euler)
         for channel in order:
             sample_array.extend(values[channel])
     packed = muscle["m_Clip"]["data"]
@@ -830,11 +847,107 @@ def restore_emissive_track_metadata(tracks, originals):
     return restored
 
 
+# Before camera Euler bindings honoured their Unity RotationOrder, every camera
+# sample was composed in the default ZXY order. Projects saved then carry those
+# rotations; a point that still equals that legacy evaluation was never edited.
+_LEGACY_CAMERA_ORDER = animation.DEFAULT_EULER_ORDER
+_LEGACY_CAMERA_TOLERANCE = 1e-6  # Per unit-quaternion component.
+
+
+def needs_camera_keyframe_check(track):
+    """A saved camera track with sampled points, which may predate camera Euler rotation orders."""
+    return (isinstance(track, dict) and track.get("kind") == "camera" and isinstance(track.get("events"), list)
+            and any(isinstance(event, dict) and isinstance(event.get("values"), dict)
+                    and isinstance(event["values"].get("keyframes"), list) for event in track["events"]))
+
+
+def _same_rotation(saved, expected):
+    if (not isinstance(saved, list) or len(saved) != 4
+            or any(type(value) not in (int, float) or not math.isfinite(value) for value in saved)):
+        return False
+    return min(max(abs(a - b) for a, b in zip(saved, expected)),
+               max(abs(a + b) for a, b in zip(saved, expected))) <= _LEGACY_CAMERA_TOLERANCE
+
+
+def _legacy_camera_frames(raw, name, events):
+    """{event id: its points composed in the legacy ZXY order} for native camera events with another order."""
+    deadline = time.monotonic() + 45
+    _, objects, _ = _read(raw, name, deadline)
+    by_id = {_id(key): key for key in objects}
+    clips, result = {}, {}
+    for event in events:
+        track_id, index = event["id"].rsplit(":", 1)
+        try:
+            if track_id not in clips:
+                clips[track_id] = objects[by_id[track_id]].read_typetree()["m_Clips"]
+            clip = clips[track_id][int(index)]
+            motion = objects[by_id[event["values"]["animation"]]]
+            if motion.type.name != "AnimationClip":
+                continue
+            channels = _camera_channels(motion.read_typetree(), deadline)
+            if "rotation" in channels or channels["eulerOrder"] == _LEGACY_CAMERA_ORDER:
+                continue  # The legacy composition gave these same rotations.
+            result[event["id"]] = _camera_frames(motion, clip, event["duration"], deadline, _MAX_CAMERA_FRAMES,
+                                                 euler_order=_LEGACY_CAMERA_ORDER)
+        except (KeyError, IndexError, TypeError, ValueError):
+            if time.monotonic() >= deadline:
+                raise
+    return result
+
+
+def restore_legacy_camera_keyframes(raw, name, tracks, originals):
+    """Give camera points saved with the legacy ZXY composition their current rotation, keeping edits.
+
+    Only a point whose saved rotation equals the legacy evaluation of its native
+    sample takes the current one; its saved time, position and field of view stay.
+    Edited rotations stay as saved and are written in the binding's own order."""
+    native_tracks = {track["id"]: track for track in originals if track.get("kind") == "camera"}
+
+    def pairs():
+        for position, track in enumerate(tracks):
+            identity = track.get("id") if needs_camera_keyframe_check(track) else None
+            native = native_tracks.get(identity) if isinstance(identity, str) else None
+            if native is None:
+                continue
+            native_events = _index_rows(native["events"], "event")
+            for index, event in enumerate(track["events"]):
+                event_id = event.get("id") if isinstance(event, dict) else None
+                source = native_events.get(event_id) if isinstance(event_id, str) else None
+                values = event.get("values") if source is not None else None
+                saved = values.get("keyframes") if isinstance(values, dict) else None
+                current = source["values"].get("keyframes") if source is not None else None
+                if (isinstance(saved, list) and isinstance(current, list) and saved != current
+                        and len(saved) == len(current) and values.get("animation") == source["values"].get("animation")):
+                    yield position, index, source
+
+    candidates = list(pairs())
+    if not candidates:
+        return tracks
+    legacy = _legacy_camera_frames(raw, name, [source for _, _, source in candidates])
+    restored = list(tracks)
+    for position, index, source in candidates:
+        before = legacy.get(source["id"])
+        current = source["values"]["keyframes"]
+        if before is None or len(before) != len(current):
+            continue
+        track = restored[position]
+        event = track["events"][index]
+        points = [{**point, "rotation": list(new["rotation"])}
+                  if (isinstance(point, dict) and point.get("time") == old["time"]
+                      and _same_rotation(point.get("rotation"), old["rotation"])) else point
+                  for point, old, new in zip(event["values"]["keyframes"], before, current)]
+        events = list(track["events"])
+        events[index] = {**event, "values": {**event["values"], "keyframes": points}}
+        restored[position] = {**track, "events": events}
+    return restored
+
+
 def export_timeline(raw: bytes, name: str, tracks: list) -> bytes:
     """Derive the base from these source bytes and export the submitted tracks."""
     original = parse_timeline(raw, name)
     if isinstance(tracks, list):
         tracks = restore_emissive_track_metadata(tracks, original["tracks"])
+        tracks = restore_legacy_camera_keyframes(raw, name, tracks, original["tracks"])
         # Shaft targets are derived preview metadata, independent of any clip's
         # member color selector. The original track identity remains read-only.
         tracks = [

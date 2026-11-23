@@ -2637,9 +2637,9 @@ _MV_STUDIO_TRANSLATIONS = {
     "Performer": ("출연자", "出演者"),
     "No performers are loaded.": ("불러온 출연자가 없습니다.", "読み込まれた出演者がいません。"),
     "Replace outfit": ("의상 교체", "衣装を交換"),
-    "This MV already has nine performers. Choose an existing performer to replace their outfit.": [
-        "이 MV에는 이미 출연자가 9명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
-        "このMVには出演者がすでに9人います。既存の出演者を選んで衣装を交換してください。"
+    "This MV already has twelve performers. Choose an existing performer to replace their outfit.": [
+        "이 MV에는 이미 출연자가 12명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
+        "このMVには出演者がすでに12人います。既存の出演者を選んで衣装を交換してください。"
     ],
     "Props": ("소품", "小道具"),
     "Effects": ("효과", "エフェクト"),
@@ -2665,6 +2665,7 @@ _MV_STUDIO_TRANSLATIONS = {
     "Entry number": ("항목 번호", "項目番号"),
     "No MV quality settings were imported.": ("불러온 MV 그래픽 설정이 없습니다.", "読み込まれたMVグラフィック設定はありません。"),
     "Quality preset": ("그래픽 프리셋", "グラフィックプリセット"),
+    "Refresh-rate mode": ("주사율 모드", "リフレッシュレートモード"),
     "Soundtrack playback is unavailable. The timeline is still playing.": ("음원을 재생할 수 없어 타임라인만 재생합니다.", "音源を再生できないためタイムラインのみ再生します。"),
     "The imported MV project is invalid.": ("불러온 MV 프로젝트 형식이 올바르지 않습니다.", "読み込んだMVプロジェクトの形式が正しくありません。"),
     "The MV could not be loaded.": ("MV를 불러오지 못했습니다.", "MVを読み込めませんでした。"),

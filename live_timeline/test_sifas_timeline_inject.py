@@ -98,6 +98,69 @@ def test_cam_euler_roundtrip():
     assert worst < 1e-5, worst
 
 
+def _ordered_e2q(euler, order):
+    """Unity RotationOrder: 축을 이름 순서대로 적용 (XYZ 는 q = qZ*qY*qX)."""
+    half = dict(zip("xyz", (math.radians(v) / 2 for v in euler)))
+    q = (0.0, 0.0, 0.0, 1.0)
+    for axis in sti.EULER_ORDERS[order]:
+        p = [0.0, 0.0, 0.0, math.cos(half[axis])]
+        p["xyz".index(axis)] = math.sin(half[axis])
+        q = sti._qmul(tuple(p), q)
+    return q
+
+
+def _same(q, p):
+    return abs(sum(a * b for a, b in zip(q, p))) > 1 - 1e-10
+
+
+def test_cam_euler_roundtrip_every_rotation_order():
+    rng = random.Random(3)
+    assert sti.EULER_ORDERS[0] == "xyz" and sti.EULER_ORDERS[4] == "zxy"
+    for order in sti.EULER_ORDERS:
+        b = "xyz".index(sti.EULER_ORDERS[order][1])
+        for i in range(4000):
+            e = [rng.uniform(-180, 180) for _ in range(3)]
+            if i % 8 == 0:
+                e[b] = rng.choice([90.0, -90.0, 89.9999, -90.00001])  # 짐벌 락 근처
+            q = _ordered_e2q(e, order)
+            back = sti.quat_to_unity_euler(q, order)
+            assert _same(q, _ordered_e2q(back, order)), (order, e, back)
+            for branch in sti.unity_euler_branches(back, order):
+                assert _same(q, _ordered_e2q(branch, order)), (order, e, branch)
+            near = sti.unity_euler_near(q, order, [rng.uniform(-400, 400) for _ in range(3)])
+            assert _same(q, _ordered_e2q(near, order)), (order, e, near)
+    # ZXY 는 기존 _e2q 규약 그대로.
+    assert _same(_ordered_e2q((30, 60, 90), 4), _e2q(30, 60, 90))
+    assert not _same(_ordered_e2q((30, 60, 90), 0), _e2q(30, 60, 90))
+
+
+def test_cam_sample_array_writes_the_binding_rotation_order():
+    rots = [_ordered_e2q((20 + i, 80 + i, -10 + 2 * i), 0) for i in range(20)]  # y 가 90 을 지난다.
+    s = [(i / 60.0, [0.0, 1.0, 2.0], q, 30.0) for i, q in enumerate(rots)]
+    for z_flip in (False, True):
+        for yaw180 in (False, True):
+            for euler_order in (0, 4):
+                arr = sti.build_sample_array(s, z_flip=z_flip, yaw180=yaw180, euler_order=euler_order)
+                eulers = [arr[7 * i + 3:7 * i + 6] for i in range(len(s))]
+                for q, e in zip(rots, eulers):
+                    x, y, z, w = q
+                    if z_flip:
+                        y, z = -y, -z
+                    if yaw180:
+                        x, y, z, w = sti._qmul((0.0, 1.0, 0.0, 0.0), (x, y, z, w))
+                    assert _same((x, y, z, w), _ordered_e2q(e, euler_order)), (z_flip, yaw180, euler_order)
+                # 샘플 사이 선형 보간이 돌아가지 않게: XYZ 의 yaw 90도(짐벌) 를 지나도 연속.
+                steps = [abs(b - a) for p, n in zip(eulers, eulers[1:]) for a, b in zip(p, n)]
+                assert max(steps) < 7, (z_flip, yaw180, euler_order, max(steps))
+    # ZXY 에서 yaw180 은 예전처럼 ey + 180 과 같은 회전.
+    e = sti.quat_to_unity_euler(rots[0])
+    arr = sti.build_sample_array(s[:1], yaw180=True)
+    assert _same(_ordered_e2q(arr[3:6], 4), _ordered_e2q((e[0], e[1] + 180, e[2]), 4))
+    assert sti._euler_order_of([{"attribute": 1, "typeID": 4, "customType": 0},
+                                {"attribute": 4, "typeID": 4, "customType": 0}]) == 0
+    assert sti._euler_order_of([{"attribute": 1, "typeID": 4}]) == 4
+
+
 def test_cam_sample_array_and_zflip():
     fr = [{"t": i / 60.0, "pos": [float(i), 0.0, 2.0 * i],
            "rot": [0, 0, 0, 1], "fov": 30.0 + i} for i in range(3)]

@@ -8,7 +8,7 @@ from . import model_animation, model_materials, model_viewer as viewer, mv_studi
 
 
 _MEMBER_PROP = re.compile(
-    r"/EntryPoint/Live/Members/(ske_[A-Za-z0-9_]+)/(Member[1-9])/Model/"
+    r"/EntryPoint/Live/Members/(ske_[A-Za-z0-9_]+)/(Member[1-9][0-9]*)/Model/"
     r"([A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)/(chp[0-9]+)\Z"
 )
 _FAN_ANGLE = crc32(b"clipUV2Angle")

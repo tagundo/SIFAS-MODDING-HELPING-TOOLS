@@ -115,6 +115,28 @@ class MVGameCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no longer available"):
             self.selection(live=14)
 
+    def test_stage_model_follows_the_3d_asset_not_the_mv_picker_stage(self):
+        # Like 11072 position 3: m_live_mv lists picker stage bg0001 (1000101), but the
+        # client loads m_live_3d_asset.live_stage_master_id (bg0018, 1001801).
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.executescript("""
+                INSERT INTO m_live VALUES (14, 'k.third', 6, NULL, NULL, 9, NULL);
+                INSERT INTO m_live_3d_asset VALUES (33, 'timeline', 18, NULL, NULL, 3, NULL);
+                INSERT INTO m_live_stage VALUES (1, 'k.picker', 'bg0001_01_s1', 'pickerModel', NULL, 'pickerBg'),
+                    (18, 'k.special', 'bg0018_01_s1', 'specialModel', NULL, 'specialBg');
+                INSERT INTO m_live_mv VALUES (14, 1, 3, 33), (14, 7, 1, 31);
+            """)
+        song = next(row for row in studio.catalog(self.root, region="gl", platform="android", language="en")["songs"]
+                    if row["id"] == 14)
+        self.assertEqual([(row["id"], row["stageId"], row["pickerStageId"], row["sceneName"], row["position"])
+                          for row in song["variants"]],
+                         [(31, 7, 7, "scene_stage", 1), (33, 18, 1, "bg0018_01_s1", 3)])
+        selected = studio.resolve(self.root, region="gl", platform="android", live_id=14, asset_id=33, language="en")
+        self.assertEqual((selected["stage"]["id"], selected["stage"]["sceneName"]), (18, "bg0018_01_s1"))
+        self.assertEqual(selected["stageModel"]["asset"], "specialModel")
+        self.assertEqual(selected["stage"]["background"]["asset"], "specialBg")
+        self.assertNotIn("pickerModel", {row["asset"] for row in selected["missing"]})
+
     def test_resolves_same_platform_dependencies_costume_and_music(self):
         android, ios = self.selection(), self.selection("ios")
         self.assertEqual(android["timeline"]["pack_name"], "androidpack")
@@ -126,6 +148,25 @@ class MVGameCatalogTests(unittest.TestCase):
         self.assertEqual(ios["performers"][0]["themeColor"], [214 / 255, 213 / 255, 202 / 255, 1.0])
         self.assertEqual(ios["audio"]["acb"]["pack_name"], "acbpack")
         self.assertEqual(ios["missing"][0]["asset"], "unavailable")
+
+    def test_explicit_costumes_replace_the_member_mapping_suit(self):
+        # A recorded game performance may wear another suit than m_live_member_mapping
+        # (12035 runtime dump: 102111001 instead of 102112001). The import can pin it.
+        with closing(sqlite3.connect(self.root / "assets/db/gl/masterdata.db")) as db, db:
+            db.execute("INSERT INTO m_suit VALUES (52, 101, 'k.costume', 'costume2'), (61, 102, 'k.costume', 'other')")
+        for platform in ("a", "i"):
+            with closing(sqlite3.connect(self.root / f"assets/db/gl/asset_{platform}_en.db")) as db, db:
+                db.execute("INSERT INTO member_model VALUES ('costume2', ?, 4, ?, 7, 11)",
+                           ("androidpack" if platform == "a" else "iospack", len(self.plain)))
+        pinned = studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en",
+                                costumes={"1": 52})["performers"][0]
+        self.assertEqual((pinned["costumeId"], pinned["model"]["asset"]), (52, "costume2"))
+        self.assertEqual([choice["id"] for choice in pinned["costumes"]], [52, 51])
+        self.assertEqual(self.selection()["performers"][0]["costumeId"], 51, "the mapping suit stays the default")
+        for costumes, error in (({"1": 61}, "not a costume of the member at position 1"), ({"2": 51}, "no member at its position"),
+                                ({"x": 52}, "valid costumes"), ({"1": "52"}, "valid costumes"), ([52], "valid costumes")):
+            with self.subTest(costumes=costumes), self.assertRaisesRegex(ValueError, error):
+                studio.resolve(self.root, region="gl", platform="android", live_id=12, asset_id=31, language="en", costumes=costumes)
 
     def test_reads_exact_local_pack_or_metapack_without_implicit_download(self):
         descriptor = self.selection()["timeline"]

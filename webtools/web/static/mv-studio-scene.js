@@ -305,12 +305,15 @@
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
     const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, stencil: true, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
-    renderer.setClearColor(0x111522);
+    // Editor backdrop; a game project uses the native MainCamera clear (see applyProject).
+    const editorClear = 0x111522;
+    renderer.setClearColor(editorClear);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.domElement.setAttribute("aria-label", "MV stage preview");
     mount.appendChild(renderer.domElement);
     const split = global.MVStudioSplit?.create(T, renderer);
     const physicsClock = global.MVStudioPhysics?.createClock();
+    let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
@@ -491,7 +494,11 @@
       sortControlParticles(camera);
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
-      for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
+      const billboardCamera = camera === editorCamera ? liveCamera : camera;
+      for (const record of records) {
+        record.shaft?.billboard(billboardCamera);
+        record.axisBillboard?.apply(billboardCamera);
+      }
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -595,6 +602,7 @@
       record.penlight?.dispose();
       record.stageFlash?.dispose();
       record.stageMaterial?.dispose();
+      record.stagePropLight?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
@@ -724,6 +732,9 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "cheek") {
+          if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
+          if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
         }
         if (Number.isFinite(values.clipIn)) assign(segment, "clipIn", values.clipIn);
         if (Number.isFinite(values.timeScale) && values.timeScale > 0) assign(segment, "timeScale", values.timeScale);
@@ -793,7 +804,8 @@
         }
       }
       if (stageOnly) return entries;
-      for (const performer of (value.performers || []).slice(0, 9)) {
+      // LiveCoreMemberManager.MemberMax: an MV has up to 12 performers.
+      for (const performer of (value.performers || []).slice(0, 12)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
       entries.push(...attachments);
@@ -872,6 +884,8 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stagePropLight = await global.MVStudioPropLight?.apply?.(T, record.root, gltf.parser, { active });
+          if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
@@ -891,6 +905,7 @@
           record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
+          record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -948,6 +963,10 @@
               entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                 facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
               { indexTiming: true });
+            // LiveCoreMemberHead.InitializeDefault binds MemberCheekBase to the
+            // merged face's material; a masked head has no cheek component.
+            const cheekMaterial = entry.spec.rig?.memberHead?.cheekMaterial;
+            if (typeof cheekMaterial === "string" && cheekMaterial) record.cheekMaterial = cheekMaterial;
             updateMotion(record);
           } else if (gltf.animations.length) {
             record.mixer = new T.AnimationMixer(gltf.scene);
@@ -1046,6 +1065,8 @@
           record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
+          record.stagePropLight?.setProject(preview);
+          record.stagePropLight?.update(0);
           record.stageColoring?.update(0, preview);
           record.stageDisplay?.update(0, preview);
           pending.records.push(record);
@@ -1392,6 +1413,10 @@
     function applyProject() {
       const tracks = project && project.tracks || [];
       settings = project && project.quality && project.quality.values || {};
+      // level35 MainCamera/Offset/Camera clears SolidColor (0, 0, 0, 0); the
+      // RenderSettings skybox is never drawn and fog is off on every MV stage.
+      if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
       defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
         !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
@@ -1416,7 +1441,7 @@
       cameraOffsets.clear();
       for (const track of tracks) {
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightShaftTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           const slot = track.shaftSlot ?? (bound ? Number(bound[1]) : null);
           if (bound && slot === Number(bound[1])) {
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightShaftClip");
@@ -1425,7 +1450,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightAreaTrack") {
-          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (binding) {
             const slot = Number(binding[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightAreaClip");
@@ -1434,7 +1459,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberCullerTrack") {
-          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (slot) {
             const position = Number(slot[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberCullerClip" && event.duration > 0);
@@ -1443,7 +1468,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberScalingTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])\/Model$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)\/Model$/.exec(track.binding || "");
           if (!bound) continue;
           const slot = Number(bound[1]);
           const clips = memberScaleTracks.get(slot) || [];
@@ -1500,7 +1525,13 @@
         record.materials?.setRimlight?.(settings.member_rim_light !== false);
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
+        record.stagePropLight?.setProject(project);
       }
+    }
+
+    // The spring rate the original frame-rate rule gives (MVStudioPhysics.frameRate).
+    function physicsRate() {
+      return global.MVStudioPhysics?.frameRate?.(settings, physicsTiming) ?? (settings.frame_rate_60fps === true ? 60 : 30);
     }
 
     function resetPhysics(reason) {
@@ -1582,9 +1613,16 @@
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
-      for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
+      for (const record of records) {
+        record.stageMaterial?.update(currentTime, project, lighting);
+        record.stagePropLight?.update(currentTime);
+      }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
+      // LiveCoreMemberManager.Update steps the springs before the director evaluates.
+      const physicsStep = playing && visible && records.some((record) => record.physics)
+        ? physicsClock?.step(frameTimestamp, physicsRate()) || 0 : 0;
+      for (const record of records) record.physics?.frame?.("update", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       for (const record of records) {
         if (record.group !== actors) continue;
         // Both native camera paths exclude the member's Invisible layer.
@@ -1599,6 +1637,7 @@
         if (record.motion) {
           record.motion.evaluatePose(currentTime);
           record.motion.applyVisibility(currentTime);
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }
@@ -1609,9 +1648,7 @@
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
-      const physicsStep = playing && visible && records.some((record) => record.physics)
-        ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
-      for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
+      for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
       if (shaftTemplates) {
@@ -1794,7 +1831,7 @@
         return point ? temp.point.setFromMatrixPosition(point.matrixWorld).distanceTo(mainCameraPosition) : undefined;
       }
 
-      read("clock", "clock", () => ({ directorTime: currentTime, rate: settings.frame_rate_60fps === true ? 60 : 30 }));
+      read("clock", "clock", () => ({ directorTime: currentTime, rate: physicsRate() }));
       read("directors", "directors", () => [{ key: "director:main", time: currentTime,
         duration: Number.isFinite(project?.duration) ? project.duration : null }]);
       read("cameras", "cameras", () => {
@@ -1827,7 +1864,8 @@
         };
         scene.traverse((node) => {
           for (const material of node.isMesh ? [node.material].flat() : []) {
-            if (!material?.uniforms || seen.has(material)) continue;
+            // A hidden material (a penlight shader with no active clip) keeps stale uniforms.
+            if (!material?.uniforms || seen.has(material) || material.visible === false) continue;
             seen.add(material);
             const u = material.uniforms, where = "@" + (material.name || node.name || "material");
             if (u.uMode && u.uMusicTime && u.uBeat) {
@@ -1987,6 +2025,12 @@
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
+      setPhysicsTiming(value) {
+        physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
+        resetPhysics("physics-timing");
+        return physicsTiming && { ...physicsTiming, rate: physicsRate() };
+      },
       frameAll,
       // Read-only state of the last evaluated frame for frame comparisons.
       inspect() {

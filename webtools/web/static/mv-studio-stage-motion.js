@@ -4,6 +4,10 @@
   const kinds = { translation: "position", rotation: "quaternion", euler: "quaternion", scale: "scale", visibility: "visible",
     overlayTint: "overlayTint", overlayUV: "overlayUV", overlayColor: "overlayColor", overlayScalar: "overlayScalar" };
   const materialKinds = new Set(["overlayTint", "overlayUV", "overlayColor", "overlayScalar"]);
+  // Unity RotationOrder (0 XYZ ... 4 ZXY, the default) -> three.js Euler order. Unity
+  // names the axes in the order they apply (XYZ: q = qZ*qY*qX); three.js names
+  // the product left to right, so the string reverses. The X mirror keeps it.
+  const eulerOrders = ["ZYX", "YZX", "XZY", "ZXY", "YXZ", "XYZ"];
   const clamp = (x, low, high) => Math.min(high, Math.max(low, x));
   const number = (value, fallback) => Number.isFinite(value) ? value : fallback;
   const modulo = (x, divisor) => ((x % divisor) + divisor) % divisor;
@@ -172,7 +176,9 @@
             const kind = kinds[source.kind], node = group.nodes.get(source.path);
             const material = materialKinds.has(kind), numeric = kind === "visible" || kind === "overlayScalar";
             if (!node || !Array.isArray(source.curves) || !source.curves.every(validCurve) ||
-                source.curves.length !== (numeric ? 1 : material || source.kind === "rotation" ? 4 : 3)) continue;
+                source.curves.length !== (numeric ? 1 : material || source.kind === "rotation" ? 4 : 3) ||
+                (source.kind === "euler" && source.rotationOrder !== undefined && !(Number.isInteger(source.rotationOrder) &&
+                  eulerOrders[source.rotationOrder]))) continue;
             const value = material ? materialValue(node, source, materialScope, requiresMaterial) : node[kind];
             if (material && !value) continue;
             targets.push({source, kind, node, material, numeric, value});
@@ -201,7 +207,8 @@
       for (let i = 0; i < values.length; i++) values[i] = evaluate(source.curves[i], time);
       if (target.numeric) target.sum += values[0] * weight;
       else if (target.kind === "quaternion") {
-        if (source.kind === "euler") quaternion.setFromEuler(euler.set(values[0] * radians, -values[1] * radians, -values[2] * radians));
+        if (source.kind === "euler") quaternion.setFromEuler(euler.set(values[0] * radians, -values[1] * radians, -values[2] * radians,
+          eulerOrders[source.rotationOrder ?? 4]));
         else {
           quaternion.set(values[0], -values[1], -values[2], values[3]);
           if (!(quaternion.lengthSq() > 0)) return;
