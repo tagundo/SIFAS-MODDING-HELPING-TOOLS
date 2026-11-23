@@ -15,11 +15,14 @@ of a track is one of:
 
 The table follows the preview consumers in web/static (by nativeClass or by
 the clip's playableClass) and the Python readers that feed them. Clip-level
-coverage is given where the preview decides per clip: CustomControl cues are
-counted as drawn when a stage preview descriptor names their (trackId,
-eventId), and stage-node clips when the stage-motion reader accepted them
-(AnimationTrack events in stageMotion.mix, ActivationTrack events in
-stageMotion.activations).
+coverage is given where the preview decides per clip: every CustomControl
+clip has a row in the import's ``controlCoverage`` ledger
+(mv_studio_control_prefabs: drawn by a per-effect stage reader, drawn in full
+or in part by the particle and prefab rules, drawing nothing in the original,
+or not previewed with the reasons; an import without the ledger counts a cue
+as drawn when a stage preview descriptor names its (trackId, eventId)), and
+stage-node clips when the stage-motion reader accepted them (AnimationTrack
+events in stageMotion.mix, ActivationTrack events in stageMotion.activations).
 
 Performer prop tracks (mv_studio_props.bindings) play only through an
 attached prop: a ``props`` asset with a preview and an ``attachment``, the
@@ -161,6 +164,20 @@ _SHARED = {"AnimationTrack": "More than one AnimationTrack on this stage binding
            "ActivationTrack": "More than one accepted ActivationTrack on this stage binding; none is switched."}
 
 
+_LEDGER_STATUSES = {RENDERED, PARTIAL, NOT_RENDERED, NO_EFFECT, MUTED}
+
+
+def _control_ledger(project):
+    """(trackId, eventId) -> (status, note) of every CustomControl clip, from the import's ledger."""
+    rows = project.get("controlCoverage")
+    found = {}
+    for row in rows if isinstance(rows, list) else ():
+        if (isinstance(row, dict) and row.get("status") in _LEDGER_STATUSES and isinstance(row.get("note"), str)
+                and isinstance(row.get("trackId"), str) and isinstance(row.get("eventId"), str)):
+            found[row["trackId"], row["eventId"]] = row["status"], row["note"]
+    return found
+
+
 def _split(total, rendered, rendered_note, missing_note):
     rows = [(RENDERED, rendered, rendered_note)] if rendered or not total else []
     if rendered < total:
@@ -219,6 +236,16 @@ def _classify(track, project, context):
             return _split(len(events), sum(event.get("id") in accepted for event in events),
                           "Stage-node visibility.", _REJECTED)
     elif native == "CustomControlTrack":
+        ledger = context["control"]
+        if ledger:
+            # One row per clip from mv_studio_control_prefabs: what the stage readers,
+            # the particle rule and the prefab rule draw of the clip's clone, or why nothing.
+            grouped = {}
+            for event in events:
+                status, reason = ledger.get((track.get("id"), event.get("id")),
+                                            (NOT_RENDERED, "Effect cues no stage effect reader draws."))
+                grouped[status, reason] = grouped.get((status, reason), 0) + 1
+            return [(status, count, reason) for (status, reason), count in grouped.items()] or [(RENDERED, 0, note)]
         drawn = sum((track.get("id"), event.get("id")) in context["cues"] for event in events)
         rows = []
         if drawn:
@@ -254,6 +281,7 @@ def report(project, prop_gap=None):
         "switched": switched,
         "props": _prop_tracks(project, tracks, prop_gap),
         "cues": claimed_cues(project),
+        "control": _control_ledger(project),
         "performers": {row.get("position") for row in project.get("performers") or ()
                        if isinstance(row, dict) and (row.get("motion") or row.get("glb"))},
     }

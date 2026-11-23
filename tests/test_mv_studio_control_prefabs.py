@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from webtools.core import mv_studio_control_prefabs as prefabs
+from webtools.core import mv_studio_import_coverage as coverage
 from webtools.core import mv_studio_prefab_animator as animator
 from webtools.core import mv_studio_shader_identity as shaders
 
@@ -139,6 +140,17 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(gaps, ["particles on the overlay camera layer 20", "mesh render mode"])
         self.assertEqual(quiet, ["particles on layer 5, which the main camera does not draw",
                                  "playOnAwake is off (the clone never starts it)"])
+
+    def test_coverage_report_reads_the_ledger(self):
+        track = {"id": "t", "label": "StageEffect/Expert/Display/EQ", "nativeClass": "CustomControlTrack",
+                 "events": [{"id": "t:0"}, {"id": "t:1"}, {"id": "t:2"}]}
+        project = {"tracks": [track], "controlCoverage": [
+            {"trackId": "t", "eventId": "t:0", "status": "rendered", "note": "drawn"},
+            {"trackId": "t", "eventId": "t:1", "status": "partial", "note": "part"},
+            {"trackId": "t", "eventId": "t:2", "status": "no effect", "note": "nothing"}]}
+        rows = {(row["status"], row["note"]): row["clips"] for row in coverage.report(project)["tracks"]}
+        self.assertEqual(rows, {("rendered", "drawn"): 1, ("partial", "part"): 1, ("no effect", "nothing"): 1})
+        self.assertEqual([row["status"] for row in coverage.report(project)["gaps"]], ["partial"])
 
     def test_warning_lists_mesh_gaps_once_per_prefab(self):
         ledger = [{"meshGaps": ["Animator animates _TintColor through both its vector and color lanes"] * 2},
