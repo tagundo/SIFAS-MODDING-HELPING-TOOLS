@@ -223,6 +223,10 @@
           Number.isInteger(burst.cycles) && finite(burst.interval) && finite(burst.probability))) return false;
     if (shape && !(Number.isInteger(shape.type) && vector(shape.position, 3) && vector(shape.rotation, 3) &&
         vector(shape.scale, 3) && finite(shape.radius) && finite(shape.arc) && finite(shape.angle))) return false;
+    // BoxShell/BoxEdge and partial radius thickness have no native sampling here.
+    const thickness = shape?.radiusThickness ?? 1;
+    if (shape && ([15, 16].includes(shape.type) || ([0, 2].includes(shape.type) && thickness !== 1) ||
+        ([4, 8, 10].includes(shape.type) && thickness !== 0 && thickness !== 1))) return false;
     const curves = (value, names) => !value || names.every(name => validCurve(value[name]));
     if (!curves(system.velocity, ["x", "y", "z"]) ||
         !curves(system.velocity?.orbital, ["orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY",
@@ -274,7 +278,8 @@
   // ---------------------------------------------------------------- shapes
   // Unity ShapeModule sampling as the native modules reproduce it: heading in
   // turns through the native sine polynomial, area radius sqrt((1-u) + .001u)
-  // at full thickness, cone directions normalize(sin(a) * xy, cos(a)) and a
+  // at full thickness (radius 1 on the edge at thickness 0; nothing between is
+  // accepted), cone directions normalize(sin(a) * xy, cos(a)) and a
   // cone-volume depth draw (mv-studio-sparks-a-*-simulation.js); BurstSpread
   // replaces the heading draw with slot / (count - 1) (sparks-b).
   function makeShape(shape, native) {
@@ -296,7 +301,7 @@
     function local(draw, slot, count) {
       const unit = () => native.nativeUnit(draw());
       switch (type) {
-        case 5: case 15: case 16: {
+        case 5: {
           const box = [f32(f32(unit() - .5) * scale[0]), f32(f32(unit() - .5) * scale[1]), f32(f32(unit() - .5) * scale[2])];
           return {position: box, direction: [0, 0, 1], scaled: true};
         }

@@ -250,6 +250,12 @@ async function testUnreproducedSystemsAreRefused() {
   assert.equal(P.validSimulation(system({shape: planar, renderer: horizontal})), true);
   assert.equal(P.validSimulation(system({shape: planar, renderer: {...horizontal, mode: 3}})), false);
   assert.equal(P.validSimulation(system({shape: {...planar, rotation: [0, 0, 0]}, renderer: horizontal})), false);
+  // BoxShell/BoxEdge and partial radius thickness have no native sampling.
+  for (const [type, radiusThickness, valid] of [[15, 1, false], [16, 1, false], [5, 0, true], [0, 1, true],
+    [0, 0, false], [10, 0, true], [10, .5, false], [4, .6, false], [12, .3, true]]) {
+    assert.equal(P.validSimulation(system({shape: {...base.shape, type, radiusThickness}})), valid, `${type}/${radiusThickness}`);
+  }
+  assert.equal(P.validSimulation(system({main: {maxParticles: 5000}})), false, "the importer reports larger pools");
   // A transform scale the scaling mode would apply is never drawn.
   const root = new T.Group();
   const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [2, 2, 2]},

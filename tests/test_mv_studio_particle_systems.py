@@ -122,6 +122,29 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(main["randomSeed"], 0xFFFFFFFF)
         self.assertEqual(main["simulationSpeed"], 0.5)
         self.assertEqual(main["maxParticles"], 60)
+        initial = particle_system()["InitialModule"]
+        self.assertEqual(systems._main(particle_system(InitialModule={**initial, "maxNumParticles": 10000}))
+                         ["maxParticles"], 10000)
+        with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            def pool(**fields):
+                source = particle_system(InitialModule={**initial, "maxNumParticles": 10000, **fields})
+                return systems.system({}, None, Reader(source), Reader(RENDERER), systems._Textures(0))["main"]
+
+            # 60/s for 2 s never fills the preview's 4096 pool, so it stands in exactly.
+            self.assertEqual(pool()["maxParticles"], 4096)
+            # A pool that could fill past 4096, or a lifetime curve that hides it, is reported.
+            for fields in ({"startLifetime": constant(100.0)},
+                           {"startLifetime": {**constant(2.0), "minMaxState": 1,
+                                              "maxCurve": {"m_Curve": [key(0, 1), key(1, 1)]}}}):
+                with self.assertRaisesRegex(systems._Unsupported, "maxParticles above the preview limit of 4096"):
+                    pool(**fields)
+        rate = {"mode": 0, "scalar": 10.0, "min": 10.0}
+        bursts = [{"time": 0, "count": {"mode": 3, "scalar": 50.0, "min": 20.0}, "cycles": 2, "interval": .5,
+                   "probability": 1}]
+        row = {"main": {"lifetime": {"mode": 3, "scalar": 3.0, "min": 1.0}, "duration": 1.0, "looping": True},
+               "emission": {"rate": rate, "bursts": bursts}}
+        # 10/s * 3 s + 1, plus 2 firings of 50 in each of the 4 loops a 3 s window can touch.
+        self.assertEqual(systems._alive_bound(row), 31 + 4 * 2 * 50)
         emission = systems._emission({"enabled": True, "rateOverTime": constant(0.0), "rateOverDistance": constant(0.0),
                                       "m_BurstCount": 1, "m_Bursts": [
                                           {"time": 0.0, "countCurve": constant(1.0), "cycleCount": 3,
@@ -137,9 +160,17 @@ class NormalizationTests(unittest.TestCase):
     def test_shapes_and_modules(self):
         source = particle_system()
         self.assertEqual(systems._shape(source["ShapeModule"])["scale"], [12, 12, 10])
-        for kind in (6, 13, 14, 19):
+        # Mesh shapes, BoxShell and BoxEdge (no boxThickness sampling) are reported.
+        for kind in (6, 13, 14, 15, 16, 19):
             with self.assertRaises(systems._Unsupported):
                 systems._shape({**source["ShapeModule"], "type": kind})
+        # Partial radius thickness: spheres only at full volume, circles/cones full or edge.
+        for kind, thickness in ((0, 0.0), (2, 0.5), (4, 0.6), (10, 0.9), (8, 0.5)):
+            with self.assertRaisesRegex(systems._Unsupported, "radiusThickness"):
+                systems._shape({**source["ShapeModule"], "type": kind, "radiusThickness": thickness})
+        for kind, thickness in ((0, 1.0), (4, 0.0), (10, 1.0), (5, 0.0), (1, 0.0), (12, 0.3)):
+            self.assertEqual(systems._shape({**source["ShapeModule"], "type": kind,
+                                             "radiusThickness": thickness})["radiusThickness"], thickness)
         with self.assertRaises(systems._Unsupported):
             systems._shape({**source["ShapeModule"], "arc": {"value": 360, "mode": 1}})
         self.assertEqual(systems._shape({**source["ShapeModule"], "arc": {"value": 180, "mode": 3}})["arcMode"], 3)
@@ -370,6 +401,28 @@ class AnimatorTests(unittest.TestCase):
         # The hidden node and its subtree are left out of the clone the runtime rebuilds.
         self.assertNotIn("fx/root/hidden", [node["path"] for node in row["nodes"]])
         self.assertEqual(notes, ["Animator"])
+
+    def test_inactive_prefab_root_is_activated_by_the_clip(self):
+        ps = ("ParticleSystem", "ParticleSystemRenderer")
+        walked = [walked_node("fx", None, active=False, kinds=ps), walked_node("fx/root", 0, kinds=ps),
+                  walked_node("fx/root/off", 1, active=False, kinds=ps)]
+        with mock.patch.object(systems, "_components", side_effect=lambda objects, game: (game["tree"], game["components"])), \
+                mock.patch.object(systems.title, "_local", return_value=None), \
+                mock.patch.object(systems.viewer, "_remaining"):
+            # _walk over a one-node stand-in: the root keeps m_IsActive=0 but counts as active.
+            node = {"tree": {"m_Name": "fx", "m_IsActive": 0},
+                    "components": {"Transform": Reader({"m_LocalPosition": {"x": 0, "y": 0, "z": 0},
+                                                        "m_LocalRotation": {"x": 0, "y": 0, "z": 0, "w": 1},
+                                                        "m_LocalScale": {"x": 1, "y": 1, "z": 1},
+                                                        "m_Children": []}, "Transform")}}
+            root, = systems._walk({}, node, 0)
+            self.assertEqual((root["self"], root["authored"]), (False, True))
+        for node in walked:
+            node["authored"] = node["parent"] is None or (node["self"] and walked[node["parent"]]["authored"])
+        row, unsupported, _ = self.template(walked)
+        # OnBehaviourPlay activates the clone root; inactive children stay off.
+        self.assertEqual([system["path"] for system in row["systems"]], ["fx", "fx/root"])
+        self.assertEqual(unsupported, [])
 
     def test_unread_controller_reports_every_system_below_it(self):
         ps = ("ParticleSystem", "ParticleSystemRenderer")

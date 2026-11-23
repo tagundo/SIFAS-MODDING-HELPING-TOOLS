@@ -51,8 +51,13 @@ _MAX_PARTICLES = 4096
 _RESERVE_SECONDS = 4
 # Native quality categories of the CustomControl tracks that start particle prefabs.
 _CATEGORIES = {"stage_control", "stage_display", "stage_overlay_effect"}
-# Unity ParticleSystemShapeType values this module reproduces.
-_SHAPES = {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 15, 16, 18}
+# Unity ParticleSystemShapeType values this module reproduces. BoxShell and
+# BoxEdge (15, 16) are not: the runtime has no boxThickness sampling.
+_SHAPES = {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 18}
+# radiusThickness is reproduced only where the runtime has the native rule:
+# full-volume spheres and hemispheres (sphereRadius, cbrt(1 - u)), and
+# circles and cones at full area (sqrt((1 - u) + .001u)) or on the edge.
+_SPHERES, _AREAS = {0, 2}, {4, 8, 10}
 # Animator generic bindings: GameObject.m_IsActive (CRC32 of the property
 # name), Transform channels, and the particle components themselves.
 _GAME_OBJECT, _TRANSFORM, _ACTIVE = 1, 4, zlib.crc32(b"m_IsActive")
@@ -208,7 +213,7 @@ def _main(source):
         "duration": _number(source.get("lengthInSec"), 0.0001, 1e5), "looping": bool(source.get("looping")),
         "prewarm": bool(source.get("prewarm")), "startDelay": curve(source["startDelay"]),
         "worldSpace": space == 1, "scalingMode": scaling, "autoRandomSeed": bool(source.get("autoRandomSeed")),
-        "randomSeed": seed & 0xFFFFFFFF, "maxParticles": min(capacity, _MAX_PARTICLES),
+        "randomSeed": seed & 0xFFFFFFFF, "maxParticles": capacity,
         "lifetime": curve(initial["startLifetime"]), "speed": curve(initial["startSpeed"]),
         "size": curve(initial["startSize"]), "rotation": curve(initial["startRotation"]),
         "color": color(initial["startColor"]), "gravity": curve(initial["gravityModifier"]),
@@ -261,8 +266,11 @@ def _shape(source):
         raise _Unsupported(f"ShapeModule.arc mode {arc.get('mode')}")
     if source.get("placementMode", 0) != 0:
         raise _Unsupported("ShapeModule.placementMode")
+    thickness = _number(source.get("radiusThickness", 1), 0, 1)
+    if (kind in _SPHERES and thickness != 1) or (kind in _AREAS and thickness not in (0, 1)):
+        raise _Unsupported("ShapeModule.radiusThickness between surface and full volume")
     return {"type": kind, "radius": _number(radius.get("value", 1), 0, 1e5),
-            "radiusThickness": _number(source.get("radiusThickness", 1), 0, 1),
+            "radiusThickness": thickness,
             "arc": _number(arc.get("value", 360), 0, 360), "arcMode": arc.get("mode", 0),
             "angle": _number(source.get("angle", 25), 0, 90),
             "length": _number(source.get("length", 5), 0, 1e5),
@@ -526,6 +534,32 @@ def _unit_scale(walked, own, scaling):
     return True
 
 
+def _alive_bound(row):
+    """More live particles than the system can ever hold, or None when a curve hides it.
+
+    Every particle lives at most the peak start lifetime L, so the live ones
+    were born within L: at most rate * L (+1 for the rate carry) plus every
+    burst firing of each loop that can overlap L.
+    """
+    def peak(value):
+        return value["scalar"] if value["mode"] == 0 else max(value["min"], value["scalar"]) if value["mode"] == 3 else None
+
+    main, emission = row["main"], row["emission"]
+    life, rate = peak(main["lifetime"]), peak(emission["rate"])
+    if life is None or rate is None:
+        return None
+    life = max(life, 0)
+    loops = math.ceil(life / main["duration"]) + 1 if main["looping"] else 1
+    total = math.ceil(max(rate, 0) * life) + 1
+    for burst in emission["bursts"]:
+        count = peak(burst["count"])
+        if count is None:
+            return None
+        firings = burst["cycles"] or math.floor(main["duration"] / max(burst["interval"], 1e-3)) + 1
+        total += loops * firings * math.ceil(max(count, 0))
+    return total
+
+
 def system(objects, game, particle, renderer, textures, blocked=None, *, upright=True):
     """Normalize one ParticleSystem and its renderer, or raise _Unsupported.
 
@@ -559,6 +593,13 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
               "renderer": drawn}
     if result["shape"] and result["shape"]["alignToDirection"] and not (upright and _planar_alignment(result)):
         raise _Unsupported("ShapeModule.alignToDirection")
+    if result["main"]["maxParticles"] > _MAX_PARTICLES:
+        bound = _alive_bound(result)
+        if bound is None or bound >= _MAX_PARTICLES:
+            # A capped pool would stop emission earlier than the game does.
+            raise _Unsupported(f"maxParticles above the preview limit of {_MAX_PARTICLES}")
+        # The authored pool can never fill, so the runtime's smaller one behaves the same.
+        result["main"]["maxParticles"] = _MAX_PARTICLES
     if blocked:
         raise _Unsupported(blocked)
     surface, texture = _material(objects, renderer, render_tree)
@@ -571,7 +612,7 @@ def _walk(objects, prefab, deadline):
     """Every node of the prefab in GetComponentsInChildren order (pre-order, child order).
 
     Inactive GameObjects are kept so Animator binding paths resolve; ``authored``
-    is the prefab's own activation.
+    is the clone's activation before any Animator runs.
     """
     walked, stack = [], [(prefab, None, (), 0)]
     while stack:
@@ -608,7 +649,9 @@ def _walk(objects, prefab, deadline):
         for child_game in reversed(children):
             stack.append((child_game, own, own_path, depth + 1))
     for node in walked:
-        node["authored"] = node["self"] and (node["parent"] is None or walked[node["parent"]]["authored"])
+        # OnBehaviourPlay activates the clone root itself (SetActive(true)), so only
+        # m_IsActive below the root is the prefab's own.
+        node["authored"] = node["parent"] is None or (node["self"] and walked[node["parent"]]["authored"])
     return walked
 
 
@@ -774,8 +817,8 @@ def template(objects, prefab, textures, deadline):
     """Walk the prefab as Unity's GetComponentsInChildren does (pre-order, child order).
 
     Nodes keep their local TRS (with any constant Animator pose) and parent
-    index so the runtime can rebuild the clone's transforms. Inactive
-    GameObjects are never activated by PrefabControl.
+    index so the runtime can rebuild the clone's transforms. PrefabControl
+    activates the clone root but no inactive GameObject below it.
     """
     walked = _walk(objects, prefab, deadline)
     if not walked:
@@ -786,7 +829,7 @@ def template(objects, prefab, textures, deadline):
     live, reasons = [], []
     for own, node in enumerate(walked):
         parent = node["parent"]
-        on = animated.get(own, node["self"])
+        on = animated.get(own, node["self"] or parent is None)
         live.append(on and (parent is None or live[parent]))
         # Why a system on this node is not drawn although the prefab says so.
         inherited = list(reasons[parent]) if parent is not None else []
