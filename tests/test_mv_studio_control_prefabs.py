@@ -155,6 +155,15 @@ class ShaderIdentityTests(unittest.TestCase):
             self.assertEqual(shaders.name(material, tree), "AS/General/Transparent")
         self.assertEqual(shader.reads, 1, "the compiled shader's type tree is read once")
 
+    def test_stage_display_pointer_table_is_derived_from_the_verified_table(self):
+        from webtools.core import mv_studio_stage_display as display
+
+        self.assertEqual(display._SHADERS, {
+            "AS/General/Opaque": (8330475765356442367, "cab-618a998abe328b9a2b05b370a5907b3e"),
+            "AS/General/Transparent": (7151384334892346267, "cab-adf9ba7b61bd035c754bf74ae44927cb")})
+        for name, (path_id, cab) in display._SHADERS.items():
+            self.assertEqual(shaders.KNOWN[cab, path_id], name)
+
     def test_an_external_shader_uses_the_verified_bundle_table(self):
         material = self.material(["archive:/cab-adf9ba7b61bd035c754bf74ae44927cb/cab-adf9ba7b61bd035c754bf74ae44927cb"])
         with mock.patch.object(shaders.viewer, "_ref", return_value=None):
