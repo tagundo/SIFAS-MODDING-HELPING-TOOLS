@@ -340,16 +340,18 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
 def _cast_in_timeline_order(performers, tracks, clip_names=None):
     # The AnimationClip a slot plays identifies its member. m_DisplayName is
     # only a fallback: in 12035/12036 it carries the other Mia/Lanzhu code.
+    # A name without a chNNNN code identifies nobody, so the next one is tried.
     clip_names = clip_names or {}
     members = {}
     for track in tracks:
         if track["kind"] != "dance" or not (slot := re.fullmatch(r"/EntryPoint/Live/Members/Member(\d+)/Model", track.get("binding", ""))):
             continue
         for event in track["events"]:
-            name = clip_names.get(event.get("id")) or event["values"].get("animationName") or event["label"]
-            identity = re.match(r"ch(\d{4})(?:_|$)", name)
-            if identity:
-                members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
+            for name in (clip_names.get(event.get("id")), event["values"].get("animationName"), event.get("label")):
+                identity = re.match(r"ch(\d{4})(?:_|$)", name) if isinstance(name, str) else None
+                if identity:
+                    members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
+                    break
     latest = {performer["memberId"]: performer for performer in performers}
     positions = {performer["position"] for performer in performers}
     if set(members) != positions or any(len(ids) != 1 for ids in members.values()):

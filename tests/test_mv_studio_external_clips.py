@@ -226,6 +226,20 @@ class CastByClipTests(unittest.TestCase):
         by_clip = mv_studio._cast_in_timeline_order(performers, tracks, names)
         self.assertEqual([(row["position"], row["memberId"]) for row in by_clip], [(1, 211), (2, 212)])
 
+    def test_a_name_without_a_member_code_falls_through_to_the_next_name(self):
+        from webtools.core import mv_studio
+        performers = [{"position": 1, "memberId": 211}, {"position": 2, "memberId": 212}]
+        tracks = self.tracks("ch0211_so9999", "ch0212_so9999")
+        # No resolved clip name carries a chNNNN code, so the display names decide.
+        cast = mv_studio._cast_in_timeline_order(performers, tracks, {"member-1:0": "dance_loop", "member-2:0": ""})
+        self.assertEqual([(row["position"], row["memberId"]) for row in cast], [(1, 212), (2, 211)])
+        # animationName comes before the display name.
+        tracks[0]["events"][0]["values"]["animationName"] = "ch0212_so9999"
+        tracks[1]["events"][0]["values"]["animationName"] = "ch0211_so9999"
+        cast = mv_studio._cast_in_timeline_order(performers, tracks, {"member-1:0": "dance_loop"})
+        self.assertIsNot(cast, performers)
+        self.assertEqual([(row["position"], row["memberId"]) for row in cast], [(1, 211), (2, 212)])
+
     def test_12035_solo_casts_by_its_clip_instead_of_falling_back(self):
         from webtools.core import mv_studio
         performers = [{"position": 1, "memberId": 211}]
