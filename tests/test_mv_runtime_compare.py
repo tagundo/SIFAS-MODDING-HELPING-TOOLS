@@ -455,6 +455,32 @@ class ToleranceTest(unittest.TestCase):
         self.assertEqual(self.beyond(0.2499), 1)
 
 
+class WorldToCameraToleranceTest(unittest.TestCase):
+    """worldToCamera's translation (column-major elements 12-14, metres) uses the camera position tolerance."""
+
+    def perturbed(self, index, delta):
+        editor = editor_doc()
+        game = synthetic.game_from_editor(editor)
+        for record in frames(game):
+            main_camera(record)["worldToCamera"][index] += delta
+        report = run(game, editor)
+        self.assertEqual(report["join"]["hypothesis"]["fitted"], "H180")
+        beyond = {group["metric"] for group in report["_worst"] if group["type"] == "camera" and group["beyond"]}
+        return report["types"]["camera"]["metrics"], beyond
+
+    def test_translation_and_basis_have_their_own_tolerances(self):
+        metrics, beyond = self.perturbed(12, 5e-4)  # 0.5 mm: inside cameraPositionM, 5x the basis tolerance.
+        self.assertEqual(beyond, set())
+        self.assertAlmostEqual(metrics["worldToCameraTranslationM"]["max"], 5e-4, places=9)
+        self.assertLess(metrics["worldToCameraMaxAbs"]["max"], 1e-9)
+        metrics, beyond = self.perturbed(14, 2e-3)  # Moves the projected anchors too.
+        self.assertIn("worldToCameraTranslationM", beyond)
+        self.assertNotIn("worldToCameraMaxAbs", beyond)
+        metrics, beyond = self.perturbed(0, 5e-4)
+        self.assertEqual(beyond, {"worldToCameraMaxAbs"})
+        self.assertLess(metrics["worldToCameraTranslationM"]["max"], 1e-9)
+
+
 class InputTest(unittest.TestCase):
     """(g) rejections and (h) job-log input."""
 

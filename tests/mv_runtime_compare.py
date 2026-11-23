@@ -70,6 +70,9 @@ DEFAULT_TOLERANCES = {
     "beatAbs": None,          # None: globalAbs. Device dumps: 0.25 (the CRI beat callback lagged <= 0.18 beat on Redroid run 2)
 }
 BEAT_GLOBALS = {"_Beat"}
+# worldToCamera is column-major: elements 12-14 are its translation in metres, compared with the
+# camera position tolerance; the other elements are unitless rotation and projective terms.
+W2C_TRANSLATION = (12, 13, 14)
 
 
 class DumpError(ValueError):
@@ -783,7 +786,9 @@ class Comparison:
             errors = {}
             for hypothesis in (Conventions.HYPOTHESES if not self.identity else ("identity",)):
                 expected = editor_camera["worldToCamera"] if self.identity else Conventions.world_to_camera(editor_camera["worldToCamera"], hypothesis)
-                errors[hypothesis] = max(abs(g - e) for g, e in zip(game_camera["worldToCamera"], expected))
+                deltas = [abs(g - e) for g, e in zip(game_camera["worldToCamera"], expected)]
+                errors[hypothesis] = (max(delta for index, delta in enumerate(deltas) if index not in W2C_TRANSLATION),
+                                      max(deltas[index] for index in W2C_TRANSLATION))
             hypotheses.append((record, near, errors))
         component = (game_camera.get("transform") or {}).get("rotation")
         if vector(component, 4) and rig_rotation is not None:
@@ -1353,15 +1358,22 @@ class Comparison:
                 handler(record, partner, False)
             elif part == "particles":
                 self.compare_particles(record, partner)
-        # Camera hypothesis: the one with the lower median residual over all frames.
+        # Camera hypothesis: the one with the lower median residual score (error / tolerance) over all frames.
         fitted, medians = None, {}
         if hypotheses:
+            def w2c_score(errors):
+                return max(error / tol if tol > 0 else (0.0 if error == 0 else EXACT_SCORE)
+                           for error, tol in zip(errors, (self.tol["worldToCamera"], self.tol["cameraPositionM"])))
+
             for name in hypotheses[0][2]:
-                medians[name] = statistics.median(errors[name] for _, _, errors in hypotheses)
+                medians[name] = statistics.median(w2c_score(errors[name]) for _, _, errors in hypotheses)
             fitted = min(medians, key=medians.get)
             for record, near, errors in hypotheses:
-                self.add("camera", "worldToCameraMaxAbs", "camera:main", record, None, None, errors[fitted], self.tol["worldToCamera"],
+                basis, translation = errors[fitted]
+                self.add("camera", "worldToCameraMaxAbs", "camera:main", record, None, None, basis, self.tol["worldToCamera"],
                          near_cut=near, field=fitted)
+                self.add("camera", "worldToCameraTranslationM", "camera:main", record, None, None, translation,
+                         self.tol["cameraPositionM"], near_cut=near, field=fitted)
             for record in frames:
                 component = self.components.get(record.get("id"))
                 if component:
@@ -1611,7 +1623,7 @@ def write_markdown(report, path):
     join = report["join"]
     lines += [f"Join: {join['mode']}, phase {join['phase'].get('chosen')} ({join['phase'].get('method')}), histogram "
               f"{join['phase'].get('histogram')}, camera hypothesis {join['hypothesis'].get('fitted')} "
-              f"(median W2C residual {join['hypothesis'].get('medianResidual')}), {join['joinedRecords']} records joined, "
+              f"(median W2C residual score {join['hypothesis'].get('medianResidual')}), {join['joinedRecords']} records joined, "
               f"{join['missingEditorRecordsCount']} without an editor record, time join max error {join['timeJoinMaxError']}, "
               f"renderer joins {join['renderers'] or 'none'}.", ""]
     summary = report["summary"]
