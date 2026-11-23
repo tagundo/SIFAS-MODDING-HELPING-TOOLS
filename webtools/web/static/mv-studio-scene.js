@@ -491,7 +491,11 @@
       sortControlParticles(camera);
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
-      for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
+      const billboardCamera = camera === editorCamera ? liveCamera : camera;
+      for (const record of records) {
+        record.shaft?.billboard(billboardCamera);
+        record.axisBillboard?.apply(billboardCamera);
+      }
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -891,6 +895,7 @@
           record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
+          record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });

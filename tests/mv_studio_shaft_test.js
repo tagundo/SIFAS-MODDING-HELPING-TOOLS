@@ -5,6 +5,7 @@ const T = require("../webtools/web/static/vendor/three-r128/three.min.js");
 global.window = global;
 require("../webtools/web/static/viewer-motion-timeline.js");
 require("../webtools/web/static/mv-studio-lighting.js");
+require("../webtools/web/static/mv-studio-axis-billboard.js");
 require("../webtools/web/static/mv-studio-shaft.js");
 
 const meshName = "Native member spotlight shaft";

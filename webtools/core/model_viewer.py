@@ -1331,11 +1331,12 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     if stage_materials:
         from . import mv_studio_shaft, mv_studio_spotlight_area, mv_studio_stage_coloring, mv_studio_stage_display
         from . import mv_studio_stage_beam, mv_studio_stage_flash, mv_studio_stage_materials, mv_studio_stage_overlay
-        from . import mv_studio_soft_billboards, unity_builtin_meshes
+        from . import mv_studio_axis_billboard, mv_studio_soft_billboards, unity_builtin_meshes
         ambient_materials, lightmap_settings, stage_metadata, stage_cubes = {}, {}, {}, {}
         single_ambient, stage_emissive, stage_cubemap_owners = {}, set(), []
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
+        axis_billboards = set()
     shadow_stages = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
@@ -1403,6 +1404,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             if flash is not None:
                 identity, entry = flash
                 stage_flashes[identity] = None if identity in stage_flashes else entry
+            axis_billboards.update(mv_studio_axis_billboard.owners(scene, obj, tree))
         face = tree.get("face")
         if isinstance(face, dict) and face.get("m_PathID") and _ref(obj, face) is None:
             scene.warn("facial_assets_missing")
@@ -1496,6 +1498,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                 if stage_beam is not None or stage_opaque is not None or stage_transparent is not None:
                     stage_motion = binding
         overlay = overlay and stage_motion is not None
+        # AxisBillboard turns its own transform toward the camera, so a static
+        # billboard keeps its authored hierarchy instead of baked world vertices.
+        axis_node = (stage_materials and stage_motion is None and renderer_type == "MeshRenderer"
+                     and _key(game_object) in axis_billboards)
         flash_binding = stage_flashes.get(_key(renderer)) if stage_materials else None
         renderer_enabled = tree.get("m_Enabled", True)
         if (not renderer_enabled and flash_binding is None) or (stage_motion is None and not scene.active(game_object)):
@@ -1577,7 +1583,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
                     for ref in refs:
                         transform = _ref(renderer, ref)
                         bones.append(faces.world(scene, renderer, scene.world(transform)) if transform is not None else None)
-                if stage_motion is None:
+                if stage_motion is None and not axis_node:
                     world = faces.world(scene, renderer, scene.world(scene.transforms.get(_key(game_object))))
                 else:
                     import numpy as np
@@ -1928,13 +1934,17 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             glb.doc["nodes"][-1]["extras"]["viewerFacialRole"] = "mouth"
         if _source_path(renderer) in faces.auto_paths and re.search(r"closed|blink|(?:^|[_\s])close(?:$|[_\s])", name + " " + game_name, re.I):
             glb.doc["nodes"][-1]["extras"]["hidden_default"] = True
-        if stage_motion is None:
+        if stage_motion is None and not axis_node:
             glb.doc["scenes"][0]["nodes"].append(node_index)
         else:
             if stage_skin is not None:
                 glb.doc["nodes"][node_index]["skin"] = skin
                 if skin_material is not None:
                     glb.doc["nodes"][node_index]["extras"]["mvStageSkin"] = True
+            if stage_nodes is None:
+                from .mv_studio_stage_nodes import StageNodes
+
+                stage_nodes = StageNodes(scene, glb, ())
             stage_nodes.attach(game_object, node_index)
         if rig is not None and skin is not None:
             rig.place(node_index, renderer, game_object, skin, target_names, target_hashes, target_weights)
@@ -1943,6 +1953,8 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             from .model_faces import renderer_role
             faces.rendered_roles.add(renderer_role(scene, renderer, game_object, mesh_obj,
                                                    _source_path(renderer) in faces.dynamic_sources))
+    if stage_materials and axis_billboards:
+        mv_studio_axis_billboard.tag(glb, stage_nodes, axis_billboards)
     return materials
 
 
