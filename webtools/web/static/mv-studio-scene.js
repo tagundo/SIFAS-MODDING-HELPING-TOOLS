@@ -305,7 +305,9 @@
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
     const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, stencil: true, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
-    renderer.setClearColor(0x111522);
+    // Editor backdrop; a game project uses the native MainCamera clear (see applyProject).
+    const editorClear = 0x111522;
+    renderer.setClearColor(editorClear);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.domElement.setAttribute("aria-label", "MV stage preview");
     mount.appendChild(renderer.domElement);
@@ -1402,6 +1404,10 @@
     function applyProject() {
       const tracks = project && project.tracks || [];
       settings = project && project.quality && project.quality.values || {};
+      // level35 MainCamera/Offset/Camera clears SolidColor (0, 0, 0, 0); the
+      // RenderSettings skybox is never drawn and fog is off on every MV stage.
+      if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
       defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
         !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
