@@ -14,6 +14,10 @@
    3*tick warm-up steps at the start pose; otherwise the game's own rule applies
    (quality frame_rate_60fps, optional manifest.device). physics.order is "game"
    (default) or "same-frame". capture.json records the rate, reference and order.
+
+   Members follow the client's MV deck chain; source.deck "original" picks the
+   Original tab instead of Customize, and manifest.costumes pins
+   {position: suit id or {suit, viewStatus}} on the import request.
 */
 'use strict';
 const assert = require('node:assert/strict');
@@ -68,6 +72,9 @@ function readManifest(file) {
   const exporter = manifest.game?.exporter;
   assert(exporter === undefined || exporter === 'fovmod', 'game.exporter is "fovmod" when the reference is a FOVMOD MP4 export');
   if (manifest.device !== undefined) SPRINGS.normalizeTiming({ device: manifest.device });
+  assert(source.deck === undefined || ['custom', 'original'].includes(source.deck), 'source.deck is "custom" or "original"');
+  assert(manifest.costumes === undefined || (manifest.costumes && typeof manifest.costumes === 'object' && !Array.isArray(manifest.costumes)),
+    'costumes maps positions to suit ids or {suit, viewStatus}');
   return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll, order } };
 }
 
@@ -197,6 +204,7 @@ async function importOriginal(page, source, download) {
   await choose('#mv-game-platform', source.platform);
   await choose('#mv-game-song', String(source.liveId));
   await choose('#mv-game-variant', String(source.assetId));
+  if (source.deck) await page.selectOption('#mv-game-deck', source.deck === 'original' ? '1' : '2');
   // A catalog reload still in flight re-syncs the variants and clears the download box when it
   // ends; the load button stays disabled until then.
   await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled, null, { timeout: 60000 });
@@ -324,6 +332,15 @@ async function run() {
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(attachSceneProbe);
     await page.goto(url + '/#mv');
+    if (manifest.costumes) {
+      // The import request carries the pinned costumes (server option `costumes`).
+      await page.route(/\/api\/mv-studio\/game(?:-stream)?(?:\?|$)/, async (route) => {
+        const request = route.request();
+        if (request.method() !== 'POST') return route.continue();
+        const body = JSON.parse(request.postData() || '{}');
+        return route.continue({ postData: JSON.stringify({ ...body, costumes: manifest.costumes }) });
+      });
+    }
     await importOriginal(page, manifest.source, manifest.download === true);
     const quality = await applyQuality(page, manifest.quality);
     // The game draws at the preset's native height; the export then scales to the video size.
