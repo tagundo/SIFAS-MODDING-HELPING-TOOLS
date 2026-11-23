@@ -239,7 +239,7 @@ async function testUnreproducedSystemsAreRefused() {
   const base = system();
   assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: between(0, 0)}})),
     true, "3D rotation that stays on Z is drawn");
-  // X/Y start rotation: Local billboards only.
+  // X/Y start rotation: Local billboards only, and only where culling cannot pause the system.
   const tumbling = (cullingMode, looping, alignment = 2, mode = 0) => system({
     main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35), cullingMode, looping},
     renderer: {...base.renderer, alignment, mode}});
@@ -250,6 +250,11 @@ async function testUnreproducedSystemsAreRefused() {
   }
   for (const mode of [1, 2, 3]) {
     assert.equal(P.validSimulation(tumbling(3, true, 2, mode)), false, "other render modes do not draw X/Y start rotation");
+  }
+  for (const [cullingMode, looping, valid] of [[0, true, false], [0, false, true], [1, true, true], [2, false, false],
+    [3, false, true]]) {
+    assert.equal(P.validSimulation(tumbling(cullingMode, looping)), valid,
+      `culling ${cullingMode} looping ${looping}: Automatic (looping) and Pause culling freeze the clock off screen`);
   }
   const spin = {separateAxes: true, x: constant(0), y: constant(0), z: constant(2)};
   assert.equal(P.validSimulation(system({rotation: spin})), true);
@@ -284,8 +289,9 @@ async function testUnreproducedSystemsAreRefused() {
 }
 
 async function testTiltedAndLocallyScaledBillboards() {
-  // fx_par_so2035_04 light_02: a Local billboard tilted 5 degrees on Y on a 1.1x1.1 node, and
-  // View billboards on a 5x3 node (fx_dis_par_so2035_02 main_dis/cloud_L).
+  // fx_par_so2035_04 light_02: a Local billboard tilted 5 degrees on Y on a 1.1x1.1 node, and a
+  // View billboard on a 5x3 node (fx_dis_par_so2035_02 main_dis/cloud_L), both with a culling mode that
+  // cannot pause them; the same clouds under looping Automatic culling stay refused.
   const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
   const cloud = system({path: "fx/cloud", node: 1, shape: null, emission: once,
     main: {duration: 10, lifetime: constant(10), size: constant(1.2), cullingMode: 1}});
@@ -310,7 +316,8 @@ async function testTiltedAndLocallyScaledBillboards() {
   controller.update(2, {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 5}]}],
     quality: {values: {stage_display: true}}});
   const meshes = Object.fromEntries(root.children[0].children.map(mesh => [mesh.name.split("/").pop(), mesh]));
-  assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat", "paused"]);
+  assert.deepEqual(Object.keys(meshes).sort(), ["beam", "cloud", "flat"], "Automatic culling would pause fx/paused");
+  assert.deepEqual(controller.inspect().map(row => row.path).sort(), ["fx/beam", "fx/cloud", "fx/flat"]);
   const attribute = (mesh, name) => Array.from(mesh.geometry.getAttribute(name).array.slice(0, 3));
   // Local scaling: the quad is 1.2 x (5, 3) and the particle sits at the node.
   assert.deepEqual(attribute(meshes.cloud, "particleSize"), [f32(f32(1.2) * 5), f32(f32(1.2) * 3), f32(1.2)]);

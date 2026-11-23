@@ -28,6 +28,7 @@ const { chromium } = require('playwright');
       const T = THREE, P = MVStudioParticleSystems, size = 160;
       const constant = value => ({ mode: 0, scalar: value, min: value });
       const once = { rate: constant(0), bursts: [{ time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1 }] };
+      // AlwaysSimulate culling: Automatic culling would pause a looping tilted or scaled system off screen.
       function system(path, alignment, angles, quad, stencil = [8, 2, 0, 0]) {
         return {
           path, node: 1, layer: 1,

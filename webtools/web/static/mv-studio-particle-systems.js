@@ -36,7 +36,9 @@
   // and on other render modes, X/Y rotation over lifetime,
   // ShapeModule.alignToDirection except where a horizontal billboard cannot
   // show it, any other transform scale the scaling mode would apply to
-  // particles (Hierarchy, Shape, world-space forces).
+  // particles (Hierarchy, Shape, world-space forces), and either billboard case
+  // above on a system Unity culling pauses off screen (looping Automatic or
+  // Pause culling: its clock depends on the cameras' visibility history).
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -198,8 +200,14 @@
   function scaledBillboard(system, pose) {
     const {main, renderer, velocity, clamp} = system;
     return main.scalingMode === 1 && renderer.mode === 0 && !main.worldSpace && zeroCurve(main.gravity) &&
-      !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6);
+      !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6) && !pausedOffScreen(system);
   }
+
+  // Unity culling pauses a looping Automatic (0) or any Pause (2) system while
+  // its renderer is invisible and resumes it without catching up (libunity.so
+  // cull 0x1cc5d8 / uncull 0x1cbd10); core/mv_studio_particle_systems.py
+  // _paused_off_screen.
+  const pausedOffScreen = ({main}) => (main.cullingMode ?? 0) === 2 || ((main.cullingMode ?? 0) === 0 && !!main.looping);
 
   function reproducible(system, pose) {
     const scaled = system.main.scalingMode === 1 ? !unitScale(pose.local) && !scaledBillboard(system, pose) :
@@ -263,14 +271,14 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
-    if ((tilted(system) && (renderer.mode !== 0 || renderer.alignment !== 2)) ||
+    if ((tilted(system) && (renderer.mode !== 0 || renderer.alignment !== 2 || pausedOffScreen(system))) ||
         (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
         (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
 
-  // X/Y start rotation: drawn on Local billboards only (validSimulation).
+  // X/Y start rotation: drawn on Local billboards culling cannot pause only (validSimulation).
   const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
 
   function validSystem(system, textures) {
