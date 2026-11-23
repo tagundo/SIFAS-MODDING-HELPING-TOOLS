@@ -86,5 +86,29 @@ const close = (actual, expected, message) => assert(Math.abs(actual - expected) 
   scene.seek(2.6, project, true);
   close(focus(), 1, 'a missing part keeps the clip focusDistance');
   scene.dispose();
-  console.log('MV Studio DOF focus wiring: BodyPartType parts, fixed Face point, previous-frame transforms on continuing playback.');
+
+  // cameraAutoDistanceMode 2: the member nearest the view axis, with the
+  // mixer's focusTransitionTime lerp advanced once per evaluated frame, also
+  // when playback frames are not drawn.
+  const axisScene = window.MVStudioScene.create({ clientWidth: 1280, clientHeight: 720, appendChild() {} }, {
+    visible: true, onError(message) { throw new Error(message); } });
+  const axis = dof(0, 4, 0);
+  Object.assign(axis.values, { cameraAutoDistanceMode: 2, focusTransitionTime: 1 });
+  const member = (position, x, z) => ({ id: 'm' + position, position, glb: '/api/mv-studio/media/' + String(position).padStart(32, '0') + '.glb',
+    rig: { focusParts: { 0: 5 } }, transform: { position: [x, 0, z] } });
+  const axisProject = { token: 'dof-axis', quality: { mode: 10, values: { posteffect: true } }, performers: [member(1, 0, 0), member(2, 3, -4)],
+    tracks: [{ kind: 'camera', binding: camera, events: [shot(0, 10), { ...shot(2, 10), values: { ...shot(2, 10).values, position: [-3, 1.5, 10] } }] },
+      { binding: camera, nativeClass: 'LiveDepthOfFieldTrack', events: [axis] }] };
+  await axisScene.load(axisProject);
+  const axisFocus = () => axisScene.assetDump({ sections: ['post'] }).post.dof.distance;
+  axisScene.seek(1.8, axisProject, true);
+  close(axisFocus(), 10 - 0.1, 'the first evaluation settles on member 1');
+  axisScene.setPlaying(true);
+  const steps = [[1.9, 10], [2.0, 10], [2.1, 10], [2.6, 12], [3.2, 14]];
+  steps.forEach(([time, expected], index) => {
+    axisScene.playbackFrame(time, index * 100, true);
+    close(axisFocus(), expected - 0.1, `mode 2 at ${time}`);
+  });
+  axisScene.dispose();
+  console.log('MV Studio DOF focus wiring: BodyPartType parts, fixed Face point, previous-frame transforms on continuing playback, mode-2 transition per frame.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

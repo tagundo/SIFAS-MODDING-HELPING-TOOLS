@@ -388,7 +388,10 @@
     // cut keeps the old shot's focus). Snapshot those at the start of each
     // continuing playback frame; a seek evaluates the current pose.
     const focusLag = { valid: false, camera: new T.Vector3(), direction: new T.Vector3(), points: new Map(), pool: new Map() };
-    let dofState = global.MVStudioDofFocus?.createState?.() ?? null;
+    // The mixer's transition fields advance once per evaluated frame (dofState);
+    // draws and the asset dump re-evaluate the frame from a copy of the state
+    // it started with (dofFrameState).
+    let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
     const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
@@ -489,7 +492,7 @@
           const target = point(slot, part);
           return target ? global.MVStudioDofFocus.vectorAngle(direction, focusOffset.subVectors(target, camera)) : undefined;
         },
-        state: readOnly ? (dofState && { ...dofState }) : dofState,
+        state: dofFrameState && { ...dofFrameState },
         warn: readOnly ? undefined : (message) => {
           if (dofWarnings.has(message)) return;
           dofWarnings.add(message);
@@ -497,6 +500,13 @@
         },
       };
       return { distance, options };
+    }
+
+    function advanceFocus() {
+      if (!dofState || !global.MVStudioDofFocus) return;
+      dofFrameState = { ...dofState };
+      const source = focusSource();
+      global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance, { ...source.options, state: dofState });
     }
 
     function sortRibbonDisplay(camera) {
@@ -1775,6 +1785,7 @@
         record.prop.evaluate(currentTime);
         if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
       }
+      advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
         // Motion sampling is still synchronous. Preserve the world matrices
