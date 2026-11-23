@@ -384,11 +384,11 @@ class TimelineContractTests(unittest.TestCase):
                 patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
             for tracks in ([world, overlay], [overlay, world]):
                 parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
-                # A world MeshRenderer material curve no longer rejects the clip;
-                # the runtime binds it to that renderer's material or skips the event.
-                self.assertEqual(parsed["bindings"], [row["binding"] for row in tracks])
-                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect", "cab:2": "stage_animation"})
-                self.assertEqual(parsed["mix"], {"cab:1:0": {}, "cab:2:0": {"materialScope": "world"}})
+                # MVStudioStageMaterial has no world holder for a MeshRenderer
+                # _TintColor, so the world alias stays unbound.
+                self.assertEqual(parsed["bindings"], [overlay["binding"]])
+                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect"})
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}})
                 declared = parsed["clips"]["cab:4"]
                 self.assertTrue(declared["requiresOverlayMaterial"])
                 self.assertTrue(declared["sampleTimeF32"])
@@ -422,6 +422,34 @@ class TimelineContractTests(unittest.TestCase):
                 self.assertEqual(shared["mix"], {"cab:2:0": {"materialScope": "world"}})
                 self.assertTrue(shared["clips"]["cab:4"]["requiresOverlayMaterial"])
                 self.assertTrue(shared["clips"]["cab:4"]["sampleTimeF32"])
+
+            # A world MeshRenderer _MainTex_ST curve binds to that renderer's own
+            # stage material, so the world clip is selected.
+            def renderer(path, name):
+                return [{"path": path, "typeID": 23, "customType": 22, "isPPtrCurve": 0,
+                         "attribute": (crc32(name) & 0x0FFFFFFF) | (lane << 28)} for lane in range(4)]
+
+            clip["m_ClipBindingConstant"]["genericBindings"] = renderer(17, b"_MainTex_ST")
+            for tracks in ([world, overlay], [overlay, world]):
+                parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(parsed["bindings"], [row["binding"] for row in tracks])
+                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect", "cab:2": "stage_animation"})
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}, "cab:2:0": {"materialScope": "world"}})
+                declared = parsed["clips"]["cab:4"]
+                self.assertTrue(declared["requiresOverlayMaterial"])
+                self.assertEqual(declared["channels"], [{
+                    "path": 17, "kind": "overlayUV",
+                    "curves": [("constant", value) for value in (1, .5, .25, 0)],
+                }])
+            # With a _TintColor on a second MeshRenderer the tint has no world
+            # holder, so the whole world clip stays unbound.
+            clip["m_ClipBindingConstant"]["genericBindings"] = renderer(17, b"_MainTex_ST") + renderer(18, b"_TintColor")
+            clip["m_MuscleClip"]["m_Clip"]["m_ConstantClip"]["data"] = [1, .5, .25, 0, 1, 1, 1, 1]
+            for tracks in ([world, overlay], [overlay, world]):
+                parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
+                self.assertEqual(parsed["bindings"], [overlay["binding"]])
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}})
+                self.assertEqual({row["kind"] for row in parsed["clips"]["cab:4"]["channels"]}, {"overlayUV", "overlayTint"})
 
     def test_resident_particle_color_requires_exact_world_skin_and_complete_lanes(self):
         from webtools.core import mv_studio_stage_motion as stage
