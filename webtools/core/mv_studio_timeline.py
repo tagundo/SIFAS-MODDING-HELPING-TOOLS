@@ -353,7 +353,8 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
                    preview_stage_glow=False, preview_stage_lens=False, preview_stage_speed_back=False,
                    preview_stage_display_lights=False, preview_stage_falling_effects=False,
                    preview_stage_break=False, preview_stage_finale_floor=False,
-                   preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False) -> dict:
+                   preview_stage_sparks_a=False, preview_stage_sparks_b=False, preview_stage_sparks_roop=False,
+                   preview_particle_systems=False) -> dict:
     """Return scene tracks, timing and preview samples without changing the bundle."""
     from .model_viewer import _remaining
 
@@ -592,6 +593,16 @@ def parse_timeline(raw: bytes, name: str, *, preview_split=False, preview_stage_
         sparks_roop = mv_studio_sparks_roop.read(objects, mono, tracks, deadline, atlas_refs=atlas_refs)
         if sparks_roop:
             result["stageSparksRoop"] = sparks_roop
+    if preview_particle_systems:
+        from . import mv_studio_particle_systems as particle_systems
+
+        # After the per-prefab readers, so a cue one of them draws is not drawn twice.
+        systems = particle_systems.read(objects, mono, tracks, deadline, claimed=particle_systems.claimed_cues(result))
+        note = particle_systems.warning(systems)
+        if note:
+            result["warnings"].append(note)
+        if systems and systems["cues"]:
+            result["stageParticleSystems"] = systems
     return result
 
 
