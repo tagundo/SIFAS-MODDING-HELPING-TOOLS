@@ -942,10 +942,12 @@
       if (catalogRequest !== controller || !dialog.open) return;
       replaceOptions(region, data.regions || [], data.region || region.value);
       replaceOptions(platform, data.platforms || [], data.platform || platform.value);
-      // A local Elichika player database: follow that player's saved MV decks.
+      // A local Elichika player database: follow that player's saved MV decks. A lone
+      // player is preselected until one is chosen; a reload never overrides a choice,
+      // including "New player". The import records the deck and player it used.
       const players = Array.isArray(data.players) ? data.players : [], player = byId("mv-game-player");
       replaceOptions(player, players.map((item) => ({ id: item.id, label: text(item.name) + " (" + text(item.id) + ")" })),
-        player.value || (players.length === 1 ? players[0].id : ""), t("New player"));
+        !player.dataset.chosen && players.length === 1 ? players[0].id : player.value, t("New player"));
       byId("mv-game-player-field").hidden = !players.length;
       catalogIndex = (Array.isArray(data.songs) ? data.songs : []).map((song) => ({ song,
         search: foldSearch([song.id, song.title, ...(song.variants || []).flatMap((variant) => [variant.id, variant.label])].join("\n")) }));
@@ -1219,6 +1221,7 @@
     byId("mv-game-platform").addEventListener("change", loadCatalog);
     byId("mv-game-song").addEventListener("change", syncVariants);
     byId("mv-game-variant").addEventListener("change", () => { byId("mv-game-download").checked = false; });
+    byId("mv-game-player").addEventListener("change", (event) => { event.target.dataset.chosen = "1"; });
     byId("mv-game-search").addEventListener("input", filterCatalog);
     byId("mv-game-load").addEventListener("click", importGame);
     byId("mv-game-picker").addEventListener("close", () => {

@@ -136,13 +136,14 @@ async function localAndGame(page, url) {
     quality: { mode: 1, modes: [{ id: 1, label: 'Medium', values: { shadow: true } }],
       options: [{ key: 'shadow', label: 'Shadow', type: 'boolean' }], values: { shadow: true } },
   };
-  let catalogRequests = 0;
+  let catalogRequests = 0, catalogPlayers = [];
   await page.route('**/api/mv-studio/catalog?*', route => {
     catalogRequests++;
     return route.fulfill({ json: { region: 'gl', platform: 'android',
       regions: [{ id: 'gl', label: 'Global (GL)' }], platforms: [{ id: 'android', label: 'Android' }],
       songs: [{ id: 12, title: 'MV Studio sample', mvOnly: true, variants: [{ id: 34, label: 'MV' }] },
         { id: 13, title: '다른 노래', variants: [{ id: 35, label: '별빛 무대' }] }],
+      players: catalogPlayers,
     } });
   });
   let request;
@@ -185,6 +186,27 @@ async function localAndGame(page, url) {
   await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled);
   await page.locator('.mv-clip[data-event=sample-clip]').waitFor();
   assert.deepEqual(request, { region: 'gl', platform: 'android', liveId: 12, assetId: 34, download: false, deck: { deckType: 1 } });
+  // A lone local player is preselected until a choice is made; a catalog reload keeps "New player".
+  catalogPlayers = [{ id: 7, name: 'Player' }];
+  const pickerImport = async (choose) => {
+    await page.locator('#mv-import-game').click();
+    await page.locator('#mv-game-player-field').waitFor();
+    await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled);
+    if (choose !== undefined) await page.locator('#mv-game-player').selectOption(choose);
+    const chosen = await page.locator('#mv-game-player').inputValue();
+    request = null;
+    await page.locator('#mv-game-load').click();
+    await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled);
+    await page.locator('.mv-clip[data-event=sample-clip]').waitFor();
+    return chosen;
+  };
+  assert.equal(await pickerImport(), '7');
+  assert.deepEqual(request.deck, { deckType: 1, userId: 7 });
+  assert.deepEqual(await page.locator('#mv-game-player option').allTextContents(), ['새 플레이어', 'Player (7)']);
+  assert.equal(await pickerImport(''), '');
+  assert.deepEqual(request.deck, { deckType: 1 });
+  assert.equal(await pickerImport(), '', 'A reload must not re-preselect after "New player" was chosen');
+  assert.deepEqual(request.deck, { deckType: 1 });
   if (!(await page.locator('#mv-performer-costume').isVisible())) await page.locator('#mv-performers summary').click();
   const position = page.locator('[data-mv-performer-axis=X]');
   await position.fill('1.25'); await position.press('Tab');
