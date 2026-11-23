@@ -44,6 +44,14 @@ assert.equal(manifest({ physics: { order: 'same-frame' } }).physics.order, 'same
 assert.throws(() => manifest({ physics: { order: 'late' } }), /physics.order/);
 assert.throws(() => manifest({ game: { exporter: 'obs' } }), /game.exporter/);
 
+// A device run below its requested rate: the preroll grid is the rate it achieved, the editor
+// keeps the requested rate; a FOVMOD export keeps its tick rule.
+reference = capture.physicsReference(manifest({ physics: { rate: 4.87 } }), q10);
+assert.deepEqual([reference.source, reference.rate, reference.ruleRate], ['manifest physics.rate', 4.87, 60]);
+assert.throws(() => manifest({ physics: { rate: 0 } }), /physics.rate/);
+assert.throws(() => manifest({ screen: { width: 1280 } }), /screen is/);
+assert.deepEqual(manifest({ screen: { width: 1280, height: 720 } }).screen, { width: 1280, height: 720 });
+
 // FOVMOD exports: grid 60 for a 30 fps MP4 (frames still land on k/30), 120 for 120 fps.
 const fovmod = manifest({ game: { exporter: 'fovmod', video: 'x.mp4', export: { fps: 30 } } });
 reference = capture.physicsReference(fovmod, q30, { rate: '30/1' });
@@ -81,6 +89,17 @@ function fakePage() {
   assert.equal(result.warmupSteps, 0, 'a preroll that starts mid-song has no warm-up');
   assert.equal(page.calls.filter(([kind]) => kind === 'frame').length, 181);
   assert.equal(result.prerollStart, 14.85 - 3);
+  assert.equal(result.previewRestored, false);
+
+  // A 4.87 Hz device grid trips the playback's slow-frame preview downscale: playback restarts
+  // before the drawn frame so it is drawn at the pinned size.
+  page = fakePage();
+  globalThis.mvFrameProbe.scene.inspect = function () { return { time: this.time, previewScale: .75 }; };
+  result = await capture.renderFrame(page, 49.649, 3, 4.87);
+  const restart = page.calls.slice(-4, -1);
+  assert.deepEqual(restart.map(([kind, value]) => [kind, kind === 'frame' ? Math.round(value * 1e3) / 1e3 : value]),
+    [['playing', false], ['playing', true], ['frame', 49.649]]);
+  assert.equal(result.previewRestored, true);
 
   // Real-time runtime dumps step at the achieved frame rate, capped by the requested rate.
   const clock = (directorTime, frameCount, deltaTime = .1) => ({ clock: { directorTime, frameCount, deltaTime } });

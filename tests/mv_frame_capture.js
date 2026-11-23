@@ -67,6 +67,14 @@ function readManifest(file) {
   assert(SPRINGS.ORDERS.includes(order), 'physics.order is "game" or "same-frame"');
   const exporter = manifest.game?.exporter;
   assert(exporter === undefined || exporter === 'fovmod', 'game.exporter is "fovmod" when the reference is a FOVMOD MP4 export');
+  // physics.rate: the spring grid in game frames per second when the reference is a device
+  // run below its requested rate (mv_runtime_capture.gameClockRate().rate, ~4.9 at Max 3D).
+  assert(physics.rate === undefined || (Number.isFinite(physics.rate) && physics.rate > 0 && physics.rate <= 120),
+    'physics.rate is the game frame rate (frames per second, at most 120)');
+  // screen: the device screen the game drew on; the 3D view's height follows the client rule
+  // (MVStudioScene.nativeRenderHeight) for that screen instead of the preset's height.
+  assert(manifest.screen === undefined || (Number.isSafeInteger(manifest.screen?.width) && Number.isSafeInteger(manifest.screen?.height) &&
+    manifest.screen.width > 0 && manifest.screen.height > 0), 'screen is {width, height} in pixels');
   if (manifest.device !== undefined) SPRINGS.normalizeTiming({ device: manifest.device });
   return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll, order } };
 }
@@ -95,8 +103,20 @@ function physicsReference(manifest, qualityValues, video = null) {
   }
   const device = manifest.device || {};
   const rate = SPRINGS.gameFrameRate(qualityValues, device);
-  return { source: 'game', rate, order, exportFps: null, device: manifest.device || null, warmupSteps: 0,
+  const reference = { source: 'game', rate, order, exportFps: null, device: manifest.device || null, warmupSteps: 0,
     timing: { order, exportFps: null, device } };
+  // A device run below its requested rate stepped its springs once per frame it actually rendered:
+  // the preroll grid is that rate, while the editor keeps the requested rate (ruleRate).
+  return Number.isFinite(manifest.physics?.rate) ? { ...reference, source: 'manifest physics.rate', rate: manifest.physics.rate, ruleRate: rate }
+    : reference;
+}
+
+// The 3D view height the client renders for a screen (LiveCoreCameraManager.Update3DCameraRenderTextures,
+// MVStudioScene.nativeRenderHeight): the preset's height when no screen is known.
+async function nativeRenderHeight(page, qualityValues, screenHeight) {
+  if (!Number.isSafeInteger(screenHeight) || screenHeight <= 0) return qualityValues.rendering_resolution;
+  return page.evaluate(({ values, screenHeight }) => MVStudioScene.nativeRenderHeight(values.rendering_resolution, screenHeight,
+    values.quality_mode), { values: qualityValues, screenHeight });
 }
 
 // Camera clip boundaries of the game camera tracks, in timeline seconds.
@@ -267,10 +287,16 @@ async function renderFrame(page, time, preroll, rate, warmup = 0) {
     try {
       for (let step = 0; step < warm; step++) scene.playbackFrame(start, step * 1000 / rate, true);
       for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, (warm + step) * 1000 / rate, true);
+      // A grid slower than 25 Hz (a device run's achieved rate, e.g. ~4.9 fps at Max 3D) trips
+      // the playback's slow-frame preview downscale, which would draw this frame below the
+      // pinned size: restart playback so the preview scale returns to 1 (the physics clock
+      // still steps once on the drawn frame).
+      const previewRestored = (scene.inspect().previewScale ?? 1) !== 1;
+      if (previewRestored) { scene.setPlaying(false); scene.setPlaying(true); }
       scene.playbackFrame(time, (warm + steps) * 1000 / rate, false);
       const canvas = document.querySelector('#mv-scene canvas');
       const png = canvas.toDataURL('image/png');
-      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start };
+      return { png, state: scene.inspect(), steps, warmupSteps: warm, prerollStart: start, previewRestored };
     } finally {
       scene.setPlaying(false);
     }
@@ -281,7 +307,7 @@ async function renderFrame(page, time, preroll, rate, warmup = 0) {
 async function applyPhysicsReference(page, reference) {
   const applied = await page.evaluate((timing) => mvFrameProbe.scene.setPhysicsTiming(timing), reference.timing);
   assert(applied, 'The editor scene has no spring timing control');
-  assert.equal(applied.rate, reference.rate, 'The editor did not apply the reference spring rate');
+  assert.equal(applied.rate, reference.ruleRate ?? reference.rate, 'The editor did not apply the reference spring rate');
   assert.equal(applied.order, reference.order, 'The editor did not apply the reference spring order');
   return applied;
 }
@@ -326,8 +352,9 @@ async function run() {
     await page.goto(url + '/#mv');
     await importOriginal(page, manifest.source, manifest.download === true);
     const quality = await applyQuality(page, manifest.quality);
-    // The game draws at the preset's native height; the export then scales to the video size.
-    const renderHeight = quality.values.rendering_resolution;
+    // The game draws at the client's height for its screen (manifest.screen, else the video's
+    // height; the preset's height when neither is known); the export then scales to the video size.
+    const renderHeight = await nativeRenderHeight(page, quality.values, manifest.screen?.height ?? target?.height);
     const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
     await pinViewport(page, renderWidth, renderHeight);
     await page.evaluate(() => {
