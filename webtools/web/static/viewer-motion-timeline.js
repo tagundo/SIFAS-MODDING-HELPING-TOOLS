@@ -1,6 +1,7 @@
 /* The game's selected dancer and facial tracks share one authored playhead. */
 (function (global) {
   "use strict";
+  var MASK_MIN_RATE = Math.fround(.51);
   function number(value, fallback) { return typeof value === "number" && isFinite(value) ? value : fallback; }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
   function curve(keys, position, fallback) {
@@ -256,13 +257,36 @@
     function beginSample(time, fresh) {
       if (fresh || sampleTime !== time) { sampleTime = time; sampleRevision += 1; }
     }
+    // A masked head whose timeline has no Rina tracks runs InitializeMask's
+    // LiveMemberAnimationMask instead of the default facial blend. Its eye and
+    // lip mixers sum each index's input weight; ProcessFrameMask ignores sums
+    // below minRateToActive (0x3f028f5c), and UpdateAnimationMask resets every
+    // input and sets the requested clip to 1. The last qualifying index wins;
+    // without one every input stays 0 and the head keeps its default dots.
+    var selection = descriptor.facial && descriptor.facial.trackSelection;
+    var maskEvents = selection && selection.mask === true ? { eyes: [], mouth: [] } : null;
+    var maskMembers = maskEvents ? new Set() : null, maskWinners = {}, maskRevision = -1;
+    function maskWinner(kind, time) {
+      if (maskRevision !== sampleRevision) { maskRevision = sampleRevision; maskWinners = {}; }
+      if (maskWinners[kind]) return maskWinners[kind];
+      var sums = new Map(), first = new Map(), winner = null;
+      timedRecords(maskEvents[kind], time).forEach(function (event) {
+        var amount = weightWithTiming(event, time, getTiming(event));
+        if (!(amount > 0)) return;
+        sums.set(event.index, Math.fround(Math.fround(sums.get(event.index) || 0) + Math.fround(amount)));
+        if (!first.has(event.index)) first.set(event.index, event);
+      });
+      sums.forEach(function (rate, index) { if (!(MASK_MIN_RATE > rate)) winner = first.get(index); });
+      return maskWinners[kind] = { event: winner };
+    }
     function sampleSegment(segment, time) {
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
       if (sample.revision !== sampleRevision) {
         var spec = getTiming(segment);
         sample.revision = sampleRevision;
-        sample.weight = weightWithTiming(segment, time, spec);
+        sample.weight = maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
+          weightWithTiming(segment, time, spec);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
       }
@@ -389,6 +413,9 @@
       else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
     var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
+    if (maskEvents) events.slice(0, 12000).forEach(function (event) {
+      if (maskEvents[event.kind]) { maskEvents[event.kind].push(event); maskMembers.add(event); }
+    });
     var modelGaze = info.expressionCatalog && info.expressionCatalog.gaze, retargetedGaze = !!(modelGaze && modelGaze.available &&
       Number.isInteger(modelGaze.owner) && Number.isInteger(descriptor.targetCharacter) && modelGaze.owner !== descriptor.targetCharacter);
     // Direction indices are the game's common six-pose semantics. When a

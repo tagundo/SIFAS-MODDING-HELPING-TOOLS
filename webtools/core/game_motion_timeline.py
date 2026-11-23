@@ -9,6 +9,8 @@ import time
 
 MAX_EVENTS = 12000
 _VOWELS = {"a": 1, "i": 2, "u": 3, "e": 4, "o": 5, "n": 6, "m": 6}
+# LiveDirector.InitializeMemberHead collects these two track types per member.
+_RINA_SELECTED = {"MemberEyeTrack", "MemberLipSyncTrack"}
 
 
 def _finite(value, default=0., low=0., high=600.):
@@ -40,7 +42,18 @@ def timing(clip):
             "postTime": _finite(clip.get("m_PostExtrapolationTime"))}
 
 
-def parse_timeline(path, performer=1, *, segments=None):
+def _flag(value):
+    return type(value) in (bool, int) and value == 1
+
+
+def parse_timeline(path, performer=1, *, segments=None, face_dots=None):
+    """face_dots is the loaded head's GetFaceDots(headAll) != null, if known.
+
+    When it is known, eye and lip tracks follow LiveDirector.InitializeMemberHead:
+    ShouldUseRinaFacialTracks gives useRina = faceDots and any of this member's
+    eye/lip tracks has isRinaFacial; SetupFacialTrackMute then sets every such
+    track's muted = isRinaFacial XOR useRina, replacing its authored m_Muted.
+    """
     from .game_motion_selection import _read, _class
     source = _read(path, time.monotonic() + 30)
     mono, classes = {}, {}
@@ -71,9 +84,23 @@ def parse_timeline(path, performer=1, *, segments=None):
     events, warnings = [], []
     types = {"MemberLipSyncTrack": "mouth", "MemberEyeTrack": "eyes",
              "MemberGazeTrack": "gaze", "MemberCheekTrack": "cheek"}
-    for identity, tree in mono.items():
-        kind = types.get(classes[identity])
-        if not kind or tree.get("m_Muted") or not belongs(tree):
+    owned = [(identity, tree) for identity, tree in mono.items() if types.get(classes[identity]) and belongs(tree)]
+    selection = None
+    if face_dots is not None:
+        facial = [tree for identity, tree in owned if classes[identity] in _RINA_SELECTED]
+        use_rina = bool(face_dots) and any(_flag(tree.get("isRinaFacial")) for tree in facial)
+        # A masked head without Rina tracks gets InitializeMask's
+        # LiveMemberAnimationMask; with them LiveMemberAnimationForRinaTrack,
+        # whose mask runs only during a Live skill cut-in wipe.
+        selection = {"faceDots": bool(face_dots), "useRina": use_rina,
+                     "mask": bool(face_dots) and not use_rina,
+                     "mutedTracks": sum(_flag(tree.get("isRinaFacial")) != use_rina for tree in facial)}
+    for identity, tree in owned:
+        kind = types[classes[identity]]
+        if selection is not None and classes[identity] in _RINA_SELECTED:
+            if _flag(tree.get("isRinaFacial")) != selection["useRina"]:
+                continue
+        elif tree.get("m_Muted"):
             continue
         for clip in tree.get("m_Clips", []):
             pointer = clip.get("m_Asset", {})
@@ -103,5 +130,8 @@ def parse_timeline(path, performer=1, *, segments=None):
     events.sort(key=lambda event: (event["start"], event["kind"]))
     duration = max([event["start"] + event["duration"] for event in events] +
                    [float(segment["start"]) + float(segment["duration"]) for segment in segments or []] + [0.])
-    return {"version": 1, "performer": int(performer), "duration": duration,
-            "events": events, "warnings": sorted(set(warnings))}
+    result = {"version": 1, "performer": int(performer), "duration": duration,
+              "events": events, "warnings": sorted(set(warnings))}
+    if selection is not None:
+        result["trackSelection"] = selection
+    return result

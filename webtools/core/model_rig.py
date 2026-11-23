@@ -495,6 +495,13 @@ class RigBuilder:
             move = self.names.get("Move", ())
             if len(move) == 1:
                 result["shaftAnchor"] = move[0]
+            from .model_faces import FaceUnavailable, member_head
+            try:
+                head = member_head(self.scene, self.selected - self.facial_sources)
+            except FaceUnavailable:
+                head = {}
+            if head:
+                result["memberHead"] = head
         # Ordinary auto-faces must be rendered. A saved, digest-bound face also
         # stays in the editing session when a complete native face is shown.
         from .model_viewer import _source_path, _source_hash

@@ -336,6 +336,61 @@ def declares_dynamic(scene):
     return False
 
 
+def _find(scene, transform, names):
+    """Unity Transform.Find for a relative path: depth first over children."""
+    from .model_viewer import _ref
+    if transform is None:
+        return None
+    if not names:
+        return transform
+    children = scene.tree(transform).get("m_Children", ())
+    for pointer in children[:256]:
+        child = _ref(transform, pointer)
+        if child is None or child.type.name != "Transform":
+            continue
+        game = _ref(child, scene.tree(child).get("m_GameObject"))
+        if game is not None and scene.name(game) == names[0]:
+            found = _find(scene, child, names[1:])
+            if found is not None:
+                return found
+    return None
+
+
+def member_head(scene, sources):
+    """Runtime facts of the one performer head among the selected sources.
+
+    CommonCoreMemberHead.GetFaceDots is headAll.transform.Find("Head_Face/
+    mesh_facedots"). ExistsMask sets HasMask from it, and NeedsMergeFace is its
+    negation; LiveDirectorBase.ShouldUseRinaFacialTracks requires it. The flag
+    is read from the BodyPartManager.headAll actually loaded, never a suit id.
+    """
+    from .model_viewer import _key, _ref, _source_path
+    heads = []
+    for obj in scene.env.objects:
+        if obj.type.name != "MonoBehaviour" or _source_path(obj) not in sources:
+            continue
+        _check(scene.deadline)
+        try:
+            tree = scene.tree(obj)
+            if not all(field in tree for field in ("head", "headAll", "face")):
+                continue
+            script = _ref(obj, tree.get("m_Script"))
+            if script is None or script.type.name != "MonoScript":
+                continue
+            definition = scene.tree(script)
+            if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
+                    "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+                continue
+            head_all = _ref(obj, tree.get("headAll"))
+            if head_all is None or head_all.type.name != "GameObject":
+                continue
+            dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
+            heads.append({"faceDots": dots is not None})
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return heads[0] if len(heads) == 1 else {}
+
+
 def _atomic(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
