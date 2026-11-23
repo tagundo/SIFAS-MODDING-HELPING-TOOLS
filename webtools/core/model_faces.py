@@ -8,6 +8,7 @@ import ast
 import hashlib
 import json
 from itertools import islice
+import math
 import os
 from pathlib import Path
 import re
@@ -334,6 +335,99 @@ def declares_dynamic(scene):
             except Exception:
                 pass
     return False
+
+
+def _find(scene, transform, names):
+    """Unity Transform.Find for a relative path: depth first over children."""
+    from .model_viewer import _ref
+    if transform is None:
+        return None
+    if not names:
+        return transform
+    children = scene.tree(transform).get("m_Children", ())
+    for pointer in children[:256]:
+        child = _ref(transform, pointer)
+        if child is None or child.type.name != "Transform":
+            continue
+        game = _ref(child, scene.tree(child).get("m_GameObject"))
+        if game is not None and scene.name(game) == names[0]:
+            found = _find(scene, child, names[1:])
+            if found is not None:
+                return found
+    return None
+
+
+def member_head(scene, sources):
+    """Runtime facts of the one performer head among the selected sources.
+
+    CommonCoreMemberHead.GetFaceDots is headAll.transform.Find("Head_Face/
+    mesh_facedots"). ExistsMask sets HasMask from it, and NeedsMergeFace is its
+    negation; LiveDirectorBase.ShouldUseRinaFacialTracks requires it. The flag
+    is read from the BodyPartManager.headAll actually loaded, never a suit id.
+    """
+    from .model_viewer import _key, _ref, _source_path
+    heads = []
+    for obj in scene.env.objects:
+        if obj.type.name != "MonoBehaviour" or _source_path(obj) not in sources:
+            continue
+        _check(scene.deadline)
+        try:
+            tree = scene.tree(obj)
+            if not all(field in tree for field in ("head", "headAll", "face")):
+                continue
+            script = _ref(obj, tree.get("m_Script"))
+            if script is None or script.type.name != "MonoScript":
+                continue
+            definition = scene.tree(script)
+            if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
+                    "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+                continue
+            head_all = _ref(obj, tree.get("headAll"))
+            if head_all is None or head_all.type.name != "GameObject":
+                continue
+            dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
+            head = {"faceDots": dots is not None}
+            face = _member_face(scene, obj, tree)
+            material = _ref(obj, tree.get("headMaterial"))
+            # Only InitializeDefault (no mask) adds the cheek, bound to the
+            # sharedMaterial of the merged mesh_face/CombineFace; the editor's
+            # native merge gives those surfaces BodyPartManager.headMaterial.
+            if (dots is None and face is not None and _flag(face.get("needsMergingFace"))
+                    and material is not None and material.type.name == "Material"):
+                head["cheekMaterial"] = str(scene.tree(material).get("m_Name", ""))
+            # InitializeDefault passes MemberFaceData.LipSync.Weight to
+            # LiveMemberLipSync.Initialize; the masked heads' mouth controls
+            # create every clip at rate 1.
+            lip_sync = (face or {}).get("lipSync")
+            weight = lip_sync.get("weight") if isinstance(lip_sync, dict) else None
+            if dots is None and type(weight) in (int, float) and math.isfinite(weight) and 0 <= weight <= 1:
+                head["lipSyncWeight"] = float(weight)
+            heads.append(head)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return heads[0] if len(heads) == 1 else {}
+
+
+def _flag(value):
+    return type(value) in (bool, int) and value == 1
+
+
+def _member_face(scene, manager, tree):
+    """BodyPartManager.face's inline MemberFaceData, verified by its MonoScript."""
+    from .model_viewer import _ref
+    face = _ref(manager, tree.get("face"))
+    if face is None or face.type.name != "MonoBehaviour":
+        return None
+    face_tree = scene.tree(face)
+    script = _ref(face, face_tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return None
+    definition = scene.tree(script)
+    if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
+            "MemberFace", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+        return None
+    data = face_tree.get("memberFaceData")
+    return data if isinstance(data, dict) else None
 
 
 def _atomic(path, data):

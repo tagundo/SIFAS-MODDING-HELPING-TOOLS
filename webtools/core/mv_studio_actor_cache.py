@@ -13,7 +13,7 @@ import sys
 from .game_models import _sha
 
 
-_PREVIEW_VERSION = 12  # Bump when actor motion selection or GLB conversion changes.
+_PREVIEW_VERSION = 13  # Bump when actor motion selection or GLB conversion changes.
 _MAX_RECEIPTS = 24
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 _MAX_DATABASE_BYTES = 8 * 1024 * 1024

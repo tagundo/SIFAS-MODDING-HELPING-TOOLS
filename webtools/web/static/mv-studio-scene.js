@@ -732,6 +732,9 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "cheek") {
+          if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
+          if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
         }
         if (Number.isFinite(values.clipIn)) assign(segment, "clipIn", values.clipIn);
         if (Number.isFinite(values.timeScale) && values.timeScale > 0) assign(segment, "timeScale", values.timeScale);
@@ -959,6 +962,10 @@
               entry.spec.rig || {}, { ...entry.spec.motion, bodySegments: record.segments,
                 facial: { ...entry.spec.motion.facial, events: record.facialEvents } },
               { indexTiming: true });
+            // LiveCoreMemberHead.InitializeDefault binds MemberCheekBase to the
+            // merged face's material; a masked head has no cheek component.
+            const cheekMaterial = entry.spec.rig?.memberHead?.cheekMaterial;
+            if (typeof cheekMaterial === "string" && cheekMaterial) record.cheekMaterial = cheekMaterial;
             updateMotion(record);
           } else if (gltf.animations.length) {
             record.mixer = new T.AnimationMixer(gltf.scene);
@@ -1629,6 +1636,7 @@
         if (record.motion) {
           record.motion.evaluatePose(currentTime);
           record.motion.applyVisibility(currentTime);
+          if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
         } else if (record.mixer) record.mixer.setTime(currentTime);
         record.nodeScaling?.applyHeight(memberScaleTracks.get(record.position), currentTime);
       }

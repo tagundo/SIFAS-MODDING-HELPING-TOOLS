@@ -300,7 +300,7 @@ def _timeline(path):
 
 
 def _motion(timeline, dependencies, facial, directory, position, owner, tracks, deadline):
-    from . import game_motion_selection, game_motion_timeline
+    from . import game_motion_selection
     selected = game_motion_selection.select(timeline, dependencies, performer=position, deadline=deadline)
     facial_selection, facial_entries = game_motion_selection.facial_banks(facial, deadline=deadline)
     selected["selected"].update(facial_selection["selected"])
@@ -320,7 +320,16 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
         matches = native_events.get((segment["track"], segment["start"], segment["duration"]), ())
         if len(matches) == 1:
             segment["nativeTrackId"], segment["nativeEventId"] = matches[0]
-    native_face = game_motion_timeline.parse_timeline(str(timeline), position, segments=segments)
+    descriptor = {"version": 2, "category": "mv", "performerPosition": position, "targetCharacter": owner,
+                  "clipSources": sources, "bodySegments": segments, "facialClips": facial_clips}
+    return [item["path"] for item in files], descriptor
+
+
+def _facial(timeline, descriptor, position, tracks, head):
+    """Add the facial events once the loaded head is known (see member_head)."""
+    from . import game_motion_timeline
+    native_face = game_motion_timeline.parse_timeline(str(timeline), position, segments=descriptor["bodySegments"],
+                                                      face_dots=(head or {}).get("faceDots"))
     facial_events = {}
     for track in tracks:
         if track["kind"] not in {"mouth", "eyes", "gaze", "cheek"} or f"Member{position}" not in track["label"].split("/"):
@@ -332,9 +341,7 @@ def _motion(timeline, dependencies, facial, directory, position, owner, tracks, 
         matches = facial_events.get((event["kind"], event["start"], event["duration"], event["label"]), ())
         if len(matches) == 1:
             event["nativeEventId"] = matches[0]
-    descriptor = {"version": 2, "category": "mv", "performerPosition": position, "targetCharacter": owner,
-                  "clipSources": sources, "bodySegments": segments, "facialClips": facial_clips, "facial": native_face}
-    return [item["path"] for item in files], descriptor
+    return {**descriptor, "facial": native_face}
 
 
 def _cast_in_timeline_order(performers, tracks):
@@ -579,6 +586,11 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             warnings.append(f"{label} choreography: {error}")
                         try:
                             url, rig = _preview(model, performer=True, motions=clips, companions=companions, reuse=True)
+                            if motion is not None:
+                                try:
+                                    motion = _facial(timeline, motion, number, project["tracks"], rig.get("memberHead"))
+                                except (ValueError, OSError) as error:
+                                    warnings.append(f"{label} facial timeline: {error}")
                             result.update(glb=url, rig=rig, motion=motion)
                             if key is not None:
                                 actor_cache.put(key, url.removeprefix(_MEDIA_URL), rig, motion)

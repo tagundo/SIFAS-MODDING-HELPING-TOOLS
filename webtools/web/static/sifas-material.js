@@ -501,7 +501,7 @@
       };
       var defaults = { _RimglightIntensity: 1, _RimglightPower: 3, _MainTexMipmapBias: 0,
         _MatcapTexAdd: 0, _MatcapSpanColTexAdd: 0, _MatcapTexDarkenR: 1,
-        _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekIntensity: 0 };
+        _MatcapBrightR: 1, _MatcapBrightG: 1, _CheekTexArrayIndex: 0, _CheekIntensity: 0 };
       Object.keys(defaults).forEach(function (name) { uniforms["u" + name.slice(1)] = { value: finite(floats[name], defaults[name]) }; });
       if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
       var defines = {};
@@ -537,6 +537,7 @@
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
+        sourceName: original.name, cheek: null, cheekLayer: null,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
@@ -552,6 +553,10 @@
         if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
         if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
         if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
+        // Only a loaded, exported array slice can show a blush; the white placeholder never tints.
+        var cheekSlot = textures._CheekTex;
+        if (names.indexOf("_CheekTex") >= 0 && cheekSlot && Number.isInteger(cheekSlot.index) &&
+            Number.isInteger(cheekSlot.arrayLayer)) pair.cheekLayer = cheekSlot.arrayLayer;
       }
       names.forEach(function (name) {
         var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
@@ -738,6 +743,42 @@
           var depthRim = pair.main.userData.mvStageMemberDepthRim;
           if (depthRim) depthRim.value = finite(rim?.intensity, 0);
         });
+      },
+      // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll
+      // (_CHEEK_ON off, _CheekTexArrayIndex 0, _CheekIntensity 0); each active
+      // MemberCheekClip input -> ApplyEnable(true) + ApplyCheek(type, value);
+      // no active input -> ApplyEnable(false), keeping the last floats
+      // (state.enabled false carries those floats; null keeps the reset).
+      setCheek: function (name, state) {
+        if (disposed || memberProp) return;
+        var changed = false;
+        materialCache.forEach(function (pair) {
+          if (pair.sourceName !== name) return;
+          var uniforms = pair.uniforms;
+          if (!pair.cheek) {
+            pair.cheek = { enabled: false };
+            uniforms.uCheekTexArrayIndex.value = 0;
+            uniforms.uCheekIntensity.value = 0;
+            changed = true;
+          }
+          if (state) {
+            var index = Math.max(0, Math.floor(finite(state.index, 0))), intensity = finite(state.intensity, 0);
+            if (uniforms.uCheekTexArrayIndex.value !== index || uniforms.uCheekIntensity.value !== intensity) changed = true;
+            uniforms.uCheekTexArrayIndex.value = index;
+            uniforms.uCheekIntensity.value = intensity;
+          }
+          var enabled = !!state && state.enabled !== false;
+          var shown = enabled && pair.cheekLayer !== null && pair.cheekLayer === uniforms.uCheekTexArrayIndex.value;
+          if (enabled && pair.cheekLayer !== null && !shown) limitations.add("A selected cheek array slice is unavailable in this preview.");
+          pair.cheek.enabled = enabled;
+          if (!!pair.main.defines.SIFAS_CHEEK !== shown) {
+            if (shown) pair.main.defines.SIFAS_CHEEK = 1;
+            else delete pair.main.defines.SIFAS_CHEEK;
+            pair.main.needsUpdate = true;
+            changed = true;
+          }
+        });
+        if (changed && options.onChange) options.onChange();
       },
       setRimlight: function (value) {
         if (disposed || memberProp || rimlightEnabled === !!value) return;
