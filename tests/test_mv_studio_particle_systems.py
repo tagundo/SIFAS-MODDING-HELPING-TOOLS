@@ -188,6 +188,72 @@ class NormalizationTests(unittest.TestCase):
             self.assertIsNone(systems.system({}, None, particle, Reader({**RENDERER, "m_Enabled": 0}),
                                              systems._Textures(0)))
 
+    def test_three_dimensional_rotation_is_reported(self):
+        self.assertTrue(systems._zero(constant(0.0)))
+        self.assertFalse(systems._zero(constant(0.5)))
+        self.assertTrue(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0), key(1, 0)]}}))
+        self.assertFalse(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0, 0, 1)]}}))
+        self.assertFalse(systems._zero({**constant(0.0), "minMaxState": 3, "minScalar": -1.0}))
+        initial = particle_system()["InitialModule"]
+        flat = systems._main(particle_system(InitialModule={**initial, "rotation3D": True}))
+        self.assertTrue(flat["rotation3D"])
+        for axis in ("startRotationX", "startRotationY"):
+            tumbling = particle_system(InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
+            with self.assertRaisesRegex(systems._Unsupported, "3D start rotation"):
+                systems._main(tumbling)
+        # Unity keeps serialized X/Y values while 3D rotation is off; only Z is used then.
+        self.assertFalse(systems._main(particle_system(InitialModule={**initial, "startRotationX": constant(1.0)}))
+                         ["rotation3D"])
+        spin = {"enabled": True, "separateAxes": True, "x": constant(0.0), "y": constant(0.0), "curve": constant(2.0)}
+        self.assertEqual(systems._rotation(spin)["z"]["scalar"], 2.0)
+        with self.assertRaisesRegex(systems._Unsupported, "RotationModule X/Y"):
+            systems._rotation({**spin, "x": constant(1.0)})
+        self.assertEqual(systems._rotation({**spin, "separateAxes": False, "x": constant(1.0)})["curve"]["scalar"], 2.0)
+
+    def test_align_to_direction_only_where_it_cannot_change_a_horizontal_billboard(self):
+        shape = particle_system()["ShapeModule"]
+        planar = {**shape, "type": 10, "alignToDirection": True, "m_Rotation": {"x": 90, "y": 30, "z": 0}}
+        horizontal = Reader({**RENDERER, "m_RenderMode": 2, "m_RenderAlignment": 2})
+        with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            row = systems.system({}, None, Reader(particle_system(ShapeModule=planar)), horizontal, systems._Textures(0))
+            self.assertTrue(row["shape"]["alignToDirection"])
+            rejected = [(Reader(particle_system(ShapeModule=planar)), Reader(RENDERER), True),
+                        (Reader(particle_system(ShapeModule={**planar, "type": 5})), horizontal, True),
+                        (Reader(particle_system(ShapeModule={**planar, "m_Rotation": {"x": 0, "y": 0, "z": 0}})),
+                         horizontal, True),
+                        (Reader(particle_system(ShapeModule={**planar, "randomDirectionAmount": .5})), horizontal, True),
+                        (Reader(particle_system(ShapeModule=planar)), horizontal, False)]
+            rows = []
+            for particle, renderer, upright in rejected:
+                with self.assertRaisesRegex(systems._Unsupported, "alignToDirection"):
+                    systems.system({}, None, particle, renderer, systems._Textures(0), upright=upright)
+                rows.append({"reason": "ShapeModule.alignToDirection"})
+        self.assertEqual(systems.warning({"unsupported": rows}),
+                         "5 original particle systems are not previewed: ShapeModule.alignToDirection x5.")
+
+    def test_transform_scale_is_reported_for_the_scaling_mode(self):
+        def walked(scaling, parent_scale, own_scale):
+            emitter = walked_node("fx/root/emitter", 1)
+            emitter["components"].update(ParticleSystem=Reader(particle_system(scalingMode=scaling)),
+                                         ParticleSystemRenderer=Reader(RENDERER))
+            emitter["scale"] = list(own_scale)
+            rows = [walked_node("fx", None), walked_node("fx/root", 0), emitter]
+            rows[1]["scale"] = list(parent_scale)
+            for node in rows:
+                node["authored"] = True
+            return rows
+
+        cases = {(0, (2, 2, 2), (1, 1, 1)): "non-unit transform scale (Hierarchy scaling mode)",
+                 (2, (1, 1, 1), (1, 1, 0)): "non-unit transform scale (Shape scaling mode)",
+                 (1, (1, 1, 1), (5, 3, 1)): "non-unit transform scale (Local scaling mode)",
+                 (1, (2, 2, 2), (1, 1, 1)): None, (0, (1, 1, 1), (1, 1, 1)): None}
+        with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            for (scaling, parent, own), reason in cases.items():
+                with mock.patch.object(systems, "_walk", return_value=walked(scaling, parent, own)):
+                    row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
+                self.assertEqual([item["reason"] for item in unsupported], [reason] if reason else [])
+                self.assertEqual(len(row["systems"]), 0 if reason else 1)
+
     def test_claimed_cues_and_warning(self):
         result = {"tracks": [{"trackId": "ignored", "eventId": "ignored"}],
                   "stageRain": {"cues": [{"trackId": "a", "eventId": "a:0", "profile": "01"}]},
@@ -258,7 +324,7 @@ class AnimatorTests(unittest.TestCase):
                     systems._default_clip({}, None, fields)
 
     def template(self, walked, rows=None, clip_error=None):
-        def drawn(objects, game, particle, renderer, textures, blocked=None):
+        def drawn(objects, game, particle, renderer, textures, blocked=None, **_):
             if blocked:
                 raise systems._Unsupported(blocked)
             return {"main": {}}
@@ -344,16 +410,23 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        self.assertEqual(len(source["cues"]), 14)
-        self.assertEqual(source["unsupported"], [])
+        # The light beams and the display clouds tilt their quads on X/Y or sit on a
+        # scaled node; they are reported and their two cues are left out.
+        reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
+        tilted, scaled = "3D start rotation (X/Y axes)", "non-unit transform scale (Local scaling mode)"
+        self.assertEqual(reasons, {
+            ("fx_par_so2035_04", "light_01"): tilted, ("fx_par_so2035_04", "light_02"): tilted,
+            ("fx_dis_par_so2035_02", "main_dis/cloud_L"): scaled, ("fx_dis_par_so2035_02", "main_dis/cloud_R"): scaled,
+            **{("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): tilted for side in "LR" for cloud in "LR"}})
+        self.assertEqual(len(source["cues"]), 12)
         names = {template["name"]: template for template in source["templates"]}
-        self.assertEqual(len(names), 10)
+        self.assertEqual(len(names), 8)
         # fx_flo_so2035_03 holds 35 systems, but 20 sit under inactive GameObjects that no clip
         # or Animator activates, so the clone never plays them.
         self.assertEqual({name: len(row["systems"]) for name, row in names.items() if name.startswith("fx_flo")},
                          {"fx_flo_so2035_01": 24, "fx_flo_so2035_02": 26, "fx_flo_so2035_03": 15})
-        light = [cue for cue in source["cues"] if source["templates"][cue["template"]]["name"] == "fx_par_so2035_04"]
-        self.assertEqual([cue["offset"] for cue in light], [[0.0, 13.0, 59.0]])
+        sparks = [cue for cue in source["cues"] if source["templates"][cue["template"]]["name"] == "fx_par_so2035_03"]
+        self.assertEqual([cue["offset"] for cue in sparks], [[0.0, -1.8200000524520874, 8.0]] * 2)
         self.assertEqual({cue["quality"] for cue in source["cues"]}, {"stage_control", "stage_display"})
         dust = names["fx_par_so2035_01"]["systems"][0]
         self.assertEqual((dust["main"]["randomSeed"], dust["main"]["autoRandomSeed"], dust["layer"]),

@@ -22,6 +22,11 @@
   //    remainder runs after the first display frame's full steps.
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
+  //
+  // Not reproduced, so the importer reports these systems and this runtime
+  // refuses them as well: X/Y particle rotation (quads turn about Z only),
+  // ShapeModule.alignToDirection except where a horizontal billboard cannot
+  // show it, and a transform scale the scaling mode would apply to particles.
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -167,12 +172,43 @@
       } else {
         position = position.map((value, i) => value + offset[i]);
       }
-      poses.push({position, rotation, scale, local: node.scale});
+      const unitChain = unitScale(node.scale) && (!parent || parent.unitChain);
+      poses.push({position, rotation, scale, local: node.scale, unitChain});
     }
     return poses;
   }
 
+  const unitScale = scale => scale.every(value => Math.abs(value - 1) <= 1e-6);
+
+  // The transform scale the scaling mode applies (Local: the node's own,
+  // Hierarchy and Shape: every node up to the clone root) must be the identity:
+  // positions would scale but sizes would not, and Shape's emitter-only scale
+  // is not modeled. alignToDirection also needs an emitter turned about Y only.
+  function reproducible(system, pose) {
+    const scaled = system.main.scalingMode === 1 ? !unitScale(pose.local) : !pose.unitChain;
+    const tilted = Math.abs(pose.rotation[0]) > 1e-6 || Math.abs(pose.rotation[2]) > 1e-6;
+    return !scaled && !(system.shape?.alignToDirection && tilted);
+  }
+
   // ---------------------------------------------------------------- validation
+  function zeroCurve(curve) {
+    if (curve.mode === 0) return curve.scalar === 0;
+    if (curve.mode === 3) return curve.scalar === 0 && curve.min === 0;
+    return curve.scalar === 0 || [...curve.maxKeys, ...(curve.minKeys || [])].every(([, value, incoming, outgoing]) =>
+      value === 0 && !incoming && !outgoing);
+  }
+
+  // The one alignToDirection set-up with native evidence (mv_studio_umbrella_particles.py):
+  // a Circle or SingleSidedEdge turned 90 degrees about X aligns particles to
+  // horizontal directions, which only writes their X/Y rotation, and a local
+  // horizontal billboard reads Z alone.
+  function planarAlignment({shape, renderer, main}) {
+    const turn = value => ((value % 360) + 360) % 360;
+    return renderer.mode === 2 && renderer.alignment === 2 && !main.rotation3D && [10, 12].includes(shape.type) &&
+      turn(shape.rotation[0]) === 90 && turn(shape.rotation[2]) === 0 && !shape.randomDirection &&
+      !shape.sphericalDirection;
+  }
+
   function validSimulation(system) {
     const {main, emission, shape, renderer} = system || {};
     if (!main || !emission || !renderer) return false;
@@ -205,6 +241,9 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
+    if ((main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY))) ||
+        (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
+        (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
@@ -961,7 +1000,7 @@
         const pose = poses[system.node];
         // Drawn by the main camera only on its culling-mask layers; layer 20
         // belongs to the overlay camera, which this module does not drive.
-        const drawn = ((mainCameraMask >>> system.layer) & 1) === 1 && system.layer < 32;
+        const drawn = ((mainCameraMask >>> system.layer) & 1) === 1 && system.layer < 32 && reproducible(system, pose);
         return {system, systemIndex, pose, drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
           seed: system.main.autoRandomSeed ?
             // The game draws a fresh auto seed per activation; keep a stable stand-in per clip.

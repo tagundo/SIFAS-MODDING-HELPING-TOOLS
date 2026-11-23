@@ -235,6 +235,38 @@ async function testApplyDrawsActiveCuesOnly() {
   assert.equal(root.children.length, 0);
 }
 
+async function testUnreproducedSystemsAreRefused() {
+  const base = system();
+  assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: between(0, 0)}})),
+    true, "3D rotation that stays on Z is drawn");
+  assert.equal(P.validSimulation(system({main: {rotation3D: true, rotationX: constant(0), rotationY: constant(.35)}})),
+    false, "X/Y start rotation is not drawn as a Z roll");
+  const spin = {separateAxes: true, x: constant(0), y: constant(0), z: constant(2)};
+  assert.equal(P.validSimulation(system({rotation: spin})), true);
+  assert.equal(P.validSimulation(system({rotation: {...spin, y: {mode: 1, scalar: 1, min: 0,
+    maxKeys: [[0, 0, 0, 0], [1, 1, 0, 0]]}}})), false);
+  const planar = {...base.shape, type: 10, rotation: [90, 15, 0], alignToDirection: true};
+  const horizontal = {...base.renderer, mode: 2, alignment: 2};
+  assert.equal(P.validSimulation(system({shape: planar, renderer: horizontal})), true);
+  assert.equal(P.validSimulation(system({shape: planar, renderer: {...horizontal, mode: 3}})), false);
+  assert.equal(P.validSimulation(system({shape: {...planar, rotation: [0, 0, 0]}, renderer: horizontal})), false);
+  // A transform scale the scaling mode would apply is never drawn.
+  const root = new T.Group();
+  const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [2, 2, 2]},
+    {parent: 0, path: "fx/a", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [system({node: 1, path: "fx/a/local"}),
+      system({node: 1, path: "fx/a/hierarchy", main: {scalingMode: 0}}), system({node: 1, path: "fx/a/shape",
+        main: {scalingMode: 2}})]}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_control", clipSeed: 1}]};
+  const controller = await P.apply(T, root, descriptor);
+  controller.update(2, {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 2}]}],
+    quality: {values: {stage_control: true}}});
+  assert.deepEqual(controller.inspect().map(row => row.path), ["fx/a/local"],
+    "Local scaling ignores the parent; Hierarchy and Shape would scale the particles");
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testSeekMatchesPlayback();
@@ -246,6 +278,7 @@ async function testApplyDrawsActiveCuesOnly() {
   testActivationTiming();
   testMaterialMappingAndLayers();
   await testApplyDrawsActiveCuesOnly();
+  await testUnreproducedSystemsAreRefused();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);

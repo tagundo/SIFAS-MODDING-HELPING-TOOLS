@@ -58,6 +58,7 @@ _SHAPES = {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 15, 16, 18}
 _GAME_OBJECT, _TRANSFORM, _ACTIVE = 1, 4, zlib.crc32(b"m_IsActive")
 _POSITION, _ROTATION, _SCALE, _EULER = 1, 2, 3, 4
 _PARTICLE_CLASSES = {198: "ParticleSystem", 199: "ParticleSystemRenderer"}
+_SCALING = {0: "Hierarchy", 1: "Local", 2: "Shape"}
 # Renderer modes: Billboard, Stretch, HorizontalBillboard, VerticalBillboard.
 _RENDER_MODES = {0, 1, 2, 3}
 # Modules read as data. Anything else that is enabled makes the system unsupported.
@@ -170,6 +171,20 @@ def _constant(source, value):
         source.get("minMaxState") == 3 and source.get("scalar") == value == source.get("minScalar"))
 
 
+def _zero(source):
+    """A MinMaxCurve that is 0 at every time and weight."""
+    state, scalar = source.get("minMaxState"), source.get("scalar")
+    if state == 3:
+        return scalar == 0 and source.get("minScalar") == 0
+    if state not in (0, 1, 2):
+        return False
+    if scalar == 0:
+        return True
+    curves = [source.get("maxCurve")] + ([source.get("minCurve")] if state == 2 else [])
+    return state != 0 and all(key.get("value") == key.get("inSlope") == key.get("outSlope") == 0
+                              for item in curves for key in (item or {}).get("m_Curve") or [])
+
+
 def _main(source):
     for field, expected in (("useUnscaledTime", False), ("ringBufferMode", 0)):
         if source.get(field) != expected:
@@ -205,6 +220,11 @@ def _main(source):
     if result["size3D"]:
         result["sizeY"], result["sizeZ"] = curve(initial["startSizeY"]), curve(initial["startSizeZ"])
     if result["rotation3D"]:
+        # The runtime turns a particle quad about its Z axis only. No native
+        # reader reproduces a 3D-rotated billboard, so X/Y start rotation is
+        # reported (center_stars, butterfly_glow reject it as well).
+        if not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"])):
+            raise _Unsupported("3D start rotation (X/Y axes)")
         result["rotationX"], result["rotationY"] = curve(initial["startRotationX"]), curve(initial["startRotationY"])
     return result
 
@@ -295,6 +315,13 @@ def _over_lifetime(source, axes):
     if source.get("separateAxes"):
         return {"separateAxes": True, **{axis: curve(source[field]) for axis, field in axes}}
     return {"separateAxes": False, "curve": curve(source["curve"])}
+
+
+def _rotation(source):
+    # Separate axes keep Z in "curve"; X/Y spin would need a 3D-rotated quad.
+    if source.get("enabled") and source.get("separateAxes") and not (_zero(source["x"]) and _zero(source["y"])):
+        raise _Unsupported("RotationModule X/Y rotation over lifetime")
+    return _over_lifetime(source, (("x", "x"), ("y", "y"), ("z", "curve")))
 
 
 def _uv(source):
@@ -455,12 +482,57 @@ def _trs(tree):
     return {"position": position, "rotation": rotation, "scale": scale}
 
 
-def system(objects, game, particle, renderer, textures, blocked=None):
+def _planar_alignment(row):
+    """alignToDirection that cannot change what a horizontal billboard draws.
+
+    The only native evidence is mv_studio_umbrella_particles.py (the Aion
+    umbrella rings): a Circle rotated 90 degrees about X aligns its particles
+    to horizontal directions, which writes their initial X/Y Euler channels,
+    and a horizontal billboard reads only the Z channel. Exactly that set-up
+    is accepted (with SingleSidedEdge, whose one direction is also horizontal
+    there) on an emitter that turns about Y only. Everything else is reported.
+    """
+    shape, renderer, main = row["shape"], row["renderer"], row["main"]
+    x, _, z = (value % 360 for value in shape["rotation"])
+    return (renderer["mode"] == 2 and renderer["alignment"] == 2 and not main["rotation3D"]
+            and shape["type"] in (10, 12) and x == 90 and z == 0
+            and shape["randomDirection"] == 0 and shape["sphericalDirection"] == 0)
+
+
+def _turns_about_y(walked, own):
+    """The node's world rotation keeps the horizontal plane (a pure Y turn)."""
+    rotation, index = (0.0, 0.0, 0.0, 1.0), own
+    while index is not None:
+        rotation = animation._multiply(walked[index]["rotation"], rotation)
+        index = walked[index]["parent"]
+    return abs(rotation[0]) < 1e-6 and abs(rotation[2]) < 1e-6
+
+
+def _unit_scale(walked, own, scaling):
+    """The transform scale the scaling mode applies is the identity.
+
+    The runtime scales particle positions by it but never particle size, and
+    Shape mode's emitter-only scale is not reproduced; no native reader has a
+    scaled emitter to take the rule from (falling_display requires identity).
+    """
+    unit = lambda node: all(abs(value - 1) <= 1e-6 for value in node["scale"])
+    if scaling == 1:
+        return unit(walked[own])
+    index = own
+    while index is not None:
+        if not unit(walked[index]):
+            return False
+        index = walked[index]["parent"]
+    return True
+
+
+def system(objects, game, particle, renderer, textures, blocked=None, *, upright=True):
     """Normalize one ParticleSystem and its renderer, or raise _Unsupported.
 
     ``blocked`` is a reason from outside the system itself (its prefab
-    Animator); it is raised after the system's own checks and before any
-    texture is read, so the warning names the system's own gap first.
+    Animator or transform scale); it is raised after the system's own checks
+    and before any texture is read, so the warning names the system's own gap
+    first. ``upright`` tells whether the emitter's world rotation is a pure Y turn.
     """
     source = particle.read_typetree()
     for name in _UNSUPPORTED_MODULES:
@@ -476,13 +548,17 @@ def system(objects, game, particle, renderer, textures, blocked=None):
         if blocked:
             raise _Unsupported(blocked)
         return None
+    # The render mode first: a mesh particle is reported as such before its modules.
+    drawn = _renderer(render_tree)
     result = {"main": _main(source), "emission": _emission(source["EmissionModule"]), "shape": _shape(shape),
               "velocity": _velocity(source["VelocityModule"]), "clamp": _clamp(source["ClampVelocityModule"]),
               "size": _over_lifetime(source["SizeModule"], (("x", "curve"), ("y", "y"), ("z", "z"))),
-              "rotation": _over_lifetime(source["RotationModule"], (("x", "x"), ("y", "y"), ("z", "curve"))),
+              "rotation": _rotation(source["RotationModule"]),
               "color": color(source["ColorModule"]["gradient"]) if source["ColorModule"].get("enabled") else None,
               "uv": _uv(source["UVModule"]), "rotationBySpeed": _rotation_by_speed(source["RotationBySpeedModule"]),
-              "renderer": _renderer(render_tree)}
+              "renderer": drawn}
+    if result["shape"] and result["shape"]["alignToDirection"] and not (upright and _planar_alignment(result)):
+        raise _Unsupported("ShapeModule.alignToDirection")
     if blocked:
         raise _Unsupported(blocked)
     surface, texture = _material(objects, renderer, render_tree)
@@ -749,7 +825,11 @@ def template(objects, prefab, textures, deadline):
                 raise _Unsupported("ParticleSystem has no renderer")
             if len(systems) >= _MAX_SYSTEMS_PER_TEMPLATE:
                 raise _Unsupported("too many systems in one prefab")
-            row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked)
+            scaling = (components["ParticleSystem"].read_typetree().get("scalingMode"))
+            if not blocked and scaling in _SCALING and not _unit_scale(walked, own, scaling):
+                blocked = f"non-unit transform scale ({_SCALING[scaling]} scaling mode)"
+            row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked,
+                         upright=_turns_about_y(walked, own))
             if row is not None:
                 index = remap[own]
                 row.update(node=index, path=node["path"], layer=nodes[index]["layer"])
