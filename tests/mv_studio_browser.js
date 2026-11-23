@@ -123,7 +123,10 @@ async function localAndGame(page, url) {
   assert(soundtrack.soundtrack.url);
 
   const gameProject = { ...local, name: 'MV Studio sample', duration: 35,
-    performers: [{ id: 'actor-1', label: 'Actor 1', glb: local.stage.glb, transform: { position: [0, 0, 0] } }],
+    performers: [{ id: 'actor-1', label: 'Actor 1', position: 1, glb: local.stage.glb, transform: { position: [0, 0, 0] },
+      costumeId: 51, viewStatus: 1, suitSource: 'memberInit',
+      costumes: [{ id: 51, name: 'Winter uniform', asset: 'a' }, { id: 52, name: 'Stage suit', asset: 'b' },
+        { id: 52, name: 'Stage suit', asset: 'c', viewStatus: 2 }] }],
     soundtrack: soundtrack.soundtrack,
     source: { kind: 'game', region: 'gl', platform: 'android', liveId: 12, assetId: 34, mvOnly: true },
     tracks: [{ id: 'camera', label: 'Camera', kind: 'camera', binding: 'MainCamera', events: [{ id: 'sample-clip',
@@ -161,6 +164,28 @@ async function localAndGame(page, url) {
   assert.equal(catalogRequests, 1);
   assert.deepEqual(request, { region: 'gl', platform: 'android', liveId: 12, assetId: 34, download: false });
   await page.locator('#mv-performers summary').click();
+  // The costume override re-imports the game MV with the suit and m_suit_view model pinned.
+  const costume = page.locator('#mv-performer-costume');
+  assert.equal(await costume.inputValue(), '0');
+  assert.deepEqual(await costume.locator('option').allTextContents(),
+    ['Winter uniform (51)', 'Stage suit (52)', 'Stage suit (52 · 뷰 2)']);
+  request = null;
+  await costume.selectOption('2');
+  await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled);
+  await page.locator('.mv-clip[data-event=sample-clip]').waitFor();
+  assert.deepEqual(request, { region: 'gl', platform: 'android', liveId: 12, assetId: 34, download: false,
+    costumes: { 1: { suit: 52, viewStatus: 2 } } });
+  // The deck tab and player choice travel with the next picker import.
+  await page.locator('#mv-import-game').click();
+  await page.locator('#mv-game-song option').first().waitFor({ state: 'attached' });
+  assert(await page.locator('#mv-game-player-field').isHidden(), 'No player database, no player choice');
+  await page.locator('#mv-game-deck').selectOption('1');
+  request = null;
+  await page.locator('#mv-game-load').click();
+  await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled);
+  await page.locator('.mv-clip[data-event=sample-clip]').waitFor();
+  assert.deepEqual(request, { region: 'gl', platform: 'android', liveId: 12, assetId: 34, download: false, deck: { deckType: 1 } });
+  if (!(await page.locator('#mv-performer-costume').isVisible())) await page.locator('#mv-performers summary').click();
   const position = page.locator('[data-mv-performer-axis=X]');
   await position.fill('1.25'); await position.press('Tab');
   await page.locator('#mv-performers summary').click();
