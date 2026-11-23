@@ -271,6 +271,7 @@ class OriginalTimelineTests(unittest.TestCase):
         renderer, = beam["renderers"]
         self.assertEqual((renderer["path"].rsplit("/", 1)[1], len(renderer["skin"]["bones"]), len(renderer["materials"])),
                          ("LaserBeam", 88, 2))
+        self.assertIs(renderer["skin"]["updateWhenOffscreen"], True, "sorted by the per-frame skinned bounds")
         animator_row, = beam["animators"]
         self.assertEqual(animator_row["clip"], {"name": "clip_par_so2036_06", "start": 0.0, "duration": 48.0, "loop": True})
         kinds = {channel["kind"] for channel in animator_row["channels"]}

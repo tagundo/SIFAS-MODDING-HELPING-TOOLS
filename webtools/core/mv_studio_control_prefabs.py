@@ -302,6 +302,8 @@ def _template(objects, walked, builder, deadline):
                 center = ((tree.get("m_AABB") or {}).get("m_Center") or {})
                 values = [center.get(axis) for axis in "xyz"]
                 row["skin"] = {"bones": bones, "bindPoses": [_mirrored(pose) for pose in poses],
+                               # Unity recomputes the bounds from the skinned pose every frame.
+                               "updateWhenOffscreen": bool(tree.get("m_UpdateWhenOffscreen", 0)),
                                "root": transforms.get(viewer._key(root)) if root is not None else None,
                                "rootCenter": [-values[0], values[1], values[2]]
                                if all(type(value) in (int, float) and math.isfinite(value) for value in values) else None}

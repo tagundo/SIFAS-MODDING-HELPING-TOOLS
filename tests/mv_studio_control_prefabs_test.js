@@ -162,7 +162,33 @@ async function run() {
     const actual = new T.Vector3().fromBufferAttribute(position, vertex).applyMatrix4(beam.matrixWorld);
     assert.ok(actual.distanceTo(expected) < 1e-5, `vertex ${vertex}: ${actual.toArray()} vs ${expected.toArray()}`);
   });
+  // m_AABB about the root bone: the sort center is the root's rest point.
+  assert.deepEqual(beams.inspect()[0].renderers[0].center.map(value => +value.toFixed(6)), [-3, 0, 0]);
   beams.dispose();
+
+  // m_UpdateWhenOffscreen: Unity recomputes the bounds from the skinned pose every
+  // frame, so the sort center is the skinned vertices' AABB center.
+  skinned.templates[0].renderers[0].skin.updateWhenOffscreen = true;
+  assert.equal(C.validDescriptor(skinned), true);
+  const offscreenScene = new T.Scene();
+  const offscreen = await C.apply(T, offscreenScene, skinned);
+  offscreen.update(10 + 59 / 30, project());
+  let moved;
+  offscreenScene.traverse(object => { if (object.isMesh) moved = object; });
+  offscreenScene.updateMatrixWorld(true);
+  const expected = rest.map(([x, y, z], vertex) => new T.Vector3(x, y, z).applyMatrix4(vertex === 1 || vertex === 2 ? bone2 : bone1));
+  const bounds = new T.Box3().setFromPoints(expected), middle = bounds.getCenter(new T.Vector3());
+  const center = new T.Vector3().fromArray(offscreen.inspect()[0].renderers[0].center);
+  assert.ok(center.distanceTo(middle) < 1e-5, `sort center ${center.toArray()} vs ${middle.toArray()}`);
+  assert.ok(center.distanceTo(new T.Vector3(-3, 0, 0)) > .1, "not the root bone's m_AABB center");
+  const moving = moved.geometry.attributes.position;
+  expected.forEach((point, vertex) => {
+    const actual = new T.Vector3().fromBufferAttribute(moving, vertex).applyMatrix4(moved.matrixWorld);
+    assert.ok(actual.distanceTo(point) < 1e-5, `offscreen vertex ${vertex}: ${actual.toArray()} vs ${point.toArray()}`);
+  });
+  skinned.templates[0].renderers[0].skin.updateWhenOffscreen = 1;
+  assert.equal(C.validDescriptor(skinned), false);
+  offscreen.dispose();
 }
 
 run().then(() => console.log("mv_studio_control_prefabs_test: ok")).catch(error => {
