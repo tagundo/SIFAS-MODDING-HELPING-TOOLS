@@ -203,6 +203,44 @@ class SyntheticMemberHeadTests(unittest.TestCase):
         unmerged = self.head(self.scene(dots_path=("Head_Face",), face_data={"lipSync": {"weight": 1.5}, "needsMergingFace": 0}))
         self.assertEqual(unmerged, {"faceDots": False}, "no CombineFace, and an out-of-range weight is not used")
 
+    def test_face_tables_keep_rows_aliases_and_null_clips_in_serialized_order(self):
+        """InitializeDefault hands MemberFaceData.animationTableEye/Mouth to the eye and lip-sync controls."""
+        data = {"lipSync": {"weight": 1.0}, "needsMergingFace": 0,
+                "animationTableEye": _pointer(900), "animationTableMouth": _pointer(901)}
+        scene = self.scene(dots_path=("Head_Face",), face_data=data)
+        added = [_Object(910, "MonoScript", {"m_ClassName": "MemberFacialAnimationDataTable", "m_Namespace": "LLAS.Scene.Live.Components",
+                                             "m_AssemblyName": "Assembly-CSharp.dll"}, "eye-table"),
+                 _Object(911, "MonoScript", {"m_ClassName": "Other", "m_Namespace": "LLAS.Scene.Live.Components",
+                                             "m_AssemblyName": "Assembly-CSharp.dll"}, "eye-table"),
+                 _Object(920, "AnimationClip", {}, "mouth-table"), _Object(921, "AnimationClip", {}, "mouth-table"),
+                 _Object(922, "AnimationClip", {}, "eye-table")]
+        scene.names.update({920: "ch0212_LiveFacial_mouth_004", 921: "ch0212_LiveFacial_mouth_007", 922: "ch0212_LiveFacial_eye_005"})
+
+        def table(path_id, script, rows, source):
+            return _Object(path_id, "MonoBehaviour", {"m_Script": _pointer(script), "datas": [
+                {"index": index, "customIndex": custom, "summary": summary, "clip": _pointer(clip) if clip else {"m_FileID": 0, "m_PathID": 0}}
+                for index, custom, summary, clip in rows]}, source)
+        eye = table(900, 910, [(101, 5, 101, 922), (20, 0, 20, None)], "eye-table")
+        mouth = table(901, 910, [(4, 0, 10004, 920), (13, 4, 10013, 920), (14, 0, 10014, None), (999, 7, 10999, 921)], "mouth-table")
+        for obj in (*added, eye, mouth):
+            scene.objects[obj.path_id] = obj
+            scene.env.objects.append(obj)
+        from webtools.core import model_viewer
+        with patch.object(model_viewer, "_source_hash", side_effect=lambda obj: "sha-" + obj.source):
+            head = self.head(scene)
+        self.assertEqual(head["facialTables"], {
+            "eyes": [{"index": 101, "customIndex": 5, "summary": 101, "sourceHash": "sha-eye-table", "sourceName": "ch0212_LiveFacial_eye_005"},
+                     {"index": 20, "customIndex": 0, "summary": 20}],
+            "mouth": [{"index": 4, "customIndex": 0, "summary": 10004, "sourceHash": "sha-mouth-table", "sourceName": "ch0212_LiveFacial_mouth_004"},
+                      {"index": 13, "customIndex": 4, "summary": 10013, "sourceHash": "sha-mouth-table", "sourceName": "ch0212_LiveFacial_mouth_004"},
+                      {"index": 14, "customIndex": 0, "summary": 10014},
+                      {"index": 999, "customIndex": 7, "summary": 10999, "sourceHash": "sha-mouth-table", "sourceName": "ch0212_LiveFacial_mouth_007"}]})
+        # Another script, or a row whose clip is not loaded, leaves that table out (the old name lookup applies).
+        eye.tree["m_Script"] = _pointer(911)
+        del scene.objects[921]
+        with patch.object(model_viewer, "_source_hash", side_effect=lambda obj: "sha-" + obj.source):
+            self.assertNotIn("facialTables", self.head(scene))
+
     def test_only_one_verified_body_part_manager_describes_the_head(self):
         self.assertEqual(self.head(self.scene(managers=2)), {})
         self.assertEqual(self.head(self.scene(script=("BodyPartManager", "Other"))), {})
@@ -246,6 +284,17 @@ class OriginalFacialSelectionTests(unittest.TestCase):
                   for e in parsed["events"] if e["kind"] == "cheek"]
         self.assertEqual(cheeks, [(15.883, 0, .317, .2, .6), (57.263, 0, .317, .2, .6), (78.467, 0, .317, .2, .6)])
 
+    def test_facial_banks_keep_null_clip_rows(self):
+        paths = sorted(SAMPLES.glob("12035-face-*.unity"))
+        if not paths:
+            self.skipTest("12035 face bundles are required")
+        selected, entries = game_motion_selection.facial_banks(paths, deadline=time.monotonic() + 60)
+        rows = {(entry["kind"], entry["index"]): entry["key"] and selected["selected"][entry["key"]]["object"].peek_name() for entry in entries}
+        self.assertEqual(rows["mouth", 13], "ch0212_LiveFacial_mouth_004")
+        self.assertEqual(rows["mouth", 101], "ch0212_LiveFacial_mouth_008")
+        self.assertIsNone(rows["mouth", 14])
+        self.assertIsNone(rows["eyes", 20])
+
     def test_member_head_reads_the_loaded_board(self):
         from webtools.core import model_viewer as viewer
         # (faceDots, cheekMaterial, MemberFaceData.lipSync.weight) of the loaded head.
@@ -267,6 +316,12 @@ class OriginalFacialSelectionTests(unittest.TestCase):
                     self.assertNotIn("lipSyncWeight", head)
                 else:
                     self.assertAlmostEqual(head["lipSyncWeight"], lip_sync, places=6)
+                # The face's own tables: mouth 13 (E2) plays mouth_004, mouth 14 has a null clip.
+                tables = {kind: {row["index"]: row.get("sourceName") for row in rows} for kind, rows in head["facialTables"].items()}
+                self.assertTrue(tables["mouth"][13].endswith("_LiveFacial_mouth_004"))
+                self.assertIsNone(tables["mouth"][14])
+                self.assertIsNone(tables["eyes"][20])
+                self.assertEqual(tables["eyes"][2] is None, live == 12029, "the Rina board has no eye 002 clip")
 
 if __name__ == "__main__":
     unittest.main()
