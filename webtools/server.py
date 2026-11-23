@@ -254,9 +254,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if action in {"game", "game-stream"}:
                 data = self._viewer_feature_request({"region", "platform", "liveId", "assetId"}, token=False,
-                                                    optional_fields={"download"})
+                                                    optional_fields={"download", "costumes"})
                 options = {"language": self._lang(), "region": data["region"], "platform": data["platform"],
-                           "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False)}
+                           "live_id": data["liveId"], "asset_id": data["assetId"], "download": data.get("download", False),
+                           **({"costumes": data["costumes"]} if "costumes" in data else {})}
                 if action == "game-stream":
                     return self._stream_mv_game(mv_studio.load_game, **options)
                 return self._send_json(mv_studio.load_game(Path.cwd(), **options))

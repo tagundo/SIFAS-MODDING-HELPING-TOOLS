@@ -1835,7 +1835,8 @@
         };
         scene.traverse((node) => {
           for (const material of node.isMesh ? [node.material].flat() : []) {
-            if (!material?.uniforms || seen.has(material)) continue;
+            // A hidden material (a penlight shader with no active clip) keeps stale uniforms.
+            if (!material?.uniforms || seen.has(material) || material.visible === false) continue;
             seen.add(material);
             const u = material.uniforms, where = "@" + (material.name || node.name || "material");
             if (u.uMode && u.uMusicTime && u.uBeat) {

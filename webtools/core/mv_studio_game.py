@@ -261,7 +261,22 @@ def _sound(db, cue, missing, role):
     return {"cue": cue, **sheets[0], "candidates": sheets}
 
 
-def _performers(master, db, mapping, dictionary, extractor, missing):
+def _pinned_costumes(costumes):
+    """{position: suit id} from an explicit request; None when nothing is pinned."""
+    if costumes is None:
+        return None
+    if not isinstance(costumes, dict) or len(costumes) > 64:
+        raise ValueError("Choose valid costumes for the MV members.")
+    pinned = {}
+    for position, suit in costumes.items():
+        position = int(position) if isinstance(position, str) and position.isdigit() else position
+        if type(position) is not int or not 1 <= position <= 64 or type(suit) is not int or suit <= 0:
+            raise ValueError("Choose valid costumes for the MV members.")
+        pinned[position] = suit
+    return pinned
+
+
+def _performers(master, db, mapping, dictionary, extractor, missing, costumes=None):
     fields = "position,member_master_id,is_center,suit_master_id"
     args = (mapping,)
     source = _rows(master, f"SELECT {fields} FROM m_live_member_mapping WHERE mapping_id=? ORDER BY position", args)
@@ -287,6 +302,12 @@ def _performers(master, db, mapping, dictionary, extractor, missing):
         if type(position) is not int or not 1 <= position <= 64:
             continue
         suggestions = []
+        if costumes and position in costumes:
+            # An explicit costume (e.g. the suit a recorded game performance wore) must
+            # belong to this member; it is never silently replaced by the mapping's suit.
+            if not _rows(master, "SELECT 1 FROM m_suit WHERE id=? AND member_m_id=?", (costumes[position], member)):
+                raise ValueError(f"Costume {costumes[position]} is not a costume of the member at position {position}.")
+            suggestions.append(costumes[position])
         if suit:
             suggestions.append(suit)
         suggestions.extend(row[0] for row in _rows(master, "SELECT suit_m_id FROM m_member_init WHERE member_m_id=?", (member,)))
@@ -306,10 +327,12 @@ def _performers(master, db, mapping, dictionary, extractor, missing):
         if type(color) is int and -(1 << 31) <= color < 1 << 32:
             # ColorVO stores signed SQLite integers as packed RGBA bytes.
             performers[-1]["themeColor"] = [((color >> shift) & 255) / 255 for shift in (24, 16, 8, 0)]
+    if costumes and set(costumes) - {row["position"] for row in performers}:
+        raise ValueError("A requested costume has no member at its position in this MV.")
     return performers
 
 
-def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
+def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, costumes=None):
     live_id, asset_id, title, stage_title, scene, stage_id, _, mv_only, _, _ = variant
     name = _display(extractor, dictionary, title, live_id)
     music_id, cue, chorus, member_mapping, song_background = song
@@ -328,7 +351,7 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
     thumbnail = _required(db, ("texture", "background"), thumb_key, "stageThumbnail", missing)
     song_background = _required(db, ("background", "texture"), song_background, "songBackground", missing)
     shader = _required(db, ("shader",), shader_key, "shader", missing)
-    performers = _performers(master, db, member_mapping, dictionary, extractor, missing)
+    performers = _performers(master, db, member_mapping, dictionary, extractor, missing, costumes)
     for performer in performers:
         member = performer["memberId"]
         if member is None:
@@ -374,7 +397,9 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor):
             "dependencies": dependencies, "missing": missing}
 
 
-def resolve(repo_root, *, region, platform, live_id, asset_id, language="en"):
+def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", costumes=None):
+    """`costumes` optionally pins {position: suit id} instead of the member mapping's suits."""
+    costumes = _pinned_costumes(costumes)
     root, region, _, language = _selection(repo_root, region, platform, language)
     ids = _identity(live_id), _identity(asset_id)
     catalogs = _asset_catalogs(root, region, platform, language)
@@ -401,7 +426,7 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en"):
         try:
             with closing(game._readonly(chosen)) as db:
                 db.execute("BEGIN")
-                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor)
+                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor, costumes)
         finally:
             if dictionary is not None:
                 dictionary.close()

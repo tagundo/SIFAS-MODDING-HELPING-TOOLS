@@ -641,6 +641,52 @@ def _as_member_material(scene, obj, tree):
     return False
 
 
+# Original SIFAS AS/* shaders that tint with _TintColor and declare no _Color
+# (shader bundle serialized file, path ID). Each declares _TintColor with the
+# ShaderLab default (1, 1, 1, 1) in m_ParsedForm.m_PropInfo.
+_AS_TINT_SHADERS = {
+    ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367): "AS/General/Opaque",
+    ("cab-adf9ba7b61bd035c754bf74ae44927cb", 7151384334892346267): "AS/General/Transparent",
+    ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372): "AS/Rimlight/Opaque",
+    ("cab-31fad648db7286e0012ae8cc07024bff", -1043432931367049882): "AS/Color/Opaque",
+    ("cab-da18667fd7e5e991d56b5d877869e6c6", 7366096703533297961): "AS/Coloring/Transparent",
+    ("cab-a44cd34f6481b592fc0475c6e5d23bfa", 9060382612279247893): "AS/FlashLight",
+    ("cab-fc0511ca63f2d94bbfe211260d08ddd1", -6509019661097744245): "AS/Stage",
+    ("cab-4004e36071ab5261ebac9281e0eccd75", 3926475870365283136): "AS/Penlight",
+}
+# Only these verified shaders tint, loaded or not: other AS/* shaders that
+# declare _TintColor without _Color (AS/MatCap/*, AS/Member) are not checked.
+_AS_TINT_NAMES = frozenset(_AS_TINT_SHADERS.values())
+_WHITE = {"r": 1., "g": 1., "b": 1., "a": 1.}
+
+
+def _as_tint_default(scene, obj, tree):
+    """ShaderLab default _TintColor of a verified AS/* shader whose tint is _TintColor; None otherwise."""
+    if obj is None:
+        return None
+    pointer = tree.get("m_Shader") or {}
+    shader = _ref(obj, pointer)
+    if shader is not None:
+        if shader.type.name != "Shader":
+            return None
+        form = scene.tree(shader).get("m_ParsedForm") or {}
+        props = {item.get("m_Name"): item for item in (form.get("m_PropInfo") or {}).get("m_Props", [])
+                 if isinstance(item, dict)}
+        tint, name = props.get("_TintColor"), form.get("m_Name")
+        if not isinstance(name, str) or name not in _AS_TINT_NAMES or "_Color" in props or not tint or tint.get("m_Type") != 0:
+            return None
+        default = {axis: tint.get(f"m_DefValue[{index}]", 1.) for index, axis in enumerate("rgba")}
+        return default if all(type(value) in (int, float) for value in default.values()) else None
+    # The stage preview loads no shader bundles: match the verified external identity.
+    try:
+        file_id = int(pointer.get("m_FileID", 0))
+        external = obj.assets_file.externals[file_id - 1] if file_id > 0 else None
+        identity = (ntpath.basename(external.name).lower(), int(pointer["m_PathID"])) if external else None
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return None
+    return dict(_WHITE) if identity in _AS_TINT_SHADERS else None
+
+
 def _member_depth_material(scene, material):
     """Admit the exact opaque wrapper that imports the member depth pass."""
     if material.type.name != "Material":
@@ -969,7 +1015,11 @@ class _Materials:
         # values into glTF incorrectly darkens real outfit heads. Lighting/tint
         # shader parity remains outside this unlit texture preview.
         color = ({"r": 1, "g": 1, "b": 1, "a": 1} if _as_member_material(self.scene, obj, tree)
-                 else colors.get("_Color", {"r": .72, "g": .74, "b": .78, "a": 1}))
+                 else colors.get("_Color"))
+        if color is None:
+            # AS/* stage shaders tint with _TintColor (ShaderLab default white), never a generic grey.
+            tint = _as_tint_default(self.scene, obj, tree)
+            color = colors.get("_TintColor", tint) if tint is not None else {"r": .72, "g": .74, "b": .78, "a": 1}
         factor = [float(color.get(a, 1)) for a in "rgba"]
         if not all(math.isfinite(v) for v in factor):
             raise ModelViewerError("A model material contains invalid colors.")

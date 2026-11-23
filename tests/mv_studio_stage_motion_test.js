@@ -161,4 +161,21 @@ assert.deepEqual(pivot.position.toArray(), [0, 1, 0], "missing material holder r
 assert.equal(density.value, 2);
 assert.equal(movement.value, 6);
 
+// Euler GenericBindings carry Unity's RotationOrder (customType): 0 = XYZ is
+// q = qZ*qY*qX, 4 = ZXY (default) is q = qY*qX*qZ, both before the X mirror.
+const axis = (x, y, z, degrees) => new T.Quaternion().setFromAxisAngle(new T.Vector3(x, y, z), degrees * Math.PI / 180);
+const unityXYZ = axis(0, 0, 1, -90).multiply(axis(0, 1, 0, -60)).multiply(axis(1, 0, 0, 30));
+const unityZXY = axis(0, 1, 0, -60).multiply(axis(1, 0, 0, 30)).multiply(axis(0, 0, 1, -90));
+const ordered = clip("ordered", "orderedSource", 0, 2, {});
+project.tracks = [{ id: "ordered", nativeClass: "AnimationTrack", binding, events: [ordered] }];
+for (const [rotationOrder, expected, label] of [[0, unityXYZ, "XYZ"], [undefined, unityZXY, "default ZXY"],
+  [4, unityZXY, "ZXY"], [7, new T.Quaternion(), "unknown order rejected"]]) {
+  project.stageMotion = { quality: { ordered: "stage_animation" }, mix: { ordered: {} }, clips: { orderedSource: {
+    start: 0, duration: 2, channels: [{ path: 10, kind: "euler", rotationOrder,
+      curves: [["constant", 30], ["constant", 60], ["constant", 90]] }] } } };
+  controller.update(1, project);
+  assert(Math.abs(expected.dot(pivot.quaternion)) > 1 - 1e-12, `Euler rotation order ${label}`);
+}
+assert(Math.abs(unityXYZ.dot(unityZXY)) < 1 - 1e-3, "the fixture distinguishes the two orders");
+
 console.log("Native stage motion: packed curves, handedness, visibility, zero-length assets and extrapolation.");

@@ -67,7 +67,12 @@ DEFAULT_TOLERANCES = {
     "globalAbs": 1e-4, "color": 1 / 512, "floatRel": 1e-4, "floatAbs": 1e-5, "stAbs": 1e-5,
     "stagePositionM": 1e-3, "stageRotationDeg": 0.1, "scaleRel": 1e-3, "bonePositionM": 5e-3, "boneRotationDeg": 0.5,
     "springRotationDeg": 5.0, "blendShapeWeight": 1.0, "authoredMatchDeg": 1e-3, "authoredFraction": 0.95,
+    "beatAbs": None,          # None: globalAbs. Device dumps: 0.25 (the CRI beat callback lagged <= 0.18 beat on Redroid run 2)
 }
+BEAT_GLOBALS = {"_Beat"}
+# worldToCamera is column-major: elements 12-14 are its translation in metres, compared with the
+# camera position tolerance; the other elements are unitless rotation and projective terms.
+W2C_TRANSLATION = (12, 13, 14)
 
 
 class DumpError(ValueError):
@@ -288,6 +293,25 @@ class Conventions:
                 match = pattern.match(path)
                 return path[match.end():] if match else path.lstrip("/")
         return path.lstrip("/")
+
+    @staticmethod
+    def game_scope(path, scope):
+        """A renderer outside /EntryPoint belongs to the additively loaded stage scene (m_live_stage.scene_name,
+        e.g. bg0006_01_s1, whose roots such as /Model are scene roots): scope "stage", path below that root."""
+        if scope == "other" and isinstance(path, str) and path.startswith("/") and not path.startswith("/EntryPoint/") \
+                and path.count("/") >= 2:
+            return "stage", "/".join(path.split("/")[2:])
+        return scope, None
+
+    @staticmethod
+    def editor_slot_name(slot):
+        """The Unity material name an editor slot stands for: its sourceName, else its name unless the slot is an
+        editor-built shader (kind coloring|shader), whose name is the shader or feature name."""
+        if slot.get("sourceName"):
+            return slot["sourceName"]
+        name = slot.get("name") or ""
+        shader_name = "/" in name or name.startswith("Native ")
+        return None if slot.get("kind") in ("coloring", "shader") and shader_name else slot.get("name")
 
     @staticmethod
     def editor_relative_path(path):
@@ -515,6 +539,7 @@ class Comparison:
             else:
                 self.editor_index[(record.get("sourceRecord"), record.get("phase"))] = record
         self.member_roots = self._member_roots()
+        self.performer_mismatch = {}
         self.culling_masks = self._culling_masks()
         self.editor_catalog = self._editor_catalog()
 
@@ -655,6 +680,35 @@ class Comparison:
             result.update(chosen=int(self.requested_phase), method="override", calibrated=chosen)
         return result
 
+    def calibrate_globals(self, frames):
+        """Shader time globals are written for the frame being set up (game _MusicTime == clock.directorTime) while
+        transforms show the previous evaluation: calibrate their own phase on _MusicTime, default 0."""
+        if self.identity:
+            return 0
+        phases = sorted({key[1] for key in self.editor_index})
+        errors = defaultdict(list)
+        for record in frames:
+            game = (record.get("globals") or {}).get("global:_MusicTime")
+            for phase in phases:
+                partner = self.partner(record, phase)
+                editor = ((partner or {}).get("globals") or {}).get("global:_MusicTime")
+                if isinstance(game, dict) and isinstance(editor, dict) and number(game.get("f")) and number(editor.get("f")):
+                    errors[phase].append(abs(game["f"] - editor["f"]))
+        if not errors:
+            return 0
+        return min(errors, key=lambda phase: (statistics.median(errors[phase]), abs(phase)))
+
+    def compare_member_identity(self, record, partner):
+        """The editor must dress each slot as the game did (frame members[].suitId vs editor costumeId)."""
+        editor = {item.get("slot"): item for item in partner.get("members") or [] if isinstance(item, dict)}
+        for member in record.get("members") or []:
+            other = editor.get(member.get("slot"))
+            if not other or not isinstance(member.get("suitId"), int):
+                continue
+            if member.get("memberId") != other.get("memberId") or member["suitId"] != other.get("costumeId"):
+                self.performer_mismatch[member.get("slot")] = {"game": {"memberId": member.get("memberId"), "suitId": member["suitId"]},
+                                                               "editor": {"memberId": other.get("memberId"), "costumeId": other.get("costumeId")}}
+
     def cuts(self, phase):
         values = set()
         for record in self.game["records"]:
@@ -732,7 +786,9 @@ class Comparison:
             errors = {}
             for hypothesis in (Conventions.HYPOTHESES if not self.identity else ("identity",)):
                 expected = editor_camera["worldToCamera"] if self.identity else Conventions.world_to_camera(editor_camera["worldToCamera"], hypothesis)
-                errors[hypothesis] = max(abs(g - e) for g, e in zip(game_camera["worldToCamera"], expected))
+                deltas = [abs(g - e) for g, e in zip(game_camera["worldToCamera"], expected)]
+                errors[hypothesis] = (max(delta for index, delta in enumerate(deltas) if index not in W2C_TRANSLATION),
+                                      max(deltas[index] for index in W2C_TRANSLATION))
             hypotheses.append((record, near, errors))
         component = (game_camera.get("transform") or {}).get("rotation")
         if vector(component, 4) and rig_rotation is not None:
@@ -801,7 +857,7 @@ class Comparison:
                 self.notes["globals.editorOnly"].append(key)
                 continue
             name = key.split(":", 1)[1]
-            tol = max(self.tol["globalAbs"], dt) if name in TIME_GLOBALS else self.tol["globalAbs"]
+            tol = max(self.tol["globalAbs"], dt) if name in TIME_GLOBALS else (self.tol["beatAbs"] or self.tol["globalAbs"]) if name in BEAT_GLOBALS else self.tol["globalAbs"]
             self.add("globals", "globalAbs", key, record, game_value["f"], editor_value["f"], abs(game_value["f"] - editor_value["f"]), tol,
                      near_cut=near, field=editor_value.get("from"))
 
@@ -830,7 +886,17 @@ class Comparison:
             return self.joins[key][0]
         scope = game_renderer.get("scope")
         relative = Conventions.game_relative_path(game_renderer.get("path"), scope, self.member_roots)
+        rescoped, below = Conventions.game_scope(game_renderer.get("path"), scope)
+        if rescoped != scope:
+            self.notes["renderers.stageSceneRoot"].append(f"{game_renderer.get('path')} -> {rescoped}:{below}")
+            scope, relative = rescoped, below
         self.game_renderers[key] = (scope, relative)
+        if not self.identity and game_renderer.get("mesh") is None and str(game_renderer.get("class", "")).endswith(".MeshRenderer"):
+            # A MeshRenderer whose MeshFilter has no mesh draws nothing (e.g. litD_* in 12035: m_Mesh PathID 0).
+            self.notes["renderers.gameNullMesh"].append(relative)
+            self.joins[key] = (None, "gameNullMesh")
+            self.join_methods["gameNullMesh"] += 1
+            return None
         same_scope = [entry for entry in self.editor_catalog.values() if entry["scope"] == scope]
         result = (None, "none")
         if self.identity:
@@ -910,14 +976,21 @@ class Comparison:
                 self.add("visibility", "rendererVisible", key, record, game_visible, editor_visible,
                          int(game_visible != editor_visible), 0, exact=True, near_cut=near,
                          field=f"{match} ({self.joins[key][1]}; game {why}; editor {editor_why})" if why else match)
-            self.compare_transform("transforms", "renderer", key, record, game_renderer.get("transform") or {}, editor_renderer.get("transform") or {},
-                                   self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
+            if not self.identity and self.editor_catalog.get(match, {}).get("path") is None:
+                # The server baked this renderer's node transform into its vertices: the editor transform is identity.
+                self.notes["transforms.flattenedEditor"].append(match)
+            else:
+                self.compare_transform("transforms", "renderer", key, record, game_renderer.get("transform") or {},
+                                       editor_renderer.get("transform") or {}, self.tol["stagePositionM"], self.tol["stageRotationDeg"], near)
             editor_slots = {item.get("slot"): item for item in editor_renderer.get("materials") or []}
             for slot in game_renderer.get("materials") or []:
                 editor_slot = editor_slots.get(slot.get("slot"))
-                if editor_slot and slot.get("name") and editor_slot.get("name"):
-                    same = Conventions.object_name(slot["name"]) == Conventions.object_name(editor_slot["name"])
-                    self.add("materials", "slotName", f"{key}#{slot.get('slot')}", record, slot["name"], editor_slot["name"], int(not same), 0,
+                editor_name = (editor_slot.get("name") if self.identity else Conventions.editor_slot_name(editor_slot)) if editor_slot else None
+                if editor_slot and slot.get("name") and not editor_name:
+                    self.notes["materials.editorShaderSlot"].append(f"{editor_slot.get('kind')}:{editor_slot.get('name')} for {slot['name']}")
+                if editor_slot and slot.get("name") and editor_name:
+                    same = Conventions.object_name(slot["name"]) == Conventions.object_name(editor_name)
+                    self.add("materials", "slotName", f"{key}#{slot.get('slot')}", record, slot["name"], editor_name, int(not same), 0,
                              exact=True, near_cut=near)
             if number(game_renderer.get("isVisible")) or isinstance(game_renderer.get("isVisible"), bool):
                 self.notes["visibility.isVisible"].append(bool(game_renderer["isVisible"]))
@@ -986,8 +1059,16 @@ class Comparison:
                     unity = Conventions.material_property(name)
                     if unity:
                         editor_properties[unity] = prop
+                values = editor_material.get("values") or {}
+                if not self.identity and editor_material.get("kind") == "gltf" and vector(values.get("color"), 3):
+                    # A glTF slot multiplies its texture by color*opacity, as AS/* shaders do by _TintColor.
+                    opacity = values.get("opacity") if number(values.get("opacity")) else 1.0
+                    editor_properties.setdefault("_TintColor", {"t": "color", "v": list(values["color"]) + [opacity], "from": "gltf color/opacity"})
+                    if isinstance(values.get("map"), dict):
+                        editor_properties.setdefault("_MainTex", {"t": "tex", "v": values["map"], "from": "gltf map"})
                 for name in editor_material.get("unmapped") or []:
-                    self.notes["materials.unmappedUniforms"].append(name)
+                    if not (editor_material.get("kind") == "gltf" and name in ("color", "map")):
+                        self.notes["materials.unmappedUniforms"].append(name)
                 for name in editor_material.get("editorOnly") or []:
                     self.notes["materials.editorOnlyUniforms"].append(name)
                 key = f"material:{renderer_key}#{slot}"
@@ -1001,6 +1082,9 @@ class Comparison:
     def compare_stage_nodes(self, record, partner, near):
         editor_nodes = by_key(partner.get("stageNodes"))
         for node in record.get("stageNodes") or []:
+            if node.get("missing") is True:
+                self.notes["stageNodes.gameMissing"].append(node.get("binding"))
+                continue
             key = node.get("key") if self.identity else Conventions.stage_node_key(node.get("binding"), node.get("relPath"), node.get("crc"))
             self.coverage_sets["stageNodes"]["game"].add(key)
             editor_node = editor_nodes.get(key)
@@ -1080,6 +1164,8 @@ class Comparison:
 
     def compare_post(self, record, partner, near):
         game_post, editor_post = record.get("post") or {}, partner.get("post") or {}
+        if "enablePostEffect" in game_post and game_post["enablePostEffect"] is None:
+            self.notes["post.gameUnresolved"].append(record.get("id"))
         if isinstance(game_post.get("enablePostEffect"), bool) and isinstance(editor_post.get("applied"), bool):
             self.add("post", "postEnabled", "post:enablePostEffect", record, game_post["enablePostEffect"], editor_post["applied"],
                      int(game_post["enablePostEffect"] != editor_post["applied"]), 0, exact=True, near_cut=near)
@@ -1238,6 +1324,8 @@ class Comparison:
         frames = [record for record in records if record.get("kind") == "frame"]
         phase_info = self.calibrate(frames)
         phase = phase_info["chosen"]
+        globals_phase = self.calibrate_globals(frames)
+        phase_info["globals"] = globals_phase
         cuts = self.cuts(phase)
         hypotheses = []
         joined, missing, time_errors = 0, [], []
@@ -1259,7 +1347,8 @@ class Comparison:
                 near = self.near_cut(record, phase, cuts)
                 self.compare_camera(record, partner, near, hypotheses)
                 self.compare_aspect(record, partner, near)
-                self.compare_globals(record, partner, False)
+                self.compare_globals(record, self.partner(record, globals_phase) or partner, False)
+                self.compare_member_identity(record, partner)
                 continue
             part = record.get("part")
             handler = {"renderers": self.compare_renderers, "materials": self.compare_materials, "stageNodes": self.compare_stage_nodes,
@@ -1269,15 +1358,22 @@ class Comparison:
                 handler(record, partner, False)
             elif part == "particles":
                 self.compare_particles(record, partner)
-        # Camera hypothesis: the one with the lower median residual over all frames.
+        # Camera hypothesis: the one with the lower median residual score (error / tolerance) over all frames.
         fitted, medians = None, {}
         if hypotheses:
+            def w2c_score(errors):
+                return max(error / tol if tol > 0 else (0.0 if error == 0 else EXACT_SCORE)
+                           for error, tol in zip(errors, (self.tol["worldToCamera"], self.tol["cameraPositionM"])))
+
             for name in hypotheses[0][2]:
-                medians[name] = statistics.median(errors[name] for _, _, errors in hypotheses)
+                medians[name] = statistics.median(w2c_score(errors[name]) for _, _, errors in hypotheses)
             fitted = min(medians, key=medians.get)
             for record, near, errors in hypotheses:
-                self.add("camera", "worldToCameraMaxAbs", "camera:main", record, None, None, errors[fitted], self.tol["worldToCamera"],
+                basis, translation = errors[fitted]
+                self.add("camera", "worldToCameraMaxAbs", "camera:main", record, None, None, basis, self.tol["worldToCamera"],
                          near_cut=near, field=fitted)
+                self.add("camera", "worldToCameraTranslationM", "camera:main", record, None, None, translation,
+                         self.tol["cameraPositionM"], near_cut=near, field=fitted)
             for record in frames:
                 component = self.components.get(record.get("id"))
                 if component:
@@ -1299,7 +1395,8 @@ class Comparison:
         single = [record for record in frames if number((record.get("clock") or {}).get("frameCount"))
                   and (record.get("clock") or {}).get("frameCount") == (record.get("clockEnd") or {}).get("frameCount")]
         with_counts = [record for record in frames if number((record.get("clock") or {}).get("frameCount"))]
-        music = [record["clock"]["directorTime"] - record["clock"]["musicTime"] for record in frames
+        # clock.musicTime is LiveMusicMachine milliseconds (1601 at directorTime 1.601).
+        music = [record["clock"]["directorTime"] - record["clock"]["musicTime"] / 1000.0 for record in frames
                  if number((record.get("clock") or {}).get("musicTime")) and number(record["clock"].get("directorTime"))]
         return {"frames": len(frames), "singleFrameFraction": (len(single) / len(with_counts)) if with_counts else None,
                 "directorMinusMusic": stats(music)}
@@ -1331,7 +1428,7 @@ class Comparison:
             scope, relative = self.game_renderers.get(key, (None, None))
             return f"{scope}:{relative}" if relative is not None else key
         joined = {editor for editor, _ in self.joins.values() if editor}
-        missing = sorted(label(key) for key, (editor, method) in self.joins.items() if editor is None and method != "ambiguous")
+        missing = sorted(label(key) for key, (editor, method) in self.joins.items() if editor is None and method not in ("ambiguous", "gameNullMesh"))
         extra = sorted(set(self.editor_catalog) - joined - self.ambiguous_candidates) if self.joins else []
         entry = {"game": len(self.joins), "editor": len(self.editor_catalog), "joined": len(joined), "joinedBy": dict(self.join_methods),
                  "editorFlattened": sum(1 for item in self.editor_catalog.values() if item["path"] is None),
@@ -1378,7 +1475,10 @@ class Comparison:
         status = editor_quality.get("status")
         if status not in (None, "matched"):
             reasons += [f"editor capture: {reason}" for reason in editor_quality.get("reasons") or [status]]
-        return {"status": "invalid:quality" if reasons else "valid", "reasons": reasons,
+        performers = [f"slot {slot}: game member {value['game']['memberId']} suit {value['game']['suitId']}, editor member "
+                      f"{value['editor']['memberId']} costume {value['editor']['costumeId']}" for slot, value in sorted(self.performer_mismatch.items())]
+        return {"status": "invalid:quality" if reasons else ("partial:performer" if performers else "valid"), "reasons": reasons,
+                "performers": performers,
                 "quality": {"compared": compared, "differences": differences, "gameOnly": game_only,
                             "editorSource": editor_quality.get("source"), "editorMode": editor_quality.get("mode"),
                             "editorStatus": status}}
@@ -1409,9 +1509,12 @@ class Comparison:
         result = []
         for group in groups.values():
             worst = group.pop("_worst")
+            performer = bool(self.performer_mismatch) and group["type"] in ("visibility", "transforms", "materials") and \
+                group["metric"].startswith(("renderer", "slotName", "float", "color", "texture")) and "/Live/Members/Member" in str(group["key"])
             result.append(dict(group, field=worst["field"], t=worst["t"], record=worst["record"], game=worst["game"],
                                editorConverted=worst["editorConverted"], error=worst["error"], tol=worst["tol"], score=worst["score"],
-                               diagnostic=group["type"] in DIAGNOSTIC_TYPES))
+                               diagnostic=group["type"] in DIAGNOSTIC_TYPES or performer,
+                               **({"diagnosticReason": "the editor dressed the member in a different suit"} if performer else {})))
         result.sort(key=lambda group: (-group["score"], group["type"], str(group["key"]), group["metric"]))
         return result
 
@@ -1509,14 +1612,18 @@ def write_markdown(report, path):
              f"Game: `{report['inputs']['game']['file']}` ({report['inputs']['game']['records']} records, side {report['inputs']['game']['side']})  ",
              f"Editor: `{report['inputs']['editor']['file']}` ({report['inputs']['editor']['records']} records)", ""]
     validity = report["validity"]
-    if validity["status"] != "valid":
+    if validity["status"].startswith("invalid"):
         lines += [f"> **{validity['status'].upper()}**: the editor did not run at the game's quality, so quality-gated asset types "
                   "(post, visibility of quality-gated nodes, springs, render resolution) are not comparable. "
                   + "; ".join(validity["reasons"]), ""]
+    if validity.get("performers"):
+        lines += ["> **PARTIAL:PERFORMER**: the editor dressed a member differently from the game, so that member's renderer, "
+                  "material and renderer-transform groups are diagnostic (bones and anchors are still ranked): "
+                  + "; ".join(validity["performers"]), ""]
     join = report["join"]
     lines += [f"Join: {join['mode']}, phase {join['phase'].get('chosen')} ({join['phase'].get('method')}), histogram "
               f"{join['phase'].get('histogram')}, camera hypothesis {join['hypothesis'].get('fitted')} "
-              f"(median W2C residual {join['hypothesis'].get('medianResidual')}), {join['joinedRecords']} records joined, "
+              f"(median W2C residual score {join['hypothesis'].get('medianResidual')}), {join['joinedRecords']} records joined, "
               f"{join['missingEditorRecordsCount']} without an editor record, time join max error {join['timeJoinMaxError']}, "
               f"renderer joins {join['renderers'] or 'none'}.", ""]
     summary = report["summary"]

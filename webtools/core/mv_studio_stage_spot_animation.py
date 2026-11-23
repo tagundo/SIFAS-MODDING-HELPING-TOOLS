@@ -117,7 +117,7 @@ def _read_clip(tree, deadline):
         if attribute == 1:
             pose["translation"] = [-values[0], values[1], values[2]]
         elif attribute == 4:
-            pose["rotation"] = animation._quaternion(values, euler=True)
+            pose["rotation"] = animation._quaternion(values, euler=True, order=row["customType"])
         elif all(0 < value <= 32 for value in values):
             pose["scale"] = values
         else:

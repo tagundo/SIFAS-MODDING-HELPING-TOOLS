@@ -1057,6 +1057,37 @@ class MVStudioStorageTests(unittest.TestCase):
         self.assertEqual(reopened["stageSpeedBack"], project["stageSpeedBack"])
         self.assertEqual(reopened["stageSparksRoop"], descriptor)
 
+    def test_saved_legacy_camera_points_reopen_in_their_binding_order_and_keep_edits(self):
+        def shot(rotations, fov=40.):
+            return [{"time": index / 60, "position": [0., 1.5, -4.], "rotation": list(rotation), "fov": fov}
+                    for index, rotation in enumerate(rotations)]
+
+        current = [[0., .6, 0., .8], [0., 0., .6, .8], [.6, 0., 0., .8]]
+        legacy = [[.28, .6, 0., .75], [0., .28, .6, .75], [.6, .28, 0., .75]]
+        native = {"id": "cab:5", "kind": "camera", "nativeClass": "AnimationTrack", "label": "CameraMotion/Camera1",
+                  "events": [{"id": "cab:5:0", "label": "Shot", "start": 0, "duration": 2 / 60,
+                              "values": {"animation": "cab:9", "keyframes": shot(current)},
+                              "editableValues": ["keyframes"]}]}
+        project = mv_studio._blank("Legacy camera")
+        project["duration"] = 1
+        project["tracks"] = [{**native, "events": [{**native["events"][0], "values": {
+            "animation": "cab:9", "keyframes": shot(legacy)}}]}]
+        points = project["tracks"][0]["events"][0]["values"]["keyframes"]
+        points[1]["fov"] = 55.
+        points[2]["rotation"] = [0., 0., 0., 1.]
+        saved = mv_studio.save(mv_studio._register(project, self.original))
+        with ZipFile(saved["path"]) as archive, patch(
+                "webtools.core.mv_studio_timeline.parse_timeline", return_value={"tracks": [native]},
+        ) as parse, patch("webtools.core.mv_studio_timeline._legacy_camera_frames",
+                          return_value={"cab:5:0": shot(legacy)}) as legacy_frames:
+            reopened = mv_studio._open_saved(archive, mv_studio._archive_entries(archive))
+        parse.assert_called_once_with(self.original, "Legacy camera", preview_split=False, preview_stage_title=False)
+        self.assertEqual(legacy_frames.call_args.args[:3], (self.original, "Legacy camera", native["events"]))
+        expected = shot([current[0], current[1], [0., 0., 0., 1.]])
+        expected[1]["fov"] = 55.
+        self.assertEqual(reopened["tracks"][0]["events"][0]["values"]["keyframes"], expected)
+        self.assertEqual({**reopened["tracks"][0], "events": []}, {**project["tracks"][0], "events": []})
+
     def test_legacy_originals_stay_readable(self):
         token = "a" * 32
         legacy = self.root / "native" / (token + ".unity")
