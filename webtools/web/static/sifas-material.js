@@ -536,12 +536,8 @@
       outline.defaultAttributeValues._sifas_color = [1, 1, 1, 1];
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
-      var cheekSlot = (data.textures || {})._CheekTex;
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
-        sourceName: original.name, cheek: null,
-        // Only an exported array slice can show a blush; the white placeholder never tints.
-        cheekLayer: !memberProp && features.cheek && uniforms.uCheekIntensity.value !== 0 && cheekSlot &&
-          Number.isInteger(cheekSlot.index) && Number.isInteger(cheekSlot.arrayLayer) ? cheekSlot.arrayLayer : null,
+        sourceName: original.name, cheek: null, cheekLayer: null,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
@@ -557,6 +553,10 @@
         if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
         if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
         if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
+        // Only a loaded, exported array slice can show a blush; the white placeholder never tints.
+        var cheekSlot = textures._CheekTex;
+        if (names.indexOf("_CheekTex") >= 0 && cheekSlot && Number.isInteger(cheekSlot.index) &&
+            Number.isInteger(cheekSlot.arrayLayer)) pair.cheekLayer = cheekSlot.arrayLayer;
       }
       names.forEach(function (name) {
         var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
