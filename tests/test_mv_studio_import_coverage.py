@@ -205,13 +205,16 @@ class ImportCoverageTests(unittest.TestCase):
     def test_unknown_and_unsupported_classes_are_named(self):
         project = self.project(_track("ik", "LiveMemberIKTrack", clips=3), _track("shadow", "LiveMemberShadowTrack"),
                                _track("new", "LiveSomethingNewTrack", clips=2))
-        coverage.apply(project)
+        # No class is partial today; keep the partial wording covered.
+        partial = (coverage.PARTIAL, "Only turns the stage's default member shadows off; "
+                                     "shadowIndex and scale clips are not applied.")
+        with patch.dict(coverage.CLASSES, {"LiveMemberShadowTrack": partial}):
+            coverage.apply(project)
         self.assertEqual(project["warnings"], [
             "Original timeline tracks MV Studio does not reproduce: LiveMemberIKTrack x1 "
             "(3 clips: Arm IK (TimelineAssetBindingInfo.ikInfo) is not implemented).",
             "Original timeline tracks MV Studio reproduces only in part: LiveMemberShadowTrack x1 "
-            "(1 clip: Scales the costume's foot shadows; the stage's memberShadowPrefabs that shadowIndex switches "
-            "are not instanced).",
+            "(1 clip: Only turns the stage's default member shadows off; shadowIndex and scale clips are not applied).",
             "Original timeline track classes MV Studio does not know: LiveSomethingNewTrack x1 "
             "(2 clips: MV Studio does not know this track class).",
         ])

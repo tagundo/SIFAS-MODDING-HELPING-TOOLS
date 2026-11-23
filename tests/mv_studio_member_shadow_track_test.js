@@ -81,5 +81,46 @@ async function scales() {
   instance.dispose();
 }
 
-scales().then(() => console.log("PASS: LiveMemberShadowMixer index/scale rule and UpdateScale latch"),
+// A stage with memberShadowPrefabs: every member gets one instance per prefab under
+// each anchor, the costume shadow is gone, and only the applied index is active.
+async function stagePrefabs() {
+  const actor = new T.Group(), layer = new T.Group(), effect = new T.Group();
+  const node = (id, position) => { const object = new T.Object3D(); object.userData.elichika_node = id; object.position.set(...position); actor.add(object); return object; };
+  node(1, [-.2, .05, 0]); node(2, [.2, .05, 0]); node(3, [0, 0, 0]); node(4, [0, 0, 0]);
+  actor.userData.mvMemberShadow = { schema: 1, toes: [1, 2], anchors: [3, 4], geometry: { POSITION: 0, TEXCOORD_0: 1, indices: 2 }, texture: 0 };
+  const geometry = new T.CircleGeometry(1, 10).rotateX(-Math.PI / 2), texture = new T.Texture({ width: 128, height: 128 });
+  const quad = new T.PlaneGeometry(10, 10).rotateX(-Math.PI / 2), long = new T.Texture({ width: 128, height: 512 });
+  const dependencies = [geometry.attributes.position, geometry.attributes.uv, geometry.index, quad.attributes.position, quad.attributes.uv, quad.index];
+  const parser = { getDependency: (kind, id) => Promise.resolve(kind === "texture" ? [texture, long][id] : dependencies[id]) };
+  effect.userData.mvMemberShadowPrefabs = { schema: 1, prefabs: [
+    { geometry: { POSITION: 0, TEXCOORD_0: 1, indices: 2 }, texture: 0, scale: [2, 2, 2] },
+    { geometry: { POSITION: 3, TEXCOORD_0: 4, indices: 5 }, texture: 1, scale: [2, 2, 2] } ] };
+  const set = await shadow.prefabs(T, effect, parser);
+  assert.equal(set.templates.length, 2);
+  assert.equal(await shadow.prefabs(T, new T.Group(), parser), null);
+  const instance = await shadow.apply(T, actor, parser, layer);
+  instance.update(false, false, null, set);
+  const meshes = layer.children.filter((mesh) => mesh.name.startsWith("Native stage member shadow"));
+  assert.equal(meshes.length, 4, "two prefabs under shadowL and shadowR");
+  const visible = () => layer.children.filter((mesh) => mesh.visible).map((mesh) => mesh.name).sort();
+  assert.deepEqual(visible(), ["Native stage member shadow 0 L", "Native stage member shadow 0 R"], "Initialize applies index 0");
+  const factor = f32(f32(.15) - f32(.05)), scaleOut = new T.Vector3();
+  meshes.find((mesh) => mesh.name === "Native stage member shadow 0 L").matrix.decompose(new T.Vector3(), new T.Quaternion(), scaleOut);
+  close(scaleOut.x, factor * 2, "anchor scale times the prefab root scale");
+  instance.update(false, false, { index: 1, scaleX: .7, scaleZ: 2.5 }, set);
+  assert.deepEqual(visible(), ["Native stage member shadow 1 L", "Native stage member shadow 1 R"]);
+  const second = meshes.find((mesh) => mesh.name === "Native stage member shadow 1 R");
+  second.matrix.decompose(new T.Vector3(), new T.Quaternion(), scaleOut);
+  close(scaleOut.x, f32(factor * f32(.7)) * 2, "track X scale");
+  close(scaleOut.z, f32(factor * f32(2.5)) * 2, "track Z scale");
+  instance.update(false, false, { index: 5, scaleX: 1, scaleZ: 1 }, set);
+  assert.deepEqual(visible(), [], "an index without a prefab activates nothing");
+  instance.update(true, false, null, null);
+  assert.deepEqual(visible(), ["Native member contact shadow L", "Native member contact shadow R"], "without prefabs the costume shadows draw");
+  assert.equal(layer.children.length, 2);
+  instance.dispose();
+  set.dispose();
+}
+
+scales().then(stagePrefabs).then(() => console.log("PASS: LiveMemberShadowMixer index/scale rule, UpdateScale latch and stage shadow prefabs"),
   (error) => { console.error(error); process.exitCode = 1; });

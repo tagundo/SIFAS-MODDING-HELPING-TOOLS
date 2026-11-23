@@ -1387,7 +1387,7 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         stage_coloring, stage_palettes, stage_displays = {}, {}, {}
         stage_flashes = {}
         axis_billboards, stage_props = set(), []
-    shadow_stages = None
+    shadow_stages = shadow_prefabs = None
     if stage_materials and getattr(scene, "native_stage_effect", False):
         from . import mv_studio_member_shadow
 
@@ -1418,6 +1418,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
             defaults = mv_studio_member_shadow.stage_default(scene, obj, tree)
             if defaults is not None:
                 shadow_stages.append(defaults)
+                shadow_prefabs = mv_studio_member_shadow.stage_prefabs(scene, obj, tree)
+                # The prefab assets are only instantiated under the members.
+                detached_templates.update(_key(game) for game in shadow_prefabs or () if game is not None)
         if stage_materials:
             excluded, shaft_source = mv_studio_shaft.references(scene, obj, tree)
             detached_templates.update(excluded)
@@ -1466,6 +1469,10 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
     cubemap_owner = stage_cubemap_owners[0] if stage_materials and len(stage_cubemap_owners) == 1 else None
     materials = materials or _Materials(scene, glb, rigged=rig is not None)
     materials.scene = scene
+    if shadow_stages == [False] and shadow_prefabs:
+        exported = mv_studio_member_shadow.export_prefabs(scene, glb, materials, shadow_prefabs, deadline)
+        if exported is not None:
+            glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadowPrefabs"] = exported
     if animated_effect:
         from . import mv_studio_stage_laser_cores, mv_studio_stationary_bursts
 

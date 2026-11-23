@@ -19,6 +19,70 @@
     void main() { gl_FragColor = texture2D(uTexture, vTexture); }
   `;
 
+  // AS/General/Transparent with _BlendSrc DstColor, _BlendDst Zero, ZWrite off,
+  // Cull off, renderQueue 2800: the shadow texture multiplies the frame.
+  function shadowMaterial(T, atlas, name) {
+    const texture = atlas.clone();
+    texture.encoding = T.LinearEncoding;
+    texture.wrapS = texture.wrapT = T.RepeatWrapping;
+    texture.magFilter = texture.minFilter = T.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    const material = new T.ShaderMaterial({
+      name, vertexShader, fragmentShader, transparent: true,
+      toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
+      blending: T.CustomBlending, blendSrc: T.DstColorFactor, blendDst: T.ZeroFactor,
+      blendSrcAlpha: T.DstAlphaFactor, blendDstAlpha: T.ZeroFactor,
+      uniforms: {uTexture: {value: texture}},
+    });
+    return {texture, material};
+  }
+
+  // LiveCoreStageEffect.memberShadowPrefabs exported by the stage effect GLB
+  // (mv_studio_member_shadow.export_prefabs): shared templates every member's
+  // ShadowComponent instantiates under both shadow anchors.
+  async function prefabs(T, root, parser) {
+    const source = root?.userData?.mvMemberShadowPrefabs;
+    if (source?.schema !== 1 || !Array.isArray(source.prefabs) || !source.prefabs.length || source.prefabs.length > 16) return null;
+    const templates = [];
+    const dispose = () => {
+      for (const template of templates) {
+        template.geometry.dispose();
+        template.material.dispose();
+        template.texture.dispose();
+      }
+      templates.length = 0;
+    };
+    try {
+      for (const prefab of source.prefabs) {
+        const geometry = prefab?.geometry;
+        if (!index(geometry?.POSITION) || !index(geometry?.TEXCOORD_0) || !index(geometry?.indices) || !index(prefab.texture) ||
+            !Array.isArray(prefab.scale) || prefab.scale.length !== 3 || !prefab.scale.every(value => Number.isFinite(value) && value > 0)) {
+          throw new Error("invalid shadow prefab");
+        }
+        const [positions, uv, faces, atlas] = await Promise.all([
+          parser.getDependency("accessor", geometry.POSITION), parser.getDependency("accessor", geometry.TEXCOORD_0),
+          parser.getDependency("accessor", geometry.indices), parser.getDependency("texture", prefab.texture),
+        ]);
+        if (positions?.itemSize !== 3 || !(positions.count > 0) || positions.count > 64 || uv?.itemSize !== 2 ||
+            uv.count !== positions.count || faces?.itemSize !== 1 || !(faces.count > 0) || faces.count % 3 || !atlas?.isTexture) {
+          throw new Error("invalid shadow prefab");
+        }
+        const meshGeometry = new T.BufferGeometry();
+        meshGeometry.setAttribute("position", positions);
+        meshGeometry.setAttribute("uv", uv);
+        meshGeometry.setIndex(faces);
+        const {texture, material} = shadowMaterial(T, atlas, "Native stage member shadow");
+        templates.push({geometry: meshGeometry, material, texture,
+          scale: new T.Matrix4().makeScale(prefab.scale[0], prefab.scale[1], prefab.scale[2])});
+      }
+    } catch {
+      dispose();
+      return null;
+    }
+    return {templates, dispose};
+  }
+
   async function apply(T, root, parser, sceneRoot) {
     const source = root?.userData?.mvMemberShadow;
     const geometry = source?.geometry;
@@ -50,19 +114,7 @@
     meshGeometry.setAttribute("position", positions);
     meshGeometry.setAttribute("uv", uv);
     meshGeometry.setIndex(faces);
-    const texture = atlas.clone();
-    texture.encoding = T.LinearEncoding;
-    texture.wrapS = texture.wrapT = T.RepeatWrapping;
-    texture.magFilter = texture.minFilter = T.LinearFilter;
-    texture.generateMipmaps = false;
-    texture.needsUpdate = true;
-    const material = new T.ShaderMaterial({
-      name: "Native member contact shadow", vertexShader, fragmentShader, transparent: true,
-      toneMapped: false, side: T.DoubleSide, depthTest: true, depthFunc: T.LessEqualDepth, depthWrite: false,
-      blending: T.CustomBlending, blendSrc: T.DstColorFactor, blendDst: T.ZeroFactor,
-      blendSrcAlpha: T.DstAlphaFactor, blendDstAlpha: T.ZeroFactor,
-      uniforms: {uTexture: {value: texture}},
-    });
+    const {texture, material} = shadowMaterial(T, atlas, "Native member contact shadow");
     for (const [side, entry] of entries.entries()) {
       entry.mesh = new T.Mesh(meshGeometry, material);
       entry.mesh.name = `Native member contact shadow ${side ? "R" : "L"}`;
@@ -73,16 +125,40 @@
     }
     const worldToe = new T.Vector3(), scale = new T.Vector3(), origin = new T.Vector3();
     const local = new T.Matrix4();
-    let disposed = false;
+    let disposed = false, instanced = null;
+    function instances(prefabSet) {
+      if (instanced && instanced.set === prefabSet) return instanced.meshes;
+      if (instanced) for (const meshes of instanced.meshes) for (const mesh of meshes) sceneRoot.remove(mesh);
+      instanced = null;
+      if (!prefabSet?.templates?.length) return null;
+      // Initialize: Instantiate(prefabs[i], shadowL) and (prefabs[i], shadowR).
+      const meshes = entries.map((entry, side) => prefabSet.templates.map((template, slot) => {
+        const mesh = new T.Mesh(template.geometry, template.material);
+        mesh.name = `Native stage member shadow ${slot} ${side ? "R" : "L"}`;
+        mesh.renderOrder = 2800;
+        mesh.visible = false;
+        mesh.matrixAutoUpdate = false;
+        sceneRoot.add(mesh);
+        return mesh;
+      }));
+      instanced = {set: prefabSet, meshes};
+      return meshes;
+    }
     return {
       // parameters: the LiveMemberShadowTrack result (see sample), or null
       // when no track ran: ShadowComponent's constructor scales stay 1, 1.
-      update(compatible, advancing, parameters) {
+      // prefabSet: the stage's shadow prefabs (see prefabs); they replace the
+      // costume's shadows, and ApplyShadowIndex keeps only parameters.index
+      // (0 from Initialize without a track) active.
+      update(compatible, advancing, parameters, prefabSet) {
         if (disposed) return;
         const scaleX = parameters ? parameters.scaleX : 1, scaleZ = parameters ? parameters.scaleZ : 1;
-        for (const entry of entries) {
+        const stageMeshes = instances(prefabSet), activeIndex = parameters ? parameters.index : 0;
+        for (const [side, entry] of entries.entries()) {
           const {toe, anchor, mesh} = entry;
-          if (!compatible) { mesh.visible = false; continue; }
+          const sideMeshes = stageMeshes?.[side];
+          if (sideMeshes) mesh.visible = false;
+          if (!compatible && !sideMeshes) { mesh.visible = false; continue; }
           toe.getWorldPosition(worldToe);
           const current = Math.min(limit, Math.max(0, f32(height - f32(worldToe.y))));
           const difference = f32(current - entry.factor);
@@ -96,8 +172,10 @@
             entry.scaleX = scaleX;
             entry.scaleZ = scaleZ;
           }
-          mesh.visible = root.visible && entry.factor > 0;
-          if (!mesh.visible) continue;
+          const shown = root.visible && entry.factor > 0;
+          if (sideMeshes) sideMeshes.forEach((instance, slot) => { instance.visible = shown && slot === activeIndex; });
+          else mesh.visible = shown;
+          if (!shown) continue;
           anchor.parent.updateWorldMatrix(true, false);
           local.compose(origin, anchor.quaternion, scale.set(f32(entry.factor * entry.scaleX), 1, f32(entry.factor * entry.scaleZ)));
           mesh.matrix.multiplyMatrices(anchor.parent.matrixWorld, local);
@@ -105,11 +183,17 @@
           // original local scale and rotation still follow the actor's parent.
           mesh.matrix.setPosition(f32(worldToe.x), floor, f32(worldToe.z));
           mesh.matrixWorldNeedsUpdate = true;
+          const instance = sideMeshes?.[activeIndex];
+          if (instance) {
+            instance.matrix.multiplyMatrices(mesh.matrix, prefabSet.templates[activeIndex].scale);
+            instance.matrixWorldNeedsUpdate = true;
+          }
         }
       },
       dispose() {
         if (disposed) return;
         disposed = true;
+        instances(null);
         for (const {mesh} of entries) sceneRoot.remove(mesh);
         meshGeometry.dispose();
         material.dispose();
@@ -161,5 +245,5 @@
     return result;
   }
 
-  global.MVStudioMemberShadow = {apply, sample};
+  global.MVStudioMemberShadow = {apply, prefabs, sample};
 })(typeof window !== "undefined" ? window : globalThis);

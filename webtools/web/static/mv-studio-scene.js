@@ -360,7 +360,7 @@
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let stageParticleSystems = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [];
+    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
@@ -620,6 +620,7 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
+      record.memberShadowPrefabs?.dispose();
       record.physics?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
@@ -867,7 +868,10 @@
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
-      if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+      if (entry.group === effects) {
+        record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+        record.memberShadowPrefabs = await global.MVStudioMemberShadow?.prefabs?.(T, gltf.scene, gltf.parser);
+      }
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
@@ -1454,6 +1458,8 @@
       // ShadowComponent.Initialize deletes the costume's shadows only for a stage
       // with memberShadowPrefabs; a LiveMemberShadowTrack then only scales them.
       defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults;
+      memberShadowPrefabs = shadowStages.length === 1 && !shadowStages[0].memberShadowDefaults
+        ? shadowStages[0].memberShadowPrefabs ?? null : null;
       memberShadowTracks = tracks.filter(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted);
       if (trackSource !== tracks) {
         trackSource = tracks;
@@ -1684,7 +1690,7 @@
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
-      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters);
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters, memberShadowPrefabs);
       for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
