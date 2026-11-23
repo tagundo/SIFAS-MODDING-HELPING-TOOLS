@@ -604,6 +604,7 @@
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
       record.physics?.dispose();
+      record.constraints?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
       if (record.root.parent) record.root.parent.remove(record.root);
       release(record.root);
@@ -955,6 +956,7 @@
           }
           record.physics = global.MVStudioPhysics?.create(record.root, entry.spec.rig?.physics,
             entry.spec.motion?.physics ?? project?.motionPhysics);
+          record.constraints = global.ViewerConstraints?.create(record.root, entry.spec.rig?.constraints);
           record.memberShadow = await global.MVStudioMemberShadow?.apply(T, record.root, gltf.parser, memberShadows);
           if (!active()) return null;
         }
@@ -989,6 +991,7 @@
       for (const record of records) {
         if (record.group !== actors) continue;
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         if (record.initialPose) restoreActorPose(record.initialPose);
         actors.add(record.root);
       }
@@ -1593,6 +1596,7 @@
         record.root.visible = record.actorVisible && !culled;
         record.materials?.setLiveLighting?.(lighting?.member(record.position));
         record.physics?.restorePose();
+        record.constraints?.restorePose();
         record.nodeScaling?.resetHeight();
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
@@ -1609,6 +1613,10 @@
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
+      // Unity's ConstraintManagerUpdate runs after the Animator and before the
+      // member manager's LateUpdate, so swing-bone sources read last frame's result.
+      for (const record of records) record.constraints?.apply(record.physics?.simulatedPose?.() || null,
+        () => record.motion?.animatedProperties?.(currentTime));
       const physicsStep = playing && visible && records.some((record) => record.physics)
         ? physicsClock?.step(frameTimestamp, settings.frame_rate_60fps === true ? 60 : 30) || 0 : 0;
       for (const record of records) record.physics?.apply(currentTime, physicsStep, settings, record.motion);
@@ -2007,6 +2015,8 @@
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
           renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          constraints: records.filter((record) => record.constraints)
+            .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
         };
       },
       assetDump,

@@ -84,7 +84,7 @@
     const settings = { bones: true, colliders: true, profile: "live", skirtsafeDisableBySource: flags,
       skirtsafeDisableByComponent: runtime.skirtsafeDisableByComponent || {},
       safeSwingBone: motionSettings?.safeSwingBoneKnown === true ? motionSettings.safeSwingBone : undefined };
-    let engine = null, active = false, applied = false;
+    let engine = null, active = false, applied = false, simulated = null;
 
     function restorePose() {
       if (!applied) return;
@@ -98,7 +98,22 @@
 
     function reset(reason) {
       active = false;
+      simulated = null;
       engine?.resetSimulation(reason);
+    }
+
+    // Unity keeps the LateUpdate swing-bone result in the transforms until the
+    // next frame's Animator. Constraints evaluated before that LateUpdate read
+    // it, while restorePose() has already put the animated pose back here.
+    function captureSimulated() {
+      simulated ||= new Map();
+      for (const [id, { object, position, quaternion }] of dynamic) {
+        const row = simulated.get(id) || { position: position ? object.position.clone() : null,
+          quaternion: quaternion ? object.quaternion.clone() : null };
+        row.position?.copy(object.position);
+        row.quaternion?.copy(object.quaternion);
+        simulated.set(id, row);
+      }
     }
 
     function apply(time, delta, quality, motion) {
@@ -121,6 +136,7 @@
       }
       engine.apply(delta, settings);
       active = true;
+      captureSimulated();
     }
 
     function dispose() {
@@ -128,8 +144,9 @@
       engine?.dispose();
       engine = null;
       active = false;
+      simulated = null;
     }
-    return { restorePose, reset, apply, dispose };
+    return { restorePose, reset, apply, dispose, simulatedPose: () => simulated };
   }
 
   global.MVStudioPhysics = { create, createClock };
