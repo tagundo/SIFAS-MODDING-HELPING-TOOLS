@@ -163,6 +163,34 @@ def _original_mips(obj, texture, *, stage=False):
     return output
 
 
+def _texture_entry(target, texture, source, index, mip_resolver, texture_resolver, name, limitations):
+    """One exported shader texture: its GLB index, sampler inputs and authored mips."""
+    entry = {"index": index, "name": str(texture.m_Name), "colorSpace": int(getattr(texture, "m_ColorSpace", 1)),
+             "scale": [_finite(source.get("m_Scale", {}).get(key, 1)) for key in "xy"],
+             "offset": [_finite(source.get("m_Offset", {}).get(key, 0)) for key in "xy"],
+             "filterMode": int(getattr(getattr(texture, "m_TextureSettings", None), "m_FilterMode", 1))}
+    try:
+        mips = _original_mips(target, texture)
+        if mips:
+            entry["mipmaps"] = [index] + (mip_resolver(mips) if mip_resolver is not None else
+                                         [texture_resolver(level) for level in mips])
+            entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
+            entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
+    except Exception:
+        limitations.append("Authored mip levels unavailable: " + name)
+    return entry
+
+
+def authored_rimlight(metadata):
+    """The material's own rim switch: authored _RimglightIntensity and _RimlightColor.a.
+
+    Live AS/Member rim no longer uses it (the timeline writes the intensity);
+    callers that still need the authored switch, such as the hand-prop export,
+    name it explicitly.
+    """
+    return metadata["floats"]["_RimglightIntensity"] > 0 and metadata["colors"]["_RimlightColor"][3] > 0
+
+
 def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_resolver=None):
     """Attach JSON-safe inputs; caller invokes only for verified AS/Member.
 
@@ -183,17 +211,21 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
         metadata["floats"][name] = _finite(floats.get(name, default))
     keywords = str(tree.get("m_ShaderKeywords", "")).split()[:64]
     metadata["keywords"] = keywords
-    features = {"rimlight": metadata["floats"]["_RimglightIntensity"] > 0
-                and metadata["colors"]["_RimlightColor"][3] > 0,
+    # Every compiled Hidden/AS/Member/Main variant (base and each _CHEEK_ON/
+    # _EMISSIVE_ON/_MATCAP_ON combination) adds the rim term, and the live
+    # timeline (CommonCoreMember.Initialize -> ApplyIntensity(0), then
+    # LiveRimlightMixer/LiveBaseLightReciever) writes its inputs every frame.
+    # The authored _RIMLIGHT float/_RIMLIGHT_ON keyword are legacy (the current
+    # shader declares no _RIMLIGHT, so LiveCoreMemberRimlight.isLegacyShader is
+    # false): the rim texture is a used input of every AS/Member material.
+    features = {"rimlight": True,
                 "matcap": "_MATCAP_ON" in keywords,
                 "emissive": "_EMISSIVE_ON" in keywords,
                 "cheek": "_CHEEK_ON" in keywords,
                 "outline": True}
     metadata["features"] = features
 
-    wanted = ["_MainTex"]
-    if features["rimlight"]:
-        wanted.append("_RimlightTex")
+    wanted = ["_MainTex", "_RimlightTex"]
     if features["matcap"]:
         wanted.extend(("_MatcapTex", "_MatcapMaskTex"))
     if features["emissive"]:
@@ -218,23 +250,11 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
                 layer = target.preview_array_layer
             if target.type.name != "Texture2D":
                 raise ValueError("This shader texture type is unsupported.")
-            index = texture_resolver(target)
             texture = target.read()
-            entry = {"index": index, "colorSpace": int(getattr(texture, "m_ColorSpace", 1)),
-                     "scale": [_finite(source.get("m_Scale", {}).get(key, 1)) for key in "xy"],
-                     "offset": [_finite(source.get("m_Offset", {}).get(key, 0)) for key in "xy"]}
+            entry = _texture_entry(target, texture, source, texture_resolver(target), mip_resolver,
+                                   texture_resolver, name, metadata["limitations"])
             if layer is not None:
                 entry["arrayLayer"] = layer
-            entry["filterMode"] = int(getattr(getattr(texture, "m_TextureSettings", None), "m_FilterMode", 1))
-            try:
-                mips = _original_mips(target, texture)
-                if mips:
-                    entry["mipmaps"] = [index] + (mip_resolver(mips) if mip_resolver is not None else
-                                                 [texture_resolver(level) for level in mips])
-                    entry["mipWidths"] = [max(1, int(texture.m_Width) >> level) for level in range(len(mips) + 1)]
-                    entry["mipHeights"] = [max(1, int(texture.m_Height) >> level) for level in range(len(mips) + 1)]
-            except Exception:
-                metadata["limitations"].append("Authored mip levels unavailable: " + name)
             metadata["textures"][name] = entry
         except Exception:
             metadata["limitations"].append("Shader texture unavailable: " + name)

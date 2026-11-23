@@ -21,8 +21,40 @@ class MemberMetadataTests(unittest.TestCase):
         self.assertNotIn("_Color", metadata["colors"])
         self.assertEqual(metadata["colors"]["_TintColor"], [1, 1, 1, 1])
         self.assertEqual(metadata["textures"]["_MainTex"], {"default": [1, 1, 1, 1]})
-        self.assertFalse(metadata["features"]["rimlight"])
         self.assertEqual(output["extras"]["other"], 1)
+
+    def test_rim_is_a_used_input_even_when_authored_off(self):
+        # Every Hidden/AS/Member/Main variant evaluates the rim; the timeline
+        # writes its intensity, so authored zeros do not drop the texture.
+        for floats, color in (({"_RimglightIntensity": 0}, None), ({"_RIMLIGHT": 0}, (0, 0, 0, 0)),
+                              ({"_RimglightIntensity": 1}, None)):
+            with self.subTest(floats=floats, color=color):
+                tree = self.tree(**floats)
+                if color:
+                    tree["m_SavedProperties"]["m_Colors"] = [("_RimlightColor", dict(zip("rgba", color)))]
+                metadata = materials.attach_member_metadata(None, object(), tree, {}, lambda _: self.fail("No image expected"))
+                self.assertTrue(metadata["features"]["rimlight"])
+                # Unassigned slot: the ShaderLab default ("white"), not a replacement asset.
+                self.assertEqual(metadata["textures"]["_RimlightTex"], {"default": [1, 1, 1, 1]})
+                self.assertEqual(materials.authored_rimlight(metadata), floats.get("_RimglightIntensity") == 1)
+
+    def test_authored_zero_rim_exports_the_rim_texture_and_its_mips(self):
+        obj, texture = fake_texture()
+        tree = self.tree(_RimglightIntensity=0)
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_RimlightTex", {"m_Texture": {"m_PathID": 7}})]
+        seen = []
+
+        def export(image):
+            seen.append(image.read().get_image_data())
+            return len(seen) - 1
+
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            metadata = materials.attach_member_metadata(None, object(), tree, {}, export)
+        rim = metadata["textures"]["_RimlightTex"]
+        self.assertEqual((rim["index"], rim["mipmaps"], rim["name"]), (0, [0, 1, 2], "Neutral image"))
+        self.assertEqual(seen, [texture.image_data, texture.image_data[64:80], texture.image_data[80:84]])
+        self.assertTrue(metadata["features"]["rimlight"])
+        self.assertFalse(materials.authored_rimlight(metadata))
 
     def test_keywords_select_variants_not_stale_toggle_floats(self):
         first = materials.attach_member_metadata(None, object(), self.tree(_MATCAP=1), {}, lambda _: 0)
@@ -46,18 +78,24 @@ class MemberMetadataTests(unittest.TestCase):
                 materials.attach_member_metadata(None, object(), self.tree(_RimglightPower=value), {}, lambda _: 0)
 
 
+def fake_texture(*, width=4, height=4, count=3, depth=None, pixels=None, wrap=0, name="Neutral image"):
+    """A raw RGBA32 Unity texture (or array) with its complete authored mip chain."""
+    settings = SimpleNamespace(m_FilterMode=1, m_WrapU=wrap, m_WrapV=wrap)
+    data = pixels if pixels is not None else bytes(range(84))
+    value = SimpleNamespace(m_Name=name, m_Width=width, m_Height=height,
+        m_MipCount=count, m_ImageCount=1, m_TextureDimension=2, m_TextureFormat=4,
+        m_Format=4, m_TextureSettings=settings, m_ColorSpace=1,
+        image_data=data, m_StreamData=SimpleNamespace(size=0), get_image_data=lambda: data)
+    if depth is not None:
+        value.m_Depth = depth
+    obj = SimpleNamespace(assets_file=object(), path_id=7,
+                          type=SimpleNamespace(name="Texture2D" if depth is None else "Texture2DArray"), read=lambda: value)
+    return obj, value
+
+
 class OriginalImageLevelTests(unittest.TestCase):
-    def texture(self, *, width=4, height=4, count=3, depth=None, pixels=None):
-        settings = SimpleNamespace(m_FilterMode=1)
-        data = pixels if pixels is not None else bytes(range(84))
-        value = SimpleNamespace(m_Name="Neutral image", m_Width=width, m_Height=height,
-            m_MipCount=count, m_ImageCount=1, m_TextureDimension=2, m_TextureFormat=4,
-            m_Format=4, m_TextureSettings=settings, m_ColorSpace=1,
-            image_data=data, m_StreamData=SimpleNamespace(size=0), get_image_data=lambda: data)
-        if depth is not None:
-            value.m_Depth = depth
-        obj = SimpleNamespace(assets_file=object(), path_id=7, type=SimpleNamespace(name="Texture2D"), read=lambda: value)
-        return obj, value
+    def texture(self, **arguments):
+        return fake_texture(**arguments)
 
     def test_authored_raw_mips_are_exact_slices_and_source_is_unchanged(self):
         obj, texture = self.texture()
