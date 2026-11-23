@@ -341,7 +341,8 @@ async function run() {
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [],
-        soundtrack: value.soundtrack ? { url: value.soundtrack.url, offset: value.soundtrack.offset ?? 0 } : null };
+        soundtrack: value.soundtrack ? { url: value.soundtrack.url, offset: value.soundtrack.offset ?? 0 } : null,
+        importCoverage: value.importCoverage ?? null };
     });
     let soundtrack = null;
     if (project.soundtrack?.url) {

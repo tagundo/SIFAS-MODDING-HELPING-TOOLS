@@ -346,15 +346,21 @@ def _facial(timeline, descriptor, position, tracks, head):
     return {**descriptor, "facial": native_face}
 
 
-def _cast_in_timeline_order(performers, tracks):
+def _cast_in_timeline_order(performers, tracks, clip_names=None):
+    # The AnimationClip a slot plays identifies its member. m_DisplayName is
+    # only a fallback: in 12035/12036 it carries the other Mia/Lanzhu code.
+    # A name without a chNNNN code identifies nobody, so the next one is tried.
+    clip_names = clip_names or {}
     members = {}
     for track in tracks:
         if track["kind"] != "dance" or not (slot := re.fullmatch(r"/EntryPoint/Live/Members/Member(\d+)/Model", track.get("binding", ""))):
             continue
         for event in track["events"]:
-            identity = re.match(r"ch(\d{4})(?:_|$)", event["values"].get("animationName") or event["label"])
-            if identity:
-                members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
+            for name in (clip_names.get(event.get("id")), event["values"].get("animationName"), event.get("label")):
+                identity = re.match(r"ch(\d{4})(?:_|$)", name) if isinstance(name, str) else None
+                if identity:
+                    members.setdefault(int(slot[1]), set()).add(member_from_native(int(identity[1])))
+                    break
     latest = {performer["memberId"]: performer for performer in performers}
     positions = {performer["position"] for performer in performers}
     if set(members) != positions or any(len(ids) != 1 for ids in members.values()):
@@ -443,6 +449,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
         with tempfile.TemporaryDirectory(prefix="import-", dir=_root()) as name:
             directory = Path(name)
             local, rows = {}, {}
+            from . import mv_studio_external_clips
+            read_asset = mv_studio_external_clips.SharedReads(
+                lambda descriptor: mv_studio_game.load_asset(repo_root, descriptor, download=download, deadline=deadline))
 
             def describe(descriptor, kind, label=None):
                 if not descriptor:
@@ -460,7 +469,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                     return None, None
                 if row["id"] not in local:
                     try:
-                        raw = mv_studio_game.load_asset(repo_root, descriptor, download=download, deadline=deadline)
+                        raw = read_asset(descriptor)
                         if not raw:
                             row["status"] = "missing"
                             return row, None
@@ -487,7 +496,9 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:_MEMBER_MAX]
-            performers = _cast_in_timeline_order(original_cast, project["tracks"])
+            # Dance clips live in the timeline's choreography packs (exact CAB/PathID).
+            clip_names = mv_studio_external_clips.apply(project, native, selected.get("choreography", []), read_asset, deadline)
+            performers = _cast_in_timeline_order(original_cast, project["tracks"], clip_names)
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
@@ -509,9 +520,12 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original stage model is unavailable for preview.")
             describe(stage.get("background"), "background", "2D stage background")
             describe(stage.get("thumbnail"), "other", "Stage thumbnail")
-            from . import mv_studio_props
+            from . import mv_studio_import_coverage, mv_studio_props
             prop_bindings = mv_studio_props.bindings(project["tracks"]) if stage.get("props") else []
             performer_prop = prop_bindings[0] if len(prop_bindings) == 1 else None
+            # Why the timeline's performer prop tracks do not play, for the coverage report.
+            prop_gap = (mv_studio_import_coverage.PROP_NO_BUNDLE if not stage.get("props") else
+                        mv_studio_import_coverage.PROP_SEVERAL if len(prop_bindings) > 1 else None)
             if performer_prop is None:
                 prop_row, prop_file = load(stage.get("props"), "props", "Stage props")
                 if prop_file is not None:
@@ -523,15 +537,18 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 on_stage(_stage_snapshot(project, rows.values(), performers))
             if performer_prop is not None:
                 prop_row, prop_file = load(stage.get("props"), "props", "Performer prop")
+                prop_gap = mv_studio_import_coverage.PROP_UNAVAILABLE
                 if prop_file is not None:
                     try:
                         glb, attachment = mv_studio_props.preview(
                             prop_file, native, timeline.name, performer_prop, deadline,
                         )
                         prop_row.update(previewUrl=_media(glb, "glb"), attachment=attachment)
+                        prop_gap = None
                     except (ValueError, OSError) as error:
                         prop_row["status"] = "unavailable"
                         warnings.append(f"{prop_row['label']}: {error}")
+                        prop_gap = mv_studio_import_coverage.PROP_PREVIEW_FAILED
             describe(selected.get("songBackground"), "background", "Song background")
             movie = selected.get("movie") or {}
             describe(movie.get("source"), "display", "MV screen video")
@@ -649,6 +666,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             warnings.extend(f"{item['role']}: {item['reason']}" if isinstance(item, dict) else str(item)
                             for item in selected.get("missing", []))
             project["assets"] = list(rows.values())
+            # After the assets: only an attached performer prop plays its tracks.
+            mv_studio_import_coverage.apply(project, prop_gap)
         return _register(project, native)
     finally:
         _IMPORT.release()
