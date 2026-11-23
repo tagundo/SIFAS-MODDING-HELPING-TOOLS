@@ -12,7 +12,8 @@ import time
 from urllib.error import HTTPError
 
 from . import game_models as game
-from .game_motions import _rows
+from . import mv_studio_suits
+from .game_motions import _columns, _rows
 
 
 PLATFORMS = {"android": "Android", "ios": "iOS"}
@@ -122,7 +123,7 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
         songs = [song for song in songs if query in song["title"].casefold() or query in str(song["id"]) or
                  any(query in variant["label"].casefold() or query in str(variant["id"]) for variant in song["variants"])]
     available = {value: bool(_asset_catalogs(root, region, value, language)) for value in PLATFORMS}
-    return {"region": region, "platform": platform, "songs": songs,
+    return {"region": region, "platform": platform, "songs": songs, "players": mv_studio_suits.users(root),
             "regions": [{"value": value, "label": REGIONS[value]} for value in regions],
             "platforms": [{"value": value, "label": label, "available": available[value]}
                           for value, label in PLATFORMS.items()]}
@@ -267,29 +268,54 @@ def _sound(db, cue, missing, role):
 
 
 def _pinned_costumes(costumes):
-    """{position: suit id} from an explicit request; None when nothing is pinned."""
+    """{position: (suit id, view status or None)} from an explicit request; None when nothing is pinned.
+
+    A pin is a suit id, or {"suit": id, "viewStatus": n} for an m_suit_view model."""
     if costumes is None:
         return None
     if not isinstance(costumes, dict) or len(costumes) > 64:
         raise ValueError("Choose valid costumes for the MV members.")
     pinned = {}
-    for position, suit in costumes.items():
+    for position, value in costumes.items():
         position = int(position) if isinstance(position, str) and position.isdigit() else position
-        if type(position) is not int or not 1 <= position <= 64 or type(suit) is not int or suit <= 0:
+        suit, view = (value.get("suit"), value.get("viewStatus")) if isinstance(value, dict) else (value, None)
+        if (type(position) is not int or not 1 <= position <= 64 or type(suit) is not int or not 0 < suit < 1 << 31 or
+                isinstance(value, dict) and set(value) - {"suit", "viewStatus"} or
+                view is not None and (type(view) is not int or not 0 < view < 64)):
             raise ValueError("Choose valid costumes for the MV members.")
-        pinned[position] = suit
+        pinned[position] = (suit, view)
     return pinned
 
 
-def _performers(master, db, mapping, dictionary, extractor, missing, costumes=None):
-    fields = "position,member_master_id,is_center,suit_master_id"
-    args = (mapping,)
-    source = _rows(master, f"SELECT {fields} FROM m_live_member_mapping WHERE mapping_id=? ORDER BY position", args)
-    non_playable = {}
-    if not source:
-        source = _rows(master, f"SELECT {fields} FROM m_live_override_member_mapping WHERE mapping_id=? ORDER BY position", args)
-        non_playable = dict(_rows(master, "SELECT position,member_non_playable_master_id FROM m_live_override_member_mapping "
-                                          "WHERE mapping_id=? AND member_master_id IS NULL AND position BETWEEN 1 AND 64", args))
+_CHOICE_LIMIT = 96
+
+
+def _choices(master, dictionary, extractor, member, non_playable, first):
+    """Costume override choices: the resolved/mapping/initial suits first, then the member's other
+    suits; every suit followed by its m_suit_view models."""
+    if non_playable:
+        rows = _rows(master, "SELECT id,name,model_asset_path FROM m_suit_non_playable WHERE member_m_id=? ORDER BY rowid",
+                     (member,))
+    else:
+        order = "display_order DESC,id" if "display_order" in _columns(master, "m_suit") else "id"
+        rows = _rows(master, f"SELECT id,name,model_asset_path FROM m_suit WHERE member_m_id=? ORDER BY {order}", (member,))
+    known = {row[0]: row for row in rows}
+    order = [suit for suit in dict.fromkeys([*first, *known]) if suit in known][:_CHOICE_LIMIT]
+    choices = []
+    for suit in order:
+        _, name, _ = known[suit]
+        label = _display(extractor, dictionary, name, suit)
+        choices.append({"id": suit, "name": label, "asset": mv_studio_suits.costume(master, suit)[0]})
+        for status in mv_studio_suits.views(master, suit):
+            model, _ = mv_studio_suits.costume(master, suit, status)
+            choices.append({"id": suit, "name": label, "asset": model, "viewStatus": status})
+    return choices
+
+
+def _performers(master, db, mapping, dictionary, extractor, missing, costumes=None, deck=None):
+    deck_type = (deck or {}).get("deckType", mv_studio_suits.DEFAULT_DECK)
+    by_position = mv_studio_suits.members_by_position(mv_studio_suits.mapping(master, mapping), deck_type, deck)
+    cache = mv_studio_suits._Master(master)
     names = game._names(extractor)
 
     def themes_for(table, ids):
@@ -299,36 +325,37 @@ def _performers(master, db, mapping, dictionary, extractor, missing, costumes=No
         slots = ",".join("?" for _ in keys)
         return dict(_rows(master, f"SELECT id,theme_color FROM {table} WHERE id IN ({slots})", keys))
 
-    themes = themes_for("m_member", (member for position, member, _, _ in source
-                                     if type(position) is int and 1 <= position <= 64))
-    non_playable_themes = themes_for("m_member_non_playable", non_playable.values())
+    rows = [row for _, row in sorted(by_position.items())]
+    themes = themes_for("m_member", (row["member"] for row in rows if not row["nonPlayable"]))
+    non_playable_themes = themes_for("m_member_non_playable", (row["member"] for row in rows if row["nonPlayable"]))
     performers = []
-    for position, member, center, suit in source:
-        if type(position) is not int or not 1 <= position <= 64:
-            continue
-        suggestions = []
+    for row in rows:
+        position, member = row["position"], row["member"]
+        resolved, source = mv_studio_suits.suit_for(master, row, deck_type, deck, cache)
+        suit, view = resolved, mv_studio_suits.view_status(deck, member)
         if costumes and position in costumes:
             # An explicit costume (e.g. the suit a recorded game performance wore) must
-            # belong to this member; it is never silently replaced by the mapping's suit.
-            if not _rows(master, "SELECT 1 FROM m_suit WHERE id=? AND member_m_id=?", (costumes[position], member)):
-                raise ValueError(f"Costume {costumes[position]} is not a costume of the member at position {position}.")
-            suggestions.append(costumes[position])
-        if suit:
-            suggestions.append(suit)
-        suggestions.extend(row[0] for row in _rows(master, "SELECT suit_m_id FROM m_member_init WHERE member_m_id=?", (member,)))
-        choices = []
-        for candidate in dict.fromkeys(suggestions):
-            row = _rows(master, "SELECT id,name,model_asset_path FROM m_suit WHERE id=? AND member_m_id=?", (candidate, member))
-            if row:
-                choice_id, choice_name, choice_asset = row[0]
-                choices.append({"id": choice_id, "name": _display(extractor, dictionary, choice_name, choice_id),
-                                "asset": choice_asset})
-        chosen = choices[0] if choices else None
-        model = _required(db, ("member_model",), chosen["asset"], "costume", missing) if chosen else None
+            # belong to this member; it is never silently replaced by the resolved suit.
+            suit, pinned_view = costumes[position]
+            table = "m_suit_non_playable" if row["nonPlayable"] else "m_suit"
+            if not _rows(master, f"SELECT 1 FROM {table} WHERE id=? AND member_m_id=?", (suit, member)):
+                raise ValueError(f"Costume {suit} is not a costume of the member at position {position}.")
+            if pinned_view is not None:
+                if pinned_view != mv_studio_suits.VIEW_DEFAULT and pinned_view not in mv_studio_suits.views(master, suit):
+                    raise ValueError(f"Costume {suit} has no view status {pinned_view} model.")
+                view = pinned_view
+            source = "pinned"
+        asset, effective_view = mv_studio_suits.costume(master, suit, view) if suit else (None, mv_studio_suits.VIEW_DEFAULT)
+        choices = _choices(master, dictionary, extractor, member, row["nonPlayable"],
+                           [suit, resolved, row.get("suit"), cache.member_init(member)])
+        chosen = next((choice for choice in choices if choice["id"] == suit), None)
+        model = _required(db, ("member_model",), asset, "costume", missing) if asset else None
         performers.append({"position": position, "memberId": member, "memberName": names.get(member, str(member or "")),
-                           "isCenter": bool(center), "costumeId": chosen["id"] if chosen else None,
-                           "costumeName": chosen["name"] if chosen else None, "costumes": choices, "model": model})
-        color = themes.get(member) if member is not None else non_playable_themes.get(non_playable.get(position))
+                           "isCenter": bool(row["isCenter"]), "costumeId": suit,
+                           "costumeName": chosen["name"] if chosen else None, "costumes": choices, "model": model,
+                           "viewStatus": effective_view, "suitSource": source, "nonPlayable": row["nonPlayable"],
+                           "attachKey": mv_studio_suits.attach_key(master, suit) if suit else ""})
+        color = (non_playable_themes if row["nonPlayable"] else themes).get(member)
         if type(color) is int and -(1 << 31) <= color < 1 << 32:
             # ColorVO stores signed SQLite integers as packed RGBA bytes.
             performers[-1]["themeColor"] = [((color >> shift) & 255) / 255 for shift in (24, 16, 8, 0)]
@@ -337,7 +364,7 @@ def _performers(master, db, mapping, dictionary, extractor, missing, costumes=No
     return performers
 
 
-def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, costumes=None):
+def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, costumes=None, deck=None):
     live_id, asset_id, title, stage_title, scene, stage_id, _, mv_only, _, _ = variant
     name = _display(extractor, dictionary, title, live_id)
     music_id, cue, chorus, member_mapping, song_background = song
@@ -356,13 +383,16 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, cos
     thumbnail = _required(db, ("texture", "background"), thumb_key, "stageThumbnail", missing)
     song_background = _required(db, ("background", "texture"), song_background, "songBackground", missing)
     shader = _required(db, ("shader",), shader_key, "shader", missing)
-    performers = _performers(master, db, member_mapping, dictionary, extractor, missing, costumes)
+    performers = _performers(master, db, member_mapping, dictionary, extractor, missing, costumes, deck)
     for performer in performers:
         member = performer["memberId"]
         if member is None:
             continue
+        # MemberOverrideFacialAnimationMaster.Get(member, view status, type 1 / 2): the
+        # effective view status of the loaded model (GetMvLiveMember3DAssetVOs b__1).
         overrides = _rows(master, "SELECT animation_asset_path FROM m_member_override_facial_animation "
-                                 "WHERE member_id=? ORDER BY view_status,animation_type", (member,))
+                                 "WHERE member_id=? AND view_status=? AND animation_type IN (1,2) ORDER BY animation_type",
+                          (member, performer.get("viewStatus", mv_studio_suits.VIEW_DEFAULT)))
         performer["facial"] = [descriptor for key in dict.fromkeys(row[0] for row in overrides if row[0])
                                if (descriptor := _resource(db, "member_facial_animation", key, "face")) is not None]
         if performer_model := performer["model"]:
@@ -402,11 +432,25 @@ def _resolve_assets(db, master, variant, song, asset, dictionary, extractor, cos
             "dependencies": dependencies, "missing": missing}
 
 
-def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", costumes=None):
-    """`costumes` optionally pins {position: suit id} instead of the member mapping's suits."""
+def _deck(root, deck, live_id):
+    """The player MV state: a new player's when absent, the local Elichika player's for {"userId": id}."""
+    deck = mv_studio_suits.normalize_deck(deck)
+    if deck is not None and "userId" in deck:
+        deck = mv_studio_suits.read_user(root, deck["userId"], live_id, deck["deckType"])
+    return deck
+
+
+def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", costumes=None, deck=None):
+    """Performers follow the client's MV deck chain (mv_studio_suits).
+
+    `deck` optionally gives the player state: {"deckType": 1 (Original) | 2 (Customize, the
+    client's first tab), "userId": local Elichika player} or the same state read elsewhere
+    ({"original"/"custom": {"members", "suits"}, "ownedSuits", "members": {id: {"viewStatus"}}}).
+    `costumes` optionally pins {position: suit id or {"suit", "viewStatus"}} over the chain."""
     costumes = _pinned_costumes(costumes)
     root, region, _, language = _selection(repo_root, region, platform, language)
     ids = _identity(live_id), _identity(asset_id)
+    deck = _deck(root, deck, ids[0])
     catalogs = _asset_catalogs(root, region, platform, language)
     if not catalogs:
         raise ValueError("The selected region has no " + PLATFORMS[platform] + " asset catalog.")
@@ -431,11 +475,15 @@ def resolve(repo_root, *, region, platform, live_id, asset_id, language="en", co
         try:
             with closing(game._readonly(chosen)) as db:
                 db.execute("BEGIN")
-                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor, costumes)
+                result = _resolve_assets(db, master, variants[0], song, asset, dictionary, extractor, costumes, deck)
         finally:
             if dictionary is not None:
                 dictionary.close()
-    return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered)
+    deck_state = {"deckType": (deck or {}).get("deckType", mv_studio_suits.DEFAULT_DECK),
+                  "userId": (deck or {}).get("userId"),
+                  "saved": any(name in (deck or {}) for name in ("original", "custom"))}
+    return dict(result, region=region, platform=platform, assetCatalog=chosen.name, registered=registered,
+                deck=deck_state)
 
 
 def _cached_pack(extractor, root, name):

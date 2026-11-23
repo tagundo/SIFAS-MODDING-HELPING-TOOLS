@@ -637,7 +637,7 @@ async function run() {
     const dressed = await page.evaluate(() => (MVStudio.getState().project?.performers || [])
       .map(({ position, memberId, costumeId, glb }) => ({ position, memberId, costumeId, loaded: typeof glb === 'string' && glb.length > 0 })));
     const performers = suits ? { source: suits.source, pinned: suits.costumes, dressed: checkCostumes(suits, dressed) }
-      : { source: 'mapping', pinned: null, dressed };
+      : { source: 'deck', pinned: null, dressed };
     const quality = await applyGameQuality(page, game.header.quality, manifest.quality);
     const clock = gameClockRate(game, quality.values, manifest.device);
     await capture.applyPhysicsReference(page, { rate: clock.target, order,

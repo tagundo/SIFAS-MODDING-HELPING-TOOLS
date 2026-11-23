@@ -29,7 +29,8 @@ function project() {
   return {
     version: 1, name: 'Runtime fixture', token: 'e'.repeat(32), duration: 4,
     stage: { glb: media('.glb'), label: 'Fixture stage' },
-    source: { kind: 'game', region: 'gl', platform: 'android', liveId: 12, assetId: 34 },
+    source: { kind: 'game', region: 'gl', platform: 'android', liveId: 12, assetId: 34,
+      deck: { deckType: 2, userId: null, saved: false }, suits: [] },
     tracks: [{ id: 'cam', kind: 'camera', label: 'Camera/MainCamera', nativeClass: 'AnimationTrack', binding,
       events: [{ id: 'cam:0', start: 0, duration: 4, label: 'Shot', values: { keyframes: [
         { time: 0, position: [0, 1.0, 3.0], rotation: [0, 0, 0, 1], fov: 30 },
