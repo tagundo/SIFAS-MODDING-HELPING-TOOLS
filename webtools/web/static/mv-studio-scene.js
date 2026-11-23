@@ -399,6 +399,19 @@
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const mainCameraPosition = new T.Vector3(), focusPosition = new T.Vector3();
+    // MainCamera rig view axis (-transform.forward), read by DOF cameraAutoDistanceMode 2.
+    const mainCameraDirection = new T.Vector3(0, 0, -1), focusOffset = new T.Vector3();
+    // LiveDepthOfFieldMixer runs in the director's script pass, before this
+    // frame's Animator writes the camera and members. Its focus distances read
+    // the transforms the previous frame left (Max 3D: every first frame after a
+    // cut keeps the old shot's focus). Snapshot those at the start of each
+    // continuing playback frame; a seek evaluates the current pose.
+    const focusLag = { valid: false, camera: new T.Vector3(), direction: new T.Vector3(), points: new Map(), pool: new Map() };
+    // The mixer's transition fields advance once per evaluated frame (dofState);
+    // draws and the asset dump re-evaluate the frame from a copy of the state
+    // it started with (dofFrameState).
+    let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
+    const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
 
@@ -433,7 +446,8 @@
 
     function renderView(camera) {
       if (camera === liveCamera && post) {
-        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, focusDistance);
+        const source = focusSource();
+        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, source.distance, source.options);
         const preserveDepth = useLive && settings.stage_overlay_effect !== false &&
           records.some(record => record.stageOverlay?.hasDepthTest());
         if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera, preserveDepth)) return;
@@ -455,9 +469,67 @@
       else renderer.render(source, camera);
     }
 
-    function focusDistance(slot, part) {
-      const point = records.find(record => record.group === actors && record.position === slot)?.focusParts?.[part];
-      return point?.getWorldPosition(focusPosition).distanceTo(mainCameraPosition);
+    // A focus part is an exported node, or a fixed world point (BodyPartManager.face
+    // keeps the uninstantiated facial prefab asset).
+    function focusPoint(record, part, target, readOnly = false) {
+      const point = record?.focusParts?.[part];
+      if (!point) return null;
+      if (point.isVector3) return target.copy(point);
+      return readOnly ? target.setFromMatrixPosition(point.matrixWorld) : point.getWorldPosition(target);
+    }
+
+    function captureFocusLag(valid) {
+      focusLag.valid = valid;
+      focusLag.points.clear();
+      if (!valid) return;
+      focusLag.camera.copy(mainCameraPosition);
+      focusLag.direction.copy(mainCameraDirection);
+      for (const record of records) {
+        if (record.group !== actors || !record.focusParts) continue;
+        for (const part of Object.keys(record.focusParts)) {
+          const key = record.position + ":" + part;
+          let point = focusLag.pool.get(key);
+          if (!point) focusLag.pool.set(key, point = new T.Vector3());
+          if (focusPoint(record, part, point)) focusLag.points.set(key, point);
+        }
+      }
+    }
+
+    function focusMembers() {
+      return records.filter(record => record.group === actors && Number.isInteger(record.position))
+        .map(record => record.position).sort((a, b) => a - b);
+    }
+
+    // Distance/angle sources for MVStudioDofFocus.sample: the lagged snapshot
+    // while playback continues, else the current pose.
+    function focusSource(readOnly = false) {
+      const lagged = focusLag.valid;
+      const camera = lagged ? focusLag.camera : mainCameraPosition;
+      const direction = lagged ? focusLag.direction : mainCameraDirection;
+      const point = (slot, part) => lagged ? focusLag.points.get(slot + ":" + part) || null :
+        focusPoint(records.find(record => record.group === actors && record.position === slot), part, focusPosition, readOnly);
+      const distance = (slot, part) => point(slot, part)?.distanceTo(camera);
+      const options = {
+        members: focusMembers(),
+        angle: (slot, part) => {
+          const target = point(slot, part);
+          return target ? global.MVStudioDofFocus.vectorAngle(direction, focusOffset.subVectors(target, camera)) : undefined;
+        },
+        state: dofFrameState && { ...dofFrameState },
+        warn: readOnly ? undefined : (message) => {
+          if (dofWarnings.has(message)) return;
+          dofWarnings.add(message);
+          global.console?.warn?.(message);
+        },
+      };
+      return { distance, options };
+    }
+
+    function advanceFocus() {
+      if (!dofState || !global.MVStudioDofFocus) return;
+      dofFrameState = { ...dofState };
+      const source = focusSource();
+      global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance, { ...source.options, state: dofState });
     }
 
     function sortRibbonDisplay(camera) {
@@ -988,17 +1060,25 @@
           record.actorVisible = record.root.visible;
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
-          const parts = entry.spec.rig?.focusParts;
+          // focusParts: BodyPartType value -> exported node id, or {world} in Unity space.
+          const parts = entry.spec.rig?.focusParts && typeof entry.spec.rig.focusParts === "object" ? entry.spec.rig.focusParts : {};
           const shaftAnchor = entry.spec.rig?.shaftAnchor;
-          const boneIds = new Set([parts?.head, parts?.hips, shaftAnchor].filter(Number.isInteger));
+          const boneIds = new Set([...Object.values(parts), shaftAnchor].filter(Number.isInteger));
+          const nodes = new Map();
           if (boneIds.size) {
-            const nodes = new Map();
             gltf.scene.traverse(node => {
               const id = node.userData.elichika_node;
               if (boneIds.has(id)) nodes.set(id, nodes.has(id) ? null : node);
             });
-            record.focusParts = { 0: nodes.get(parts?.head), 3: nodes.get(parts?.hips) };
             record.shaftAnchor = nodes.get(shaftAnchor);
+          }
+          record.focusParts = {};
+          for (const [part, value] of Object.entries(parts)) {
+            const world = value?.world;
+            const point = Number.isInteger(value) ? nodes.get(value) :
+              Array.isArray(world) && world.length === 3 && world.every(Number.isFinite)
+                ? new T.Vector3(-world[0], world[1], world[2]) : null;
+            if (point) record.focusParts[part] = point;
           }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
             parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw, liveMember: true,
@@ -1473,6 +1553,7 @@
       liveCameraEvent = { track: track.id ?? null, event: event.id ?? null, start: event.start, duration: event.duration };
       if (held) liveCameraEvent.held = true;
       mainCameraPosition.copy(liveCamera.position);
+      mainCameraDirection.set(0, 0, -1).applyQuaternion(liveCamera.quaternion);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
 
@@ -1631,6 +1712,7 @@
 
     function resetPhysics(reason) {
       physicsClock?.reset();
+      dofState = global.MVStudioDofFocus?.createState?.() ?? null;
       resetShafts = true;
       lastShaftFrame = null;
       for (const record of records) {
@@ -1662,6 +1744,7 @@
 
     function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
+      captureFocusLag(Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
@@ -1789,6 +1872,7 @@
         record.prop.evaluate(currentTime);
         if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
       }
+      advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
         // Motion sampling is still synchronous. Preserve the world matrices
@@ -1935,10 +2019,7 @@
         return result;
       }
 
-      function focusDistanceReadOnly(slot, part) {
-        const point = records.find((record) => record.group === actors && record.position === slot)?.focusParts?.[part];
-        return point ? temp.point.setFromMatrixPosition(point.matrixWorld).distanceTo(mainCameraPosition) : undefined;
-      }
+      const focusReadOnly = focusSource(true);
 
       read("clock", "clock", () => ({ directorTime: currentTime, rate: physicsRate() }));
       read("directors", "directors", () => [{ key: "director:main", time: currentTime,
@@ -2086,7 +2167,7 @@
       });
       read("post", "post", () => ({
         bloom: global.MVStudioPost?.sample?.(project, currentTime) ?? null,
-        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusDistanceReadOnly) ?? null,
+        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusReadOnly.distance, focusReadOnly.options) ?? null,
         flare: global.MVStudioFlare?.sample?.(project, currentTime) ?? null,
         applied: settings.posteffect === true, enablePostEffect: settings.posteffect === true,
       }));

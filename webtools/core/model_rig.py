@@ -436,11 +436,51 @@ class RigBuilder:
             for key in (path, zlib.crc32(path.encode())):
                 self.morph_bindings[key] = record
 
+    # BodyPartManager.Initialize (GL 3.12.0 libil2cpp 0x27c0170) fills partMap,
+    # which LiveDepthOfFieldMixer.CalcFocusDistance reads with GetPart(bodyPart):
+    # BodyPartType Head 0 = head, HeadAll 1 = headAll, Face 2 = face.gameObject,
+    # Hips 3 = hips, Neck 4 = neck. HeadMaterial 5 is never added.
+    FOCUS_PART_FIELDS = ((0, "head"), (1, "headAll"), (2, "face"), (3, "hips"), (4, "neck"))
+
+    def _root_transform(self, transform):
+        from .model_viewer import _key, _ref
+        seen = set()
+        while transform is not None and _key(transform) not in seen and len(seen) <= 256:
+            seen.add(_key(transform))
+            parent = _ref(transform, self.scene.tree(transform).get("m_Father"))
+            if parent is None:
+                return transform
+            transform = parent
+        return None
+
+    def _focus_part(self, owner, pointer, body_root):
+        """One partMap entry: an exported node, or a fixed world point (Unity space)."""
+        from .model_viewer import _key, _ref
+        target = _ref(owner, pointer)
+        if target is not None and target.type.name != "GameObject":
+            # face is a MemberFace component; partMap keeps its gameObject.
+            target = _ref(target, self.scene.tree(target).get("m_GameObject"))
+        if target is None or target.type.name != "GameObject":
+            return None
+        transform = self.scene.transforms.get(_key(target))
+        if transform is None:
+            return None
+        root = self._root_transform(transform)
+        if root is not None and body_root is not None and _key(root) == _key(body_root):
+            return self.nodes.get(_key(transform))
+        # A reference outside the member prefab (BodyPartManager.face points at
+        # the separate facial prefab asset) survives Instantiate unchanged.
+        # MergeFace instantiates a copy under Head, but partMap still holds the
+        # uninstantiated asset, whose transform never moves.
+        position = self.scene.world(transform)[:3, 3]
+        values = [float(value) for value in position]
+        return {"world": values} if all(math.isfinite(value) for value in values) else None
+
     def _focus_parts(self):
         from .model_viewer import _key, _ref, _source_path
 
         selected = self.selected - self.facial_sources
-        candidates = set()
+        candidates = {}
         for obj in self.scene.env.objects:
             if obj.type.name != "MonoBehaviour" or _source_path(obj) not in selected:
                 continue
@@ -455,19 +495,19 @@ class RigBuilder:
                 if tuple(source.get(key) for key in ("m_ClassName", "m_Namespace", "m_AssemblyName")) != (
                         "BodyPartManager", "LLAS.Components.Members", "Assembly-CSharp.dll"):
                     continue
-                parts = []
-                for name in ("head", "hips"):
-                    game = _ref(obj, tree[name])
-                    transform = self.scene.transforms.get(_key(game)) if game is not None and game.type.name == "GameObject" else None
-                    parts.append(self.nodes.get(_key(transform)) if transform is not None else None)
-                if all(part is not None for part in parts):
-                    candidates.add(tuple(parts))
+                owner = _ref(obj, tree.get("m_GameObject"))
+                body = self.scene.transforms.get(_key(owner)) if owner is not None else None
+                body_root = self._root_transform(body) if body is not None else None
+                parts = {}
+                for value, name in self.FOCUS_PART_FIELDS:
+                    part = self._focus_part(obj, tree.get(name), body_root) if name in tree else None
+                    if part is not None:
+                        parts[str(value)] = part
+                if parts:
+                    candidates[repr(sorted(parts.items()))] = parts
             except (ValueError, TypeError, KeyError, AttributeError):
                 continue
-        if len(candidates) == 1:
-            head, hips = candidates.pop()
-            return {"head": head, "hips": hips}
-        return {}
+        return next(iter(candidates.values())) if len(candidates) == 1 else {}
 
     def metadata(self):
         import copy
