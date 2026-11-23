@@ -266,19 +266,31 @@ class ShaderMaterialTest(unittest.TestCase):
         self.assertEqual([(item["metric"], item["score"]) for item in result.items], [("textureSize", 0.0)])
         self.assertEqual(result.notes["materials.notComparableMPB"], ["mat_stg:_MainTex_ST (mainUVTransform)"])
 
-    def test_cheek_floats_are_ignored_under_cheek_keyword_off(self):
-        result = comparison()
-        game = material_record("head", {"_CHEEK": {"t": "float", "v": 0}, "_CheekIntensity": {"t": "float", "v": 0.045},
-                                        "_RimglightIntensity": {"t": "float", "v": 0.5}})
-        editor = editor_material(kind="member", properties={"_CheekIntensity": {"t": "float", "v": 0},
-                                                            "_RimglightIntensity": {"t": "float", "v": 0.5}})
-        result.compare_materials(game, editor, False)
-        self.assertEqual([item["field"].split(" ")[0] for item in result.items], ["_RimglightIntensity"])
-        self.assertEqual(result.notes["materials.cheekKeywordOff"], ["_CheekIntensity"])
-        result.items.clear()
-        game["materials"][0]["properties"]["_CHEEK"]["v"] = 1
-        result.compare_materials(game, editor, False)
-        self.assertIn("_CheekIntensity", [item["field"].split(" ")[0] for item in result.items])
+    def test_cheek_intensity_under_cheek_keyword_off_is_checked_as_zero(self):
+        def scored(editor_intensity, keywords=None, cheek=0):
+            result = comparison()
+            game = material_record("head", {"_CHEEK": {"t": "float", "v": cheek}, "_CheekIntensity": {"t": "float", "v": 0.045},
+                                            "_CheekTexArrayIndex": {"t": "float", "v": 3}, "_RimglightIntensity": {"t": "float", "v": 0.5}})
+            fields = {"_CheekIntensity": {"t": "float", "v": editor_intensity, "from": "uCheekIntensity"},
+                      "_CheekTexArrayIndex": {"t": "float", "v": 1, "from": "uCheekTexArrayIndex"},
+                      "_RimglightIntensity": {"t": "float", "v": 0.5, "from": "uRimglightIntensity"}}
+            editor = editor_material(kind="member", properties=fields, **({"keywords": keywords} if keywords is not None else {}))
+            result.compare_materials(game, editor, False)
+            return result, {item["field"].split(" ")[0]: item for item in result.items if item["metric"] == "floatScore"}
+
+        # The game keeps a stale 0.045 under _CHEEK 0 (MemberCheekMixer.PostProcess) and draws no cheek.
+        result, items = scored(0)
+        self.assertEqual(sorted(items), ["_CheekIntensity", "_RimglightIntensity"], "the index is not read under _CHEEK 0")
+        self.assertEqual((items["_CheekIntensity"]["game"], items["_CheekIntensity"]["score"]), ([0.0], 0.0))
+        self.assertEqual(result.notes["materials.cheekKeywordOff"], ["_CheekIntensity", "_CheekTexArrayIndex"])
+        result, items = scored(0.3, keywords=["_CHEEK_ON"])
+        self.assertGreater(items["_CheekIntensity"]["score"], 1, "the editor draws a cheek the game does not")
+        result, items = scored(0.3, keywords=[])
+        self.assertEqual(items["_CheekIntensity"]["score"], 0.0, "without _CHEEK_ON the editor draws no cheek either")
+        # With _CHEEK 1 both floats are compared as they are.
+        result, items = scored(0.045, keywords=["_CHEEK_ON"], cheek=1)
+        self.assertEqual(sorted(items), ["_CheekIntensity", "_CheekTexArrayIndex", "_RimglightIntensity"])
+        self.assertEqual(items["_CheekIntensity"]["score"], 0.0)
 
 
 class BillboardTest(unittest.TestCase):

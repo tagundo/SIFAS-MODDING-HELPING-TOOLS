@@ -1173,12 +1173,26 @@ class Comparison:
     def drawn_game_material(self, game_material):
         """The game material with the properties its drawn variant reads: AS/Member reads the cheek floats only
         under _CHEEK_ON. With _CHEEK 0, MemberCheekMixer.PostProcess keeps the floats of the last frame it applied
-        inside a cheek clip, which depend on the device frame grid and are never drawn."""
+        inside a cheek clip, which depend on the device frame grid and are never drawn: the drawn cheek intensity
+        is 0, which the editor's drawn intensity must match, and the texture-array index is not read."""
         properties = game_material.get("properties") or {}
         if self.identity or value_of(properties.get("_CHEEK")) != 0 or not CHEEK_FLOATS & set(properties):
             return game_material
         self.notes["materials.cheekKeywordOff"].extend(sorted(CHEEK_FLOATS & set(properties)))
-        return dict(game_material, properties={name: value for name, value in properties.items() if name not in CHEEK_FLOATS})
+        drawn = {name: value for name, value in properties.items() if name not in CHEEK_FLOATS}
+        if "_CheekIntensity" in properties:
+            drawn["_CheekIntensity"] = {"t": "float", "v": 0.0, "from": "_CHEEK 0: no cheek drawn"}
+        return dict(game_material, properties=drawn)
+
+    @staticmethod
+    def drawn_editor_cheek(editor_material, editor_properties):
+        """An AS/Member editor material draws the cheek only under its _CHEEK_ON variant: without it the drawn
+        cheek intensity is 0 whatever the uniform holds."""
+        keywords = editor_material.get("keywords")
+        intensity = editor_properties.get("_CheekIntensity")
+        if editor_material.get("kind") == "member" and isinstance(keywords, list) and "_CHEEK_ON" not in keywords and \
+                isinstance(intensity, dict) and intensity.get("v") != 0:
+            editor_properties["_CheekIntensity"] = dict(intensity, v=0.0, **{"from": f"{intensity.get('from')} (no _CHEEK_ON: not drawn)"})
 
     def editor_material_properties(self, editor_material, game_material, editor_properties):
         """Unity properties of an editor material beyond its mapped `properties`, and the curve-driven ones removed.
@@ -1241,6 +1255,8 @@ class Comparison:
                     unity = Conventions.material_property(name)
                     if unity:
                         editor_properties[unity] = prop
+                if not self.identity:
+                    self.drawn_editor_cheek(editor_material, editor_properties)
                 values = editor_material.get("values") or {}
                 key = f"material:{renderer_key}#{slot}"
                 if editor_material.get("visible") is False:
