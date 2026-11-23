@@ -1,10 +1,10 @@
 'use strict';
 
 // Pixel checks of the original-particle billboard shader (mv-studio-particle-systems.js):
-//  * Billboard quads with 3D start rotation cover the quad Unity builds: the negated
-//    Z, X, Y start angles in Unity's Euler order inside the alignment frame (camera for
-//    View, world axes for World, emitter for Local), in the stage's reflected X.
-//  * A Local scaling mode node scale sizes the quad.
+//  * Local billboard quads with 3D start rotation cover the quad Unity builds: the
+//    negated Z, X, Y start angles in Unity's Euler order inside the emitter frame, in the
+//    stage's reflected X. View/World X/Y tilt is refused (unevidenced frame handedness).
+//  * A Local scaling mode node scale sizes the quad (Local and View alignment).
 //  * A particle material with stencil Equal Ref 2 (the display particles) draws only where
 //    an earlier queue replaced the stencil with 2 (the display background).
 
@@ -35,7 +35,7 @@ const { chromium } = require('playwright');
             autoRandomSeed: false, randomSeed: 1, maxParticles: 4, lifetime: constant(10), speed: constant(0),
             size: constant(quad), rotation: constant(angles[2]), color: { mode: 0, max: [1, 1, 1, 1] }, gravity: constant(0),
             size3D: false, rotation3D: true, rotationX: constant(angles[0]), rotationY: constant(angles[1]),
-            randomizeRotationDirection: 0, stopAction: 0, cullingMode: 0, simulationSpeed: 1 },
+            randomizeRotationDirection: 0, stopAction: 0, cullingMode: 3, simulationSpeed: 1 },
           emission: once, shape: null, velocity: null, clamp: null, size: null, rotation: null, color: null, uv: null,
           rotationBySpeed: null,
           renderer: { mode: 0, alignment, sortMode: 0, sortingFudge: 0, minParticleSize: 0, maxParticleSize: 10, lengthScale: 2,
@@ -74,8 +74,9 @@ const { chromium } = require('playwright');
           const local = apply(turn, [u * quad[0], v * quad[1], 0]);
           let offset;
           if (alignment === 0) {
-            // Unity camera space looks along +Z; three.js view space along -Z.
-            offset = new T.Vector3(local[0], local[1], -local[2]);
+            // An untilted View quad lies in the camera plane (no handedness involved).
+            if (angles[0] || angles[1]) throw new Error('View X/Y tilt has no evidenced frame');
+            offset = new T.Vector3(local[0], local[1], 0);
           } else {
             const world = alignment === 2 ? apply(quaternionMatrix(emitter), local) : local;
             offset = new T.Vector3(-world[0], world[1], world[2]).applyMatrix3(view);
@@ -136,15 +137,17 @@ const { chromium } = require('playwright');
       const norm = Math.hypot(...emitter);
       const unitEmitter = emitter.map(value => value / norm);
       const cases = [
-        // fx_dis_par_so2035_02 sub display clouds: View, 20 degrees on Y, 1.2 on a 5x3 node.
-        { name: 'view-y', alignment: 0, angles: [0, .3490658402442932, 0], quad: 1.2, scale: [5, 3, 1] },
-        { name: 'view-xyz', alignment: 0, angles: [.5, -.6, .4], quad: 2, scale: [1, 1, 1] },
-        { name: 'world-xyz', alignment: 1, angles: [-.4, .7, .3], quad: 2.5, scale: [1, 1, 1] },
+        // fx_dis_par_so2035_02 main display cloud: View, 1 unit on a 5x3 node (rolled 0.3 rad here).
+        { name: 'view-scaled', alignment: 0, angles: [0, 0, .3], quad: 1, scale: [5, 3, 1] },
         // fx_par_so2035_04 light_02: Local, 5 degrees on Y, on a 1.1x1.1 node.
         { name: 'local-y', alignment: 2, angles: [0, .0872664600610733, 0], quad: 3, scale: [1.1, 1.1, 1] },
         { name: 'local-xyz', alignment: 2, angles: [.45, .8, -.35], quad: 2.5, scale: [1, 1, 1] },
       ];
       const report = [];
+      // View and World X/Y tilt are refused by the runtime.
+      for (const alignment of [0, 1]) {
+        if (P.validSimulation(system('refused', alignment, [0, .35, 0], 1))) throw new Error(`alignment ${alignment} tilt drawn`);
+      }
       for (const item of cases) {
         const pixels = await draw(system(item.name, item.alignment, item.angles, item.quad), item.scale, unitEmitter);
         const got = coverage(pixels);

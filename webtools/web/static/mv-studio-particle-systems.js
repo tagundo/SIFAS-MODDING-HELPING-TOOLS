@@ -23,19 +23,20 @@
   //  * The clone root sits at the world origin plus the clip offset; its
   //    systems use their own serialized random seeds.
   //
-  //  * Billboard quads with 3D start rotation turn by the negated X/Y/Z
-  //    angles in Unity's Euler order (Z, then X, then Y) inside their
-  //    alignment frame: the camera (View), the world (World) or the emitter
-  //    (Local), as mv-studio-display-lights.js draws its Local strokes.
+  //  * Local-aligned billboard quads with 3D start rotation turn by the
+  //    negated X/Y/Z angles in Unity's Euler order (Z, then X, then Y) inside
+  //    the emitter frame, as mv-studio-display-lights.js draws its Local strokes.
   //  * Local scaling mode applies the system's own localScale: local-space
   //    positions go through the scaled transform and billboard quad X/Y sizes
   //    are multiplied by the scale's X/Y.
   //
   // Not reproduced, so the importer reports these systems and this runtime
-  // refuses them as well: X/Y rotation on other render modes and X/Y rotation
-  // over lifetime, ShapeModule.alignToDirection except where a horizontal
-  // billboard cannot show it, and any other transform scale the scaling mode
-  // would apply to particles (Hierarchy, Shape, world-space forces).
+  // refuses them as well: X/Y start rotation on View or World billboards (the
+  // handedness of the camera and world frames for that turn is not evidenced)
+  // and on other render modes, X/Y rotation over lifetime,
+  // ShapeModule.alignToDirection except where a horizontal billboard cannot
+  // show it, any other transform scale the scaling mode would apply to
+  // particles (Hierarchy, Shape, world-space forces).
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -262,14 +263,14 @@
     if (system.rotationBySpeed && !(validCurve(system.rotationBySpeed.curve) && vector(system.rotationBySpeed.range, 2))) {
       return false;
     }
-    if ((tilted(system) && renderer.mode !== 0) ||
+    if ((tilted(system) && (renderer.mode !== 0 || renderer.alignment !== 2)) ||
         (system.rotation?.separateAxes && !(zeroCurve(system.rotation.x) && zeroCurve(system.rotation.y))) ||
         (shape?.alignToDirection && !planarAlignment(system))) return false;
     return [0, 1, 2, 3].includes(renderer.mode) && finite(renderer.maxParticleSize) &&
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
 
-  // X/Y start rotation: drawn on Billboard quads only (validSimulation).
+  // X/Y start rotation: drawn on Local billboards only (validSimulation).
   const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
 
   function validSystem(system, textures) {
@@ -882,18 +883,13 @@
       // Positive particle rotation turns the quad clockwise.
       local = vec2(c * local.x + s * local.y, -s * local.x + c * local.y);
       #if defined(TILTED)
-      // 3D start rotation: the negated Z, X, Y angles in Unity's Euler order,
-      // in the alignment frame (Z above, then X, then Y).
+      // 3D start rotation of a Local billboard: the negated Z, X, Y angles in
+      // Unity's Euler order in the emitter frame (Z above, then X, then Y).
       float cx = cos(particleTilt.x), sx = sin(particleTilt.x);
       float cy = cos(particleTilt.y), sy = sin(particleTilt.y);
       vec3 turned = vec3(local.x, cx * local.y, -sx * local.y);
       turned = vec3(cy * turned.x - sy * turned.z, turned.y, sy * turned.x + cy * turned.z);
-      #if defined(VIEW_FACING)
-      // Unity camera space looks along +Z; three.js view space along -Z.
-      point.xyz += vec3(turned.xy, -turned.z);
-      #else
       point.xyz += mat3(modelViewMatrix) * (uAxisX * turned.x + uAxisY * turned.y + uAxisZ * turned.z);
-      #endif
       #elif defined(VIEW_FACING)
       point.xy += local;
       #elif defined(VERTICAL)

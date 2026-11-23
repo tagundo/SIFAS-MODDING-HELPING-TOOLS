@@ -219,7 +219,7 @@ class NormalizationTests(unittest.TestCase):
             self.assertIsNone(systems.system({}, None, particle, Reader({**RENDERER, "m_Enabled": 0}),
                                              systems._Textures(0)))
 
-    def test_three_dimensional_rotation_is_drawn_on_billboards_only(self):
+    def test_three_dimensional_rotation_is_drawn_on_local_billboards_only(self):
         self.assertTrue(systems._zero(constant(0.0)))
         self.assertFalse(systems._zero(constant(0.5)))
         self.assertTrue(systems._zero({**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 0), key(1, 0)]}}))
@@ -229,18 +229,23 @@ class NormalizationTests(unittest.TestCase):
         flat = systems._main(particle_system(InitialModule={**initial, "rotation3D": True}))
         self.assertTrue(flat["rotation3D"])
         with mock.patch.object(systems, "_material", return_value=(dict(SURFACE), None)):
+            local = Reader({**RENDERER, "m_RenderAlignment": 2})
             for axis in ("startRotationX", "startRotationY"):
-                tumbling = particle_system(InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
+                tumbling = particle_system(cullingMode=3,
+                                           InitialModule={**initial, "rotation3D": True, axis: constant(math.pi)})
                 self.assertEqual(systems._main(tumbling)["rotationX" if axis.endswith("X") else "rotationY"]["scalar"],
                                  math.pi)
-                # Billboard quads (View, World and Local alignment) take the X/Y turn.
-                for alignment in (0, 1, 2):
-                    row = systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
-                                         systems._Textures(0))
-                    self.assertTrue(row["main"]["rotation3D"])
+                # Local billboards turn in the emitter frame (the native display-light strokes' rule).
+                row = systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
+                self.assertTrue(row["main"]["rotation3D"])
+                # The View camera frame and the World frame have no evidenced handedness for the X/Y turn.
+                for alignment in (0, 1):
+                    with self.assertRaisesRegex(systems._Unsupported, "3D start rotation .* on a View or World billboard"):
+                        systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderAlignment": alignment}),
+                                       systems._Textures(0))
                 # Stretched, horizontal and vertical quads are reported.
                 for mode in (1, 2, 3):
-                    with self.assertRaisesRegex(systems._Unsupported, "3D start rotation"):
+                    with self.assertRaisesRegex(systems._Unsupported, r"^3D start rotation \(X/Y axes\)$"):
                         systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderMode": mode}),
                                        systems._Textures(0))
         # Unity keeps serialized X/Y values while 3D rotation is off; only Z is used then.
@@ -274,9 +279,9 @@ class NormalizationTests(unittest.TestCase):
                          "5 original particle systems are not previewed: ShapeModule.alignToDirection x5.")
 
     def test_transform_scale_is_reported_for_the_scaling_mode(self):
-        def walked(scaling, parent_scale, own_scale):
+        def walked(scaling, parent_scale, own_scale, culling=3):
             emitter = walked_node("fx/root/emitter", 1)
-            emitter["components"].update(ParticleSystem=Reader(particle_system(scalingMode=scaling)),
+            emitter["components"].update(ParticleSystem=Reader(particle_system(scalingMode=scaling, cullingMode=culling)),
                                          ParticleSystemRenderer=Reader(RENDERER))
             emitter["scale"] = list(own_scale)
             rows = [walked_node("fx", None), walked_node("fx/root", 0), emitter]
@@ -306,7 +311,7 @@ class NormalizationTests(unittest.TestCase):
                            {"VelocityModule": velocity}, {"renderer": {**RENDERER, "m_RenderMode": 2}}):
                 rows = walked(1, (1, 1, 1), (5, 3, 1))
                 renderer = change.pop("renderer", RENDERER)
-                rows[2]["components"].update(ParticleSystem=Reader(particle_system(scalingMode=1, **change)),
+                rows[2]["components"].update(ParticleSystem=Reader(particle_system(scalingMode=1, cullingMode=3, **change)),
                                              ParticleSystemRenderer=Reader(renderer))
                 with mock.patch.object(systems, "_walk", return_value=rows):
                     row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
@@ -531,20 +536,20 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the
-        # display clouds (View billboards on 5x3..7x3 nodes, the side ones tilted on Y)
-        # are drawn; nothing in 12035 is reported any more.
-        self.assertEqual(source["unsupported"], [])
+        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the main
+        # display clouds (View billboards on 5x3 and 6x3 nodes) are drawn; the side display
+        # clouds are View billboards tilted on Y, whose frame handedness is unevidenced.
+        reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
+        view_tilt = "3D start rotation (X/Y axes) on a View or World billboard"
+        self.assertEqual(reasons, {("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): view_tilt
+                                   for side in "LR" for cloud in "LR"})
         self.assertEqual(len(source["cues"]), 14)
         names = {template["name"]: template for template in source["templates"]}
         self.assertEqual(len(names), 10)
         clouds = {row["path"].rsplit("/root/", 1)[1]: row for row in names["fx_dis_par_so2035_02"]["systems"]}
-        self.assertEqual(sorted(clouds), [f"{part}/cloud_{cloud}" for part in ("main_dis", "sub_dis_L", "sub_dis_R")
-                                          for cloud in "LR"])
+        self.assertEqual(sorted(clouds), ["main_dis/cloud_L", "main_dis/cloud_R"])
         nodes = names["fx_dis_par_so2035_02"]["nodes"]
         self.assertEqual(nodes[clouds["main_dis/cloud_R"]["node"]]["scale"], [6.0, 3.0, 1.0])
-        self.assertEqual((clouds["sub_dis_L/cloud_L"]["main"]["rotationY"]["scalar"],
-                          clouds["sub_dis_L/cloud_L"]["renderer"]["alignment"]), (0.3490658402442932, 0))
         self.assertEqual(clouds["main_dis/cloud_L"]["material"]["stencil"], [3, 2, 0, 0])
         lights = {row["path"].rsplit("/root/", 1)[1]: row for row in names["fx_par_so2035_04"]["systems"]}
         self.assertEqual({path: (row["renderer"]["alignment"], row["main"]["rotationY"]["scalar"])

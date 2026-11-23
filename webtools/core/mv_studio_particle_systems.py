@@ -21,10 +21,13 @@ One common rule for every song, taken from the client and the serialized assets:
   curve, or whose ParticleSystem/renderer properties are animated, are listed
   as not previewed instead of being drawn statically.
 
-* Billboard renderers draw 3D start rotation: the quad turns by the negated
-  start angles in Unity's Euler order (Z, X, Y) inside its alignment frame
-  (camera, world or emitter), the rule mv-studio-display-lights.js draws its
-  Local strokes with. Other render modes with an X/Y start angle are reported.
+* Local-aligned Billboard renderers draw 3D start rotation: the quad turns by
+  the negated start angles in Unity's Euler order (Z, X, Y) inside the emitter
+  frame, the rule mv-studio-display-lights.js draws its Local strokes with.
+  The camera frame of View alignment and the world frame of World alignment
+  have no evidenced handedness for the X/Y turn (the libunity.so billboard
+  geometry for rotation3D was not found), so X/Y start rotation on View or
+  World billboards is reported, as on the other render modes.
 * Local scaling mode applies the node's own localScale to local-space
   billboards: positions through the scaled transform, quad X/Y sizes times the
   scale's X/Y (_scaled_billboard). Other scaled cases are reported.
@@ -234,7 +237,7 @@ def _main(source):
     if result["size3D"]:
         result["sizeY"], result["sizeZ"] = curve(initial["startSizeY"]), curve(initial["startSizeZ"])
     if result["rotation3D"]:
-        # X/Y start rotation is drawn on Billboard quads only (see system()).
+        # X/Y start rotation is drawn on Local billboards only (see system()).
         result["rotationX"], result["rotationY"] = curve(initial["startRotationX"]), curve(initial["startRotationY"])
     return result
 
@@ -628,9 +631,12 @@ def system(objects, game, particle, renderer, textures, blocked=None, *, upright
     initial = source["InitialModule"]
     tilted = result["main"]["rotation3D"] and not (_zero(initial["startRotationX"]) and _zero(initial["startRotationY"]))
     if tilted and drawn["mode"] != 0:
-        # The X/Y turn is reproduced on Billboard quads (View, World and Local
-        # alignment) only; stretched and horizontal/vertical quads are reported.
         raise _Unsupported("3D start rotation (X/Y axes)")
+    if tilted and drawn["alignment"] != 2:
+        # Only the emitter frame of Local alignment is evidenced (display-light
+        # strokes, the 12035 shot 34/35 light X-cross). The handedness of the
+        # View camera frame and the World frame for the X/Y turn is not.
+        raise _Unsupported("3D start rotation (X/Y axes) on a View or World billboard")
     if result["main"]["maxParticles"] > _MAX_PARTICLES:
         bound = _alive_bound(result)
         if bound is None or bound >= _MAX_PARTICLES:
