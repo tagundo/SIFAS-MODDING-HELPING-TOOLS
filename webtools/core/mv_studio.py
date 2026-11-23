@@ -180,7 +180,7 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False):
+             native_stage_effect=False, attach=""):
     models = [path, *companions]
     key = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
@@ -189,7 +189,7 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         # also need explicit companions to rule out local face discovery.
         key = (_root(), tuple((item.name, game_models._sha(item)) for item in models),
                tuple((item.name, game_models._sha(item)) for item in motions), tuple(stage_bindings),
-               native_stage_effect)
+               native_stage_effect) + ((attach,) if attach else ())
         cached = model_viewer._conversion_get(cache, key, time.monotonic() + model_viewer.BUILD_SECONDS)
         if cached is not None:
             name, rig = json.loads(cached)
@@ -203,7 +203,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         face_context={"enabled": performer and not companions, "allow_download": False,
                       "_mv_stage": not performer, "_mv_authored_motion": performer and bool(motions),
                       "_mv_stage_motion_bindings": stage_bindings, "_mv_performer": performer,
-                      "_mv_native_stage_effect": native_stage_effect},
+                      "_mv_native_stage_effect": native_stage_effect,
+                      **({"_mv_attach_key": attach} if performer and attach else {})},
         motion_paths=list(map(str, motions)) or None)
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:

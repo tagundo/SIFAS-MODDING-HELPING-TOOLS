@@ -129,11 +129,13 @@ class ActorCache:
         except _CACHE_ERRORS:
             return None
 
-    def key(self, shared, position, member, model, companions, facial):
+    def key(self, shared, position, member, model, companions, facial, attach=""):
         if shared is None or not companions:
             return None
         try:
-            recipe = (self.recipe, self.context, shared, position, member, _sources([model, *companions]), _sources(facial))
+            # A suit attach key (m_suit_attach) re-dresses the same model bundle.
+            recipe = (self.recipe, self.context, shared, position, member, _sources([model, *companions]), _sources(facial),
+                      *((attach,) if attach else ()))
             return sha256(_encode(recipe)).hexdigest()
         except _CACHE_ERRORS:
             return None

@@ -1010,6 +1010,8 @@ class _Materials:
         if key in self.materials:
             return self.materials[key]
         tree = self.scene.tree(obj) if obj is not None else {}
+        if obj is not None and getattr(self.scene, "member_attach", None) is not None:
+            obj, tree = self.scene.member_attach.material(self.scene, obj, tree)  # suit attach data
         colors = _properties(tree, "m_Colors")
         # AS/Member never consumes _Color; carrying stale Unity generic shader
         # values into glTF incorrectly darkens real outfit heads. Lighting/tint
@@ -2113,6 +2115,9 @@ def _build(paths, deadline, face_context=None, rigged=False, *, _optional_deadli
     scene.preview_stage = bool((face_context or {}).get("_mv_stage"))
     scene.stage_motion_bindings = (face_context or {}).get("_mv_stage_motion_bindings", ())
     scene.native_stage_effect = (face_context or {}).get("_mv_native_stage_effect") is True
+    if (face_context or {}).get("_mv_attach_key"):
+        from .mv_studio_suit_attach import MemberAttach
+        scene.member_attach = MemberAttach.read(scene, face_context["_mv_attach_key"])
     disabled_faces = FacePlan(scene, paths, dict(face_context, enabled=False) if face_context else None, deadline)
     rig = None
     if rigged:

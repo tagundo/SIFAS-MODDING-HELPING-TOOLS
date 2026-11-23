@@ -215,6 +215,23 @@ class MVGameCatalogTests(unittest.TestCase):
             motion.write_bytes(b"Different authored timeline clip data")
             open_actor()
             self.assertEqual(prepare.call_count, 3)
+            # A suit attach key re-dresses the same model bundle: its own preview, told the key.
+            mv_studio._preview(model, performer=True, motions=(motion,), companions=(companion,), reuse=True, attach="c1")
+            self.assertEqual(prepare.call_count, 4)
+            self.assertEqual(prepare.call_args.kwargs["face_context"]["_mv_attach_key"], "c1")
+            self.assertNotIn("_mv_attach_key", prepare.call_args_list[0].kwargs["face_context"])
+
+    def test_actor_cache_keys_a_suit_attach_key(self):
+        from webtools.core import mv_studio_actor_cache as actors
+        model, face = self.root / "model.unity", self.root / "face.unity"
+        for file in (model, face):
+            file.write_bytes(file.name.encode())
+        cache = actors.ActorCache.__new__(actors.ActorCache)
+        cache.recipe, cache.context = "recipe", ("gl", "android")
+        plain = cache.key(("timeline", []), 1, 211, model, [face], [])
+        self.assertEqual(plain, cache.key(("timeline", []), 1, 211, model, [face], [], attach=""))
+        self.assertNotEqual(plain, cache.key(("timeline", []), 1, 211, model, [face], [], attach="c1"))
+
 
     def test_exact_game_stage_reuses_successful_media_across_staging_directories(self):
         first = self.root / "old-import" / "game-2.unity"
