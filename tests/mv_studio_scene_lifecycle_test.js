@@ -383,6 +383,26 @@ async function checkNativeMemberCulling() {
   f.app.dispose();
 }
 
+// LiveCoreMemberManager.MemberMax = 12: lives such as 12074 bind Member10..Member12.
+async function checkTwelvePerformers() {
+  const f = fixture(), value = project(70);
+  value.performers = Array.from({ length: 13 }, (_, index) => ({ ...project(70 + index).performers[0],
+    id: `member-${index + 1}`, position: index + 1 }));
+  value.tracks.push({ nativeClass: 'LiveMemberCullerTrack', binding: '/EntryPoint/Live/Members/Member12', events: [
+    { start: 2, duration: 1, values: { playableClass: 'LiveMemberCullerClip' } },
+  ] });
+  await f.app.load(value);
+  f.app.seek(1, value);
+  const shown = new Set(f.frames.at(-1));
+  for (let index = 0; index < 12; index++) assert(shown.has(`model-${70 + index}`), `performer ${index + 1} is loaded`);
+  assert(!shown.has('model-82'), 'a thirteenth performer is beyond MemberMax');
+  f.app.seek(2.5, value);
+  const culled = new Set(f.frames.at(-1));
+  assert(!culled.has('model-81') && !culled.has('outline-81'), 'Member12 culling hides the twelfth performer');
+  assert(culled.has('model-79') && culled.has('model-80'), 'Member12 culling leaves Member10/11 visible');
+  f.app.dispose();
+}
+
 function stateOf(f) {
   const nodes = [];
   f.world.traverse((node) => {
@@ -542,6 +562,7 @@ function checkAssetDumpHelpers() {
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
+  await checkTwelvePerformers();
   const f = fixture(), first = project(1);
   await f.app.load(first);
   assert.deepEqual(f.frames.at(-1), ['model-1', 'outline-1']);

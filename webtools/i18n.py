@@ -2637,9 +2637,9 @@ _MV_STUDIO_TRANSLATIONS = {
     "Performer": ("출연자", "出演者"),
     "No performers are loaded.": ("불러온 출연자가 없습니다.", "読み込まれた出演者がいません。"),
     "Replace outfit": ("의상 교체", "衣装を交換"),
-    "This MV already has nine performers. Choose an existing performer to replace their outfit.": [
-        "이 MV에는 이미 출연자가 9명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
-        "このMVには出演者がすでに9人います。既存の出演者を選んで衣装を交換してください。"
+    "This MV already has twelve performers. Choose an existing performer to replace their outfit.": [
+        "이 MV에는 이미 출연자가 12명 있습니다. 기존 출연자를 선택해 의상을 교체하세요.",
+        "このMVには出演者がすでに12人います。既存の出演者を選んで衣装を交換してください。"
     ],
     "Props": ("소품", "小道具"),
     "Effects": ("효과", "エフェクト"),

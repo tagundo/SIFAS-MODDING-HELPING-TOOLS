@@ -793,7 +793,8 @@
         }
       }
       if (stageOnly) return entries;
-      for (const performer of (value.performers || []).slice(0, 9)) {
+      // LiveCoreMemberManager.MemberMax: an MV has up to 12 performers.
+      for (const performer of (value.performers || []).slice(0, 12)) {
         if (performer.glb) entries.push({ spec: performer, group: actors });
       }
       entries.push(...attachments);
@@ -1416,7 +1417,7 @@
       cameraOffsets.clear();
       for (const track of tracks) {
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightShaftTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           const slot = track.shaftSlot ?? (bound ? Number(bound[1]) : null);
           if (bound && slot === Number(bound[1])) {
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightShaftClip");
@@ -1425,7 +1426,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberSpotLightAreaTrack") {
-          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const binding = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (binding) {
             const slot = Number(binding[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberSpotLightAreaClip");
@@ -1434,7 +1435,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberCullerTrack") {
-          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9])$/.exec(track.binding || "");
+          const slot = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)$/.exec(track.binding || "");
           if (slot) {
             const position = Number(slot[1]);
             const events = track.events.filter(event => event.values?.playableClass === "LiveMemberCullerClip" && event.duration > 0);
@@ -1443,7 +1444,7 @@
           continue;
         }
         if (!track.muted && track.nativeClass === "LiveMemberScalingTrack") {
-          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9])\/Model$/.exec(track.binding || "");
+          const bound = /^\/EntryPoint\/Live\/Members\/Member([1-9][0-9]*)\/Model$/.exec(track.binding || "");
           if (!bound) continue;
           const slot = Number(bound[1]);
           const clips = memberScaleTracks.get(slot) || [];

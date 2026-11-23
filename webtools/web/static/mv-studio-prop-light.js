@@ -1,7 +1,7 @@
 (function (global) {
   "use strict";
 
-  const propBinding = /^\/EntryPoint\/Live\/Members\/ske_[A-Za-z0-9_]+\/Member([1-9])\/Model\/(?:[A-Za-z0-9_]+\/)+chp[0-9]+$/;
+  const propBinding = /^\/EntryPoint\/Live\/Members\/ske_[A-Za-z0-9_]+\/Member([1-9][0-9]*)\/Model\/(?:[A-Za-z0-9_]+\/)+chp[0-9]+$/;
 
   function uniqueTrack(tracks, nativeClass) {
     const matches = tracks.filter(track => track.nativeClass === nativeClass);
