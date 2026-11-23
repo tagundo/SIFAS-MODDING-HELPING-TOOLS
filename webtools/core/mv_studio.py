@@ -640,6 +640,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original soundtrack is unavailable for preview.")
             warnings.extend(f"{item['role']}: {item['reason']}" if isinstance(item, dict) else str(item)
                             for item in selected.get("missing", []))
+            from . import mv_studio_import_coverage
+            mv_studio_import_coverage.apply(project)
             project["assets"] = list(rows.values())
         return _register(project, native)
     finally:

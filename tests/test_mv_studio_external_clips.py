@@ -271,6 +271,7 @@ class LoadGameWiringTests(unittest.TestCase):
         self.assertEqual(self.reads.count("dance-a"), 1)
         self.assertEqual(self.reads.count("dance-b"), 1)
         self.assertEqual(project["warnings"], ["earlier"])
+        self.assertEqual(project["importCoverage"]["gaps"], [])
         self.assertEqual(project["companionClips"], self.resolved["clips"])
         self.assertEqual(project["tracks"], self.tracks)
         self.assertEqual([(row["position"], row["memberId"]) for row in project["performers"]], [(1, 211), (2, 212)])
