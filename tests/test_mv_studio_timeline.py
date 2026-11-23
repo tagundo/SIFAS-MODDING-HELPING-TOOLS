@@ -63,6 +63,78 @@ class TimelineContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "camera bindings"):
                     studio._camera_sample_order(amended)
 
+    @staticmethod
+    def euler_camera(order, eulers, rate=60.):
+        """A full native shot: dense position, Euler (customType = RotationOrder) and FOV samples."""
+        rows = [{"path": 0, "typeID": 4, "attribute": 1, "customType": 0, "isPPtrCurve": 0},
+                {"path": 0, "typeID": 4, "attribute": 4, "customType": order, "isPPtrCurve": 0},
+                {"path": 0, "typeID": 114, "attribute": studio._FOV, "customType": 0, "isPPtrCurve": 0}]
+        samples = [value for index, euler in enumerate(eulers) for value in (index * .1, 1.5, -4., *euler, 30. + index)]
+        span = (len(eulers) - 1) / rate
+        return {"m_SampleRate": rate, "m_ClipBindingConstant": {"genericBindings": rows}, "m_MuscleClip": {
+            "m_StartTime": 0., "m_StopTime": span, "m_Clip": {"data": {
+                "m_StreamedClip": {"curveCount": 0, "data": []}, "m_ConstantClip": {"data": []},
+                "m_DenseClip": {"m_CurveCount": 7, "m_FrameCount": len(eulers), "m_SampleRate": rate,
+                                "m_BeginTime": 0., "m_SampleArray": samples}}}}}
+
+    @staticmethod
+    def camera_points(tree):
+        span = tree["m_MuscleClip"]["m_StopTime"]
+        return studio._camera_frames(SimpleNamespace(read_typetree=lambda: tree), {}, span, None, 10_000)
+
+    def test_camera_euler_binding_uses_its_unity_rotation_order(self):
+        import math
+        from webtools.core import model_animation as animation
+
+        def unity(order, euler):  # Unity-handed quaternion of the Euler angles in that order.
+            return list(animation.unity_euler_quaternion(euler, order))
+
+        eulers = [[10., 70., -40.], [12., 68., -35.]]
+        for order in (0, 4):
+            with self.subTest(order=order):
+                tree = self.euler_camera(order, eulers)
+                self.assertEqual(studio._camera_channels(tree, None)["eulerOrder"], order)
+                for point, euler in zip(self.camera_points(tree), eulers):
+                    expected = unity(order, euler)
+                    self.assertGreater(abs(sum(a * b for a, b in zip(point["rotation"], expected))), 1 - 1e-12)
+        # SIFAS cameras bind customType 0: XYZ is q = qZ*qY*qX, which differs from the ZXY default here.
+        xyz, zxy = unity(0, eulers[0]), unity(4, eulers[0])
+        self.assertLess(abs(sum(a * b for a, b in zip(xyz, zxy))), math.cos(math.radians(1)))
+        for invalid in (6, 2.5):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "Euler rotation order"):
+                studio._camera_channels(self.euler_camera(invalid, eulers), None)
+
+    def test_camera_point_edits_write_euler_samples_in_the_binding_order(self):
+        import math
+        import random
+        rng = random.Random(7)
+        # A sweep through the XYZ gimbal region and across +-180 degrees.
+        eulers = [[170. + 4 * index, 60. + 2.5 * index, -175. - 3 * index] for index in range(16)]
+        eulers += [[rng.uniform(-170, 170), rng.uniform(-80, 80), rng.uniform(-170, 170)] for _ in range(8)]
+        for order in (0, 4):
+            with self.subTest(order=order):
+                tree = self.euler_camera(order, eulers)
+                span = tree["m_MuscleClip"]["m_StopTime"]
+                before = self.camera_points(tree)
+                after = deepcopy(before)
+                for point in after:
+                    point["fov"] += 1
+                studio._write_camera(tree, {}, {"duration": span, "values": {"keyframes": before}},
+                                     {"duration": span, "values": {"keyframes": after}})
+                written = self.camera_points(tree)
+                for old, new in zip(after, written):
+                    self.assertGreater(abs(sum(a * b for a, b in zip(old["rotation"], new["rotation"]))), 1 - 1e-12)
+                    self.assertAlmostEqual(new["fov"], old["fov"], places=9)
+                samples = tree["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]["m_SampleArray"]
+                angles = [samples[index * 7 + 3:index * 7 + 6] for index in range(len(eulers))]
+                # Linear interpolation between dense samples never takes the long way round.
+                self.assertLess(max(abs(b - a) for first, second in zip(angles, angles[1:])
+                                    for a, b in zip(first, second)), 181)
+                # Authored steps are 2.5-4 degrees. Exactly at the XYZ gimbal (y = 90) only x - z is defined:
+                # the writer keeps x and the next sample catches up with one doubled step.
+                self.assertLess(max(abs(b - a) for first, second in zip(angles[:16], angles[1:16])
+                                    for a, b in zip(first, second)), 8.5)
+
     def test_stage_motion_euler_channels_carry_the_binding_rotation_order(self):
         from webtools.core import mv_studio_stage_motion as stage
         bindings = {"genericBindings": []}

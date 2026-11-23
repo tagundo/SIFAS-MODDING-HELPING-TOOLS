@@ -219,9 +219,19 @@ def _camera_channels(tree, deadline):
             if channel in channels:
                 raise ValueError("The camera clip has conflicting channel bindings.")
             channels[channel] = group
+            if channel == "euler":
+                # GenericBinding.customType is the Unity RotationOrder (SIFAS cameras use 0, XYZ).
+                channels["eulerOrder"] = _camera_euler_order(bind)
     if len(curves) != offset or "position" not in channels or not {"rotation", "euler"} & channels.keys():
         raise ValueError("The camera clip has unsupported native channel bindings.")
     return channels
+
+
+def _camera_euler_order(binding):
+    try:
+        return animation.euler_order(binding.get("customType", animation.DEFAULT_EULER_ORDER))
+    except animation.AnimationError as error:
+        raise ValueError("The camera clip has an unsupported Euler rotation order.") from error
 
 
 def _camera_binding(binding):
@@ -260,7 +270,8 @@ def _camera_frames(obj, clip, duration, deadline, remaining_frames):
         position = [animation._finite(evaluate(value, stamp)) for value in channels["position"]]
         orientation = channels.get("rotation") or channels["euler"]
         rotation = animation._quaternion([evaluate(value, stamp) for value in orientation],
-                                         euler="rotation" not in channels)
+                                         euler="rotation" not in channels,
+                                         order=channels.get("eulerOrder", animation.DEFAULT_EULER_ORDER))
         # The viewer helper returns glTF handedness. This descriptor exposes
         # Unity coordinates, keeping handedness conversion with the renderer.
         rotation[1] = -rotation[1]
@@ -719,7 +730,7 @@ def _camera_vector(value, length, label):
 
 
 def _write_camera(tree, clip, old_event, new_event):
-    from live_timeline.sifas_timeline_inject import quat_to_unity_euler
+    from live_timeline.sifas_timeline_inject import unity_euler_near
 
     before, after = old_event["values"]["keyframes"], new_event["values"]["keyframes"]
     span = old_event["duration"]
@@ -734,6 +745,11 @@ def _write_camera(tree, clip, old_event, new_event):
         raise ValueError("Camera point edits require an untrimmed, full native shot with unchanged sample times.")
     order = _camera_sample_order(tree)
     sample_array, previous_euler = [], None
+    if "euler" in order:
+        channels = _camera_channels(tree, None)
+        euler_order = channels["eulerOrder"]
+        # Start from the original first sample's angles; later samples follow their predecessor.
+        previous_euler = [animation._evaluate(curve, first) for curve in channels["euler"]]
     for index, (old_point, point) in enumerate(zip(before, after)):
         if (not isinstance(point, dict) or set(point) != {"time", "position", "rotation", "fov"}
                 or point["time"] != old_point["time"] or abs(point["time"] - index / rate) > 1e-5):
@@ -747,10 +763,9 @@ def _write_camera(tree, clip, old_event, new_event):
         fov = [_time(point["fov"], "field of view", minimum=.01, maximum=179.99)]
         values = {"position": position, "rotation": rotation, "fov": fov}
         if "euler" in order:
-            euler = quat_to_unity_euler(rotation)
-            if previous_euler is not None:
-                euler = [axis + 360 * round((previous - axis) / 360) for axis, previous in zip(euler, previous_euler)]
-            values["euler"] = previous_euler = euler
+            # Write the binding's own rotation order. The dense clip lerps Euler
+            # samples, so keep the equivalent angles nearest the previous sample.
+            values["euler"] = previous_euler = unity_euler_near(rotation, euler_order, previous_euler)
         for channel in order:
             sample_array.extend(values[channel])
     packed = muscle["m_Clip"]["data"]
