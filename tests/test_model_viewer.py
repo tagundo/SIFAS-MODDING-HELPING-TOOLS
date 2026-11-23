@@ -496,6 +496,57 @@ class ShaderMaterialTests(unittest.TestCase):
         self.assertEqual(self.material(dependency="asmember.shader.unity3d", shader_path_id=123), expected)
 
 
+class StageTintMaterialTests(unittest.TestCase):
+    GREY = [.72, .74, .78, 1]
+    RIMLIGHT = ("cab-6cf8387efa4151b6220fceb9384d0e8e", 7983779172275908372)  # AS/Rimlight/Opaque (microphone)
+
+    def factor(self, colors, *, identity=RIMLIGHT, resolved=None):
+        """baseColorFactor of a material whose saved m_Colors are `colors` (no _Color unless given)."""
+        asset = SimpleNamespace(externals=[SimpleNamespace(name=identity[0].upper())])
+        material = SimpleNamespace(assets_file=asset, path_id=1)
+        shader = SimpleNamespace(assets_file=asset, path_id=2, type=SimpleNamespace(name="Shader")) if resolved else None
+        tree = {"m_Name": "mat_stg_so2035_oth_01", "m_Shader": {"m_FileID": 1, "m_PathID": identity[1]},
+                "m_SavedProperties": {"m_Colors": [(name, dict(zip("rgba", value))) for name, value in colors.items()]}}
+
+        def read(obj):
+            if obj is material:
+                return tree
+            if obj is shader:
+                name, props = resolved
+                return {"m_ParsedForm": {"m_Name": name, "m_PropInfo": {"m_Props": [
+                    {"m_Name": prop, "m_Type": kind, **{f"m_DefValue[{i}]": value for i, value in enumerate(default)}}
+                    for prop, kind, default in props]}}}
+            raise AssertionError("Unknown source")
+
+        scene = SimpleNamespace(tree=read, env=SimpleNamespace(objects=[]), stats={"materials": 0})
+        glb = viewer._Glb()
+        with patch.object(viewer, "_ref", return_value=shader), patch.object(viewer, "_source_path", return_value="stage.unity"):
+            viewer._Materials(scene, glb).material(material)
+        return glb.doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"]
+
+    def test_as_tint_shaders_without_color_use_their_tint_not_the_generic_grey(self):
+        rim = {"_AmbientColor": (1, 1, 1, 0), "_RimlightColor": (1, 1, 1, 1), "_RimlightDirection": (0, 0, 0, 0)}
+        self.assertEqual(self.factor({**rim, "_TintColor": (1, 1, 1, 1)}), [1, 1, 1, 1], "12035 microphone stand")
+        self.assertEqual(self.factor({**rim, "_TintColor": (.9, .8, .7, .6)}), [.9, .8, .7, .6])
+        general = ("cab-618a998abe328b9a2b05b370a5907b3e", 8330475765356442367)
+        self.assertEqual(self.factor({"_AmbientColor": (0, 0, 0, 0)}, identity=general), [1, 1, 1, 1],
+                         "an unset _TintColor is the ShaderLab default")
+        self.assertEqual(self.factor({"_TintColor": (2, .5, 1, 1)}, identity=general), [1, .5, 1, 1])
+        declared = ("AS/General/Opaque", [("_TintColor", 0, (.5, .6, .7, 1)), ("_AmbientColor", 0, (1, 1, 1, 0))])
+        self.assertEqual(self.factor({}, identity=("cab-unknown", 5), resolved=declared), [.5, .6, .7, 1],
+                         "a loaded shader's own declared default")
+
+    def test_other_shaders_keep_color_or_the_generic_fallback(self):
+        tint = {"_TintColor": (.5, .5, .5, .5)}
+        self.assertEqual(self.factor(tint, identity=("cab-unknown", 7983779172275908372)), self.GREY)
+        self.assertEqual(self.factor(tint, identity=(self.RIMLIGHT[0], 123)), self.GREY)
+        particles = ("Legacy Shaders/Particles/Additive", [("_TintColor", 0, (.5, .5, .5, .5))])
+        self.assertEqual(self.factor(tint, resolved=particles), self.GREY, "not an AS/* shader")
+        soft = ("AS/SoftParticleBillboard", [("_Color", 0, (1, 1, 1, 1))])
+        self.assertEqual(self.factor(tint, resolved=soft), self.GREY, "AS/* shaders that read _Color")
+        self.assertEqual(self.factor({"_Color": (.25, .5, .75, 1), **tint}), [.25, .5, .75, 1], "a saved _Color is kept")
+
+
 class RealUnityFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
