@@ -220,8 +220,9 @@ async function checkNativeCamera() {
   f.app.dispose();
 }
 
-// Original MV end: the end effect starts when the music ends, at soundtrack
-// duration - offset in director time (the audio plays at time + offset).
+// Original MV end: past the last camera clip the live camera holds that shot's
+// final pose (StartBlur keeps the last 3D frame), and the end effect starts when
+// the music ends, at soundtrack duration - offset in director time.
 async function checkOriginalEndHold() {
   const f = fixture(true, { screenFade: true });
   const track = { kind: 'camera', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera', events: [
@@ -233,11 +234,18 @@ async function checkOriginalEndHold() {
   const value = { source: { kind: 'game' }, duration: 6, soundtrack: { duration: 5, offset: .5 }, tracks: [track], performers: [] };
   await f.app.load(value);
   const shot = (time) => { f.app.seek(time, value); return f.cameras.at(-1); };
-  shot(4);
+  assert.equal(shot(1.5).near, .02, 'a gap between clips is not the end: the editor view stays');
+  const held = shot(4);
+  assert.deepEqual([held.position, held.fov, held.near], [[-2,2,4], 28, .1], 'the last shot holds its final pose');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.app.inspect().cameraEvent)),
+    { track: null, event: 'c:1', start: 2, duration: 1, held: true });
+  assert.equal(f.app.inspect().liveShot, true);
   assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 4.5 }, 'the music ends at duration - offset');
   value.soundtrack.offset = undefined;
   shot(4);
   assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 5 });
+  value.source = { kind: 'user' };
+  assert.equal(shot(4).near, .02, 'only an original MV holds the last shot');
   f.app.dispose();
 }
 
