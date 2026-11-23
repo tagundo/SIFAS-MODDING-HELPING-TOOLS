@@ -385,10 +385,41 @@ def member_head(scene, sources):
             if head_all is None or head_all.type.name != "GameObject":
                 continue
             dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
-            heads.append({"faceDots": dots is not None})
+            head = {"faceDots": dots is not None}
+            face = _member_face(scene, obj, tree)
+            material = _ref(obj, tree.get("headMaterial"))
+            # Only InitializeDefault (no mask) adds the cheek, bound to the
+            # sharedMaterial of the merged mesh_face/CombineFace; the editor's
+            # native merge gives those surfaces BodyPartManager.headMaterial.
+            if (dots is None and face is not None and _flag(face.get("needsMergingFace"))
+                    and material is not None and material.type.name == "Material"):
+                head["cheekMaterial"] = str(scene.tree(material).get("m_Name", ""))
+            heads.append(head)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
     return heads[0] if len(heads) == 1 else {}
+
+
+def _flag(value):
+    return type(value) in (bool, int) and value == 1
+
+
+def _member_face(scene, manager, tree):
+    """BodyPartManager.face's inline MemberFaceData, verified by its MonoScript."""
+    from .model_viewer import _ref
+    face = _ref(manager, tree.get("face"))
+    if face is None or face.type.name != "MonoBehaviour":
+        return None
+    face_tree = scene.tree(face)
+    script = _ref(face, face_tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return None
+    definition = scene.tree(script)
+    if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
+            "MemberFace", "LLAS.Components.Members", "Assembly-CSharp.dll"):
+        return None
+    data = face_tree.get("memberFaceData")
+    return data if isinstance(data, dict) else None
 
 
 def _atomic(path, data):

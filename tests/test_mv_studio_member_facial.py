@@ -42,8 +42,8 @@ def _timeline(tracks):
     groups = {member: add("GroupTrack", {"m_Name": f"Member{member}"}) for member in {row[0] for row in tracks}}
     for member, cls, rina, muted, clips in tracks:
         rows = []
-        for start, index in clips:
-            asset = add("Clip", {"index": index, "weight": 1.0})
+        for start, index, *fields in clips:
+            asset = add("Clip", fields[0] if fields else {"index": index, "weight": 1.0})
             rows.append({"m_Asset": {"m_FileID": 0, "m_PathID": asset}, "m_Start": start, "m_Duration": 1.0,
                          "m_DisplayName": f"{cls}-{index}"})
         tree = {"m_Name": cls, "m_Parent": {"m_FileID": 0, "m_PathID": groups[member]}, "m_Muted": muted, "m_Clips": rows}
@@ -53,7 +53,15 @@ def _timeline(tracks):
     return {"objects": objects}, classes
 
 
-class SyntheticFacialSelectionTests(unittest.TestCase):
+class _Parse:
+    def parse(self, tracks, **options):
+        source, classes = _timeline(tracks)
+        with patch.object(game_motion_selection, "_read", return_value=source), \
+                patch.object(game_motion_selection, "_class", side_effect=lambda src, obj, tree: classes[obj.path_id]):
+            return game_motion_timeline.parse_timeline("timeline.unity", 1, **options)
+
+
+class SyntheticFacialSelectionTests(_Parse, unittest.TestCase):
     TRACKS = [
         (1, "MemberEyeTrack", 0, 0, [(0, 1), (2, 3)]),
         (1, "MemberEyeTrack", 1, 0, [(0, 101), (2, 102)]),
@@ -63,12 +71,6 @@ class SyntheticFacialSelectionTests(unittest.TestCase):
         (1, "MemberCheekTrack", None, 0, [(0, 0)]),
         (2, "MemberEyeTrack", 1, 0, [(5, 101)]),
     ]
-
-    def parse(self, tracks, **options):
-        source, classes = _timeline(tracks)
-        with patch.object(game_motion_selection, "_read", return_value=source), \
-                patch.object(game_motion_selection, "_class", side_effect=lambda src, obj, tree: classes[obj.path_id]):
-            return game_motion_timeline.parse_timeline("timeline.unity", 1, **options)
 
     @staticmethod
     def indices(parsed, kind):
@@ -108,6 +110,15 @@ class SyntheticFacialSelectionTests(unittest.TestCase):
         self.assertEqual(self.parse(tracks, face_dots=True)["events"][0]["kind"], "eyes")
         self.assertEqual(len(self.parse(tracks, face_dots=True)["events"]), 1, "gaze keeps its authored mute")
         self.assertEqual(self.parse(tracks)["events"], [], "an unknown head keeps the authored mute")
+
+
+class SyntheticCheekEventTests(_Parse, unittest.TestCase):
+    def test_cheek_events_carry_type_and_intensity(self):
+        cheek = {"cheekType": 1, "intensity": .317}
+        parsed = self.parse([(1, "MemberCheekTrack", None, 0, [(2, 0, cheek), (5, 0, {"cheekType": 0, "intensity": 7})])],
+                            face_dots=False)
+        rows = [(event["index"], event["intensity"], event["weight"]) for event in parsed["events"]]
+        self.assertEqual(rows, [(1, .317, 1.0), (0, 1.0, 1.0)], "intensity is a finite 0-1 value")
 
 
 class _Scene:
@@ -208,6 +219,12 @@ class OriginalFacialSelectionTests(unittest.TestCase):
                 self.assertEqual(selected.pop("trackSelection")["mutedTracks"], 0)
                 self.assertEqual(selected, legacy)
 
+    def test_12035_cheek_clips(self):
+        parsed, _ = self.events(12035, face_dots=False)
+        cheeks = [(round(e["start"], 3), e["index"], round(e["intensity"], 3), e["timing"]["easeIn"], round(e["timing"]["easeOut"], 3))
+                  for e in parsed["events"] if e["kind"] == "cheek"]
+        self.assertEqual(cheeks, [(15.883, 0, .317, .2, .6), (57.263, 0, .317, .2, .6), (78.467, 0, .317, .2, .6)])
+
     def test_member_head_reads_the_loaded_board(self):
         from webtools.core import model_viewer as viewer
         for live, expected in ((12029, True), (12035, False)):
@@ -217,7 +234,10 @@ class OriginalFacialSelectionTests(unittest.TestCase):
             with self.subTest(live=live):
                 deadline = time.monotonic() + 60
                 scene = viewer._Scene(viewer._environment([str(path) for path in paths], deadline), deadline)
-                self.assertEqual(model_faces.member_head(scene, {str(paths[0])})["faceDots"], expected)
+                head = model_faces.member_head(scene, {str(paths[0])})
+                self.assertEqual(head["faceDots"], expected)
+                # InitializeDefault binds the cheek to the merged face's head material; a mask has none.
+                self.assertEqual(head.get("cheekMaterial"), None if expected else "ch0212_co0001_head")
 
 
 if __name__ == "__main__":

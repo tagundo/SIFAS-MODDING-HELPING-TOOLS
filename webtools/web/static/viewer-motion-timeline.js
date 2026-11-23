@@ -412,7 +412,7 @@
       if (register(groups, clip, segment, false)) used += 1;
       else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
-    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [];
+    var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [], cheekEvents = [];
     if (maskEvents) events.slice(0, 12000).forEach(function (event) {
       if (maskEvents[event.kind]) { maskEvents[event.kind].push(event); maskMembers.add(event); }
     });
@@ -474,6 +474,10 @@
     events.slice(0, 12000).forEach(function (event) {
       if (event.kind === "gaze") {
         gazeEvents.push(event);
+        return;
+      }
+      if (event.kind === "cheek") {
+        cheekEvents.push(event);
         return;
       }
       if (event.kind !== "eyes" && event.kind !== "mouth") return;
@@ -680,6 +684,19 @@
       evaluate: function (time) {
         evaluatePose(time);
         evaluateGaze(time);
+      },
+      // MemberCheekMixer.Process runs per active input: ApplyEnable(true), then
+      // ApplyCheek(cheekType, intensity * weight) overwrites the material, so the
+      // last active input wins. PostProcess disables _CHEEK_ON when no input ran.
+      cheek: function (time) {
+        beginSample(time, false);
+        var state = null;
+        timedRecords(cheekEvents, time).forEach(function (event) {
+          var amount = sampleWeight(event, time);
+          if (!(amount > 0)) return;
+          state = { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)) };
+        });
+        return state;
       },
       getGazeState: function () { return Object.assign(gaze.getState(), { retargeted: retargetedGaze, sourceOwner: retargetedGaze ? modelGaze.owner : descriptor.targetCharacter || null }); },
       followsGazeTarget: function () { return gazeEvents.some(function (event) { return event.target === 21 || event.target >= 37; }); },

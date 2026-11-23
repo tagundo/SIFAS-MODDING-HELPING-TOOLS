@@ -124,6 +124,10 @@ def parse_timeline(path, performer=1, *, segments=None, face_dots=None):
                      "label": str(clip.get("m_DisplayName", ""))[:128], "timing": timing(clip)}
             if kind == "gaze":
                 event["target"] = int(_finite(asset.get("target"), high=1000))
+            elif kind == "cheek":
+                # MemberCheekMixer.Process: ApplyCheek(clip.cheekType, clip.intensity * input weight).
+                event["index"] = int(_finite(asset.get("cheekType"), high=1000))
+                event["intensity"] = _finite(asset.get("intensity"), high=1)
             events.append(event)
             if len(events) > MAX_EVENTS:
                 raise ValueError("The selected facial timeline contains too many events.")
