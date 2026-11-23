@@ -3,6 +3,7 @@
    node tests/mv_spring_order_check.js --manifest M.json --out DIR [--times 14.85,57.6]
         [--configs same-frame,game,game@60] [--server-root DIR] [--library DIR] [--url URL]
         [--chromium PATH] [--software true] [--margin 32] [--margin-fraction 0.15] [--assert true] [--envelope 4] [--noise 0.15]
+        [--warmup true]
 
    Every time is rendered once per config through the editor's own import, with the
    spring rate of the manifest's reference (mv_frame_capture.physicsReference). A config
@@ -18,6 +19,12 @@
    With --assert true: no changed pixel outside the member box, every config whose
    grid differs from the baseline grid stays within --noise deg, and every order change
    stays within --envelope deg. DIR gets the PNGs, result.json and summary.json.
+
+   The first spring job after an import runs the game-load forced skirt correction
+   (later seeks do not), so the first rendered frame of a session carries that
+   history. --warmup true renders the first time once and discards it, so every
+   measured config starts alike (use it for grid-only checks; leave it off to keep
+   the first config pixel-identical to a plain mv_frame_capture.js run).
 */
 'use strict';
 const assert = require('node:assert/strict');
@@ -179,6 +186,10 @@ async function run() {
     const planned = manifest.autoFrames ? capture.midShotTimes(tracks, manifest.autoFrames) : [];
     const times = options.times ? options.times.split(',').map(Number) :
       [...new Set([...manifest.frames.map((frame) => frame.time), ...planned])].sort((a, b) => a - b);
+    if (options.warmup === 'true' && times.length) {
+      await capture.applyPhysicsReference(page, { ...reference, order: configs[0].order, timing: { ...reference.timing, order: configs[0].order } });
+      await capture.renderFrame(page, times[0], manifest.physics.preroll, configs[0].grid ?? reference.rate);
+    }
     for (const time of times) {
       const row = { time, runs: [] };
       for (const config of configs) {
