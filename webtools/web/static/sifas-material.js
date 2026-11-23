@@ -383,6 +383,12 @@
       pair.main.userData.sifasRuntime.outlineStencilComp = comparison;
     }
 
+    function cheekLayer(pair, index) {
+      var layer = Math.floor(finite(index, 0) + .5);
+      if (pair.cheekDepth > 0) layer = Math.min(pair.cheekDepth - 1, Math.max(0, layer));
+      return pair.cheekLayers[layer] || null;
+    }
+
     function constantTexture(value) {
       var key = "constant:" + value.join(",");
       if (textureCache.has(key)) return textureCache.get(key);
@@ -441,6 +447,10 @@
         if (propSize && originals.some((item, level) => item.image?.width !== (propSize >> level) ||
             item.image?.height !== (propSize >> level))) throw new Error("Invalid prop mip dimensions");
         var texture = original.clone();
+        // The Unity asset this texture holds (an array slice keeps its array's
+        // name and layer), reported by the MV asset dump.
+        if (typeof info.name === "string" && info.name) texture.name = info.name;
+        if (Number.isInteger(info.arrayLayer)) (texture.userData || (texture.userData = {})).sifasArrayLayer = info.arrayLayer;
         // Pixel bytes and wrapping are shared unchanged. Only the sampling
         // color-space flag differs: the source APK calculates in Gamma space.
         texture.encoding = T.LinearEncoding;
@@ -523,8 +533,14 @@
       if (!memberProp) uniforms.uRimglightPower.value = Math.max(.0001, uniforms.uRimglightPower.value);
       if (liveMember) uniforms.uRimglightIntensity.value = 0;
       var defines = {};
+      // A cheek array present without the authored _CHEEK_ON keyword is only
+      // available to the runtime cheek (setCheek); the static variant follows
+      // the material's own keyword.
+      var cheekKeyword = !Array.isArray(data.keywords) || data.keywords.indexOf("_CHEEK_ON") >= 0;
       if (!memberProp) ["rimlight", "matcap", "emissive", "cheek"].forEach(function (name) {
-        if (features[name] && (name !== "rimlight" || rimlightEnabled)) defines["SIFAS_" + name.toUpperCase()] = 1;
+        if (features[name] && (name !== "rimlight" || rimlightEnabled) && (name !== "cheek" || cheekKeyword)) {
+          defines["SIFAS_" + name.toUpperCase()] = 1;
+        }
       });
       var parameters = { vertexShader: memberProp ? PROP_VERTEX : mouthDepth ? MOUTH_VERTEX : VERTEX,
         fragmentShader: memberProp ? PROP_FRAGMENT : mouthDepth ? MOUTH_FRAGMENT : FRAGMENT, uniforms: uniforms,
@@ -557,7 +573,7 @@
       outline.defaultAttributeValues._sifas_outline_width = [-1];
       ownedMaterials.add(main); ownedMaterials.add(outline);
       var pair = { main: main, outline: outline, uniforms: uniforms, features: features, usable: true,
-        sourceName: original.name, cheek: null, cheekLayer: null, outlineStencilComp: outlineStencilComp,
+        sourceName: original.name, cheek: null, cheekLayers: [], cheekDepth: 0, outlineStencilComp: outlineStencilComp,
         ambient: uniforms.uAmbientColor.value.clone(), tint: uniforms.uTintColor.value.clone(),
         rim: { color: uniforms.uRimlightColor.value.clone(), direction: uniforms.uRimlightDirection.value.clone(),
           intensity: uniforms.uRimglightIntensity.value, power: uniforms.uRimglightPower.value } };
@@ -572,11 +588,24 @@
         if (features.rimlight) names.push("_RimlightTex");
         if (features.matcap) names.push("_MatcapTex", "_MatcapMaskTex");
         if (features.emissive) names.push("_EmissiveTex", "_EmissiveScrollTex");
-        if (features.cheek && uniforms.uCheekIntensity.value !== 0) names.push("_CheekTex");
-        // Only a loaded, exported array slice can show a blush; the white placeholder never tints.
+        if (features.cheek) names.push("_CheekTex");
+        // Every exported slice of the cheek array, by array layer, for
+        // MemberCheekBase.ApplyCheek's _CheekTexArrayIndex. Only a loaded,
+        // exported slice can show a blush; the white placeholder never tints.
         var cheekSlot = textures._CheekTex;
-        if (names.indexOf("_CheekTex") >= 0 && cheekSlot && Number.isInteger(cheekSlot.index) &&
-            Number.isInteger(cheekSlot.arrayLayer)) pair.cheekLayer = cheekSlot.arrayLayer;
+        if (features.cheek && cheekSlot && !cheekSlot.default) {
+          var layers = Array.isArray(cheekSlot.layers) ? cheekSlot.layers : [cheekSlot];
+          // sampler2DArray clamps the rounded layer into the array; only a
+          // complete export (every slice, in order) can be clamped here.
+          if (Array.isArray(cheekSlot.layers) && cheekSlot.depth === layers.length &&
+              layers.every(function (layer, slice) { return layer && layer.arrayLayer === slice; })) pair.cheekDepth = layers.length;
+          layers.forEach(function (layer) {
+            if (!layer || !Number.isInteger(layer.index) || !Number.isInteger(layer.arrayLayer) || layer.arrayLayer < 0) return;
+            pending.push(loadTexture(layer, [1, 1, 1, 1]).then(function (texture) {
+              if (!disposed && texture && texture !== constantTexture([1, 1, 1, 1])) pair.cheekLayers[layer.arrayLayer] = texture;
+            }));
+          });
+        }
       }
       names.forEach(function (name) {
         var binding = { key: textureIdentityKey(textureIdentity(textures[name], name === "_MainTex" ? original.map : null)),
@@ -793,8 +822,15 @@
             uniforms.uCheekIntensity.value = intensity;
           }
           var enabled = !!state && state.enabled !== false;
-          var shown = enabled && pair.cheekLayer !== null && pair.cheekLayer === uniforms.uCheekTexArrayIndex.value;
-          if (enabled && pair.cheekLayer !== null && !shown) limitations.add("A selected cheek array slice is unavailable in this preview.");
+          // tex2DArray(_CheekTex, (uv, _CheekTexArrayIndex)): bind the slice
+          // the index selects; an unexported slice is never substituted.
+          var layer = enabled ? cheekLayer(pair, uniforms.uCheekTexArrayIndex.value) : null;
+          var shown = !!layer;
+          if (layer && uniforms.uCheekTex.value !== layer) { uniforms.uCheekTex.value = layer; changed = true; }
+          if (enabled && !layer) {
+            limitations.add(pair.cheekLayers.length ? "A selected cheek array slice is unavailable in this preview."
+              : "This head carries no cheek array; the game binds its shared Live/Characters/facialAssets/cheek_array.");
+          }
           pair.cheek.enabled = enabled;
           if (!!pair.main.defines.SIFAS_CHEEK !== shown) {
             if (shown) pair.main.defines.SIFAS_CHEEK = 1;

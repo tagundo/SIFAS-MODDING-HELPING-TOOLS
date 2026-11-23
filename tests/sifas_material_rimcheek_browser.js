@@ -1,4 +1,4 @@
-/* Live AS/Member rim rules in the reconstructed material.
+/* Live AS/Member rim and cheek rules in the reconstructed material.
 
    - CommonCoreMember.Initialize -> LiveCoreMemberRimlight.ApplyIntensity(0):
      a live performer starts with rim intensity 0, so an always-evaluated rim
@@ -6,7 +6,10 @@
    - ApplyIntensity -> ApplyEnable(final > 0), non-legacy shader:
      _OutlineStencilComp = 3 (Equal) while lit, 8 (Always) otherwise. The MAIN
      pass writes stencil 1 (Replace), so an Equal outline survives only over
-     member pixels. */
+     member pixels.
+   - MemberCheekBase.ApplyCheek(type, value): _CheekTexArrayIndex selects the
+     exported slice of the cheek array (clamped into the array like
+     sampler2DArray); intensity 0 is the untinted surface. */
 const assert = require('assert');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -95,6 +98,26 @@ const root = path.resolve(__dirname, '..');
       out.shellAlways = shell.draw();
       shell.controller.setLiveLighting({ rim });
       out.shellEqual = shell.draw();
+      // 4. Cheek slices: a stock head (no _CHEEK_ON) starts without the term.
+      out.cheekInitial = live.defined('SIFAS_CHEEK');
+      live.controller.setLiveLighting({ rim: { ...rim, intensity: 0 } });
+      const plain = live.draw();
+      const cheek = (state) => { live.controller.setCheek('head', state);
+        return { pixel: live.draw(), slice: live.uniforms.uCheekTex.value.image.data.slice(0, 3).join(','), defined: live.defined('SIFAS_CHEEK') }; };
+      out.cheek = { plain, zero: cheek({ index: 0, intensity: 0 }), first: cheek({ index: 0, intensity: .5 }),
+        second: cheek({ index: 1, intensity: .5 }), clamped: cheek({ index: 5, intensity: .5 }),
+        off: cheek({ index: 1, intensity: .5, enabled: false }) };
+      // A head without a cheek array reports it instead of tinting with the placeholder.
+      const bare = await build({ live: true, cheek: 'none' });
+      bare.controller.setLiveLighting({ rim: { ...rim, intensity: 0 } });
+      const barePlain = bare.draw();
+      bare.controller.setCheek('head', { index: 0, intensity: .5 });
+      out.bare = { plain: barePlain, pixel: bare.draw(), defined: bare.defined('SIFAS_CHEEK'),
+        limitations: bare.controller.getState().limitations };
+      // The authored keyword still selects the static variant.
+      const keyed = await build({ live: false, keywords: ['_CHEEK_ON'] });
+      out.keyed = keyed.defined('SIFAS_CHEEK');
+      out.textureName = live.uniforms.uRimlightTex.value.name;
       out.glError = gl.getError();
       return out;
     });
@@ -117,8 +140,25 @@ const root = path.resolve(__dirname, '..');
     // 3: outline color is the main texel * .35 (70, 63, 56) over a 32-grey background.
     near(result.shellAlways, [70, 63, 56], 'Always draws the outline-only pixel', 3);
     near(result.shellEqual, [32, 32, 32], 'Equal drops the outline outside stencil-1 pixels', 1);
+    // 4
+    assert.equal(result.cheekInitial, false, 'no authored _CHEEK_ON: the static variant has no cheek term');
+    assert.deepEqual(result.cheek.zero.pixel, result.cheek.plain, 'cheek intensity 0 draws the untinted surface');
+    assert.equal(result.cheek.zero.defined, true);
+    const tint = (slice) => [200, 180, 160].map((value, index) => Math.round(value * (1 + (slice[index] / 255 - 1) * .5)));
+    near(result.cheek.first.pixel, tint([128, 64, 255]), 'type 0 selects slice 0');
+    assert.equal(result.cheek.first.slice, '128,64,255');
+    near(result.cheek.second.pixel, tint([255, 128, 64]), 'type 1 selects slice 1');
+    assert.equal(result.cheek.second.slice, '255,128,64');
+    assert.equal(result.cheek.clamped.slice, '255,128,64', 'the index is clamped into the complete array');
+    assert.deepEqual(result.cheek.off.pixel, result.cheek.plain, 'ApplyEnable(false) removes the term');
+    assert.equal(result.cheek.off.defined, false);
+    assert.deepEqual(result.bare.pixel, result.bare.plain, 'no array: never tinted by the placeholder');
+    assert.equal(result.bare.defined, false);
+    assert(result.bare.limitations.some((item) => /cheek_array/.test(item)), 'the missing shared array is reported');
+    assert.equal(result.keyed, true, 'an authored _CHEEK_ON keeps the static cheek variant');
+    assert.equal(result.textureName, 'head_rim', 'textures carry their Unity asset name');
     assert.equal(result.glError, 0);
-    console.log('PASS: live rim baseline 0, ApplyEnable outline stencil, Equal drops outline-only pixels');
+    console.log('PASS: live rim baseline 0, ApplyEnable outline stencil, Equal drops outline-only pixels, cheek slice selection');
   } finally {
     await browser.close();
   }
