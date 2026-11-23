@@ -107,6 +107,22 @@
     return previous || next;
   }
 
+  // The camera clip that ends last, when `time` is past its end: an original MV
+  // holds that shot's final pose (see frameTracks).
+  function endedCameraEvent(track, time) {
+    let last = null;
+    for (const event of track.events) if (!last || event.start + event.duration > last.start + last.duration) last = event;
+    return last && time > last.start + last.duration ? last : null;
+  }
+
+  // The director time the music ends at: the audio plays at director time + the
+  // soundtrack offset (MVStudio seek), so FinishLiveMv runs at duration - offset.
+  function musicEnd(project) {
+    const soundtrack = project?.soundtrack;
+    if (!Number.isFinite(soundtrack?.duration)) return project?.duration;
+    return Math.max(0, soundtrack.duration - (Number.isFinite(soundtrack.offset) ? soundtrack.offset : 0));
+  }
+
   // Camera frames from the native importer are ordered. Continue to accept
   // projects authored by older tools that saved frames in a different order.
   function cameraSamples(event, time, ordered) {
@@ -315,6 +331,9 @@
     const physicsClock = global.MVStudioPhysics?.createClock();
     let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
+    // LiveMvDarkFilterField and the live-end overlay blur (see mv-studio-screen-fade.js).
+    const screenFade = global.MVStudioScreenFade?.create(T, renderer);
+    let screenFadeEnabled = options?.screenFade !== false;
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
@@ -355,9 +374,9 @@
     let stageButterfly = null, stageRain = null, stageLeaves = null, stageMomiji = null, stageConfetti = null, stageGlow = null, stageLens = null;
     let stageSpeedBack = null, stageDisplayLights = null, stageFallingEffects = null, stageBreak = null, stageFinaleFloor = null;
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
-    let stageParticleSystems = null;
+    let stageParticleSystems = null, stageControlPrefabs = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null, defaultMemberShadows = false;
+    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
@@ -380,6 +399,19 @@
     const culled = [];
     const position = new T.Vector3(), otherPosition = new T.Vector3();
     const mainCameraPosition = new T.Vector3(), focusPosition = new T.Vector3();
+    // MainCamera rig view axis (-transform.forward), read by DOF cameraAutoDistanceMode 2.
+    const mainCameraDirection = new T.Vector3(0, 0, -1), focusOffset = new T.Vector3();
+    // LiveDepthOfFieldMixer runs in the director's script pass, before this
+    // frame's Animator writes the camera and members. Its focus distances read
+    // the transforms the previous frame left (Max 3D: every first frame after a
+    // cut keeps the old shot's focus). Snapshot those at the start of each
+    // continuing playback frame; a seek evaluates the current pose.
+    const focusLag = { valid: false, camera: new T.Vector3(), direction: new T.Vector3(), points: new Map(), pool: new Map() };
+    // The mixer's transition fields advance once per evaluated frame (dofState);
+    // draws and the asset dump re-evaluate the frame from a copy of the state
+    // it started with (dofFrameState).
+    let dofState = global.MVStudioDofFocus?.createState?.() ?? null, dofFrameState = dofState && { ...dofState };
+    const dofWarnings = new Set();
     const rotation = new T.Quaternion(), otherRotation = new T.Quaternion();
     const gaze = { camera: [0, 0, 0], members: {} }, gazeEyePosition = new T.Vector3();
 
@@ -405,12 +437,17 @@
             overlay?.draw(scene, particles?.length ? camera => sortTransparentParticles(camera, particles) : undefined);
           }
         }
+        if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
+          // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, musicEnd(project)));
+        }
       }
     }
 
     function renderView(camera) {
       if (camera === liveCamera && post) {
-        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, focusDistance);
+        const source = focusSource();
+        const focus = global.MVStudioDofFocus?.sample(project, currentTime, camera.fov, source.distance, source.options);
         const preserveDepth = useLive && settings.stage_overlay_effect !== false &&
           records.some(record => record.stageOverlay?.hasDepthTest());
         if (post.draw(() => renderScene(camera), Boolean(focus), focus, camera, preserveDepth)) return;
@@ -432,9 +469,67 @@
       else renderer.render(source, camera);
     }
 
-    function focusDistance(slot, part) {
-      const point = records.find(record => record.group === actors && record.position === slot)?.focusParts?.[part];
-      return point?.getWorldPosition(focusPosition).distanceTo(mainCameraPosition);
+    // A focus part is an exported node, or a fixed world point (BodyPartManager.face
+    // keeps the uninstantiated facial prefab asset).
+    function focusPoint(record, part, target, readOnly = false) {
+      const point = record?.focusParts?.[part];
+      if (!point) return null;
+      if (point.isVector3) return target.copy(point);
+      return readOnly ? target.setFromMatrixPosition(point.matrixWorld) : point.getWorldPosition(target);
+    }
+
+    function captureFocusLag(valid) {
+      focusLag.valid = valid;
+      focusLag.points.clear();
+      if (!valid) return;
+      focusLag.camera.copy(mainCameraPosition);
+      focusLag.direction.copy(mainCameraDirection);
+      for (const record of records) {
+        if (record.group !== actors || !record.focusParts) continue;
+        for (const part of Object.keys(record.focusParts)) {
+          const key = record.position + ":" + part;
+          let point = focusLag.pool.get(key);
+          if (!point) focusLag.pool.set(key, point = new T.Vector3());
+          if (focusPoint(record, part, point)) focusLag.points.set(key, point);
+        }
+      }
+    }
+
+    function focusMembers() {
+      return records.filter(record => record.group === actors && Number.isInteger(record.position))
+        .map(record => record.position).sort((a, b) => a - b);
+    }
+
+    // Distance/angle sources for MVStudioDofFocus.sample: the lagged snapshot
+    // while playback continues, else the current pose.
+    function focusSource(readOnly = false) {
+      const lagged = focusLag.valid;
+      const camera = lagged ? focusLag.camera : mainCameraPosition;
+      const direction = lagged ? focusLag.direction : mainCameraDirection;
+      const point = (slot, part) => lagged ? focusLag.points.get(slot + ":" + part) || null :
+        focusPoint(records.find(record => record.group === actors && record.position === slot), part, focusPosition, readOnly);
+      const distance = (slot, part) => point(slot, part)?.distanceTo(camera);
+      const options = {
+        members: focusMembers(),
+        angle: (slot, part) => {
+          const target = point(slot, part);
+          return target ? global.MVStudioDofFocus.vectorAngle(direction, focusOffset.subVectors(target, camera)) : undefined;
+        },
+        state: dofFrameState && { ...dofFrameState },
+        warn: readOnly ? undefined : (message) => {
+          if (dofWarnings.has(message)) return;
+          dofWarnings.add(message);
+          global.console?.warn?.(message);
+        },
+      };
+      return { distance, options };
+    }
+
+    function advanceFocus() {
+      if (!dofState || !global.MVStudioDofFocus) return;
+      dofFrameState = { ...dofState };
+      const source = focusSource();
+      global.MVStudioDofFocus.sample(project, currentTime, liveCamera.fov, source.distance, { ...source.options, state: dofState });
     }
 
     function sortRibbonDisplay(camera) {
@@ -617,6 +712,14 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
+      if (record.memberShadowPrefabs) {
+        // Performers instance these templates under their anchors: drop those
+        // meshes (and the scene's reference) before the templates are disposed.
+        for (const item of records) item.memberShadow?.releasePrefabs?.(record.memberShadowPrefabs);
+        if (memberShadowPrefabs === record.memberShadowPrefabs) memberShadowPrefabs = null;
+        record.memberShadowPrefabs.dispose();
+      }
+      record.lossyScale?.dispose();
       record.physics?.dispose();
       record.constraints?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
@@ -655,6 +758,8 @@
       stageSparksRoop = null;
       stageParticleSystems?.dispose();
       stageParticleSystems = null;
+      stageControlPrefabs?.dispose();
+      stageControlPrefabs = null;
       stageSparksA?.dispose();
       stageSparksA = null;
       stageSparksB?.dispose();
@@ -741,6 +846,13 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "eyes" && Number.isInteger(segment.splitIndex)) {
+          // MemberEyeMixer.Process swaps in splitScreenSetting.Index/Weight
+          // while the split screen is enabled (see ViewerMotionTimeline).
+          const alternate = values.splitScreenSetting;
+          const usesAlternate = (alternate?.UseSetting === 1 || alternate?.UseSetting === true) && Number.isFinite(alternate.Weight);
+          assign(segment, "splitUse", usesAlternate);
+          assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.Weight)) : 0);
         } else if (segment.kind === "cheek") {
           if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
           if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
@@ -758,6 +870,15 @@
         }
       }
       if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
+    }
+
+    // MemberEyeClip.splitScreenSetting {UseSetting, Index, Weight}: the alternate
+    // clip index is fixed when the actor's facial inputs are bound.
+    function eyeSplitIndex(event) {
+      const alternate = event.kind === "eyes" && nativeEvents.get(event.nativeEventId)?.event.values.splitScreenSetting;
+      if (alternate && (alternate.UseSetting === 1 || alternate.UseSetting === true) &&
+          Number.isInteger(alternate.Index) && alternate.Index >= 0) event.splitIndex = alternate.Index;
+      return event;
     }
 
     function gazeContext() {
@@ -849,7 +970,10 @@
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
-      if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+      if (entry.group === effects) {
+        record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+        record.memberShadowPrefabs = await global.MVStudioMemberShadow?.prefabs?.(T, gltf.scene, gltf.parser);
+      }
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
@@ -915,6 +1039,7 @@
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
+          record.lossyScale = global.MVStudioLossyScale?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -940,20 +1065,28 @@
           record.actorVisible = record.root.visible;
           actorPose(record, entry.spec);
           record.nodeScaling = savedNodeScaling(T, gltf.scene, entry.spec.rig);
-          const parts = entry.spec.rig?.focusParts;
+          // focusParts: BodyPartType value -> exported node id, or {world} in Unity space.
+          const parts = entry.spec.rig?.focusParts && typeof entry.spec.rig.focusParts === "object" ? entry.spec.rig.focusParts : {};
           const shaftAnchor = entry.spec.rig?.shaftAnchor;
-          const boneIds = new Set([parts?.head, parts?.hips, shaftAnchor].filter(Number.isInteger));
+          const boneIds = new Set([...Object.values(parts), shaftAnchor].filter(Number.isInteger));
+          const nodes = new Map();
           if (boneIds.size) {
-            const nodes = new Map();
             gltf.scene.traverse(node => {
               const id = node.userData.elichika_node;
               if (boneIds.has(id)) nodes.set(id, nodes.has(id) ? null : node);
             });
-            record.focusParts = { 0: nodes.get(parts?.head), 3: nodes.get(parts?.hips) };
             record.shaftAnchor = nodes.get(shaftAnchor);
           }
+          record.focusParts = {};
+          for (const [part, value] of Object.entries(parts)) {
+            const world = value?.world;
+            const point = Number.isInteger(value) ? nodes.get(value) :
+              Array.isArray(world) && world.length === 3 && world.every(Number.isFinite)
+                ? new T.Vector3(-world[0], world[1], world[2]) : null;
+            if (point) record.focusParts[part] = point;
+          }
           if (global.SifasMaterial) record.materials = global.SifasMaterial.apply(gltf.scene, renderer, {
-            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw,
+            parser: gltf.parser, enabled: true, rimlight: true, onChange: requestDraw, liveMember: true,
             mouthCentroidDepth: renderer.capabilities.isWebGL2 === true, nativeMemberDepth: true, releaseParserAfterLoad: true
           });
           if (record.materials && record.materials.ready) await record.materials.ready;
@@ -964,7 +1097,7 @@
             record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
               ...segment, timing: { ...segment.timing }
             }));
-            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
+            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => eyeSplitIndex({
               ...event, timing: { ...event.timing }
             }));
             record.motionEvents = record.segments.concat(record.facialEvents);
@@ -1311,6 +1444,13 @@
         return;
       }
       stageParticleSystems = particleSystems;
+      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs,
+        value.stageParticleSystems);
+      if (!active()) {
+        controlPrefabs?.dispose();
+        return;
+      }
+      stageControlPrefabs = controlPrefabs;
       loadedProjectToken = typeof value.token === "string" ? value.token : null;
       grid.visible = !stage.children.length;
       frameAll();
@@ -1369,17 +1509,28 @@
       else target.setHex(fallback);
     }
 
-    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera) {
+    // holdLastShot (original MVs): past the end of every camera clip the game
+    // keeps the last shot. Nothing moves the 3D camera after its final key, and at
+    // the music end LiveCoreCameraManager.StartBlur (0x2f63180) turns the 3D
+    // cameras off one frame later (AnimationBlurIntensity), so the overlay camera
+    // keeps blurring that frame. The editor camera is never shown in its place.
+    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera, holdLastShot = false) {
       ambient.color.setHex(0xe4edff);
       ambient.intensity = 1.2;
       key.color.setHex(0xffffff);
       key.intensity = 2.1;
       rim.color.setHex(0x8bb6ff);
       rim.intensity = 1.0;
+      let sampledCamera = false, ended = null;
       for (const track of tracks) {
         const event = track.kind === "camera" ? activeCameraEvent(track, time) : activeEvent(track, time);
-        if (!event) continue;
+        if (!event) {
+          const last = holdLastShot && onCamera && track.kind === "camera" ? endedCameraEvent(track, time) : null;
+          if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+          continue;
+        }
         if (track.kind === "camera") {
+          sampledCamera = true;
           onCamera?.(event, time, track);
         } else {
           const label = event.values.playableClass;
@@ -1398,13 +1549,16 @@
       if (quality.stage_ambient === false) ambient.intensity = 0.6;
       if (quality.base_light === false) key.intensity = 0.8;
       if (quality.member_rim_light === false) rim.intensity = 0;
+      if (!sampledCamera && ended) onCamera(ended.event, ended.event.start + ended.event.duration, ended.track, true);
     }
 
-    function useCameraEvent(event, time, track) {
+    function useCameraEvent(event, time, track, held = false) {
       if (!poseCamera(event, time, track)) return;
       hasShot = true;
       liveCameraEvent = { track: track.id ?? null, event: event.id ?? null, start: event.start, duration: event.duration };
+      if (held) liveCameraEvent.held = true;
       mainCameraPosition.copy(liveCamera.position);
+      mainCameraDirection.set(0, 0, -1).applyQuaternion(liveCamera.quaternion);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
 
@@ -1435,8 +1589,12 @@
       if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
       else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
-      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
-        !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
+      // ShadowComponent.Initialize deletes the costume's shadows only for a stage
+      // with memberShadowPrefabs; a LiveMemberShadowTrack then only scales them.
+      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults;
+      memberShadowPrefabs = shadowStages.length === 1 && !shadowStages[0].memberShadowDefaults
+        ? shadowStages[0].memberShadowPrefabs ?? null : null;
+      memberShadowTracks = tracks.filter(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted);
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
@@ -1539,7 +1697,13 @@
         record.stageColoring?.invalidate();
         record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
-        record.materials?.setRimlight?.(settings.member_rim_light !== false);
+        // member_rim_light never reaches a member material: the game only mutes
+        // the "Member Rim Light" tracks (LiveQualityOperator.
+        // ApplyLiveQualityToMemberEffectTrack 0x20f3164), which sample() skips.
+        // The base light still writes the rim (LiveBaseLightReciever.
+        // ApplyBaseLightColor 0x2f5fac0 -> LiveCoreMemberRimlight.
+        // ApplyBaseIntensity 0x2f607fc: intensity = base, ApplyEnable(base > 0))
+        // and every AS/Member variant draws it, so the rim term stays on.
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
         record.stagePropLight?.setProject(project);
@@ -1553,6 +1717,7 @@
 
     function resetPhysics(reason) {
       physicsClock?.reset();
+      dofState = global.MVStudioDofFocus?.createState?.() ?? null;
       resetShafts = true;
       lastShaftFrame = null;
       for (const record of records) {
@@ -1584,6 +1749,7 @@
 
     function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
+      captureFocusLag(Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
@@ -1600,7 +1766,7 @@
       }
       hasShot = false;
       liveCameraEvent = null;
-      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
+      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent, project?.source?.kind === "game");
       post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
@@ -1625,8 +1791,11 @@
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
       stageParticleSystems?.update(currentTime, project);
+      stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      // LiveCoreLossyScale.LateUpdate follows the animators.
+      for (const record of records) record.lossyScale?.apply();
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
@@ -1654,7 +1823,7 @@
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          record.motion.evaluatePose(currentTime);
+          record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
           if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
         } else if (record.mixer) record.mixer.setTime(currentTime);
@@ -1674,7 +1843,8 @@
       for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
-      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
+      const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters, memberShadowPrefabs);
       for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
@@ -1707,6 +1877,7 @@
         record.prop.evaluate(currentTime);
         if (record.root.visible) record.propMaterial?.setLiveLighting?.(record.propLight?.sample(currentTime));
       }
+      advanceFocus();
       if (viewportDirty || renderHeight !== settings.rendering_resolution) resize();
       else if (deferDraw && visible) {
         // Motion sampling is still synchronous. Preserve the world matrices
@@ -1764,7 +1935,7 @@
         const clipIndex = track ? track.events.findIndex((event) => event.id === liveCameraEvent.event) : -1;
         return { track: liveCameraEvent.track, label: track?.label ?? null, nativeClass: track?.nativeClass ?? null,
           binding: track?.binding ?? null, clipIndex: clipIndex >= 0 ? clipIndex : null,
-          start: liveCameraEvent.start, duration: liveCameraEvent.duration };
+          start: liveCameraEvent.start, duration: liveCameraEvent.duration, ...(liveCameraEvent.held ? { held: true } : {}) };
       }
 
       function cameraEntry(camera, base) {
@@ -1890,10 +2061,7 @@
         return result;
       }
 
-      function focusDistanceReadOnly(slot, part) {
-        const point = records.find((record) => record.group === actors && record.position === slot)?.focusParts?.[part];
-        return point ? temp.point.setFromMatrixPosition(point.matrixWorld).distanceTo(mainCameraPosition) : undefined;
-      }
+      const focusReadOnly = focusSource(true);
 
       read("clock", "clock", () => ({ directorTime: currentTime, rate: physicsRate() }));
       read("directors", "directors", () => [{ key: "director:main", time: currentTime,
@@ -2055,7 +2223,7 @@
       });
       read("post", "post", () => ({
         bloom: global.MVStudioPost?.sample?.(project, currentTime) ?? null,
-        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusDistanceReadOnly) ?? null,
+        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusReadOnly.distance, focusReadOnly.options) ?? null,
         flare: global.MVStudioFlare?.sample?.(project, currentTime) ?? null,
         applied: settings.posteffect === true, enablePostEffect: settings.posteffect === true,
       }));
@@ -2104,6 +2272,7 @@
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2132,6 +2301,7 @@
           renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
           constraints: records.filter((record) => record.constraints)
             .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
+          controlPrefabs: stageControlPrefabs?.inspect() ?? null,
         };
       },
       assetDump,
@@ -2150,6 +2320,7 @@
         clear();
         split?.dispose();
         post?.dispose();
+        screenFade?.dispose();
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();

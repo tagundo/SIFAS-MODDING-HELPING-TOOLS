@@ -845,6 +845,95 @@ class GroupingTest(unittest.TestCase):
         self.assertTrue(all(group["field"] != "_EmissiveTex" for group in report["ranked"]["perType"]["materials"]))
 
 
+class MemberVariantTest(unittest.TestCase):
+    """AS/Member: a texture the drawn variant samples, the variant keywords, the rim term and the outline stencil."""
+
+    def docs(self, editor_member=None, game_member=None):
+        editor = editor_doc()
+        game = synthetic.game_from_editor(editor)
+        for record in records_of(editor, "materials"):
+            for material in record["materials"]:
+                if material["kind"] == "member":
+                    material["properties"]["_RimlightTex"] = {"t": "tex", "v": {"name": None, "width": 1, "height": 1, "mips": 1,
+                                                                                "placeholder": True}, "from": "uRimlightTex"}
+                    material["properties"]["_OutlineStencilComp"] = {"t": "float", "v": 3, "from": "outline stencilFunc"}
+                    material["properties"]["_RimglightIntensity"] = {"t": "float", "v": 0.75, "from": "uRimglightIntensity"}
+                    material.update(editor_member or {})
+        for record in records_of(game, "materials"):
+            for material in record["materials"]:
+                if "_RimglightPower" in material["properties"]:
+                    material["properties"]["_RimlightTex"] = {"t": "tex", "v": {"name": "ch0212_co0002_body_rim", "width": 128, "height": 128}}
+                    material["properties"]["_OutlineStencilComp"] = {"t": "float", "v": 3}
+                    material["properties"]["_RimglightIntensity"] = {"t": "float", "v": 0.75}
+                    material.update(game_member or {})
+        return game, editor
+
+    def metrics(self, report):
+        return {group["metric"]: group for group in report["ranked"]["perType"]["materials"]}
+
+    def test_sampled_placeholder_is_a_missing_texture(self):
+        game, editor = self.docs({"keywords": ["_RIMLIGHT_ON"], "rimlightEvaluated": True})
+        report = run(game, editor)
+        missing = self.metrics(report)["textureMissing"]
+        self.assertEqual((missing["field"], missing["beyond"] > 0), ("_RimlightTex", True))
+        self.assertGreater(report["summary"]["beyondTolerance"], 0)
+        # The emissive slot is not sampled by this variant: still only a note.
+        self.assertNotIn("_EmissiveTex", [group["field"] for group in report["ranked"]["perType"]["materials"]])
+
+    def test_unreported_variant_keeps_placeholders_as_notes(self):
+        game, editor = self.docs()
+        report = run(game, editor)
+        self.assertNotIn("textureMissing", self.metrics(report))
+        self.assertEqual(report["summary"]["beyondTolerance"], 0)
+
+    def test_real_texture_size_and_mips_are_compared(self):
+        game, editor = self.docs({"keywords": [], "rimlightEvaluated": True})
+        for record in records_of(editor, "materials"):
+            for material in record["materials"]:
+                if material["kind"] == "member":
+                    material["properties"]["_RimlightTex"]["v"] = {"name": "ch0212_co0002_body_rim", "width": 128, "height": 128, "mips": 8}
+        for record in records_of(game, "materials"):
+            for material in record["materials"]:
+                if "_RimlightTex" in material["properties"]:
+                    material["properties"]["_RimlightTex"]["v"]["mipCount"] = 8
+        report = run(game, editor)
+        rim = [group for group in items_of(report, "materials") if group["field"] == "_RimlightTex"]
+        self.assertEqual(sorted((group["metric"], group["count"] > 0, group["beyond"]) for group in rim),
+                         [("textureMips", True, 0), ("textureSize", True, 0)])
+        self.assertEqual(report["summary"]["beyondTolerance"], 0)
+
+    def test_gpu_generated_mip_chain_is_a_note_not_a_mip_mismatch(self):
+        game, editor = self.docs({"keywords": [], "rimlightEvaluated": True})
+        for record in records_of(editor, "materials"):
+            for material in record["materials"]:
+                if material["kind"] == "member":
+                    material["properties"]["_RimlightTex"]["v"] = {"name": "ch0212_co0002_body_rim", "width": 128,
+                                                                   "height": 128, "mips": 8, "mipsGenerated": True}
+        for record in records_of(game, "materials"):
+            for material in record["materials"]:
+                if "_RimlightTex" in material["properties"]:
+                    material["properties"]["_RimlightTex"]["v"]["mipCount"] = 1
+        report = run(game, editor)
+        rim = [group for group in items_of(report, "materials") if group["field"] == "_RimlightTex"]
+        self.assertEqual([group["metric"] for group in rim], ["textureSize"])
+        notes = report["notes"]["materials.generatedMips"]
+        self.assertTrue(notes and "authored mips not uploaded" in str(notes))
+
+    def test_variant_keywords_rim_term_and_outline_stencil(self):
+        game, editor = self.docs({"keywords": ["_RIMLIGHT_ON"], "rimlightEvaluated": False,
+                                  "properties": None}, {"keywords": ["_CHEEK_ON", "_RIMLIGHT_ON"]})
+        for record in records_of(editor, "materials"):
+            for material in record["materials"]:
+                if material["kind"] == "member":
+                    material["properties"] = {"_OutlineStencilComp": {"t": "float", "v": 8, "from": "outline stencilFunc"}}
+        report = run(game, editor)
+        metrics = self.metrics(report)
+        self.assertGreater(metrics["variantKeywords"]["beyond"], 0, "_CHEEK_ON on in the game, off in the editor")
+        self.assertGreater(metrics["rimlightEvaluated"]["beyond"], 0, "a lit game rim the editor does not evaluate")
+        stencil = [group for group in report["ranked"]["perType"]["materials"] if group["field"].startswith("_OutlineStencilComp")]
+        self.assertTrue(stencil and stencil[0]["beyond"] > 0, "ApplyEnable's Equal(3) against the editor's Always(8)")
+
+
 class RendererJoinTest(unittest.TestCase):
     """Contract 4: renderers join on (scope, GameObject path); the mesh name is only a check."""
 

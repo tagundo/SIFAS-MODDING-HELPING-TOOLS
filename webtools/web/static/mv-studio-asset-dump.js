@@ -84,14 +84,50 @@
     return texture.userData?.placeholder === true || (texture.isDataTexture === true && image?.width === 1 && image?.height === 1);
   }
 
+  // Name (the Unity asset name the importer exported, e.g. "ch0212_co0002_head_rim";
+  // an array slice keeps its array's name and reports arrayLayer), size and
+  // mip level count (authored levels uploaded with the texture, else 1).
+  // Three.js (r128 WebGLTextures.textureNeedsGenerateMipmaps) builds the chain
+  // on the GPU when no level is uploaded, generateMipmaps is on and the minifying
+  // filter samples mips. Such a chain is not the authored one: report it as
+  // generated so a comparison never reads it as the asset's mip count.
+  function generatedMips(texture, width, height) {
+    if (texture.isCompressedTexture || !texture.generateMipmaps) return 0;
+    // THREE.NearestFilter 1003, THREE.LinearFilter 1006 sample only level 0.
+    if (texture.minFilter === 1003 || texture.minFilter === 1006) return 0;
+    if (!(width > 0 && height > 0)) return 0;
+    return Math.floor(Math.log2(Math.max(width, height))) + 1;
+  }
+
   function textureIdentity(texture) {
     if (!texture || !texture.isTexture) return null;
     const image = Array.isArray(texture.image) ? texture.image[0] : texture.image;
     const identity = texture.userData?.viewerTexture;
+    const width = Number.isFinite(image?.width) ? image.width : null, height = Number.isFinite(image?.height) ? image.height : null;
+    const authored = Array.isArray(texture.mipmaps) ? texture.mipmaps.length : 0;
+    const generated = authored ? 0 : generatedMips(texture, width, height);
     const result = { name: texture.name || (typeof identity?.id === "string" ? identity.id : null),
-      width: Number.isFinite(image?.width) ? image.width : null, height: Number.isFinite(image?.height) ? image.height : null };
+      width, height, mips: authored || generated || 1 };
+    if (generated) result.mipsGenerated = true;
+    if (Number.isInteger(texture.userData?.sifasArrayLayer)) result.arrayLayer = texture.userData.sifasArrayLayer;
     if (placeholderTexture(texture, image)) result.placeholder = true;
     return result;
+  }
+
+  // The compiled Hidden/AS/Member/Main variant keywords the editor reproduces
+  // with SifasMaterial defines. Every variant evaluates the rim (no keyword).
+  const MEMBER_VARIANTS = { SIFAS_CHEEK: "_CHEEK_ON", SIFAS_MATCAP: "_MATCAP_ON", SIFAS_EMISSIVE: "_EMISSIVE_ON" };
+
+  // Effective Unity keywords of an AS/Member material: the authored keywords
+  // with each variant keyword replaced by the state the editor draws, as
+  // Material.shaderKeywords reads in the game (the runtime only toggles
+  // _CHEEK_ON there; the legacy _RIMLIGHT_ON is left as authored).
+  function memberKeywords(material) {
+    const authored = Array.isArray(material.userData?.sifas?.keywords) ? material.userData.sifas.keywords : [];
+    const variants = new Set(Object.values(MEMBER_VARIANTS));
+    const result = authored.filter((keyword) => typeof keyword === "string" && !variants.has(keyword));
+    for (const [define, keyword] of Object.entries(MEMBER_VARIANTS)) if (material.defines?.[define]) result.push(keyword);
+    return result.sort();
   }
 
   function uniformValue(value) {
@@ -141,7 +177,11 @@
       const color = read.t === "vector" && /Color|Col$/.test(name);
       properties[name] = { t: color ? "color" : read.t, v: read.v, from: uniform };
     }
-    return { kind: "member", properties, unmapped: unmapped.sort(), editorOnly: editorOnly.sort(), globals };
+    // The OUTLINE pass stencil comparison (LiveCoreMemberRimlight.ApplyEnable).
+    const stencil = material.userData?.sifasRuntime?.outlineStencilComp;
+    if (Number.isInteger(stencil)) properties._OutlineStencilComp = { t: "float", v: stencil, from: "outline stencilFunc" };
+    return { kind: "member", properties, unmapped: unmapped.sort(), editorOnly: editorOnly.sort(), globals,
+      keywords: memberKeywords(material), rimlightEvaluated: !!material.defines?.SIFAS_RIMLIGHT };
   }
 
   function stageUniforms(material) {
@@ -297,7 +337,7 @@
   }
 
   global.MVStudioAssetDump = { SCHEMA, CONVENTIONS, STAGE_TABLE, COLORING_TABLE, EDITOR_ONLY: Array.from(EDITOR_ONLY),
-    temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, uniformValue,
+    temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, memberKeywords, uniformValue,
     memberUniforms, stageUniforms, coloringUniforms, materialProperties, rendererScope, renderersOf, gameObjectPath, keyFor, round,
     finalize, finiteArray, aspectCorrection };
   // Runtime-built renderers and editor shader texture spaces (Max 3D runtime comparison).

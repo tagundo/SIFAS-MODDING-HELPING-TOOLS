@@ -21,8 +21,40 @@ class MemberMetadataTests(unittest.TestCase):
         self.assertNotIn("_Color", metadata["colors"])
         self.assertEqual(metadata["colors"]["_TintColor"], [1, 1, 1, 1])
         self.assertEqual(metadata["textures"]["_MainTex"], {"default": [1, 1, 1, 1]})
-        self.assertFalse(metadata["features"]["rimlight"])
         self.assertEqual(output["extras"]["other"], 1)
+
+    def test_rim_is_a_used_input_even_when_authored_off(self):
+        # Every Hidden/AS/Member/Main variant evaluates the rim; the timeline
+        # writes its intensity, so authored zeros do not drop the texture.
+        for floats, color in (({"_RimglightIntensity": 0}, None), ({"_RIMLIGHT": 0}, (0, 0, 0, 0)),
+                              ({"_RimglightIntensity": 1}, None)):
+            with self.subTest(floats=floats, color=color):
+                tree = self.tree(**floats)
+                if color:
+                    tree["m_SavedProperties"]["m_Colors"] = [("_RimlightColor", dict(zip("rgba", color)))]
+                metadata = materials.attach_member_metadata(None, object(), tree, {}, lambda _: self.fail("No image expected"))
+                self.assertTrue(metadata["features"]["rimlight"])
+                # Unassigned slot: the ShaderLab default ("white"), not a replacement asset.
+                self.assertEqual(metadata["textures"]["_RimlightTex"], {"default": [1, 1, 1, 1]})
+                self.assertEqual(materials.authored_rimlight(metadata), floats.get("_RimglightIntensity") == 1)
+
+    def test_authored_zero_rim_exports_the_rim_texture_and_its_mips(self):
+        obj, texture = fake_texture()
+        tree = self.tree(_RimglightIntensity=0)
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_RimlightTex", {"m_Texture": {"m_PathID": 7}})]
+        seen = []
+
+        def export(image):
+            seen.append(image.read().get_image_data())
+            return len(seen) - 1
+
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            metadata = materials.attach_member_metadata(None, object(), tree, {}, export)
+        rim = metadata["textures"]["_RimlightTex"]
+        self.assertEqual((rim["index"], rim["mipmaps"], rim["name"]), (0, [0, 1, 2], "Neutral image"))
+        self.assertEqual(seen, [texture.image_data, texture.image_data[64:80], texture.image_data[80:84]])
+        self.assertTrue(metadata["features"]["rimlight"])
+        self.assertFalse(materials.authored_rimlight(metadata))
 
     def test_keywords_select_variants_not_stale_toggle_floats(self):
         first = materials.attach_member_metadata(None, object(), self.tree(_MATCAP=1), {}, lambda _: 0)
@@ -30,6 +62,52 @@ class MemberMetadataTests(unittest.TestCase):
         self.assertFalse(first["features"]["matcap"])
         self.assertTrue(all(second["features"][name] for name in ("matcap", "emissive", "cheek")))
         self.assertEqual(second["textures"]["_EmissiveTex"]["default"], [0, 0, 0, 1])
+
+    def test_cheek_array_exports_every_slice_as_exact_bytes(self):
+        # A stock head: no _CHEEK_ON, _CheekIntensity 0, a 2-slice array
+        # (Clamp, 1 mip) that MemberCheekMixer drives at runtime.
+        slices = [bytes([index] * 16 * 4) for index in (17, 230)]
+        obj, array = fake_texture(width=4, height=4, count=1, depth=2, pixels=b"".join(slices), wrap=1, name="cheek_array")
+        tree = self.tree(_CheekIntensity=0, _CheekTexArrayIndex=1)
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_CheekTex", {"m_Texture": {"m_PathID": 7}})]
+        exported, by_key = [], {}
+
+        def export(image):
+            key = image.path_id
+            if key not in by_key:
+                texture = image.read()
+                by_key[key] = len(exported)
+                exported.append((texture.get_image_data(), texture.m_TextureSettings.m_WrapU,
+                                 texture.m_TextureSettings.m_WrapV, texture.m_Width, texture.m_Height))
+            return by_key[key]
+
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            metadata = materials.attach_member_metadata(None, object(), tree, {}, export)
+        cheek = metadata["textures"]["_CheekTex"]
+        self.assertTrue(metadata["features"]["cheek"])
+        self.assertEqual([layer["arrayLayer"] for layer in cheek["layers"]], [0, 1])
+        self.assertEqual([exported[layer["index"]][0] for layer in cheek["layers"]], slices)
+        self.assertTrue(all(row[1:] == (1, 1, 4, 4) for row in exported), "Clamp and the original size are kept")
+        self.assertEqual(len(exported), 2, "the authored slice reuses its exported layer")
+        self.assertEqual((cheek["arrayLayer"], cheek["index"], cheek["depth"], cheek["name"]),
+                         (1, cheek["layers"][1]["index"], 2, "cheek_array"))
+        self.assertTrue(all("mipmaps" not in layer for layer in cheek["layers"]))
+        self.assertEqual(array.image_data, b"".join(slices))
+        self.assertEqual(metadata["limitations"], [])
+
+    def test_cheek_slot_without_array_keeps_authored_feature(self):
+        none = materials.attach_member_metadata(None, object(), self.tree(), {}, lambda _: self.fail("No image expected"))
+        self.assertFalse(none["features"]["cheek"])
+        self.assertNotIn("_CheekTex", none["textures"])
+        obj, _ = fake_texture()
+        tree = self.tree()
+        tree["m_SavedProperties"]["m_TexEnvs"] = [("_CheekTex", {"m_Texture": {"m_PathID": 7}})]
+        with patch("webtools.core.model_viewer._ref", return_value=obj):
+            flat = materials.attach_member_metadata(None, object(), tree, {}, lambda _: self.fail("No image expected"))
+        # Only a Texture2DArray feeds MemberCheekBase; an authored-off 2D slot stays unused.
+        self.assertFalse(flat["features"]["cheek"])
+        self.assertNotIn("_CheekTex", flat["textures"])
+        self.assertEqual(flat["limitations"], [])
 
     def test_missing_nonzero_dependency_disables_only_that_feature(self):
         tree = self.tree("_MATCAP_ON", _RimglightIntensity=1)
@@ -46,18 +124,24 @@ class MemberMetadataTests(unittest.TestCase):
                 materials.attach_member_metadata(None, object(), self.tree(_RimglightPower=value), {}, lambda _: 0)
 
 
+def fake_texture(*, width=4, height=4, count=3, depth=None, pixels=None, wrap=0, name="Neutral image"):
+    """A raw RGBA32 Unity texture (or array) with its complete authored mip chain."""
+    settings = SimpleNamespace(m_FilterMode=1, m_WrapU=wrap, m_WrapV=wrap)
+    data = pixels if pixels is not None else bytes(range(84))
+    value = SimpleNamespace(m_Name=name, m_Width=width, m_Height=height,
+        m_MipCount=count, m_ImageCount=1, m_TextureDimension=2, m_TextureFormat=4,
+        m_Format=4, m_TextureSettings=settings, m_ColorSpace=1,
+        image_data=data, m_StreamData=SimpleNamespace(size=0), get_image_data=lambda: data)
+    if depth is not None:
+        value.m_Depth = depth
+    obj = SimpleNamespace(assets_file=object(), path_id=7,
+                          type=SimpleNamespace(name="Texture2D" if depth is None else "Texture2DArray"), read=lambda: value)
+    return obj, value
+
+
 class OriginalImageLevelTests(unittest.TestCase):
-    def texture(self, *, width=4, height=4, count=3, depth=None, pixels=None):
-        settings = SimpleNamespace(m_FilterMode=1)
-        data = pixels if pixels is not None else bytes(range(84))
-        value = SimpleNamespace(m_Name="Neutral image", m_Width=width, m_Height=height,
-            m_MipCount=count, m_ImageCount=1, m_TextureDimension=2, m_TextureFormat=4,
-            m_Format=4, m_TextureSettings=settings, m_ColorSpace=1,
-            image_data=data, m_StreamData=SimpleNamespace(size=0), get_image_data=lambda: data)
-        if depth is not None:
-            value.m_Depth = depth
-        obj = SimpleNamespace(assets_file=object(), path_id=7, type=SimpleNamespace(name="Texture2D"), read=lambda: value)
-        return obj, value
+    def texture(self, **arguments):
+        return fake_texture(**arguments)
 
     def test_authored_raw_mips_are_exact_slices_and_source_is_unchanged(self):
         obj, texture = self.texture()

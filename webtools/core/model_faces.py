@@ -387,7 +387,15 @@ def member_head(scene, sources):
                 continue
             dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
             head = {"faceDots": dots is not None}
-            face = _member_face(scene, obj, tree)
+            face_component, face = _member_face(scene, obj, tree)
+            # A face table that cannot be read only leaves facialTables out;
+            # the head's dots, cheek and lip-sync weight do not depend on it.
+            try:
+                tables = _facial_tables(scene, face_component, face)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                tables = {}
+            if tables:
+                head["facialTables"] = tables
             material = _ref(obj, tree.get("headMaterial"))
             # Only InitializeDefault (no mask) adds the cheek, bound to the
             # sharedMaterial of the merged mesh_face/CombineFace; the editor's
@@ -413,21 +421,73 @@ def _flag(value):
 
 
 def _member_face(scene, manager, tree):
-    """BodyPartManager.face's inline MemberFaceData, verified by its MonoScript."""
+    """BodyPartManager.face and its inline MemberFaceData, verified by its MonoScript."""
     from .model_viewer import _ref
     face = _ref(manager, tree.get("face"))
     if face is None or face.type.name != "MonoBehaviour":
-        return None
+        return None, None
     face_tree = scene.tree(face)
-    script = _ref(face, face_tree.get("m_Script"))
-    if script is None or script.type.name != "MonoScript":
-        return None
-    definition = scene.tree(script)
-    if (definition.get("m_ClassName"), definition.get("m_Namespace"), definition.get("m_AssemblyName")) != (
-            "MemberFace", "LLAS.Components.Members", "Assembly-CSharp.dll"):
-        return None
+    if not _declares(scene, face, face_tree, "MemberFace", "LLAS.Components.Members"):
+        return None, None
     data = face_tree.get("memberFaceData")
-    return data if isinstance(data, dict) else None
+    return (face, data) if isinstance(data, dict) else (None, None)
+
+
+def _declares(scene, component, tree, name, namespace):
+    from .model_viewer import _ref
+    script = _ref(component, tree.get("m_Script"))
+    if script is None or script.type.name != "MonoScript":
+        return False
+    definition = scene.tree(script)
+    return (definition.get("m_ClassName"), definition.get("m_Namespace"),
+            definition.get("m_AssemblyName")) == (name, namespace, "Assembly-CSharp.dll")
+
+
+_FACIAL_TABLES = (("eyes", "animationTableEye"), ("mouth", "animationTableMouth"))
+_MAX_FACIAL_ROWS = 256
+
+
+def _facial_tables(scene, face, data):
+    """The face's own eye and mouth MemberFacialAnimationDataTable rows, in serialized order.
+
+    LiveCoreMemberHead.InitializeDefault hands MemberFaceData.AnimationTableMouth to
+    LiveMemberLipSync.Initialize and AnimationTableEye to LiveMemberEyeAnimation (and
+    LiveMemberEyeContact). Initialize walks its clip enum and
+    MemberFacialAnimationBase.CreateAnimationClip plays the first row whose index equals
+    the id (Enumerable.FirstOrDefault): that row's clip, whatever its customIndex, e.g.
+    mouth 13 (E2) -> LiveFacial_mouth_004. A missing row or a null clip creates no
+    playable, so ProcessFrame finds no entry and the index adds nothing. Null rows are
+    kept for that reason. A table whose clip is not loaded is left out entirely.
+    """
+    from .model_viewer import _ref, _source_hash
+    result = {}
+    if face is None or not isinstance(data, dict):
+        return result
+    for kind, field in _FACIAL_TABLES:
+        table = _ref(face, data.get(field))
+        if table is None or table.type.name != "MonoBehaviour":
+            continue
+        tree = scene.tree(table)
+        datas = tree.get("datas")
+        if (not _declares(scene, table, tree, "MemberFacialAnimationDataTable", "LLAS.Scene.Live.Components")
+                or not isinstance(datas, list) or len(datas) > _MAX_FACIAL_ROWS):
+            continue
+        rows = []
+        for entry in datas:
+            values = [entry.get(name) for name in ("index", "customIndex", "summary")] if isinstance(entry, dict) else ()
+            if len(values) != 3 or any(type(value) is not int for value in values):
+                break
+            row = dict(zip(("index", "customIndex", "summary"), values))
+            pointer = entry.get("clip")
+            if isinstance(pointer, dict) and pointer.get("m_PathID"):
+                clip = _ref(table, pointer)
+                if clip is None or clip.type.name != "AnimationClip" or not _source_hash(clip):
+                    break
+                row.update(sourceHash=_source_hash(clip), sourceName=str(scene.name(clip) or "Animation")[:160])
+            rows.append(row)
+        else:
+            result[kind] = rows
+    return result
 
 
 def _atomic(path, data):

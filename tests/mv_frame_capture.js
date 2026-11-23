@@ -14,6 +14,14 @@
    3*tick warm-up steps at the start pose; otherwise the game's own rule applies
    (quality frame_rate_60fps, optional manifest.device). physics.order is "game"
    (default) or "same-frame". capture.json records the rate, reference and order.
+
+   Members follow the client's MV deck chain; source.deck "original" picks the
+   Original tab instead of Customize, source.player picks a local Elichika player of
+   the server root's userdata.db (default: none, a new player, even when the editor
+   would preselect a lone player), and manifest.costumes pins
+   {position: suit id or {suit, viewStatus}} on the import request. capture.json
+   records the deck the import resolved (project.source.deck) and what each position
+   wore and why (project.source.suits, project.performers).
 */
 'use strict';
 const assert = require('node:assert/strict');
@@ -76,6 +84,11 @@ function readManifest(file) {
   assert(manifest.screen === undefined || (Number.isSafeInteger(manifest.screen?.width) && Number.isSafeInteger(manifest.screen?.height) &&
     manifest.screen.width > 0 && manifest.screen.height > 0), 'screen is {width, height} in pixels');
   if (manifest.device !== undefined) SPRINGS.normalizeTiming({ device: manifest.device });
+  assert(source.deck === undefined || ['custom', 'original'].includes(source.deck), 'source.deck is "custom" or "original"');
+  assert(source.player === undefined || (Number.isSafeInteger(source.player) && source.player > 0),
+    'source.player is a local Elichika user id');
+  assert(manifest.costumes === undefined || (manifest.costumes && typeof manifest.costumes === 'object' && !Array.isArray(manifest.costumes)),
+    'costumes maps positions to suit ids or {suit, viewStatus}');
   return { ...manifest, source, quality, frames, autoFrames: auto, physics: { ...physics, preroll, order } };
 }
 
@@ -205,6 +218,12 @@ function attachSceneProbe() {
   });
 }
 
+// The deck tab (1 Original, 2 Customize, the client's first tab) and local player a
+// manifest source asks for; userId null is a new player.
+function deckRequest(source) {
+  return { deckType: source.deck === 'original' ? 1 : 2, userId: source.player ?? null };
+}
+
 async function importOriginal(page, source, download) {
   await page.waitForFunction(() => window.MVStudio && MVStudio.getState().visible);
   await page.locator('#mv-import-game').click();
@@ -217,9 +236,23 @@ async function importOriginal(page, source, download) {
   await choose('#mv-game-platform', source.platform);
   await choose('#mv-game-song', String(source.liveId));
   await choose('#mv-game-variant', String(source.assetId));
+  const deck = deckRequest(source);
+  await page.selectOption('#mv-game-deck', String(deck.deckType));
   // A catalog reload still in flight re-syncs the variants and clears the download box when it
   // ends; the load button stays disabled until then.
   await page.waitForFunction(() => !document.querySelector('#mv-game-load').disabled, null, { timeout: 60000 });
+  // The editor preselects a lone player of the server's userdata.db; always choose explicitly.
+  const player = deck.userId === null ? '' : String(deck.userId);
+  const players = await page.evaluate(() => [...document.querySelector('#mv-game-player').options].map((option) => option.value));
+  if (!players.includes(player)) {
+    throw new Error(`Player ${deck.userId} is not in the editor server's player database (offered: ${players.filter(Boolean).join(', ') || 'none'})`);
+  }
+  // Set directly: the player field is hidden when the server has no player database.
+  await page.evaluate((value) => {
+    const select = document.querySelector('#mv-game-player');
+    select.value = value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, player);
   await page.locator('#mv-game-download').setChecked(Boolean(download));
   await page.locator('#mv-game-load').click();
   // The import operation disables the button synchronously and re-enables it when it ends.
@@ -232,6 +265,26 @@ async function importOriginal(page, source, download) {
     throw new Error(`The editor did not import ${source.region}/${source.platform} ${source.liveId}/${source.assetId}` +
       (result.status ? `: ${result.status}` : '') + ` (imported ${JSON.stringify(result.source)})`);
   }
+  const resolved = imported.deck || {};
+  if (resolved.deckType !== deck.deckType || (resolved.userId ?? null) !== deck.userId) {
+    throw new Error(`The editor dressed the members from deck ${JSON.stringify(imported.deck ?? null)}, not ${JSON.stringify(deck)}`);
+  }
+  return imported;
+}
+
+// The imported project as capture.json records it: what was loaded, and per position the
+// suit worn, its view status, attach key and why (suitSource deck / mapping / memberInit /
+// nonPlayable / pinned).
+async function projectRecord(page) {
+  return page.evaluate(() => {
+    const value = MVStudio.getState().project;
+    return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [],
+      soundtrack: value.soundtrack ? { url: value.soundtrack.url, offset: value.soundtrack.offset ?? 0 } : null,
+      importCoverage: value.importCoverage ?? null,
+      performers: (value.performers || []).map((item) => ({ position: item.position ?? null, memberId: item.memberId ?? null,
+        costumeId: item.costumeId ?? null, viewStatus: item.viewStatus ?? null, suitSource: item.suitSource ?? null,
+        attachKey: item.attachKey || '', loaded: typeof item.glb === 'string' && item.glb.length > 0 })) };
+  });
 }
 
 async function applyQuality(page, quality) {
@@ -350,6 +403,15 @@ async function run() {
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(attachSceneProbe);
     await page.goto(url + '/#mv');
+    if (manifest.costumes) {
+      // The import request carries the pinned costumes (server option `costumes`).
+      await page.route(/\/api\/mv-studio\/game(?:-stream)?(?:\?|$)/, async (route) => {
+        const request = route.request();
+        if (request.method() !== 'POST') return route.continue();
+        const body = JSON.parse(request.postData() || '{}');
+        return route.continue({ postData: JSON.stringify({ ...body, costumes: manifest.costumes }) });
+      });
+    }
     await importOriginal(page, manifest.source, manifest.download === true);
     const quality = await applyQuality(page, manifest.quality);
     // The game draws at the client's height for its screen (manifest.screen, else the video's
@@ -357,20 +419,22 @@ async function run() {
     const renderHeight = await nativeRenderHeight(page, quality.values, manifest.screen?.height ?? target?.height);
     const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
     await pinViewport(page, renderWidth, renderHeight);
-    await page.evaluate(() => {
+    await page.evaluate((screenFade) => {
       const select = document.querySelector('#mv-camera-mode');
       select.value = 'live';
       select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+      // The MV dark filter and live-end blur are absent from the libfovmod 3D
+      // captures this harness is compared with; a manifest can ask for them.
+      const fade = document.querySelector('#mv-screen-fade');
+      if (fade && fade.checked !== screenFade) {
+        fade.checked = screenFade;
+        fade.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, manifest.screenFade === true);
     const physics = physicsReference(manifest, quality.values, target);
     await applyPhysicsReference(page, physics);
     const rate = physics.rate;
-    const project = await page.evaluate(() => {
-      const value = MVStudio.getState().project;
-      return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [],
-        soundtrack: value.soundtrack ? { url: value.soundtrack.url, offset: value.soundtrack.offset ?? 0 } : null,
-        importCoverage: value.importCoverage ?? null };
-    });
+    const project = await projectRecord(page);
     let soundtrack = null;
     if (project.soundtrack?.url) {
       const response = await page.request.get(new URL(project.soundtrack.url, url).href);
@@ -418,5 +482,5 @@ async function run() {
 }
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
+module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
   videoFps, physicsReference, applyPhysicsReference };

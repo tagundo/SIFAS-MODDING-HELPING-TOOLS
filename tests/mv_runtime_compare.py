@@ -516,6 +516,25 @@ def value_of(raw):
     return raw.get("v") if isinstance(raw, dict) and "v" in raw else raw
 
 
+# Hidden/AS/Member/Main compiles one variant per combination of these keywords;
+# every variant samples _MainTex and adds the _RimlightTex rim term.
+MEMBER_VARIANT_KEYWORDS = frozenset({"_CHEEK_ON", "_EMISSIVE_ON", "_MATCAP_ON"})
+MEMBER_VARIANT_SLOTS = {"_CHEEK_ON": ("_CheekTex",), "_EMISSIVE_ON": ("_EmissiveTex", "_EmissiveScrollTex"),
+                        "_MATCAP_ON": ("_MatcapTex", "_MatcapMaskTex")}
+
+
+def member_sampled_slots(editor_material):
+    """Texture slots the AS/Member variant the editor draws samples (empty when it does not report its variant)."""
+    if editor_material.get("kind") != "member" or not isinstance(editor_material.get("keywords"), list):
+        return set()
+    slots = {"_MainTex"}
+    if editor_material.get("rimlightEvaluated") is True:
+        slots.add("_RimlightTex")
+    for keyword in editor_material["keywords"]:
+        slots.update(MEMBER_VARIANT_SLOTS.get(keyword, ()))
+    return slots
+
+
 def expected_keys(keys):
     """Expected per-type keys from the bundle-side inventory (12035-runtime-keys.json).
 
@@ -1069,18 +1088,34 @@ class Comparison:
             if number(game_renderer.get("isVisible")) or isinstance(game_renderer.get("isVisible"), bool):
                 self.notes["visibility.isVisible"].append(bool(game_renderer["isVisible"]))
 
-    def compare_property(self, key, name, record, game_property, editor_property, near):
+    def compare_property(self, key, name, record, game_property, editor_property, near, sampled=False):
         kind = game_property.get("t")
         game_value, editor_value = game_property.get("v"), editor_property.get("v")
         if kind == "tex" or editor_property.get("t") == "tex":
             if isinstance(editor_value, dict) and editor_value.get("placeholder") is True:
-                # The editor's 1x1 constant bound where it has no texture: not a Unity texture, never scored.
-                self.notes["materials.placeholderTextures"].append(
-                    f"{name}: game {(game_value or {}).get('name') if isinstance(game_value, dict) else game_value!r}")
+                if sampled and isinstance(game_value, dict) and (game_value.get("name") or game_value.get("width")):
+                    # The variant the editor draws samples this slot, the game binds a real texture
+                    # and the editor only its 1x1 constant: the texture is missing from the import.
+                    self.add("materials", "textureMissing", key, record, game_value, editor_value, 1, 0, exact=True,
+                             near_cut=near, field=name)
+                else:
+                    # The editor's 1x1 constant bound where it has no texture: not a Unity texture, never scored.
+                    self.notes["materials.placeholderTextures"].append(
+                        f"{name}: game {(game_value or {}).get('name') if isinstance(game_value, dict) else game_value!r}")
             elif isinstance(game_value, dict) and isinstance(editor_value, dict):
                 same = all(game_value.get(field) == editor_value.get(field) for field in ("width", "height")
                            if game_value.get(field) is not None and editor_value.get(field) is not None)
                 self.add("materials", "textureSize", key, record, game_value, editor_value, int(not same), 0, exact=True, near_cut=near, field=name)
+                game_mips = game_value.get("mipCount", game_value.get("mips"))
+                if isinstance(game_mips, int) and isinstance(editor_value.get("mips"), int):
+                    if editor_value.get("mipsGenerated") is True:
+                        # The GPU built the editor's chain: authored mips were not uploaded, so the
+                        # count says nothing about the asset's levels. Noted, never scored.
+                        self.notes["materials.generatedMips"].append(
+                            f"{name}: game {game_mips} authored, editor {editor_value['mips']} generated (authored mips not uploaded)")
+                    else:
+                        self.add("materials", "textureMips", key, record, game_mips, editor_value["mips"],
+                                 int(game_mips != editor_value["mips"]), 0, exact=True, near_cut=near, field=name)
                 game_name, editor_name = game_value.get("name"), editor_value.get("name")
                 if game_name and editor_name and Conventions.object_name(game_name) != Conventions.object_name(editor_name):
                     self.notes["materials.textureNames"].append(f"{name}: game {game_name!r}, editor {editor_name!r}")
@@ -1205,12 +1240,32 @@ class Comparison:
                 for name in editor_material.get("editorOnly") or []:
                     self.notes["materials.editorOnlyUniforms"].append(name)
                 key = f"material:{renderer_key}#{slot}"
+                sampled = member_sampled_slots(editor_material)
+                self.compare_member_variant(key, record, game_material, editor_material, near)
                 for name, game_property in (game_material.get("properties") or {}).items():
                     editor_property = editor_properties.get(name)
                     if not isinstance(editor_property, dict):
                         self.notes["materials.notModeled"].append(f"{editor_material.get('kind')}:{name}")
                         continue
-                    self.compare_property(key, name, record, game_property, editor_property, near)
+                    self.compare_property(key, name, record, game_property, editor_property, near, sampled=name in sampled)
+
+    def compare_member_variant(self, key, record, game_material, editor_material, near):
+        """AS/Member variant state: the keywords that select a compiled variant and the rim term."""
+        if editor_material.get("kind") != "member":
+            return
+        game_keywords, editor_keywords = game_material.get("keywords"), editor_material.get("keywords")
+        if isinstance(game_keywords, list) and isinstance(editor_keywords, list):
+            game_variant = sorted(set(game_keywords) & MEMBER_VARIANT_KEYWORDS)
+            editor_variant = sorted(set(editor_keywords) & MEMBER_VARIANT_KEYWORDS)
+            self.add("materials", "variantKeywords", key, record, game_variant, editor_variant,
+                     int(game_variant != editor_variant), 0, exact=True, near_cut=near, field="keywords")
+            if sorted(set(game_keywords) - MEMBER_VARIANT_KEYWORDS) != sorted(set(editor_keywords) - MEMBER_VARIANT_KEYWORDS):
+                self.notes["materials.otherKeywords"].append(f"game {sorted(game_keywords)}, editor {sorted(editor_keywords)}")
+        # Every Hidden/AS/Member/Main variant adds the rim term: a lit rim the editor does not evaluate is missing.
+        intensity = value_of((game_material.get("properties") or {}).get("_RimglightIntensity"))
+        if editor_material.get("rimlightEvaluated") is False and number(intensity) and intensity > 0:
+            self.add("materials", "rimlightEvaluated", key, record, intensity, False, 1, 0, exact=True, near_cut=near,
+                     field="_RimglightIntensity")
 
     def compare_stage_nodes(self, record, partner, near):
         editor_nodes = by_key(partner.get("stageNodes"))

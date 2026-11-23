@@ -3,7 +3,9 @@
    Checks that the runner imports through the catalog and game stream, applies the
    game quality mode, pins the render size, steps to exact times with the game
    camera, reads back deterministic pixels, and that the comparator maps those
-   frames back onto a 30 fps export of themselves.
+   frames back onto a 30 fps export of themselves. The runner always chooses the MV
+   deck and local player explicitly (no player by default, even when the editor
+   preselects a lone one) and refuses a project dressed from another deck.
 */
 'use strict';
 const assert = require('node:assert/strict');
@@ -20,17 +22,19 @@ const media = (ext) => '/api/mv-studio/media/' + 'a'.repeat(32) + ext;
 const quality = (height) => ({ rendering_resolution: height, frame_rate_60fps: false, posteffect: false });
 const OFFSET = 0.25;
 
-function project() {
+function project(deck = { deckType: 2, userId: null, saved: false }, performers = []) {
+  const suits = performers.map(({ position, memberId, costumeId, viewStatus, suitSource, attachKey }) =>
+    ({ position, memberId, costumeId, viewStatus, suitSource, attachKey }));
   return {
     version: 1, name: 'Frame fixture', token: 'f'.repeat(32), duration: 4,
     stage: { glb: media('.glb'), label: 'Fixture stage' }, soundtrack: { url: media('.wav'), offset: OFFSET },
-    source: { kind: 'game', region: 'gl', platform: 'ios', liveId: 12, assetId: 34 },
+    source: { kind: 'game', region: 'gl', platform: 'ios', liveId: 12, assetId: 34, deck, suits },
     tracks: [{ id: 'cam', kind: 'camera', label: 'Camera', events: [{ id: 'cam:0', start: 0, duration: 4, label: 'Shot',
       values: { keyframes: [
         { time: 0, position: [0, 1.0, 3.0], rotation: [0, 0, 0, 1], fov: 30 },
         { time: 4, position: [4.0, 1.6, 2.0], rotation: [0, 0.25881905, 0, 0.96592583], fov: 50 },
       ] } }] }],
-    assets: [], performers: [], warnings: ['Synthetic stage for the frame capture runner.'],
+    assets: [], performers, warnings: ['Synthetic stage for the frame capture runner.'],
     quality: { mode: 30, values: quality(180), modes: [{ id: 20, label: 'High 3D', values: quality(360) }, { id: 30, label: 'Normal 3D', values: quality(180) }],
       options: [{ key: 'rendering_resolution', label: 'Render resolution', type: 'number' },
         { key: 'frame_rate_60fps', label: '60 fps', type: 'boolean' }, { key: 'posteffect', label: 'Post-processing effects', type: 'boolean' }] },
@@ -76,6 +80,14 @@ function planning() {
   assert(Math.abs(capture.cutDistance(capture.cameraCuts(tracks), 2.05) - 0.05) < 1e-9);
   assert.throws(() => capture.readManifest(writeManifest({ autoFrames: { count: 3, grid: 25 } })), /grid/);
   assert.equal(capture.readManifest(writeManifest({ autoFrames: { count: 3 } })).frames.length, 0);
+  // The deck tab and local player: Customize and a new player unless the manifest names them.
+  const sourceWith = (extra) => ({ source: { region: 'gl', platform: 'ios', liveId: 1, assetId: 2, ...extra } });
+  assert.deepEqual(capture.deckRequest(capture.readManifest(writeManifest({ frames: [1] })).source), { deckType: 2, userId: null });
+  assert.deepEqual(capture.deckRequest(capture.readManifest(writeManifest({ frames: [1], ...sourceWith({ deck: 'original', player: 7 }) })).source),
+    { deckType: 1, userId: 7 });
+  for (const player of [0, '7', 1.5]) {
+    assert.throws(() => capture.readManifest(writeManifest({ frames: [1], ...sourceWith({ player }) })), /source\.player/);
+  }
 }
 
 function writeManifest(extra) {
@@ -98,15 +110,19 @@ async function run() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(capture.attachSceneProbe);
-    let streamed = null;
+    let streamed = null, served = null;
+    // One local Elichika player: the editor preselects it, the runner must not follow it silently.
     await page.route('**/api/mv-studio/catalog?*', route => route.fulfill({ json: {
       region: 'gl', platform: 'ios', regions: [{ id: 'gl', label: 'GL' }],
       platforms: [{ id: 'android', label: 'Android' }, { id: 'ios', label: 'iOS' }],
       songs: [{ id: 12, title: 'Fixture song', variants: [{ id: 34, label: 'MV' }] }],
+      players: [{ id: 7, name: 'Player' }],
     } }));
     await page.route('**/api/mv-studio/game-stream?*', route => {
       streamed = route.request().postDataJSON();
-      const value = project();
+      // Like the server: project.source.deck is the deck the import resolved.
+      const deck = { deckType: streamed.deck?.deckType ?? 2, userId: streamed.deck?.userId ?? null, saved: false };
+      const value = served ? served(deck) : project(deck);
       const preview = { stage: value.stage, assets: [], tracks: [], quality: value.quality, duration: value.duration, source: value.source };
       return route.fulfill({ contentType: 'application/x-ndjson; charset=utf-8',
         body: JSON.stringify({ type: 'stage', preview }) + '\n' + JSON.stringify({ type: 'complete', project: value }) + '\n' });
@@ -115,8 +131,12 @@ async function run() {
     await page.route('**/api/mv-studio/media/*.wav', route => route.fulfill({ contentType: 'audio/wav', body: wav }));
     await page.goto(server.url + '/#mv');
     const source = { region: 'gl', platform: 'ios', liveId: 12, assetId: 34 };
-    await capture.importOriginal(page, source, false);
-    assert.deepEqual(streamed, { ...source, download: false }, 'The runner must import through the game stream with the manifest source');
+    assert.deepEqual(await capture.importOriginal(page, source, false),
+      { kind: 'game', ...source, deck: { deckType: 2, userId: null, saved: false }, suits: [] });
+    assert.deepEqual(streamed, { ...source, download: false },
+      'The runner must import through the game stream with the manifest source, as a new player despite the preselected one');
+    const record = await capture.projectRecord(page);
+    assert.deepEqual([record.source.deck, record.performers], [{ deckType: 2, userId: null, saved: false }, []]);
 
     // A higher preset changes the native height; the requested mode then wins.
     const high = await capture.applyQuality(page, { mode: 20 });
@@ -183,11 +203,35 @@ async function run() {
       assert(frame.metrics.ssim > 0.9, `SSIM ${frame.metrics.ssim} at ${frame.time}`);
       assert(Math.abs(frame.geometry.scale - 1) < 0.011 && Math.hypot(frame.geometry.dx, frame.geometry.dy) < 1.5, `geometry at ${frame.time}`);
     }
+    await playerChoice(page, () => streamed, (value) => { served = value; });
+    assert.deepEqual(errors, []);
     console.log(JSON.stringify({ ok: true, renderer: info.renderer, meanSSIM: report.summary.meanSSIM, evidence: work }));
   } finally {
     if (browser) await browser.close();
     server.child.kill();
   }
+}
+
+// A named player and the Original tab reach the request; capture.json's project record
+// carries each position's suit and why; a project dressed from another deck, or a player
+// the server does not list, is refused.
+async function playerChoice(page, lastRequest, serve) {
+  const source = { region: 'gl', platform: 'ios', liveId: 12, assetId: 34, deck: 'original', player: 7 };
+  const performer = { id: 'member-1', label: 'Member 1', position: 1, memberId: 211, costumeId: 102111001, viewStatus: 1,
+    suitSource: 'deck', attachKey: 'c1', transform: { position: [0, 0, 0] } };
+  serve((deck) => project(deck, [performer]));
+  const imported = await capture.importOriginal(page, source, false);
+  assert.deepEqual(lastRequest().deck, { deckType: 1, userId: 7 });
+  assert.deepEqual(imported.deck, { deckType: 1, userId: 7, saved: false });
+  const record = await capture.projectRecord(page);
+  assert.deepEqual(record.source.suits, [{ position: 1, memberId: 211, costumeId: 102111001, viewStatus: 1, suitSource: 'deck', attachKey: 'c1' }]);
+  assert.deepEqual(record.performers, [{ position: 1, memberId: 211, costumeId: 102111001, viewStatus: 1, suitSource: 'deck',
+    attachKey: 'c1', loaded: false }]);
+  serve((deck) => project({ ...deck, userId: null }, [performer]));
+  await assert.rejects(capture.importOriginal(page, source, false), /dressed the members from deck/);
+  serve(null);
+  await assert.rejects(capture.importOriginal(page, { ...source, player: 8 }, false), /Player 8 is not in the editor server's player database \(offered: 7\)/);
+  await page.evaluate(() => document.querySelector('#mv-game-picker').close());
 }
 
 run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
