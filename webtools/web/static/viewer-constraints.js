@@ -13,9 +13,12 @@
  *   from Euler(at-rest) by weight.
  * - Masked axes keep the current local value (rotation per Euler ZXY axis).
  * - Weight is clamped to [0, 1]. Euler angles are Unity degrees, ZXY order.
- * All math is in Unity space; the glTF scene mirrors X. Evaluation sits after
- * the Animator and before the member manager's LateUpdate swing bones, so a
- * source that is a swing bone reads its previous simulated local pose.
+ * All math is in Unity space; the glTF scene mirrors X. ConstraintManagerUpdate
+ * runs in PreLateUpdate, after the Animator and before every LateUpdate script.
+ * The swing bones are not simulated in LateUpdate: LiveCoreMemberManager.Update
+ * runs their job (UpdateMultiThread 0x2f6a7b8) and LateUpdate (0x2f6a9a4) only
+ * applies AllSafeCorrect, so a swing-bone source holds the local rotation this
+ * frame's Update job wrote, unless the Animator owns that property.
  * Not modeled: dependency ordering between constraints (none in the shipped
  * rigs share nodes) and Unity's sign handling for negative-scale ancestors
  * (such a chain is reported and skipped). */
@@ -155,8 +158,9 @@
       applied = false;
     }
 
-    // simulated: Map(node id -> { position, quaternion }) of the swing bones'
-    // last LateUpdate result; animated(): properties the Animator owns now.
+    // simulated: Map(node id -> { position, quaternion }) of the swing-bone
+    // local pose the transforms hold at ConstraintManagerUpdate (the caller's
+    // physics simulatedPose()); animated(): properties the Animator owns now.
     function apply(simulated, animated) {
       var owned = null;
       function animatedNow() { if (!owned) owned = (animated && animated()) || {}; return owned; }

@@ -139,13 +139,13 @@ close(target.position.toArray(), [-.25, 0, 1.5], 1e-12, 'unresolved source dropp
 sameRotation(toUnityRotation(skirtRoot.quaternion), U.euler([0, -90, 0]), 1e-9, 'rest skirt source in parent space');
 assert.equal(solver.getState().evaluated, 2);
 
-// A swing-bone source reads last frame's simulated local pose unless the
-// Animator owns that property this frame.
+// A swing-bone source reads the simulated local pose (this frame's Update job
+// output in the game order) unless the Animator owns that property this frame.
 const swingLocal = new THREE.Quaternion(); const swingUnity = U.euler([0, 0, 50]);
 swingLocal.set(swingUnity[0], -swingUnity[1], -swingUnity[2], swingUnity[3]);
 const simulated = new Map([[5, { position: null, quaternion: swingLocal }]]);
 solver.apply(simulated, () => ({}));
-sameRotation(toUnityRotation(skirtRoot.quaternion), U.quatMul(U.euler([0, -90, 0]), swingUnity), 1e-9, 'previous swing result');
+sameRotation(toUnityRotation(skirtRoot.quaternion), U.quatMul(U.euler([0, -90, 0]), swingUnity), 1e-9, 'simulated swing result');
 solver.apply(simulated, () => ({ 5: { quaternion: true } }));
 sameRotation(toUnityRotation(skirtRoot.quaternion), U.euler([0, -90, 0]), 1e-9, 'animated property wins');
 close(skirt.quaternion.toArray(), [0, 0, 0, 1], 0, 'the source node itself is not written');
