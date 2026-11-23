@@ -1092,12 +1092,13 @@ def _open_saved(archive, entries):
             "m_FileID": 0, "m_PathID": "1069439206166195116",
         } for event in track["events"]) for track in project["tracks"])
     restore_emissive_tracks = any(mv_studio_timeline.needs_emissive_track_metadata(track) for track in project["tracks"])
+    restore_camera_points = any(mv_studio_timeline.needs_camera_keyframe_check(track) for track in project["tracks"])
     if source is not None and (restore_split or restore_title or restore_particles or restore_ribbons
                                or restore_spotlight or restore_butterfly or restore_rain or restore_leaves or restore_momiji
                                or restore_confetti or restore_glow or restore_lens or restore_speed_back
                                or restore_display_lights or restore_falling
                                or restore_break or restore_finale_floor or restore_sparks_a or restore_sparks_b
-                               or restore_sparks_roop or restore_emissive_tracks):
+                               or restore_sparks_roop or restore_emissive_tracks or restore_camera_points):
         try:
             options = {}
             if restore_particles:
@@ -1143,6 +1144,13 @@ def _open_saved(archive, entries):
         else:
             if restore_emissive_tracks:
                 project["tracks"] = mv_studio_timeline.restore_emissive_track_metadata(project["tracks"], original["tracks"])
+            if restore_camera_points and isinstance(original.get("tracks"), list):
+                # Unedited camera points saved before camera Euler rotation orders preview as the game does.
+                try:
+                    project["tracks"] = mv_studio_timeline.restore_legacy_camera_keyframes(
+                        source, project["name"], project["tracks"], original["tracks"])
+                except (EOFError, KeyError, TypeError, ValueError, OSError, struct.error):
+                    pass
             for field in ("splitScreen", "stageTitle", "stageSpotlight", "stageDisplayLights"):
                 if field in original:
                     project[field] = original[field]

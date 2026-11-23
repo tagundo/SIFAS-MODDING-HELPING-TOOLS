@@ -15,6 +15,25 @@ from webtools.core import mv_studio_timeline as studio
 SAMPLES = Path(os.environ.get("ELICHIKA_STUDIO_TIMELINE_DIR", "/unavailable-studio-samples"))
 
 
+def legacy_zxy_quaternion(values, euler=False, order=None):
+    """model_animation._quaternion as 998b326 had it: every Euler rotation composed in ZXY, whatever its order."""
+    import math
+    from webtools.core import model_animation as animation
+
+    if euler:
+        x, y, z = (math.radians(value) * .5 for value in values)
+        values = animation._multiply(animation._multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
+                                     (0, 0, math.sin(z), math.cos(z)))
+    length = math.sqrt(sum(value * value for value in values))
+    x, y, z, w = (value / length for value in values)
+    return [x, -y, -z, w]
+
+
+def rotation_degrees(a, b):
+    import math
+    return math.degrees(2 * math.acos(min(1., abs(sum(x * y for x, y in zip(a, b))))))
+
+
 class TimelineContractTests(unittest.TestCase):
     def test_non_timeline_input_has_a_clear_error(self):
         with self.assertRaisesRegex(ValueError, "UnityFS live timeline"):
@@ -134,6 +153,84 @@ class TimelineContractTests(unittest.TestCase):
                 # the writer keeps x and the next sample catches up with one doubled step.
                 self.assertLess(max(abs(b - a) for first, second in zip(angles[:16], angles[1:16])
                                     for a, b in zip(first, second)), 8.5)
+
+    def legacy_camera_fixture(self):
+        """Two native XYZ camera shots: their parsed track, the same track as 998b326 saved it, and the bundle objects."""
+        import random
+        from webtools.core import model_animation as animation
+
+        rng = random.Random(11)
+        trees, clips, events, objects = [], [], [], {}
+        for index in range(2):
+            eulers = [[rng.uniform(-60, 60), rng.uniform(-80, 80), rng.uniform(-40, 40)] for _ in range(9)]
+            tree = self.euler_camera(0, eulers)
+            span = tree["m_MuscleClip"]["m_StopTime"]
+            trees.append(tree)
+            clips.append({"m_Start": index * 2., "m_Duration": span})
+            objects[("cab-x", 20 + index)] = SimpleNamespace(type=SimpleNamespace(name="AnimationClip"),
+                                                             read_typetree=lambda tree=tree: deepcopy(tree))
+            events.append({"id": f"cab-x:5:{index}", "start": index * 2., "duration": span, "label": f"Shot {index}",
+                           "values": {"asset": f"cab-x:{10 + index}", "playableClass": "AnimationPlayableAsset",
+                                      "animation": f"cab-x:{20 + index}", "animationName": f"cam{index}",
+                                      "keyframes": self.camera_points(tree)},
+                           "editableValues": ["keyframes"]})
+        objects[("cab-x", 5)] = SimpleNamespace(type=SimpleNamespace(name="MonoBehaviour"),
+                                                read_typetree=lambda: {"m_Clips": deepcopy(clips)})
+        native = {"id": "cab-x:5", "kind": "camera", "label": "CameraMotion/Camera1", "events": events,
+                  "nativeClass": "AnimationTrack", "muted": False, "binding": "/EntryPoint/Live/Cameras/MainCamera"}
+        legacy = deepcopy(native)
+        with patch.object(animation, "_quaternion", legacy_zxy_quaternion):
+            for event, tree in zip(legacy["events"], trees):
+                event["values"]["keyframes"] = self.camera_points(tree)
+        # Python and browser JSON both round-trip these doubles exactly.
+        return trees, native, json.loads(json.dumps(legacy)), objects
+
+    def test_legacy_unedited_camera_points_export_the_original_bytes(self):
+        trees, native, legacy, objects = self.legacy_camera_fixture()
+        self.assertGreater(max(rotation_degrees(a["rotation"], b["rotation"]) for event, old in zip(native["events"], legacy["events"])
+                               for a, b in zip(event["values"]["keyframes"], old["values"]["keyframes"])), 1)
+        bloom = {"id": "cab-x:7", "kind": "bloom", "label": "Bloom", "events": [], "nativeClass": "BloomTrack", "muted": False}
+        saved = [legacy, bloom]
+        snapshot = deepcopy(saved)
+        with patch.object(studio, "_read", return_value=(None, objects, {})):
+            self.assertEqual(studio.restore_legacy_camera_keyframes(b"raw", "x", saved, [native, bloom]), [native, bloom])
+        self.assertEqual(saved, snapshot)
+        with patch.object(studio, "_read") as read:
+            current = [deepcopy(native), bloom]
+            self.assertIs(studio.restore_legacy_camera_keyframes(b"raw", "x", current, [native, bloom]), current)
+        read.assert_not_called()
+
+        raw = b"native timeline bytes"
+        original = {"duration": 4., "tracks": [native, bloom], "warnings": []}
+        with patch.object(studio, "parse_timeline", return_value=original), \
+                patch.object(studio, "_read", return_value=(None, objects, {})):
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy([native, bloom])), raw)
+            self.assertIs(studio.export_timeline(raw, "x", deepcopy(saved)), raw)
+
+    def test_legacy_camera_edit_is_kept_and_written_in_the_binding_order(self):
+        trees, native, legacy, objects = self.legacy_camera_fixture()
+        edited = deepcopy(legacy)
+        points = edited["events"][1]["values"]["keyframes"]
+        points[3]["fov"] += 2.
+        points[5]["rotation"] = [0., .6, 0., .8]
+        with patch.object(studio, "_read", return_value=(None, objects, {})):
+            restored, = studio.restore_legacy_camera_keyframes(b"raw", "x", [edited], [native])
+        self.assertEqual(restored["events"][0], native["events"][0])
+        expected = deepcopy(native["events"][1])
+        expected["values"]["keyframes"][3]["fov"] += 2.
+        expected["values"]["keyframes"][5]["rotation"] = [0., .6, 0., .8]
+        self.assertEqual(restored["events"][1], expected)
+
+        written = deepcopy(trees[1])
+        studio._write_camera(written, {}, native["events"][1], restored["events"][1])
+        for point, want in zip(self.camera_points(written), expected["values"]["keyframes"]):
+            self.assertLess(rotation_degrees(point["rotation"], want["rotation"]), 1e-5)
+            self.assertAlmostEqual(point["fov"], want["fov"], places=9)
+        # Without the migration the edited shot's untouched points would bake the old ZXY error into the clip.
+        baked = deepcopy(trees[1])
+        studio._write_camera(baked, {}, native["events"][1], edited["events"][1])
+        self.assertGreater(max(rotation_degrees(point["rotation"], want["rotation"]) for point, want in
+                               zip(self.camera_points(baked), expected["values"]["keyframes"])), 1)
 
     def test_stage_motion_euler_channels_carry_the_binding_rotation_order(self):
         from webtools.core import mv_studio_stage_motion as stage
@@ -359,6 +456,65 @@ class TimelineContractTests(unittest.TestCase):
             self.assertIsNone(stage._read_clip(reader, None, world=True))
         payload["genericBindings"] = [{**item, "typeID": 23} for item in surface] + colors[:3]
         self.assertIsNone(stage._read_clip(reader, None, world=True))
+
+
+@unittest.skipUnless((SAMPLES / "a-1203503-live_timeline.unity").is_file(), "Original game samples are optional")
+class LegacyCameraProjectTests(unittest.TestCase):
+    """1203503 binds its camera Euler curves in XYZ; projects saved by 998b326 carry them composed in ZXY."""
+
+    @classmethod
+    def setUpClass(cls):
+        from webtools.core import model_animation as animation
+
+        cls.raw = (SAMPLES / "a-1203503-live_timeline.unity").read_bytes()
+        cls.fresh = studio.parse_timeline(cls.raw, "a")
+        with patch.object(animation, "_quaternion", legacy_zxy_quaternion):
+            legacy = studio.parse_timeline(cls.raw, "a")
+        cls.legacy = json.loads(json.dumps(legacy))  # As a saved project carries it.
+
+    @staticmethod
+    def camera(data):
+        return next(track for track in data["tracks"] if track["kind"] == "camera")
+
+    def affected(self):
+        return [index for index, (fresh, legacy) in enumerate(zip(self.camera(self.fresh)["events"],
+                                                                  self.camera(self.legacy)["events"])) if fresh != legacy]
+
+    def test_unedited_legacy_project_exports_the_original_bytes(self):
+        self.assertEqual(len(self.raw), 300856)
+        self.assertEqual(len(self.affected()), 15)
+        tracks = deepcopy(self.legacy["tracks"])
+        restored = studio.restore_legacy_camera_keyframes(self.raw, "a", tracks, self.fresh["tracks"])
+        self.assertEqual(restored, self.fresh["tracks"])
+        self.assertEqual(studio._changes(self.fresh, {**self.fresh, "tracks": restored}), [])
+        self.assertIs(studio.export_timeline(self.raw, "a", deepcopy(self.fresh["tracks"])), self.raw)
+        self.assertIs(studio.export_timeline(self.raw, "a", tracks), self.raw)
+        self.assertEqual(tracks, self.legacy["tracks"])
+
+    def test_legacy_project_keeps_its_camera_edit_and_matches_a_fresh_edit(self):
+        index = self.affected()[0]
+
+        def edit(data):
+            tracks = deepcopy(data["tracks"])
+            point = self.camera({"tracks": tracks})["events"][index]["values"]["keyframes"][12]
+            point["fov"] += 1.5
+            point["position"][0] += .25
+            return tracks
+
+        fresh, legacy = edit(self.fresh), edit(self.legacy)
+        restored = studio.restore_legacy_camera_keyframes(self.raw, "a", legacy, self.fresh["tracks"])
+        self.assertEqual(restored, fresh)
+        self.assertEqual(len(studio._changes(self.fresh, {**self.fresh, "tracks": restored})), 1)
+        changed = studio.export_timeline(self.raw, "a", fresh)
+        self.assertEqual(studio.export_timeline(self.raw, "a", legacy), changed)
+        current = self.camera(studio.parse_timeline(changed, "a"))["events"]
+        original = self.camera(self.fresh)["events"]
+        self.assertEqual(current[:index] + current[index + 1:], original[:index] + original[index + 1:])
+        written = current[index]["values"]["keyframes"]
+        wanted = self.camera({"tracks": fresh})["events"][index]["values"]["keyframes"]
+        self.assertAlmostEqual(written[12]["fov"], wanted[12]["fov"], places=4)
+        self.assertAlmostEqual(written[12]["position"][0], wanted[12]["position"][0], places=4)
+        self.assertLess(max(rotation_degrees(a["rotation"], b["rotation"]) for a, b in zip(written, wanted)), .01)
 
 
 @unittest.skipUnless((SAMPLES / "a-1205603-live_timeline.unity").is_file() and
