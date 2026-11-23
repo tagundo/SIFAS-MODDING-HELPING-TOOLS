@@ -27,6 +27,14 @@ same test the scene uses before it creates MVStudioProps. load_game attaches
 one only when the catalog lists a stage props bundle, the timeline has
 exactly one prop binding and the prop preview succeeds; in every other case
 the prop tracks are reported as not rendered with load_game's reason.
+
+The report reflects the stage readers that actually ran, and some of them
+depend on the external texture decoders. 12007 (iOS and Android) draws two
+CustomControl cues, StageEffect/Expert/Control/Star_par :0 and :1, through
+stageLensFlare only when ELICHIKA_TEXTURE65_BIN is set (ASTCENC_BIN alone
+gives none); without it the same import reports all 18 of its cues as not
+drawn. Compare importCoverage only between imports made with the same
+decoders (ASTCENC_BIN, ELICHIKA_TEXTURE65_BIN) as the baselines.
 """
 import re
 
