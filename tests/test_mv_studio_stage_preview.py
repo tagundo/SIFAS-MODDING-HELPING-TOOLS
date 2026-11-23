@@ -101,6 +101,15 @@ class StagePreviewTests(unittest.TestCase):
         return mv_studio.load_game(self.root, region="gl", platform="android", live_id=10,
                                    asset_id=11, language="en", **kwargs)
 
+    def test_project_source_records_the_resolved_deck_and_suit_sources(self):
+        self.selection["deck"] = {"deckType": 1, "userId": 7, "saved": True}
+        self.selection["performers"][0].update(costumeId=102111001, viewStatus=1, suitSource="deck", attachKey="c1")
+        source = self.import_game()["source"]
+        self.assertEqual((source["kind"], source["liveId"], source["assetId"]), ("game", 10, 11))
+        self.assertEqual(source["deck"], {"deckType": 1, "userId": 7, "saved": True})
+        self.assertEqual(source["suits"], [{"position": 1, "memberId": 210, "costumeId": 102111001, "viewStatus": 1,
+                                            "suitSource": "deck", "attachKey": "c1"}])
+
     def test_snapshot_is_detached_before_cast_and_uses_existing_download_consent(self):
         baseline = self.import_game(download=True)
         original_history = self.history[:]

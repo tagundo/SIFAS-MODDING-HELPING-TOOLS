@@ -441,7 +441,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
     player state (deck type, local Elichika player). `costumes` ({position: suit id or
     {"suit", "viewStatus"}}) dresses members in explicit suits instead, e.g. the suits a
     recorded game performance wore."""
-    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality
+    from . import mv_studio_actor_cache, mv_studio_game, mv_studio_quality, mv_studio_suits
 
     if type(download) is not bool:
         raise ValueError("Choose whether to download missing game assets.")
@@ -455,7 +455,10 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                                           deck=deck)
         source = {"kind": "game", "region": selected["region"], "platform": selected["platform"],
                   "liveId": selected["liveId"], "assetId": selected["assetId"], "mvOnly": selected.get("mvOnly", False),
-                  "registered": selected.get("registered", False)}
+                  "registered": selected.get("registered", False),
+                  # The deck tab / local player and every position's suit source, so a saved
+                  # project or a frame capture says which player state dressed the members.
+                  **mv_studio_suits.provenance(selected.get("deck"), selected.get("performers"))}
         project = _blank(selected["name"], source)
         project["quality"] = mv_studio_quality.read_quality(repo_root, region=source["region"], language=language,
                                                              quality_set=selected.get("qualitySet"))

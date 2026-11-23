@@ -202,6 +202,20 @@ def views(master, suit):
                                                       "WHERE suit_master_id=? ORDER BY view_status", (suit,)) if model]
 
 
+def provenance(deck, performers):
+    """What an import resolved, recorded in project.source: the deck tab and local player
+    (`deck` as resolve() returns it) and each position's suit, view status and why
+    (suitSource deck / mapping / memberInit / nonPlayable / pinned)."""
+    deck = deck if isinstance(deck, dict) else {}
+    user = deck.get("userId")
+    return {"deck": {"deckType": deck.get("deckType", DEFAULT_DECK), "userId": user if _int(user) else None,
+                     "saved": bool(deck.get("saved"))},
+            "suits": [{"position": item.get("position"), "memberId": item.get("memberId"),
+                       "costumeId": item.get("costumeId"), "viewStatus": item.get("viewStatus", VIEW_DEFAULT),
+                       "suitSource": item.get("suitSource"), "attachKey": item.get("attachKey") or ""}
+                      for item in performers or () if isinstance(item, dict)]}
+
+
 def normalize_deck(value):
     """Validate the optional player state a request or an Elichika route supplies."""
     if value is None:

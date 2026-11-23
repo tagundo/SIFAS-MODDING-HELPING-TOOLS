@@ -114,6 +114,20 @@ class SuitChainTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 suits.normalize_deck(value)
 
+    def test_provenance_records_the_deck_player_and_each_positions_suit_source(self):
+        performers = [{"position": 1, "memberId": 211, "costumeId": 202113101, "viewStatus": 1, "suitSource": "deck",
+                       "attachKey": "c1", "model": {"asset": "stage211"}},
+                      {"position": 2, "memberId": 209, "costumeId": 302092002, "viewStatus": 2, "suitSource": "pinned",
+                       "attachKey": ""}]
+        self.assertEqual(suits.provenance({"deckType": 2, "userId": 7, "saved": True}, performers), {
+            "deck": {"deckType": 2, "userId": 7, "saved": True},
+            "suits": [{"position": 1, "memberId": 211, "costumeId": 202113101, "viewStatus": 1, "suitSource": "deck",
+                       "attachKey": "c1"},
+                      {"position": 2, "memberId": 209, "costumeId": 302092002, "viewStatus": 2, "suitSource": "pinned",
+                       "attachKey": ""}]})
+        # No player state is a new player on the client's first tab (Customize).
+        self.assertEqual(suits.provenance(None, []), {"deck": {"deckType": 2, "userId": None, "saved": False}, "suits": []})
+
     def test_costume_view_label_keeps_the_global_view_word_untranslated(self):
         # The global /api/i18n table also serves the texture tools, whose "View" menu falls
         # back to its own words (보기 / 表示) only while the global table has no "View".
