@@ -12,7 +12,7 @@ function latch() {
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
-function fixture(visible = true) {
+function fixture(visible = true, options = {}) {
   const frames = [], samples = [], models = new Map(), holds = new Map(), queued = new Map();
   const cameras = [];
   const fetched = [], parsing = new Map();
@@ -102,7 +102,9 @@ function fixture(visible = true) {
       info.outline = outline;
       const hold = holds.get(id);
       if (hold) hold.started.resolve();
-      return { ready: hold?.finish.promise || Promise.resolve(), dispose() { info.materialsReleased++; } };
+      return { ready: hold?.finish.promise || Promise.resolve(), dispose() { info.materialsReleased++; },
+        setRimlight(value) { (info.rimlight ||= []).push(value); },
+        setLiveLighting(value) { info.liveLighting = value; } };
     } },
     ViewerMotionTimeline: { create(root) {
       return { evaluatePose(time) { samples.push([root.userData.id, time]); },
@@ -120,6 +122,9 @@ function fixture(visible = true) {
   window.ViewerMotionTimeline = { ...window.ViewerMotionTimeline, ...motion };
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-split.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
+  if (options.lighting) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
+  }
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
@@ -383,6 +388,31 @@ async function checkNativeMemberCulling() {
   f.app.dispose();
 }
 
+// member_rim_light only mutes the Member Rim Light tracks
+// (LiveQualityOperator.ApplyLiveQualityToMemberEffectTrack); the member
+// material keeps its rim term and the base light still lights it.
+async function checkMemberRimQuality() {
+  const f = fixture(true, { lighting: true }), value = project(56);
+  value.quality = { values: { member_rim_light: false, base_light: true } };
+  value.tracks.push({ nativeClass: 'LiveBaseLightTrack', binding: '/EntryPoint/Live/Global/LiveBaseLightReciever', events: [
+    { start: 0, duration: 10, values: { playableClass: 'LiveBaseLightClip', ambientColorType: 0, ambientMemberPosition: 1,
+      ambientColor: [1, 1, 1, 1], ambientTintColor: [1, 1, 1, 1], rimlightColorType: 0, rimlightColor: [1, 1, 1, 1],
+      rimlightIntensity: .4, rimlightSharpness: 2, rimlightDirection: { x: 0, y: 1, z: 0 } } }] },
+  { nativeClass: 'LiveRimlightTrack', binding: '/EntryPoint/Live/Members/Member1', events: [
+    { start: 0, duration: 10, values: { playableClass: 'LiveRimlightClip', colorSpecifiedType: 0, color: [1, 1, 1, 1],
+      intensity: .3, sharpness: 1, direction: { x: 0, y: 0, z: 0 } } }] });
+  await f.app.load(value);
+  f.app.seek(1, value);
+  const info = f.models.get(56);
+  assert.deepEqual(info.rimlight || [], [], 'the quality never switches the member rim term off');
+  assert.equal(info.liveLighting.rim.intensity, .4, 'only the base light rim reaches the material');
+  value.quality.values.member_rim_light = true;
+  f.app.seek(1, value);
+  assert(Math.abs(info.liveLighting.rim.intensity - .7) < 1e-9, 'with the quality on the rim track adds to the base');
+  assert.deepEqual(info.rimlight || [], []);
+  f.app.dispose();
+}
+
 // LiveCoreMemberManager.MemberMax = 12: lives such as 12074 bind Member10..Member12.
 async function checkTwelvePerformers() {
   const f = fixture(), value = project(70);
@@ -578,6 +608,7 @@ function checkAssetDumpHelpers() {
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
+  await checkMemberRimQuality();
   await checkTwelvePerformers();
   const f = fixture(), first = project(1);
   await f.app.load(first);

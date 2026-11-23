@@ -383,6 +383,16 @@
       pair.main.userData.sifasRuntime.outlineStencilComp = comparison;
     }
 
+    // LiveCoreMemberRimlight.ApplyIntensity / ApplyBaseIntensity ->
+    // ApplyEnable(final > 0); on the current (non-legacy) shader that only sets
+    // _OutlineStencilComp: 3 (Equal, the outline is kept over stencil-1 member
+    // pixels) while the rim is lit, 8 (Always) otherwise. The stencil follows
+    // the rim the material draws, so a rim switched off here (setRimlight)
+    // draws as intensity 0 and keeps Always.
+    function liveOutlineStencil(pair) {
+      return rimlightEnabled && pair.uniforms.uRimglightIntensity.value > 0 ? 3 : 8;
+    }
+
     function cheekLayer(pair, index) {
       var layer = Math.floor(finite(index, 0) + .5);
       if (pair.cheekDepth > 0) layer = Math.min(pair.cheekDepth - 1, Math.max(0, layer));
@@ -791,11 +801,7 @@
           // BaseLight and Member Rim Light write their current values.
           var depthRim = pair.main.userData.mvStageMemberDepthRim;
           if (depthRim) depthRim.value = finite(rim?.intensity, 0);
-          // LiveCoreMemberRimlight.ApplyIntensity -> ApplyEnable(final > 0); on
-          // the current (non-legacy) shader that only sets _OutlineStencilComp:
-          // 3 (Equal, the outline is kept over stencil-1 member pixels) while
-          // the rim is lit, 8 (Always) otherwise.
-          if (liveMember) setOutlineStencil(pair, uniforms.uRimglightIntensity.value > 0 ? 3 : 8);
+          if (liveMember) setOutlineStencil(pair, liveOutlineStencil(pair));
         });
       },
       // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll
@@ -845,6 +851,7 @@
         if (disposed || memberProp || rimlightEnabled === !!value) return;
         rimlightEnabled = !!value;
         materialCache.forEach(function (pair) {
+          if (liveMember) setOutlineStencil(pair, liveOutlineStencil(pair));
           if (!pair.features.rimlight) return;
           if (rimlightEnabled) pair.main.defines.SIFAS_RIMLIGHT = 1;
           else delete pair.main.defines.SIFAS_RIMLIGHT;

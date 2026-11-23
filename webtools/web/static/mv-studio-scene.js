@@ -1576,7 +1576,13 @@
         record.stageColoring?.invalidate();
         record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
-        record.materials?.setRimlight?.(settings.member_rim_light !== false);
+        // member_rim_light never reaches a member material: the game only mutes
+        // the "Member Rim Light" tracks (LiveQualityOperator.
+        // ApplyLiveQualityToMemberEffectTrack 0x20f3164), which sample() skips.
+        // The base light still writes the rim (LiveBaseLightReciever.
+        // ApplyBaseLightColor 0x2f5fac0 -> LiveCoreMemberRimlight.
+        // ApplyBaseIntensity 0x2f607fc: intensity = base, ApplyEnable(base > 0))
+        // and every AS/Member variant draws it, so the rim term stays on.
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
         record.stagePropLight?.setProject(project);

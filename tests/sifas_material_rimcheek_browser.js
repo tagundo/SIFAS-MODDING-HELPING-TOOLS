@@ -91,6 +91,19 @@ const root = path.resolve(__dirname, '..');
       out.noLighting = { stencil: live.stencil(), intensity: live.uniforms.uRimglightIntensity.value };
       authored.controller.setLiveLighting({ rim });
       out.authoredLit = authored.stencil();
+      // 2b. member_rim_light off mutes only the rim tracks: the base light alone
+      //     (ApplyBaseIntensity -> ApplyEnable(base > 0)) lights the rim, the
+      //     define stays on and the stencil is Equal. A rim switched off in the
+      //     material draws as intensity 0, so its stencil stays Always.
+      const based = await build({ live: true });
+      based.controller.setLiveLighting({ rim: { ...rim, intensity: .4 } });
+      out.baseLit = { stencil: based.stencil(), pixel: based.draw(), defined: based.defined('SIFAS_RIMLIGHT') };
+      based.controller.setRimlight(false);
+      out.baseOff = { stencil: based.stencil(), pixel: based.draw(), defined: based.defined('SIFAS_RIMLIGHT') };
+      based.controller.setLiveLighting({ rim: { ...rim, intensity: .4 } });
+      out.baseOffRelit = based.stencil();
+      based.controller.setRimlight(true);
+      out.baseOn = { stencil: based.stencil(), pixel: based.draw() };
       // 3. An outline-only pixel (back-facing plane: MAIN culled, OUTLINE drawn,
       //    no stencil written) is drawn with Always and dropped with Equal.
       const shell = await build({ live: true, backFacing: true });
@@ -137,6 +150,14 @@ const root = path.resolve(__dirname, '..');
     assert.deepEqual(result.unlit.pixel, result.baseline.rimOff);
     assert.deepEqual(result.noLighting, { stencil: [result.Always, 8], intensity: 0 });
     assert.deepEqual(result.authoredLit, [result.Always, 8], 'only a live performer runs LiveCoreMemberRimlight');
+    // 2b
+    assert.deepEqual(result.baseLit.stencil, [result.Equal, 3], 'a base-light rim alone keeps the outline Equal');
+    assert.equal(result.baseLit.defined, true);
+    assert(result.baseLit.pixel[1] > result.baseline.rimOff[1] + 20, `the base rim is drawn: ${result.baseLit.pixel}`);
+    assert.deepEqual(result.baseOff, { stencil: [result.Always, 8], pixel: result.baseline.rimOff, defined: false },
+      'a rim that is not drawn never hides the silhouette outline');
+    assert.deepEqual(result.baseOffRelit, [result.Always, 8]);
+    assert.deepEqual(result.baseOn, { stencil: [result.Equal, 3], pixel: result.baseLit.pixel });
     // 3: outline color is the main texel * .35 (70, 63, 56) over a 32-grey background.
     near(result.shellAlways, [70, 63, 56], 'Always draws the outline-only pixel', 3);
     near(result.shellEqual, [32, 32, 32], 'Equal drops the outline outside stencil-1 pixels', 1);
