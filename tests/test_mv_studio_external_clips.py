@@ -290,6 +290,9 @@ class LoadGameWiringTests(unittest.TestCase):
             "duration": 10.0, "tracks": deepcopy(self.tracks), "warnings": ["earlier", GENERIC]})).start()
         patch.object(mv_studio, "_preview", return_value=("/api/mv-studio/media/" + "a" * 32 + ".glb", {})).start()
         patch.object(mv_studio, "_motion", side_effect=self.motion).start()
+        # The fixture timeline is not a real bundle: the facial pass that runs
+        # on the loaded head is outside this wiring test.
+        patch.object(mv_studio, "_facial", side_effect=lambda timeline, motion, *rest: motion).start()
         patch.object(mv_studio, "_register", side_effect=lambda project, native: project).start()
         self.mv_studio = mv_studio
 

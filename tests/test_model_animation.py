@@ -492,9 +492,16 @@ class EulerWriteHelpersTest(unittest.TestCase):
     so an older top-level live_timeline package earlier on sys.path cannot shadow them."""
 
     def test_helpers_match_the_live_timeline_copy_for_every_order(self):
-        from webtools.core import model_animation as animation
-        from live_timeline import sifas_timeline_inject as inject
+        import importlib.util
         import random
+        from webtools.core import model_animation as animation
+        # Load this checkout's copy by path: another top-level live_timeline on
+        # sys.path (for example an older Elichika modtools submodule) would
+        # otherwise be compared instead.
+        source = Path(__file__).resolve().parents[1] / 'live_timeline' / 'sifas_timeline_inject.py'
+        spec = importlib.util.spec_from_file_location('_checkout_sifas_timeline_inject', source)
+        inject = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inject)
         rng = random.Random(7)
         for order in range(6):
             previous = None

@@ -220,6 +220,15 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             # Optional source physics is independent of the usable body model.
             pass
+        from . import model_constraints
+
+        try:
+            constraints = model_constraints.catalogue_preview(models, rig["bones"])
+            if constraints.get("available"):
+                rig = {**rig, "constraints": constraints}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Unity constraints are optional rig data, like source physics.
+            pass
     if key is not None:
         if performer and rig.get("available") and any(clip.get("bindingComplete") for clip in rig.get("clips", [])):
             model_viewer._conversion_put(
@@ -296,7 +305,8 @@ def _timeline(path):
                                                preview_stage_display_lights=True, preview_stage_falling_effects=True,
                                                preview_stage_break=True, preview_stage_finale_floor=True,
                                                preview_stage_sparks_a=True, preview_stage_sparks_b=True,
-                                               preview_stage_sparks_roop=True, preview_particle_systems=True)
+                                               preview_stage_sparks_roop=True, preview_particle_systems=True,
+                                               preview_control_prefabs=True)
     if not parsed.get("tracks"):
         raise ValueError("This file does not contain an original live timeline.")
     return raw, parsed
@@ -497,7 +507,8 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                              "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                              "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                              "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                             "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
+                             "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems",
+                             "stageControlPrefabs", "controlCoverage")
                             if field in parsed})
             warnings.extend(parsed.get("warnings", []))
             original_cast = selected.get("performers", [])[:_MEMBER_MAX]
@@ -1279,7 +1290,8 @@ def _mod_files(project, files):
                                  "stageRibbons", "stageSpotlight", "stageButterfly", "stageRain", "stageLeaves", "stageMomiji",
                                  "stageConfetti", "stageGlow", "stageLensFlare", "stageSpeedBack",
                                  "stageDisplayLights", "stageFallingEffects", "stageBreak", "stageFinaleFloor",
-                                 "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems")
+                                 "stageSparksA", "stageSparksB", "stageSparksRoop", "stageParticleSystems",
+                                 "stageControlPrefabs", "controlCoverage")
                                 if field in parsed})
                 project["warnings"].extend(parsed.get("warnings", []))
                 project["assets"].append({"id": secrets.token_hex(8), "kind": "timeline", "label": label,

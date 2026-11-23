@@ -273,6 +273,43 @@ async function testUnreproducedSystemsAreRefused() {
   controller.dispose();
 }
 
+async function testPrefabAnimatorCurves() {
+  // A prefab Animator moves a local-space emitter and fades its renderer's _TintColor:
+  // both are sampled at the clone's state time (time since activation, looped).
+  const root = new T.Group();
+  const nodes = [{parent: null, path: "fx", layer: 26, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
+    {parent: 0, path: "fx/ryuu", layer: 26, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]}];
+  const animated = system({node: 1, path: "fx/ryuu", layer: 26, shape: null, emission: {rate: constant(0),
+    bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]},
+    main: {lifetime: constant(100), size: constant(1)}});
+  const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: [level(4), level(2), level(1)]}],
+    templates: [{name: "fx", nodes, systems: [animated], animation: {
+      clips: [{name: "clip", start: 0, duration: 2, loop: true}],
+      channels: [{node: 1, clip: 0, kind: "translation", curves: [["linear", [[0, 0], [2, 4]]], ["constant", 1], ["constant", 0]]},
+        {system: 0, clip: 0, kind: "tint", curves: [["constant", 1], ["constant", 1], ["constant", 1],
+          ["linear", [[0, 1], [2, 0]]]]}]}}],
+    cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 0, 0], quality: "stage_display", clipSeed: 1}]};
+  assert.equal(P.validDescriptor(descriptor), true);
+  const broken = structuredClone(descriptor);
+  broken.templates[0].animation.channels[0].node = 7;
+  assert.equal(P.validDescriptor(broken), false);
+  assert.equal(P.animatorTime({start: 0, duration: 2, loop: true}, 75, 30), .5);
+  assert.equal(P.animatorTime({start: 0, duration: 2, loop: false}, 75, 30), 2);
+  const controller = await P.apply(T, root, descriptor);
+  const project = {tracks: [{id: "track", events: [{id: "track:0", start: 1, duration: 10}]}],
+    quality: {values: {stage_display: true}}};
+  controller.update(1 + 29 / 30, project);
+  let [state] = controller.inspect(1);
+  // 30 frames since activation: state time 1 s, emitter at Unity x = 2 (mirrored), y = 1.
+  assert.deepEqual(state.positions[0].map(value => Math.round(value * 1e3) / 1e3), [-2, 1, 0]);
+  const mesh = root.children[0].children.find(child => child.name.endsWith("fx/ryuu"));
+  assert.ok(Math.abs(mesh.material.uniforms.uTint.value.w - .5) < 1e-6);
+  controller.update(1 + 74 / 30, project);
+  [state] = controller.inspect(1);
+  assert.deepEqual(state.positions[0].map(value => Math.round(value * 1e3) / 1e3), [-1, 1, 0], "the clip loops");
+  controller.dispose();
+}
+
 (async () => {
   testDrawOrderMatchesNativeLanes();
   testSeekMatchesPlayback();
@@ -285,6 +322,7 @@ async function testUnreproducedSystemsAreRefused() {
   testMaterialMappingAndLayers();
   await testApplyDrawsActiveCuesOnly();
   await testUnreproducedSystemsAreRefused();
+  await testPrefabAnimatorCurves();
   console.log("mv_studio_particle_systems_test: ok");
 })().catch(error => {
   console.error(error);

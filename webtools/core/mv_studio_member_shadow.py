@@ -1,4 +1,4 @@
-"""Extract the stock member's two default foot shadows for MV playback."""
+"""Extract the stock member's two default foot shadows and the stage's shadow prefabs for MV playback."""
 
 import subprocess
 
@@ -109,13 +109,16 @@ def _shader(scene, material, pointer):
                               scene.tree(shader).get("m_ParsedForm", {}).get("m_Name") == "AS/General/Transparent")
 
 
-def _image(scene, material):
+def _image(scene, material, *, prefab=False, colorless=False):
     tree = scene.tree(material)
     floats = viewer._properties(tree, "m_Floats")
     tint = viewer._properties(tree, "m_Colors").get("_TintColor")
     keywords = set(str(tree.get("m_ShaderKeywords", "")).split())
-    if (tree.get("m_Name") != "shadow" or tree.get("m_CustomRenderQueue") != 2800
-            or "_VERTEX_COLOR_OFF" not in keywords or keywords - {"_VERTEX_COLOR_OFF", "_ALPHABLEND_ON", "_EMISSION"}
+    # A stage prefab's material may leave out _VERTEX_COLOR_OFF only when its mesh
+    # has no COLOR stream, which reads as opaque white either way.
+    vertex_color_off = "_VERTEX_COLOR_OFF" in keywords or (prefab and colorless)
+    if ((not prefab and tree.get("m_Name") != "shadow") or tree.get("m_CustomRenderQueue") != 2800
+            or not vertex_color_off or keywords - {"_VERTEX_COLOR_OFF", "_ALPHABLEND_ON", "_EMISSION"}
             or any(floats.get(name) != value for name, value in _STATE.items())
             or tint != dict.fromkeys("rgba", 1) or not _shader(scene, material, tree.get("m_Shader"))):
         return None
@@ -127,7 +130,9 @@ def _image(scene, material):
         return None
     texture = image.read()
     sampler = texture.m_TextureSettings
-    if (texture.m_Name != "dropshadow" or (texture.m_Width, texture.m_Height, texture.m_MipCount) != (128, 128, 1)
+    size = (texture.m_Width, texture.m_Height)
+    if ((not prefab and (texture.m_Name != "dropshadow" or size != (128, 128))) or texture.m_MipCount != 1
+            or any(not 32 <= side <= 512 or side & (side - 1) for side in size)
             or (texture.m_TextureFormat, texture.m_ImageCount, texture.m_TextureDimension, texture.m_ColorSpace)
             not in ((32, 1, 2, 1), (34, 1, 2, 1))
             or (sampler.m_FilterMode, sampler.m_Aniso, sampler.m_MipBias) != (1, 1, 0)
@@ -195,6 +200,91 @@ def _read(scene, glb, materials, rig, deadline):
                          "TEXCOORD_0": glb.attribute(uv, "VEC2"),
                          "indices": glb.attribute(triangles[0].ravel(), "SCALAR", 5123)},
             "texture": index}
+
+
+def stage_prefabs(scene, component, tree):
+    """The GameObjects a typed stage's memberShadowPrefabs names, if it has any.
+
+    ShadowComponent.Initialize (GL 3.12.0, 0x2c966c0) reads
+    LiveCoreStageEffect.MemberShadowPrefabs; when the array is not empty it
+    deletes the costume's shadow renderers and instantiates every prefab under
+    both shadowL and shadowR, then ApplyShadowIndex(0) leaves only the first
+    instance pair active. The prefab assets themselves are never in the scene.
+    """
+    if stage_default(scene, component, tree) is not False:
+        return None
+    return [_local(component, pointer, "GameObject") for pointer in tree["memberShadowPrefabs"]]
+
+
+def _prefab(scene, glb, materials, game, deadline):
+    transform = scene.transforms.get(viewer._key(game)) if game is not None else None
+    if transform is None:
+        return None
+    fields = scene.tree(transform)
+    # Instantiate(prefab, parent) keeps the prefab root's local transform.
+    # Only an unrotated root at the anchor is read; its children are not.
+    if (fields.get("m_Children") or (fields.get("m_Father") or {}).get("m_PathID")
+            or fields.get("m_LocalPosition") != {"x": 0, "y": 0, "z": 0}
+            or fields.get("m_LocalRotation") != {"x": 0, "y": 0, "z": 0, "w": 1}):
+        return None
+    scale = [fields.get("m_LocalScale", {}).get(axis) for axis in "xyz"]
+    if any(type(value) not in (int, float) or not 0 < value <= 100 for value in scale):
+        return None
+    key = viewer._key(game)
+    rows = [(obj, tree) for obj, tree, owner in scene.renderers if viewer._key(owner) == key]
+    if len(rows) != 1:
+        return None
+    renderer, tree = rows[0]
+    states = ("m_CastShadows", "m_ReceiveShadows", "m_RenderingLayerMask",
+              "m_RendererPriority", "m_SortingLayerID", "m_SortingOrder")
+    refs = tree.get("m_Materials", ())
+    if (renderer.type.name != "MeshRenderer" or not tree.get("m_Enabled") or len(refs) != 1
+            or tuple(tree.get(name) for name in states) != (0, 0, 1, 0, 0, 0)):
+        return None
+    material = _local(renderer, refs[0], "Material")
+    mesh = scene.filters.get(key)
+    if material is None or mesh is None or mesh.type.name != "Mesh" or mesh.assets_file is not renderer.assets_file:
+        return None
+    mesh_tree = scene.tree(mesh)
+    channels = mesh_tree.get("m_VertexData", {}).get("m_Channels", ())
+    colorless = len(channels) > 3 and not channels[3].get("dimension")
+    parts = mesh_tree.get("m_SubMeshes", ())
+    if len(parts) != 1 or parts[0].get("topology") != 0 or not 0 < mesh_tree["m_VertexData"].get("m_VertexCount", 0) <= 64:
+        return None
+    _, positions, _, uv, triangles = viewer._geometry(mesh, np.eye(4), deadline=deadline)
+    # 11015's second prefab is a 10 x 10 plane 1e-4 above its root, reaching 8.77 forward.
+    if (positions.ndim != 2 or positions.shape[1] != 3 or np.abs(positions[:, 1]).max() > .01
+            or np.abs(positions).max() > 16 or uv is None or uv.shape != (len(positions), 2)
+            or not np.all((0 <= uv) & (uv <= 1)) or len(triangles) != 1 or triangles[0].ndim != 2):
+        return None
+    image = _image(scene, material, prefab=True, colorless=colorless)
+    if image is None:
+        return None
+    reader, texture = image
+    texture_key = viewer._key(reader)
+    if texture_key not in materials.textures:
+        pixels = texture.m_Width * texture.m_Height
+        if materials.pixels + pixels > viewer.MAX_TEXTURE_PIXELS:
+            return None
+        png = viewer._texture_png(texture, deadline, stage=True)
+        if len(glb.data) + len(png) + 1024 > viewer.MAX_GLB_BYTES:
+            return None
+        materials.predecoded[texture_key] = png
+    return {"geometry": {"POSITION": glb.attribute(positions, "VEC3", bounds=True),
+                         "TEXCOORD_0": glb.attribute(uv, "VEC2"),
+                         "indices": glb.attribute(triangles[0].ravel(), "SCALAR", 5123)},
+            "texture": materials.texture(reader), "scale": scale}
+
+
+def export_prefabs(scene, glb, materials, prefabs, deadline):
+    """Detached member-shadow prefab templates, or None when any is unreadable."""
+    if not prefabs or len(prefabs) > 16:
+        return None
+    try:
+        exported = [_prefab(scene, glb, materials, game, deadline) for game in prefabs]
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return None
+    return {"schema": 1, "prefabs": exported} if all(exported) else None
 
 
 def read(scene, glb, materials, rig, deadline):

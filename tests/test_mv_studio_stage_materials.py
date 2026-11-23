@@ -34,6 +34,62 @@ class StageDisplayMaterialTests(unittest.TestCase):
             self.assertNotIn("vertexColor", fallback)
             self.assertEqual({k: v for k, v in variant.items() if k != "vertexColor"}, fallback)
 
+    def test_opaque_background_may_replace_the_reference_on_depth_failure(self):
+        original = SimpleNamespace(type=SimpleNamespace(name="Material"))
+        floats = {"_StencilComp": 8, "_StencilRef": 2, "_StencilPassOp": 2, "_StencilZFailOp": 2}
+        tree = {"m_ShaderKeywords": "", "m_CustomRenderQueue": -1, "m_SavedProperties": {"m_Floats": floats.items()}}
+        scene = SimpleNamespace(tree=lambda _: tree)
+        with patch.object(displays, "_shader_matches", return_value=True):
+            # mat_dis_bg_so2035_opa_0x / so2036_opa_0x: _StencilZFailOp 2 (Replace).
+            self.assertEqual(displays._material(scene, None, original, False)["stencilZFail"], 2)
+            floats["_StencilZFailOp"] = 0
+            self.assertEqual(displays._material(scene, None, original, False)["stencilZFail"], 0)
+            for value in (1, 3):
+                floats["_StencilZFailOp"] = value
+                self.assertIsNone(displays._material(scene, None, original, False))
+            # Logo passes keep the exact transparent profile.
+            floats.update(_StencilPassOp=0, _StencilZFailOp=2, _BlendSrc=5, _BlendDst=10, _ZTestMode=4, _ZWriteParam=0)
+            self.assertIsNone(displays._material(scene, None, original, True))
+            floats["_StencilZFailOp"] = 0
+            self.assertEqual(displays._material(scene, None, original, True)["stencilZFail"], 0)
+
+
+class ActualStageDisplayTests(unittest.TestCase):
+    """Set SIFAS_TEST_STAGE_EFFECT_12035 / _12036 to the original Android stage_effect bundles."""
+
+    def screens(self, variable):
+        import os
+        from pathlib import Path
+        raw = os.environ.get(variable)
+        if not raw or not Path(raw).is_file():
+            self.skipTest(f"Set {variable} to the original stage_effect bundle")
+        deadline = time.monotonic() + 120
+        env = model_viewer._environment([raw], deadline)
+        scene = model_viewer._Scene(env, deadline)
+        materials = SimpleNamespace(texture=lambda texture: texture.path_id)
+        result = {}
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            tree = scene.tree(obj)
+            if "materialReferences" not in tree:
+                continue
+            found = displays.binding(scene, obj, tree)
+            exported = displays.export(scene, materials, found[1]) if found else None
+            result[found[1][0].rsplit("/", 1)[-1] if found else None] = exported
+        return result
+
+    def test_12035_screens_keep_their_native_backgrounds(self):
+        screens = self.screens("SIFAS_TEST_STAGE_EFFECT_12035")
+        self.assertEqual({name: len(screen["variants"]) for name, screen in screens.items()}, {"main_01": 4, "sub_01": 3})
+        for screen in screens.values():
+            self.assertEqual({variant["background"]["stencilZFail"] for variant in screen["variants"]}, {2})
+            self.assertEqual(screen["fallback"]["stencilZFail"], 0)
+
+    def test_12036_screens_keep_their_native_backgrounds(self):
+        screens = self.screens("SIFAS_TEST_STAGE_EFFECT_12036")
+        self.assertEqual({name: len(screen["variants"]) for name, screen in screens.items()}, {"main_01": 2, "sub_01": 2})
+
 
 class StageMatCapMaterialTests(unittest.TestCase):
     def test_world_matcap_uses_compiled_state_and_keeps_exact_queued_sort(self):

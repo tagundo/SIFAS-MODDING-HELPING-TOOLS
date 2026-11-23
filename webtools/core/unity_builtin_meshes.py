@@ -39,13 +39,17 @@ def mesh_id(scene, game_object):
         mesh_filter = viewer._ref(game_object, entry.get("component"))
         if mesh_filter is None or mesh_filter.type.name != "MeshFilter":
             continue
-        pointer = scene.tree(mesh_filter).get("m_Mesh", {})
-        file_id, path_id = pointer.get("m_FileID", 0), pointer.get("m_PathID")
-        externals = mesh_filter.assets_file.externals
-        if (path_id in MESHES and type(file_id) is int and 0 < file_id <= len(externals)
-                and externals[file_id - 1].path.replace("\\", "/").lower() == DEFAULT_RESOURCES):
-            return path_id
-        return None
+        return pointer_id(mesh_filter, scene.tree(mesh_filter).get("m_Mesh", {}))
+    return None
+
+
+def pointer_id(owner, pointer):
+    """Return the built-in Mesh pathID a serialized pointer from ``owner`` names, or None."""
+    file_id, path_id = (pointer or {}).get("m_FileID", 0), (pointer or {}).get("m_PathID")
+    externals = owner.assets_file.externals
+    if (path_id in MESHES and type(file_id) is int and 0 < file_id <= len(externals)
+            and externals[file_id - 1].path.replace("\\", "/").lower() == DEFAULT_RESOURCES):
+        return path_id
     return None
 
 

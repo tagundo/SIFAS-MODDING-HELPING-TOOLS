@@ -133,7 +133,7 @@
     const settings = { bones: true, colliders: true, profile: "live", skirtsafeDisableBySource: flags,
       skirtsafeDisableByComponent: runtime.skirtsafeDisableByComponent || {},
       safeSwingBone: motionSettings?.safeSwingBoneKnown === true ? motionSettings.safeSwingBone : undefined };
-    let engine = null, active = false, applied = false, stepped = false, previous = null;
+    let engine = null, active = false, applied = false, stepped = false, previous = null, simulated = null;
 
     function restorePose() {
       if (!applied) return;
@@ -160,7 +160,27 @@
       active = false;
       stepped = false;
       previous = null;
+      simulated = null;
       engine?.resetSimulation(reason);
+    }
+
+    // The swing-bone local pose Unity's transforms hold when
+    // ConstraintManagerUpdate (PreLateUpdate, after the Animator) reads them.
+    // Game order: LiveCoreMemberManager.Update -> UpdateMultiThread scheduled
+    // this frame's job, which wrote world rotations against the parents the
+    // previous frame ended with, so update() takes the copy right after the
+    // step, before LateUpdate's AllSafeCorrect. The same-frame order runs its
+    // job after the timeline, so its solve reads the previous apply() result.
+    // The copy survives restorePose(), which puts the authored pose back.
+    function captureSimulated() {
+      simulated ||= new Map();
+      for (const [id, { object, position, quaternion }] of dynamic) {
+        const row = simulated.get(id) || { position: position ? object.position.clone() : null,
+          quaternion: quaternion ? object.quaternion.clone() : null };
+        row.position?.copy(object.position);
+        row.quaternion?.copy(object.quaternion);
+        simulated.set(id, row);
+      }
     }
 
     function configure(quality) {
@@ -185,6 +205,7 @@
       }
       engine.apply(delta, settings);
       active = true;
+      captureSimulated();
     }
 
     // Game order, part 1 (LiveCoreMemberManager.Update): called before the
@@ -205,6 +226,7 @@
       engine.captureAnimationPose({ time: pose.time, advancing: true, animatedProperties: pose.animatedProperties });
       stepped = engine.step(delta, settings) === true;
       active = true;
+      if (stepped) captureSimulated();
       return stepped;
     }
 
@@ -242,8 +264,9 @@
       active = false;
       stepped = false;
       previous = null;
+      simulated = null;
     }
-    return { restorePose, reset, apply, update, lateUpdate, frame, dispose };
+    return { restorePose, reset, apply, update, lateUpdate, frame, dispose, simulatedPose: () => simulated };
   }
 
   global.MVStudioPhysics = { create, createClock, gameFrameRate, exportTickRate, normalizeTiming, frameRate, ORDERS, REFRESH_RATES };

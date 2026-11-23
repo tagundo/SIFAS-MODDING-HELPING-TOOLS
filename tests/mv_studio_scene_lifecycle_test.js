@@ -522,7 +522,8 @@ function checkAssetDumpHelpers() {
   const helpers = fixture().window.MVStudioAssetDump;
   // Results are built in the vm realm: compare them as plain JSON.
   const D = { gameObjectPath: (...args) => JSON.parse(JSON.stringify(helpers.gameObjectPath(...args))),
-    textureIdentity: (...args) => JSON.parse(JSON.stringify(helpers.textureIdentity(...args))) };
+    textureIdentity: (...args) => JSON.parse(JSON.stringify(helpers.textureIdentity(...args))),
+    materialProperties: (...args) => JSON.parse(JSON.stringify(helpers.materialProperties(...args))) };
   const node = (name, tag) => {
     const value = new THREE.Object3D();
     if (name !== null) value.userData.name = name;
@@ -548,10 +549,25 @@ function checkAssetDumpHelpers() {
   root.add(broken); broken.add(inner); inner.add(leaf);
   assert.deepEqual(D.gameObjectPath(leaf, root), { path: null, pathSource: 'flattened' }, 'an untagged glTF node breaks the chain');
   const constant = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-  assert.deepEqual(D.textureIdentity(constant), { name: null, width: 1, height: 1, placeholder: true });
+  assert.deepEqual(D.textureIdentity(constant), { name: null, width: 1, height: 1, mips: 1, placeholder: true });
   const real = new THREE.DataTexture(new Uint8Array(16), 2, 2);
   real.name = 'atlas';
-  assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2 });
+  assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2, mips: 1 });
+  real.mipmaps = [{ width: 2, height: 2 }, { width: 1, height: 1 }];
+  real.userData = { sifasArrayLayer: 1 };
+  assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2, mips: 2, arrayLayer: 1 },
+    'authored mip levels and the array slice are part of the identity');
+  // AS/Member: effective keywords (authored, with variant keywords as drawn),
+  // the rim evaluation and the outline stencil comparison.
+  const member = new THREE.ShaderMaterial({ uniforms: { uRimglightIntensity: { value: .5 }, uOutlineScale: { value: 1 } },
+    defines: { SIFAS_RIMLIGHT: 1, SIFAS_CHEEK: 1 } });
+  member.userData.sifas = { keywords: ['_RIMLIGHT_ON', '_MATCAP_ON'] };
+  member.userData.sifasRuntime = { outlineStencilComp: 3 };
+  const read = D.materialProperties(member);
+  assert.deepEqual([read.kind, read.keywords, read.rimlightEvaluated], ['member', ['_CHEEK_ON', '_RIMLIGHT_ON'], true],
+    'the drawn variant replaces the authored _MATCAP_ON; the legacy _RIMLIGHT_ON stays as authored');
+  assert.deepEqual(read.properties._OutlineStencilComp, { t: 'float', v: 3, from: 'outline stencilFunc' });
+  assert.deepEqual(read.properties._RimglightIntensity, { t: 'float', v: .5, from: 'uRimglightIntensity' });
 }
 
 (async () => {

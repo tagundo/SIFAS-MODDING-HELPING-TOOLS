@@ -31,7 +31,7 @@ async function run() {
     target: effect, fallback: material(7, 2000, [1, 1, 0, -.125]),
     variants: [
       { background: material(null, 2000), logo: material(8, 3000) },
-      { background: {...material(9, 2000), vertexColor: true}, logo: material(8, 3000) }
+      { background: {...material(9, 2000), vertexColor: true, stencilZFail: 2}, logo: material(8, 3000) }
     ]
   };
   root.add(node);
@@ -50,6 +50,7 @@ async function run() {
   assert.equal(node.material.stencilFunc, T.AlwaysStencilFunc);
   assert.equal(node.material.stencilZPass, T.ReplaceStencilOp);
   assert.equal(node.material.stencilRef, 2);
+  assert.equal(node.material.stencilZFail, T.KeepStencilOp);
   assert.equal(node.material.depthWrite, true);
   assert.equal(node.material.transparent, false);
   assert.equal(node.material.uniforms.uVertexColor.value, false);
@@ -59,12 +60,16 @@ async function run() {
   assert.equal(node.material.uniforms.uTexture.value.name, "9");
   assert.equal(node.material.uniforms.uTextureST.value.w, .3125);
   assert.equal(node.material.uniforms.uVertexColor.value, true);
+  // _StencilZFailOp 2 also writes the reference where the screen fails the depth test.
+  assert.equal(node.material.stencilZFail, T.ReplaceStencilOp);
+  assert.equal(logo.material.stencilZFail, T.KeepStencilOp);
   assert.equal(logo.material.uniforms.uVertexColor.value, false);
   project.quality.values.stage_display = false;
   controller.update(2.5, project);
   assert.equal(node.material.uniforms.uTexture.value.name, "7");
   assert.equal(node.material.uniforms.uTextureST.value.w, .125);
   assert.equal(node.material.uniforms.uVertexColor.value, false);
+  assert.equal(node.material.stencilZFail, T.KeepStencilOp);
   assert.equal(logo.visible, false);
   controller.dispose();
   assert.equal(node.children.length, 0);
@@ -79,7 +84,7 @@ async function run() {
   assert.equal(node.material.stencilRef, 2);
   uncolored.dispose();
   assert.equal(node.material, original);
-  console.log("Native stage display: mixed ambient/scroll, backdrop variants, logo pass, stencil, and static fallback.");
+  console.log("Native stage display: mixed ambient/scroll, backdrop variants, logo pass, stencil, and static fallback, depth-fail stencil replace.");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });
