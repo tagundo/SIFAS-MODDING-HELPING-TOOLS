@@ -193,7 +193,12 @@
     // world rotations against those parents.
     function update(time, delta, quality, motion) {
       configure(quality);
-      if (!(delta > 0)) return false;
+      if (!(delta > 0)) {
+        // A displayed frame with no game frame (display faster than the game's
+        // rate): the next job must still read the last game frame's pose.
+        if (active) engine?.keepFramePose?.();
+        return false;
+      }
       engine ||= source.create(root, catalog, null, { initializationPose: original });
       remember();
       const pose = previous || { time, animatedProperties: motion?.animatedProperties?.(time) || {} };

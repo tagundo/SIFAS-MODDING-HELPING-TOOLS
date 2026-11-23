@@ -132,7 +132,7 @@
     return { coreAvailable: !missing.length, missing: missing, skirtCorrectionMissing: skirt };
   }
   function create(root, catalog, current, options) {
-    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, lateDue = false, profile = 'navi', missing = [], skirtCorrectionMissing = [], configuredCorrectionMissing = [];
+    options = options || {}; var THREE = global.THREE, math = global.ViewerGamePhysicsMath, nodes = {}, records = {}, managers = [], baseCache = {}, buffers = [], data = [], colliders = [], matrices = [], entries = [], captured = null, context = {}, output = {}, initialized = false, pending = true, pendingBase = true, disposed = false, signature = '', restSignature = '', startupCorrection = false, lateDue = false, framePose = null, framePoseDue = false, profile = 'navi', missing = [], skirtCorrectionMissing = [], configuredCorrectionMissing = [];
     var stats = { mode: 'game', profile: profile, nativeSteps: 0, totalNativeSteps: 0, resets: 0, initializationGeneration: 0, dynamicGeneration: 0, contacts: 0, safeCorrections: 0, delta: 0, substeps: 0, frameMs: 0 };
     function helper(o) { while (o) { if (o.userData && o.userData.viewerHelper) return true; o = o.parent; } return false; }
     root.traverse(function (o) { if (!helper(o) && o.userData && o.userData.elichika_node !== undefined) nodes[String(o.userData.elichika_node)] = o; });
@@ -151,7 +151,7 @@
     function setWorldPosition(o, position) { var p = new THREE.Vector3().fromArray(mirrored(position)); if (o.parent) o.parent.worldToLocal(p); o.position.copy(p); if (o.matrixAutoUpdate === false) o.updateMatrix(); o.updateMatrixWorld(true); }
     function depth(o) { var d = 0; while (o.parent) { d++; o = o.parent; } return d; }
     function currentValues(record) { return current ? current(record) : record.values; }
-    function resetSimulation(reason) { pending = true; lateDue = false; stats.resets++; stats.resetReason = reason || 'reset'; if (/author|model|load|initialization/.test(reason || '')) pendingBase = true; }
+    function resetSimulation(reason) { pending = true; lateDue = false; framePose = null; framePoseDue = false; stats.resets++; stats.resetReason = reason || 'reset'; if (/author|model|load|initialization/.test(reason || '')) pendingBase = true; }
     function obtainRest() { return options.initializationPose || (typeof options.getInitializationPose === 'function' ? options.getInitializationPose() : null); }
     function buildBase() {
       var rest = obtainRest();
@@ -297,9 +297,28 @@
     function step(delta, settings) {
       if (disposed) return false; var start = now(); settings = settings || {};
       if (!prepare(delta, settings) || !(delta > 0)) return false;
-      runJob(settings); saveOutput(); lateDue = true;
+      framePoseDue = false;
+      if (framePose) {
+        // The caller displayed frames between two game frames. The job still
+        // reads the pose the last game frame ended with, and its rotations
+        // become local rotations against that frame's parents.
+        var shown = snapshot(); restore(framePose); framePose = null;
+        runJob(settings);
+        var locals = entries.map(function (entry) { return entry.object.quaternion.toArray(); });
+        restore(shown);
+        entries.forEach(function (entry, index) { entry.object.quaternion.fromArray(locals[index]); if (entry.object.matrixAutoUpdate === false) entry.object.updateMatrix(); });
+        root.updateMatrixWorld(true);
+      } else runJob(settings);
+      saveOutput(); lateDue = true;
       stats.nativeSteps = 1; stats.substeps = 1; stats.totalNativeSteps++; stats.frameMs = now() - start;
       return true;
+    }
+    // Called before the caller changes the pose for a displayed frame that has
+    // no game frame (the display runs faster than the game's frame rate): keep
+    // the pose the last game frame ended with for the next step().
+    function keepFramePose() {
+      if (disposed || !framePoseDue || pending) return;
+      framePose = snapshot(); framePoseDue = false;
     }
     function late(settings, nextContext) {
       settings = settings || {};
@@ -311,7 +330,7 @@
       lateDue = false;
       if (nextContext) context = Object.assign({}, context, nextContext);
       refreshCorrectionMissing(settings);
-      reapplyOutput(true); finish(settings);
+      reapplyOutput(true); finish(settings); framePoseDue = true;
       stats.frameMs += now() - start;
     }
     function state() {
@@ -319,7 +338,7 @@
       var capsuleRows = initialized ? colliders.map(function (d, index) { var a = point(matrices[index], d.offset), base = d.managerOffset || 0, sibling = d.siblingIndex >= 0 ? colliders[base + d.siblingIndex] : null, b = sibling ? point(matrices[base + d.siblingIndex], sibling.offset) : a; return { id: d.record.id, a: mirrored(a), b: mirrored(b), ra: d.radius, rb: sibling ? d.siblingRadius : d.radius }; }) : [];
       return Object.assign({}, stats, { available: missing.length === 0 && catalogReadiness(catalog).coreAvailable, nativeCatalogAvailable: !!(catalog.native && catalog.native.available), initialized: initialized, initializationMissing: missing.slice(), unsupported: missing.slice(), skirtCorrectionMissing: skirtCorrectionMissing.slice(), mode: 'game', profile: profile, dynamicBones: entries.length, components: (catalog.components || []).length, bones: boneRows, capsules: capsuleRows, runtimeProfile: { job: profile === 'live' ? 'SwingBoneGroupJob' : 'SwingBoneJob', callerFlags: true } });
     }
-    return { captureAnimationPose: captureAnimationPose, resetSimulation: resetSimulation, setInitializationPose: function (pose) { options.initializationPose = pose; pendingBase = true; resetSimulation('initialization-pose'); }, apply: apply, step: step, late: late, getState: state, getTimingState: function () { return Object.assign({}, stats); }, dispose: function () { disposed = true; output = {}; captured = null; buffers = []; data = []; entries = []; } };
+    return { captureAnimationPose: captureAnimationPose, resetSimulation: resetSimulation, setInitializationPose: function (pose) { options.initializationPose = pose; pendingBase = true; resetSimulation('initialization-pose'); }, apply: apply, step: step, late: late, keepFramePose: keepFramePose, getState: state, getTimingState: function () { return Object.assign({}, stats); }, dispose: function () { disposed = true; output = {}; captured = null; buffers = []; data = []; entries = []; } };
   }
   global.ViewerGamePhysics = { create: create, catalogReadiness: catalogReadiness, profiles: { navi: { job: 'single', enableJob: true, enableLod: true, skirtsafeDisable: true }, live: { job: 'group', flagsFromCaller: true } }, reference: { stepJob: stepJob, constraint: constraint, quatMul: quatMul, quatRotate: quatRotate, point: point, classify: classify, safeCorrect: safeCorrect } };
 }(typeof window !== 'undefined' ? window : globalThis));

@@ -191,6 +191,23 @@ const close = (a, b, message, tolerance = 1e-6) =>
   assert.notDeepEqual(order.dyna.quaternion.toArray(), [0, 0, 0, 1], 'the next frame steps from the seek pose');
 }
 {
+  // A 60 Hz display of a 30 fps game: the displayed in-between frames move the
+  // parents, but each job still reads the pose the previous game frame ended with,
+  // so the game frames match a 30 Hz display exactly.
+  const angle = (t) => 40 * Math.sin(t * 7) + 15 * Math.cos(t * 23);
+  const display30 = springRig(), display60 = springRig();
+  for (let frame = 1; frame <= 12; frame++) {
+    display30.frame('game', { parent: angle(frame / 30) }, 1 / 30);
+    if (frame > 1) display60.frame('game', { parent: angle(frame / 30 - 1 / 60) }, 0);
+    display60.frame('game', { parent: angle(frame / 30) }, 1 / 30);
+    assert.deepEqual(display60.dyna.quaternion.toArray(), display30.dyna.quaternion.toArray(), `game frame ${frame}`);
+  }
+  assert.equal(display60.engine.getTimingState().totalNativeSteps, 12);
+  const held = display60.dyna.quaternion.toArray();
+  display60.frame('game', { parent: angle(13 / 30 - 1 / 60) }, 0);
+  assert.deepEqual(display60.dyna.quaternion.toArray(), held, 'a displayed in-between frame holds the local rotation');
+}
+{
   // Properties the timeline animates are written after the job, so they win.
   const rig = springRig();
   const animated = { 0: { quaternion: true }, 1: { quaternion: true } };
