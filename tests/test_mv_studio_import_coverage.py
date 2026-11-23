@@ -221,6 +221,13 @@ class ImportCoverageTests(unittest.TestCase):
         self.assertEqual([row["nativeClass"] for row in project["importCoverage"]["gaps"]],
                          ["LiveMemberIKTrack", "LiveMemberShadowTrack", "LiveSomethingNewTrack"])
 
+    def test_unexported_member_shadow_prefabs_are_not_reported_as_rendered(self):
+        project = self.project(_track("shadow", "LiveMemberShadowTrack", clips=2))
+        self.assertEqual(coverage.report(project)["gaps"], [])
+        rows = coverage.report(project, shadow_gap=coverage.SHADOW_PREFABS_UNAVAILABLE)["tracks"]
+        self.assertEqual([(row["status"], row["clips"], row["note"]) for row in rows],
+                         [(coverage.NOT_RENDERED, 2, coverage.SHADOW_PREFABS_UNAVAILABLE)])
+
     def test_a_project_without_tracks_reports_nothing(self):
         project = self.project()
         self.assertEqual(coverage.apply(project), {"tracks": [], "gaps": []})
@@ -271,6 +278,23 @@ class LoadGamePropCoverageTests(unittest.TestCase):
             ("AnimationTrack", coverage.NOT_RENDERED, "Prop clips without a playable native opening curve."): 1,
             ("ActivationTrack", coverage.RENDERED, "Performer prop visibility."): 1})
         self.preview.assert_called_once()
+
+    def test_stage_effect_shadow_prefab_failure_is_reported(self):
+        # The stage effect preview warns that its member-shadow prefabs were not exported.
+        self.selection["stage"]["effect"] = {"table": "stage_effect", "asset": "effect", "available": True}
+        self.tracks.append(_track("shadow", "LiveMemberShadowTrack", binding="/EntryPoint/Live/Members"))
+        message = "The stage's member shadow prefabs could not be exported, so the performers draw no shadows in this preview."
+
+        def preview(path, *, warnings=None, native_stage_effect=False, **_):
+            if native_stage_effect and warnings is not None:
+                warnings.append({"code": "member_shadow_prefabs_unavailable", "name": "", "message": message})
+            return "/api/mv-studio/media/" + "a" * 32 + ".glb", {}
+
+        patch.object(self.mv_studio, "_preview", side_effect=preview).start()
+        project = self.mv_studio.load_game(self.root, region="gl", platform="ios", live_id=1, asset_id=2, language="en")
+        rows = {(row["nativeClass"], row["status"], row["note"]) for row in project["importCoverage"]["tracks"]}
+        self.assertIn(("LiveMemberShadowTrack", coverage.NOT_RENDERED, coverage.SHADOW_PREFABS_UNAVAILABLE), rows)
+        self.assertIn(f"Stage effects: {message}", project["warnings"])
 
     def test_each_case_without_an_attached_prop_names_its_reason(self):
         def expect(note):

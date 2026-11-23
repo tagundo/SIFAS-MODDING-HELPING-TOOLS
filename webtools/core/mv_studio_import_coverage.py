@@ -130,6 +130,10 @@ PROP_NO_BUNDLE = "The catalog lists no stage props bundle for this stage."
 PROP_SEVERAL = "More than one performer prop binding; the preview attaches a single prop only."
 PROP_UNAVAILABLE = "The stage props bundle is unavailable."
 PROP_PREVIEW_FAILED = "The performer prop preview could not be built from the props bundle."
+# load_game's reason when the stage effect has member-shadow prefabs that could not be exported:
+# the costume shadows are removed for them (ShadowComponent.Initialize), so no shadow is drawn.
+SHADOW_PREFABS_UNAVAILABLE = ("The stage's member shadow prefabs could not be exported, so no performer "
+                              "shadow is drawn for the shadow index and scales.")
 PROP_NOT_ATTACHED = "No performer prop is attached to this import."
 _PROP_NO_CURVE = "Prop clips without a playable native opening curve."
 
@@ -252,15 +256,18 @@ def _classify(track, project, context):
         if drawn < len(events):
             rows.append((NOT_RENDERED, len(events) - drawn, "Effect cues no stage effect reader draws."))
         return rows or [(RENDERED, 0, note)]
+    if native == "LiveMemberShadowTrack" and context.get("shadow"):
+        status, note = NOT_RENDERED, context["shadow"]
     if status == RENDERED and slot is not None and slot not in context["performers"]:
         status, note = NOT_RENDERED, _NO_PERFORMER
     return [(status, len(events), note)]
 
 
-def report(project, prop_gap=None):
+def report(project, prop_gap=None, shadow_gap=None):
     """Return per (native class, status) counts of tracks and clips, and the reported gaps.
 
-    ``prop_gap`` is load_game's reason for attaching no performer prop.
+    ``prop_gap`` is load_game's reason for attaching no performer prop, ``shadow_gap``
+    its reason when the stage's member-shadow prefabs are not drawn.
     """
     tracks = [track for track in project.get("tracks") or () if isinstance(track, dict)]
     motion = project.get("stageMotion") or {}
@@ -283,6 +290,7 @@ def report(project, prop_gap=None):
         "control": _control_ledger(project),
         "performers": {row.get("position") for row in project.get("performers") or ()
                        if isinstance(row, dict) and (row.get("motion") or row.get("glb"))},
+        "shadow": shadow_gap,
     }
     rows = {}
     for track in tracks:
@@ -317,12 +325,12 @@ def warnings(coverage):
     return notes
 
 
-def apply(project, prop_gap=None):
+def apply(project, prop_gap=None, shadow_gap=None):
     """Attach the coverage report to a game import and add its gap warnings.
 
     Run it once ``project["assets"]`` is final, so an attached performer prop is seen.
     """
-    coverage = report(project, prop_gap)
+    coverage = report(project, prop_gap, shadow_gap)
     project["importCoverage"] = coverage
     project["warnings"].extend(warnings(coverage))
     return coverage

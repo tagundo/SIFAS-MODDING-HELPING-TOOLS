@@ -539,6 +539,8 @@ class _Scene:
             "skin_zero_weight_vertices": "Some vertices have no bone weights and use their saved renderer placement.",
             "rig_unavailable": "This model uses a static preview because its rig could not be loaded.",
             "stage_hidden_transform": "An animated stage mesh starts at zero scale and is hidden in this preview.",
+            "member_shadow_prefabs_unavailable": "The stage's member shadow prefabs could not be exported, so the "
+                                                 "performers draw no shadows in this preview.",
         }
         warning = {"code": code, "name": str(name)[:160], "message": messages.get(code, code)}
         if warning not in self.warnings:
@@ -1476,6 +1478,9 @@ def _append_scene(scene, glb, faces, deadline, *, auto_only=False, materials=Non
         exported = mv_studio_member_shadow.export_prefabs(scene, glb, materials, shadow_prefabs, deadline)
         if exported is not None:
             glb.doc["scenes"][0].setdefault("extras", {})["mvMemberShadowPrefabs"] = exported
+        else:
+            # The game deletes the costume shadows for these prefabs, so nothing stands in for them.
+            scene.warn("member_shadow_prefabs_unavailable")
     if animated_effect:
         from . import mv_studio_stage_laser_cores, mv_studio_stationary_bursts
 

@@ -180,7 +180,11 @@ def _path(value):
 
 
 def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, stage_bindings=(),
-             native_stage_effect=False):
+             native_stage_effect=False, warnings=None):
+    """Return (media URL, rig) of a model preview; ``warnings`` receives its conversion warnings.
+
+    A stage preview is reused from the cache only when it converted without warnings.
+    """
     models = [path, *companions]
     key = None
     cache = _ACTOR_PREVIEWS if performer else _STAGE_PREVIEWS
@@ -208,6 +212,8 @@ def _preview(path, *, performer=False, motions=(), companions=(), reuse=False, s
     payload = model_viewer.get_model(prepared["id"])
     if payload is None:
         raise ValueError("The 3D preview expired. Reopen the asset.")
+    if warnings is not None:
+        warnings.extend(item for item in prepared.get("warnings") or () if isinstance(item, dict))
     url, rig = _media(payload, "glb"), prepared.get("rig", {}) if performer else {}
     if rig.get("bones"):
         from . import viewer_physics
@@ -513,13 +519,20 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
             stage = selected.get("stage") or {}
             stage_row, stage_file = load(selected.get("stageModel") or stage.get("model"), "stage", stage.get("name") or "Stage model")
             effect_row, effect_file = load(selected.get("stageEffect") or stage.get("effect"), "effect", "Stage effects")
+            from . import mv_studio_import_coverage
+            shadow_gap = None
             for row, preview_path in ((stage_row, stage_file), (effect_row, effect_file)):
                 if preview_path is None:
                     continue
                 try:
                     bindings = project.get("stageMotion", {}).get("bindings", ()) if row is effect_row else ()
+                    converted = []
                     row["previewUrl"], _ = _preview(preview_path, reuse=True, stage_bindings=bindings,
-                                                    native_stage_effect=row is effect_row)
+                                                    native_stage_effect=row is effect_row, warnings=converted)
+                    for item in converted:
+                        if item.get("code") == "member_shadow_prefabs_unavailable":
+                            warnings.append(f"{row['label']}: {item.get('message')}")
+                            shadow_gap = mv_studio_import_coverage.SHADOW_PREFABS_UNAVAILABLE
                 except (ValueError, OSError) as error:
                     warnings.append(f"{row['label']}: {error}")
             if stage_row and stage_row.get("previewUrl"):
@@ -531,7 +544,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                 warnings.append("The original stage model is unavailable for preview.")
             describe(stage.get("background"), "background", "2D stage background")
             describe(stage.get("thumbnail"), "other", "Stage thumbnail")
-            from . import mv_studio_import_coverage, mv_studio_props
+            from . import mv_studio_props
             prop_bindings = mv_studio_props.bindings(project["tracks"]) if stage.get("props") else []
             performer_prop = prop_bindings[0] if len(prop_bindings) == 1 else None
             # Why the timeline's performer prop tracks do not play, for the coverage report.
@@ -678,7 +691,7 @@ def load_game(repo_root, *, region, platform, live_id, asset_id, language, downl
                             for item in selected.get("missing", []))
             project["assets"] = list(rows.values())
             # After the assets: only an attached performer prop plays its tracks.
-            mv_studio_import_coverage.apply(project, prop_gap)
+            mv_studio_import_coverage.apply(project, prop_gap, shadow_gap)
         return _register(project, native)
     finally:
         _IMPORT.release()
