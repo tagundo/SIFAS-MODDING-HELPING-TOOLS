@@ -107,6 +107,14 @@
     return previous || next;
   }
 
+  // The director time the music ends at: the audio plays at director time + the
+  // soundtrack offset (MVStudio seek), so FinishLiveMv runs at duration - offset.
+  function musicEnd(project) {
+    const soundtrack = project?.soundtrack;
+    if (!Number.isFinite(soundtrack?.duration)) return project?.duration;
+    return Math.max(0, soundtrack.duration - (Number.isFinite(soundtrack.offset) ? soundtrack.offset : 0));
+  }
+
   // Camera frames from the native importer are ordered. Continue to accept
   // projects authored by older tools that saved frames in a different order.
   function cameraSamples(event, time, ordered) {
@@ -410,8 +418,7 @@
         }
         if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
           // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
-          const end = Number.isFinite(project.soundtrack?.duration) ? project.soundtrack.duration : project.duration;
-          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, end));
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, musicEnd(project)));
         }
       }
     }

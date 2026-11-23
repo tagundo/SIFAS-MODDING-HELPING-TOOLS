@@ -125,11 +125,16 @@ function fixture(visible = true, options = {}) {
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
   }
+  const fades = [];
+  if (options.screenFade) {
+    window.MVStudioScreenFade = { create: () => ({ draw(state) { fades.push(state); }, dispose() {} }),
+      state: (time, end) => ({ time, end }) };
+  }
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
     { visible, onError(message) { throw new Error(message); } });
-  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window,
+  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window, fades,
     checkResize: onResize, get world() { return world; } };
 }
 
@@ -212,6 +217,27 @@ async function checkNativeCamera() {
   f.checkResize();
   assert.equal(f.cameras.at(-1).fov, 40, 'a resize applies stock native aspect correction without requiring another seek');
   assert.equal(shot(3.3).near, .02, 'gaps beyond the authored Hold keep the editor view');
+  f.app.dispose();
+}
+
+// Original MV end: the end effect starts when the music ends, at soundtrack
+// duration - offset in director time (the audio plays at time + offset).
+async function checkOriginalEndHold() {
+  const f = fixture(true, { screenFade: true });
+  const track = { kind: 'camera', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera', events: [
+    { id: 'c:0', start: 0, duration: 1, values: { keyframes: [
+      { time: 0, position: [0,2,10], rotation: [0,0,0,1], fov: 34 }, { time: 1, position: [0,3,8], rotation: [0,0,0,1], fov: 23 }] } },
+    { id: 'c:1', start: 2, duration: 1, values: { keyframes: [
+      { time: 0, position: [1,2,4], rotation: [0,0,0,1], fov: 30 }, { time: 1, position: [2,2,4], rotation: [0,0,0,1], fov: 28 }] } }
+  ] };
+  const value = { source: { kind: 'game' }, duration: 6, soundtrack: { duration: 5, offset: .5 }, tracks: [track], performers: [] };
+  await f.app.load(value);
+  const shot = (time) => { f.app.seek(time, value); return f.cameras.at(-1); };
+  shot(4);
+  assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 4.5 }, 'the music ends at duration - offset');
+  value.soundtrack.offset = undefined;
+  shot(4);
+  assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 5 });
   f.app.dispose();
 }
 
@@ -619,6 +645,7 @@ function checkAssetDumpHelpers() {
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
+  await checkOriginalEndHold();
   await checkTwelvePerformers();
   const f = fixture(), first = project(1);
   await f.app.load(first);
