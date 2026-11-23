@@ -52,6 +52,7 @@ function fixture(visible = true, options = {}) {
       const id = new Uint8Array(bytes)[0];
       const root = new THREE.Group();
       root.userData.id = id;
+      Object.assign(root.userData, options.userData?.[id]);
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 1,0,0, 0,1,0], 3));
       geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute([0,0,0,0, 0,0,0,0, 0,0,0,0], 4));
@@ -125,7 +126,27 @@ function fixture(visible = true, options = {}) {
   if (options.lighting) {
     vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
   }
-  const fades = [];
+  const fades = [], shadows = [];
+  if (options.memberShadow) {
+    // Stage-effect prefab sets and per-performer controllers, as MVStudioMemberShadow.
+    window.MVStudioMemberShadow = {
+      async prefabs(T, root) {
+        if (!root.userData.shadowSet) return null;
+        const set = { id: root.userData.id, disposed: false, dispose() { set.disposed = true; shadows.push(['dispose', set.id]); } };
+        return set;
+      },
+      async apply() {
+        let instanced = null;
+        return { update(compatible, advancing, parameters, set) {
+          if (set?.disposed) shadows.push(['drawn-disposed', set.id]);
+          instanced = set;
+        }, releasePrefabs(set) {
+          if (instanced === set) { shadows.push(['release', set.id]); instanced = null; }
+        }, dispose() {} };
+      },
+      sample: () => null,
+    };
+  }
   if (options.screenFade) {
     window.MVStudioScreenFade = { create: () => ({ draw(state) { fades.push(state); }, dispose() {} }),
       state: (time, end) => ({ time, end }) };
@@ -134,7 +155,7 @@ function fixture(visible = true, options = {}) {
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
     { visible, onError(message) { throw new Error(message); } });
-  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window, fades,
+  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window, fades, shadows,
     checkResize: onResize, get world() { return world; } };
 }
 
@@ -217,6 +238,26 @@ async function checkNativeCamera() {
   f.checkResize();
   assert.equal(f.cameras.at(-1).fov, 40, 'a resize applies stock native aspect correction without requiring another seek');
   assert.equal(shot(3.3).near, .02, 'gaps beyond the authored Hold keep the editor view');
+  f.app.dispose();
+}
+
+// A stage effect's member-shadow prefab set is released with its record: the
+// performers that stay drop their instances first and never draw the disposed set.
+async function checkShadowPrefabRelease() {
+  const userData = { 91: { mvMemberShadowDefaults: false, shadowSet: true }, 92: { mvMemberShadowDefaults: false, shadowSet: true } };
+  const f = fixture(true, { memberShadow: true, userData });
+  const value = project(90);
+  value.assets = [{ kind: 'effect', previewUrl: address(91) }];
+  await f.app.load(value);
+  f.app.seek(1, value);
+  const next = { ...project(90), assets: [{ kind: 'effect', previewUrl: address(92) }] };
+  await f.app.load(next);
+  f.app.seek(1, next);
+  f.app.seek(2, next);
+  const log = f.shadows.map((row) => row.join(':'));
+  assert(log.includes('release:91') && log.indexOf('release:91') < log.indexOf('dispose:91'),
+    `the performer drops the old instances before the templates go: ${log}`);
+  assert(!log.some((row) => row.startsWith('drawn-disposed')), `a disposed set is never drawn: ${log}`);
   f.app.dispose();
 }
 
@@ -654,6 +695,7 @@ function checkAssetDumpHelpers() {
   await checkNativeMemberCulling();
   await checkMemberRimQuality();
   await checkOriginalEndHold();
+  await checkShadowPrefabRelease();
   await checkTwelvePerformers();
   const f = fixture(), first = project(1);
   await f.app.load(first);

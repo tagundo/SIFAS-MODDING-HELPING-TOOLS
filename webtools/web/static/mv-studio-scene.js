@@ -635,7 +635,13 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
-      record.memberShadowPrefabs?.dispose();
+      if (record.memberShadowPrefabs) {
+        // Performers instance these templates under their anchors: drop those
+        // meshes (and the scene's reference) before the templates are disposed.
+        for (const item of records) item.memberShadow?.releasePrefabs?.(record.memberShadowPrefabs);
+        if (memberShadowPrefabs === record.memberShadowPrefabs) memberShadowPrefabs = null;
+        record.memberShadowPrefabs.dispose();
+      }
       record.lossyScale?.dispose();
       record.physics?.dispose();
       record.constraints?.dispose();
