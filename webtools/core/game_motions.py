@@ -501,7 +501,8 @@ def run_import(job, *, repo_root, output_root, record):
         facial_clips = []
         for entry in facial_entries:
             entry = dict(entry)
-            entry.update(identities[entry.pop("key")])
+            key = entry.pop("key")
+            entry.update(identities[key] if key is not None else {})
             facial_clips.append(entry)
         if len(files) > MAX_BUNDLES:
             raise ValueError("The selected performer needs too many motion bundles for the viewer.")
