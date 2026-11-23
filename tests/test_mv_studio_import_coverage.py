@@ -77,7 +77,7 @@ class ImportCoverageTests(unittest.TestCase):
                    binding="/EntryPoint/Live/Cameras/SplitScreenEffect/Cameras/SubCamera2"),
             _track("motion", "AnimationTrack", kind="effects", binding=stage),
             _track("rejected", "AnimationTrack", kind="effects", binding=stage + "2", clips=2),
-            stageMotion={"bindings": [stage]},
+            stageMotion={"bindings": [stage], "mix": {"motion:0": {}}},
         )
         rows = _rows(coverage.report(project), "AnimationTrack")
         self.assertEqual(rows[coverage.RENDERED, "Main camera."], (1, 3))
@@ -94,6 +94,43 @@ class ImportCoverageTests(unittest.TestCase):
         rows = _rows(coverage.report(project), "ActivationTrack")
         self.assertEqual(rows[coverage.RENDERED, "Stage-node visibility."], (1, 2))
         self.assertEqual(rows[coverage.NOT_RENDERED, "No preview module switches this binding."], (1, 1))
+
+    def test_stage_node_clips_count_per_clip_the_stage_motion_reader_accepts(self):
+        stage = "/EntryPoint/Live/Stages/MainStage/Effect/fx/root"
+        # The activation track alone puts the binding into stageMotion.bindings.
+        project = self.project(
+            _track("motion", "AnimationTrack", kind="effects", binding=stage, clips=3),
+            _track("on", "ActivationTrack", binding=stage, clips=3),
+            stageMotion={"bindings": [stage], "mix": {"motion:1": {}, "on:0": {}, "on:2": {}},
+                         "activations": {"on": ["on:0", "on:2"]}})
+        report = coverage.report(project)
+        self.assertEqual(_rows(report, "AnimationTrack"), {
+            (coverage.RENDERED, "Stage-node animation."): (1, 1),
+            (coverage.NOT_RENDERED, "Clips the stage-motion reader rejects."): (1, 2)})
+        self.assertEqual(_rows(report, "ActivationTrack"), {
+            (coverage.RENDERED, "Stage-node visibility."): (1, 2),
+            (coverage.NOT_RENDERED, "Clips the stage-motion reader rejects."): (1, 1)})
+        project["stageMotion"]["mix"] = {"on:0": {}, "on:2": {}}
+        self.assertEqual(_rows(coverage.report(project), "AnimationTrack"), {
+            (coverage.NOT_RENDERED, "Clips the stage-motion reader rejects."): (1, 3)})
+
+    def test_a_stage_binding_with_two_tracks_of_a_class_is_not_driven(self):
+        stage = "/EntryPoint/Live/Stages/MainStage/Effect/fx/root"
+        project = self.project(
+            _track("motion", "AnimationTrack", kind="effects", binding=stage),
+            _track("muted", "AnimationTrack", kind="effects", binding=stage, muted=True),
+            _track("on", "ActivationTrack", binding=stage), _track("on-2", "ActivationTrack", binding=stage),
+            _track("ignored", "ActivationTrack", binding=stage),
+            stageMotion={"bindings": [stage], "mix": {"motion:0": {}, "on:0": {}, "on-2:0": {}},
+                         "activations": {"on": ["on:0"], "on-2": ["on-2:0"]}})
+        report = coverage.report(project)
+        self.assertEqual(_rows(report, "AnimationTrack"), {
+            (coverage.NOT_RENDERED, "More than one AnimationTrack on this stage binding; none is animated."): (1, 1),
+            (coverage.MUTED, "Muted in the original timeline."): (1, 1)})
+        self.assertEqual(_rows(report, "ActivationTrack"), {
+            (coverage.NOT_RENDERED, "More than one accepted ActivationTrack on this stage binding; none is switched."):
+                (2, 2),
+            (coverage.NOT_RENDERED, "No preview module switches this binding."): (1, 1)})
 
     def test_performer_prop_tracks_count_only_through_an_attached_prop(self):
         project = self.project(*_prop_tracks(), assets=[_prop_asset()])

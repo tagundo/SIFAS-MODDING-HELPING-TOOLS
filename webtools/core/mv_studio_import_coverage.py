@@ -17,7 +17,9 @@ The table follows the preview consumers in web/static (by nativeClass or by
 the clip's playableClass) and the Python readers that feed them. Clip-level
 coverage is given where the preview decides per clip: CustomControl cues are
 counted as drawn when a stage preview descriptor names their (trackId,
-eventId).
+eventId), and stage-node clips when the stage-motion reader accepted them
+(AnimationTrack events in stageMotion.mix, ActivationTrack events in
+stageMotion.activations).
 
 Performer prop tracks (mv_studio_props.bindings) play only through an
 attached prop: a ``props`` asset with a preview and an ``attachment``, the
@@ -145,6 +147,10 @@ def _prop_tracks(project, tracks, gap):
 
 
 _NO_PERFORMER = "No performer is loaded at its member slot."
+_REJECTED = "Clips the stage-motion reader rejects."
+# MVStudioStageMotion drives a stage binding only through exactly one track of each class.
+_SHARED = {"AnimationTrack": "More than one AnimationTrack on this stage binding; none is animated.",
+           "ActivationTrack": "More than one accepted ActivationTrack on this stage binding; none is switched."}
 
 
 def _split(total, rendered, rendered_note, missing_note):
@@ -188,14 +194,22 @@ def _classify(track, project, context):
             status, note = (RENDERED, "Split-screen sub camera.") if project.get("splitScreen") else (
                 NOT_RENDERED, "Split-screen sub camera without a split-screen layout.")
         elif binding in context["motion"]:
-            status, note = RENDERED, "Stage-node animation."
+            if context["animated"].get(binding, 0) > 1:
+                return [(NOT_RENDERED, len(events), _SHARED[native])]
+            mixed = sum(event.get("id") in context["mix"] for event in events)
+            return _split(len(events), mixed, "Stage-node animation.", _REJECTED)
         else:
             status, note = NOT_RENDERED, "No preview module animates this binding."
     elif native == "ActivationTrack":
-        if track.get("id") in context["activations"]:
-            status, note = RENDERED, "Stage-node visibility."
-        else:
+        accepted = context["activations"].get(track.get("id"))
+        if accepted is None:
             status, note = NOT_RENDERED, "No preview module switches this binding."
+        elif context["switched"].get(binding, 0) > 1:
+            return [(NOT_RENDERED, len(events), _SHARED[native])]
+        else:
+            accepted = set(accepted) if isinstance(accepted, (list, tuple, set)) else set()
+            return _split(len(events), sum(event.get("id") in accepted for event in events),
+                          "Stage-node visibility.", _REJECTED)
     elif native == "CustomControlTrack":
         drawn = sum((track.get("id"), event.get("id")) in context["cues"] for event in events)
         rows = []
@@ -216,9 +230,20 @@ def report(project, prop_gap=None):
     """
     tracks = [track for track in project.get("tracks") or () if isinstance(track, dict)]
     motion = project.get("stageMotion") or {}
+    activations = motion.get("activations") if isinstance(motion.get("activations"), dict) else {}
+    animated, switched = {}, {}
+    for track in tracks:
+        # The stage-motion consumer counts every track on the binding, muted or not.
+        if track.get("nativeClass") == "AnimationTrack":
+            animated[track.get("binding")] = animated.get(track.get("binding"), 0) + 1
+        elif track.get("nativeClass") == "ActivationTrack" and track.get("id") in activations:
+            switched[track.get("binding")] = switched.get(track.get("binding"), 0) + 1
     context = {
         "motion": set(motion.get("bindings") or ()),
-        "activations": set(motion.get("activations") or ()),
+        "mix": motion.get("mix") if isinstance(motion.get("mix"), dict) else {},
+        "activations": activations,
+        "animated": animated,
+        "switched": switched,
         "props": _prop_tracks(project, tracks, prop_gap),
         "cues": claimed_cues(project),
         "performers": {row.get("position") for row in project.get("performers") or ()
