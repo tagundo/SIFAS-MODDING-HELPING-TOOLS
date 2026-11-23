@@ -127,21 +127,16 @@
     position.add(target);
   }
 
-  function worldRotation(object, target) {
-    target.identity();
-    for (let node = object; node; node = node.parent) target.premultiply(node.quaternion);
-    return target;
-  }
-
   function create(T, prepared, memberRoot, moveNode) {
-    if (!prepared?.templates.size || !memberRoot?.isObject3D || !moveNode?.isObject3D || !global.MVStudioLighting) return null;
+    const axis = global.MVStudioAxisBillboard;
+    if (!prepared?.templates.size || !memberRoot?.isObject3D || !moveNode?.isObject3D || !global.MVStudioLighting || !axis) return null;
     const variants = new Map();
     for (const template of prepared.templates.values()) variants.set(template.index, instance(T, template, memberRoot));
     const parameters = { color: new T.Vector4(), scale: new T.Vector3() };
     const colorCache = new T.Vector4(), lastPosition = new T.Vector3(), moveVelocity = new T.Vector3();
     const position = new T.Vector3(), target = new T.Vector3(), change = new T.Vector3(), impulse = new T.Vector3();
     const up = new T.Vector3(), worldUp = new T.Vector3(0, 1, 0);
-    const right = new T.Vector3(), forward = new T.Vector3(), basis = new T.Matrix4(), rotation = new T.Quaternion();
+    const work = axis.scratch(T), rotation = new T.Quaternion();
     const parentRotation = new T.Quaternion(), cacheDifference = new T.Vector4();
     let selected = variants.get(0), index = 0, force = false, cacheValid = false;
 
@@ -160,14 +155,10 @@
       moveVelocity.set(0, 0, 0);
     }
 
+    // The shared AxisBillboard basis; Transform.rotation sets parent^-1 * R.
     function point(object, direction, vertical) {
-      right.crossVectors(vertical, direction);
-      if (right.lengthSq() <= 1e-12) return;
-      right.normalize();
-      forward.crossVectors(right, vertical).normalize();
-      rotation.setFromRotationMatrix(basis.makeBasis(right, vertical, forward));
-      // Unity Transform.rotation composes quaternions independently of parent scale.
-      worldRotation(object.parent, parentRotation);
+      if (!axis.axisRotation(vertical, direction, rotation, work)) return;
+      axis.worldRotation(object.parent, parentRotation);
       object.quaternion.copy(parentRotation.invert()).multiply(rotation);
     }
 
@@ -230,7 +221,7 @@
         if (!selected?.mesh.visible || !camera) return;
         const mesh = selected.mesh;
         mesh.getWorldPosition(position);
-        up.copy(worldUp).applyQuaternion(worldRotation(mesh, rotation)).normalize();
+        up.copy(worldUp).applyQuaternion(axis.worldRotation(mesh, rotation)).normalize();
         camera.getWorldPosition(target).sub(position);
         point(mesh, target, up);
       },

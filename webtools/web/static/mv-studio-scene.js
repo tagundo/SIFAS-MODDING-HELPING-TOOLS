@@ -305,7 +305,9 @@
     if (!T || !T.GLTFLoader || !T.OrbitControls) throw new Error("The 3D preview could not start.");
     const renderer = new T.WebGLRenderer({ antialias: true, alpha: false, stencil: true, powerPreference: "high-performance" });
     renderer.outputEncoding = T.sRGBEncoding;
-    renderer.setClearColor(0x111522);
+    // Editor backdrop; a game project uses the native MainCamera clear (see applyProject).
+    const editorClear = 0x111522;
+    renderer.setClearColor(editorClear);
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.domElement.setAttribute("aria-label", "MV stage preview");
     mount.appendChild(renderer.domElement);
@@ -492,7 +494,11 @@
       sortControlParticles(camera);
       for (const record of records) record.stageStationaryBursts?.sort(camera);
       // AxisBillboard follows the camera currently drawing each split layer.
-      for (const record of records) record.shaft?.billboard(camera === editorCamera ? liveCamera : camera);
+      const billboardCamera = camera === editorCamera ? liveCamera : camera;
+      for (const record of records) {
+        record.shaft?.billboard(billboardCamera);
+        record.axisBillboard?.apply(billboardCamera);
+      }
       const projection = camera.projectionMatrix.elements;
       const { width, height } = renderer.domElement;
       if (camera !== liveCamera || renderer.shadowMap.enabled || !width || !height || projection[8] || projection[9] ||
@@ -596,6 +602,7 @@
       record.penlight?.dispose();
       record.stageFlash?.dispose();
       record.stageMaterial?.dispose();
+      record.stagePropLight?.dispose();
       record.stageColoring?.dispose();
       record.stageDisplay?.dispose();
       record.stageOverlay?.dispose();
@@ -873,6 +880,8 @@
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
           if (!active()) return null;
+          record.stagePropLight = await global.MVStudioPropLight?.apply?.(T, record.root, gltf.parser, { active });
+          if (!active()) return null;
           record.stageColoring = await global.MVStudioStageColoring?.apply(T, record.root, gltf.parser);
           if (!active()) return null;
           record.stageDisplay = await global.MVStudioStageDisplay?.apply(T, record.root, gltf.parser);
@@ -892,6 +901,7 @@
           record.areaTemplate = await global.MVStudioSpotlightArea?.prepare(T, gltf);
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
+          record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -1047,6 +1057,8 @@
           record.stageStationaryBursts?.update(0, preview, record.stageMotion);
           record.penlight?.update(0, preview);
           record.stageMaterial?.update(0, preview, lighting);
+          record.stagePropLight?.setProject(preview);
+          record.stagePropLight?.update(0);
           record.stageColoring?.update(0, preview);
           record.stageDisplay?.update(0, preview);
           pending.records.push(record);
@@ -1393,6 +1405,10 @@
     function applyProject() {
       const tracks = project && project.tracks || [];
       settings = project && project.quality && project.quality.values || {};
+      // level35 MainCamera/Offset/Camera clears SolidColor (0, 0, 0, 0); the
+      // RenderSettings skybox is never drawn and fog is off on every MV stage.
+      if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
       defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
         !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
@@ -1501,6 +1517,7 @@
         record.materials?.setRimlight?.(settings.member_rim_light !== false);
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
+        record.stagePropLight?.setProject(project);
       }
     }
 
@@ -1588,7 +1605,10 @@
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.penlight?.update(currentTime, project);
-      for (const record of records) record.stageMaterial?.update(currentTime, project, lighting);
+      for (const record of records) {
+        record.stageMaterial?.update(currentTime, project, lighting);
+        record.stagePropLight?.update(currentTime);
+      }
       for (const record of records) record.stageColoring?.update(currentTime, project);
       for (const record of records) record.stageDisplay?.update(currentTime, project);
       // LiveCoreMemberManager.Update steps the springs before the director evaluates.
