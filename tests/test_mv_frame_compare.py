@@ -230,5 +230,66 @@ class VideoEndToEnd(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+def runtime_dump(rows):
+    """A runtime dump with frame records (id, frameCount, directorTime, deltaTime)."""
+    return {"records": [{"id": ident, "kind": "frame", "clock": {"frameCount": frame, "directorTime": t, "deltaTime": dt}}
+                        for ident, frame, t, dt in rows]}
+
+
+class ScreencapGameFrames(unittest.TestCase):
+    """Runtime-dump screencaps lag their 'before' record by a few game frames on a software-GPU device."""
+
+    DUMP = runtime_dump([("f1", 100, 10.0, 0.2), ("f2", 104, 11.0, 0.3), ("f3", 106, 11.6, 1 / 3), ("f0", 90, 0.0, 0.1)])
+
+    def test_game_frames_follow_frame_counts_and_unclamped_deltas(self):
+        frames = compare.game_frame_times(self.DUMP)
+        self.assertEqual(sorted(frames), [100, 101, 102, 103, 104, 105, 106])
+        self.assertAlmostEqual(frames[103], 10.7)            # 11.0 - deltaTime 0.3
+        self.assertAlmostEqual(frames[101], 10 + 0.7 / 3)    # the rest spread evenly
+        self.assertAlmostEqual(frames[105], 11.3)            # 1/3 s is clamped: evenly spread
+
+    def test_candidates_are_the_before_frame_and_the_frames_before_it(self):
+        shots = [{"n": 1, "before": {"id": "f3", "directorTime": 11.6}}, {"n": 2, "before": {"id": "f0", "directorTime": 0.0}}]
+        times = compare.shot_candidates(shots, self.DUMP, frames_back=3)
+        self.assertEqual([(item["shot"], item["frame"], item["time"]) for item in times],
+                         [(1, 0, 11.6), (1, 1, 11.3), (1, 2, 11.0), (1, 3, 10.7), (2, 0, 0.0)])
+
+    def test_screencap_mode_compares_only_game_frame_candidates(self):
+        root = Path(tempfile.mkdtemp(prefix="mv-frame-shots-"))
+        try:
+            game = scene(seed=3, phase=1.0)
+            Image.fromarray(game).save(root / "shot-001.png")
+            shots = [{"n": 1, "file": "shot-001.png", "before": {"id": "f3", "directorTime": 11.6},
+                      "after": {"id": "f4", "directorTime": 12.0}}]
+            (root / "shots.json").write_text(json.dumps(shots))
+            (root / "dump.json").write_text(json.dumps(self.DUMP))
+            frames = []
+            # The exact match sits two game frames back; 11.45 is off the game grid and never compared.
+            for time, image in ((11.6, scene(seed=3, phase=1.6)), (11.45, game), (11.0, game), (10.7, scene(seed=3, phase=0.4))):
+                name = f"editor-{time:.4f}.png"
+                Image.fromarray(image).save(root / name)
+                frames.append({"time": time, "image": name, "state": {"camera": {"fov": 30}}})
+            capture = {"schema": 1, "kind": "elichika-mv-editor-frames", "manifest": {"source": {"liveId": 1}}, "project": {"warnings": []},
+                       "frames": frames}
+            (root / "capture.json").write_text(json.dumps(capture))
+            out = root / "report"
+            code = compare.run(compare.parser().parse_args(["--capture", str(root / "capture.json"), "--game-shots", str(root / "shots.json"),
+                                                            "--game-dump", str(root / "dump.json"), "--out", str(out)]))
+            self.assertEqual(code, 0)
+            report = json.loads((out / "report.json").read_text())
+            frame = report["frames"][0]
+            self.assertEqual((frame["time"], frame["gameFramesBack"]), (11.0, 2))
+            self.assertEqual([item["time"] for item in frame["candidates"]], [10.7, 11.0, 11.6])
+            self.assertEqual(report["alignment"]["method"], "screencap-game-frames")
+            self.assertEqual(report["summary"]["gameFramesBack"], {"2": 1})
+            self.assertGreater(frame["metrics"]["ssim"], 0.999)
+            written = root / "times.json"
+            compare.run(compare.parser().parse_args(["--game-shots", str(root / "shots.json"), "--game-dump", str(root / "dump.json"),
+                                                     "--write-shot-times", str(written)]))
+            self.assertEqual([item["time"] for item in json.loads(written.read_text())], [11.6, 11.3, 11.0, 10.7])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

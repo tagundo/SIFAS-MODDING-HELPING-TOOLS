@@ -4,6 +4,20 @@
         [--game-info info.json] [--align audio|none|SECONDS] [--search 2]
         [--baseline OLD/report.json] [--fail-on-regression]
     python tests/mv_frame_compare.py --capture CAPTURE/capture.json --game-frame 14.85=shot.png --out REPORT
+    python tests/mv_frame_compare.py --capture CAPTURE/capture.json --game-shots mv-runtime-shots.json --out REPORT
+        [--game-dump mv-runtime-dump.json.gz [--shot-frames 3]] [--shot-lead 1.6] [--shot-trail 0]
+    python tests/mv_frame_compare.py --game-shots mv-runtime-shots.json --game-dump mv-runtime-dump.json.gz
+        --write-shot-times times.json [--shot-frames 3]
+
+Screencaps from the runtime dump (mv-runtime-shots.json) carry the director times of the
+frame records before and after the capture, not the time of the frame on screen. On a
+software-GPU device the presented frame lags those records by up to a few game frames
+(Max 3D 12035: the best frame was 1 frame back in 26 of 47 shots, 2 in 19). With
+--game-dump the candidates are the game frames themselves: the 'before' record's frame and
+--shot-frames frames before it, rebuilt from the dump's frameCount/directorTime/deltaTime
+(--write-shot-times lists them for mv_frame_capture.js); without it every editor frame in
+[before - lead, after + trail] is scored. The best match is compared and reported with its
+lag behind `before` (and its game frame offset).
 
 The game MP4 export is fixed-step: video frame N is the game state at N/fps of its
 own clock. Timeline time t maps to video time t + soundtrack offset - audio lag,
@@ -15,6 +29,7 @@ Images are only resized here to bring the two frames to one comparison size; the
 smaller frame is never enlarged. Nothing is written back to game assets.
 """
 import argparse
+import gzip
 from datetime import datetime, timezone
 import json
 import math
@@ -371,7 +386,150 @@ def _scope(capture, game_info, alignment):
     }
 
 
+MAX_DELTA_TIME = 1 / 3      # Unity Time.maximumDeltaTime: a clamped deltaTime is not the frame spacing
+
+
+def load_game_dump(path):
+    """The runtime value dump (schema sifas-mv-runtime-dump/1) as JSON, gzip or not."""
+    data = Path(path).read_bytes()
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return json.loads(data.decode("utf-8"))
+
+
+def game_frame_times(dump):
+    """Rendered game frames (frameCount -> director seconds) rebuilt from every record that carries
+    clock.frameCount: a record is a frame; the frame before it is at directorTime - deltaTime unless
+    deltaTime was clamped to maximumDeltaTime; the other frames between two records are spread evenly
+    (the same rule as mv_runtime_capture.js gameFrameTimes)."""
+    anchors = {}
+    for record in dump.get("records") or []:
+        clock = record.get("clock") or {}
+        frame, t = clock.get("frameCount"), clock.get("directorTime")
+        if isinstance(frame, int) and isinstance(t, (int, float)) and t > 0:
+            anchors.setdefault(frame, (float(t), clock.get("deltaTime")))
+    frames = {}
+    ordered = sorted(anchors.items())
+    if ordered:
+        frames[ordered[0][0]] = ordered[0][1][0]
+    for (f0, (t0, _)), (f1, (t1, dt1)) in zip(ordered, ordered[1:]):
+        count = f1 - f0
+        if not t1 > t0:
+            continue
+        before = t1 - dt1 if (isinstance(dt1, (int, float)) and 0 < dt1 < MAX_DELTA_TIME - 1e-6 and t1 - dt1 > t0 + 1e-9
+                              and count >= 2) else None
+        end, spread = (before, count - 1) if before is not None else (t1, count)
+        for k in range(1, spread):
+            frames[f0 + k] = t0 + k * (end - t0) / spread
+        if before is not None:
+            frames[f1 - 1] = before
+        frames[f1] = t1
+    return frames
+
+
+def shot_candidates(shots, dump, frames_back=3):
+    """Editor times to render per screencap: the game frames the screen can still show when the
+    capture starts. The screencap lags the 'before' record by up to a few game frames on a
+    software-GPU device, so the candidates are that record's frame and the frames_back frames
+    before it on the game frame grid (frameCount -> director time)."""
+    records = {record.get("id"): record for record in dump.get("records") or []}
+    grid = game_frame_times(dump)
+    result = []
+    for shot in shots:
+        clock = (records.get(shot["before"]["id"]) or {}).get("clock") or {}
+        frame, tb, dt = clock.get("frameCount"), float(shot["before"]["directorTime"]), clock.get("deltaTime")
+        for k in range(frames_back + 1):
+            t = grid.get(frame - k) if isinstance(frame, int) else None
+            if t is None and isinstance(dt, (int, float)) and dt > 0:
+                t = tb - k * dt          # no reconstructed frame: the before record's own spacing
+            if t is not None and t >= 0:
+                result.append({"shot": shot.get("n"), "frame": k, "time": round(t, 4)})
+    return result
+
+
+def run_shots(arguments, capture, capture_path, out):
+    """Best editor frame per runtime-dump screencap: among the editor frames at the screencap's game
+    frame candidates (--game-dump), else inside its director-time window."""
+    shots_path = Path(arguments.game_shots).resolve()
+    shots = json.loads(shots_path.read_text("utf-8"))
+    if not isinstance(shots, list):
+        raise SystemExit("--game-shots must be the mv-runtime-shots.json list")
+    grid = {}
+    if arguments.game_dump:
+        for item in shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames):
+            grid.setdefault(item["shot"], []).append(item)
+    frames = []
+    for shot in shots:
+        before, after = float(shot["before"]["directorTime"]), float(shot["after"]["directorTime"])
+        low, high = before - arguments.shot_lead, after + arguments.shot_trail
+        image = (shots_path.parent / shot["file"]).resolve()
+        record = {"shot": shot.get("n"), "gameImage": str(image), "window": [before, after], "search": [low, high]}
+        if grid:
+            wanted = grid.get(shot.get("n")) or []
+            record["search"] = [{"frame": item["frame"], "time": item["time"]} for item in wanted]
+            candidates = [frame for frame in capture["frames"] if any(abs(float(frame["time"]) - item["time"]) <= 1e-3 for item in wanted)]
+            for frame in candidates:
+                frame["_gameFrame"] = min(wanted, key=lambda item: abs(float(frame["time"]) - item["time"]))["frame"]
+        else:
+            candidates = [frame for frame in capture["frames"] if low - 1e-6 <= float(frame["time"]) <= high + 1e-6]
+        if not image.is_file() or not candidates:
+            record["error"] = "The screencap is missing." if not image.is_file() else \
+                f"No editor frame in [{low:.3f}, {high:.3f}]; capture frames covering the window first."
+            frames.append(record)
+            continue
+        game = load_image(image)
+        scored = sorted(({"time": float(frame["time"]), "frame": frame,
+                          "quick": quick_ssim(game, load_image(capture_path.parent / frame["image"]))} for frame in candidates),
+                        key=lambda item: -item["quick"])
+        finalists = []
+        for item in scored[:3]:
+            editor = load_image(capture_path.parent / item["frame"]["image"])
+            target = (editor.shape[1], editor.shape[0])
+            finalists.append((float(ssim_map(luma(_resize(game, target)), luma(editor)).mean()), item, editor))
+        _, best, editor = max(finalists, key=lambda value: value[0])
+        frame, state = best["frame"], best["frame"].get("state") or {}
+        fov = (state.get("camera") or {}).get("fov")
+        result = compare(game, editor, fov)
+        name = f"compare-shot-{int(shot.get('n') or len(frames) + 1):03d}.png"
+        composite(result, f"shot {shot.get('n')}  t={best['time']:.4f}s (window {before:.3f}-{after:.3f}, lag {before - best['time']:+.3f}s)  "
+                          f"SSIM {result['metrics']['ssim']:.4f}  scale {result['geometry']['scale']:.3f}  "
+                          f"shift {result['geometry']['dx']:+.1f},{result['geometry']['dy']:+.1f}px", out / name)
+        record.update({"time": best["time"], "lagBehindBefore": before - best["time"], "gameFramesBack": frame.get("_gameFrame"),
+                       "atSearchEdge": (frame.get("_gameFrame") == arguments.shot_frames) if grid else
+                       (abs(best["time"] - low) < 1e-6 or abs(best["time"] - high) < 1e-6),
+                       "editorImage": str(capture_path.parent / frame["image"]), "editorCamera": state.get("camera"),
+                       "cameraEvent": state.get("cameraEvent"), "cutDistance": frame.get("cutDistance"),
+                       "candidates": [{"time": item["time"], "quickSSIM": item["quick"]} for item in sorted(scored, key=lambda item: item["time"])],
+                       "compareSize": result["size"], "metrics": result["metrics"], "geometry": result["geometry"],
+                       "worstTiles": result["worstTiles"], "composite": str(out / name)})
+        frames.append(record)
+    scored = [frame for frame in frames if "metrics" in frame]
+    lags = [frame["lagBehindBefore"] for frame in scored]
+    for frame in capture["frames"]:
+        frame.pop("_gameFrame", None)
+    back = [f["gameFramesBack"] for f in scored if f.get("gameFramesBack") is not None]
+    method = {"method": "screencap-game-frames", "framesBack": arguments.shot_frames, "dump": str(Path(arguments.game_dump).resolve())} \
+        if grid else {"method": "screencap-window", "lead": arguments.shot_lead, "trail": arguments.shot_trail}
+    return dict(method, shots=str(shots_path)), frames, {
+        "gameFramesBack": {str(k): back.count(k) for k in sorted(set(back))} if back else None,
+        "frames": len(scored), "meanSSIM": float(np.mean([f["metrics"]["ssim"] for f in scored])) if scored else None,
+        "minSSIM": min((f["metrics"]["ssim"] for f in scored), default=None),
+        "lagBehindBefore": {"median": float(np.median(lags)), "min": min(lags), "max": max(lags)} if lags else None,
+        "atSearchEdge": [f["shot"] for f in scored if f["atSearchEdge"]],
+        "nearCut": [f["shot"] for f in scored if f.get("cutDistance") is not None and f["cutDistance"] < 2 / 30]}
+
+
 def run(arguments):
+    if arguments.write_shot_times:
+        if not (arguments.game_shots and arguments.game_dump):
+            raise SystemExit("--write-shot-times needs --game-shots and --game-dump")
+        shots = json.loads(Path(arguments.game_shots).read_text("utf-8"))
+        times = shot_candidates(shots, load_game_dump(arguments.game_dump), arguments.shot_frames)
+        Path(arguments.write_shot_times).write_text(json.dumps(times, indent=1) + "\n", "utf-8")
+        print(json.dumps({"times": len(times), "out": str(Path(arguments.write_shot_times).resolve())}))
+        return 0
+    if not arguments.capture or not arguments.out:
+        raise SystemExit("--capture and --out are required")
     capture_path = Path(arguments.capture).resolve()
     capture = json.loads(capture_path.read_text("utf-8"))
     if capture.get("kind") != "elichika-mv-editor-frames":
@@ -379,6 +537,16 @@ def run(arguments):
     out = Path(arguments.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     game_info = json.loads(Path(arguments.game_info).read_text("utf-8")) if arguments.game_info else (capture["manifest"].get("game") or None)
+    if arguments.game_shots:
+        alignment, frames, summary = run_shots(arguments, capture, capture_path, out)
+        report = {"schema": SCHEMA, "kind": "elichika-mv-frame-comparison", "createdAt": datetime.now(timezone.utc).isoformat(),
+                  "capture": {"path": str(capture_path), "source": capture["manifest"]["source"], "quality": capture.get("quality"),
+                              "render": capture.get("render"), "warnings": (capture.get("project") or {}).get("warnings", [])},
+                  "game": {"video": None, "probe": None, "info": game_info}, "alignment": alignment,
+                  "scope": _scope(capture, game_info, alignment), "frames": frames, "summary": summary}
+        (out / "report.json").write_text(json.dumps(report, indent=2, allow_nan=True) + "\n", "utf-8")
+        print(json.dumps({"report": str(out / "report.json"), **summary, "alignment": alignment["method"]}))
+        return 0
     offset = float(((capture.get("project") or {}).get("soundtrack") or {}).get("offset") or 0)
     manual = {}
     for item in arguments.game_frame or []:
@@ -473,16 +641,24 @@ def run(arguments):
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    result.add_argument("--capture", required=True, help="capture.json from tests/mv_frame_capture.js")
+    result.add_argument("--capture", help="capture.json from tests/mv_frame_capture.js")
     result.add_argument("--video", help="game MP4 export of the same MV")
     result.add_argument("--game-frame", action="append", metavar="TIME=PNG", help="game screenshot for one capture time")
+    result.add_argument("--game-shots", help="mv-runtime-shots.json from the runtime dump (screencaps with director-time windows)")
+    result.add_argument("--shot-lead", type=float, default=1.6, help="seconds searched before each screencap window")
+    result.add_argument("--shot-trail", type=float, default=0.0, help="seconds searched after each screencap window")
+    result.add_argument("--game-dump", help="the runtime value dump the screencaps belong to: compare only the editor frames at "
+                        "the game frames each screencap can show (its 'before' frame and --shot-frames frames before it)")
+    result.add_argument("--shot-frames", type=int, default=3, help="game frames before the 'before' record searched per screencap")
+    result.add_argument("--write-shot-times", help="write the candidate times for --game-shots/--game-dump (frames for "
+                        "mv_frame_capture.js) to this file and exit")
     result.add_argument("--game-info", help="JSON describing the game client, device, platform, FOV and quality")
     result.add_argument("--align", default="audio", help="audio (default), none, or video-minus-timeline seconds")
     result.add_argument("--search", type=int, default=2, help="neighbouring video frames to score on each side")
     result.add_argument("--baseline", help="earlier report.json to diff against")
     result.add_argument("--regression-threshold", type=float, default=0.005)
     result.add_argument("--fail-on-regression", action="store_true")
-    result.add_argument("--out", required=True)
+    result.add_argument("--out")
     return result
 
 
