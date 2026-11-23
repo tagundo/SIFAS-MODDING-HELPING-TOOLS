@@ -735,6 +735,13 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "eyes" && Number.isInteger(segment.splitIndex)) {
+          // MemberEyeMixer.Process swaps in splitScreenSetting.Index/Weight
+          // while the split screen is enabled (see ViewerMotionTimeline).
+          const alternate = values.splitScreenSetting;
+          const usesAlternate = (alternate?.UseSetting === 1 || alternate?.UseSetting === true) && Number.isFinite(alternate.Weight);
+          assign(segment, "splitUse", usesAlternate);
+          assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.Weight)) : 0);
         } else if (segment.kind === "cheek") {
           if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
           if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
@@ -752,6 +759,15 @@
         }
       }
       if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
+    }
+
+    // MemberEyeClip.splitScreenSetting {UseSetting, Index, Weight}: the alternate
+    // clip index is fixed when the actor's facial inputs are bound.
+    function eyeSplitIndex(event) {
+      const alternate = event.kind === "eyes" && nativeEvents.get(event.nativeEventId)?.event.values.splitScreenSetting;
+      if (alternate && (alternate.UseSetting === 1 || alternate.UseSetting === true) &&
+          Number.isInteger(alternate.Index) && alternate.Index >= 0) event.splitIndex = alternate.Index;
+      return event;
     }
 
     function gazeContext() {
@@ -958,7 +974,7 @@
             record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
               ...segment, timing: { ...segment.timing }
             }));
-            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
+            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => eyeSplitIndex({
               ...event, timing: { ...event.timing }
             }));
             record.motionEvents = record.segments.concat(record.facialEvents);
@@ -1645,7 +1661,7 @@
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          record.motion.evaluatePose(currentTime);
+          record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
           if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
         } else if (record.mixer) record.mixer.setTime(currentTime);

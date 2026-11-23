@@ -271,7 +271,7 @@
       if (maskWinners[kind]) return maskWinners[kind];
       var sums = new Map(), first = new Map(), winner = null;
       timedRecords(maskEvents[kind], time).forEach(function (event) {
-        var amount = weightWithTiming(event, time, getTiming(event));
+        var amount = splitGate(event) ? weightWithTiming(event, time, getTiming(event)) : 0;
         if (!(amount > 0)) return;
         sums.set(event.index, Math.fround(Math.fround(sums.get(event.index) || 0) + Math.fround(amount)));
         if (!first.has(event.index)) first.set(event.index, event);
@@ -287,6 +287,18 @@
     function inputRate(segment) {
       return lipSyncRate !== 1 && segment.kind === "mouth" && segment.index >= 1 && segment.index <= 6 ? lipSyncRate : 1;
     }
+    // MemberEyeMixer.Process: when the clip's splitScreenSetting.UseSetting is
+    // set and LiveCoreCameraManager.IsSplitScreenEnabled (the SplitScreenEffect
+    // object is active), the input adds setting.Weight to setting.Index instead
+    // of clip.weight to clip.index. The alternate is a twin input that shares
+    // the clip's timing; exactly one of the pair is live for a split state.
+    var splitActive = false, splitTwins = new WeakMap();
+    function splitGate(segment) {
+      var primary = splitTwins.get(segment);
+      if (primary) return splitActive && primary.splitUse !== false;
+      if (Number.isInteger(segment.splitIndex) && segment.splitUse !== false) return !splitActive;
+      return true;
+    }
     function sampleSegment(segment, time) {
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
@@ -294,7 +306,7 @@
         var spec = getTiming(segment);
         sample.revision = sampleRevision;
         var rate = inputRate(segment);
-        sample.weight = maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
+        sample.weight = !splitGate(segment) ? 0 : maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
           rate === 1 ? weightWithTiming(segment, time, spec) : Math.fround(Math.fround(weightWithTiming(segment, time, spec)) * rate);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
@@ -422,6 +434,21 @@
       else { compatibilityDetails.push({ sourceName: segment.sourceName || "", reason: "The body clip's tracks do not bind to this model's bones." }); warn("A selected body segment is incompatible with this model."); }
     });
     var events = descriptor.facial && descriptor.facial.events || [], gazeEvents = [], cheekEvents = [];
+    if (events.some(function (event) { return event.kind === "eyes" && Number.isInteger(event.splitIndex); })) {
+      // Each twin directly follows its clip, so the eye mixer's per-index
+      // insertion order (and the mask's last-index rule) stays the original.
+      events = events.slice(0, 12000).reduce(function (list, event) {
+        list.push(event);
+        if (event.kind !== "eyes" || !Number.isInteger(event.splitIndex)) return list;
+        var twin = Object.create(event, {
+          index: { value: event.splitIndex, enumerable: true },
+          weight: { get: function () { return Number.isFinite(event.splitWeight) ? event.splitWeight : 0; }, enumerable: true }
+        });
+        splitTwins.set(twin, event);
+        list.push(twin);
+        return list;
+      }, []);
+    }
     if (maskEvents) events.slice(0, 12000).forEach(function (event) {
       if (maskEvents[event.kind]) { maskEvents[event.kind].push(event); maskMembers.add(event); }
     });
@@ -640,7 +667,8 @@
         if (morphWrites) morphWrites.push(group);
       });
     }
-    function evaluatePose(time) {
+    function evaluatePose(time, context) {
+      splitActive = !!(context && context.split);
       beginSample(time, true);
       if (restoreFace) {
         faceWrites.forEach(function (group) { group.binding.setValue(group.base, 0); });
