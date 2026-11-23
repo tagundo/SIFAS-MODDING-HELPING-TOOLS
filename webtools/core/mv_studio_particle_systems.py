@@ -218,14 +218,19 @@ def _shape(source):
     if kind not in _SHAPES:
         raise _Unsupported(f"ShapeModule.type {kind}")
     radius, arc = source.get("radius") or {}, source.get("arc") or {}
-    for name, value in (("radius", radius), ("arc", arc)):
-        if value.get("mode", 0) != 0:
-            raise _Unsupported(f"ShapeModule.{name} mode {value.get('mode')}")
+    # Random (0) everywhere; BurstSpread (3) for the arc, which spreads one
+    # emission batch evenly (mv-studio-sparks-b-simulation.js). Loop and
+    # PingPong are not reproduced.
+    if radius.get("mode", 0) != 0:
+        raise _Unsupported(f"ShapeModule.radius mode {radius.get('mode')}")
+    if arc.get("mode", 0) not in (0, 3):
+        raise _Unsupported(f"ShapeModule.arc mode {arc.get('mode')}")
     if source.get("placementMode", 0) != 0:
         raise _Unsupported("ShapeModule.placementMode")
     return {"type": kind, "radius": _number(radius.get("value", 1), 0, 1e5),
             "radiusThickness": _number(source.get("radiusThickness", 1), 0, 1),
-            "arc": _number(arc.get("value", 360), 0, 360), "angle": _number(source.get("angle", 25), 0, 90),
+            "arc": _number(arc.get("value", 360), 0, 360), "arcMode": arc.get("mode", 0),
+            "angle": _number(source.get("angle", 25), 0, 90),
             "length": _number(source.get("length", 5), 0, 1e5),
             "boxThickness": _vector(source.get("boxThickness") or {"x": 0, "y": 0, "z": 0}, low=0, high=1),
             "position": _vector(source["m_Position"]), "rotation": _vector(source["m_Rotation"], low=-1e5, high=1e5),
@@ -240,22 +245,29 @@ def _shape(source):
 def _velocity(source):
     if not source.get("enabled"):
         return None
-    for name in ("orbitalX", "orbitalY", "orbitalZ", "radial"):
-        if not _constant(source[name], 0):
-            raise _Unsupported(f"VelocityModule.{name}")
+    result = {"x": curve(source["x"]), "y": curve(source["y"]), "z": curve(source["z"]),
+              "worldSpace": bool(source.get("inWorldSpace"))}
+    # Orbital and radial motion around the offset point, scaled with the linear
+    # part by the speed modifier (mv-studio-autumn-red-burst-simulation.js).
+    names = ("orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY", "orbitalOffsetZ", "radial")
+    if any(not _constant(source[name], 0) for name in names):
+        result["orbital"] = {name: curve(source[name]) for name in names}
     if not _constant(source["speedModifier"], 1):
-        raise _Unsupported("VelocityModule.speedModifier")
-    return {"x": curve(source["x"]), "y": curve(source["y"]), "z": curve(source["z"]),
-            "worldSpace": bool(source.get("inWorldSpace"))}
+        result["speedModifier"] = curve(source["speedModifier"])
+    return result
 
 
 def _clamp(source):
     if not source.get("enabled"):
         return None
-    if not _constant(source["drag"], 0):
-        raise _Unsupported("ClampVelocityModule.drag")
     result = {"separateAxes": bool(source.get("separateAxis")), "worldSpace": bool(source.get("inWorldSpace")),
               "dampen": _number(source.get("dampen", 0), 0, 1)}
+    if not _constant(source["drag"], 0):
+        # Only the evidenced form: drag scaled by particle area and speed squared
+        # (mv-studio-moving-burst-simulation.js).
+        if not (source.get("multiplyDragByParticleSize") and source.get("multiplyDragByParticleVelocity")):
+            raise _Unsupported("ClampVelocityModule.drag without size and velocity scaling")
+        result["drag"] = curve(source["drag"])
     if result["separateAxes"]:
         result.update(x=curve(source["x"]), y=curve(source["y"]), z=curve(source["z"]))
     else:
@@ -612,10 +624,15 @@ def read(objects, mono, tracks, deadline, *, claimed=frozenset()):
 def warning(descriptor):
     """One project warning that lists what the original prefabs use and the preview leaves out."""
     rows = (descriptor or {}).get("unsupported") or []
-    if not rows:
-        return None
-    reasons = {}
-    for row in rows:
-        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
-    listed = ", ".join(f"{reason} x{count}" for reason, count in sorted(reasons.items(), key=lambda item: -item[1]))
-    return f"{len(rows)} original particle systems are not previewed: {listed}."
+    others = (descriptor or {}).get("otherComponents") or {}
+    parts = []
+    if rows:
+        reasons = {}
+        for row in rows:
+            reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+        listed = ", ".join(f"{reason} x{count}" for reason, count in sorted(reasons.items(), key=lambda item: -item[1]))
+        parts.append(f"{len(rows)} original particle systems are not previewed: {listed}.")
+    if others:
+        kinds = sorted({kind for row in others.values() for kind in row})
+        parts.append(f"{len(others)} particle prefabs also hold {', '.join(kinds)} content that is not previewed.")
+    return " ".join(parts) or None

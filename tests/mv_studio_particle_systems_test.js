@@ -125,6 +125,52 @@ function testCurvesAndColorsOverLifetime() {
   assert.ok(Math.abs(atom.age - 50) < 2.5, `age ${atom.age}`);
 }
 
+function testOrbitalRadialAndBurstSpread() {
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const point = {type: 5, radius: 1, radiusThickness: 1, arc: 360, angle: 25, length: 5, boxThickness: [0, 0, 0],
+    position: [1, 0, 0], rotation: [0, 0, 0], scale: [0, 0, 0], alignToDirection: false, randomDirection: 0,
+    sphericalDirection: 0, randomPosition: 0, donutRadius: 0};
+  const orbit = (z, radial) => ({x: constant(0), y: constant(0), z: constant(0), worldSpace: false,
+    orbital: {orbitalX: constant(0), orbitalY: constant(0), orbitalZ: constant(z), orbitalOffsetX: constant(0),
+      orbitalOffsetY: constant(0), orbitalOffsetZ: constant(0), radial: constant(radial)}});
+  const base = {main: {looping: false, duration: 10, lifetime: constant(10)}, emission: once, shape: point};
+  // A quarter turn per second about Z moves (1, 0, 0) to (0, 1, 0).
+  const spin = P.create(system({...base, velocity: orbit(Math.PI / 2, 0)}), 2);
+  const [turned] = spin.sample(30, 30);
+  assert.ok(Math.abs(turned.x) < .03 && Math.abs(turned.y - 1) < .03, `${turned.x},${turned.y}`);
+  const push = P.create(system({...base, velocity: orbit(0, .5)}), 2);
+  const [pushed] = push.sample(60, 30);
+  assert.ok(Math.abs(pushed.x - 2) < .03 && Math.abs(pushed.y) < 1e-6, `radial ${pushed.x}`);
+  // BurstSpread places one batch evenly over the arc instead of drawing a heading.
+  const ring = {...point, type: 10, position: [0, 0, 0], scale: [1, 1, 1], radiusThickness: 0, arc: 180, arcMode: 3};
+  const spread = P.create(system({main: {looping: false, duration: 10, lifetime: constant(10)}, shape: ring,
+    emission: {rate: constant(0), bursts: [{time: 0, count: constant(5), cycles: 1, interval: 0, probability: 1}]}}), 4);
+  const angles = spread.sample(1, 30).map(atom => Math.atan2(atom.source.position[1], atom.source.position[0]))
+    .sort((a, b) => a - b);
+  angles.forEach((angle, index) => assert.ok(Math.abs(angle - index * Math.PI / 4) < 1e-3, `slot ${index}: ${angle}`));
+}
+
+function testLimitVelocityDampenAndDrag() {
+  const once = {rate: constant(0), bursts: [{time: 0, count: constant(1), cycles: 1, interval: 0, probability: 1}]};
+  const base = {main: {looping: false, duration: 10, lifetime: constant(10), speed: constant(10), size: constant(1)},
+    emission: once};
+  const speedAt = (row, frames) => {
+    const stream = P.create(system({...base, ...row}), 1);
+    const [atom] = stream.sample(frames, 30);
+    return Math.hypot(atom.mx, atom.my, atom.mz);
+  };
+  // Full dampen clamps at once; half dampen per 1/30 s halves the excess every 1/30 s
+  // (two display frames: 8 over the limit becomes 2).
+  assert.ok(Math.abs(speedAt({clamp: {separateAxes: false, worldSpace: false, dampen: 1, magnitude: constant(2)}}, 1) - 2) < 1e-5);
+  const half = speedAt({clamp: {separateAxes: false, worldSpace: false, dampen: .5, magnitude: constant(2)}}, 2);
+  assert.ok(Math.abs(half - 4) < .05, `half dampen ${half}`);
+  // Quadratic drag on a unit-size particle: dv/dt = -v^2 * drag * pi / 4.
+  const dragged = speedAt({clamp: {separateAxes: false, worldSpace: false, dampen: 0, magnitude: constant(100),
+    drag: constant(1)}}, 30);
+  const expected = 1 / (1 / 10 + Math.PI / 4);
+  assert.ok(Math.abs(dragged - expected) / expected < .05, `drag ${dragged} vs ${expected}`);
+}
+
 function testActivationTiming() {
   const event = {start: 7.383333333333334, duration: 40.55};
   assert.equal(P.activeFrames(event, 7.3, 30), 0);
@@ -152,7 +198,8 @@ async function testApplyDrawsActiveCuesOnly() {
   const nodes = [{parent: null, path: "fx", layer: 1, position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]},
     {parent: 0, path: "fx/dust", layer: 1, position: [1, 5.85, 0], rotation: [.7071068, 0, 0, .7071068], scale: [1, 1, 1]}];
   const descriptor = {schema: 1, textures: [{name: "tex", filter: 1, wrap: [1, 1], levels: Array.from({length: 7}, (_, i) => level(64 >> i))}],
-    templates: [{name: "fx", nodes, systems: [system({node: 1}), system({node: 1, layer: 20, path: "fx/overlay"})]}],
+    templates: [{name: "fx", nodes, systems: [system({node: 1}), system({node: 1, layer: 20, path: "fx/overlay"}),
+      system({node: 1, layer: 15, path: "fx/floor", renderer: {...system().renderer, mode: 2, maxParticleSize: 2}})]}],
     cues: [{trackId: "track", eventId: "track:0", template: 0, offset: [0, 13, 59], quality: "stage_control", clipSeed: 7}]};
   assert.equal(P.validDescriptor(descriptor), true);
   assert.equal(P.validDescriptor({...descriptor, cues: [{...descriptor.cues[0], template: 3}]}), false);
@@ -164,12 +211,16 @@ async function testApplyDrawsActiveCuesOnly() {
   const group = root.children[0];
   assert.equal(group.children.filter(mesh => mesh.visible).length, 0);
   controller.update(2, project);
-  const visible = group.children.filter(mesh => mesh.visible);
-  assert.equal(visible.length, 1, "the layer-20 system is left to the overlay camera");
+  const visible = group.children.filter(mesh => mesh.visible && mesh.name.endsWith("root/dust"));
+  assert.equal(group.children.filter(mesh => mesh.visible).length, 2, "the layer-20 system is left to the overlay camera");
+  const floor = group.children.find(mesh => mesh.name.endsWith("fx/floor"));
+  assert.equal(floor.material.uniforms.uPlaneScale.value, Math.fround(Math.SQRT1_2));
+  assert.deepEqual(floor.material.uniforms.uAxisX.value.toArray(), [-1, 0, 0], "Unity +X is reflected like the stage");
   assert.equal(visible[0].material.blendSrc, T.SrcAlphaFactor);
   assert.equal(visible[0].material.blendDst, T.OneFactor);
   assert.equal(visible[0].material.depthWrite, false);
   assert.equal(visible[0].material.uniforms.uTexture.value.wrapS, T.ClampToEdgeWrapping);
+  assert.equal(visible[0].material.uniforms.uPlaneScale.value, 1);
   const [state] = controller.inspect(2);
   assert.equal(state.alive, visible[0].geometry.instanceCount);
   // Unity X is reflected; the clone sits at the clip offset plus the node pose.
@@ -190,6 +241,8 @@ async function testApplyDrawsActiveCuesOnly() {
   testPrewarmedSteadyState();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
+  testOrbitalRadialAndBurstSpread();
+  testLimitVelocityDampenAndDrag();
   testActivationTiming();
   testMaterialMappingAndLayers();
   await testApplyDrawsActiveCuesOnly();

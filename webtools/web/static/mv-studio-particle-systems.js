@@ -30,7 +30,7 @@
   const salts = {
     speed: 0x96aa4de3, gravity: 0xe2b7c3c3, velocity: 0xe0fbd834, size: 0x8d2c8431, color: 0x591bc05c,
     rotation: 0x6aed452e, rotationSign: 0xff2bb1a4, rotationBySpeed: 0xdec4aea1, startFrame: 0x56b3dbb0,
-    frame: 0x13740583,
+    frame: 0x13740583, drag: 0xa6790296,
     // Stand-ins: these draws exist in Unity but their salts are not identified yet.
     clamp: 0x2c1b3c6d, row: 0x297a2d39, flipU: 0x5f356495, flipV: 0x2a2f6b71, burst: 0x3c6ef372,
   };
@@ -188,9 +188,12 @@
     if (shape && !(Number.isInteger(shape.type) && vector(shape.position, 3) && vector(shape.rotation, 3) &&
         vector(shape.scale, 3) && finite(shape.radius) && finite(shape.arc) && finite(shape.angle))) return false;
     const curves = (value, names) => !value || names.every(name => validCurve(value[name]));
-    if (!curves(system.velocity, ["x", "y", "z"])) return false;
-    if (system.clamp && !(system.clamp.separateAxes ? curves(system.clamp, ["x", "y", "z"]) :
-      validCurve(system.clamp.magnitude))) return false;
+    if (!curves(system.velocity, ["x", "y", "z"]) ||
+        !curves(system.velocity?.orbital, ["orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY",
+          "orbitalOffsetZ", "radial"]) ||
+        (system.velocity?.speedModifier && !validCurve(system.velocity.speedModifier))) return false;
+    if (system.clamp && (!(system.clamp.separateAxes ? curves(system.clamp, ["x", "y", "z"]) :
+      validCurve(system.clamp.magnitude)) || (system.clamp.drag && !validCurve(system.clamp.drag)))) return false;
     for (const name of ["size", "rotation"]) {
       const value = system[name];
       if (value && !(value.separateAxes ? curves(value, ["x", "y", "z"]) : validCurve(value.curve))) return false;
@@ -230,17 +233,28 @@
   }
 
   // ---------------------------------------------------------------- shapes
+  // Unity ShapeModule sampling as the native modules reproduce it: heading in
+  // turns through the native sine polynomial, area radius sqrt((1-u) + .001u)
+  // at full thickness, cone directions normalize(sin(a) * xy, cos(a)) and a
+  // cone-volume depth draw (mv-studio-sparks-a-*-simulation.js); BurstSpread
+  // replaces the heading draw with slot / (count - 1) (sparks-b).
   function makeShape(shape, native) {
     if (!shape) return {draw: () => ({position: [0, 0, 0], direction: [0, 0, 1]})};
     const rotation = eulerQuaternion(shape.rotation), {scale, position: origin, type} = shape;
     const radius = f32(shape.radius), thickness = f32(shape.radiusThickness ?? 1);
-    const arc = f32(shape.arc * Math.PI / 180), cone = f32(shape.angle * Math.PI / 180);
-    const ring = draw => {
-      // Uniform area between the inner (1 - thickness) radius and the radius.
-      const inner = f32(1 - thickness);
-      return f32(radius * Math.sqrt(lerp(f32(inner * inner), 1, native.nativeUnit(draw()))));
+    const arcTurns = f32(f32(shape.arc * f32(Math.PI / 180)) * .15915493667125702);
+    const cone = f32(shape.angle * Math.PI / 180), coneX = f32(Math.sin(cone)), coneZ = f32(Math.cos(cone));
+    const inner = Math.max(f32(.001), f32(f32(1 - thickness) * f32(1 - thickness)));
+    const cos = native.nativeCosine;
+    function heading(draw, slot, count) {
+      const fraction = shape.arcMode === 3 ? f32(slot * f32(1 / Math.max(1, count - 1))) : native.nativeUnit(draw());
+      return f32(arcTurns * fraction);
+    }
+    const areaRadius = draw => {
+      const weight = native.nativeUnit(draw());
+      return f32(Math.sqrt(f32(f32(1 - weight) + f32(inner * weight))));
     };
-    function local(draw) {
+    function local(draw, slot, count) {
       const unit = () => native.nativeUnit(draw());
       switch (type) {
         case 5: case 15: case 16: {
@@ -248,26 +262,28 @@
           return {position: box, direction: [0, 0, 1], scaled: true};
         }
         case 0: case 1: case 2: case 3: {
-          const turns = f32(unit() * f32(arc / f32(2 * Math.PI)));
+          const turns = heading(draw, slot, count);
           const point = type < 2 ? native.nativeSpherePosition(turns, unit(), type === 1 ? 0 : unit(), radius, scale) :
             native.nativeHemispherePosition(turns, unit(), type === 3 ? 0 : unit(), radius, scale);
           const length = Math.hypot(...point);
           return {position: point, direction: length > 0 ? point.map(value => value / length) : [0, 0, 1], scaled: true};
         }
         case 10: case 11: {
-          const angle = f32(unit() * arc), r = type === 11 ? radius : ring(draw);
-          const direction = [Math.cos(angle), Math.sin(angle), 0];
-          return {position: direction.map(value => f32(value * r)), direction};
+          const turns = heading(draw, slot, count), r = type === 11 ? 1 : areaRadius(draw);
+          const x = f32(cos(turns) * r), y = f32(cos(f32(turns - .25)) * r);
+          const length = Math.hypot(x, y) || 1;
+          return {position: [f32(x * radius), f32(y * radius), 0], direction: [x / length, y / length, 0]};
         }
         case 4: case 7: case 8: case 9: {
-          const angle = f32(unit() * arc), r = type === 7 || type === 9 ? radius : ring(draw);
-          const spread = radius > 0 ? f32(cone * f32(r / radius)) : 0;
-          const radial = [Math.cos(angle), Math.sin(angle)];
-          const direction = [radial[0] * Math.sin(spread), radial[1] * Math.sin(spread), Math.cos(spread)];
-          const base = [radial[0] * r, radial[1] * r, 0];
+          const turns = heading(draw, slot, count), r = type === 7 || type === 9 ? 1 : areaRadius(draw);
+          const x = f32(cos(turns) * r), y = f32(cos(f32(turns - .25)) * r);
+          const localX = f32(coneX * x), localY = f32(coneX * y);
+          const inverse = f32(1 / Math.sqrt(f32(f32(localX * localX) + f32(f32(localY * localY) + f32(coneZ * coneZ)))));
+          const direction = [f32(localX * inverse), f32(localY * inverse), f32(coneZ * inverse)];
+          const base = [f32(x * radius), f32(y * radius), 0];
           if (type >= 8) {
-            const along = f32(unit() * shape.length);
-            return {position: base.map((value, i) => value + direction[i] * along), direction};
+            const depth = f32(shape.length * unit());
+            return {position: base.map((value, i) => f32(value + f32(direction[i] * depth))), direction};
           }
           return {position: base, direction};
         }
@@ -282,8 +298,8 @@
           return {position: [0, 0, 0], direction: [0, 0, 1]};
       }
     }
-    return {draw(draw) {
-      const sample = local(draw);
+    return {draw(draw, slot = 0, count = 1) {
+      const sample = local(draw, slot, count);
       let {position, direction} = sample;
       if (!sample.scaled) position = position.map((value, i) => value * scale[i]);
       if (shape.randomDirection > 0 || shape.sphericalDirection > 0) {
@@ -340,8 +356,12 @@
     const bursts = emission.bursts.map(burst => ({...burst, count: compile(burst.count)}));
     const shape = makeShape(system.shape, native);
     const velocity = system.velocity && ["x", "y", "z"].map(axis => compile(system.velocity[axis]));
+    const orbital = system.velocity?.orbital && ["orbitalX", "orbitalY", "orbitalZ", "orbitalOffsetX", "orbitalOffsetY",
+      "orbitalOffsetZ", "radial"].map(name => compile(system.velocity.orbital[name]));
+    const speedModifier = system.velocity?.speedModifier && compile(system.velocity.speedModifier);
     const clamp = system.clamp && (system.clamp.separateAxes ? ["x", "y", "z"].map(axis => compile(system.clamp[axis])) :
       compile(system.clamp.magnitude));
+    const drag = system.clamp?.drag && compile(system.clamp.drag);
     const sizeOverLife = system.size && (system.size.separateAxes ? ["x", "y", "z"].map(axis => compile(system.size[axis])) :
       [compile(system.size.curve)]);
     const spin = system.rotation && compile(system.rotation.separateAxes ? system.rotation.z : system.rotation.curve);
@@ -372,25 +392,24 @@
       }
     }
 
-    function birth({initial, shape: shapeDraw}, systemTime) {
+    function birth({initial}, systemTime) {
       const word = initial();
       const life = Math.max(f32(1e-4), lifetime.sample(systemTime, nativeUnit(initial())));
       const size = sizes.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const angles = rotations.map(curve => curve.sample(systemTime, nativeUnit(initial())));
       const rgba = startColor(nativeUnit(initial()), systemTime);
-      const {position, direction} = shape.draw(shapeDraw);
       const speed = startSpeed.sample(systemTime, salted(word, salts.speed));
       const stream = nativeRandom((word + salts.velocity) >>> 0);
-      const weights = [nativeUnit(stream()), nativeUnit(stream()), nativeUnit(stream())];
+      // Linear x, y, z, then (stand-in order) orbital x, y, z, offset x, y, z, radial and speed modifier.
+      const weights = Array.from({length: orbital || speedModifier ? 11 : 3}, () => nativeUnit(stream()));
       const threshold = f32(main.randomizeRotationDirection * .5);
       return {
-        word, life: nativeInverseLifetime(life), size, roll: angles[0], rgba, position,
-        velocity: direction.map(value => f32(value * speed)), weights,
+        word, life: nativeInverseLifetime(life), size, roll: angles[0], rgba, speed, weights,
         gravity: gravityModifier.sample(systemTime, salted(word, salts.gravity)),
         sizeWeight: salted(word, salts.size), colorWeight: salted(word, salts.color),
         spinWeight: salted(word, salts.rotation), spinSign: salted(word, salts.rotationSign) > threshold ? 1 : -1,
         speedSpinWeight: spinBySpeed ? salted(word, salts.rotationBySpeed) : 0,
-        clampWeight: clamp ? salted(word, salts.clamp) : 0,
+        clampWeight: clamp ? salted(word, salts.clamp) : 0, dragWeight: drag ? salted(word, salts.drag) : 0,
         frameStart: uv ? salted(word, salts.startFrame) : 0, frameWeight: uv ? salted(word, salts.frame) : 0,
         row: uv?.randomRow ? salted(word, salts.row) : 0,
         flipU: salted(word, salts.flipU) < Math.max(system.renderer.flip[0], uv?.flipU || 0),
@@ -413,9 +432,16 @@
         ez = velocity[2].sample(phase, source.weights[2]);
         if (velocityToLocal) [ex, ey, ez] = velocityToLocal([ex, ey, ez]).map(f32);
       }
+      const modifier = speedModifier ? speedModifier.sample(phase, source.weights[10]) : 1;
       let mx = f32(atom.vx + ex), my = f32(atom.vy + ey), mz = f32(atom.vz + ez);
+      if (modifier !== 1) {
+        mx = f32(mx * modifier);
+        my = f32(my * modifier);
+        mz = f32(mz * modifier);
+      }
       if (clamp) {
-        const dampen = f32(system.clamp.dampen);
+        // Dampen is per 1/30 s: 1 - (1 - dampen)^(dt * 30) (mv-studio-moving-burst-simulation.js).
+        const dampen = f32(1 - f32(Math.pow(f32(1 - f32(system.clamp.dampen)), f32(dt * 30))));
         if (Array.isArray(clamp)) {
           const limits = clamp.map(curve => Math.abs(curve.sample(phase, source.clampWeight)));
           const fix = (moving, extra, limit, key) => {
@@ -439,10 +465,51 @@
             mz = f32(atom.vz + ez);
           }
         }
+        if (drag) {
+          // Speed loses dt * speed^2 * drag * area, area = pi * (size / 2)^2.
+          const coefficient = drag.sample(phase, source.dragWeight);
+          const width = sizeOverLife ? f32(source.size[0] * Math.max(0, sizeOverLife[0].sample(phase, source.sizeWeight))) :
+            source.size[0];
+          const half = f32(width * .5), area = f32(half * f32(half * f32(Math.PI)));
+          const square = f32(f32(mx * mx) + f32(f32(my * my) + f32(mz * mz))), speed = f32(Math.sqrt(square));
+          if (speed > f32(1e-15)) {
+            const scale = f32(Math.max(0, f32(speed - f32(dt * f32(square * f32(coefficient * area))))) / speed);
+            atom.vx = f32(f32(mx * scale) - ex);
+            atom.vy = f32(f32(my * scale) - ey);
+            atom.vz = f32(f32(mz * scale) - ez);
+            mx = f32(atom.vx + ex);
+            my = f32(atom.vy + ey);
+            mz = f32(atom.vz + ez);
+          }
+        }
       }
       atom.mx = mx;
       atom.my = my;
       atom.mz = mz;
+      if (orbital && dt > birthBias) {
+        // Rotate about the orbital offset point, then push along the rotated
+        // radius; the displacement joins the linear motion of this step.
+        const value = (index, weight) => orbital[index].sample(phase, source.weights[weight]);
+        const motion = f32(dt * modifier);
+        const center = [value(3, 6), value(4, 7), value(5, 8)];
+        let relative = [f32(atom.x - center[0]), f32(atom.y - center[1]), f32(atom.z - center[2])];
+        const turns = [0, 1, 2].map(axis => f32(f32(motion * value(axis, axis + 3)) * .15915493667125702));
+        const turn = (vector, axis, angle) => {
+          if (!angle) return vector;
+          const c = native.nativeCosine(angle), s = native.nativeCosine(f32(angle - .25));
+          const [a, b] = axis === 0 ? [1, 2] : axis === 1 ? [2, 0] : [0, 1];
+          const next = [...vector];
+          next[a] = f32(f32(c * vector[a]) - f32(s * vector[b]));
+          next[b] = f32(f32(s * vector[a]) + f32(c * vector[b]));
+          return next;
+        };
+        const rotated = turn(turn(turn(relative, 0, turns[0]), 1, turns[1]), 2, turns[2]);
+        const push = f32(motion * value(6, 9)), length = Math.hypot(...rotated);
+        const moved = length > 0 ? rotated.map(axis => f32(axis + f32(f32(axis / length) * push))) : rotated;
+        atom.x = f32(atom.x + f32(moved[0] - relative[0]));
+        atom.y = f32(atom.y + f32(moved[1] - relative[1]));
+        atom.z = f32(atom.z + f32(moved[2] - relative[2]));
+      }
       atom.x = f32(atom.x + f32(mx * dt));
       atom.y = f32(atom.y + f32(my * dt));
       atom.z = f32(atom.z + f32(mz * dt));
@@ -462,7 +529,17 @@
     function born(state, count, within, systemTime) {
       const sources = [];
       while (sources.length < count) {
-        if (state.group === groups.length) groups.push(lanes.map(lane => birth(lane, systemTime)));
+        if (state.group === groups.length) {
+          // Every lane of a group draws its InitialModule and ShapeModule words.
+          const base = sources.length;
+          const group = lanes.map(lane => birth(lane, systemTime));
+          group.forEach((source, lane) => {
+            const {position, direction} = shape.draw(lanes[lane].shape, base + lane, count);
+            source.position = position;
+            source.velocity = direction.map(value => f32(value * source.speed));
+          });
+          groups.push(group);
+        }
         sources.push(...groups[state.group++].slice(0, count - sources.length));
       }
       const births = sources.map((source, index) => {
@@ -665,6 +742,7 @@
     uniform vec4 uTiles;
     uniform vec4 uMainST;
     uniform vec2 uSizeLimit;
+    uniform float uPlaneScale;
     uniform vec3 uAxisX;
     uniform vec3 uAxisY;
     uniform vec2 uPivot;
@@ -679,15 +757,18 @@
       bool orthographic = projectionMatrix[3][3] == 1.0;
       float depth = orthographic ? 1.0 : -center.z;
       float viewWidth = 2.0 * depth / abs(projectionMatrix[0][0]);
-      vec2 size = particleSize.xy;
+      // Horizontal billboards scale the quad and its size cap by sqrt(1/2)
+      // (mv-studio-finale-floor.js planeScale); other modes use 1.
+      vec2 size = particleSize.xy * uPlaneScale;
+      vec2 sizeLimit = uSizeLimit * uPlaneScale;
       vec2 corner = position.xy;
       vec4 point = center;
       #ifdef STRETCHED
       // Head at the particle, tail behind it along the velocity
       // (mv-studio-moving-companions.js velocityBillboards).
       float width = size.x;
-      if (depth >= 0.0) width = min(width, uSizeLimit.y * viewWidth);
-      if (uSizeLimit.x > 0.0 && depth >= 0.0) width = max(width, uSizeLimit.x * viewWidth);
+      if (depth >= 0.0) width = min(width, sizeLimit.y * viewWidth);
+      if (sizeLimit.x > 0.0 && depth >= 0.0) width = max(width, sizeLimit.x * viewWidth);
       vec3 movement = mat3(modelViewMatrix) * particleVelocity;
       float squared = dot(movement, movement);
       if (squared > 1.0e-30) {
@@ -701,8 +782,8 @@
       // the viewport width at the particle depth and keeps the aspect ratio.
       float larger = max(max(size.x, size.y), 1.0e-6);
       float limited = larger;
-      if (depth >= 0.0) limited = min(limited, uSizeLimit.y * viewWidth);
-      if (uSizeLimit.x > 0.0 && depth >= 0.0) limited = max(limited, uSizeLimit.x * viewWidth);
+      if (depth >= 0.0) limited = min(limited, sizeLimit.y * viewWidth);
+      if (sizeLimit.x > 0.0 && depth >= 0.0) limited = max(limited, sizeLimit.x * viewWidth);
       vec2 local = corner * size * (limited / larger) + uPivot * size;
       float c = cos(particleFrame.z), s = sin(particleFrame.z);
       // Positive particle rotation turns the quad clockwise.
@@ -801,6 +882,7 @@
         uMainST: {value: new T.Vector4().fromArray(material.st)},
         uTiles: {value: new T.Vector4(system.uv?.tiles[0] || 1, system.uv?.tiles[1] || 1, 0, 0)},
         uSizeLimit: {value: new T.Vector2(renderer.minParticleSize, renderer.maxParticleSize)},
+        uPlaneScale: {value: renderer.mode === 2 ? Math.fround(Math.SQRT1_2) : 1},
         uAxisX: {value: new T.Vector3(1, 0, 0)}, uAxisY: {value: new T.Vector3(0, 1, 0)},
         uPivot: {value: new T.Vector2(renderer.pivot[0], renderer.pivot[1])},
         ...(renderer.mode === 1 ? {uStretch: {value: new T.Vector2(renderer.lengthScale, renderer.velocityScale)}} : {}),

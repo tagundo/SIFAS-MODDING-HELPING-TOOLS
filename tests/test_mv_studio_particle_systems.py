@@ -141,12 +141,25 @@ class NormalizationTests(unittest.TestCase):
                 systems._shape({**source["ShapeModule"], "type": kind})
         with self.assertRaises(systems._Unsupported):
             systems._shape({**source["ShapeModule"], "arc": {"value": 360, "mode": 1}})
+        self.assertEqual(systems._shape({**source["ShapeModule"], "arc": {"value": 180, "mode": 3}})["arcMode"], 3)
+        with self.assertRaises(systems._Unsupported):
+            systems._shape({**source["ShapeModule"], "radius": {"value": 1, "mode": 3}})
         velocity = {"enabled": True, "x": constant(0.0), "y": constant(1.0), "z": constant(0.0),
                     "orbitalX": constant(0.0), "orbitalY": constant(0.0), "orbitalZ": constant(0.0),
                     "radial": constant(0.0), "speedModifier": constant(1.0), "inWorldSpace": True}
+        velocity.update({name: constant(0.0) for name in ("orbitalOffsetX", "orbitalOffsetY", "orbitalOffsetZ")})
         self.assertTrue(systems._velocity(velocity)["worldSpace"])
-        with self.assertRaisesRegex(systems._Unsupported, "orbitalY"):
-            systems._velocity({**velocity, "orbitalY": constant(1.0)})
+        self.assertNotIn("orbital", systems._velocity(velocity))
+        orbit = systems._velocity({**velocity, "orbitalY": constant(1.0), "speedModifier": constant(2.0)})
+        self.assertEqual(orbit["orbital"]["orbitalY"], {"mode": 0, "scalar": 1.0, "min": 1.0})
+        self.assertEqual(orbit["speedModifier"]["scalar"], 2.0)
+        limit = {"enabled": True, "separateAxis": False, "inWorldSpace": False, "dampen": .5,
+                 "magnitude": constant(2.0), "drag": constant(1.0),
+                 "multiplyDragByParticleSize": True, "multiplyDragByParticleVelocity": True}
+        self.assertEqual(systems._clamp(limit)["drag"]["scalar"], 1.0)
+        self.assertNotIn("drag", systems._clamp({**limit, "drag": constant(0.0), "multiplyDragByParticleSize": False}))
+        with self.assertRaises(systems._Unsupported):
+            systems._clamp({**limit, "multiplyDragByParticleVelocity": False})
         uv = {"enabled": True, "mode": 0, "timeMode": 0, "tilesX": 2, "tilesY": 2, "animationType": 1,
               "rowIndex": 1, "randomRow": False, "frameOverTime": constant(0.0), "startFrame": constant(0.5),
               "cycles": 1.0, "flipU": 0.0, "flipV": 0.0}
@@ -183,6 +196,8 @@ class NormalizationTests(unittest.TestCase):
         note = systems.warning({"unsupported": [{"reason": "SubModule"}, {"reason": "SubModule"},
                                                 {"reason": "mesh render mode"}]})
         self.assertEqual(note, "3 original particle systems are not previewed: SubModule x2, mesh render mode x1.")
+        self.assertEqual(systems.warning({"unsupported": [], "otherComponents": {"fx": ["Animator", "MeshRenderer"]}}),
+                         "1 particle prefabs also hold Animator, MeshRenderer content that is not previewed.")
 
 
 _CENSUS = Path(os.environ.get(
