@@ -241,6 +241,13 @@ class SyntheticMemberHeadTests(unittest.TestCase):
         with patch.object(model_viewer, "_source_hash", side_effect=lambda obj: "sha-" + obj.source):
             self.assertNotIn("facialTables", self.head(scene))
 
+    def test_unreadable_face_table_keeps_the_rest_of_the_head(self):
+        data = {"lipSync": {"weight": 0.5}, "needsMergingFace": 1, "animationTableMouth": _pointer(901)}
+        scene = self.scene(dots_path=("Head_Face",), face_data=data)
+        for error in (KeyError, TypeError, ValueError, AttributeError):
+            with self.subTest(error=error.__name__), patch.object(model_faces, "_facial_tables", side_effect=error("bad table")):
+                self.assertEqual(self.head(scene), {"faceDots": False, "cheekMaterial": "ch0212_co0001_head", "lipSyncWeight": 0.5})
+
     def test_only_one_verified_body_part_manager_describes_the_head(self):
         self.assertEqual(self.head(self.scene(managers=2)), {})
         self.assertEqual(self.head(self.scene(script=("BodyPartManager", "Other"))), {})

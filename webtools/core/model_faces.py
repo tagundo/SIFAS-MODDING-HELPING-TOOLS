@@ -388,7 +388,12 @@ def member_head(scene, sources):
             dots = _find(scene, scene.transforms.get(_key(head_all)), ("Head_Face", "mesh_facedots"))
             head = {"faceDots": dots is not None}
             face_component, face = _member_face(scene, obj, tree)
-            tables = _facial_tables(scene, face_component, face)
+            # A face table that cannot be read only leaves facialTables out;
+            # the head's dots, cheek and lip-sync weight do not depend on it.
+            try:
+                tables = _facial_tables(scene, face_component, face)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                tables = {}
             if tables:
                 head["facialTables"] = tables
             material = _ref(obj, tree.get("headMaterial"))
