@@ -168,7 +168,7 @@ async function localAndGame(page, url) {
   const costume = page.locator('#mv-performer-costume');
   assert.equal(await costume.inputValue(), '0');
   assert.deepEqual(await costume.locator('option').allTextContents(),
-    ['Winter uniform (51)', 'Stage suit (52)', 'Stage suit (52 · 뷰 2)']);
+    ['Winter uniform (51)', 'Stage suit (52)', 'Stage suit (52 · 뷰 상태 2)']);
   request = null;
   await costume.selectOption('2');
   await page.waitForFunction(() => !document.querySelector('#mv-import-game').disabled);

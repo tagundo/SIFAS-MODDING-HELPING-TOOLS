@@ -114,6 +114,15 @@ class SuitChainTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 suits.normalize_deck(value)
 
+    def test_costume_view_label_keeps_the_global_view_word_untranslated(self):
+        # The global /api/i18n table also serves the texture tools, whose "View" menu falls
+        # back to its own words (보기 / 表示) only while the global table has no "View".
+        from webtools import i18n
+        for language, label in (("ko", "뷰 상태"), ("ja", "ビュー状態")):
+            with self.subTest(language=language):
+                self.assertIsNone(i18n._TABLES[language].get("View"))
+                self.assertEqual(i18n._TABLES[language].get("View status"), label)
+
 
 class UserDatabaseTests(unittest.TestCase):
     def test_reads_one_players_mv_state_read_only(self):

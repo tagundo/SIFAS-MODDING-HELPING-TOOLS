@@ -348,7 +348,7 @@
     if (!project || project.source?.kind !== "game" || !choices.length || !samePayload(lastGamePayload)) return null;
     const view = (value) => Number.isInteger(value) && value > 1 ? value : 1;
     const options = choices.map((choice, index) => ({ id: String(index), label: text(choice.name || choice.id) + " (" +
-      text(choice.id) + (view(choice.viewStatus) > 1 ? " · " + t("View") + " " + choice.viewStatus : "") + ")" }));
+      text(choice.id) + (view(choice.viewStatus) > 1 ? " · " + t("View status") + " " + choice.viewStatus : "") + ")" }));
     const control = make("select", null, { id: "mv-performer-costume" });
     const current = choices.findIndex((choice) => choice.id === actor.costumeId && view(choice.viewStatus) === view(actor.viewStatus));
     replaceOptions(control, options, String(current));

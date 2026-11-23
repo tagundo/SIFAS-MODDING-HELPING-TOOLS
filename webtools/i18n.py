@@ -2626,7 +2626,8 @@ _MV_STUDIO_TRANSLATIONS = {
     "Player": ("플레이어", "プレイヤー"),
     "New player": ("새 플레이어", "新しいプレイヤー"),
     "Game costume": ("게임 의상", "ゲームの衣装"),
-    "View": ("뷰", "ビュー"),
+    # Not bare "View": the global table would also rename the texture tools' View menu.
+    "View status": ("뷰 상태", "ビュー状態"),
     "Load MV": ("MV 불러오기", "MVを読み込む"),
     "MV only": ("MV 전용", "MV専用"),
     "Loading MVs…": ("MV 목록 불러오는 중…", "MV一覧を読み込み中…"),
