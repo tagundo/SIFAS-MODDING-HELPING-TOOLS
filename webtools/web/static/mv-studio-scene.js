@@ -363,6 +363,11 @@
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
     const memberCullingTracks = new Map();
+    // A LiveMemberCullerClip moves the member to the Invisible layer, which both
+    // native camera paths exclude; the editor hides the member's root instead.
+    function memberCulledAt(position, time) {
+      return Boolean(memberCullingTracks.get(position)?.some(event => time >= event.start && time < event.start + event.duration));
+    }
     const memberShaftTracks = new Map(), memberAreaTracks = new Map();
     const releasedSkeletons = new WeakSet();
     const size = new T.Vector2();
@@ -822,7 +827,7 @@
     async function buildRecord(entry, bytes, active) {
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
-        identity: entry.identity, visibility: [], rig: entry.spec.rig };
+        identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
       if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
@@ -1584,8 +1589,7 @@
         if (record.group !== actors) continue;
         // Both native camera paths exclude the member's Invisible layer.
         // Keep sampling its transforms so other actors can still track it.
-        const culled = memberCullingTracks.get(record.position)?.some(event =>
-          currentTime >= event.start && currentTime < event.start + event.duration);
+        const culled = memberCulledAt(record.position, currentTime);
         record.root.visible = record.actorVisible && !culled;
         record.materials?.setLiveLighting?.(lighting?.member(record.position));
         record.physics?.restorePose();
@@ -1651,6 +1655,330 @@
       } else draw();
     }
 
+    // Runtime value dump of the last evaluated frame (sifas-mv-runtime-dump/1,
+    // editor columns, three-rh-mirror-x space). Strictly read-only: it never
+    // seeks, resizes, draws or updates a matrix, and copies every value into
+    // plain arrays. Call seek(t, undefined, true) first; the deferred seek has
+    // already updated the world matrices this reads.
+    const defaultGlobals = ["_Beat", "_MusicTime", "_SelfTime", "_ColorsLength", "_RenderTextureResolution", "_Time"];
+    const anchorBones = ["Hips", "Head", "LeftHand", "RightHand"];
+
+    function assetDump(request = {}) {
+      const D = global.MVStudioAssetDump;
+      if (!D) throw new Error("The MV asset dump helpers are not loaded.");
+      const clock = global.performance?.now ? () => global.performance.now() : () => Date.now();
+      const started = clock();
+      const sections = new Set(Array.isArray(request.sections) ? request.sections : ["clock", "cameras"]);
+      const limit = (value, fallback) => Number.isInteger(value) && value > 0 ? value : fallback;
+      const maxNodes = limit(request.maxNodes, 4000), maxMaterials = limit(request.maxMaterials, 1024);
+      const maxBones = limit(request.maxBones, 256);
+      const filter = request.filter || {}, keys = request.keys || {};
+      const temp = D.temporaries(T), out = {}, errors = [], truncated = [];
+      const cache = {};
+
+      function read(section, key, reader) {
+        if (!sections.has(section)) return;
+        try {
+          out[key] = reader();
+        } catch (error) {
+          out[key] = null;
+          errors.push({ at: section, error: String(error?.message || error).slice(0, 160) });
+        }
+      }
+
+      function viewOf(camera) {
+        // An unparented camera's world matrix is its local TRS; compose it into
+        // a temporary so a camera that was not drawn yet is still current.
+        const world = camera.parent ? camera.matrixWorld : temp.matrix.compose(camera.position, camera.quaternion, camera.scale);
+        const current = camera.matrixWorld.elements.every((value, index) => Math.abs(value - world.elements[index]) <= 1e-9);
+        return { world: Array.from(world.elements), view: Array.from(temp.inverse.copy(world).invert().elements), current };
+      }
+
+      function cameraEvent() {
+        if (!liveCameraEvent) return null;
+        const track = (project?.tracks || []).find((item) => item.id === liveCameraEvent.track);
+        const clipIndex = track ? track.events.findIndex((event) => event.id === liveCameraEvent.event) : -1;
+        return { track: liveCameraEvent.track, label: track?.label ?? null, nativeClass: track?.nativeClass ?? null,
+          binding: track?.binding ?? null, clipIndex: clipIndex >= 0 ? clipIndex : null,
+          start: liveCameraEvent.start, duration: liveCameraEvent.duration };
+      }
+
+      function cameraEntry(camera, base) {
+        const matrices = viewOf(camera);
+        const world = D.decompose(temp.matrix.fromArray(matrices.world), temp);
+        const expectedY = 1 / Math.tan(camera.fov * Math.PI / 360);
+        return { ...base, fieldOfView: camera.fov, aspect: camera.aspect, nearClipPlane: camera.near, farClipPlane: camera.far,
+          projection: Array.from(camera.projectionMatrix.elements), worldToCamera: matrices.view,
+          transform: { position: world.position, rotation: camera.parent ? world.rotation : camera.quaternion.toArray() },
+          checks: { matrixWorldCurrent: matrices.current,
+            projectionMatchesFov: Math.abs(camera.projectionMatrix.elements[5] - expectedY) <= 1e-6 * Math.max(1, expectedY) } };
+      }
+
+      function boneIndex(record) {
+        cache.bones ||= new Map();
+        if (cache.bones.has(record)) return cache.bones.get(record);
+        const paths = new Map(), nodes = new Map();
+        for (const bone of Array.isArray(record.rig?.bones) ? record.rig.bones : []) {
+          if (Number.isInteger(bone?.node) && typeof bone.path === "string") paths.set(bone.node, bone.path);
+        }
+        record.root.traverse((node) => {
+          const path = paths.get(node.userData?.elichika_node);
+          if (path !== undefined && !node.userData.viewerHelper) nodes.set(path, nodes.has(path) ? null : node);
+        });
+        for (const [path, node] of nodes) if (!node) nodes.delete(path);
+        cache.bones.set(record, nodes);
+        return nodes;
+      }
+
+      function namedBone(record, name) {
+        let best = null;
+        for (const [path, node] of boneIndex(record)) {
+          if (path.split("/").at(-1) === name && (!best || path.length < best[0].length)) best = [path, node];
+        }
+        return best ? best[1] : null;
+      }
+
+      function rendererEntries() {
+        if (cache.renderers) return cache.renderers;
+        const entries = [], counts = new Map();
+        for (const record of records) {
+          const scope = D.rendererScope(record, actors);
+          for (const [owner, meshes] of D.renderersOf(record.root)) {
+            const mesh = D.nodeName(owner), count = (counts.get(scope + "\n" + mesh) || 0) + 1;
+            counts.set(scope + "\n" + mesh, count);
+            const { path, pathSource } = D.gameObjectPath(owner, record.root);
+            entries.push({ key: D.keyFor("renderer", { scope, mesh, index: count }), scope, mesh, path, pathSource, owner, meshes, record });
+          }
+        }
+        return (cache.renderers = entries);
+      }
+
+      // A requested game renderer selects its editor counterparts by key, by
+      // GameObject path (the editor path below its prefab root is a suffix of
+      // the game path) or by mesh name in the same scope. This is a superset;
+      // the comparator makes the actual join.
+      function rendererWanted(item, entry) {
+        if (item.key === entry.key) return true;
+        if (item.scope !== entry.scope) return false;
+        const below = entry.path === null ? "" : entry.path.split("/").slice(1).join("/");
+        if (below && typeof item.path === "string" && (item.path === below || item.path.endsWith("/" + below))) return true;
+        return item.mesh === entry.mesh;
+      }
+
+      function selectedRenderers() {
+        const wanted = Array.isArray(filter.renderers) ? filter.renderers : null;
+        const entries = rendererEntries().filter((entry) => !wanted || wanted.some((item) => rendererWanted(item, entry)));
+        if (entries.length > maxNodes) truncated.push("renderers");
+        return entries.slice(0, maxNodes);
+      }
+
+      // Node visibility without the member culler: the culler hides an actor's
+      // root (record.root.visible = actorVisible && !culled), which the game
+      // does through the camera culling mask instead; "culled" reports it.
+      function nodeVisible(node, record) {
+        for (let current = node; current; current = current.parent) {
+          const shown = current === record.root && record.group === actors ? Boolean(record.actorVisible) : current.visible;
+          if (!shown) return false;
+        }
+        return true;
+      }
+
+      function slots(entry) {
+        const result = [];
+        for (const mesh of entry.meshes) for (const material of [mesh.material].flat()) result.push({ mesh, material });
+        return result;
+      }
+
+      function focusDistanceReadOnly(slot, part) {
+        const point = records.find((record) => record.group === actors && record.position === slot)?.focusParts?.[part];
+        return point ? temp.point.setFromMatrixPosition(point.matrixWorld).distanceTo(mainCameraPosition) : undefined;
+      }
+
+      read("clock", "clock", () => ({ directorTime: currentTime, rate: settings.frame_rate_60fps === true ? 60 : 30 }));
+      read("directors", "directors", () => [{ key: "director:main", time: currentTime,
+        duration: Number.isFinite(project?.duration) ? project.duration : null }]);
+      read("cameras", "cameras", () => {
+        const main = cameraEntry(liveCamera, { key: D.keyFor("camera", { role: "main" }), role: "main", liveShot: hasShot,
+          authoredFov: authoredMainFov, nativeLens: nativeMainLens, event: cameraEvent() });
+        if (!hasShot) main.errors = [{ at: "camera", error: "no live camera shot at this time" }];
+        const cameras = [main];
+        for (const view of split?.inspect?.() || []) {
+          const camera = { fov: view.fov, aspect: view.aspect, near: view.near, far: view.far,
+            position: new T.Vector3().fromArray(view.position), quaternion: new T.Quaternion().fromArray(view.quaternion),
+            scale: new T.Vector3(1, 1, 1), parent: null, matrixWorld: new T.Matrix4(),
+            projectionMatrix: new T.Matrix4().fromArray(view.projection) };
+          cameras.push({ ...cameraEntry(camera, { key: D.keyFor("camera", { role: "split" + view.slot }), role: "split",
+            inView: view.inView, maskBounds: view.maskBounds }), checks: undefined });
+        }
+        return cameras;
+      });
+      read("correctors", "correctors", () => {
+        const bounds = { min: 0.75, max: 1 };
+        const correction = nativeMainLens ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+        return [{ key: "corrector:camera:main", correction, aspectInput: liveCamera.aspect, bounds, nativeLens: nativeMainLens,
+          mode: { modeled: false } }];
+      });
+      read("cameraWork", "cameraWork", () => [{ key: "cameraWork:/EntryPoint/Live/Cameras/MainCamera", authoredFov: authoredMainFov }]);
+      read("globals", "globals", () => {
+        const names = Array.isArray(keys.globals) ? keys.globals : defaultGlobals;
+        const found = {}, seen = new Set();
+        const take = (name, value, from, extra) => {
+          if (!(name in found) && Number.isFinite(value)) found[name] = { f: value, from, ...extra };
+        };
+        scene.traverse((node) => {
+          for (const material of node.isMesh ? [node.material].flat() : []) {
+            if (!material?.uniforms || seen.has(material)) continue;
+            seen.add(material);
+            const u = material.uniforms, where = "@" + (material.name || node.name || "material");
+            if (u.uMode && u.uMusicTime && u.uBeat) {
+              take("_MusicTime", u.uMusicTime.value, "uMusicTime" + where);
+              // Penlight mode 0 does not read the beat clock.
+              if (u.uMode.value !== 0) take("_Beat", u.uBeat.value, "uBeat" + where);
+            }
+            if (u._MusicTime) take("_MusicTime", u._MusicTime.value, "_MusicTime" + where);
+            // LiveColoringTrack clip-local time on one material, not a shader
+            // global: the comparator lists it as a note and never scores it.
+            if (u.uSelfTime) take("_SelfTime", u.uSelfTime.value, "uSelfTime" + where + " (per material)", { perMaterial: true });
+          }
+        });
+        return Object.fromEntries(names.map((name) => [`global:${name}`, found[name] || null]));
+      });
+      read("renderSettings", "renderSettings", () => ({ modeled: false }));
+      read("lights", "lights", () => ({ modeled: false }));
+      // Frame records carry member identity under "members"; the members part carries bones.
+      read("memberIdentity", sections.has("members") ? "memberIdentity" : "members", () => (project?.performers || []).map((performer) => ({
+        slot: performer.position, memberId: performer.memberId ?? null, costumeId: performer.costumeId ?? null })));
+      read("anchors", "anchors", () => {
+        const anchors = [];
+        for (const record of records) if (record.group === actors) {
+          for (const name of anchorBones) {
+            const node = namedBone(record, name);
+            if (node) anchors.push({ key: D.keyFor("anchor", { slot: record.position, name }), position: D.worldPosition(node, temp) });
+          }
+        }
+        const stageRecord = records.find((record) => record.role === "stage");
+        if (stageRecord) anchors.push({ key: "anchor:stageOrigin", position: D.worldPosition(stageRecord.root, temp) });
+        return anchors;
+      });
+      read("renderers", "renderers", () => selectedRenderers().map((entry) => ({
+        key: entry.key, scope: entry.scope, mesh: entry.mesh, path: entry.path, pathSource: entry.pathSource,
+        class: entry.meshes.some((mesh) => mesh.isSkinnedMesh) ? "SkinnedMeshRenderer" : "MeshRenderer",
+        visible: entry.meshes.some((mesh) => nodeVisible(mesh, entry.record)),
+        culled: entry.record.group === actors && memberCulledAt(entry.record.position, currentTime),
+        materialVisible: slots(entry).every(({ material }) => material?.visible !== false),
+        transform: D.decompose(entry.owner.matrixWorld, temp),
+        materials: slots(entry).map(({ material }, slot) => ({ slot, name: D.materialName(material),
+          editorName: material?.name ?? null, kind: D.materialProperties(material).kind })),
+      })));
+      read("materials", "materials", () => {
+        const materials = [];
+        for (const entry of selectedRenderers()) {
+          for (const [slot, { material }] of slots(entry).entries()) {
+            if (materials.length >= maxMaterials) { truncated.push("materials"); return materials; }
+            const properties = D.materialProperties(material);
+            materials.push({ key: D.keyFor("material", { renderer: entry.key, slot }), renderer: entry.key, slot,
+              name: D.materialName(material), editorName: material?.name ?? null, ...properties });
+          }
+        }
+        return materials;
+      });
+      read("stageNodes", "stageNodes", () => {
+        const wanted = Array.isArray(filter.stageNodes) ? new Set(filter.stageNodes) : null;
+        const nodes = [];
+        for (const record of records) record.root.traverse((node) => {
+          const tag = node.userData?.mvStageNode;
+          if (typeof tag?.binding !== "string" || !Number.isInteger(tag.path)) return;
+          const key = D.keyFor("stageNode", { binding: tag.binding, path: tag.path });
+          if (wanted && !wanted.has(key)) return;
+          if (nodes.length >= maxNodes) { if (!truncated.includes("stageNodes")) truncated.push("stageNodes"); return; }
+          nodes.push({ key, binding: tag.binding, crc: tag.path, name: D.nodeName(node), activeSelf: node.visible,
+            visible: D.effectiveVisible(node), ...D.decompose(node.matrixWorld, temp) });
+        });
+        return nodes;
+      });
+      read("members", "members", () => {
+        const wanted = Array.isArray(filter.bones) ? new Set(filter.bones) : null;
+        const result = [];
+        for (const record of records) if (record.group === actors) {
+          const bones = [];
+          for (const [path, node] of boneIndex(record)) {
+            const key = D.keyFor("bone", { slot: record.position, path });
+            if (wanted && !wanted.has(key)) continue;
+            if (bones.length >= maxBones) { truncated.push("members"); break; }
+            bones.push({ key, ...D.decompose(node.matrixWorld, temp),
+              localPosition: node.position.toArray(), localRotation: node.quaternion.toArray() });
+          }
+          const morphs = [];
+          for (const entry of rendererEntries()) if (entry.record === record) {
+            for (const mesh of entry.meshes) {
+              const dictionary = mesh.morphTargetDictionary, influences = mesh.morphTargetInfluences;
+              if (!dictionary || !influences) continue;
+              const weights = {};
+              for (const [name, index] of Object.entries(dictionary)) {
+                if (influences[index] && Object.keys(weights).length < 24) weights[name] = influences[index];
+              }
+              if (Object.keys(weights).length) morphs.push({ rendererKey: entry.key, unit: "influence01", weights });
+            }
+          }
+          result.push({ slot: record.position, bones, morphs, physics: Boolean(record.physics) });
+        }
+        return result;
+      });
+      read("springs", "springs", () => {
+        const result = [];
+        for (const record of records) if (record.group === actors && record.physics) {
+          const bones = [];
+          for (const [path, node] of boneIndex(record)) {
+            if (!/_Dyna$/.test(path) || bones.length >= 64) continue;
+            bones.push({ key: D.keyFor("bone", { slot: record.position, path }), localRotation: node.quaternion.toArray(),
+              rotation: D.decompose(node.matrixWorld, temp).rotation });
+          }
+          result.push({ managerKey: `springs:member${record.position}`, bones });
+        }
+        return result.length ? result : { modeled: false };
+      });
+      read("post", "post", () => ({
+        bloom: global.MVStudioPost?.sample?.(project, currentTime) ?? null,
+        dof: global.MVStudioDofFocus?.sample?.(project, currentTime, liveCamera.fov, focusDistanceReadOnly) ?? null,
+        flare: global.MVStudioFlare?.sample?.(project, currentTime) ?? null,
+        applied: settings.posteffect === true, enablePostEffect: settings.posteffect === true,
+      }));
+      read("quality", "quality", () => ({ mode: project?.quality?.mode ?? null, values: { ...settings } }));
+      read("tracks", "tracks", () => (project?.tracks || []).filter((track) => track.nativeClass && track.binding).map((track) => ({
+        key: D.keyFor("track", track), label: track.label ?? null, nativeClass: track.nativeClass, binding: track.binding,
+        kind: track.kind ?? null, muted: Boolean(track.muted),
+        active: track.events.flatMap((event, clipIndex) => {
+          const inside = currentTime >= event.start && currentTime < event.start + event.duration;
+          const weight = event.values && global.MVStudioLighting?.nativeWeight ? global.MVStudioLighting.nativeWeight(event, currentTime) : null;
+          return inside || weight > 0 ? [{ clipIndex, start: event.start, duration: event.duration, weight }] : [];
+        }),
+      })));
+      read("census", "census", () => {
+        const nodes = [];
+        const push = (key, kind, extra) => {
+          if (nodes.length < maxNodes) nodes.push({ key, kind, ...extra }); else if (!truncated.includes("census")) truncated.push("census");
+        };
+        for (const entry of rendererEntries()) push(entry.key, "renderer", { scope: entry.scope, mesh: entry.mesh, path: entry.path });
+        for (const record of records) record.root.traverse((node) => {
+          const tag = node.userData?.mvStageNode;
+          if (typeof tag?.binding === "string" && Number.isInteger(tag.path)) push(D.keyFor("stageNode", { binding: tag.binding, path: tag.path }), "stageNode");
+        });
+        for (const record of records) if (record.group === actors) {
+          for (const path of boneIndex(record).keys()) push(D.keyFor("bone", { slot: record.position, path }), "bone");
+        }
+        return { nodes };
+      });
+      for (const name of ["particles", "lightingRefs", "fovmodNative", "propertyBlocks"]) read(name, name, () => ({ modeled: false }));
+
+      const nonFinite = [];
+      const result = D.finalize(out, nonFinite);
+      result.nonFinite = nonFinite;
+      result.errors = errors;
+      result.truncatedSections = truncated;
+      result.cost = { elapsedMs: clock() - started };
+      return result;
+    }
+
     const observer = global.ResizeObserver ? new global.ResizeObserver(() => resize(false)) : null;
     if (observer) observer.observe(mount);
     controls.addEventListener("change", requestDraw);
@@ -1674,11 +2002,14 @@
             quaternion: camera.getWorldQuaternion(new T.Quaternion()).toArray(),
             fov: camera.fov, aspect: camera.aspect, near: camera.near, far: camera.far,
             projection: Array.from(camera.projectionMatrix.elements),
+            authoredFov: live ? authoredMainFov : null, nativeLens: live ? nativeMainLens : null,
+            aspectCorrection: live ? (nativeMainLens ? global.MVStudioSplit?.aspectCorrection(camera.aspect) ?? 1 : 1) : null,
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
           renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
         };
       },
+      assetDump,
       setVisible(value) {
         const changed = visible !== Boolean(value);
         visible = Boolean(value);

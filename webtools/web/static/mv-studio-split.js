@@ -4,8 +4,11 @@
   const binding = "/EntryPoint/Live/Cameras/SplitScreenEffect";
   const subCamera = new RegExp(`^${binding}/Cameras/SubCamera([1-4])$`);
 
-  function aspectCorrection(aspect) {
-    return Math.min(1, Math.max(0.75, aspect / (16 / 9)));
+  // FOVMOD clamps CameraAspectCorrector.Correction to [min, max]; the stock
+  // client range is [0.75, 1]. Other bounds are only used by the value dump.
+  function aspectCorrection(aspect, bounds) {
+    const min = Number.isFinite(bounds?.min) ? bounds.min : 0.75, max = Number.isFinite(bounds?.max) ? bounds.max : 1;
+    return Math.min(max, Math.max(min, aspect / (16 / 9)));
   }
 
   function enabled(value) { return value === true || value === 1; }
@@ -184,7 +187,21 @@
       return true;
     }
 
-    return { setProject, sample, draw, dispose: clearMedia };
+    // Read-only view of the sub cameras of the last sample (runtime value dump).
+    // A sub camera's aspect is set when its layer is drawn.
+    function inspect() {
+      return layers.filter(Boolean).map((layer) => {
+        const view = frame?.views.find((item) => item.layer === layer) || null;
+        const { camera } = layer;
+        return { slot: layer.slot + 1, enabledInQuality, inView: Boolean(view), main: frame ? frame.main : null,
+          fov: camera.fov, aspect: camera.aspect, near: camera.near, far: camera.far,
+          position: camera.position.toArray(), quaternion: camera.quaternion.toArray(),
+          projection: Array.from(camera.projectionMatrix.elements),
+          maskBounds: view ? view.mask.bounds.slice() : null };
+      });
+    }
+
+    return { setProject, sample, draw, inspect, dispose: clearMedia };
   }
 
   global.MVStudioSplit = { create, aspectCorrection };

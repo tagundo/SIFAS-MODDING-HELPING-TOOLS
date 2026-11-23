@@ -327,4 +327,4 @@ async function run() {
 }
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
-module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs };
+module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, importOriginal, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty };

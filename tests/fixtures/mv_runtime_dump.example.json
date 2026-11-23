@@ -1,0 +1,1634 @@
+{
+ "schema": "sifas-mv-runtime-dump/1",
+ "side": "game",
+ "header": {
+  "createdAt": "2026-11-23T12:00:00Z",
+  "producer": {
+   "name": "qa-mvdump",
+   "samplerVersion": 1,
+   "agentBundleSha256": "<sha256 of unity_ui.mvdump.bundle.js>",
+   "extensionSha256": "<sha256 of mv_runtime_dump.js>",
+   "observerSha256": "957e71e7d76cdcc1077fc0497e44cc224dcb65449e11e4fcce92ef0c5557ea38",
+   "patchedObserverSha256": "<sha256>",
+   "bridge": "0.9.1",
+   "frida": "16.6.6",
+   "agentVersion": 8,
+   "elichikaCommit": "<git sha>",
+   "toolkitRef": "codex/android-client-qa-gl-native-hit-20261114-r8",
+   "mvExportFocusSha256": "<sha256 of the copied qa-mv/mv_export_focus.py>",
+   "hooks": {
+    "mv_export_focus.py": {
+     "anchor": "    log('STEP', {'mv': 'playing', 'elapsed': round(time.monotonic() - started)})",
+     "count": 1
+    },
+    "native_ocr_control.py": {
+     "edits": 6,
+     "allExactlyOnce": true
+    }
+   }
+  },
+  "conventions": {
+   "space": "unity-lh",
+   "matrixLayout": "column-major",
+   "angles": "degrees",
+   "quaternion": "xyzw",
+   "color": "raw",
+   "time": "director-seconds"
+  },
+  "source": {
+   "region": "gl",
+   "platform": "android",
+   "liveId": 12035,
+   "live3dAssetId": null,
+   "stageText": "Special Stage",
+   "deckLiveMasterId": 12035
+  },
+  "client": {
+   "package": "com.klab.lovelive.allstars.global",
+   "apkName": "LLAS_GL_FOVMOD_2026.11.18.7.apk",
+   "apkSha256": "<sha256>",
+   "unityVersion": "2018.4.23f1",
+   "libunityBuildId": "e8c9d46cd7c5a461c723007e4714c3318ed9553c",
+   "colorSpace": {
+    "v": 0,
+    "n": "Gamma"
+   },
+   "device": "redroid-arm64 guest-gpu 1280x720@15"
+  },
+  "screen": {
+   "width": 1280,
+   "height": 720,
+   "orientation": {
+    "v": 3,
+    "n": "LandscapeLeft"
+   },
+   "landscape": true,
+   "wmSize": "1280x720"
+  },
+  "fovmod": {
+   "prefs": {
+    "minWord": 506269697,
+    "maxWord": 506335234,
+    "orient": 2,
+    "splash": 1,
+    "lang": "en"
+   },
+   "decoded": {
+    "min": 0.75,
+    "max": 1.0
+   },
+   "cfg": {
+    "min": "1e2d1001",
+    "max": "1e2e1002",
+    "orient": "2",
+    "splash": "1"
+   },
+   "statusTxt": "native=1 min=0.75000 max=1.00000 orientation=2 splash=1",
+   "sfovrw22": {
+    "min": 0.75,
+    "max": 1.0,
+    "fastIntro": 1,
+    "generation": 3,
+    "writable": true,
+    "executable": false
+   },
+   "requestedOrientation": 0,
+   "readAt": "dump-start"
+  },
+  "quality": {
+   "holder": "LLAS.Scene.Live.LiveDirector.liveQualitySetting",
+   "values": {
+    "PostEffect": false,
+    "RenderingResolution": 720,
+    "Quality": {
+     "v": 30,
+     "n": null
+    }
+   }
+  },
+  "limits": {
+   "frameBudgetMs": {
+    "soft": 60,
+    "hard": 150
+   },
+   "fullBudgetMs": {
+    "soft": 80,
+    "hard": 200
+   },
+   "rpcTimeoutS": 12,
+   "frameIntervalS": 0.5,
+   "wallCapS": 240,
+   "rebinds": 2,
+   "arrays": false,
+   "propertyBlocks": false,
+   "caps": {
+    "directors": 8,
+    "cameras": 16,
+    "camerasDetailed": 8,
+    "correctors": 8,
+    "cameraWork": 4,
+    "lights": 16,
+    "globals": 20,
+    "anchors": 8,
+    "censusNodes": 400,
+    "censusDepth": 6,
+    "renderers": 400,
+    "materials": 256,
+    "properties": 48,
+    "bonesPerMember": 24,
+    "blendShapes": 24,
+    "swingBones": 64,
+    "stageNodes": 256,
+    "particles": 160,
+    "fields": 48
+   }
+  },
+  "budgets": {
+   "frame": {
+    "soft": 60,
+    "hard": 150
+   },
+   "full": {
+    "soft": 80,
+    "hard": 200
+   },
+   "source": {
+    "frame": "default",
+    "full": "default"
+   }
+  },
+  "keys": {
+   "file": "mvdump-keys-12035.json",
+   "sha256": "<sha256>"
+  },
+  "probe": {
+   "classesFound": [
+    "UnityEngine.Camera",
+    "LLAS.Scene.Live.Components.CameraAspectCorrector",
+    "LLAS.Scene.Live.Components.LiveCoreCameraWork"
+   ],
+   "classesMissing": [],
+   "file": "mv-runtime-probe.json"
+  }
+ },
+ "records": [
+  {
+   "id": "f0001",
+   "kind": "frame",
+   "seq": 1,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 9.8,
+    "calls": 312,
+    "objects": 19,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 60,
+     "hard": 150
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "scene": {
+    "name": "LiveMv",
+    "width": 1280,
+    "height": 720,
+    "orientation": {
+     "v": 3,
+     "n": "LandscapeLeft"
+    }
+   },
+   "directors": [
+    {
+     "key": "director:/EntryPoint/Live/Director",
+     "path": "/EntryPoint/Live/Director",
+     "instanceId": -41230,
+     "main": true,
+     "enabled": true,
+     "time": 11.5,
+     "duration": 107.3,
+     "state": {
+      "v": 1,
+      "n": "Playing"
+     },
+     "timeUpdateMode": {
+      "v": 1,
+      "n": "GameTime"
+     },
+     "extrapolationMode": {
+      "v": 0,
+      "n": "None"
+     },
+     "asset": "so2035_timeline",
+     "heldByLiveDirector": true
+    }
+   ],
+   "cameras": [
+    {
+     "key": "camera:main",
+     "role": "main",
+     "path": "/EntryPoint/Live/Cameras/MainCamera/Camera",
+     "instanceId": -55512,
+     "enabled": true,
+     "isActiveAndEnabled": true,
+     "activeInHierarchy": true,
+     "fieldOfView": 7.62814951,
+     "aspect": 1.77777779,
+     "nearClipPlane": 0.1,
+     "farClipPlane": 1000,
+     "orthographic": false,
+     "orthographicSize": 5,
+     "usePhysicalProperties": false,
+     "focalLength": 50,
+     "lensShift": [
+      0,
+      0
+     ],
+     "projection": [
+      8.43750018,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      15.0000003,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.00020002,
+      -1.0,
+      0.0,
+      0.0,
+      -0.200020002,
+      0.0
+     ],
+     "worldToCamera": [
+      -0.941243277,
+      -0.050958343,
+      -0.333862756,
+      0.0,
+      -4.37702065e-17,
+      0.988551298,
+      -0.150885162,
+      0.0,
+      -0.337729319,
+      0.142019644,
+      0.930467263,
+      0.0,
+      0.946718759,
+      -1.57333134,
+      -9.33014399,
+      1.0
+     ],
+     "rect": [
+      0,
+      0,
+      1,
+      1
+     ],
+     "pixelRect": [
+      0,
+      0,
+      1280,
+      720
+     ],
+     "pixelWidth": 1280,
+     "pixelHeight": 720,
+     "depth": 0,
+     "clearFlags": {
+      "v": 2,
+      "n": "SolidColor"
+     },
+     "backgroundColor": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "cullingMask": -1,
+     "allowHDR": false,
+     "allowMSAA": false,
+     "depthTextureMode": {
+      "v": 0,
+      "n": null
+     },
+     "targetTexture": {
+      "name": "LiveCoreCamera_RT",
+      "width": 1280,
+      "height": 720,
+      "format": {
+       "v": 0,
+       "n": "ARGB32"
+      }
+     },
+     "transform": {
+      "position": [
+       -2.30406928,
+       0.147538453,
+       9.22457218
+      ],
+      "rotation": [
+       -0.012968117,
+       0.982377453,
+       0.0745397825,
+       0.170909886
+      ],
+      "lossyScale": [
+       1,
+       1,
+       1
+      ],
+      "localPosition": [
+       0,
+       0,
+       0
+      ],
+      "localRotation": [
+       0,
+       1,
+       0,
+       0
+      ]
+     },
+     "rig": {
+      "path": "/EntryPoint/Live/Cameras/MainCamera",
+      "position": [
+       -2.30406928,
+       0.147538453,
+       9.22457218
+      ],
+      "rotation": [
+       0.0745397825,
+       -0.170909886,
+       0.012968117,
+       0.982377453
+      ]
+     }
+    },
+    {
+     "key": "camera:overlay",
+     "role": "overlay",
+     "path": "/EntryPoint/Live/Cameras/OverlayCamera",
+     "instanceId": -55530,
+     "enabled": true,
+     "isActiveAndEnabled": true,
+     "activeInHierarchy": true,
+     "fieldOfView": 60,
+     "aspect": 1.77777779,
+     "nearClipPlane": 0.3,
+     "farClipPlane": 1000,
+     "orthographic": true,
+     "orthographicSize": 5,
+     "targetTexture": null,
+     "errors": [
+      {
+       "at": "projection",
+       "error": "omitted: soft budget (non-main camera detail)"
+      }
+     ]
+    }
+   ],
+   "correctors": [
+    {
+     "key": "corrector:camera:main",
+     "path": "/EntryPoint/Live/Cameras/MainCamera/Camera",
+     "enabled": true,
+     "mode": {
+      "v": 1,
+      "n": null
+     },
+     "correction": 1,
+     "defaultOrthographicSize": 5,
+     "target": {
+      "instanceId": -55512,
+      "path": "/EntryPoint/Live/Cameras/MainCamera/Camera",
+      "cameraKey": "camera:main"
+     },
+     "fields": {
+      "targetAspect": {
+       "t": "f32",
+       "v": 1.77777779
+      }
+     }
+    }
+   ],
+   "cameraWork": [
+    {
+     "key": "cameraWork:/EntryPoint/Live/Cameras/MainCamera",
+     "path": "/EntryPoint/Live/Cameras/MainCamera",
+     "class": "LLAS.Scene.Live.Components.LiveCoreCameraWork",
+     "fields": {
+      "fieldOfView": {
+       "t": "f32",
+       "v": 7.62814951
+      },
+      "offsetScale": {
+       "t": "f32",
+       "v": 1
+      }
+     }
+    }
+   ],
+   "globals": {
+    "global:_Beat": {
+     "f": 0.0,
+     "v": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "global:_MusicTime": {
+     "f": 11.48,
+     "v": [
+      11.48,
+      0,
+      0,
+      0
+     ]
+    },
+    "global:_SelfTime": {
+     "f": 0,
+     "v": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "global:_ColorsLength": {
+     "f": 0,
+     "v": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "global:_RenderTextureResolution": {
+     "f": 0,
+     "v": [
+      1280,
+      720,
+      0,
+      0
+     ]
+    },
+    "global:_Time": {
+     "f": 0,
+     "v": [
+      14.553333,
+      291.06665,
+      582.1333,
+      873.2
+     ]
+    },
+    "global:_TintColor": {
+     "f": 0,
+     "v": [
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   "renderSettings": {
+    "fog": false,
+    "fogMode": {
+     "v": 3,
+     "n": "ExponentialSquared"
+    },
+    "fogColor": [
+     0.5,
+     0.5,
+     0.5,
+     1
+    ],
+    "fogDensity": 0.01,
+    "fogStartDistance": 0,
+    "fogEndDistance": 300,
+    "ambientMode": {
+     "v": 3,
+     "n": "Flat"
+    },
+    "ambientSkyColor": [
+     0.2,
+     0.2,
+     0.2,
+     1
+    ],
+    "ambientEquatorColor": [
+     0.11,
+     0.13,
+     0.13,
+     1
+    ],
+    "ambientGroundColor": [
+     0.05,
+     0.04,
+     0.03,
+     1
+    ],
+    "ambientIntensity": 1,
+    "ambientLight": [
+     0.2,
+     0.2,
+     0.2,
+     1
+    ],
+    "reflectionIntensity": 1,
+    "skybox": null
+   },
+   "lights": [],
+   "members": [
+    {
+     "slot": 1,
+     "formationPosition": 1,
+     "memberId": 212,
+     "suitId": 100212001,
+     "path": "/EntryPoint/Live/Members/Member1",
+     "active": true
+    }
+   ],
+   "anchors": [
+    {
+     "key": "anchor:member1:Head",
+     "position": [
+      -0.031,
+      1.512,
+      1.874
+     ]
+    },
+    {
+     "key": "anchor:member1:Hips",
+     "position": [
+      -0.029,
+      0.951,
+      1.873
+     ]
+    },
+    {
+     "key": "anchor:stageOrigin",
+     "position": [
+      0,
+      0,
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "p0-census-00",
+   "kind": "full",
+   "seq": 2,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 14.1,
+    "calls": 640,
+    "objects": 80,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "census",
+   "chunk": 0,
+   "cursor": {
+    "path": []
+   },
+   "next": {
+    "path": [
+     0,
+     2,
+     1
+    ]
+   },
+   "census": {
+    "roots": [
+     "/EntryPoint"
+    ],
+    "nodes": [
+     {
+      "path": "/EntryPoint/Live/Cameras/MainCamera",
+      "depth": 3,
+      "activeSelf": true,
+      "activeInHierarchy": true,
+      "childCount": 2,
+      "components": [
+       "UnityEngine.Transform",
+       "LLAS.Scene.Live.Components.LiveCoreCameraWork",
+       "UnityEngine.Animator"
+      ]
+     },
+     {
+      "path": "/EntryPoint/Live/Cameras/MainCamera/Camera",
+      "depth": 4,
+      "activeSelf": true,
+      "activeInHierarchy": true,
+      "childCount": 0,
+      "components": [
+       "UnityEngine.Transform",
+       "UnityEngine.Camera",
+       "LLAS.Scene.Live.Components.CameraAspectCorrector",
+       "LLAS.Scene.Live.Components.LiveCoreCamera"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "p0-quality-00",
+   "kind": "full",
+   "seq": 3,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 2.0,
+    "calls": 30,
+    "objects": 1,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "quality",
+   "chunk": 0,
+   "cursor": {},
+   "next": null,
+   "quality": {
+    "holder": "LLAS.Scene.Live.LiveDirector.liveQualitySetting",
+    "values": {
+     "BaseLight": true,
+     "StageAmbient": true,
+     "PostEffect": false,
+     "StageCubemap": false,
+     "SplitScreen": false,
+     "MemberSwingBone": true,
+     "RenderingResolution": 720,
+     "FrameRate60Fps": false,
+     "Quality": {
+      "v": 30,
+      "n": null
+     },
+     "MovieLive": false,
+     "RefreshRateMode": {
+      "v": 0,
+      "n": null
+     }
+    }
+   }
+  },
+  {
+   "id": "p0-fovmodNative-00",
+   "kind": "full",
+   "seq": 4,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 6.5,
+    "calls": 4,
+    "objects": 0,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "fovmodNative",
+   "chunk": 0,
+   "cursor": {},
+   "next": null,
+   "fovmodNative": {
+    "bridgeLoaded": true,
+    "gameLoaded": true,
+    "config": {
+     "magic": "SFOVRW22",
+     "version": 1,
+     "size": 32,
+     "min": 0.75,
+     "max": 1,
+     "fastIntro": 1,
+     "generation": 3,
+     "writable": true,
+     "executable": false,
+     "orientation": 2
+    },
+    "requestedOrientation": 0
+   }
+  },
+  {
+   "id": "p0-renderers-00",
+   "kind": "full",
+   "seq": 5,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 17.3,
+    "calls": 410,
+    "objects": 24,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "renderers",
+   "chunk": 0,
+   "cursor": {
+    "afterInstanceId": null
+   },
+   "next": {
+    "afterInstanceId": -30120
+   },
+   "renderers": [
+    {
+     "key": "renderer:/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Body",
+     "path": "/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Body",
+     "rawPath": "/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member(Clone)/Body",
+     "scope": "member1",
+     "class": "UnityEngine.SkinnedMeshRenderer",
+     "instanceId": -30340,
+     "mesh": "Body",
+     "enabled": true,
+     "layer": 0,
+     "isVisible": true,
+     "activeInHierarchy": true,
+     "bounds": {
+      "center": [
+       -0.03,
+       0.9,
+       1.87
+      ],
+      "extents": [
+       0.4,
+       0.9,
+       0.3
+      ]
+     },
+     "transform": {
+      "position": [
+       -0.0287,
+       0,
+       1.8735
+      ],
+      "rotation": [
+       0,
+       0,
+       0,
+       1
+      ],
+      "lossyScale": [
+       1,
+       1,
+       1
+      ]
+     },
+     "lightmapIndex": -1,
+     "lightmapScaleOffset": [
+      1,
+      1,
+      0,
+      0
+     ],
+     "sortingOrder": 0,
+     "materials": [
+      {
+       "slot": 0,
+       "instanceId": -30344,
+       "name": "ch0212_co0001_body",
+       "shader": "AS/Member",
+       "renderQueue": 2000,
+       "keywords": []
+      }
+     ]
+    },
+    {
+     "key": "renderer:/EntryPoint/Live/Stages/MainStage/Model/bg0006_01_mdl/ground",
+     "path": "/EntryPoint/Live/Stages/MainStage/Model/bg0006_01_mdl/ground",
+     "scope": "stage",
+     "class": "UnityEngine.MeshRenderer",
+     "instanceId": -30120,
+     "mesh": "ground",
+     "enabled": true,
+     "layer": 0,
+     "isVisible": true,
+     "activeInHierarchy": true,
+     "bounds": {
+      "center": [
+       0,
+       -0.1,
+       0
+      ],
+      "extents": [
+       30,
+       0.5,
+       30
+      ]
+     },
+     "transform": {
+      "position": [
+       0,
+       0,
+       0
+      ],
+      "rotation": [
+       0,
+       0,
+       0,
+       1
+      ],
+      "lossyScale": [
+       1,
+       1,
+       1
+      ]
+     },
+     "lightmapIndex": 0,
+     "lightmapScaleOffset": [
+      1,
+      1,
+      0,
+      0
+     ],
+     "sortingOrder": 0,
+     "materials": [
+      {
+       "slot": 0,
+       "instanceId": -29990,
+       "name": "bg0006_01_out_opa_mt",
+       "shader": "AS/Color/Opaque",
+       "renderQueue": 2000,
+       "keywords": []
+      },
+      {
+       "slot": 1,
+       "instanceId": -29992,
+       "name": "bg0006_01_stageA_opa_mt",
+       "shader": "AS/Stage",
+       "renderQueue": 2000,
+       "keywords": []
+      },
+      {
+       "slot": 2,
+       "instanceId": -29994,
+       "name": "bg0006_01_stageB_opa_mt",
+       "shader": "AS/Stage",
+       "renderQueue": 2000,
+       "keywords": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "p0-materials-00",
+   "kind": "full",
+   "seq": 6,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 16.0,
+    "calls": 150,
+    "objects": 2,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "materials",
+   "chunk": 0,
+   "cursor": {
+    "afterInstanceId": null
+   },
+   "next": {
+    "afterInstanceId": -29992
+   },
+   "materials": [
+    {
+     "instanceId": -30344,
+     "name": "ch0212_co0001_body",
+     "shader": "AS/Member",
+     "usedBy": [
+      "renderer:/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Body#0"
+     ],
+     "properties": {
+      "_TintColor": {
+       "t": "color",
+       "v": [
+        0.4989,
+        0.5149,
+        0.649,
+        1
+       ]
+      },
+      "_AmbientColor": {
+       "t": "color",
+       "v": [
+        1,
+        1,
+        1,
+        1
+       ]
+      },
+      "_RimlightColor": {
+       "t": "color",
+       "v": [
+        0.4314,
+        0.4498,
+        1,
+        1
+       ]
+      },
+      "_RimlightDirection": {
+       "t": "vector",
+       "v": [
+        -9,
+        6,
+        0,
+        0
+       ]
+      },
+      "_RimglightIntensity": {
+       "t": "float",
+       "v": 0.75
+      },
+      "_RimglightPower": {
+       "t": "float",
+       "v": 13
+      },
+      "_MainTex": {
+       "t": "tex",
+       "v": {
+        "name": "ch0212_co0001_body_col",
+        "width": 1024,
+        "height": 1024
+       },
+       "st": [
+        1,
+        1,
+        0,
+        0
+       ]
+      }
+     },
+     "missing": [
+      "_CheekTexArrayIndex"
+     ]
+    },
+    {
+     "instanceId": -29992,
+     "name": "bg0006_01_stageA_opa_mt",
+     "shader": "AS/Stage",
+     "usedBy": [
+      "renderer:/EntryPoint/Live/Stages/MainStage/Model/bg0006_01_mdl/ground#1"
+     ],
+     "properties": {
+      "_TintColor": {
+       "t": "color",
+       "v": [
+        1,
+        1,
+        1,
+        1
+       ]
+      },
+      "_AmbientColor": {
+       "t": "color",
+       "v": [
+        0.62,
+        0.6,
+        0.71,
+        1
+       ]
+      },
+      "_BlendColor": {
+       "t": "color",
+       "v": [
+        0,
+        0,
+        0,
+        0
+       ]
+      },
+      "_MainTexMipmapBias": {
+       "t": "float",
+       "v": 0
+      }
+     },
+     "missing": []
+    }
+   ]
+  },
+  {
+   "id": "p0-lightingRefs-00",
+   "kind": "full",
+   "seq": 7,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 3.2,
+    "calls": 40,
+    "objects": 6,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "lightingRefs",
+   "chunk": 0,
+   "cursor": {},
+   "next": null,
+   "lightingRefs": [
+    {
+     "componentKey": "component:/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member#LiveCoreMemberAmbient",
+     "class": "LLAS.Scene.Live.Components.LiveCoreMemberAmbient",
+     "field": "materials",
+     "materials": [
+      -30350,
+      -30344
+     ]
+    }
+   ]
+  },
+  {
+   "id": "p0-members-00",
+   "kind": "full",
+   "seq": 8,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 11.0,
+    "calls": 180,
+    "objects": 20,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "members",
+   "chunk": 0,
+   "cursor": {
+    "slot": 1
+   },
+   "next": null,
+   "members": [
+    {
+     "slot": 1,
+     "path": "/EntryPoint/Live/Members/Member1",
+     "rootPath": "/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member",
+     "modelLocalScale": [
+      1,
+      1,
+      1
+     ],
+     "nodeScaling": {
+      "heightScale": {
+       "t": "f32",
+       "v": 1.0
+      }
+     },
+     "bones": [
+      {
+       "key": "member:1:Reference/Move",
+       "path": "/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Reference/Move",
+       "position": [
+        -0.0287,
+        0,
+        1.8735
+       ],
+       "rotation": [
+        0,
+        0,
+        0,
+        1
+       ],
+       "lossyScale": [
+        1,
+        1,
+        1
+       ],
+       "localPosition": [
+        -0.0287,
+        0,
+        1.8735
+       ],
+       "localRotation": [
+        0,
+        0,
+        0,
+        1
+       ]
+      },
+      {
+       "key": "member:1:Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/Neck/Head",
+       "path": "/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/Neck/Head",
+       "position": [
+        -0.031,
+        1.512,
+        1.874
+       ],
+       "rotation": [
+        0.01,
+        0.02,
+        0.0,
+        0.9997
+       ],
+       "lossyScale": [
+        1,
+        1,
+        1
+       ],
+       "localPosition": [
+        0,
+        0.08,
+        0.01
+       ],
+       "localRotation": [
+        0.01,
+        0.0,
+        0.0,
+        0.99995
+       ]
+      }
+     ],
+     "blendShapes": [
+      {
+       "rendererKey": "renderer:/EntryPoint/Live/Members/Member1/Model/ch0212_co0001_member/Face",
+       "weights": {
+        "eye_close": 12.5
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "p0-stageNodes-00",
+   "kind": "full",
+   "seq": 9,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 12.4,
+    "calls": 260,
+    "objects": 64,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "stageNodes",
+   "chunk": 0,
+   "cursor": {
+    "binding": 0,
+    "path": []
+   },
+   "next": null,
+   "stageNodes": [
+    {
+     "binding": "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litC_All",
+     "relPath": "litC_04_All/litC_04_Yrot_Ani/litC_04_handle",
+     "path": "/EntryPoint/Live/Stages/MainStage/Effect/lit_01/litC_All/litC_04_All/litC_04_Yrot_Ani/litC_04_handle",
+     "activeSelf": true,
+     "activeInHierarchy": true,
+     "position": [
+      1.2,
+      6.4,
+      -3.1
+     ],
+     "rotation": [
+      0,
+      0.38268343,
+      0,
+      0.92387953
+     ],
+     "lossyScale": [
+      1,
+      1,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "p0-particles-00",
+   "kind": "full",
+   "seq": 10,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 4.1,
+    "calls": 90,
+    "objects": 10,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "particles",
+   "chunk": 0,
+   "cursor": {
+    "afterInstanceId": null
+   },
+   "next": null,
+   "particles": [
+    {
+     "key": "particles:/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2035_01/par_01",
+     "path": "/EntryPoint/Live/Stages/MainStage/Effect/fx_par_so2035_01/par_01",
+     "isPlaying": true,
+     "isEmitting": true,
+     "isPaused": false,
+     "particleCount": 37,
+     "time": 1.13,
+     "randomSeed": 7548,
+     "useAutoRandomSeed": false,
+     "rendererEnabled": true
+    }
+   ]
+  },
+  {
+   "id": "p0-post-00",
+   "kind": "full",
+   "seq": 11,
+   "clock": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "unityTime": 291.06665,
+    "unscaledTime": 291.06665,
+    "deltaTime": 0.06666667,
+    "timeScale": 1,
+    "realtimeSinceStartup": 1402.3311,
+    "musicTime": 11.48,
+    "musicPlaying": true
+   },
+   "clockEnd": {
+    "directorTime": 11.5,
+    "frameCount": 4187,
+    "realtimeSinceStartup": 1402.3409
+   },
+   "cost": {
+    "elapsedMs": 3.0,
+    "calls": 25,
+    "objects": 2,
+    "truncated": false,
+    "truncatedSections": [],
+    "budgetMs": {
+     "soft": 80,
+     "hard": 200
+    }
+   },
+   "host": {
+    "sentMono": 1234.567,
+    "recvMono": 1234.811,
+    "rttMs": 244,
+    "dispatcher": {
+     "state": "READY"
+    }
+   },
+   "nonFinite": [],
+   "pass": 0,
+   "part": "post",
+   "chunk": 0,
+   "cursor": {},
+   "next": null,
+   "post": {
+    "enablePostEffect": false,
+    "holders": [
+     {
+      "key": "post:/EntryPoint/Live/Cameras/MainCamera/Camera#LiveCoreCamera",
+      "class": "LLAS.Scene.Live.Components.LiveCoreCamera",
+      "path": "/EntryPoint/Live/Cameras/MainCamera/Camera",
+      "enabled": true,
+      "fields": {
+       "enablePostEffect": {
+        "t": "bool",
+        "v": false
+       },
+       "postProcess": {
+        "t": "ref",
+        "v": null
+       }
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "trailer": {
+  "records": {
+   "frame": 1,
+   "full": 10
+  },
+  "coverage": {
+   "directorFirst": 11.5,
+   "directorLast": 11.5,
+   "duration": 107.3,
+   "fraction": 0.0
+  },
+  "passes": [
+   {
+    "pass": 0,
+    "startedAt": 11.5,
+    "complete": false,
+    "parts": [
+     "census",
+     "quality",
+     "fovmodNative",
+     "renderers",
+     "materials",
+     "lightingRefs",
+     "members",
+     "stageNodes",
+     "particles",
+     "post"
+    ]
+   }
+  ],
+  "stopReason": "example",
+  "gaps": [],
+  "rebinds": [],
+  "errors": [],
+  "dispatcher": {
+   "state": "READY",
+   "counts": {
+    "enqueued": 120,
+    "completed": 120,
+    "rejected": 0,
+    "postCalls": 120,
+    "callbacks": 121
+   }
+  },
+  "fovmodEnd": null,
+  "release": [],
+  "probe": {
+   "blob": "rtdump-probe",
+   "emitted": true,
+   "level": "full",
+   "b64": 30120
+  },
+  "truncation": null,
+  "bytes": {
+   "raw": 0,
+   "gz": 0,
+   "b64": 0
+  }
+ }
+}

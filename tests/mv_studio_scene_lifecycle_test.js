@@ -119,6 +119,7 @@ function fixture(visible = true) {
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/viewer-motion-timeline.js'), 'utf8'), context);
   window.ViewerMotionTimeline = { ...window.ViewerMotionTimeline, ...motion };
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-split.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
@@ -382,8 +383,162 @@ async function checkNativeMemberCulling() {
   f.app.dispose();
 }
 
+function stateOf(f) {
+  const nodes = [];
+  f.world.traverse((node) => {
+    const uniforms = {};
+    for (const material of node.material ? [node.material].flat() : []) {
+      for (const [name, holder] of Object.entries(material.uniforms || {})) {
+        const value = holder.value;
+        uniforms[name] = value?.toArray ? value.toArray() : value?.isTexture ? value.uuid : value;
+      }
+    }
+    nodes.push([node.uuid, node.position.toArray(), node.quaternion.toArray(), node.scale.toArray(), node.visible,
+      Array.from(node.matrixWorld.elements), uniforms]);
+  });
+  return { inspect: f.app.inspect(), nodes, frames: f.frames.length, queued: f.queued.size,
+    size: f.renderer.size.toArray(), ratio: f.renderer.getPixelRatio() };
+}
+
+async function checkAssetDump() {
+  const f = fixture();
+  const track = { id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 },
+      { time: 10, position: [1, 2, 0], rotation: [0, 0, 0, 1], fov: 30 }] } }] };
+  const value = project(71);
+  value.duration = 12;
+  value.tracks = [track];
+  value.performers[0].memberId = 212;
+  value.performers[0].costumeId = 100212001;
+  value.performers[0].rig = { bones: [{ node: 1, path: 'Reference/Move' }] };
+  await f.app.load(value);
+  f.mount.clientWidth = 720;
+  f.checkResize();
+  f.app.seek(2, value, true);
+  const sections = ['clock', 'directors', 'cameras', 'correctors', 'cameraWork', 'globals', 'renderSettings', 'lights',
+    'memberIdentity', 'anchors', 'renderers', 'materials', 'members', 'stageNodes', 'post', 'quality', 'census', 'particles'];
+  const before = stateOf(f);
+  const dump = (request) => JSON.parse(JSON.stringify(f.app.assetDump(request)));
+  const first = dump({ sections });
+  const second = dump({ sections });
+  const after = stateOf(f);
+  assert.deepEqual(after, before, 'assetDump must not change time, cameras, transforms, uniforms, draws or the viewport');
+  delete first.cost; delete second.cost;
+  assert.deepEqual(second, first, 'assetDump is idempotent');
+  assert.deepEqual(first.errors, []);
+  assert.deepEqual(first.nonFinite, []);
+  assert.deepEqual(first.clock, { directorTime: 2, rate: 30 });
+  assert.deepEqual(first.directors, [{ key: 'director:main', time: 2, duration: 12 }]);
+  const [main] = first.cameras;
+  assert.equal(main.key, 'camera:main');
+  assert.equal(main.liveShot, true);
+  assert.equal(main.aspect, 1);
+  assert(Math.abs(main.fieldOfView - 40) < 1e-6, 'degrees: authored 30 divided by the 0.75 correction at 1:1');
+  assert.equal(main.authoredFov, 30);
+  assert.equal(main.nativeLens, true);
+  assert.deepEqual(main.event, { track: 'cam', label: 'Camera/MainCamera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', clipIndex: 0, start: 0, duration: 10 });
+  assert.deepEqual(main.checks, { matrixWorldCurrent: true, projectionMatchesFov: true });
+  // Column-major (three.js .elements, Unity Matrix4x4 memory order): e[11] = -1 for a perspective projection.
+  assert.equal(main.projection[11], -1);
+  assert.equal(main.projection[15], 0);
+  assert(Math.abs(main.projection[5] - 1 / Math.tan(20 * Math.PI / 180)) < 1e-6);
+  assert.deepEqual(main.transform.position, [-1, 2, 8], 'editor space mirrors Unity X; the producer never converts');
+  const w = main.worldToCamera, p = main.transform.position;
+  const eye = [0, 1, 2].map((row) => w[row] * p[0] + w[4 + row] * p[1] + w[8 + row] * p[2] + w[12 + row]);
+  assert(eye.every((v) => Math.abs(v) < 1e-9), 'worldToCamera maps the camera position to the eye');
+  assert.deepEqual(first.correctors, [{ key: 'corrector:camera:main', correction: 0.75, aspectInput: 1,
+    bounds: { min: 0.75, max: 1 }, nativeLens: true, mode: { modeled: false } }]);
+  assert.deepEqual(first.cameraWork, [{ key: 'cameraWork:/EntryPoint/Live/Cameras/MainCamera', authoredFov: 30 }]);
+  assert.deepEqual(first.renderSettings, { modeled: false });
+  assert.deepEqual(first.lights, { modeled: false });
+  assert.deepEqual(first.particles, { modeled: false });
+  assert.equal(first.globals['global:_Beat'], null, 'quantities the editor does not model are null');
+  assert.equal(first.renderers.length, 1);
+  assert.equal(first.renderers[0].key, 'renderer:member1:model-71');
+  assert.equal(first.renderers[0].visible, true);
+  assert.equal(first.renderers[0].culled, false);
+  assert.equal(first.renderers[0].path, null, 'a rig-root mesh node carries no GameObject chain');
+  assert.equal(first.renderers[0].pathSource, 'flattened');
+  assert.deepEqual(first.materials.map((m) => m.key), ['material:renderer:member1:model-71#0']);
+  const bones = first.members.find((m) => m.bones)?.bones || [];
+  assert.deepEqual(bones.map((bone) => bone.key), ['member:1:Reference/Move']);
+  assert.deepEqual(first.census.nodes.map((node) => node.kind).sort(), ['bone', 'renderer']);
+  assert.deepEqual(first.census.nodes.find((node) => node.kind === 'renderer'),
+    { key: 'renderer:member1:model-71', kind: 'renderer', scope: 'member1', mesh: 'model-71', path: null });
+  assert.deepEqual(first.quality, { mode: null, values: {} });
+  assert.deepEqual(first.memberIdentity, [{ slot: 1, memberId: 212, costumeId: 100212001 }]);
+  assert.deepEqual(dump({ sections: ['memberIdentity'] }).members, first.memberIdentity, 'frame records carry identity as members');
+  const narrow = dump({ sections: ['renderers'], filter: { renderers: [{ scope: 'member1', mesh: 'other' }] } });
+  assert.deepEqual(narrow.renderers, [], 'renderer filters select by scope and mesh');
+  f.app.dispose();
+}
+
+// The member culler hides the actor root in the editor; the dump reports it as
+// "culled" with node visibility unchanged, and reading it changes nothing.
+async function checkAssetDumpCuller() {
+  const f = fixture(), value = project(72);
+  value.duration = 12;
+  value.tracks.push({ nativeClass: 'LiveMemberCullerTrack', binding: '/EntryPoint/Live/Members/Member1', events: [
+    { start: 1, duration: 2, values: { playableClass: 'LiveMemberCullerClip' } }] });
+  await f.app.load(value);
+  const renderer = (time) => {
+    f.app.seek(time, value, true);
+    const before = stateOf(f);
+    const [entry] = JSON.parse(JSON.stringify(f.app.assetDump({ sections: ['renderers'] }))).renderers;
+    assert.deepEqual(stateOf(f), before, 'assetDump stays read-only inside a culler clip');
+    return entry;
+  };
+  const inside = renderer(2);
+  assert.equal(f.models.get(72).mesh.parent.visible, false, 'the editor culls through the actor root');
+  assert.deepEqual([inside.visible, inside.culled], [true, true], 'a culler hide is culled, not a node visibility change');
+  const after = renderer(3.5);
+  assert.deepEqual([after.visible, after.culled], [true, false]);
+  f.app.dispose();
+}
+
+function checkAssetDumpHelpers() {
+  const helpers = fixture().window.MVStudioAssetDump;
+  // Results are built in the vm realm: compare them as plain JSON.
+  const D = { gameObjectPath: (...args) => JSON.parse(JSON.stringify(helpers.gameObjectPath(...args))),
+    textureIdentity: (...args) => JSON.parse(JSON.stringify(helpers.textureIdentity(...args))) };
+  const node = (name, tag) => {
+    const value = new THREE.Object3D();
+    if (name !== null) value.userData.name = name;
+    if (tag) value.userData.mvStageNode = { active: true };
+    return value;
+  };
+  const root = new THREE.Group(), prefab = node('bg0006_01_fx_so2035_ex', true), group = node('ver', true);
+  const gameObject = node('ver_color_02', true), wrapper = node(null, false);
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  mesh.userData.name = 'ver_color_01';
+  root.add(prefab); prefab.add(wrapper); wrapper.add(group); group.add(gameObject); gameObject.add(mesh);
+  assert.deepEqual(D.gameObjectPath(mesh, root), { path: 'bg0006_01_fx_so2035_ex/ver/ver_color_02', pathSource: 'stageNodes' },
+    'GameObject names from the tagged chain; the mesh node is named after the Mesh asset; editor wrappers are skipped');
+  const flat = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  flat.userData.name = 'bg0006_01_aud_01';
+  root.add(flat);
+  assert.deepEqual(D.gameObjectPath(flat, root), { path: null, pathSource: 'flattened' });
+  const character = node('Character__0', false), skinned = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  skinned.userData.name = 'Body';
+  root.add(character); character.add(skinned);
+  assert.deepEqual(D.gameObjectPath(skinned, root), { path: null, pathSource: 'flattened' });
+  const broken = node('Untagged', false), inner = node('inner', true), leaf = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+  root.add(broken); broken.add(inner); inner.add(leaf);
+  assert.deepEqual(D.gameObjectPath(leaf, root), { path: null, pathSource: 'flattened' }, 'an untagged glTF node breaks the chain');
+  const constant = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  assert.deepEqual(D.textureIdentity(constant), { name: null, width: 1, height: 1, placeholder: true });
+  const real = new THREE.DataTexture(new Uint8Array(16), 2, 2);
+  real.name = 'atlas';
+  assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2 });
+}
+
 (async () => {
   checkResizeDraws();
+  await checkAssetDump();
+  await checkAssetDumpCuller();
+  checkAssetDumpHelpers();
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
