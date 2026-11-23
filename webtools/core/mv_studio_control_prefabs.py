@@ -13,8 +13,9 @@ the evidence) and read from the same cue extraction (``control_clips``):
   GameObject draws with its materials through the MainCamera when its layer
   is in the level35 culling mask 0x0C0BC013. Layer 20 belongs to the
   orthographic overlay camera and is reported here.
-* An enabled Animator plays its controller's default state from the
-  activation on the player clock (mv_studio_prefab_animator): Transform,
+* An enabled Animator on a GameObject active at the clone's activation plays
+  its controller's default state from that activation on the player clock
+  (mv_studio_prefab_animator): Transform,
   GameObject activation, renderer enable and the renderer's _TintColor and
   _MainTex_ST (its MaterialPropertyBlock), wrapped by m_LoopTime.
 * A CustomControl track is gated by its quality category like the particle
@@ -186,6 +187,14 @@ def _animators(objects, walked, deadline):
             continue
         fields = component.read_typetree()
         if not fields.get("m_Enabled", True):
+            continue
+        if not node["authored"]:
+            # Inactive when PrefabControl activates the clone: Unity starts this
+            # Animator's default state when a curve activates its GameObject, not
+            # at the clone's activation. That start time is not reproduced, so
+            # what it animates is reported (an unreachable node draws nothing).
+            subtree[own] = ("under prefab animation that is not previewed "
+                            "(Animator activated after the clone; its state time is not reproduced)")
             continue
         try:
             clip = animator.default_clip(objects, component, fields)

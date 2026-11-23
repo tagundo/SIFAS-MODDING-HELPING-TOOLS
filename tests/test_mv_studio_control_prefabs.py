@@ -94,6 +94,40 @@ class AnimatorReaderTests(unittest.TestCase):
             animator._state(machine)
 
 
+class Reader:
+    def __init__(self, tree):
+        self.tree = tree
+
+    def read_typetree(self):
+        return self.tree
+
+
+class TemplateTests(unittest.TestCase):
+    def test_animator_inactive_at_clone_activation_is_reported(self):
+        # fx/root's Animator activates fx/root/late; Unity starts late's own Animator
+        # when that happens, not when the clone activates, so what it animates is
+        # reported. fx/root/never is never activated: it draws nothing.
+        walked = [node("fx", None), node("fx/root", 0, kinds=("Animator",)),
+                  node("fx/root/late", 1, active=False, kinds=("Animator",)),
+                  node("fx/root/late/bar", 2, kinds=("MeshRenderer",)),
+                  node("fx/root/never", 1, active=False, kinds=("Animator",)),
+                  node("fx/root/never/bar", 4, kinds=("MeshRenderer",))]
+        for item in walked:
+            item["authored"] = item["self"] and (item["parent"] is None or walked[item["parent"]]["authored"])
+            item["components"] = {kind: Reader({"m_Enabled": 1}) for kind in item["components"]
+                                  if kind != "Transform"}
+        clip = {"m_Name": "clip", "m_MuscleClip": {"m_StartTime": 0.0, "m_StopTime": 1.0, "m_LoopTime": 1}}
+        rows = {id(walked[1]["components"]["Animator"]): [row(binding("late", 1, animator.ACTIVE), MOVING)]}
+        with mock.patch.object(animator, "default_clip", return_value=clip) as default, \
+                mock.patch.object(animator, "bindings", side_effect=lambda clip, deadline: rows.pop(next(iter(rows)))):
+            template, drawn, gaps, quiet = prefabs._template({}, walked, prefabs._Builder(0), 0)
+        self.assertEqual(default.call_count, 1, "only the Animator active at the clone's activation is read")
+        self.assertEqual((template, drawn), (None, 0))
+        self.assertEqual(gaps, [{"path": "fx/root/late/bar", "reason": "under prefab animation that is not previewed "
+                                 "(Animator activated after the clone; its state time is not reproduced)"}])
+        self.assertEqual(quiet, ["inactive GameObject"])
+
+
 class ShaderIdentityTests(unittest.TestCase):
     class Shader:
         def __init__(self, name, path_id=7):
