@@ -330,11 +330,18 @@ async function run() {
     const renderHeight = quality.values.rendering_resolution;
     const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
     await pinViewport(page, renderWidth, renderHeight);
-    await page.evaluate(() => {
+    await page.evaluate((screenFade) => {
       const select = document.querySelector('#mv-camera-mode');
       select.value = 'live';
       select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+      // The MV dark filter and live-end blur are absent from the libfovmod 3D
+      // captures this harness is compared with; a manifest can ask for them.
+      const fade = document.querySelector('#mv-screen-fade');
+      if (fade && fade.checked !== screenFade) {
+        fade.checked = screenFade;
+        fade.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, manifest.screenFade === true);
     const physics = physicsReference(manifest, quality.values, target);
     await applyPhysicsReference(page, physics);
     const rate = physics.rate;

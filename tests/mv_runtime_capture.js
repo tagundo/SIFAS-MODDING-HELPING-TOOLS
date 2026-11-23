@@ -525,6 +525,11 @@ async function prepareLiveView(page, viewport) {
     const select = document.querySelector('#mv-camera-mode');
     select.value = 'live';
     select.dispatchEvent(new Event('change', { bubbles: true }));
+    const fade = document.querySelector('#mv-screen-fade');
+    if (fade?.checked) {
+      fade.checked = false;
+      fade.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     const scene = mvFrameProbe.scene;
     if (typeof scene.assetDump !== 'function') throw new Error('This editor build has no MVStudioScene.assetDump()');
     // Without resize(false) the live camera keeps the old aspect.

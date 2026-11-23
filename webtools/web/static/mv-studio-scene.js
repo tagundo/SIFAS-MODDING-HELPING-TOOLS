@@ -315,6 +315,9 @@
     const physicsClock = global.MVStudioPhysics?.createClock();
     let physicsTiming = global.MVStudioPhysics?.normalizeTiming?.() ?? null;
     const post = global.MVStudioPost?.create(T, renderer);
+    // LiveMvDarkFilterField and the live-end overlay blur (see mv-studio-screen-fade.js).
+    const screenFade = global.MVStudioScreenFade?.create(T, renderer);
+    let screenFadeEnabled = options?.screenFade !== false;
     const overlay = global.MVStudioStageOverlay?.create(T, renderer);
     const cameraDepth = global.MVStudioCameraDepth?.create(T, renderer);
     const transparentSort = global.MVStudioTransparentSort?.create(T, renderer);
@@ -357,7 +360,7 @@
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let stageParticleSystems = null, stageControlPrefabs = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null, defaultMemberShadows = false;
+    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [], memberShadowPrefabs = null;
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
@@ -404,6 +407,11 @@
           if (particles?.length || records.some((record) => record.stageOverlay?.hasVisible())) {
             overlay?.draw(scene, particles?.length ? camera => sortTransparentParticles(camera, particles) : undefined);
           }
+        }
+        if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
+          // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
+          const end = Number.isFinite(project.soundtrack?.duration) ? project.soundtrack.duration : project.duration;
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, end));
         }
       }
     }
@@ -612,6 +620,8 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
+      record.memberShadowPrefabs?.dispose();
+      record.lossyScale?.dispose();
       record.physics?.dispose();
       record.constraints?.dispose();
       if (record.mixer) record.mixer.stopAllAction();
@@ -738,6 +748,13 @@
             Number.isInteger(alternate.Target) && Number.isFinite(alternate.WeightForDirection);
           assign(segment, "splitTarget", usesAlternate ? alternate.Target : null);
           assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.WeightForDirection)) : 0);
+        } else if (segment.kind === "eyes" && Number.isInteger(segment.splitIndex)) {
+          // MemberEyeMixer.Process swaps in splitScreenSetting.Index/Weight
+          // while the split screen is enabled (see ViewerMotionTimeline).
+          const alternate = values.splitScreenSetting;
+          const usesAlternate = (alternate?.UseSetting === 1 || alternate?.UseSetting === true) && Number.isFinite(alternate.Weight);
+          assign(segment, "splitUse", usesAlternate);
+          assign(segment, "splitWeight", usesAlternate && !bound.track.muted ? Math.min(1, Math.max(0, alternate.Weight)) : 0);
         } else if (segment.kind === "cheek") {
           if (Number.isInteger(values.cheekType)) assign(segment, "index", values.cheekType);
           if (Number.isFinite(values.intensity)) assign(segment, "intensity", Math.min(1, Math.max(0, values.intensity)));
@@ -755,6 +772,15 @@
         }
       }
       if (changed && record.motion.invalidateTiming) record.motion.invalidateTiming();
+    }
+
+    // MemberEyeClip.splitScreenSetting {UseSetting, Index, Weight}: the alternate
+    // clip index is fixed when the actor's facial inputs are bound.
+    function eyeSplitIndex(event) {
+      const alternate = event.kind === "eyes" && nativeEvents.get(event.nativeEventId)?.event.values.splitScreenSetting;
+      if (alternate && (alternate.UseSetting === 1 || alternate.UseSetting === true) &&
+          Number.isInteger(alternate.Index) && alternate.Index >= 0) event.splitIndex = alternate.Index;
+      return event;
     }
 
     function gazeContext() {
@@ -846,7 +872,10 @@
       const gltf = await new Promise((resolve, reject) => new T.GLTFLoader().parse(bytes, "", resolve, reject));
       const record = { root: gltf.scene, id: entry.spec.id, group: entry.group, position: entry.spec.position,
         identity: entry.identity, visibility: [], rig: entry.spec.rig, role: entry.role };
-      if (entry.group === effects) record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+      if (entry.group === effects) {
+        record.memberShadowDefaults = gltf.scene.userData?.mvMemberShadowDefaults;
+        record.memberShadowPrefabs = await global.MVStudioMemberShadow?.prefabs?.(T, gltf.scene, gltf.parser);
+      }
       const audience = gltf.scene.userData?.mvAudiencePoint;
       if (entry.group === stage && vector(audience, 3)) record.audience = audience;
       let ready = false;
@@ -912,6 +941,7 @@
           if (!active()) return null;
           record.stageMotion = global.MVStudioStageMotion?.apply(T, record.root);
           record.axisBillboard = global.MVStudioAxisBillboard?.create(T, record.root);
+          record.lossyScale = global.MVStudioLossyScale?.create(T, record.root);
           record.stageLaserCores = await global.MVStudioStageLaserCores?.apply(T, record.root, gltf.parser, {
             active, maxTextureSize: renderer.capabilities.maxTextureSize,
           });
@@ -961,7 +991,7 @@
             record.segments = (entry.spec.motion.bodySegments || []).map((segment) => ({
               ...segment, timing: { ...segment.timing }
             }));
-            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => ({
+            record.facialEvents = (entry.spec.motion.facial?.events || []).map((event) => eyeSplitIndex({
               ...event, timing: { ...event.timing }
             }));
             record.motionEvents = record.segments.concat(record.facialEvents);
@@ -1438,8 +1468,12 @@
       if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
       else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
-      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
-        !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
+      // ShadowComponent.Initialize deletes the costume's shadows only for a stage
+      // with memberShadowPrefabs; a LiveMemberShadowTrack then only scales them.
+      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults;
+      memberShadowPrefabs = shadowStages.length === 1 && !shadowStages[0].memberShadowDefaults
+        ? shadowStages[0].memberShadowPrefabs ?? null : null;
+      memberShadowTracks = tracks.filter(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted);
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
@@ -1631,6 +1665,8 @@
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
+      // LiveCoreLossyScale.LateUpdate follows the animators.
+      for (const record of records) record.lossyScale?.apply();
       for (const record of records) record.stageSoftBillboards?.update(currentTime);
       for (const record of records) record.stageLaserCores?.update(currentTime, project, record.stageMotion);
       for (const record of records) record.stageStationaryBursts?.update(currentTime, project, record.stageMotion);
@@ -1658,7 +1694,7 @@
         const performer = performers.get(record.id);
         if (performer) actorPose(record, performer);
         if (record.motion) {
-          record.motion.evaluatePose(currentTime);
+          record.motion.evaluatePose(currentTime, { split: activeSplitGazeCameras !== null });
           record.motion.applyVisibility(currentTime);
           if (record.cheekMaterial) record.materials?.setCheek?.(record.cheekMaterial, record.motion.cheek?.(currentTime));
         } else if (record.mixer) record.mixer.setTime(currentTime);
@@ -1678,7 +1714,8 @@
       for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
-      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
+      const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters, memberShadowPrefabs);
       for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;
@@ -2057,6 +2094,7 @@
       load, prepareStage, cancelStagePreparation, seek, playbackFrame, setPlaying, resize,
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
+      setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2104,6 +2142,7 @@
         clear();
         split?.dispose();
         post?.dispose();
+        screenFade?.dispose();
         cameraDepth?.dispose();
         release(grid);
         controls.dispose();
