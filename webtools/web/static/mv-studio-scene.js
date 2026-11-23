@@ -382,6 +382,8 @@
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
     let lastShaftFrame = null, resetShafts = true;
     let renderHeight = null, viewportDirty = false, settings = {}, trackSource = null, renderTracks = [];
+    // The player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode, off unless saved).
+    let antiAliasing = options?.antiAliasing === true;
     let nativeMainLens = false, authoredMainFov = liveCamera.fov;
     const cameraOffsets = new Map();
     const nativeEvents = new Map(), performers = new Map(), sortedCameraFrames = new WeakMap(), memberScaleTracks = new Map();
@@ -638,9 +640,10 @@
       const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
       // The view's device pixels are the game's screen: the 3D cameras draw at the height the
-      // client derives from RenderingResolution and the screen height (nativeRenderHeight).
+      // client derives from RenderingResolution, the screen height and the anti-aliasing option
+      // (nativeRenderHeight).
       const target = Number.isFinite(nativeHeight) && nativeHeight > 0
-        ? nativeRenderHeight(nativeHeight, Math.floor(height * (global.devicePixelRatio || 1)), values.quality_mode) : null;
+        ? nativeRenderHeight(nativeHeight, Math.floor(height * (global.devicePixelRatio || 1)), values.quality_mode, antiAliasing) : null;
       let resolution = target === null ? Math.min(global.devicePixelRatio || 1, 2) : Math.min(target / height, 2);
       // three.js floors height * ratio: keep the exact integer height.
       if (target !== null && resolution < 2 && Math.floor(height * resolution) < target) resolution = Math.min((target + 1e-6) / height, 2);
@@ -2273,6 +2276,15 @@
       flushSeekDraw() { if (seekDrawPending) draw(); },
       setCamera(mode) { useLive = mode !== "orbit"; draw(); },
       setScreenFade(enabled) { screenFadeEnabled = enabled !== false; requestDraw(); },
+      // The player's anti-aliasing option (default off): with it, Max and High 3D draw at the
+      // screen height (nativeRenderHeight).
+      setAntiAliasing(enabled) {
+        const value = enabled === true;
+        if (value === antiAliasing) return;
+        antiAliasing = value;
+        viewportDirty = true;
+        resize();
+      },
       // Device frame-rate options and spring order (MVStudioPhysics.normalizeTiming).
       setPhysicsTiming(value) {
         physicsTiming = global.MVStudioPhysics?.normalizeTiming?.({ ...physicsTiming, ...value }) ?? null;
@@ -2298,7 +2310,7 @@
             aspectCorrection: live ? (nativeMainLens ? global.MVStudioSplit?.aspectCorrection(camera.aspect) ?? 1 : 1) : null,
           },
           canvas: { width, height, pixelRatio: renderer.getPixelRatio() },
-          renderHeight, previewScale, playing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
+          renderHeight, previewScale, playing, antiAliasing, qualityMode: project?.quality?.mode ?? null, quality: { ...settings },
           constraints: records.filter((record) => record.constraints)
             .map((record) => ({ slot: record.position, ...record.constraints.getState() })),
           controlPrefabs: stageControlPrefabs?.inspect() ?? null,
@@ -2330,14 +2342,19 @@
     };
   }
 
-  // LiveCoreCameraManager.Update3DCameraRenderTextures (GL 3.12.0): the 3D cameras render at
-  // RenderingResolution (1080 when it is below 1), never above Screen.height; Initialize flags quality
-  // modes below 21 (Max/High 3D), whose height is then raised to Screen.height. The render texture
-  // width is Screen.width / Screen.height * height, and _RenderTextureResolution is (width, height).
-  // Max 3D (1080) on a 1280x720 screen therefore draws 1280x720, Performance 3D (640) 1138x640.
-  function nativeRenderHeight(renderingResolution, screenHeight, qualityMode) {
+  // LiveCoreCameraManager.Update3DCameraRenderTextures (GL 3.12.0, 0x2f61b18): the 3D cameras
+  // render at RenderingResolution (1080 when it is below 1), never above Screen.height. When
+  // needAntiAliasing (field 0x72) is set, the height is raised to Mathf.Max(height, Screen.height).
+  // Initialize (0x2f61710) sets needAntiAliasing = antiAliasing && Quality < 21; its only caller
+  // (<PostprocessInitializeAsync>d__9) passes GameSettingsDM.GetAntiAliasingMode(), the player's
+  // option, which is false unless ASLocalStorage holds AntiAliasingMode. The same flag selects
+  // MSAA (MSAAUtility.GetMSAALevel). The render texture width is Screen.width / Screen.height *
+  // height, and _RenderTextureResolution is (width, height). Max 3D (1080) on a 1280x720 screen
+  // therefore draws 1280x720, Performance 3D (640) 1138x640; on a 1440-line screen Max 3D draws
+  // 1080 lines, or 1440 with anti-aliasing on.
+  function nativeRenderHeight(renderingResolution, screenHeight, qualityMode, antiAliasing = false) {
     let height = renderingResolution >= 1 ? Math.min(renderingResolution, screenHeight) : 1080;
-    if (Number.isFinite(qualityMode) && qualityMode < 21) height = Math.max(height, screenHeight);
+    if (antiAliasing === true && Number.isFinite(qualityMode) && qualityMode < 21) height = Math.max(height, screenHeight);
     return height;
   }
 

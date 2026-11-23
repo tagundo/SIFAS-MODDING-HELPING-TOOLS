@@ -84,6 +84,10 @@ function readManifest(file) {
   assert(manifest.screen === undefined || (Number.isSafeInteger(manifest.screen?.width) && Number.isSafeInteger(manifest.screen?.height) &&
     manifest.screen.width > 0 && manifest.screen.height > 0), 'screen is {width, height} in pixels');
   if (manifest.device !== undefined) SPRINGS.normalizeTiming({ device: manifest.device });
+  // device.antiAliasing: the player's anti-aliasing option (GameSettingsDM.GetAntiAliasingMode,
+  // off unless the player saved it); with it, Max and High 3D draw at the screen height.
+  assert(manifest.device?.antiAliasing === undefined || typeof manifest.device.antiAliasing === 'boolean',
+    'device.antiAliasing is true or false');
   assert(source.deck === undefined || ['custom', 'original'].includes(source.deck), 'source.deck is "custom" or "original"');
   assert(source.player === undefined || (Number.isSafeInteger(source.player) && source.player > 0),
     'source.player is a local Elichika user id');
@@ -125,11 +129,30 @@ function physicsReference(manifest, qualityValues, video = null) {
 }
 
 // The 3D view height the client renders for a screen (LiveCoreCameraManager.Update3DCameraRenderTextures,
-// MVStudioScene.nativeRenderHeight): the preset's height when no screen is known.
-async function nativeRenderHeight(page, qualityValues, screenHeight) {
+// MVStudioScene.nativeRenderHeight) with the player's anti-aliasing option: the preset's height when
+// no screen is known.
+async function nativeRenderHeight(page, qualityValues, screenHeight, antiAliasing = false) {
   if (!Number.isSafeInteger(screenHeight) || screenHeight <= 0) return qualityValues.rendering_resolution;
-  return page.evaluate(({ values, screenHeight }) => MVStudioScene.nativeRenderHeight(values.rendering_resolution, screenHeight,
-    values.quality_mode), { values: qualityValues, screenHeight });
+  return page.evaluate(({ values, screenHeight, antiAliasing }) => MVStudioScene.nativeRenderHeight(values.rendering_resolution, screenHeight,
+    values.quality_mode, antiAliasing), { values: qualityValues, screenHeight, antiAliasing: antiAliasing === true });
+}
+
+// Sets the editor's anti-aliasing option (manifest device.antiAliasing, off by default as in the
+// client) through its control and checks the scene took it.
+async function applyAntiAliasing(page, enabled) {
+  const wanted = enabled === true;
+  const applied = await page.evaluate((wanted) => {
+    const input = document.querySelector('#mv-anti-aliasing');
+    if (!input) return { error: 'The editor has no anti-aliasing control.' };
+    if (input.checked !== wanted) {
+      input.checked = wanted;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return { value: mvFrameProbe.scene?.inspect().antiAliasing };
+  }, wanted);
+  if (applied.error) throw new Error(applied.error);
+  assert.equal(applied.value, wanted, 'The editor scene did not apply the anti-aliasing option');
+  return wanted;
 }
 
 // Camera clip boundaries of the game camera tracks, in timeline seconds.
@@ -414,9 +437,10 @@ async function run() {
     }
     await importOriginal(page, manifest.source, manifest.download === true);
     const quality = await applyQuality(page, manifest.quality);
+    const antiAliasing = await applyAntiAliasing(page, manifest.device?.antiAliasing);
     // The game draws at the client's height for its screen (manifest.screen, else the video's
     // height; the preset's height when neither is known); the export then scales to the video size.
-    const renderHeight = await nativeRenderHeight(page, quality.values, manifest.screen?.height ?? target?.height);
+    const renderHeight = await nativeRenderHeight(page, quality.values, manifest.screen?.height ?? target?.height, antiAliasing);
     const renderWidth = Math.round(renderHeight * aspect / 2) * 2;
     await pinViewport(page, renderWidth, renderHeight);
     await page.evaluate((screenFade) => {
@@ -464,7 +488,7 @@ async function run() {
       manifest, project, soundtrack, physicsRate: rate,
       physics: { rate, reference: physics.source, order: physics.order, exportFps: physics.exportFps, device: physics.device,
         warmupSteps: physics.warmupSteps },
-      render: { width: renderWidth, height: renderHeight, aspect, video: target },
+      render: { width: renderWidth, height: renderHeight, aspect, antiAliasing, video: target },
       quality: { mode: quality.mode, values: quality.values },
       environment: {
         modtools: { commit: gitHead(MODTOOLS), dirty: gitDirty(MODTOOLS) },
@@ -483,4 +507,4 @@ async function run() {
 
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
 module.exports = { readManifest, frameName, cameraCuts, cutDistance, midShotTimes, attachSceneProbe, deckRequest, importOriginal, projectRecord, applyQuality, pinViewport, renderFrame, rendererInfo, browserArgs, bootEditor, gitHead, gitDirty,
-  videoFps, physicsReference, applyPhysicsReference };
+  videoFps, physicsReference, applyPhysicsReference, nativeRenderHeight, applyAntiAliasing };

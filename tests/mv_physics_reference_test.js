@@ -51,6 +51,10 @@ assert.deepEqual([reference.source, reference.rate, reference.ruleRate], ['manif
 assert.throws(() => manifest({ physics: { rate: 0 } }), /physics.rate/);
 assert.throws(() => manifest({ screen: { width: 1280 } }), /screen is/);
 assert.deepEqual(manifest({ screen: { width: 1280, height: 720 } }).screen, { width: 1280, height: 720 });
+// device.antiAliasing: the player's option, a boolean; it does not change the spring rate.
+assert.equal(manifest({ device: { antiAliasing: true } }).device.antiAliasing, true);
+assert.throws(() => manifest({ device: { antiAliasing: 1 } }), /device.antiAliasing/);
+assert.equal(capture.physicsReference(manifest({ device: { antiAliasing: true } }), q10).rate, 60);
 
 // FOVMOD exports: grid 60 for a 30 fps MP4 (frames still land on k/30), 120 for 120 fps.
 const fovmod = manifest({ game: { exporter: 'fovmod', video: 'x.mp4', export: { fps: 30 } } });
@@ -75,6 +79,34 @@ function fakePage() {
   return { calls, evaluate: async (fn, args) => fn(args) };
 }
 (async () => {
+  // The render height follows the client rule with the manifest's anti-aliasing option, and the
+  // option is set through the editor's control (off unless the manifest turns it on).
+  const heights = [];
+  globalThis.MVStudioScene = { nativeRenderHeight: (...args) => { heights.push(args); return args[3] ? args[1] : Math.min(args[0], args[1]); } };
+  const direct = { evaluate: async (fn, args) => fn(args) };
+  const max3d = { quality_mode: 10, rendering_resolution: 1080 };
+  assert.equal(await capture.nativeRenderHeight(direct, max3d, 1440), 1080);
+  assert.equal(await capture.nativeRenderHeight(direct, max3d, 1440, true), 1440);
+  assert.equal(await capture.nativeRenderHeight(direct, max3d, undefined, true), 1080, 'no screen: the preset height');
+  assert.deepEqual(heights, [[1080, 1440, 10, false], [1080, 1440, 10, true]]);
+  const control = { checked: false, events: [], dispatchEvent(event) { this.events.push(event.type); } };
+  let sceneAntiAliasing = false;
+  globalThis.Event = class { constructor(type) { this.type = type; } };
+  globalThis.document = { querySelector: (selector) => selector === '#mv-anti-aliasing' ? control : null };
+  globalThis.mvFrameProbe = { scene: { inspect: () => ({ antiAliasing: sceneAntiAliasing }) } };
+  assert.equal(await capture.applyAntiAliasing(direct, undefined), false);
+  assert.deepEqual(control.events, [], 'off by default: the control is left alone');
+  control.dispatchEvent = function (event) { this.events.push(event.type); sceneAntiAliasing = this.checked; };
+  assert.equal(await capture.applyAntiAliasing(direct, true), true);
+  assert.deepEqual([control.checked, control.events], [true, ['change']]);
+  control.dispatchEvent = function (event) { this.events.push(event.type); };
+  control.checked = false;
+  sceneAntiAliasing = false;
+  await assert.rejects(capture.applyAntiAliasing(direct, true), /did not apply the anti-aliasing option/);
+  globalThis.document = { querySelector: () => null };
+  await assert.rejects(capture.applyAntiAliasing(direct, false), /no anti-aliasing control/);
+  delete globalThis.MVStudioScene;
+
   let page = fakePage();
   let result = await capture.renderFrame(page, 1, 3, 60, 180);
   const frames = page.calls.filter(([kind]) => kind === 'frame');

@@ -705,6 +705,9 @@ async function run() {
     const grid = gridMode === 'game' ? gameFrameTimes(game) : null;
     const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : gridMode === 'game' && grid.length ? 'game-frames' : clock.source,
       order, gridFrames: grid ? grid.length : null };
+    // The player's anti-aliasing option sets the 3D render height (off by default, as on the
+    // reference devices: QualitySettings.antiAliasing 0 and no camera allowMSAA in the dumps).
+    const antiAliasing = await capture.applyAntiAliasing(page, manifest.device?.antiAliasing);
     const pinned = await prepareLiveView(page, viewport);
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
@@ -723,7 +726,7 @@ async function run() {
     fs.writeFileSync(path.join(out, 'editor-dump.json.gz'), body);
     const environment = { schema: 1, kind: 'elichika-mv-runtime-capture', createdAt: editor.header.createdAt, manifest, project,
       physicsRate: rate, physics,
-      gameDump: editor.header.gameDump, render: { ...viewport, pinned }, quality: editor.header.quality, performers,
+      gameDump: editor.header.gameDump, render: { ...viewport, pinned, antiAliasing }, quality: editor.header.quality, performers,
       environment: { ...producer, platform: process.platform }, timing, elapsedSeconds: editor.trailer.elapsedSeconds, pageErrors: errors,
       output: { file: 'editor-dump.json.gz', bytes: body.length, records: records.length } };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(environment, null, 2) + '\n');

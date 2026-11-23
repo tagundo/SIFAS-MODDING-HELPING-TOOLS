@@ -197,29 +197,45 @@ function checkResizeDraws() {
 }
 
 // LiveCoreCameraManager.Update3DCameraRenderTextures: RenderingResolution capped at the screen
-// height (1080 when unset), raised to the screen height at quality modes below 21.
+// height (1080 when unset), raised to the screen height only when needAntiAliasing is set
+// (the player's anti-aliasing option, default off, and a quality mode below 21).
 async function checkNativeRenderHeight() {
   const f = fixture();
   const height = f.window.MVStudioScene.nativeRenderHeight;
   assert.equal(height(1080, 720, 10), 720, 'Max 3D on a 1280x720 screen draws 720 lines (game camera pixelRect)');
   assert.equal(height(640, 720, 40), 640, 'Performance 3D keeps its 640 lines (game 1138x640)');
-  assert.equal(height(1080, 1440, 10), 1440, 'Max/High 3D never draw below the screen height');
-  assert.equal(height(1080, 1440, 20), 1440);
-  assert.equal(height(720, 1440, 30), 720);
+  assert.equal(height(1080, 1440, 10), 1080, 'Max 3D draws RenderingResolution lines with anti-aliasing off (the default)');
+  assert.equal(height(1080, 1440, 10, false), 1080);
+  assert.equal(height(1080, 1440, 10, true), 1440, 'with anti-aliasing on, Max/High 3D never draw below the screen height');
+  assert.equal(height(1080, 1440, 20, true), 1440);
+  assert.equal(height(720, 1440, 30, true), 720, 'Normal 3D is not raised by anti-aliasing');
+  assert.equal(height(640, 720, 40, true), 640, 'Performance 3D is not raised by anti-aliasing');
+  assert.equal(height(1080, 720, 10, true), 720);
   assert.equal(height(0, 720, 40), 1080, 'an unset resolution draws 1080 lines');
+  assert.equal(height(0, 1440, 10), 1080);
+  assert.equal(height(0, 1440, 10, true), 1440);
+  assert.equal(height(1080, 1440, 10, 1), 1080, 'only a boolean true turns anti-aliasing on');
   const value = project(73);
   value.quality = { mode: 10, values: { quality_mode: 10, rendering_resolution: 1080 } };
   await f.app.load(value);
   f.app.resize();
+  assert.equal(f.app.inspect().antiAliasing, false, 'anti-aliasing is off by default');
   assert.equal(f.renderer.getPixelRatio(), 1, 'a 720-line view at Max 3D is not supersampled');
   f.window.devicePixelRatio = 2;
   f.app.resize();
-  assert.equal(f.renderer.getPixelRatio(), 2, 'a 1440-device-line view draws at its device pixels');
+  assert.equal(f.renderer.getPixelRatio(), 1.5, 'a 1440-device-line view draws 1080 lines with anti-aliasing off');
+  f.app.setAntiAliasing(true);
+  assert.equal(f.app.inspect().antiAliasing, true);
+  assert.equal(f.renderer.getPixelRatio(), 2, 'with anti-aliasing on, a 1440-device-line view draws at its device pixels');
+  f.app.setAntiAliasing(false);
+  assert.equal(f.renderer.getPixelRatio(), 1.5, 'turning anti-aliasing off resizes back to 1080 lines');
   f.window.devicePixelRatio = 1;
   value.quality = { mode: 40, values: { quality_mode: 40, rendering_resolution: 640 } };
   f.app.seek(0, value);
   f.app.resize();
   assert.equal(Math.floor(720 * f.renderer.getPixelRatio()), 640, 'Performance 3D draws its exact 640 lines');
+  f.app.setAntiAliasing(true);
+  assert.equal(Math.floor(720 * f.renderer.getPixelRatio()), 640, 'Performance 3D keeps 640 lines with anti-aliasing on');
   f.app.dispose();
 }
 
