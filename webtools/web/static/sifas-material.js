@@ -747,7 +747,8 @@
       // MemberCheekBase on BodyPartManager.headMaterial: Initialize -> ResetAll
       // (_CHEEK_ON off, _CheekTexArrayIndex 0, _CheekIntensity 0); each active
       // MemberCheekClip input -> ApplyEnable(true) + ApplyCheek(type, value);
-      // no active input -> ApplyEnable(false), keeping the last floats.
+      // no active input -> ApplyEnable(false), keeping the last floats
+      // (state.enabled false carries those floats; null keeps the reset).
       setCheek: function (name, state) {
         if (disposed || memberProp) return;
         var changed = false;
@@ -766,9 +767,10 @@
             uniforms.uCheekTexArrayIndex.value = index;
             uniforms.uCheekIntensity.value = intensity;
           }
-          var shown = !!state && pair.cheekLayer !== null && pair.cheekLayer === uniforms.uCheekTexArrayIndex.value;
-          if (state && pair.cheekLayer !== null && !shown) limitations.add("A selected cheek array slice is unavailable in this preview.");
-          pair.cheek.enabled = !!state;
+          var enabled = !!state && state.enabled !== false;
+          var shown = enabled && pair.cheekLayer !== null && pair.cheekLayer === uniforms.uCheekTexArrayIndex.value;
+          if (enabled && pair.cheekLayer !== null && !shown) limitations.add("A selected cheek array slice is unavailable in this preview.");
+          pair.cheek.enabled = enabled;
           if (!!pair.main.defines.SIFAS_CHEEK !== shown) {
             if (shown) pair.main.defines.SIFAS_CHEEK = 1;
             else delete pair.main.defines.SIFAS_CHEEK;

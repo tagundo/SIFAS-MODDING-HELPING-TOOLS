@@ -696,14 +696,27 @@
       },
       // MemberCheekMixer.Process runs per active input: ApplyEnable(true), then
       // ApplyCheek(cheekType, intensity * weight) overwrites the material, so the
-      // last active input wins. PostProcess disables _CHEEK_ON when no input ran.
+      // last active input wins. PostProcess only disables _CHEEK_ON when no input
+      // ran; the floats keep the last applied values. During playback that is the
+      // end of the latest finished clip, which is used here so a seek gives the
+      // same values. Before any clip ResetAll's 0/0 stays (null).
       cheek: function (time) {
         beginSample(time, false);
         var state = null;
+        function applied(event, amount, enabled) {
+          return { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)), enabled: enabled };
+        }
         timedRecords(cheekEvents, time).forEach(function (event) {
           var amount = sampleWeight(event, time);
-          if (!(amount > 0)) return;
-          state = { index: event.index, intensity: Math.fround(Math.fround(number(event.intensity, 0)) * Math.fround(amount)) };
+          if (amount > 0) state = applied(event, amount, true);
+        });
+        if (state) return state;
+        var latest = -Infinity;
+        cheekEvents.forEach(function (event) {
+          var end = event.start + event.duration;
+          if (!(end <= time) || end < latest || !(number(event.weight, 1) > 0)) return;
+          latest = end;
+          state = applied(event, weightWithTiming(event, end, getTiming(event)), false);
         });
         return state;
       },
