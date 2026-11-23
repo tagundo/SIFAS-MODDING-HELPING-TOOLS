@@ -31,7 +31,8 @@ class AxisBillboardOwnerTests(unittest.TestCase):
         other_script = _object("MonoScript", 3, {"m_AssemblyName": "Assembly-CSharp.dll",
                                                  "m_Namespace": "LLAS.Components.AxisBillboard",
                                                  "m_ClassName": "Billboard"})
-        self.games = {pid: _object("GameObject", pid, {}) for pid in (20, 21, 22)}
+        self.file = SimpleNamespace()
+        self.games = {pid: _object("GameObject", pid, {}) for pid in (20, 21, 22, 30)}
         # Initialize enables a listed component even when it is serialized disabled.
         self.objects = {1: effect_script, 2: axis_script, 3: other_script, **self.games,
                         10: _object("MonoBehaviour", 10, {"m_Script": {"m_PathID": 2}, "m_Enabled": 0,
@@ -40,6 +41,8 @@ class AxisBillboardOwnerTests(unittest.TestCase):
                                                          "m_GameObject": {"m_PathID": 21}}),
                         12: _object("MonoBehaviour", 12, {"m_Script": {"m_PathID": 3}, "m_Enabled": 1,
                                                          "m_GameObject": {"m_PathID": 22}})}
+        for obj in self.objects.values():
+            obj.assets_file = self.file
         self.scene = SimpleNamespace(tree=lambda obj: obj.tree)
         self.ref = patch.object(viewer, "_ref", lambda owner, pointer: self.objects.get((pointer or {}).get("m_PathID")))
         self.ref.start()
@@ -47,15 +50,19 @@ class AxisBillboardOwnerTests(unittest.TestCase):
 
     def owners(self, tree):
         component = _object("MonoBehaviour", 99, tree)
-        return billboard.owners(self.scene, component, tree)
+        component.assets_file = self.file
+        self.scene.env = SimpleNamespace(objects=[component, *self.objects.values()])
+        paths = {30: ("fx_root",), 20: ("fx_root", "lit_01", "litB_01_bilcone"),
+                 21: ("other_root", "litB_02_bilcone"), 22: ("fx_root", "lit_01", "litC_01_bilcone")}
+        with patch.object(billboard, "_path", lambda scene, game: paths.get(game.path_id, ())):
+            return billboard.owners(self.scene, component, tree)
 
-    def test_only_listed_axis_billboards_of_the_stage_effect_are_owners(self):
-        tree = {"m_Script": {"m_PathID": 1},
-                "axisBillboards": [{"m_PathID": 10}, {"m_PathID": 12}, {"m_PathID": 404}, {"m_PathID": 20}]}
+    def test_every_axis_billboard_below_the_stage_effect_is_an_owner(self):
+        # GetComponentsInChildren<AxisBillboard>(true): disabled components count, and
+        # Initialize enables them; the serialized axisBillboards array is replaced.
+        tree = {"m_Script": {"m_PathID": 1}, "m_GameObject": {"m_PathID": 30}, "axisBillboards": []}
         self.assertEqual(self.owners(tree), {viewer._key(self.games[20])})
-        # Unlisted components never receive camera targets.
-        self.assertEqual(self.owners({**tree, "axisBillboards": []}), set())
-        # Another component's array is not LiveCoreStageEffect.axisBillboards.
+        # Another component is not LiveCoreStageEffect.
         self.assertEqual(self.owners({**tree, "m_Script": {"m_PathID": 3}}), set())
 
     def test_tag_marks_only_retained_nodes_and_keeps_their_trs(self):
