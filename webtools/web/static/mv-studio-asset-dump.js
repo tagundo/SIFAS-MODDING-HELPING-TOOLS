@@ -298,7 +298,8 @@
 
   global.MVStudioAssetDump = { SCHEMA, CONVENTIONS, STAGE_TABLE, COLORING_TABLE, EDITOR_ONLY: Array.from(EDITOR_ONLY),
     temporaries, decompose, worldPosition, effectiveVisible, nodeName, materialName, textureIdentity, uniformValue,
-    memberUniforms, stageUniforms, coloringUniforms, materialProperties, rendererScope, renderersOf, runtimeObject, textureSTSpace,
-    gameObjectPath, keyFor, round,
+    memberUniforms, stageUniforms, coloringUniforms, materialProperties, rendererScope, renderersOf, gameObjectPath, keyFor, round,
     finalize, finiteArray, aspectCorrection };
+  // Runtime-built renderers and editor shader texture spaces (Max 3D runtime comparison).
+  Object.assign(global.MVStudioAssetDump, { runtimeObject, textureSTSpace });
 })(typeof window !== "undefined" ? window : globalThis);
