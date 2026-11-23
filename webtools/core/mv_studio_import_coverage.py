@@ -80,8 +80,8 @@ CLASSES = {
     "LivePropRimlightTrack": (RENDERED, "Prop rim light."),
     "LiveMemberCullerTrack": (RENDERED, "Performer culling."),
     "LiveMemberScalingTrack": (RENDERED, "Performer height scaling."),
-    "LiveMemberShadowTrack": (PARTIAL, "Only turns the stage's default member shadows off; "
-                                       "shadowIndex and scale clips are not applied."),
+    "LiveMemberShadowTrack": (PARTIAL, "Scales the costume's foot shadows; the stage's memberShadowPrefabs "
+                                       "that shadowIndex switches are not instanced."),
     "LiveMemberIKTrack": (NOT_RENDERED, "Arm IK (TimelineAssetBindingInfo.ikInfo) is not implemented."),
     "LiveDisplayCameraTrack": (NOT_RENDERED, "The display camera that draws onto the stage screens is not implemented."),
     "LivePropColoringTrack": (NOT_RENDERED, "Prop colouring is not implemented."),

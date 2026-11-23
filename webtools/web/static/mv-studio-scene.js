@@ -357,7 +357,7 @@
     let stageSparksA = null, stageSparksB = null, stageSparksRoop = null;
     let stageParticleSystems = null;
     let activeSplitGazeCameras = null;
-    let loadedProjectToken = null, defaultMemberShadows = false;
+    let loadedProjectToken = null, defaultMemberShadows = false, memberShadowTracks = [];
     let currentTime = 0, useLive = true, hasShot = false, records = [], queuedDraw = 0, seekDrawPending = false;
     let liveCameraEvent = null;
     let playing = false, lastPlaybackFrame = null, slowFrames = 0, previewScale = 1;
@@ -1443,8 +1443,10 @@
       if (project?.source?.kind === "game") renderer.setClearColor(0x000000, 0);
       else renderer.setClearColor(editorClear, 1);
       const shadowStages = records.filter(record => typeof record.memberShadowDefaults === "boolean");
-      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults &&
-        !tracks.some(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted && track.events.length);
+      // ShadowComponent.Initialize deletes the costume's shadows only for a stage
+      // with memberShadowPrefabs; a LiveMemberShadowTrack then only scales them.
+      defaultMemberShadows = shadowStages.length === 1 && shadowStages[0].memberShadowDefaults;
+      memberShadowTracks = tracks.filter(track => track.nativeClass === "LiveMemberShadowTrack" && !track.muted);
       if (trackSource !== tracks) {
         trackSource = tracks;
         nativeEvents.clear();
@@ -1673,7 +1675,8 @@
       for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
-      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow);
+      const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
+      for (const record of records) record.memberShadow?.update(defaultMemberShadows, advancingShadow, shadowParameters);
       for (const record of records) record.physics?.frame?.("late", currentTime, physicsStep, settings, record.motion, physicsTiming?.order);
       // Unity gates both native member spot light tracks on the Area quality value.
       const shaftTemplates = records.find(record => record.shaftTemplates)?.shaftTemplates;

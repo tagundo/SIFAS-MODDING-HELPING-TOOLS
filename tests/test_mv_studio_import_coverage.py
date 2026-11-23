@@ -210,7 +210,8 @@ class ImportCoverageTests(unittest.TestCase):
             "Original timeline tracks MV Studio does not reproduce: LiveMemberIKTrack x1 "
             "(3 clips: Arm IK (TimelineAssetBindingInfo.ikInfo) is not implemented).",
             "Original timeline tracks MV Studio reproduces only in part: LiveMemberShadowTrack x1 "
-            "(1 clip: Only turns the stage's default member shadows off; shadowIndex and scale clips are not applied).",
+            "(1 clip: Scales the costume's foot shadows; the stage's memberShadowPrefabs that shadowIndex switches "
+            "are not instanced).",
             "Original timeline track classes MV Studio does not know: LiveSomethingNewTrack x1 "
             "(2 clips: MV Studio does not know this track class).",
         ])
