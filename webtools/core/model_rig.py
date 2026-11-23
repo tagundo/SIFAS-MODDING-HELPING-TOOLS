@@ -440,6 +440,20 @@ class RigBuilder:
     # which LiveDepthOfFieldMixer.CalcFocusDistance reads with GetPart(bodyPart):
     # BodyPartType Head 0 = head, HeadAll 1 = headAll, Face 2 = face.gameObject,
     # Hips 3 = hips, Neck 4 = neck. HeadMaterial 5 is never added.
+    #
+    # face is the costume's serialized reference unless the spawner overrides it.
+    # LiveDirector.SpawnObjectAsync (0x2926a60) calls
+    # BodyPartManager.OverrideFacial(MemberAssetLoader.Facial, ...) (0x27c05d0),
+    # which stores Facial in face only when it is non-null; Initialize runs
+    # later, from PostprocessInitializeAsync -> LiveCoreMemberManager.Initialize.
+    # MemberAssetLoader loads Facial only from LiveMember3DAssetVO.FacialAsset
+    # (LiveAssetLoader 0x2920fbc; LoadAsync skips a null path), and both
+    # GetMvLiveMember3DAssetVOs (0x26298e4) and GetLiveMember3DAssetVOs
+    # (0x2626930) take that path only from m_member_override_facial
+    # (member_id, view_status). The table has no rows in the GL or JP
+    # masterdata, so Facial is null and face stays the costume's reference.
+    # A *_facedynamic companion bundle is that reference's target, not an
+    # override, so it never replaces a face that points inside the prefab.
     FOCUS_PART_FIELDS = ((0, "head"), (1, "headAll"), (2, "face"), (3, "hips"), (4, "neck"))
 
     def _root_transform(self, transform):
@@ -470,8 +484,9 @@ class RigBuilder:
             return self.nodes.get(_key(transform))
         # A reference outside the member prefab (BodyPartManager.face points at
         # the separate facial prefab asset) survives Instantiate unchanged.
-        # MergeFace instantiates a copy under Head, but partMap still holds the
-        # uninstantiated asset, whose transform never moves.
+        # MergeFace (0x27c17f4, after Initialize) instantiates a copy under
+        # Head, but partMap still holds the uninstantiated asset, whose
+        # transform never moves.
         position = self.scene.world(transform)[:3, 3]
         values = [float(value) for value in position]
         return {"world": values} if all(math.isfinite(value) for value in values) else None
