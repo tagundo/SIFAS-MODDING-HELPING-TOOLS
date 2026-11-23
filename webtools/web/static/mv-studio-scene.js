@@ -542,8 +542,13 @@
       const displayed = preparation?.shown ? preparation.preview : project;
       const values = displayed?.quality?.values || {};
       const nativeHeight = values.rendering_resolution;
-      const resolution = Number.isFinite(nativeHeight) && nativeHeight > 0
-        ? Math.min(nativeHeight / height, 2) : Math.min(global.devicePixelRatio || 1, 2);
+      // The view's device pixels are the game's screen: the 3D cameras draw at the height the
+      // client derives from RenderingResolution and the screen height (nativeRenderHeight).
+      const target = Number.isFinite(nativeHeight) && nativeHeight > 0
+        ? nativeRenderHeight(nativeHeight, Math.floor(height * (global.devicePixelRatio || 1)), values.quality_mode) : null;
+      let resolution = target === null ? Math.min(global.devicePixelRatio || 1, 2) : Math.min(target / height, 2);
+      // three.js floors height * ratio: keep the exact integer height.
+      if (target !== null && resolution < 2 && Math.floor(height * resolution) < target) resolution = Math.min((target + 1e-6) / height, 2);
       const previewResolution = resolution * (preparation?.shown ? 1 : previewScale);
       const changedRatio = renderer.getPixelRatio() !== previewResolution;
       renderer.getSize(size);
@@ -2154,5 +2159,16 @@
     };
   }
 
-  global.MVStudioScene = { create };
+  // LiveCoreCameraManager.Update3DCameraRenderTextures (GL 3.12.0): the 3D cameras render at
+  // RenderingResolution (1080 when it is below 1), never above Screen.height; Initialize flags quality
+  // modes below 21 (Max/High 3D), whose height is then raised to Screen.height. The render texture
+  // width is Screen.width / Screen.height * height, and _RenderTextureResolution is (width, height).
+  // Max 3D (1080) on a 1280x720 screen therefore draws 1280x720, Performance 3D (640) 1138x640.
+  function nativeRenderHeight(renderingResolution, screenHeight, qualityMode) {
+    let height = renderingResolution >= 1 ? Math.min(renderingResolution, screenHeight) : 1080;
+    if (Number.isFinite(qualityMode) && qualityMode < 21) height = Math.max(height, screenHeight);
+    return height;
+  }
+
+  global.MVStudioScene = { create, nativeRenderHeight };
 }(window));

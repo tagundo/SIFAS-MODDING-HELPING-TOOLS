@@ -29,6 +29,7 @@ function fixture(visible = true) {
     setSize(width, height) { this.size.set(width, height); }
     getPixelRatio() { return this.pixelRatio; }
     setPixelRatio(value) { this.pixelRatio = value; }
+    getDrawingBufferSize(out) { return out.set(Math.floor(this.size.x * (this.pixelRatio ?? 1)), Math.floor(this.size.y * (this.pixelRatio ?? 1))); }
     render(scene, camera) {
       world = scene;
       if (scene.autoUpdate) scene.updateMatrixWorld();
@@ -161,6 +162,33 @@ function checkResizeDraws() {
   assert.equal(f.frames.length, 5);
   assert.equal(f.renderer.size.x, 640);
   assert.equal(f.renderer.getPixelRatio(), 1);
+  f.app.dispose();
+}
+
+// LiveCoreCameraManager.Update3DCameraRenderTextures: RenderingResolution capped at the screen
+// height (1080 when unset), raised to the screen height at quality modes below 21.
+async function checkNativeRenderHeight() {
+  const f = fixture();
+  const height = f.window.MVStudioScene.nativeRenderHeight;
+  assert.equal(height(1080, 720, 10), 720, 'Max 3D on a 1280x720 screen draws 720 lines (game camera pixelRect)');
+  assert.equal(height(640, 720, 40), 640, 'Performance 3D keeps its 640 lines (game 1138x640)');
+  assert.equal(height(1080, 1440, 10), 1440, 'Max/High 3D never draw below the screen height');
+  assert.equal(height(1080, 1440, 20), 1440);
+  assert.equal(height(720, 1440, 30), 720);
+  assert.equal(height(0, 720, 40), 1080, 'an unset resolution draws 1080 lines');
+  const value = project(73);
+  value.quality = { mode: 10, values: { quality_mode: 10, rendering_resolution: 1080 } };
+  await f.app.load(value);
+  f.app.resize();
+  assert.equal(f.renderer.getPixelRatio(), 1, 'a 720-line view at Max 3D is not supersampled');
+  f.window.devicePixelRatio = 2;
+  f.app.resize();
+  assert.equal(f.renderer.getPixelRatio(), 2, 'a 1440-device-line view draws at its device pixels');
+  f.window.devicePixelRatio = 1;
+  value.quality = { mode: 40, values: { quality_mode: 40, rendering_resolution: 640 } };
+  f.app.seek(0, value);
+  f.app.resize();
+  assert.equal(Math.floor(720 * f.renderer.getPixelRatio()), 640, 'Performance 3D draws its exact 640 lines');
   f.app.dispose();
 }
 
@@ -475,6 +503,8 @@ async function checkAssetDump() {
   assert.deepEqual(first.lights, { modeled: false });
   assert.deepEqual(first.particles, { modeled: false });
   assert.equal(first.globals['global:_Beat'], null, 'quantities the editor does not model are null');
+  assert.deepEqual(first.globals['global:_RenderTextureResolution'],
+    { f: 0, from: 'renderer.getDrawingBufferSize', v: [720, 720, 0, 0] }, 'the render-target size in pixels');
   assert.equal(first.renderers.length, 1);
   assert.equal(first.renderers[0].key, 'renderer:member1:model-71');
   assert.equal(first.renderers[0].visible, true);
@@ -556,6 +586,7 @@ function checkAssetDumpHelpers() {
 
 (async () => {
   checkResizeDraws();
+  await checkNativeRenderHeight();
   await checkAssetDump();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
