@@ -13,8 +13,9 @@ the evidence) and read from the same cue extraction (``control_clips``):
   GameObject draws with its materials through the MainCamera when its layer
   is in the level35 culling mask 0x0C0BC013. Layer 20 belongs to the
   orthographic overlay camera and is reported here.
-* An enabled Animator plays its controller's default state from the
-  activation on the player clock (mv_studio_prefab_animator): Transform,
+* An enabled Animator on a GameObject active at the clone's activation plays
+  its controller's default state from that activation on the player clock
+  (mv_studio_prefab_animator): Transform,
   GameObject activation, renderer enable and the renderer's _TintColor and
   _MainTex_ST (its MaterialPropertyBlock), wrapped by m_LoopTime.
 * A CustomControl track is gated by its quality category like the particle
@@ -42,6 +43,7 @@ from . import unity_builtin_meshes
 
 SCHEMA = 1
 _MAX_TEMPLATES = 64
+_MAX_CUES = 512  # MVStudioControlPrefabs.validDescriptor refuses a longer cue list.
 _MAX_RENDERERS = 64
 _MAX_VERTICES = 120_000
 _MAX_BYTES = 12 * 1024 * 1024
@@ -67,8 +69,9 @@ def _b64(array, dtype):
 class _Builder:
     """Shared textures and meshes of every template, within the preview budget."""
 
-    def __init__(self, deadline):
-        self.textures = particles._Textures(deadline)
+    def __init__(self, deadline, textures=None):
+        # The particle reader's table when given: a texture both use is exported once.
+        self.textures = particles._Textures(deadline) if textures is None else textures
         self.meshes, self.index, self.vertices, self.bytes = [], {}, 0, 0
 
     def mesh(self, renderer, kind, node, need_colors, skin_quality=0):
@@ -187,6 +190,14 @@ def _animators(objects, walked, deadline):
         fields = component.read_typetree()
         if not fields.get("m_Enabled", True):
             continue
+        if not node["authored"]:
+            # Inactive when PrefabControl activates the clone: Unity starts this
+            # Animator's default state when a curve activates its GameObject, not
+            # at the clone's activation. That start time is not reproduced, so
+            # what it animates is reported (an unreachable node draws nothing).
+            subtree[own] = ("under prefab animation that is not previewed "
+                            "(Animator activated after the clone; its state time is not reproduced)")
+            continue
         try:
             clip = animator.default_clip(objects, component, fields)
             if clip is None:
@@ -292,6 +303,8 @@ def _template(objects, walked, builder, deadline):
                 center = ((tree.get("m_AABB") or {}).get("m_Center") or {})
                 values = [center.get(axis) for axis in "xyz"]
                 row["skin"] = {"bones": bones, "bindPoses": [_mirrored(pose) for pose in poses],
+                               # Unity recomputes the bounds from the skinned pose every frame.
+                               "updateWhenOffscreen": bool(tree.get("m_UpdateWhenOffscreen", 0)),
                                "root": transforms.get(viewer._key(root)) if root is not None else None,
                                "rootCenter": [-values[0], values[1], values[2]]
                                if all(type(value) in (int, float) and math.isfinite(value) for value in values) else None}
@@ -357,15 +370,21 @@ def _particle_summary(outcome):
     return drawn, gaps, quiet
 
 
-def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
+def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None, textures=None, shared=0):
     """Return (descriptor or None, coverage ledger) for every CustomControlClip.
 
     ``claimed`` maps (trackId, eventId) to the per-effect stage reader that draws
     the cue; those cues are left to it. ``outcomes`` is what
     mv_studio_particle_systems.read did with each prefab (None: no particles).
+    ``textures`` is the particle reader's texture table; its first ``shared``
+    entries are carried by the stageParticleSystems descriptor, so this
+    descriptor lists only the entries after them ("sharedTextures": shared) and
+    a material index below ``shared`` names that descriptor's texture.
     """
     claimed = claimed or {}
-    builder = _Builder(deadline)
+    builder = _Builder(deadline, textures)
+    if not 0 <= shared <= len(builder.textures.levels):
+        raise ValueError("shared texture count outside the texture table")
     templates, cues, ledger, prefabs, mesh_reasons = [], [], [], {}, {}
     for row in particles.control_clips(objects, mono, tracks):
         track, event = row["track"], row["event"]
@@ -404,12 +423,20 @@ def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
                 gaps.append(f"prefab meshes: {str(error)[:120] or type(error).__name__}")
             if outcomes is None:
                 gaps.append("particle systems are not read by this import")
-            prefabs[key] = index, drawn + meshes, gaps, quiet
-        index, drawn, gaps, quiet = prefabs[key]
-        dropped = identity in ((outcomes or {}).get(key) or {}).get("dropped", ())
-        cue_gaps = gaps + (["particle cue budget of the preview"] if dropped else [])
+            prefabs[key] = index, drawn, meshes, gaps, quiet
+        index, systems, meshes, gaps, quiet = prefabs[key]
+        cue_gaps = list(gaps)
+        if identity in ((outcomes or {}).get(key) or {}).get("dropped", ()):
+            # The particle reader left this cue out of its own budget: its systems are not drawn.
+            cue_gaps.append("particle cue budget of the preview")
+            systems = 0
         if index is not None:
-            cues.append({**entry, "template": index, "offset": row["offset"], "quality": row["quality"]})
+            if len(cues) < _MAX_CUES:
+                cues.append({**entry, "template": index, "offset": row["offset"], "quality": row["quality"]})
+            else:
+                cue_gaps.append("prefab cue budget of the preview")
+                meshes = 0
+        drawn = systems + meshes
         if drawn and not cue_gaps:
             status, note = RENDERED, "The effect prefab is drawn by the common CustomControl rule."
         elif drawn:
@@ -430,8 +457,10 @@ def read(objects, mono, tracks, deadline, *, claimed=None, outcomes=None):
         mesh.pop("_center", None)
     descriptor = None
     if cues:
-        descriptor = {"schema": SCHEMA, "textures": builder.textures.levels, "meshes": builder.meshes,
+        descriptor = {"schema": SCHEMA, "textures": builder.textures.levels[shared:], "meshes": builder.meshes,
                       "templates": templates, "cues": cues}
+        if shared:
+            descriptor["sharedTextures"] = shared
     return descriptor, ledger
 
 

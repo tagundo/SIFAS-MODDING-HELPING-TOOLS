@@ -63,9 +63,23 @@
       row.curves.length === (row.kind === "enabled" ? 1 : 4);
   }
 
-  function validDescriptor(source) {
+  // The texture table a descriptor's material indices name: the first
+  // `sharedTextures` entries are the stageParticleSystems descriptor's (one export
+  // for a texture both use), the rest are the descriptor's own.
+  function textureTable(source, shared) {
+    if (!Array.isArray(source?.textures)) return null;
+    if (source.sharedTextures === undefined) return source.textures;
+    const count = source.sharedTextures;
+    if (!Number.isInteger(count) || count < 1 || !Array.isArray(shared?.textures) || shared.textures.length !== count) {
+      return null;
+    }
+    return shared.textures.concat(source.textures);
+  }
+
+  function validDescriptor(source, shared) {
     const stage = motion();
-    const {textures, meshes, templates, cues} = source || {};
+    const {meshes, templates, cues} = source || {};
+    const textures = textureTable(source, shared);
     if (!stage || source?.schema !== 1 || !Array.isArray(textures) || !Array.isArray(meshes) ||
         !Array.isArray(templates) || !Array.isArray(cues) || cues.length > 512 || templates.length > 64) return false;
     if (!textures.every(texture => Array.isArray(texture?.levels) && texture.levels.length >= 1 &&
@@ -89,7 +103,8 @@
         (renderer.skin === undefined || (meshes[renderer.mesh].joints !== undefined &&
           Array.isArray(renderer.skin.bones) && renderer.skin.bones.every(bone => !!template.nodes[bone]) &&
           Array.isArray(renderer.skin.bindPoses) && renderer.skin.bindPoses.length === renderer.skin.bones.length &&
-          renderer.skin.bindPoses.every(pose => vector(pose, 16)))) &&
+          renderer.skin.bindPoses.every(pose => vector(pose, 16)) &&
+          (renderer.skin.updateWhenOffscreen === undefined || typeof renderer.skin.updateWhenOffscreen === "boolean"))) &&
         (renderer.sortCenter === undefined || vector(renderer.sortCenter, 3))) &&
       Array.isArray(template.animators) && template.animators.every(animator => !!template.nodes[animator?.node] &&
         finite(animator.clip?.start) && finite(animator.clip.duration) && animator.clip.duration >= 0 &&
@@ -177,20 +192,27 @@
     return geometry;
   }
 
-  async function apply(T, root, descriptor) {
+  // `shared`: the stageParticleSystems descriptor whose textures a descriptor with
+  // `sharedTextures` indexes first.
+  async function apply(T, root, descriptor, shared) {
     const systems = global.MVStudioParticleSystems, stage = motion();
     if (!root?.isObject3D || !systems?.loadTexture || !systems.renderState || !systems.activeFrames ||
         !systems.animatorTime || !stage ||
-        !global.MVStudioTitle?.loadTexture || !validDescriptor(descriptor)) return null;
-    const textures = [];
+        !global.MVStudioTitle?.loadTexture || !validDescriptor(descriptor, shared)) return null;
+    // Only the textures this descriptor's materials sample are uploaded.
+    const table = textureTable(descriptor, shared), used = new Set();
+    for (const template of descriptor.templates) for (const renderer of template.renderers) {
+      for (const material of renderer.materials) if (material.texture !== null) used.add(material.texture);
+    }
+    const textures = new Array(table.length).fill(null);
+    let white = null;
     try {
-      for (const source of descriptor.textures) textures.push(await systems.loadTexture(T, global.MVStudioTitle, source));
-      textures.push(await systems.loadTexture(T, global.MVStudioTitle, null));
+      for (const index of used) textures[index] = await systems.loadTexture(T, global.MVStudioTitle, table[index]);
+      white = await systems.loadTexture(T, global.MVStudioTitle, null);
     } catch {
-      for (const texture of textures) texture.dispose();
+      for (const texture of textures) texture?.dispose();
       return null;
     }
-    const white = textures[textures.length - 1];
     const group = new T.Group();
     group.name = "Original control prefabs";
     root.add(group);
@@ -313,38 +335,55 @@
     }
 
     // Unity's linear blend skinning on the CPU: bone world * bind pose, per vertex weights.
+    // Transparent draws sort by the renderer bounds center: m_AABB about the root
+    // bone, or, with m_UpdateWhenOffscreen, the bounds Unity recomputes every frame
+    // from the skinned pose (the center of the skinned vertices' world AABB).
     function skin(state, clone) {
       const {renderer, parts, streams, joints, weights, poses, boneMatrices} = state;
       renderer.skin.bones.forEach((bone, index) => boneMatrices[index].multiplyMatrices(clone.nodes[bone].matrixWorld, poses[index]));
-      const root = renderer.skin.root ?? renderer.skin.bones[0];
-      center.fromArray(renderer.skin.rootCenter || [0, 0, 0]).applyMatrix4(clone.nodes[root].matrixWorld);
+      const rest = streams.rest, output = streams.position;
+      const array = output.array, count = output.count;
+      const skinned = state.skinned || (state.skinned = new Uint8Array(count));
+      const offscreen = renderer.skin.updateWhenOffscreen === true;
+      let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      const world = state.world || (state.world = new Float32Array(count * 3));
+      for (let vertex = 0; vertex < count; vertex++) {
+        let x = 0, y = 0, z = 0, total = 0;
+        for (let lane = 0; lane < 4; lane++) {
+          const weight = weights[vertex * 4 + lane];
+          if (!(weight > 0)) continue;
+          const bone = boneMatrices[joints[vertex * 4 + lane]];
+          if (!bone) continue;
+          point.set(rest[vertex * 3], rest[vertex * 3 + 1], rest[vertex * 3 + 2]).applyMatrix4(bone);
+          x += point.x * weight;
+          y += point.y * weight;
+          z += point.z * weight;
+          total += weight;
+        }
+        skinned[vertex] = total > 0 ? 1 : 0;
+        if (!(total > 0)) continue;
+        x /= total; y /= total; z /= total;
+        world[vertex * 3] = x; world[vertex * 3 + 1] = y; world[vertex * 3 + 2] = z;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+      if (offscreen && minX <= maxX) {
+        center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+      } else {
+        const root = renderer.skin.root ?? renderer.skin.bones[0];
+        center.fromArray(renderer.skin.rootCenter || [0, 0, 0]).applyMatrix4(clone.nodes[root].matrixWorld);
+      }
       state.holder.position.copy(center);
       state.holder.updateMatrixWorld(true);
-      {
-        const rest = streams.rest, output = streams.position;
-        const array = output.array;
-        for (let vertex = 0; vertex < output.count; vertex++) {
-          let x = 0, y = 0, z = 0, total = 0;
-          for (let lane = 0; lane < 4; lane++) {
-            const weight = weights[vertex * 4 + lane];
-            if (!(weight > 0)) continue;
-            const bone = boneMatrices[joints[vertex * 4 + lane]];
-            if (!bone) continue;
-            point.set(rest[vertex * 3], rest[vertex * 3 + 1], rest[vertex * 3 + 2]).applyMatrix4(bone);
-            x += point.x * weight;
-            y += point.y * weight;
-            z += point.z * weight;
-            total += weight;
-          }
-          if (total > 0) {
-            array[vertex * 3] = x / total - center.x;
-            array[vertex * 3 + 1] = y / total - center.y;
-            array[vertex * 3 + 2] = z / total - center.z;
-          }
-        }
-        output.needsUpdate = true;
-        for (const part of parts) part.geometry.computeBoundingSphere();
+      for (let vertex = 0; vertex < count; vertex++) {
+        if (!skinned[vertex]) continue;
+        array[vertex * 3] = world[vertex * 3] - center.x;
+        array[vertex * 3 + 1] = world[vertex * 3 + 1] - center.y;
+        array[vertex * 3 + 2] = world[vertex * 3 + 2] - center.z;
       }
+      output.needsUpdate = true;
+      for (const part of parts) part.geometry.computeBoundingSphere();
     }
 
     function hide(entry) {
@@ -410,7 +449,8 @@
         root.remove(group);
         for (const geometry of geometries) geometry.dispose();
         group.traverse(object => object.material?.dispose?.());
-        for (const texture of textures) texture.dispose();
+        for (const texture of textures) texture?.dispose();
+        white.dispose();
       },
     };
   }

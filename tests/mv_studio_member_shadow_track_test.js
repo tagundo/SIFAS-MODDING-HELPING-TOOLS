@@ -115,6 +115,14 @@ async function stagePrefabs() {
   close(scaleOut.z, f32(factor * f32(2.5)) * 2, "track Z scale");
   instance.update(false, false, { index: 5, scaleX: 1, scaleZ: 1 }, set);
   assert.deepEqual(visible(), [], "an index without a prefab activates nothing");
+  // The stage effect is released while the performer stays: its instances go
+  // with the templates, and a later set is instanced afresh.
+  instance.releasePrefabs(await shadow.prefabs(T, effect, parser));
+  assert.equal(layer.children.length, 6, "another set's release leaves these instances");
+  instance.releasePrefabs(set);
+  assert.equal(layer.children.length, 2, "only the costume shadow meshes remain");
+  instance.update(false, false, null, set);
+  assert.equal(layer.children.length, 6);
   instance.update(true, false, null, null);
   assert.deepEqual(visible(), ["Native member contact shadow L", "Native member contact shadow R"], "without prefabs the costume shadows draw");
   assert.equal(layer.children.length, 2);

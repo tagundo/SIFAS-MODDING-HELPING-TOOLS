@@ -64,6 +64,39 @@ async function run() {
   rogue.templates[0].renderers[0].draws = [[3, 0]];
   assert.equal(C.validDescriptor(rogue), false, "a draw must name a submesh");
 
+  // One texture table with the particle systems: indices below sharedTextures name the
+  // stageParticleSystems descriptor's textures, the rest this descriptor's own.
+  const png = (width, height) => {
+    const header = Buffer.alloc(24); header.writeUInt32BE(width, 16); header.writeUInt32BE(height, 20);
+    return header.toString("base64");
+  };
+  const level = (width) => ({levels: [{png: png(width, width), width, height: width}], filter: 1, wrap: [0, 0]});
+  const particleSide = {textures: [level(4), level(8)]};
+  const sharing = descriptor();
+  sharing.textures = [level(16)];
+  sharing.sharedTextures = 2;
+  sharing.templates[0].renderers[0].materials = [material({texture: 1})];
+  sharing.templates[0].renderers[1].materials = [material({texture: 2})];
+  assert.equal(C.validDescriptor(sharing, particleSide), true);
+  assert.equal(C.validDescriptor(sharing), false, "shared indices need the particle descriptor");
+  assert.equal(C.validDescriptor(sharing, {textures: [level(4)]}), false, "the shared count must match");
+  const outside = structuredClone(sharing);
+  outside.templates[0].renderers[1].materials = [material({texture: 3})];
+  assert.equal(C.validDescriptor(outside, particleSide), false);
+  const loaded = [];
+  const loadTexture = P.loadTexture;
+  P.loadTexture = async (T, title, source) => { loaded.push(source?.levels[0].width ?? "white"); return loadTexture(T, title, source); };
+  const sharedScene = new T.Scene();
+  const sharedPrefabs = await C.apply(T, sharedScene, sharing, particleSide);
+  P.loadTexture = loadTexture;
+  assert.ok(sharedPrefabs);
+  assert.deepEqual(loaded, [8, 16, "white"], "only the sampled textures are uploaded: shared index 1 and own index 0");
+  sharedPrefabs.update(10.6, project());
+  const sampled = [];
+  sharedScene.traverse(object => { if (object.isMesh) sampled.push(object.material.uniforms.uTexture.value.image?.width); });
+  assert.deepEqual(sampled.sort((a, b) => a - b), [8, 16]);
+  sharedPrefabs.dispose();
+
   // The state time runs from the activation frame (clipIn does not reach the Animator),
   // wraps for a looping clip and holds the end otherwise.
   const clip = {start: 0, duration: 1, loop: true};
@@ -162,7 +195,33 @@ async function run() {
     const actual = new T.Vector3().fromBufferAttribute(position, vertex).applyMatrix4(beam.matrixWorld);
     assert.ok(actual.distanceTo(expected) < 1e-5, `vertex ${vertex}: ${actual.toArray()} vs ${expected.toArray()}`);
   });
+  // m_AABB about the root bone: the sort center is the root's rest point.
+  assert.deepEqual(beams.inspect()[0].renderers[0].center.map(value => +value.toFixed(6)), [-3, 0, 0]);
   beams.dispose();
+
+  // m_UpdateWhenOffscreen: Unity recomputes the bounds from the skinned pose every
+  // frame, so the sort center is the skinned vertices' AABB center.
+  skinned.templates[0].renderers[0].skin.updateWhenOffscreen = true;
+  assert.equal(C.validDescriptor(skinned), true);
+  const offscreenScene = new T.Scene();
+  const offscreen = await C.apply(T, offscreenScene, skinned);
+  offscreen.update(10 + 59 / 30, project());
+  let moved;
+  offscreenScene.traverse(object => { if (object.isMesh) moved = object; });
+  offscreenScene.updateMatrixWorld(true);
+  const expected = rest.map(([x, y, z], vertex) => new T.Vector3(x, y, z).applyMatrix4(vertex === 1 || vertex === 2 ? bone2 : bone1));
+  const bounds = new T.Box3().setFromPoints(expected), middle = bounds.getCenter(new T.Vector3());
+  const center = new T.Vector3().fromArray(offscreen.inspect()[0].renderers[0].center);
+  assert.ok(center.distanceTo(middle) < 1e-5, `sort center ${center.toArray()} vs ${middle.toArray()}`);
+  assert.ok(center.distanceTo(new T.Vector3(-3, 0, 0)) > .1, "not the root bone's m_AABB center");
+  const moving = moved.geometry.attributes.position;
+  expected.forEach((point, vertex) => {
+    const actual = new T.Vector3().fromBufferAttribute(moving, vertex).applyMatrix4(moved.matrixWorld);
+    assert.ok(actual.distanceTo(point) < 1e-5, `offscreen vertex ${vertex}: ${actual.toArray()} vs ${point.toArray()}`);
+  });
+  skinned.templates[0].renderers[0].skin.updateWhenOffscreen = 1;
+  assert.equal(C.validDescriptor(skinned), false);
+  offscreen.dispose();
 }
 
 run().then(() => console.log("mv_studio_control_prefabs_test: ok")).catch(error => {

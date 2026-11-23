@@ -12,7 +12,7 @@ function latch() {
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
-function fixture(visible = true) {
+function fixture(visible = true, options = {}) {
   const frames = [], samples = [], models = new Map(), holds = new Map(), queued = new Map();
   const cameras = [];
   const fetched = [], parsing = new Map();
@@ -52,6 +52,7 @@ function fixture(visible = true) {
       const id = new Uint8Array(bytes)[0];
       const root = new THREE.Group();
       root.userData.id = id;
+      Object.assign(root.userData, options.userData?.[id]);
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 1,0,0, 0,1,0], 3));
       geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute([0,0,0,0, 0,0,0,0, 0,0,0,0], 4));
@@ -102,7 +103,9 @@ function fixture(visible = true) {
       info.outline = outline;
       const hold = holds.get(id);
       if (hold) hold.started.resolve();
-      return { ready: hold?.finish.promise || Promise.resolve(), dispose() { info.materialsReleased++; } };
+      return { ready: hold?.finish.promise || Promise.resolve(), dispose() { info.materialsReleased++; },
+        setRimlight(value) { (info.rimlight ||= []).push(value); },
+        setLiveLighting(value) { info.liveLighting = value; } };
     } },
     ViewerMotionTimeline: { create(root) {
       return { evaluatePose(time) { samples.push([root.userData.id, time]); },
@@ -120,11 +123,39 @@ function fixture(visible = true) {
   window.ViewerMotionTimeline = { ...window.ViewerMotionTimeline, ...motion };
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-split.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-asset-dump.js'), 'utf8'), context);
+  if (options.lighting) {
+    vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-lighting.js'), 'utf8'), context);
+  }
+  const fades = [], shadows = [];
+  if (options.memberShadow) {
+    // Stage-effect prefab sets and per-performer controllers, as MVStudioMemberShadow.
+    window.MVStudioMemberShadow = {
+      async prefabs(T, root) {
+        if (!root.userData.shadowSet) return null;
+        const set = { id: root.userData.id, disposed: false, dispose() { set.disposed = true; shadows.push(['dispose', set.id]); } };
+        return set;
+      },
+      async apply() {
+        let instanced = null;
+        return { update(compatible, advancing, parameters, set) {
+          if (set?.disposed) shadows.push(['drawn-disposed', set.id]);
+          instanced = set;
+        }, releasePrefabs(set) {
+          if (instanced === set) { shadows.push(['release', set.id]); instanced = null; }
+        }, dispose() {} };
+      },
+      sample: () => null,
+    };
+  }
+  if (options.screenFade) {
+    window.MVStudioScreenFade = { create: () => ({ draw(state) { fades.push(state); }, dispose() {} }),
+      state: (time, end) => ({ time, end }) };
+  }
   vm.runInContext(fs.readFileSync(require.resolve('../webtools/web/static/mv-studio-scene.js'), 'utf8'), context);
   const mount = { clientWidth: 1280, clientHeight: 720, appendChild() {} };
   const app = window.MVStudioScene.create(mount,
     { visible, onError(message) { throw new Error(message); } });
-  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window,
+  return { app, frames, cameras, samples, models, holds, queued, fetched, parsing, renderer, mount, window, fades, shadows,
     checkResize: onResize, get world() { return world; } };
 }
 
@@ -207,6 +238,55 @@ async function checkNativeCamera() {
   f.checkResize();
   assert.equal(f.cameras.at(-1).fov, 40, 'a resize applies stock native aspect correction without requiring another seek');
   assert.equal(shot(3.3).near, .02, 'gaps beyond the authored Hold keep the editor view');
+  f.app.dispose();
+}
+
+// A stage effect's member-shadow prefab set is released with its record: the
+// performers that stay drop their instances first and never draw the disposed set.
+async function checkShadowPrefabRelease() {
+  const userData = { 91: { mvMemberShadowDefaults: false, shadowSet: true }, 92: { mvMemberShadowDefaults: false, shadowSet: true } };
+  const f = fixture(true, { memberShadow: true, userData });
+  const value = project(90);
+  value.assets = [{ kind: 'effect', previewUrl: address(91) }];
+  await f.app.load(value);
+  f.app.seek(1, value);
+  const next = { ...project(90), assets: [{ kind: 'effect', previewUrl: address(92) }] };
+  await f.app.load(next);
+  f.app.seek(1, next);
+  f.app.seek(2, next);
+  const log = f.shadows.map((row) => row.join(':'));
+  assert(log.includes('release:91') && log.indexOf('release:91') < log.indexOf('dispose:91'),
+    `the performer drops the old instances before the templates go: ${log}`);
+  assert(!log.some((row) => row.startsWith('drawn-disposed')), `a disposed set is never drawn: ${log}`);
+  f.app.dispose();
+}
+
+// Original MV end: past the last camera clip the live camera holds that shot's
+// final pose (StartBlur keeps the last 3D frame), and the end effect starts when
+// the music ends, at soundtrack duration - offset in director time.
+async function checkOriginalEndHold() {
+  const f = fixture(true, { screenFade: true });
+  const track = { kind: 'camera', nativeClass: 'AnimationTrack', binding: '/EntryPoint/Live/Cameras/MainCamera', events: [
+    { id: 'c:0', start: 0, duration: 1, values: { keyframes: [
+      { time: 0, position: [0,2,10], rotation: [0,0,0,1], fov: 34 }, { time: 1, position: [0,3,8], rotation: [0,0,0,1], fov: 23 }] } },
+    { id: 'c:1', start: 2, duration: 1, values: { keyframes: [
+      { time: 0, position: [1,2,4], rotation: [0,0,0,1], fov: 30 }, { time: 1, position: [2,2,4], rotation: [0,0,0,1], fov: 28 }] } }
+  ] };
+  const value = { source: { kind: 'game' }, duration: 6, soundtrack: { duration: 5, offset: .5 }, tracks: [track], performers: [] };
+  await f.app.load(value);
+  const shot = (time) => { f.app.seek(time, value); return f.cameras.at(-1); };
+  assert.equal(shot(1.5).near, .02, 'a gap between clips is not the end: the editor view stays');
+  const held = shot(4);
+  assert.deepEqual([held.position, held.fov, held.near], [[-2,2,4], 28, .1], 'the last shot holds its final pose');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.app.inspect().cameraEvent)),
+    { track: null, event: 'c:1', start: 2, duration: 1, held: true });
+  assert.equal(f.app.inspect().liveShot, true);
+  assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 4.5 }, 'the music ends at duration - offset');
+  value.soundtrack.offset = undefined;
+  shot(4);
+  assert.deepEqual({ ...f.fades.at(-1) }, { time: 4, end: 5 });
+  value.source = { kind: 'user' };
+  assert.equal(shot(4).near, .02, 'only an original MV holds the last shot');
   f.app.dispose();
 }
 
@@ -380,6 +460,31 @@ async function checkNativeMemberCulling() {
   culling.muted = true;
   f.app.seek(2.5, value);
   assert.deepEqual(f.frames.at(-1), ['model-55', 'outline-55']);
+  f.app.dispose();
+}
+
+// member_rim_light only mutes the Member Rim Light tracks
+// (LiveQualityOperator.ApplyLiveQualityToMemberEffectTrack); the member
+// material keeps its rim term and the base light still lights it.
+async function checkMemberRimQuality() {
+  const f = fixture(true, { lighting: true }), value = project(56);
+  value.quality = { values: { member_rim_light: false, base_light: true } };
+  value.tracks.push({ nativeClass: 'LiveBaseLightTrack', binding: '/EntryPoint/Live/Global/LiveBaseLightReciever', events: [
+    { start: 0, duration: 10, values: { playableClass: 'LiveBaseLightClip', ambientColorType: 0, ambientMemberPosition: 1,
+      ambientColor: [1, 1, 1, 1], ambientTintColor: [1, 1, 1, 1], rimlightColorType: 0, rimlightColor: [1, 1, 1, 1],
+      rimlightIntensity: .4, rimlightSharpness: 2, rimlightDirection: { x: 0, y: 1, z: 0 } } }] },
+  { nativeClass: 'LiveRimlightTrack', binding: '/EntryPoint/Live/Members/Member1', events: [
+    { start: 0, duration: 10, values: { playableClass: 'LiveRimlightClip', colorSpecifiedType: 0, color: [1, 1, 1, 1],
+      intensity: .3, sharpness: 1, direction: { x: 0, y: 0, z: 0 } } }] });
+  await f.app.load(value);
+  f.app.seek(1, value);
+  const info = f.models.get(56);
+  assert.deepEqual(info.rimlight || [], [], 'the quality never switches the member rim term off');
+  assert.equal(info.liveLighting.rim.intensity, .4, 'only the base light rim reaches the material');
+  value.quality.values.member_rim_light = true;
+  f.app.seek(1, value);
+  assert(Math.abs(info.liveLighting.rim.intensity - .7) < 1e-9, 'with the quality on the rim track adds to the base');
+  assert.deepEqual(info.rimlight || [], []);
   f.app.dispose();
 }
 
@@ -557,6 +662,16 @@ function checkAssetDumpHelpers() {
   real.userData = { sifasArrayLayer: 1 };
   assert.deepEqual(D.textureIdentity(real), { name: 'atlas', width: 2, height: 2, mips: 2, arrayLayer: 1 },
     'authored mip levels and the array slice are part of the identity');
+  // An image texture with no uploaded levels gets its chain from the GPU.
+  const gpu = new THREE.Texture({ width: 128, height: 64 });
+  gpu.name = 'rim';
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 8, mipsGenerated: true },
+    'a GPU-generated chain is reported as generated, not as authored mips');
+  gpu.minFilter = THREE.LinearFilter;
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 1 }, 'a non-mip filter samples one level');
+  gpu.minFilter = THREE.LinearMipmapLinearFilter;
+  gpu.mipmaps = [{ width: 128, height: 64 }, { width: 64, height: 32 }, { width: 32, height: 16 }];
+  assert.deepEqual(D.textureIdentity(gpu), { name: 'rim', width: 128, height: 64, mips: 3 }, 'uploaded levels are authored');
   // AS/Member: effective keywords (authored, with variant keywords as drawn),
   // the rim evaluation and the outline stencil comparison.
   const member = new THREE.ShaderMaterial({ uniforms: { uRimglightIntensity: { value: .5 }, uOutlineScale: { value: 1 } },
@@ -578,6 +693,9 @@ function checkAssetDumpHelpers() {
   await checkNativeCamera();
   await checkSavedNodeScaling();
   await checkNativeMemberCulling();
+  await checkMemberRimQuality();
+  await checkOriginalEndHold();
+  await checkShadowPrefabRelease();
   await checkTwelvePerformers();
   const f = fixture(), first = project(1);
   await f.app.load(first);

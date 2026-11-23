@@ -402,6 +402,47 @@ class AnimatorTests(unittest.TestCase):
         self.assertNotIn("fx/root/hidden", [node["path"] for node in row["nodes"]])
         self.assertEqual(notes, ["Animator"])
 
+    def test_renderer_lane_families_are_reported_like_mesh_renderers(self):
+        # mv_studio_prefab_animator.channels reports a mesh renderer whose _TintColor
+        # binds both .xyzw and .rgba (or part of a vector); the particle renderer
+        # gets the same reason instead of keeping whichever binding comes last.
+        import zlib
+
+        ps = ("ParticleSystem", "ParticleSystemRenderer")
+        walked = [walked_node("fx", None), walked_node("fx/root", 0, kinds=("Animator",)),
+                  walked_node("fx/root/both", 1, kinds=ps), walked_node("fx/root/part", 1, kinds=ps),
+                  walked_node("fx/root/whole", 1, kinds=ps)]
+        for node in walked:
+            node["authored"] = True
+
+        def lane(path, name, index):
+            item = binding(path, 199, (zlib.crc32(name.encode()) & 0x0FFFFFFF) | (index << 28))
+            return {**item, "customType": 22}
+
+        moving = ("linear", [(0.0, 0.0), (1.0, 1.0)])
+        rows = [*[(lane("both", "_TintColor", index), [None], [moving]) for index in range(4)],
+                *[(lane("both", "_TintColor", 4 + index), [None], [moving]) for index in range(4)],
+                *[(lane("part", "_MainTex_ST", index), [None], [moving]) for index in range(2)],
+                *[(lane("whole", "_TintColor", 4 + index), [None], [moving]) for index in range(4)]]
+        clip = {"m_Name": "clip", "m_MuscleClip": {"m_StartTime": 0.0, "m_StopTime": 1.0, "m_LoopTime": 1}}
+
+        def drawn(objects, game, particle, renderer, textures, blocked=None, **_):
+            if blocked:
+                raise systems._Unsupported(blocked)
+            return {"main": {}}
+
+        with mock.patch.object(systems, "_walk", return_value=walked), \
+                mock.patch.object(systems, "_default_clip", return_value=clip), \
+                mock.patch.object(systems, "_bindings", return_value=rows), \
+                mock.patch.object(systems, "system", side_effect=drawn):
+            row, unsupported, _ = systems.template({}, None, None, 0)
+        self.assertEqual({item["path"]: item["reason"] for item in unsupported}, {
+            "fx/root/both": "Animator animates _TintColor through both its vector and color lanes",
+            "fx/root/part": "Animator animates part of _MainTex_ST"})
+        self.assertEqual([system["path"] for system in row["systems"]], ["fx/root/whole"])
+        channel, = row["animation"]["channels"]
+        self.assertEqual((channel["kind"], channel["system"]), ("tint", 0))
+
     def test_inactive_prefab_root_is_activated_by_the_clip(self):
         ps = ("ParticleSystem", "ParticleSystemRenderer")
         walked = [walked_node("fx", None, active=False, kinds=ps), walked_node("fx/root", 0, kinds=ps),

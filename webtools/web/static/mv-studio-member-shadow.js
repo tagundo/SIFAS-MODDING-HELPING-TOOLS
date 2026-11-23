@@ -190,6 +190,11 @@
           }
         }
       },
+      // Drop the instances of a prefab set that is about to be disposed (its
+      // stage effect is released while this performer stays).
+      releasePrefabs(prefabSet) {
+        if (!disposed && prefabSet && instanced?.set === prefabSet) instances(null);
+      },
       dispose() {
         if (disposed) return;
         disposed = true;

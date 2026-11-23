@@ -107,6 +107,22 @@
     return previous || next;
   }
 
+  // The camera clip that ends last, when `time` is past its end: an original MV
+  // holds that shot's final pose (see frameTracks).
+  function endedCameraEvent(track, time) {
+    let last = null;
+    for (const event of track.events) if (!last || event.start + event.duration > last.start + last.duration) last = event;
+    return last && time > last.start + last.duration ? last : null;
+  }
+
+  // The director time the music ends at: the audio plays at director time + the
+  // soundtrack offset (MVStudio seek), so FinishLiveMv runs at duration - offset.
+  function musicEnd(project) {
+    const soundtrack = project?.soundtrack;
+    if (!Number.isFinite(soundtrack?.duration)) return project?.duration;
+    return Math.max(0, soundtrack.duration - (Number.isFinite(soundtrack.offset) ? soundtrack.offset : 0));
+  }
+
   // Camera frames from the native importer are ordered. Continue to accept
   // projects authored by older tools that saved frames in a different order.
   function cameraSamples(event, time, ordered) {
@@ -410,8 +426,7 @@
         }
         if (useLive && screenFadeEnabled && project?.source?.kind === "game") {
           // FinishLiveMv runs on LiveMusicMachine.OnFinishMusic, at the music end.
-          const end = Number.isFinite(project.soundtrack?.duration) ? project.soundtrack.duration : project.duration;
-          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, end));
+          screenFade?.draw(global.MVStudioScreenFade.state(currentTime, musicEnd(project)));
         }
       }
     }
@@ -620,7 +635,13 @@
       record.stageLaserCores?.dispose();
       record.stageStationaryBursts?.dispose();
       record.memberShadow?.dispose();
-      record.memberShadowPrefabs?.dispose();
+      if (record.memberShadowPrefabs) {
+        // Performers instance these templates under their anchors: drop those
+        // meshes (and the scene's reference) before the templates are disposed.
+        for (const item of records) item.memberShadow?.releasePrefabs?.(record.memberShadowPrefabs);
+        if (memberShadowPrefabs === record.memberShadowPrefabs) memberShadowPrefabs = null;
+        record.memberShadowPrefabs.dispose();
+      }
       record.lossyScale?.dispose();
       record.physics?.dispose();
       record.constraints?.dispose();
@@ -1338,7 +1359,8 @@
         return;
       }
       stageParticleSystems = particleSystems;
-      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs);
+      const controlPrefabs = await global.MVStudioControlPrefabs?.apply(T, scene, value.stageControlPrefabs,
+        value.stageParticleSystems);
       if (!active()) {
         controlPrefabs?.dispose();
         return;
@@ -1402,17 +1424,28 @@
       else target.setHex(fallback);
     }
 
-    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera) {
+    // holdLastShot (original MVs): past the end of every camera clip the game
+    // keeps the last shot. Nothing moves the 3D camera after its final key, and at
+    // the music end LiveCoreCameraManager.StartBlur (0x2f63180) turns the 3D
+    // cameras off one frame later (AnimationBlurIntensity), so the overlay camera
+    // keeps blurring that frame. The editor camera is never shown in its place.
+    function frameTracks(time, tracks, quality, [ambient, key, rim], onCamera, holdLastShot = false) {
       ambient.color.setHex(0xe4edff);
       ambient.intensity = 1.2;
       key.color.setHex(0xffffff);
       key.intensity = 2.1;
       rim.color.setHex(0x8bb6ff);
       rim.intensity = 1.0;
+      let sampledCamera = false, ended = null;
       for (const track of tracks) {
         const event = track.kind === "camera" ? activeCameraEvent(track, time) : activeEvent(track, time);
-        if (!event) continue;
+        if (!event) {
+          const last = holdLastShot && onCamera && track.kind === "camera" ? endedCameraEvent(track, time) : null;
+          if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+          continue;
+        }
         if (track.kind === "camera") {
+          sampledCamera = true;
           onCamera?.(event, time, track);
         } else {
           const label = event.values.playableClass;
@@ -1431,12 +1464,14 @@
       if (quality.stage_ambient === false) ambient.intensity = 0.6;
       if (quality.base_light === false) key.intensity = 0.8;
       if (quality.member_rim_light === false) rim.intensity = 0;
+      if (!sampledCamera && ended) onCamera(ended.event, ended.event.start + ended.event.duration, ended.track, true);
     }
 
-    function useCameraEvent(event, time, track) {
+    function useCameraEvent(event, time, track, held = false) {
       if (!poseCamera(event, time, track)) return;
       hasShot = true;
       liveCameraEvent = { track: track.id ?? null, event: event.id ?? null, start: event.start, duration: event.duration };
+      if (held) liveCameraEvent.held = true;
       mainCameraPosition.copy(liveCamera.position);
       applyCameraOffsets(liveCamera, track.binding, time);
     }
@@ -1576,7 +1611,13 @@
         record.stageColoring?.invalidate();
         record.stageDisplay?.invalidate();
         if (record.motion) updateMotion(record);
-        record.materials?.setRimlight?.(settings.member_rim_light !== false);
+        // member_rim_light never reaches a member material: the game only mutes
+        // the "Member Rim Light" tracks (LiveQualityOperator.
+        // ApplyLiveQualityToMemberEffectTrack 0x20f3164), which sample() skips.
+        // The base light still writes the rim (LiveBaseLightReciever.
+        // ApplyBaseLightColor 0x2f5fac0 -> LiveCoreMemberRimlight.
+        // ApplyBaseIntensity 0x2f607fc: intensity = base, ApplyEnable(base > 0))
+        // and every AS/Member variant draws it, so the rim term stays on.
         if (record.prop) record.prop.setTracks(tracks);
         record.propLight?.setProject(project);
         record.stagePropLight?.setProject(project);
@@ -1637,7 +1678,7 @@
       }
       hasShot = false;
       liveCameraEvent = null;
-      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent);
+      frameTracks(currentTime, renderTracks, settings, lights, useCameraEvent, project?.source?.kind === "game");
       post?.evaluate(project, currentTime);
       activeSplitGazeCameras = split?.sample(currentTime, sampleSplitCamera) ?? null;
       const lighting = global.MVStudioLighting?.sample(project, currentTime);
@@ -1805,7 +1846,7 @@
         const clipIndex = track ? track.events.findIndex((event) => event.id === liveCameraEvent.event) : -1;
         return { track: liveCameraEvent.track, label: track?.label ?? null, nativeClass: track?.nativeClass ?? null,
           binding: track?.binding ?? null, clipIndex: clipIndex >= 0 ? clipIndex : null,
-          start: liveCameraEvent.start, duration: liveCameraEvent.duration };
+          start: liveCameraEvent.start, duration: liveCameraEvent.duration, ...(liveCameraEvent.held ? { held: true } : {}) };
       }
 
       function cameraEntry(camera, base) {

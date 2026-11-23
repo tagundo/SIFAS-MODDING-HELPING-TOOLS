@@ -678,10 +678,13 @@ def _animators(objects, walked, deadline):
     controller is not read. Constant Transform curves are written into the
     walked node's local pose. ``driven`` holds the time-varying curves the
     runtime plays (mv_studio_prefab_animator): node translations and the
-    renderer's _TintColor/_MainTex_ST, with the clip timing of their Animator.
+    renderer's _TintColor/_MainTex_ST, with the clip timing of their Animator;
+    ``driven["unsupported"]`` maps a node to the reason a renderer material
+    binding on it is not reproduced, worded as mv_studio_prefab_animator.channels
+    reports a mesh renderer's.
     """
     active, moving, unresolved, notes, posed = {}, {}, {}, set(), {}
-    driven = {"clips": [], "nodes": {}, "renderers": {}}
+    driven = {"clips": [], "nodes": {}, "renderers": {}, "unsupported": {}}
     for own, node in enumerate(walked):
         legacy = node["components"].get("Animation")
         if legacy is not None and node["authored"] and legacy.read_typetree().get("m_Enabled", True):
@@ -706,7 +709,7 @@ def _animators(objects, walked, deadline):
             continue
         clip_index = None
         # Binding paths are CRC32 hashes of the path below the Animator's GameObject.
-        targets, lanes = animator.targets(walked, own), {}
+        targets, lanes, both_families = animator.targets(walked, own), {}, set()
         for binding, values, *rest in rows:
             curves = rest[0] if rest else None
             target = targets.get(binding.get("path"))
@@ -750,14 +753,21 @@ def _animators(objects, walked, deadline):
                     continue
                 lane = animator.material_lane(binding) if kind == 199 else None
                 if lane is not None and curves is not None and timing is not None:
-                    lanes.setdefault((target, lane[0]), {})[lane[1]] = curves[0]
+                    found = lanes.setdefault((target, lane[0]), {})
+                    if lane[1] in found:
+                        both_families.add((target, lane[0]))
+                    found[lane[1]] = curves[0]
                 else:
                     moving.setdefault(target, set()).add(f"{_PARTICLE_CLASSES[kind]} properties")
             else:
                 # Mesh renderer material curves and the like: drawn by mv_studio_control_prefabs.
                 notes.add("Animator")
         for (target, prop), found in lanes.items():
-            if set(found) != {0, 1, 2, 3} or prop in {row["kind"] for row in driven["renderers"].get(target, ())}:
+            if (target, prop) in both_families or set(found) != {0, 1, 2, 3}:
+                moving.setdefault(target, set()).add("ParticleSystemRenderer properties")
+                driven["unsupported"].setdefault(target, animator.lane_reason(prop, (target, prop) in both_families))
+                continue
+            if prop in {row["kind"] for row in driven["renderers"].get(target, ())}:
                 moving.setdefault(target, set()).add("ParticleSystemRenderer properties")
                 continue
             if clip_index is None:
@@ -825,7 +835,8 @@ def template(objects, prefab, textures, deadline, walked=None):
         try:
             animated_parts = sorted(kind for kind in moving.get(own, ()) if kind.endswith("properties"))
             blocked = ("activated by the prefab Animator" if not node["authored"] else reasons[own][0] if reasons[own]
-                       else f"animated by the prefab Animator ({', '.join(animated_parts)})" if animated_parts else None)
+                       else driven["unsupported"].get(own)
+                       or (f"animated by the prefab Animator ({', '.join(animated_parts)})" if animated_parts else None))
             renderer = components.get("ParticleSystemRenderer")
             if renderer is None:
                 raise _Unsupported("ParticleSystem has no renderer")
@@ -972,14 +983,17 @@ def claimed_cues(result):
     return found
 
 
-def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None):
+def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None, textures=None):
     """Return the particle templates and cues of every CustomControlTrack, or None.
 
     ``outcomes``, when given, receives per prefab (viewer._key) what this reader
     did with it: the walked hierarchy, the drawn systems' layers, the rejected
     systems or the reason no template exists. mv_studio_control_prefabs reuses it.
+    ``textures``, when given, is the _Textures table shared with that reader, so
+    a texture both use is exported once; the descriptor lists the levels this
+    reader added (indices 0..n-1 of the shared table).
     """
-    textures = _Textures(deadline)
+    textures = _Textures(deadline) if textures is None else textures
     templates, cues, unsupported, notes = [], [], [], {}
     prefab_ids = {}
     outcomes = {} if outcomes is None else outcomes
@@ -1024,7 +1038,7 @@ def read(objects, mono, tracks, deadline, *, claimed=frozenset(), outcomes=None)
                      "offset": offset, "quality": quality, "clipSeed": seed & 0xFFFFFFFF})
     if not cues and not unsupported:
         return None
-    return {"schema": SCHEMA, "textures": textures.levels, "templates": templates, "cues": cues,
+    return {"schema": SCHEMA, "textures": list(textures.levels), "templates": templates, "cues": cues,
             "unsupported": unsupported, "otherComponents": notes}
 
 

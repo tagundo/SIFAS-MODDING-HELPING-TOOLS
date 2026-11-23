@@ -50,4 +50,19 @@ assert.deepEqual(sample(project, 30).member(1).rim, { intensity: 0 });
 // Without any member lighting track the live baseline (ApplyIntensity(0) at
 // initialization) holds; MVStudioScene passes null and SifasMaterial keeps 0.
 assert.equal(sample({ quality: { values: {} }, tracks: [] }, 30).member(1), null);
+// member_rim_light off only mutes the "Member Rim Light" tracks
+// (LiveQualityOperator.ApplyLiveQualityToMemberEffectTrack 0x20f3164). The base
+// light keeps writing every member's rim: LiveBaseLightMixer.PostProcess ->
+// LiveBaseLightReciever.ApplyBaseLightColor -> ApplyBaseIntensity(base), so the
+// material holds the base rim and ApplyEnable(base > 0) keeps the stencil Equal.
+const baseRim = { start: 0, duration: 100, values: { playableClass: "LiveBaseLightClip", ambientColorType: 0,
+  ambientMemberPosition: 1, ambientColor: [1, 1, 1, 1], ambientTintColor: [1, 1, 1, 1], rimlightColorType: 0,
+  rimlightColor: [0.25, 0.5, 1, 1], rimlightIntensity: 0.4, rimlightSharpness: 6, rimlightDirection: { x: 1, y: 2, z: 3 } } };
+const muted = { quality: { values: { member_rim_light: false, base_light: true } }, tracks: [...project.tracks,
+  { nativeClass: "LiveBaseLightTrack", binding: "/EntryPoint/Live/Global/LiveBaseLightReciever", events: [baseRim] }] };
+assert.deepEqual(sample(muted, 14.946).member(1).rim,
+  { color: [0.25, 0.5, 1, 1], intensity: 0.4, power: 7, direction: [1, 2, 3, 0] },
+  "with member rim light off the base light alone sets the rim (the local clip is muted)");
+muted.quality.values.member_rim_light = true;
+assert(Math.abs(sample(muted, 14.946).member(1).rim.intensity - (0.4 + 0.75)) < 1e-6, "with it on: base + local");
 console.log("PASS: member rim mixing matches the 12035 Max 3D game dump (local clips, no base light)");

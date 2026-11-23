@@ -94,6 +94,40 @@ class AnimatorReaderTests(unittest.TestCase):
             animator._state(machine)
 
 
+class Reader:
+    def __init__(self, tree):
+        self.tree = tree
+
+    def read_typetree(self):
+        return self.tree
+
+
+class TemplateTests(unittest.TestCase):
+    def test_animator_inactive_at_clone_activation_is_reported(self):
+        # fx/root's Animator activates fx/root/late; Unity starts late's own Animator
+        # when that happens, not when the clone activates, so what it animates is
+        # reported. fx/root/never is never activated: it draws nothing.
+        walked = [node("fx", None), node("fx/root", 0, kinds=("Animator",)),
+                  node("fx/root/late", 1, active=False, kinds=("Animator",)),
+                  node("fx/root/late/bar", 2, kinds=("MeshRenderer",)),
+                  node("fx/root/never", 1, active=False, kinds=("Animator",)),
+                  node("fx/root/never/bar", 4, kinds=("MeshRenderer",))]
+        for item in walked:
+            item["authored"] = item["self"] and (item["parent"] is None or walked[item["parent"]]["authored"])
+            item["components"] = {kind: Reader({"m_Enabled": 1}) for kind in item["components"]
+                                  if kind != "Transform"}
+        clip = {"m_Name": "clip", "m_MuscleClip": {"m_StartTime": 0.0, "m_StopTime": 1.0, "m_LoopTime": 1}}
+        rows = {id(walked[1]["components"]["Animator"]): [row(binding("late", 1, animator.ACTIVE), MOVING)]}
+        with mock.patch.object(animator, "default_clip", return_value=clip) as default, \
+                mock.patch.object(animator, "bindings", side_effect=lambda clip, deadline: rows.pop(next(iter(rows)))):
+            template, drawn, gaps, quiet = prefabs._template({}, walked, prefabs._Builder(0), 0)
+        self.assertEqual(default.call_count, 1, "only the Animator active at the clone's activation is read")
+        self.assertEqual((template, drawn), (None, 0))
+        self.assertEqual(gaps, [{"path": "fx/root/late/bar", "reason": "under prefab animation that is not previewed "
+                                 "(Animator activated after the clone; its state time is not reproduced)"}])
+        self.assertEqual(quiet, ["inactive GameObject"])
+
+
 class ShaderIdentityTests(unittest.TestCase):
     class Shader:
         def __init__(self, name, path_id=7):
@@ -120,6 +154,15 @@ class ShaderIdentityTests(unittest.TestCase):
             self.assertTrue(shaders.matches(material, tree, "AS/General/Transparent"))
             self.assertEqual(shaders.name(material, tree), "AS/General/Transparent")
         self.assertEqual(shader.reads, 1, "the compiled shader's type tree is read once")
+
+    def test_stage_display_pointer_table_is_derived_from_the_verified_table(self):
+        from webtools.core import mv_studio_stage_display as display
+
+        self.assertEqual(display._SHADERS, {
+            "AS/General/Opaque": (8330475765356442367, "cab-618a998abe328b9a2b05b370a5907b3e"),
+            "AS/General/Transparent": (7151384334892346267, "cab-adf9ba7b61bd035c754bf74ae44927cb")})
+        for name, (path_id, cab) in display._SHADERS.items():
+            self.assertEqual(shaders.KNOWN[cab, path_id], name)
 
     def test_an_external_shader_uses_the_verified_bundle_table(self):
         material = self.material(["archive:/cab-adf9ba7b61bd035c754bf74ae44927cb/cab-adf9ba7b61bd035c754bf74ae44927cb"])
@@ -151,6 +194,59 @@ class LedgerTests(unittest.TestCase):
         rows = {(row["status"], row["note"]): row["clips"] for row in coverage.report(project)["tracks"]}
         self.assertEqual(rows, {("rendered", "drawn"): 1, ("partial", "part"): 1, ("no effect", "nothing"): 1})
         self.assertEqual([row["status"] for row in coverage.report(project)["gaps"]], ["partial"])
+
+    def test_cue_budgets_are_ledgered(self):
+        # The runtime refuses more than 512 cues; the extra clips are ledgered, not
+        # reported as drawn. A cue the particle reader dropped draws no systems.
+        rows = [{"track": {"id": "t"}, "event": {"id": f"t:{index}"}, "prefab": object(), "offset": [0, 0, 0],
+                 "quality": "stage_control"} for index in range(3)]
+        outcomes = {"k": {"systems": [26], "walked": [], "dropped": {("t", "t:1")}}}
+        with mock.patch.object(prefabs, "_MAX_CUES", 2), \
+                mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", return_value=({"name": "fx"}, 1, [], [])):
+            descriptor, ledger = prefabs.read({}, None, [], float("inf"), outcomes=outcomes)
+        self.assertEqual([cue["eventId"] for cue in descriptor["cues"]], ["t:0", "t:1"])
+        self.assertEqual([(row["eventId"], row["status"]) for row in ledger],
+                         [("t:0", "rendered"), ("t:1", "partial"), ("t:2", "partial")])
+        self.assertIn("particle cue budget of the preview", ledger[1]["note"])
+        self.assertIn("prefab cue budget of the preview", ledger[2]["note"])
+        outcomes["k"]["dropped"].add(("t", "t:2"))
+        with mock.patch.object(prefabs, "_MAX_CUES", 2), \
+                mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", return_value=({"name": "fx"}, 1, [], [])):
+            _, ledger = prefabs.read({}, None, [], float("inf"), outcomes=outcomes)
+        self.assertEqual(ledger[2]["status"], "not rendered", "neither the systems nor the meshes are drawn")
+        self.assertEqual(ledger[2]["note"], "The effect prefab is not previewed: particle cue budget of the preview, "
+                                            "prefab cue budget of the preview.")
+
+    def test_texture_table_is_shared_with_the_particle_reader(self):
+        # The particle reader's table: its first two entries travel in stageParticleSystems,
+        # this descriptor carries only what the prefab meshes added after them.
+        table = prefabs.particles._Textures(float("inf"))
+        table.levels.extend([{"name": "particle_a"}, {"name": "particle_b"}])
+        rows = [{"track": {"id": "t"}, "event": {"id": "t:0"}, "prefab": object(), "offset": [0, 0, 0],
+                 "quality": "stage_control"}]
+
+        used = []
+
+        def template(objects, walked, builder, deadline):
+            used.append(builder.textures)
+            builder.textures.levels.append({"name": "mesh_only"})
+            return {"name": "fx"}, 1, [], []
+
+        with mock.patch.object(prefabs.particles, "control_clips", return_value=rows), \
+                mock.patch.object(prefabs.viewer, "_key", return_value="k"), \
+                mock.patch.object(prefabs, "_template", side_effect=template):
+            descriptor, _ = prefabs.read({}, None, [], float("inf"), outcomes={"k": {"walked": []}},
+                                         textures=table, shared=2)
+            self.assertEqual((descriptor["textures"], descriptor["sharedTextures"]), ([{"name": "mesh_only"}], 2))
+            self.assertIs(used[0], table, "the prefab meshes add to the particle reader's table")
+            alone, _ = prefabs.read({}, None, [], float("inf"), outcomes={"k": {"walked": []}})
+            self.assertNotIn("sharedTextures", alone)
+            with self.assertRaises(ValueError):
+                prefabs.read({}, None, [], float("inf"), outcomes={}, textures=table, shared=9)
 
     def test_warning_lists_mesh_gaps_once_per_prefab(self):
         ledger = [{"meshGaps": ["Animator animates _TintColor through both its vector and color lanes"] * 2},
@@ -211,12 +307,18 @@ class OriginalTimelineTests(unittest.TestCase):
         renderer, = beam["renderers"]
         self.assertEqual((renderer["path"].rsplit("/", 1)[1], len(renderer["skin"]["bones"]), len(renderer["materials"])),
                          ("LaserBeam", 88, 2))
+        self.assertIs(renderer["skin"]["updateWhenOffscreen"], True, "sorted by the per-frame skinned bounds")
         animator_row, = beam["animators"]
         self.assertEqual(animator_row["clip"], {"name": "clip_par_so2036_06", "start": 0.0, "duration": 48.0, "loop": True})
         kinds = {channel["kind"] for channel in animator_row["channels"]}
         self.assertTrue({"euler", "scale", "tint"} <= kinds)
         self.assertEqual({source["templates"][cue["template"]]["name"] for cue in source["cues"]}, set(names))
         self.assertEqual({cue["quality"] for cue in source["cues"]}, {"stage_control", "stage_display"})
+        # One texture table with the particle systems: nothing is exported twice.
+        particles = _parse("12036")["stageParticleSystems"]["textures"]
+        self.assertEqual(source.get("sharedTextures"), len(particles))
+        names = [texture["name"] for texture in particles + source["textures"]]
+        self.assertEqual(len(names), len(set(names)))
         # Authored pixels and mip levels only: each level halves, nothing is resampled.
         from PIL import Image
         for texture in source["textures"]:

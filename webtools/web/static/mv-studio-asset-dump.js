@@ -87,13 +87,28 @@
   // Name (the Unity asset name the importer exported, e.g. "ch0212_co0002_head_rim";
   // an array slice keeps its array's name and reports arrayLayer), size and
   // mip level count (authored levels uploaded with the texture, else 1).
+  // Three.js (r128 WebGLTextures.textureNeedsGenerateMipmaps) builds the chain
+  // on the GPU when no level is uploaded, generateMipmaps is on and the minifying
+  // filter samples mips. Such a chain is not the authored one: report it as
+  // generated so a comparison never reads it as the asset's mip count.
+  function generatedMips(texture, width, height) {
+    if (texture.isCompressedTexture || !texture.generateMipmaps) return 0;
+    // THREE.NearestFilter 1003, THREE.LinearFilter 1006 sample only level 0.
+    if (texture.minFilter === 1003 || texture.minFilter === 1006) return 0;
+    if (!(width > 0 && height > 0)) return 0;
+    return Math.floor(Math.log2(Math.max(width, height))) + 1;
+  }
+
   function textureIdentity(texture) {
     if (!texture || !texture.isTexture) return null;
     const image = Array.isArray(texture.image) ? texture.image[0] : texture.image;
     const identity = texture.userData?.viewerTexture;
+    const width = Number.isFinite(image?.width) ? image.width : null, height = Number.isFinite(image?.height) ? image.height : null;
+    const authored = Array.isArray(texture.mipmaps) ? texture.mipmaps.length : 0;
+    const generated = authored ? 0 : generatedMips(texture, width, height);
     const result = { name: texture.name || (typeof identity?.id === "string" ? identity.id : null),
-      width: Number.isFinite(image?.width) ? image.width : null, height: Number.isFinite(image?.height) ? image.height : null,
-      mips: Array.isArray(texture.mipmaps) && texture.mipmaps.length ? texture.mipmaps.length : 1 };
+      width, height, mips: authored || generated || 1 };
+    if (generated) result.mipsGenerated = true;
     if (Number.isInteger(texture.userData?.sifasArrayLayer)) result.arrayLayer = texture.userData.sifasArrayLayer;
     if (placeholderTexture(texture, image)) result.placeholder = true;
     return result;
