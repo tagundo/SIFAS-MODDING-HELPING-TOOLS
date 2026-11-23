@@ -279,14 +279,23 @@
       sums.forEach(function (rate, index) { if (!(MASK_MIN_RATE > rate)) winner = first.get(index); });
       return maskWinners[kind] = { event: winner };
     }
+    // LiveMemberLipSync.Initialize stores WeightRate = MemberFaceData.LipSync.Weight
+    // for AnimationForLipsync (A, I, U, E, O, N = 1..6) and 1 for every other
+    // index; ProcessFrameDefault sets each input weight to w * WeightRate.
+    var head = info.memberHead || {}, lipSyncRate = typeof head.lipSyncWeight === "number" && isFinite(head.lipSyncWeight) ?
+      Math.fround(clamp(head.lipSyncWeight, 0, 1)) : 1;
+    function inputRate(segment) {
+      return lipSyncRate !== 1 && segment.kind === "mouth" && segment.index >= 1 && segment.index <= 6 ? lipSyncRate : 1;
+    }
     function sampleSegment(segment, time) {
       var sample = sampledSegments.get(segment);
       if (!sample) { sample = {}; sampledSegments.set(segment, sample); }
       if (sample.revision !== sampleRevision) {
         var spec = getTiming(segment);
         sample.revision = sampleRevision;
+        var rate = inputRate(segment);
         sample.weight = maskMembers && maskMembers.has(segment) ? (maskWinner(segment.kind, time).event === segment ? 1 : 0) :
-          weightWithTiming(segment, time, spec);
+          rate === 1 ? weightWithTiming(segment, time, spec) : Math.fround(Math.fround(weightWithTiming(segment, time, spec)) * rate);
         sample.local = (time - segment.start) * number(segment.timeScale, 1) + number(segment.clipIn, 0);
         sample.mode = time < segment.start ? spec.preMode : time > segment.start + segment.duration ? spec.postMode : 1;
       }

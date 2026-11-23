@@ -140,7 +140,8 @@ def _pointer(path_id):
 
 
 class SyntheticMemberHeadTests(unittest.TestCase):
-    def scene(self, dots_path=("Head_Face", "mesh_facedots"), managers=1, script=("BodyPartManager", "LLAS.Components.Members")):
+    def scene(self, dots_path=("Head_Face", "mesh_facedots"), managers=1, script=("BodyPartManager", "LLAS.Components.Members"),
+              face_data=None):
         objects, names, ids = [], {}, iter(range(1, 1000))
 
         def node(name, parent=None):
@@ -162,9 +163,19 @@ class SyntheticMemberHeadTests(unittest.TestCase):
         monoscript = next(ids)
         objects.append(_Object(monoscript, "MonoScript", {"m_ClassName": script[0], "m_Namespace": script[1],
                                                           "m_AssemblyName": "Assembly-CSharp.dll"}))
+        face, material = {}, {}
+        if face_data is not None:
+            # MemberFace lives in the separate face bundle for merged faces.
+            face_script, face_id, material_id = next(ids), next(ids), next(ids)
+            objects.append(_Object(face_script, "MonoScript", {"m_ClassName": "MemberFace", "m_Namespace": "LLAS.Components.Members",
+                                                               "m_AssemblyName": "Assembly-CSharp.dll"}, "face"))
+            objects.append(_Object(face_id, "MonoBehaviour", {"m_Script": _pointer(face_script), "memberFaceData": face_data}, "face"))
+            objects.append(_Object(material_id, "Material", {"m_Name": "ch0212_co0001_head"}))
+            face, material = _pointer(face_id), _pointer(material_id)
         for _ in range(managers):
             objects.append(_Object(next(ids), "MonoBehaviour", {"m_Script": _pointer(monoscript), "head": _pointer(head.path_id),
-                                                                "headAll": _pointer(head_all_game.path_id), "face": {}}))
+                                                                "headAll": _pointer(head_all_game.path_id), "face": face,
+                                                                "headMaterial": material}))
         return _Scene(objects, names, time.monotonic() + 30)
 
     def head(self, scene, sources=("costume",)):
@@ -181,6 +192,16 @@ class SyntheticMemberHeadTests(unittest.TestCase):
                          "Find matches the exact relative path, not any descendant")
         self.assertEqual(self.head(self.scene(dots_path=("head_face", "mesh_facedots"))), {"faceDots": False},
                          "Transform names are case sensitive")
+
+    def test_unmasked_merged_face_reports_cheek_material_and_lip_sync_weight(self):
+        data = {"lipSync": {"weight": 0.8999999761581421}, "needsMergingFace": 1}
+        unmasked = self.head(self.scene(dots_path=("Head_Face",), face_data=data))
+        self.assertEqual(unmasked, {"faceDots": False, "cheekMaterial": "ch0212_co0001_head",
+                                    "lipSyncWeight": 0.8999999761581421})
+        self.assertEqual(self.head(self.scene(face_data=data)), {"faceDots": True},
+                         "InitializeMask/ForRinaTrack add no cheek and create mouth clips at rate 1")
+        unmerged = self.head(self.scene(dots_path=("Head_Face",), face_data={"lipSync": {"weight": 1.5}, "needsMergingFace": 0}))
+        self.assertEqual(unmerged, {"faceDots": False}, "no CombineFace, and an out-of-range weight is not used")
 
     def test_only_one_verified_body_part_manager_describes_the_head(self):
         self.assertEqual(self.head(self.scene(managers=2)), {})
@@ -227,7 +248,10 @@ class OriginalFacialSelectionTests(unittest.TestCase):
 
     def test_member_head_reads_the_loaded_board(self):
         from webtools.core import model_viewer as viewer
-        for live, expected in ((12029, True), (12035, False)):
+        # (faceDots, cheekMaterial, MemberFaceData.lipSync.weight) of the loaded head.
+        expected = {12029: (True, None, None), 12035: (False, "ch0212_co0001_head", .9),
+                    12007: (False, "ch0206_co0001_head", .9), 12038: (False, "ch0210_co0017_head", .95)}
+        for live, (dots, cheek, lip_sync) in expected.items():
             paths = [SAMPLES / f"{live}-costume.unity", *sorted(SAMPLES.glob(f"{live}-face-*.unity"))]
             if not paths[0].is_file():
                 continue
@@ -235,10 +259,14 @@ class OriginalFacialSelectionTests(unittest.TestCase):
                 deadline = time.monotonic() + 60
                 scene = viewer._Scene(viewer._environment([str(path) for path in paths], deadline), deadline)
                 head = model_faces.member_head(scene, {str(paths[0])})
-                self.assertEqual(head["faceDots"], expected)
+                self.assertEqual(head["faceDots"], dots)
                 # InitializeDefault binds the cheek to the merged face's head material; a mask has none.
-                self.assertEqual(head.get("cheekMaterial"), None if expected else "ch0212_co0001_head")
-
+                self.assertEqual(head.get("cheekMaterial"), cheek)
+                # InitializeDefault passes LipSync.Weight; a masked head's mouth control uses rate 1.
+                if lip_sync is None:
+                    self.assertNotIn("lipSyncWeight", head)
+                else:
+                    self.assertAlmostEqual(head["lipSyncWeight"], lip_sync, places=6)
 
 if __name__ == "__main__":
     unittest.main()

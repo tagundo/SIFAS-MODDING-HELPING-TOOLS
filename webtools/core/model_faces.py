@@ -8,6 +8,7 @@ import ast
 import hashlib
 import json
 from itertools import islice
+import math
 import os
 from pathlib import Path
 import re
@@ -394,6 +395,13 @@ def member_head(scene, sources):
             if (dots is None and face is not None and _flag(face.get("needsMergingFace"))
                     and material is not None and material.type.name == "Material"):
                 head["cheekMaterial"] = str(scene.tree(material).get("m_Name", ""))
+            # InitializeDefault passes MemberFaceData.LipSync.Weight to
+            # LiveMemberLipSync.Initialize; the masked heads' mouth controls
+            # create every clip at rate 1.
+            lip_sync = (face or {}).get("lipSync")
+            weight = lip_sync.get("weight") if isinstance(lip_sync, dict) else None
+            if dots is None and type(weight) in (int, float) and math.isfinite(weight) and 0 <= weight <= 1:
+                head["lipSyncWeight"] = float(weight)
             heads.append(head)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
