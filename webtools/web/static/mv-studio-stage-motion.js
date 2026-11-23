@@ -98,7 +98,12 @@
       if (color ? value?.isVector4 : Number.isFinite(value?.value)) return value;
       return;
     }
-    if (requiresMaterial) return global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
+    if (requiresMaterial) {
+      const overlay = global.MVStudioStageOverlay?.materialChannel?.(node, kind, rendererClass, scope);
+      if (overlay || scope !== "world" || rendererClass !== undefined) return overlay;
+      // A world MeshRenderer without an overlay pass: its own stage material.
+      return global.MVStudioStageMaterial?.materialChannel?.(node, kind);
+    }
     if (rendererClass === undefined) return node.userData.mvStageOverlayChannels?.[kind];
   }
 

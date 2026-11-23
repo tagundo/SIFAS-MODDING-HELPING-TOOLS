@@ -137,6 +137,10 @@
   const ambientUniforms = ["ambient", "tint", "blendColor"];
   // LiveCoreStageAmbient initializes these defaults independently of the material.
   const singleDefaults = [[1, 1, 1, 0], [1, 1, 1, 1], [1, 1, 1, 0]];
+  // A stage AnimationClip's MeshRenderer _MainTex_ST curve sets that renderer's
+  // value only. Its channel holds Unity's (scale, offset) order for the
+  // animated node; update() converts it to the glTF-space mainUVTransform.
+  const uvOwners = new WeakMap();
   const mainStage = "/EntryPoint/Live/Stages/MainStage";
   const stageModel = mainStage + "/Model";
 
@@ -430,6 +434,22 @@
       records.push({...entry, material, reflectionCube});
     }
 
+    // The animated GameObject's node owns the renderer's mesh. Only a renderer
+    // with one stage material gets a channel, so restoring it keeps that value.
+    const uvOwnerRecords = new Map(), uvRecords = [];
+    for (const record of records) {
+      let owner = record.node;
+      while (owner && typeof owner.userData.mvStageNode?.binding !== "string") owner = owner.parent;
+      if (!owner || !record.material.uniforms.mainUVTransform) continue;
+      uvOwnerRecords.set(owner, uvOwnerRecords.has(owner) || uvOwners.has(owner) ? null : record);
+    }
+    for (const [owner, record] of uvOwnerRecords) {
+      if (!record) continue;
+      const entry = {owner, record, channel: null};
+      uvOwners.set(owner, entry);
+      uvRecords.push(entry);
+    }
+
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
     const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
     const singleTracks = new Map(), samples = new Map();
@@ -451,6 +471,10 @@
             if (track.nativeClass !== "LiveStageSingleAmbientTrack" || !singleBindings.has(track.binding)) continue;
             singleTracks.set(track.binding, singleTracks.has(track.binding) ? null : track);
           }
+        }
+        for (const {record, channel} of uvRecords) {
+          if (channel) record.material.uniforms.mainUVTransform.value.set(
+            channel.x, channel.y, channel.z, 1 - channel.y - channel.w);
         }
         const active = stageAmbient(project, seconds, ambientTrack);
         const emissive = stageEmissive(project, seconds, emissiveTrack);
@@ -497,6 +521,7 @@
         }
       },
       dispose() {
+        for (const entry of uvRecords) if (uvOwners.get(entry.owner) === entry) uvOwners.delete(entry.owner);
         for (const {node, original, material} of records) {
           node.material = original;
           material.dispose();
@@ -507,5 +532,15 @@
     };
   }
 
-  global.MVStudioStageMaterial = { apply, createTextureSampler };
+  function materialChannel(owner, kind) {
+    const entry = kind === "overlayUV" ? uvOwners.get(owner) : null;
+    if (!entry) return;
+    if (!entry.channel) {
+      const transform = entry.record.material.uniforms.mainUVTransform.value;
+      entry.channel = transform.clone().set(transform.x, transform.y, transform.z, 1 - transform.y - transform.w);
+    }
+    return entry.channel;
+  }
+
+  global.MVStudioStageMaterial = { apply, createTextureSampler, materialChannel };
 })(typeof window !== "undefined" ? window : globalThis);

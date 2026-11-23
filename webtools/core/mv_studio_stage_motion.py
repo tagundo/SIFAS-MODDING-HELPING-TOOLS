@@ -365,13 +365,14 @@ def read(objects, mono, tracks, deadline):
                 has_skin = any(channel.get("rendererClass") == 137 for channel in material_channels)
                 has_soft_billboard = any(channel["kind"] in _SOFT_BILLBOARD_KINDS for channel in material_channels)
                 if material_scope == "world":
-                    if has_skin or has_soft_billboard:
+                    # MeshRenderer material curves (e.g. 12025 Anim_root's speaker
+                    # _MainTex_ST) animate that renderer only. The runtime binds them
+                    # to the renderer's own world material or skips the whole event,
+                    # so they no longer reject the clip's transform and activation.
+                    if has_skin or has_soft_billboard or not resident_laser:
                         timing["materialScope"] = "world"
                         timing_cost += 1
                         requires_material = True
-                    elif not resident_laser:
-                        rejected.add(profile)
-                        continue
                 elif material_scope == "overlay":
                     if has_soft_billboard:
                         continue

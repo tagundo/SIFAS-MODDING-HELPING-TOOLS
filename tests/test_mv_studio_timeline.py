@@ -171,7 +171,7 @@ class TimelineContractTests(unittest.TestCase):
             self.assertEqual(stage._quality("StageEffect/Expert/Animation/Lights", parent=("cab", 3), mono=mono), "stage_animation")
             self.assertIsNone(stage._quality("StageEffect/Expert/Animation/Curtain/Track", parent=("cab", 4), mono=mono))
 
-    def test_typed_native_overlay_uses_category_and_keeps_world_alias_unbound(self):
+    def test_typed_native_overlay_uses_category_and_world_renderer_curves_need_their_own_material(self):
         from webtools.core import mv_studio_stage_motion as stage
         from zlib import crc32
 
@@ -201,9 +201,11 @@ class TimelineContractTests(unittest.TestCase):
                 patch.object(studio, "_pointer", side_effect=lambda _, ptr: ("cab", ptr["m_PathID"]) if ptr else None):
             for tracks in ([world, overlay], [overlay, world]):
                 parsed = stage.read(objects, mono, tracks, time.monotonic() + 3)
-                self.assertEqual(parsed["bindings"], [overlay["binding"]])
-                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect"})
-                self.assertEqual(set(parsed["mix"]), {"cab:1:0"})
+                # A world MeshRenderer material curve no longer rejects the clip;
+                # the runtime binds it to that renderer's material or skips the event.
+                self.assertEqual(parsed["bindings"], [row["binding"] for row in tracks])
+                self.assertEqual(parsed["quality"], {"cab:1": "stage_overlay_effect", "cab:2": "stage_animation"})
+                self.assertEqual(parsed["mix"], {"cab:1:0": {}, "cab:2:0": {"materialScope": "world"}})
                 declared = parsed["clips"]["cab:4"]
                 self.assertTrue(declared["requiresOverlayMaterial"])
                 self.assertTrue(declared["sampleTimeF32"])
