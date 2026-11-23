@@ -58,28 +58,32 @@ def _asset_catalogs(root, region, platform, language):
 
 
 def _variant_rows(db, selected=None):
+    # The client's MV stage picker lists m_live_mv rows by their live_stage_master_id
+    # (SelectableStageVO), but Live3DDM.GetMvLive3DAssetVO loads the stage scene and
+    # model from m_live_3d_asset.live_stage_master_id of the row's 3D asset. The
+    # m_live_mv stage id is only the picker key and never chooses the stage.
     condition = " AND live.live_id=? AND asset.id=?" if selected else ""
     common = "FROM m_live AS live JOIN {table} AS mv ON mv.live_id=live.live_id " \
              "JOIN m_live_3d_asset AS asset ON asset.id=mv.live_3d_asset_master_id " \
-             "LEFT JOIN m_live_stage AS stage ON stage.id={stage} " \
+             "LEFT JOIN m_live_stage AS stage ON stage.id=asset.live_stage_master_id " \
              "WHERE asset.timeline IS NOT NULL AND asset.timeline<>''{condition} "
     rows = []
     for table, priority in (("m_live_mv", 0), ("m_live_difficulty", 1)):
-        stage = "COALESCE(mv.live_stage_master_id,asset.live_stage_master_id)" if not priority else "asset.live_stage_master_id"
         position = "mv.position" if not priority else "0"
+        picker = "mv.live_stage_master_id" if not priority else "NULL"
         columns = (
             "live.live_id,asset.id,live.name,stage.stage_name,stage.scene_name,"
-            f"{stage}, {position} AS position,"
+            f"asset.live_stage_master_id, {position} AS position,"
             "NOT EXISTS(SELECT 1 FROM m_live_difficulty d WHERE d.live_id=live.live_id) AS mv_only,"
-            f"{priority} AS priority, ({stage}=asset.live_stage_master_id) AS native_stage"
+            f"{priority} AS priority, {picker} AS picker_stage"
         )
-        query = "SELECT DISTINCT " + columns + " " + common.format(table=table, stage=stage, condition=condition)
+        query = "SELECT DISTINCT " + columns + " " + common.format(table=table, condition=condition)
         # No silent partial catalogs. These tables normally return hundreds of rows.
         found = _rows(db, query + "LIMIT ?", (*selected, MAX_ROWS+1) if selected else (MAX_ROWS+1,))
         if len(found) > MAX_ROWS:
             raise ValueError("The game contains too many 3D MV catalog rows.")
         rows.extend(found)
-    return sorted(rows, key=lambda row: (row[0], row[8], -int(bool(row[9])), row[6] or 0, row[1]))
+    return sorted(rows, key=lambda row: (row[0], row[8], row[6] or 0, row[1]))
 
 
 def _display(extractor, dictionary, raw, fallback):
@@ -97,7 +101,7 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
     by_song, variants = {}, set()
     dictionary = game._dictionary(root, region, language)
     try:
-        for live, asset, title, stage, scene, stage_id, position, mv_only, priority, _ in rows:
+        for live, asset, title, stage, scene, stage_id, position, mv_only, priority, picker_stage in rows:
             if (live, asset) in variants:
                 continue
             variants.add((live, asset))
@@ -106,6 +110,7 @@ def catalog(repo_root, *, region="", platform="android", language="en", search="
                                  "variants": [], "mvOnly": bool(mv_only)}
             label = _display(extractor, dictionary, stage, scene or str(asset))
             by_song[live]["variants"].append({"id": asset, "label": label, "stageId": stage_id,
+                                               "pickerStageId": picker_stage,
                                                "sceneName": scene, "position": position,
                                                "source": "difficulty" if priority else "mv"})
     finally:
