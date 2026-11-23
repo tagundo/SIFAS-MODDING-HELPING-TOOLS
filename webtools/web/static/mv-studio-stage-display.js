@@ -98,6 +98,8 @@
         material.needsUpdate = true;
       }
       material.stencilRef = fields.stencil;
+      // _StencilZFailOp 2 (Replace) also writes the reference where the depth test fails.
+      material.stencilZFail = fields.stencilZFail === 2 ? T.ReplaceStencilOp : T.KeepStencilOp;
       node.renderOrder = fields.queue;
     }
     const load = async (fields) => fields ? { ...fields, image: await texture(fields.texture) } : null;
