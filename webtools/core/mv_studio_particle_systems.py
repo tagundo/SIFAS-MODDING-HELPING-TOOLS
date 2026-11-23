@@ -13,6 +13,13 @@ One common rule for every song, taken from the client and the serialized assets:
   ParticleSystem with ``playOnAwake`` starts there and runs on the player clock
   with its own serialized ``randomSeed`` (``autoRandomSeed=0``) or a fresh auto
   seed. ``OnBehaviourPause`` deactivates the clone at the clip end.
+* An Animator inside the prefab starts its controller's default state when the
+  clone activates. Only a single-state controller with AlwaysAnimate culling is
+  read, and only its constant curves are applied: a constant ``m_IsActive``
+  keeps a node active or inactive and a constant Transform curve replaces the
+  authored local pose. Systems under any time-varying activation or Transform
+  curve, or whose ParticleSystem/renderer properties are animated, are listed
+  as not previewed instead of being drawn statically.
 
 This module only normalizes serialized data. ``mv-studio-particle-systems.js``
 simulates and draws it. Textures keep their authored pixels and mip levels.
@@ -21,8 +28,9 @@ simulates and draws it. Textures keep their authored pixels and mip levels.
 import base64
 import math
 import time
+import zlib
 
-from . import decode, model_viewer as viewer
+from . import decode, model_animation as animation, model_viewer as viewer
 from . import mv_studio_stage_motion as motion, mv_studio_stage_title as title, mv_studio_timeline as timeline
 from .model_materials import _original_mips
 from .mv_studio_stage_display import _shader_matches
@@ -34,6 +42,7 @@ _MAX_TEMPLATES = 192
 _MAX_SYSTEMS = 1536
 _MAX_SYSTEMS_PER_TEMPLATE = 96
 _MAX_DEPTH = 24
+_MAX_NODES = 4096
 _MAX_KEYS = 64
 _MAX_TEXTURES = 64
 _MAX_TEXTURE_BYTES = 40 * 1024 * 1024
@@ -44,6 +53,11 @@ _RESERVE_SECONDS = 4
 _CATEGORIES = {"stage_control", "stage_display", "stage_overlay_effect"}
 # Unity ParticleSystemShapeType values this module reproduces.
 _SHAPES = {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 15, 16, 18}
+# Animator generic bindings: GameObject.m_IsActive (CRC32 of the property
+# name), Transform channels, and the particle components themselves.
+_GAME_OBJECT, _TRANSFORM, _ACTIVE = 1, 4, zlib.crc32(b"m_IsActive")
+_POSITION, _ROTATION, _SCALE, _EULER = 1, 2, 3, 4
+_PARTICLE_CLASSES = {198: "ParticleSystem", 199: "ParticleSystemRenderer"}
 # Renderer modes: Billboard, Stretch, HorizontalBillboard, VerticalBillboard.
 _RENDER_MODES = {0, 1, 2, 3}
 # Modules read as data. Anything else that is enabled makes the system unsupported.
@@ -441,8 +455,13 @@ def _trs(tree):
     return {"position": position, "rotation": rotation, "scale": scale}
 
 
-def system(objects, game, particle, renderer, textures):
-    """Normalize one ParticleSystem and its renderer, or raise _Unsupported."""
+def system(objects, game, particle, renderer, textures, blocked=None):
+    """Normalize one ParticleSystem and its renderer, or raise _Unsupported.
+
+    ``blocked`` is a reason from outside the system itself (its prefab
+    Animator); it is raised after the system's own checks and before any
+    texture is read, so the warning names the system's own gap first.
+    """
     source = particle.read_typetree()
     for name in _UNSUPPORTED_MODULES:
         if (source.get(name) or {}).get("enabled"):
@@ -454,6 +473,8 @@ def system(objects, game, particle, renderer, textures):
         raise _Unsupported("mesh emitter shape")
     render_tree = renderer.read_typetree()
     if not render_tree.get("m_Enabled"):
+        if blocked:
+            raise _Unsupported(blocked)
         return None
     result = {"main": _main(source), "emission": _emission(source["EmissionModule"]), "shape": _shape(shape),
               "velocity": _velocity(source["VelocityModule"]), "clamp": _clamp(source["ClampVelocityModule"]),
@@ -462,52 +483,43 @@ def system(objects, game, particle, renderer, textures):
               "color": color(source["ColorModule"]["gradient"]) if source["ColorModule"].get("enabled") else None,
               "uv": _uv(source["UVModule"]), "rotationBySpeed": _rotation_by_speed(source["RotationBySpeedModule"]),
               "renderer": _renderer(render_tree)}
+    if blocked:
+        raise _Unsupported(blocked)
     surface, texture = _material(objects, renderer, render_tree)
     surface["texture"] = textures.add(texture)
     result["material"] = surface
     return result
 
 
-def template(objects, prefab, textures, deadline):
-    """Walk the prefab as Unity's GetComponentsInChildren does (pre-order, child order).
+def _walk(objects, prefab, deadline):
+    """Every node of the prefab in GetComponentsInChildren order (pre-order, child order).
 
-    Nodes keep their local TRS and parent index so the runtime can rebuild the
-    clone's transforms; inactive GameObjects are never activated by PrefabControl.
+    Inactive GameObjects are kept so Animator binding paths resolve; ``authored``
+    is the prefab's own activation.
     """
-    nodes, systems, unsupported, notes = [], [], [], set()
-    root_tree, _ = _components(objects, prefab)
-    name = str(root_tree.get("m_Name", ""))[:128]
-    stack = [(prefab, None, (), 0)]
+    walked, stack = [], [(prefab, None, (), 0)]
     while stack:
         viewer._remaining(deadline)
         game, parent, path, depth = stack.pop()
         if depth > _MAX_DEPTH:
             raise _Unsupported("prefab hierarchy is too deep")
+        if len(walked) >= _MAX_NODES:
+            raise _Unsupported("prefab hierarchy is too large")
         tree, components = _components(objects, game)
         transform = components.get("Transform")
-        if not tree.get("m_IsActive", True) or transform is None:
+        if transform is None:
             continue
-        node_path = (*path, str(tree.get("m_Name", ""))[:64])
+        # Binding hashes use the full names; the shown path keeps them short.
+        own_path = (*path, str(tree.get("m_Name", "")))
         transform_tree = transform.read_typetree()
-        own = len(nodes)
-        nodes.append({"parent": parent, "path": "/".join(node_path), "layer": tree.get("m_Layer", 0),
-                      **_trs(transform_tree)})
-        for kind in ("Animator", "Animation", "MeshRenderer", "SkinnedMeshRenderer"):
-            if kind in components:
-                notes.add(kind)
-        if "ParticleSystem" in components:
-            try:
-                renderer = components.get("ParticleSystemRenderer")
-                if renderer is None:
-                    raise _Unsupported("ParticleSystem has no renderer")
-                if len(systems) >= _MAX_SYSTEMS_PER_TEMPLATE:
-                    raise _Unsupported("too many systems in one prefab")
-                row = system(objects, game, components["ParticleSystem"], renderer, textures)
-                if row is not None:
-                    row.update(node=own, path=nodes[own]["path"], layer=nodes[own]["layer"])
-                    systems.append(row)
-            except (_Unsupported, *title._UNSUPPORTED) as error:
-                unsupported.append({"path": nodes[own]["path"], "reason": str(error)[:160] or type(error).__name__})
+        try:
+            pose = _trs(transform_tree)
+        except _Unsupported:
+            pose = {"position": None, "rotation": None, "scale": None}
+        own = len(walked)
+        walked.append({"parent": parent, "game": game, "tree": tree, "components": components, "parts": own_path,
+                       "path": "/".join(part[:64] for part in own_path), "self": bool(tree.get("m_IsActive", True)),
+                       **pose})
         children = []
         for child in transform_tree.get("m_Children") or []:
             child_transform = title._local(objects, transform, child, "Transform")
@@ -518,7 +530,232 @@ def template(objects, prefab, textures, deadline):
             if child_game is not None:
                 children.append(child_game)
         for child_game in reversed(children):
-            stack.append((child_game, own, node_path, depth + 1))
+            stack.append((child_game, own, own_path, depth + 1))
+    for node in walked:
+        node["authored"] = node["self"] and (node["parent"] is None or walked[node["parent"]]["authored"])
+    return walked
+
+
+def _flat(curve):
+    """The value of a packed clip curve that never changes, else None."""
+    mode, keys = curve
+    if mode == "constant":
+        return keys
+    if not keys:
+        return None
+    if mode == "cubic":
+        values = {coefficients[3] for _, coefficients in keys}
+        flat = all(coefficients[0] == coefficients[1] == coefficients[2] == 0 for _, coefficients in keys)
+        return values.pop() if flat and len(values) == 1 else None
+    values = {value for _, value in keys}
+    return values.pop() if len(values) == 1 else None
+
+
+def _default_clip(objects, animator, fields):
+    """The clip of a single-state controller's default state, None without a controller.
+
+    Anything else (several layers or states, transitions, blend trees, culling
+    other than AlwaysAnimate, object-reference curves) raises _Unsupported.
+    """
+    controller = title._local(objects, animator, fields.get("m_Controller"))
+    if controller is None:
+        return None
+    if controller.type.name != "AnimatorController":
+        raise _Unsupported(f"Animator {controller.type.name}")
+    if fields.get("m_CullingMode", 0) != 0:
+        raise _Unsupported(f"Animator culling mode {fields.get('m_CullingMode')}")
+    tree = controller.read_typetree()
+    graph = tree["m_Controller"]
+    layers, machines = graph["m_LayerArray"], graph["m_StateMachineArray"]
+    if len(layers) != 1 or len(machines) != 1 or layers[0]["data"]["m_StateMachineIndex"] != 0:
+        raise _Unsupported("Animator controller with several layers")
+    machine = machines[0]["data"]
+    states = machine["m_StateConstantArray"]
+    if len(states) != 1 or machine["m_DefaultState"] != 0 or machine["m_AnyStateTransitionConstantArray"]:
+        raise _Unsupported("Animator controller with several states")
+    state = states[0]["data"]
+    trees = state["m_BlendTreeConstantArray"]
+    if state["m_TransitionConstantArray"] or len(trees) != 1:
+        raise _Unsupported("Animator state with transitions or blend trees")
+    leaves = trees[0]["data"]["m_NodeArray"]
+    if len(leaves) != 1 or leaves[0]["data"].get("m_ChildIndices"):
+        raise _Unsupported("Animator state with a blend tree")
+    clips = tree.get("m_AnimationClips") or []
+    index = leaves[0]["data"].get("m_ClipID")
+    if type(index) is not int or not 0 <= index < len(clips):
+        raise _Unsupported("Animator state without a clip")
+    clip = title._local(objects, controller, clips[index], "AnimationClip")
+    if clip is None:
+        raise _Unsupported("Animator clip is unavailable")
+    return clip.read_typetree()
+
+
+def _bindings(clip, deadline):
+    """(binding, per-channel constant or None) for every generic binding of a packed clip."""
+    bindings = (clip.get("m_ClipBindingConstant") or {}).get("genericBindings") or []
+    if any(binding.get("isPPtrCurve") for binding in bindings):
+        raise _Unsupported("Animator clip with object reference curves")
+    if not bindings:
+        if any(clip.get(field) for field in ("m_PositionCurves", "m_RotationCurves", "m_ScaleCurves",
+                                             "m_EulerCurves", "m_FloatCurves")):
+            raise _Unsupported("Animator clip with editor curves")
+        return []
+    try:
+        curves = animation._packed_curves(clip, deadline)
+    except animation.AnimationError as error:
+        raise _Unsupported(f"Animator clip ({error})") from None
+    rows, offset = [], 0
+    for binding in bindings:
+        width = animation._width(binding)
+        selected = curves[offset:offset + width]
+        offset += width
+        if len(selected) != width:
+            raise _Unsupported("Animator clip curves do not match their bindings")
+        rows.append((binding, [_flat(curve) for curve in selected]))
+    if offset != len(curves):
+        raise _Unsupported("Animator clip curves do not match their bindings")
+    return rows
+
+
+def _euler(values):
+    # Unity's Quaternion.Euler applies Z, then X, then Y (Unity space, degrees).
+    x, y, z = (math.radians(value) * .5 for value in values)
+    return list(animation._multiply(animation._multiply((0, math.sin(y), 0, math.cos(y)), (math.sin(x), 0, 0, math.cos(x))),
+                                    (0, 0, math.sin(z), math.cos(z))))
+
+
+def _animators(objects, walked, deadline):
+    """Apply what each in-prefab Animator's default state does to the particle nodes.
+
+    Returns (active, moving, unresolved, notes): ``active`` maps a node to a
+    constant m_IsActive; ``moving`` maps a node to the curve kinds that change
+    over time on it (activation, Transform) or animate its particle components;
+    ``unresolved`` maps an Animator node to the reason its controller is not read.
+    Constant Transform curves are written into the walked node's local pose.
+    """
+    active, moving, unresolved, notes, posed = {}, {}, {}, set(), {}
+    for own, node in enumerate(walked):
+        legacy = node["components"].get("Animation")
+        if legacy is not None and node["authored"] and legacy.read_typetree().get("m_Enabled", True):
+            # Legacy Animation clips are not read at all.
+            unresolved[own] = "legacy Animation component"
+        animator = node["components"].get("Animator")
+        if animator is None or not node["authored"]:
+            continue
+        fields = animator.read_typetree()
+        if not fields.get("m_Enabled", True):
+            continue
+        try:
+            clip = _default_clip(objects, animator, fields)
+            if clip is None:
+                continue
+            rows = _bindings(clip, deadline)
+        except (_Unsupported, *title._UNSUPPORTED) as error:
+            unresolved[own] = str(error)[:120] or type(error).__name__
+            notes.add("Animator")
+            continue
+        # Binding paths are CRC32 hashes of the path below the Animator's GameObject.
+        prefix, targets = node["parts"], {}
+        for index, other in enumerate(walked):
+            if other["parts"][:len(prefix)] == prefix:
+                targets.setdefault(zlib.crc32("/".join(other["parts"][len(prefix):]).encode("utf-8")), index)
+        for binding, values in rows:
+            target = targets.get(binding.get("path"))
+            kind, attribute = binding.get("typeID", binding.get("classID")), binding.get("attribute")
+            if target is None:
+                continue
+            components = walked[target]["components"]
+            if kind == _GAME_OBJECT and attribute == _ACTIVE:
+                value = values[0]
+                if value in (0, 1) and active.get(target, value) == value:
+                    active[target] = value == 1
+                else:
+                    moving.setdefault(target, set()).add("activation")
+            elif kind == _TRANSFORM and attribute in (_POSITION, _ROTATION, _SCALE, _EULER):
+                channel = {_POSITION: "position", _SCALE: "scale"}.get(attribute, "rotation")
+                if any(value is None for value in values) or (target, channel) in posed:
+                    moving.setdefault(target, set()).add("Transform")
+                    continue
+                posed[target, channel] = True
+                if channel == "rotation":
+                    rotation = _euler(values) if attribute == _EULER else [_number(value, -2, 2) for value in values]
+                    length = math.sqrt(sum(value * value for value in rotation))
+                    if not length > 1e-6:
+                        raise _Unsupported("Animator rotation curve is not a rotation")
+                    walked[target]["rotation"] = [value / length for value in rotation]
+                else:
+                    walked[target][channel] = [_number(value) for value in values]
+            elif kind in _PARTICLE_CLASSES:
+                if _PARTICLE_CLASSES[kind] in components:
+                    moving.setdefault(target, set()).add(f"{_PARTICLE_CLASSES[kind]} properties")
+            else:
+                # Mesh renderer material curves and the like: content this preview does not draw.
+                notes.add("Animator")
+    return active, moving, unresolved, notes
+
+
+def template(objects, prefab, textures, deadline):
+    """Walk the prefab as Unity's GetComponentsInChildren does (pre-order, child order).
+
+    Nodes keep their local TRS (with any constant Animator pose) and parent
+    index so the runtime can rebuild the clone's transforms. Inactive
+    GameObjects are never activated by PrefabControl.
+    """
+    walked = _walk(objects, prefab, deadline)
+    if not walked:
+        raise _Unsupported("prefab has no Transform")
+    name = str(walked[0]["tree"].get("m_Name", ""))[:128]
+    animated, moving, unresolved, notes = _animators(objects, walked, deadline)
+    nodes, systems, unsupported, remap = [], [], [], {}
+    live, reasons = [], []
+    for own, node in enumerate(walked):
+        parent = node["parent"]
+        on = animated.get(own, node["self"])
+        live.append(on and (parent is None or live[parent]))
+        # Why a system on this node is not drawn although the prefab says so.
+        inherited = list(reasons[parent]) if parent is not None else []
+        if own in unresolved:
+            inherited.append(f"under prefab animation that is not previewed ({unresolved[own]})")
+        kinds = sorted(kind for kind in moving.get(own, ()) if kind in ("activation", "Transform"))
+        if kinds:
+            inherited.append(f"animated by the prefab Animator ({', '.join(kinds)})")
+        reasons.append(inherited)
+    for own, node in enumerate(walked):
+        components = node["components"]
+        if live[own]:
+            if any(node[field] is None for field in ("position", "rotation", "scale")):
+                raise _Unsupported("non-finite or out-of-range value")
+            remap[own] = len(nodes)
+            nodes.append({"parent": remap.get(node["parent"]), "path": node["path"],
+                          "layer": node["tree"].get("m_Layer", 0),
+                          "position": node["position"], "rotation": node["rotation"], "scale": node["scale"]})
+            for kind in ("Animation", "MeshRenderer", "SkinnedMeshRenderer"):
+                if kind in components:
+                    notes.add(kind)
+        if "ParticleSystem" not in components:
+            continue
+        if not live[own]:
+            if node["authored"]:
+                # The prefab leaves it active, but its Animator keeps it (or an ancestor) off.
+                unsupported.append({"path": node["path"],
+                                    "reason": "kept inactive by the prefab Animator (the game never draws it)"})
+            continue
+        try:
+            animated_parts = sorted(kind for kind in moving.get(own, ()) if kind.endswith("properties"))
+            blocked = ("activated by the prefab Animator" if not node["authored"] else reasons[own][0] if reasons[own]
+                       else f"animated by the prefab Animator ({', '.join(animated_parts)})" if animated_parts else None)
+            renderer = components.get("ParticleSystemRenderer")
+            if renderer is None:
+                raise _Unsupported("ParticleSystem has no renderer")
+            if len(systems) >= _MAX_SYSTEMS_PER_TEMPLATE:
+                raise _Unsupported("too many systems in one prefab")
+            row = system(objects, node["game"], components["ParticleSystem"], renderer, textures, blocked)
+            if row is not None:
+                index = remap[own]
+                row.update(node=index, path=node["path"], layer=nodes[index]["layer"])
+                systems.append(row)
+        except (_Unsupported, *title._UNSUPPORTED) as error:
+            unsupported.append({"path": node["path"], "reason": str(error)[:160] or type(error).__name__})
     return {"name": name, "nodes": nodes, "systems": systems}, unsupported, sorted(notes)
 
 

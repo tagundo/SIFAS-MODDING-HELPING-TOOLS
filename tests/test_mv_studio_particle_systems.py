@@ -70,8 +70,9 @@ def particle_system(**overrides):
 
 
 class Reader:
-    def __init__(self, tree):
+    def __init__(self, tree, kind="MonoBehaviour"):
         self.tree = tree
+        self.type = type("Type", (), {"name": kind})
 
     def read_typetree(self):
         return self.tree
@@ -200,10 +201,138 @@ class NormalizationTests(unittest.TestCase):
                          "1 particle prefabs also hold Animator, MeshRenderer content that is not previewed.")
 
 
+def walked_node(path, parent, *, active=True, kinds=(), position=(0, 0, 0)):
+    components = {kind: Reader({"m_Enabled": 1}, kind) for kind in ("Transform", *kinds)}
+    parts = tuple(path.split("/"))
+    return {"parent": parent, "game": None, "tree": {"m_Name": parts[-1], "m_Layer": 0}, "components": components,
+            "parts": parts, "path": path, "self": active, "position": list(position), "rotation": [0, 0, 0, 1],
+            "scale": [1, 1, 1]}
+
+
+def binding(path, type_id, attribute):
+    import zlib
+    return {"path": zlib.crc32(path.encode()), "typeID": type_id, "attribute": attribute, "isPPtrCurve": 0}
+
+
+def controller(states=1, transitions=0, culling=0):
+    state = {"data": {"m_TransitionConstantArray": [{}] * transitions,
+                      "m_BlendTreeConstantArray": [{"data": {"m_NodeArray": [{"data": {"m_ClipID": 0,
+                                                                                        "m_ChildIndices": []}}]}}]}}
+    return {"m_Controller": {"m_LayerArray": [{"data": {"m_StateMachineIndex": 0}}],
+                             "m_StateMachineArray": [{"data": {"m_DefaultState": 0, "m_AnyStateTransitionConstantArray": [],
+                                                               "m_StateConstantArray": [state] * states}}]},
+            "m_AnimationClips": [{"m_PathID": 2}]}, culling
+
+
+class AnimatorTests(unittest.TestCase):
+    """In-prefab Animators: constant curves are applied, anything time-varying is reported."""
+
+    def test_flat_curves(self):
+        self.assertEqual(systems._flat(("constant", 0.0)), 0.0)
+        sentinel = -3.4e38
+        self.assertEqual(systems._flat(("cubic", [(sentinel, (0, 0, 0, 1.0)), (0.0, (0, 0, 0, 1.0))])), 1.0)
+        self.assertIsNone(systems._flat(("cubic", [(sentinel, (0, 0, 0, 0.0)), (2.2, (0, 0, 0, 1.0))])))
+        self.assertIsNone(systems._flat(("cubic", [(0.0, (0, 0, .5, 1.0))])))
+        self.assertEqual(systems._flat(("linear", [(0.0, 2.0), (1.0, 2.0)])), 2.0)
+        self.assertIsNone(systems._flat(("linear", [(0.0, 2.0), (1.0, 3.0)])))
+        self.assertIsNone(systems._flat(("cubic", [])))
+
+    def test_single_state_controller_only(self):
+        tree, culling = controller()
+        clip = Reader({"m_Name": "clip"}, "AnimationClip")
+
+        def local(objects, owner, ref, kind=None):
+            return {1: Reader(tree, "AnimatorController"), 2: clip}.get((ref or {}).get("m_PathID"))
+
+        with mock.patch.object(systems.title, "_local", side_effect=local):
+            fields = {"m_Controller": {"m_PathID": 1}, "m_CullingMode": culling}
+            self.assertEqual(systems._default_clip({}, None, fields), {"m_Name": "clip"})
+            self.assertIsNone(systems._default_clip({}, None, {"m_Controller": {"m_PathID": 0}}))
+            with self.assertRaisesRegex(systems._Unsupported, "culling"):
+                systems._default_clip({}, None, {**fields, "m_CullingMode": 1})
+            for variant, message in ((controller(states=2)[0], "several states"),
+                                     (controller(transitions=1)[0], "transitions")):
+                tree.clear()
+                tree.update(variant)
+                with self.assertRaisesRegex(systems._Unsupported, message):
+                    systems._default_clip({}, None, fields)
+
+    def template(self, walked, rows=None, clip_error=None):
+        def drawn(objects, game, particle, renderer, textures, blocked=None):
+            if blocked:
+                raise systems._Unsupported(blocked)
+            return {"main": {}}
+
+        clip = mock.Mock(side_effect=clip_error) if clip_error else mock.Mock(return_value={"m_Name": "clip"})
+        with mock.patch.object(systems, "_walk", return_value=walked), \
+                mock.patch.object(systems, "_default_clip", clip), \
+                mock.patch.object(systems, "_bindings", return_value=rows or []), \
+                mock.patch.object(systems, "system", side_effect=drawn):
+            return systems.template({}, None, None, 0)
+
+    def test_constant_curves_apply_and_time_varying_curves_are_reported(self):
+        ps = ("ParticleSystem", "ParticleSystemRenderer")
+        walked = [walked_node("fx", None), walked_node("fx/root", 0, kinds=("Animator",)),
+                  walked_node("fx/root/hidden", 1), walked_node("fx/root/hidden/core", 2, kinds=ps),
+                  walked_node("fx/root/shown", 1), walked_node("fx/root/shown/core", 4, kinds=ps),
+                  walked_node("fx/root/moved", 1, kinds=ps), walked_node("fx/root/swing", 1),
+                  walked_node("fx/root/swing/core", 7, kinds=ps), walked_node("fx/root/blink", 1, kinds=ps),
+                  walked_node("fx/root/tint", 1, kinds=ps), walked_node("fx/root/off", 1, active=False),
+                  walked_node("fx/root/off/core", 11, kinds=ps), walked_node("fx/root/sibling", 1, kinds=ps)]
+        for node in walked:
+            node["authored"] = node["self"] and (node["parent"] is None or walked[node["parent"]]["authored"])
+        active, position, euler = systems._ACTIVE, systems._POSITION, systems._EULER
+        rows = [(binding("hidden", 1, active), [0.0]), (binding("shown/core", 1, active), [1.0]),
+                (binding("moved", 4, position), [1.0, 2.0, 3.0]), (binding("moved", 4, euler), [0.0, 90.0, 0.0]),
+                (binding("swing", 4, euler), [0.0, None, 0.0]), (binding("blink", 1, active), [None]),
+                (binding("tint", 199, 822146758), [0.5]), (binding("off", 1, active), [1.0]),
+                (binding("missing", 1, active), [0.0]), (binding("sibling", 23, 1), [None])]
+        row, unsupported, notes = self.template(walked, rows)
+        reasons = {item["path"]: item["reason"] for item in unsupported}
+        self.assertEqual([system["path"] for system in row["systems"]],
+                         ["fx/root/shown/core", "fx/root/moved", "fx/root/sibling"])
+        self.assertEqual(reasons, {
+            "fx/root/hidden/core": "kept inactive by the prefab Animator (the game never draws it)",
+            "fx/root/swing/core": "animated by the prefab Animator (Transform)",
+            "fx/root/blink": "animated by the prefab Animator (activation)",
+            "fx/root/tint": "animated by the prefab Animator (ParticleSystemRenderer properties)",
+            "fx/root/off/core": "activated by the prefab Animator"})
+        moved = next(node for node in row["nodes"] if node["path"] == "fx/root/moved")
+        self.assertEqual(moved["position"], [1.0, 2.0, 3.0])
+        self.assertEqual([round(value, 6) for value in moved["rotation"]], [0, round(math.sqrt(.5), 6), 0,
+                                                                          round(math.sqrt(.5), 6)])
+        # The hidden node and its subtree are left out of the clone the runtime rebuilds.
+        self.assertNotIn("fx/root/hidden", [node["path"] for node in row["nodes"]])
+        self.assertEqual(notes, ["Animator"])
+
+    def test_unread_controller_reports_every_system_below_it(self):
+        ps = ("ParticleSystem", "ParticleSystemRenderer")
+        walked = [walked_node("fx", None, kinds=ps), walked_node("fx/root", 0, kinds=("Animator",)),
+                  walked_node("fx/root/core", 1, kinds=ps)]
+        for node in walked:
+            node["authored"] = True
+        row, unsupported, notes = self.template(
+            walked, clip_error=systems._Unsupported("Animator controller with several states"))
+        self.assertEqual([system["path"] for system in row["systems"]], ["fx"])
+        self.assertEqual(unsupported, [{"path": "fx/root/core", "reason": "under prefab animation that is not "
+                                        "previewed (Animator controller with several states)"}])
+        self.assertEqual(notes, ["Animator"])
+        legacy = [walked_node("fx", None), walked_node("fx/root", 0, kinds=("Animation",)),
+                  walked_node("fx/root/core", 1, kinds=ps)]
+        for node in legacy:
+            node["authored"] = True
+        row, unsupported, notes = self.template(legacy)
+        self.assertEqual(row["systems"], [])
+        self.assertEqual(unsupported, [{"path": "fx/root/core", "reason": "under prefab animation that is not "
+                                        "previewed (legacy Animation component)"}])
+        self.assertEqual(notes, ["Animation"])
+
+
 _CENSUS = Path(os.environ.get(
     "ELICHIKA_MV_CENSUS_BUNDLES",
     "/tmp/claude-0/-home-user/dc5429c4-d1a3-5925-9def-449194025faf/scratchpad/coverage/bundle-census/bundles"))
 _TIMELINE_12035 = _CENSUS / "android" / "live_timeline-bcc02fa813.unity3d"
+_TIMELINE_12036 = _CENSUS / "android" / "live_timeline-9b87bf5145.unity3d"
 
 
 @unittest.skipUnless(_TIMELINE_12035.is_file() and os.environ.get("ELICHIKA_TEXTURE65_BIN"),
@@ -238,6 +367,34 @@ class OriginalTimelineTests(unittest.TestCase):
                 self.assertEqual(image.size, (level["width"], level["height"]))
                 self.assertEqual(level["width"], max(1, levels[0]["width"] >> index))
             self.assertEqual(len(levels), max(levels[0]["width"], levels[0]["height"]).bit_length())
+
+    @unittest.skipUnless(_TIMELINE_12036.is_file(), "the original 12036 timeline is not available")
+    def test_12036_android_animator_cores(self):
+        from webtools.core import mv_studio_timeline
+
+        parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12036.read_bytes(), "12036", preview_particle_systems=True)
+        source = parsed["stageParticleSystems"]
+        drawn = {template["name"]: [row["path"].split("/root/", 1)[1] for row in template["systems"]]
+                 for template in source["templates"]}
+        # Each laser prefab's Animator holds constant m_IsActive curves on its cores:
+        # only one joint pair stays on (the others are inactive in the prefab or kept off).
+        self.assertEqual(drawn["fx_par_so2036_06"], ["joint_all/Joint_root_03/L/core", "joint_all/Joint_root_03/R/core"])
+        self.assertEqual(drawn["fx_par_so2036_07"], ["joint_all/Joint_root_02/L/core", "joint_all/Joint_root_02/R/core"])
+        self.assertEqual(drawn["fx_par_so2036_08"], ["joint_all/Joint_root_01/L/core", "joint_all/Joint_root_01/R/core"])
+        reasons = {}
+        for row in source["unsupported"]:
+            reasons.setdefault(row["reason"], []).append(row["path"])
+        hidden = reasons["kept inactive by the prefab Animator (the game never draws it)"]
+        self.assertEqual(sorted(hidden), sorted(
+            f"fx_par_so2036_0{prefab}/root/joint_all/Joint_root_0{joint}/{side}/core"
+            for prefab, joints in ((6, (1, 2)), (7, (1, 3))) for joint in joints for side in "LR"))
+        # Clouds and dragons that the Animator moves or blinks are reported, not drawn statically.
+        self.assertNotIn("fx_dis_par_so2036_06", drawn)
+        self.assertEqual(len(reasons["animated by the prefab Animator (activation)"]), 4)
+        self.assertEqual(sorted(reasons["animated by the prefab Animator (Transform)"]),
+                         [f"fx_dis_par_so2036_05/root/{name}" for name in ("kumo_01", "kumo_02", "kumo_03", "kumo_04",
+                                                                           "ryuu_01")])
+        self.assertNotIn("fx_dis_par_so2036_05", drawn)
 
 
 if __name__ == "__main__":
