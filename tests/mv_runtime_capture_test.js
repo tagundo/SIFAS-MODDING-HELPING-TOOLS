@@ -76,5 +76,26 @@ const mainCamera = (fields) => ({ key: 'camera:main', ...fields });
   await unpin();
   assert.equal(routes.length, 0);
 
+  // Runtime member meshes select the editor's source meshes (CombineFace -> Face, <suit>_head/body_BoneN -> Hair/Body).
+  const head = '/EntryPoint/Live/Members/Member1/Model/Reference/Move/Hips_Position/Hips/Spine/Spine1/Spine2/Neck/Head/Head_All';
+  assert.equal(capture.rendererSelector({ key: 'f', scope: 'member1', mesh: 'CombineFace', path: head + '/mesh_face/CombineFace' }).mesh, 'Face');
+  assert.equal(capture.rendererSelector({ key: 'h', scope: 'member1', mesh: 'x', path: head + '/mesh_hair/Hair/ch0212_co0002_head_Bone2' }).mesh, 'Hair');
+  assert.equal(capture.memberMeshAlias({ scope: 'effect', path: head + '/mesh_face/CombineFace' }), null);
+
+  // The spring preroll steps on the game's own frame times: a record is a frame, the frame
+  // before it is at t - deltaTime unless deltaTime was clamped (1/3 s), the rest is spread evenly.
+  const clocked = (frameCount, directorTime, deltaTime) => ({ kind: 'frame', clock: { frameCount, directorTime, deltaTime } });
+  const grid = capture.gameFrameTimes({ records: [clocked(100, 10, 0.2), clocked(104, 11, 0.3), clocked(106, 11.6, 1 / 3),
+    { kind: 'full', part: 'springs', clock: { frameCount: 104, directorTime: 11, deltaTime: 0.3 } }, clocked(90, 0, 0.1)] });
+  const rounded = grid.map((value) => Math.round(value * 1e9) / 1e9);
+  assert.deepEqual(rounded, [10, 10.233333333, 10.466666667, 10.7, 11, 11.3, 11.6]);
+  const before = capture.prerollTimes(11.3, 1, 5, grid);
+  assert.deepEqual([before.source, before.times.map((value) => Math.round(value * 1e9) / 1e9)],
+    ['game-frames', [10.466666667, 10.7, 11]]);
+  // Outside the recorded frames the fixed-rate grid ending exactly at t is kept.
+  const fixed = capture.prerollTimes(3, 1, 4, grid);
+  assert.deepEqual([fixed.source, fixed.times], ['fixed-rate', [2, 2.25, 2.5, 2.75]]);
+  assert.deepEqual(capture.prerollTimes(0.1, 1, 4).times, []);
+
   console.log('MV_RUNTIME_CAPTURE_PASS viewport, stage-scene selector and pinned suits');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
