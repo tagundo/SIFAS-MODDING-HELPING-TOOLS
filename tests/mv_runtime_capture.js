@@ -2,7 +2,7 @@
 
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
-        [--software true] [--chromium PATH] [--keys FILE] [--batch 100]
+        [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -15,7 +15,10 @@
    live camera. Every game record is then evaluated at
    t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
    deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The read-only MVStudioScene.assetDump() supplies
+   t for members and springs. The preroll grid is the frame rate the game
+   achieved (frames per director second, capped by the requested rate), since
+   the game steps its springs once per rendered frame. The read-only
+   MVStudioScene.assetDump() supplies
    the values; DIR/editor-dump.json.gz is written in the same schema with
    side "editor". Values stay in editor space: tests/mv_runtime_compare.py
    owns every conversion. Pixels are never read back or resampled.
@@ -27,6 +30,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const capture = require('./mv_frame_capture');
+const SPRINGS = globalThis.MVStudioPhysics;
 
 const SCHEMA = 'sifas-mv-runtime-dump/1';
 const MODTOOLS = path.resolve(__dirname, '..');
@@ -209,6 +213,28 @@ function planRequests(doc, phases) {
   return requests.sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
 }
 
+// The real-time game steps its springs once per rendered frame, so a runtime dump
+// is reproduced at the frame rate the game achieved: frames per director second
+// between the first and last records taken while the director advanced
+// (clock.frameCount and clock.directorTime), capped by the rate the game
+// requested (MVStudioPhysics.gameFrameRate). Without a usable clock the
+// requested rate is used.
+function gameClockRate(doc, qualityValues, device) {
+  const target = SPRINGS.gameFrameRate(qualityValues, device);
+  const clocks = (doc.records || []).map((record) => record.clock)
+    .filter((clock) => Number.isFinite(clock?.frameCount) && Number.isFinite(clock?.directorTime));
+  const end = clocks.reduce((max, clock) => Math.max(max, clock.directorTime), -Infinity);
+  const advancing = clocks.filter((clock) => clock.directorTime > 0 && clock.directorTime < end)
+    .sort((a, b) => a.frameCount - b.frameCount);
+  const first = advancing[0], last = advancing.at(-1);
+  const frames = last && last.frameCount - first.frameCount, seconds = last && last.directorTime - first.directorTime;
+  if (!(frames > 0 && seconds > 0)) return { source: 'game-rule', rate: target, target, achieved: null, frames: 0, seconds: 0, meanDeltaTime: null };
+  const deltas = advancing.map((clock) => clock.deltaTime).filter((value) => Number.isFinite(value) && value > 0);
+  const achieved = frames / seconds;
+  return { source: 'game-clock', rate: Math.min(achieved, target), target, achieved, frames, seconds,
+    meanDeltaTime: deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null };
+}
+
 // ------------------------------------------------------------- browser side
 
 async function evaluatePure(page, batch, keys) {
@@ -382,6 +408,7 @@ function editorRecord(request, result, rate) {
   if (source.kind === 'full') Object.assign(record, { pass: source.pass ?? null, part: source.part, chunk: source.chunk ?? 0 });
   record.clock = { directorTime: request.t, sourceDirectorTime: source.clock.directorTime, phase: request.phase,
     phaseSeconds: request.phase * request.deltaTime, deltaTime: request.deltaTime, rate: values.clock?.rate ?? rate };
+  if (request.physics) record.clock.physicsRate = rate;
   if (Math.abs((values.clock?.directorTime ?? NaN) - request.t) > 1e-9) {
     (values.errors ||= []).push({ at: 'clock', error: `editor time ${values.clock?.directorTime} != requested ${request.t}` });
   }
@@ -441,7 +468,7 @@ async function capturePage(page, game, { phases, preroll, rate, batchSize = 100,
 }
 
 function editorDocument({ game, gameFile, sha256, auxiliary = {}, records, timing, conventions, manifest, viewport, quality, phases, preroll, rate,
-  batchSize, keysFile, producer, errors, began }) {
+  physics = null, batchSize, keysFile, producer, errors, began }) {
   const elapsedSeconds = (Date.now() - began) / 1000;
   return {
     schema: SCHEMA, side: 'editor',
@@ -453,6 +480,7 @@ function editorDocument({ game, gameFile, sha256, auxiliary = {}, records, timin
         status: quality.status ?? 'invalid:quality', reasons: quality.reasons ?? ['quality was not taken from the game dump'],
         gameOnly: quality.gameOnly ?? [], gameDifferences: qualityDifferences(game.header.quality, quality.values) },
       limits: { phases, physicsPrerollSeconds: preroll, rate, batch: batchSize },
+      physics,
       keys: keysFile ? { file: path.basename(keysFile), sha256: crypto.createHash('sha256').update(fs.readFileSync(keysFile)).digest('hex') } : null,
       gameDump: { sha256, file: gameFile ? path.basename(gameFile) : null, schema: game.schema, records: game.records.length,
         producer: game.header.producer?.name ?? null, budgets: game.header.budgets ?? null, auxiliaryBlobs: Object.keys(auxiliary).sort() },
@@ -469,6 +497,8 @@ async function run() {
   const phases = parsePhases(options.phases);
   const preroll = options.preroll === 'full' ? 'full' : Number(options.preroll ?? 3);
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), '--preroll is seconds or "full"');
+  const order = options['physics-order'] ?? 'game';
+  assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -497,7 +527,11 @@ async function run() {
     await capture.importOriginal(page, manifest.source, manifest.download === true);
     const importSeconds = (Date.now() - importStart) / 1000;
     const quality = await applyGameQuality(page, game.header.quality, manifest.quality);
-    const rate = quality.values.frame_rate_60fps === true ? 60 : 30;
+    const clock = gameClockRate(game, quality.values, manifest.device);
+    await capture.applyPhysicsReference(page, { rate: clock.target, order,
+      timing: { order, exportFps: null, device: manifest.device || {} } });
+    const rate = clock.rate;
+    const physics = { ...clock, reference: clock.source, order };
     const pinned = await prepareLiveView(page, viewport);
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
@@ -511,10 +545,11 @@ async function run() {
       browser: browser.version(), webgl };
     const conventions = await page.evaluate(() => ({ ...MVStudioAssetDump.CONVENTIONS }));
     const editor = editorDocument({ game, gameFile: options.dump, sha256, auxiliary, records, timing, conventions, manifest, viewport, quality,
-      phases, preroll, rate, batchSize, keysFile, producer, errors, began });
+      phases, preroll, rate, physics, batchSize, keysFile, producer, errors, began });
     const body = zlib.gzipSync(Buffer.from(JSON.stringify(editor)), { level: 9 });
     fs.writeFileSync(path.join(out, 'editor-dump.json.gz'), body);
     const environment = { schema: 1, kind: 'elichika-mv-runtime-capture', createdAt: editor.header.createdAt, manifest, project,
+      physicsRate: rate, physics,
       gameDump: editor.header.gameDump, render: { ...viewport, pinned }, quality: editor.header.quality,
       environment: { ...producer, platform: process.platform }, timing, elapsedSeconds: editor.trailer.elapsedSeconds, pageErrors: errors,
       output: { file: 'editor-dump.json.gz', bytes: body.length, records: records.length } };
@@ -533,4 +568,4 @@ async function run() {
 if (require.main === module) run().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
-  prepareLiveView, capturePage, editorDocument, FRAME_SECTIONS, SCHEMA };
+  prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };
