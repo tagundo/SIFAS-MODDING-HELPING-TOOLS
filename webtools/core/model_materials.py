@@ -23,6 +23,20 @@ FLOATS = {
     "_MainTexMipmapBias": 0, "_CullMode": 2, "_OutlineStencilComp": 8,
 }
 MAX_ARRAY_BYTES = 64 * 1024 * 1024
+# MemberCheekBase.Initialize (GL 3.12.0 0x27c4a88) puts one cached texture into
+# _CheekTex: SetCheekTexture (0x27c4b2c) loads it once with
+# Resources.Load<Texture2DArray>("Live/Characters/facialAssets/cheek_array"),
+# which globalgamemanagers maps to the client APK's
+# assets/bin/Data/71c40f69646c1c446aee4779ed1b6f26, PathID 1. The costume's own
+# _CheekTex is never read. Elichika and the preview have no access to that APK
+# file, so only its identity is recorded here (read from the GL client APK):
+# the preview keeps the head's own array and can tell whether it is a copy.
+SHARED_CHEEK_ARRAY = {
+    "resource": "Live/Characters/facialAssets/cheek_array",
+    "width": 256, "height": 256, "depth": 2, "format": 4, "mips": 1,
+    "filter": 1, "wrapU": 1, "wrapV": 1, "colorSpace": 1, "bytes": 524288,
+    "sha256": "26de3c60f632112a8a9617cbaac04d390936a8da3849ddfd9e28fdc5b7a34b09",
+}
 
 
 def _finite(value):
@@ -85,6 +99,20 @@ def _array_layer(obj, layer):
                            path_id=(obj.path_id, "array-layer", layer),
                            type=SimpleNamespace(name="Texture2D"),
                            read=lambda: proxy)
+
+
+def _array_identity(texture):
+    """The sampled content of a Texture2DArray: layout, sampler and pixel bytes."""
+    import hashlib
+    data = texture.image_data
+    if not isinstance(data, (bytes, bytearray)) or not 0 < len(data) <= MAX_ARRAY_BYTES:
+        return None
+    settings = texture.m_TextureSettings
+    return {"width": int(texture.m_Width), "height": int(texture.m_Height), "depth": int(texture.m_Depth),
+            "format": int(texture.m_Format), "mips": int(texture.m_MipCount),
+            "filter": int(settings.m_FilterMode), "wrapU": int(settings.m_WrapU), "wrapV": int(settings.m_WrapV),
+            "colorSpace": int(getattr(texture, "m_ColorSpace", 1)), "bytes": len(data),
+            "sha256": hashlib.sha256(bytes(data)).hexdigest()}
 
 
 def _original_mips(obj, texture, *, stage=False):
@@ -271,6 +299,10 @@ def attach_member_metadata(scene, obj, tree, material, texture_resolver, *, mip_
                                    texture_resolver, name, metadata["limitations"])
             if layer is not None:
                 entry.update(arrayLayer=layer, name=array_name, depth=len(layers), layers=layers)
+                identity = _array_identity(array.read())
+                shared = {key: value for key, value in SHARED_CHEEK_ARRAY.items() if key != "resource"}
+                entry["sharedArray"] = {"resource": SHARED_CHEEK_ARRAY["resource"],
+                                        "matches": identity == shared if identity else None}
                 features["cheek"] = True
             metadata["textures"][name] = entry
         except Exception:

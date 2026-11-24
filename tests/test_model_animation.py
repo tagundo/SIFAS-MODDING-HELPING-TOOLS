@@ -211,6 +211,21 @@ class AnimationTests(unittest.TestCase):
         self.assertAlmostEqual(rows[4], .5)
         self.assertAlmostEqual(rows[-2], 1)
 
+    def test_clip_metadata_lists_the_morph_targets_the_source_clip_binds(self):
+        # A glTF weights channel carries every target; the gaze layer needs the
+        # source binding (LiveMemberEyeContact clips bind one eyelid shape).
+        name = "EyeBlendShape.eye_facial_003_006_011"
+        data = words([(-3.4e38, [(0, (0, 0, 0, 0))]), (0, [(0, (0, 0, 0, 100))]), (math.inf, [])])
+        tree = clip([binding(99, animation.path_hash(name), 137, 20)], stream={"curveCount": 1, "data": data}, rate=4)
+        glb = builder()
+        names = ["EyeBlendShape.eye_facial_002", name, "EyeBlendShape.eye_facial_004"]
+        result = animation.append_animations(scene([tree]), glb, {}, {99: {"node": 1, "names": names, "weights": [0, 0, 0]}})
+        self.assertEqual(result["clips"][0]["morphTargets"], [{"node": 1, "indices": [1]}])
+        rows = values(glb, glb.doc["animations"][0]["samplers"][0]["output"])
+        self.assertEqual([round(row[0], 6) for row in rows[-3:]], [0, 1, 0], "unbound targets keep their rest weight")
+        bones = animation.append_animations(scene([clip([])]), builder(), {}, {})
+        self.assertTrue(all("morphTargets" not in item for item in bones["clips"]))
+
     def test_unique_morph_name_can_rebind_legacy_path_but_ambiguous_name_cannot(self):
         name = "FullOriginalShapeName"
         tree = clip([binding(999, animation.path_hash(name), 137, 20)], constant=[100], duration=.1)

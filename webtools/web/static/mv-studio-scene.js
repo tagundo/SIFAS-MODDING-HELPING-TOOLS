@@ -1778,7 +1778,9 @@
 
     function playbackFrame(time, frameTimestamp, deferDraw = false) {
       if (disposed) return;
-      captureFocusLag(Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9);
+      // A continuing playback frame follows the frame evaluated before it.
+      const continuing = Number.isFinite(frameTimestamp) && Number.isFinite(time) && time > currentTime + 1e-9;
+      captureFocusLag(continuing);
       if (Number.isFinite(frameTimestamp) && time < currentTime - 1e-9) resetPhysics("clock-rewind");
       currentTime = Number.isFinite(time) ? time : 0;
       // Reduce only the temporary playback buffer when the browser has
@@ -1869,7 +1871,7 @@
       // Native performers look at the other actor's animated Eye_Root, so
       // prepare every actor at this timestamp before resolving any gaze.
       const targets = gazeContext();
-      for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets);
+      for (const record of records) if (record.motion) record.motion.evaluateGaze(currentTime, targets, { continuing });
       // The native ShadowComponent runs before the member manager's LateUpdate.
       const advancingShadow = playing && Number.isFinite(frameTimestamp);
       const shadowParameters = global.MVStudioMemberShadow?.sample?.(memberShadowTracks, currentTime) ?? null;
