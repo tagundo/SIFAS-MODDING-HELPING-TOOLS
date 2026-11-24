@@ -268,10 +268,11 @@
 
     function key(event) {
       if (!event.altKey || event.ctrlKey || event.metaKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
-      const range = options.getRange();
-      if (!range || rules().move === false) return;
+      // Owned even when the move is refused: Alt+← is the browser's Back otherwise.
       event.preventDefault();
       event.stopPropagation();
+      const range = options.getRange();
+      if (!range || rules().move === false) return;
       const frames = (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 10 : 1);
       const next = nudgeRange(range, frames, { bounds: bounds() });
       if (next.start !== range.start) options.setRange(next, { phase: "commit", mode: "move", key: true });

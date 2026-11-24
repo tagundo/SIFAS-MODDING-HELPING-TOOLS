@@ -153,6 +153,14 @@ function dragging() {
   near(range.start, 2.5 - 9 / 60, 'nudged');
   element.dispatch('keydown', { key: 'ArrowRight' });
   assert.equal(calls.length, 2, 'a plain arrow is not a nudge');
+  // A refused nudge is still owned: Alt+← must not fall through to the browser's Back.
+  rules = { move: false, resize: false, reason: 'locked' };
+  const refused = element.dispatch('keydown', { key: 'ArrowLeft', altKey: true });
+  assert(refused.defaultPrevented, 'Alt+← on a locked clip is not the browser Back');
+  assert.equal(calls.length, 2, 'and the locked clip does not move');
+  rules = { move: true, resize: true };
+  assert.equal(element.dispatch('keydown', { key: 'ArrowLeft', altKey: true, ctrlKey: true }).defaultPrevented, false,
+    'other Alt combinations are left alone');
   detach();
   element.dispatch('keydown', { key: 'ArrowRight', altKey: true });
   assert.equal(calls.length, 2, 'detached');
