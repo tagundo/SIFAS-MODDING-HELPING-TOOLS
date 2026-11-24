@@ -1,22 +1,140 @@
-"""@UTF and AFS2 writers on synthetic tables.
+"""@UTF and AFS2 writers, template cue builder and decode-back verifier.
 
-Set SIFAS_TEST_ACB to a private local stock music cue sheet for the optional
-byte-identity check.
+Every container here is synthetic: the template cue sheet copies only the
+stock table schema (column names and types) and carries synthetic audio. Set
+SIFAS_TEST_ACB and SIFAS_TEST_AWB to private local stock music files for the
+optional rebuild check.
 """
+import hashlib
 import math
 import os
 from pathlib import Path
+import shutil
 import struct
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
+
+import numpy as np
 
 from webtools.core import cri_acb_write as acbw
 from webtools.core import cri_audio_decode as cri
 from webtools.core import cri_hca_encode as enc
 from webtools.core.cri_acb_write import CONSTANT, PER_ROW, ZERO, UtfColumn, UtfTable
 
+RATE = 44100
+CLHCA = Path(enc.__file__).parent / "resources" / "cri_hca"
+
+
+class Clhca:
+    directory = None
+    library = None
+
+    @classmethod
+    def get(cls):
+        if cls.library is None:
+            cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+            if not cc:
+                raise unittest.SkipTest("No C compiler to build the vendored clHCA decoder")
+            cls.directory = tempfile.TemporaryDirectory()
+            library = Path(cls.directory.name) / "libelichika_hca.so"
+            subprocess.run([cc, "-O2", "-shared", "-fPIC", str(CLHCA / "clhca.c"), "-o", str(library)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            cls.library = str(library)
+        return cls.library
+
+
+def tearDownModule():
+    if Clhca.directory is not None:
+        Clhca.directory.cleanup()
+        Clhca.directory = Clhca.library = None
+
+
+def tone(seconds, frequency, other=None, level=0.4):
+    t = np.arange(int(seconds * RATE)) / RATE
+    left = level * np.sin(2 * np.pi * frequency * t)
+    right = level * np.sin(2 * np.pi * (other or frequency) * t)
+    return np.clip(np.rint(np.stack([left, right], axis=1) * 32767), -32768, 32767).astype(np.int16)
+
 
 def table(name, columns, rows, align=0):
     return acbw.write_utf(UtfTable(name, 1, [UtfColumn(n, kind, PER_ROW) for n, kind in columns], rows, align))
+
+
+def synthetic_template(hca, *, streaming=2, beat_rows=1, cues=1, encode_type=2, prefetch_blocks=5, subkey=0):
+    """A single-cue music cue sheet with the stock schema and synthetic content."""
+    info = enc.hca_info(hca)
+    samples = info["sampleCount"]
+    waveform = table("Waveform", [("MemoryAwbId", 2), ("EncodeType", 0), ("Streaming", 0), ("NumChannels", 0),
+                                  ("LoopFlag", 0), ("SamplingRate", 2), ("NumSamples", 4), ("ExtensionData", 2),
+                                  ("StreamAwbPortNo", 2), ("StreamAwbId", 2)],
+                     [{"MemoryAwbId": 0, "EncodeType": encode_type, "Streaming": streaming, "NumChannels": 2,
+                       "LoopFlag": 1, "SamplingRate": RATE, "NumSamples": samples, "ExtensionData": 0xFFFF,
+                       "StreamAwbPortNo": 0, "StreamAwbId": 0}])
+    cue = table("Cue", [("CueId", 4), ("ReferenceType", 0), ("ReferenceIndex", 2), ("UserData", 10), ("Worksize", 2),
+                        ("AisacControlMap", 11), ("Length", 4), ("NumAisacControlMaps", 0), ("HeaderVisibility", 0)],
+                [{"CueId": index, "ReferenceType": 3, "ReferenceIndex": 0, "UserData": "", "Worksize": 0,
+                  "AisacControlMap": b"", "Length": samples * 1000 // RATE, "NumAisacControlMaps": 0,
+                  "HeaderVisibility": 1} for index in range(cues)])
+    names = table("CueName", [("CueName", 10), ("CueIndex", 2)],
+                  [{"CueName": f"template_{index}" if index else "template", "CueIndex": index} for index in range(cues)])
+    synth = table("Synth", [("Type", 0), ("VoiceLimitGroupName", 10), ("CommandIndex", 2), ("ReferenceItems", 11),
+                            ("LocalAisacs", 11), ("GlobalAisacStartIndex", 2), ("GlobalAisacNumRefs", 2),
+                            ("ControlWorkArea1", 2), ("ControlWorkArea2", 2), ("TrackValues", 11),
+                            ("ParameterPallet", 2), ("ActionTrackStartIndex", 2), ("NumActionTracks", 2)],
+                  [{"Type": 0, "VoiceLimitGroupName": "", "CommandIndex": 0, "ReferenceItems": struct.pack(">HH", 1, 0),
+                    "LocalAisacs": b"", "GlobalAisacStartIndex": 0xFFFF, "GlobalAisacNumRefs": 0, "ControlWorkArea1": 0,
+                    "ControlWorkArea2": 0, "TrackValues": b"", "ParameterPallet": 0xFFFF,
+                    "ActionTrackStartIndex": 0xFFFF, "NumActionTracks": 0}])
+    track = table("Track", [("EventIndex", 2), ("CommandIndex", 2), ("LocalAisacs", 11), ("GlobalAisacStartIndex", 2),
+                            ("GlobalAisacNumRefs", 2), ("ParameterPallet", 2), ("TargetType", 0), ("TargetName", 10),
+                            ("TargetId", 4), ("TargetAcbName", 10), ("Scope", 0), ("TargetTrackNo", 2)],
+                  [{"EventIndex": 0, "CommandIndex": 0xFFFF, "LocalAisacs": b"", "GlobalAisacStartIndex": 0xFFFF,
+                    "GlobalAisacNumRefs": 0, "ParameterPallet": 0xFFFF, "TargetType": 0, "TargetName": "",
+                    "TargetId": 0xFFFFFFFF, "TargetAcbName": "", "Scope": 0, "TargetTrackNo": 0xFFFF}])
+    sequence = table("Sequence", [("PlaybackRatio", 2), ("NumTracks", 2), ("TrackIndex", 11), ("CommandIndex", 2),
+                                  ("Type", 0)],
+                     [{"PlaybackRatio": 100, "NumTracks": 1, "TrackIndex": struct.pack(">H", 0), "CommandIndex": 0,
+                       "Type": 0}])
+    command = lambda raw: table("Command", [("Command", 11)], [{"Command": raw}])
+    acf = acbw.write_utf(UtfTable("AcfReference", 1, [UtfColumn("Type", 0, PER_ROW), UtfColumn("Name", 10, PER_ROW),
+                                                      UtfColumn("Name2", 10, CONSTANT, ""), UtfColumn("Id", 4, PER_ROW)],
+                                  [{"Type": 3, "Name": "CATEGORY_A", "Id": 1}, {"Type": 9, "Name": "BUS_A", "Id": 0xFFFFFFFF}]))
+    beats = table("BeatSyncInfo", [("Bpm", 8), ("NumBeats", 5), ("BeatDenominator", 5), ("SyncBeatFlags", 4),
+                                   ("BaseRate", 4), ("StartSample", 4), ("EndSample", 4)],
+                  [{"Bpm": 100.0 + index, "NumBeats": 4, "BeatDenominator": 4, "SyncBeatFlags": 0xFFFFFFFF,
+                    "BaseRate": RATE, "StartSample": 1000 + index * 50000, "EndSample": 50999 + index * 50000
+                    if index + 1 < beat_rows else samples} for index in range(beat_rows)]) if beat_rows else b""
+    awb = acbw.write_afs2([(0, hca)], subkey=subkey) if streaming else None
+    if streaming == 2:
+        memory = acbw.write_afs2([(0, hca[:96 + prefetch_blocks * 512])], subkey=subkey)
+    elif streaming == 0:
+        memory = acbw.write_afs2([(0, hca)], subkey=subkey)
+    else:
+        memory = b""
+    stream_hash = table("StreamAwb", [("Name", 10), ("Hash", 11)],
+                        [{"Name": "template", "Hash": hashlib.md5(awb).digest()}]) if streaming else b""
+    afs2_header = table("StreamAwbHeader", [("Header", 11)], [{"Header": awb[:28]}]) if streaming else b""
+    root_columns = [("FileIdentifier", 4), ("Size", 4), ("Version", 4), ("Type", 0), ("Target", 0), ("AcfMd5Hash", 11),
+                    ("CategoryExtension", 0), ("CueTable", 11), ("CueNameTable", 11), ("WaveformTable", 11),
+                    ("AisacTable", 11), ("SynthTable", 11), ("SeqCommandTable", 11), ("TrackTable", 11),
+                    ("SequenceTable", 11), ("AwbFile", 11), ("VersionString", 10), ("AcbGuid", 11),
+                    ("StreamAwbHash", 11), ("AcbVolume", 8), ("Name", 10), ("CharacterEncodingType", 0),
+                    ("AcfReferenceTable", 11), ("BeatSyncInfoTable", 11), ("CuePriorityType", 0),
+                    ("SynthCommandTable", 11), ("TrackEventTable", 11), ("StreamAwbTocWork", 11),
+                    ("StreamAwbAfs2Header", 11)]
+    root = {"FileIdentifier": 0, "Size": 0, "Version": 0x01320000, "Type": 0, "Target": 0,
+            "AcfMd5Hash": bytes(range(16)), "CategoryExtension": 0, "CueTable": cue, "CueNameTable": names,
+            "WaveformTable": waveform, "AisacTable": b"", "SynthTable": synth,
+            "SeqCommandTable": command(bytes.fromhex("0041080000000100000017")), "TrackTable": track,
+            "SequenceTable": sequence, "AwbFile": memory, "VersionString": "\nsynthetic template\n",
+            "AcbGuid": bytes(16), "StreamAwbHash": stream_hash, "AcbVolume": 1.0, "Name": "template",
+            "CharacterEncodingType": 0, "AcfReferenceTable": acf, "BeatSyncInfoTable": beats, "CuePriorityType": 255,
+            "SynthCommandTable": command(bytes.fromhex("00220200ff")),
+            "TrackEventTable": command(struct.pack(">HBHH", 2000, 4, 2, 0) + bytes(3)),
+            "StreamAwbTocWork": bytes(64), "StreamAwbAfs2Header": afs2_header}
+    return table("Header", root_columns, [root], align=32), awb
 
 
 class UtfTests(unittest.TestCase):
@@ -153,12 +271,260 @@ class Afs2Tests(unittest.TestCase):
                 acbw.write_afs2(entries, **options)
 
 
-@unittest.skipUnless(os.environ.get("SIFAS_TEST_ACB"), "Set a private local music ACB path for the stock layout check")
-class PrivateStockLayoutTests(unittest.TestCase):
-    def test_stock_cue_sheet_round_trips_byte_identically(self):
+class BuildCueTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.template_pcm = tone(1.5, 300)
+        cls.template_hca = enc.encode_hca(cls.template_pcm)
+        cls.pcm = tone(3.2, 523.25, 659.25)
+        cls.hca = enc.encode_hca(cls.pcm)
+        cls.template_acb, cls.template_awb = synthetic_template(cls.template_hca)
+
+    def build(self, **overrides):
+        options = {"sheet": "music_93001", "beat": {"bpm": 128.0, "firstBeat": 0.52},
+                   "guid": bytes(range(16, 32))}
+        options.update(overrides)
+        return acbw.build_cue(self.template_acb, self.template_awb, self.hca, **options)
+
+    def test_replaces_only_the_audio_identity_fields(self):
+        acb, awb = self.build()
+        catalog = cri.inspect_cues(acb)
+        self.assertEqual(catalog["sheet"], "music_93001")
+        self.assertEqual([cue["name"] for cue in catalog["cues"]], ["music_93001"])
+        samples = len(self.pcm)
+        self.assertEqual(cri.inspect_beat_sync(acb, "music_93001"), {
+            "bpm": 128.0, "numBeats": 4, "beatDenominator": 4, "baseRate": RATE,
+            "startSample": round(0.52 * RATE), "endSample": samples})
+        root = acbw.read_utf(acb)
+        nested = lambda name: acbw.read_utf(root.value(0, name))
+        self.assertEqual(nested("StreamAwbHash").value(0, "Hash"), hashlib.md5(awb).digest())
+        self.assertEqual(nested("StreamAwbHash").value(0, "Name"), "music_93001")
+        self.assertEqual(nested("StreamAwbAfs2Header").value(0, "Header"), awb[:28])
+        self.assertEqual(root.value(0, "AcbGuid"), bytes(range(16, 32)))
+        memory = acbw.read_afs2(root.value(0, "AwbFile"))
+        self.assertEqual(memory["entries"], [(0, self.hca[:96 + 5 * 512])])
+        self.assertEqual(cri.awb_entries(awb), [{"id": 0, "start": 32, "end": 32 + len(self.hca), "subkey": 0}])
+        self.assertEqual(awb[32:], self.hca)
+        waveform = nested("WaveformTable")
+        self.assertEqual((waveform.value(0, "NumSamples"), waveform.value(0, "SamplingRate"),
+                          waveform.value(0, "NumChannels")), (samples, RATE, 2))
+        self.assertEqual(nested("CueTable").value(0, "Length"), samples * 1000 // RATE)
+
+        template = acbw.read_utf(self.template_acb)
+        self.assertEqual([(c.name, c.kind, c.storage) for c in root.columns],
+                         [(c.name, c.kind, c.storage) for c in template.columns])
+        replaced = {"Name", "AcbGuid", "AwbFile", "StreamAwbHash", "StreamAwbAfs2Header", "WaveformTable", "CueTable",
+                    "CueNameTable", "BeatSyncInfoTable"}
+        for column in template.columns:
+            if column.name not in replaced:
+                self.assertEqual(root.value(0, column.name), template.value(0, column.name), column.name)
+        changed_fields = {
+            "WaveformTable": {"NumSamples"}, "CueTable": {"Length"}, "CueNameTable": {"CueName"},
+            "BeatSyncInfoTable": {"Bpm", "StartSample", "EndSample"}, "StreamAwbHash": {"Name", "Hash"},
+            "StreamAwbAfs2Header": {"Header"}}
+        for name, fields in changed_fields.items():
+            old, new = acbw.read_utf(template.value(0, name)), nested(name)
+            self.assertEqual([(c.name, c.kind, c.storage) for c in old.columns],
+                             [(c.name, c.kind, c.storage) for c in new.columns], name)
+            for column in old.columns:
+                if column.name not in fields:
+                    self.assertEqual(new.value(0, column.name), old.value(0, column.name), (name, column.name))
+        # Rebuilding is deterministic for a given GUID.
+        self.assertEqual(self.build(), (acb, awb))
+
+    def test_tempo_segments_and_errors(self):
+        acb, _ = self.build(beat={"segments": [{"bpm": 120.0, "startSample": 1000},
+                                               {"bpm": 90.5, "startSample": 60000}]})
+        beat = cri.inspect_beat_sync(acb, "music_93001")
+        self.assertEqual([(s["bpm"], s["startSample"], s["endSample"]) for s in beat["segments"]],
+                         [(120.0, 1000, 59999), (90.5, 60000, len(self.pcm))])
+        for bad in (None, {"bpm": 0, "firstBeat": 0.1}, {"bpm": 120, "firstBeat": -1},
+                    {"bpm": 120, "firstBeat": 99.0}, {"bpm": 120, "firstBeat": 0.1, "beatDenominator": 3},
+                    {"segments": [{"bpm": 120.0, "startSample": 500}, {"bpm": 100.0, "startSample": 400}]},
+                    {"segments": []}):
+            with self.subTest(beat=bad), self.assertRaises(enc.AudioEncodeError):
+                self.build(beat=bad)
+        for sheet in ("", "a\0b", 5):
+            with self.assertRaises(enc.AudioEncodeError):
+                self.build(sheet=sheet)
+        with self.assertRaises(enc.AudioEncodeError):
+            self.build(guid=b"short")
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.build_cue(self.template_acb, self.template_awb, self.hca[:-1], sheet="x", beat={"bpm": 1, "firstBeat": 0})
+
+    def test_template_without_prefetch_or_stream(self):
+        memory_acb, memory_awb = synthetic_template(self.template_hca, streaming=0, beat_rows=0)
+        self.assertIsNone(memory_awb)
+        acb, awb = acbw.build_cue(memory_acb, None, self.hca, sheet="music_93001_SABI", beat=None)
+        self.assertIsNone(awb)
+        root = acbw.read_utf(acb)
+        self.assertEqual(acbw.read_afs2(root.value(0, "AwbFile"))["entries"], [(0, self.hca)])
+        self.assertEqual(cri.inspect_cues(acb)["cues"][0]["waveforms"], [{"waveformIndex": 0, "awbId": 0, "streaming": False}])
+        # A beat for a template with an empty beat table creates one in the stock schema.
+        acb, _ = acbw.build_cue(memory_acb, None, self.hca, sheet="music_93001_SABI", beat={"bpm": 100, "firstBeat": 0})
+        self.assertEqual(cri.inspect_beat_sync(acb, "music_93001_SABI")["bpm"], 100.0)
+        stream_acb, stream_awb = synthetic_template(self.template_hca, streaming=1)
+        acb, awb = acbw.build_cue(stream_acb, stream_awb, self.hca, sheet="music_93002", beat={"bpm": 1, "firstBeat": 0})
+        self.assertEqual(acbw.read_utf(acb).value(0, "AwbFile"), b"")
+        self.assertEqual(awb[32:], self.hca)
+
+    def test_empty_beat_table_stays_empty_without_a_beat(self):
+        root = acbw.read_utf(self.template_acb)
+        beats = acbw.read_utf(root.value(0, "BeatSyncInfoTable"))
+        beats.resize(0)
+        root.set(0, "BeatSyncInfoTable", acbw.write_utf(beats))
+        template = acbw.write_utf(root)
+        acb, _ = acbw.build_cue(template, self.template_awb, self.hca, sheet="music_93001_SABI", beat=None)
+        self.assertEqual(acbw.read_utf(acb).value(0, "BeatSyncInfoTable"), acbw.write_utf(beats))
+        self.assertIsNone(cri.inspect_beat_sync(acb, "music_93001_SABI"))
+        self.assertFalse(acbw.template_info(template)["hasBeats"])
+
+    def test_prefetch_follows_the_template_and_short_streams(self):
+        acb_two, awb_two = synthetic_template(self.template_hca, prefetch_blocks=2)
+        acb, _ = acbw.build_cue(acb_two, awb_two, self.hca, sheet="music_93001", beat={"bpm": 1, "firstBeat": 0})
+        self.assertEqual(acbw.read_afs2(acbw.read_utf(acb).value(0, "AwbFile"))["entries"][0][1], self.hca[:96 + 2 * 512])
+        tiny = enc.encode_hca(tone(0.01, 440))
+        acb, awb = acbw.build_cue(self.template_acb, self.template_awb, tiny, sheet="music_93003",
+                                  beat={"bpm": 120, "firstBeat": 0})
+        self.assertEqual(acbw.read_afs2(acbw.read_utf(acb).value(0, "AwbFile"))["entries"][0][1], tiny)
+
+    def test_rejects_unsupported_templates(self):
+        for options in ({"cues": 2}, {"encode_type": 0}):
+            acb, awb = synthetic_template(self.template_hca, **options)
+            with self.subTest(options), self.assertRaises(enc.AudioEncodeError):
+                acbw.build_cue(acb, awb, self.hca, sheet="music_1", beat={"bpm": 120, "firstBeat": 0})
+        acb, awb = synthetic_template(self.template_hca, beat_rows=2)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.build_cue(acb, awb, self.hca, sheet="music_1", beat=None)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.build_cue(b"not a cue sheet", awb, self.hca, sheet="music_1", beat={"bpm": 120, "firstBeat": 0})
+
+    def test_two_row_template_beats_keep_flags(self):
+        acb, awb = synthetic_template(self.template_hca, beat_rows=2)
+        new_acb, _ = acbw.build_cue(acb, awb, self.hca, sheet="music_1", beat={"bpm": 150.0, "firstBeat": 0.25})
+        beats = acbw.read_utf(acbw.read_utf(new_acb).value(0, "BeatSyncInfoTable"))
+        self.assertEqual(len(beats.rows), 1)
+        self.assertEqual({c.storage for c in beats.columns}, {PER_ROW})
+        self.assertEqual(cri.inspect_beat_sync(new_acb, "music_1")["bpm"], 150.0)
+
+
+class VerifyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.pcm = tone(2.0, 440, 550)
+        cls.hca = enc.encode_hca(cls.pcm)
+        template_acb, template_awb = synthetic_template(enc.encode_hca(tone(1.0, 200)))
+        cls.acb, cls.awb = acbw.build_cue(template_acb, template_awb, cls.hca, sheet="music_93001",
+                                          beat={"bpm": 120.0, "firstBeat": 0.0})
+
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"ELICHIKA_HCA_LIBRARY": Clhca.get()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_decodes_with_exact_length_and_snr(self):
+        result = acbw.verify_cue(self.acb, self.awb, self.pcm, cue="music_93001")
+        self.assertEqual(result["frames"], len(self.pcm))
+        self.assertEqual(result["decoder"], "clhca")
+        self.assertGreater(result["snrDb"], 40)
+
+    def test_refuses_mismatched_audio(self):
+        cases = {"length": self.pcm[:-1], "content": tone(2.0, 300), "channels": self.pcm[:, ::-1] // 2}
+        for name, pcm in cases.items():
+            with self.subTest(name), self.assertRaises(enc.AudioEncodeError):
+                acbw.verify_cue(self.acb, self.awb, pcm)
+        wrong_key = enc.encode_hca(self.pcm, key=enc.SIFAS_HCA_KEY + 2)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.verify_cue(self.acb, acbw.write_afs2([(0, wrong_key)]), self.pcm)
+
+    def test_requires_the_bundled_decoder(self):
+        with patch.object(cri, "_native_library", return_value=None):
+            with self.assertRaisesRegex(enc.AudioEncodeError, "decoder is missing"):
+                acbw.verify_cue(self.acb, self.awb, self.pcm)
+
+
+class RegistrationHelperTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"ELICHIKA_HCA_LIBRARY": Clhca.get()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_template_info_and_one_call_cue(self):
+        template_acb, template_awb = synthetic_template(enc.encode_hca(tone(1.0, 200)))
+        self.assertEqual(acbw.template_info(template_acb, template_awb), {
+            "sheet": "template", "sampleCount": RATE, "sampleRate": RATE, "streaming": 2, "subkey": 0,
+            "hasBeats": True})
+        song = tone(30.0, 330, 440, level=0.3)
+        seen = []
+        result = acbw.make_cue(song, template_acb, template_awb, sheet="music_93001",
+                               beat={"bpm": 128.0, "firstBeat": 0.5}, progress=lambda done, total: seen.append(done))
+        self.assertEqual(result["sampleCount"], len(song))
+        self.assertGreater(result["snrDb"], 40)
+        self.assertEqual(cri.inspect_cues(result["acb"])["sheet"], "music_93001")
+        self.assertTrue(seen)
+
+        preview = acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=25.0,
+                                    beat={"bpm": 120.0, "firstBeat": 0.3})
+        self.assertEqual(preview["startSample"], 10 * RATE)
+        self.assertEqual(preview["sampleCount"], 20 * RATE)
+        beat = cri.inspect_beat_sync(preview["acb"], "music_93001_SABI")
+        self.assertEqual((beat["bpm"], beat["startSample"], beat["endSample"]), (120.0, round(0.3 * RATE), 20 * RATE))
+        short = acbw.make_preview(song, template_acb, template_awb, sheet="music_93001_SABI", start_seconds=3.0,
+                                  beat={"bpm": 120.0, "firstBeat": 0.3}, length_samples=5 * RATE, verify=False)
+        self.assertEqual((short["startSample"], short["sampleCount"], short["snrDb"]), (3 * RATE, 5 * RATE, None))
+
+    def test_subkey_of_the_template_bank_keys_the_stream(self):
+        template_hca = enc.encode_hca(tone(1.0, 200), subkey=0x51)
+        template_acb, template_awb = synthetic_template(template_hca, subkey=0x51)
+        self.assertEqual(acbw.template_info(template_acb, template_awb)["subkey"], 0x51)
+        result = acbw.make_cue(tone(2.0, 440), template_acb, template_awb, sheet="music_93001",
+                               beat={"bpm": 90.0, "firstBeat": 0.0})
+        self.assertEqual(cri.awb_entries(result["awb"])[0]["subkey"], 0x51)
+        self.assertGreater(result["snrDb"], 40)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.template_info(b"@UTF" + bytes(40))
+
+
+class ExcerptBeatTests(unittest.TestCase):
+    def test_first_beat_moves_into_the_excerpt(self):
+        beat = {"bpm": 120.0, "firstBeat": 0.3}
+        moved = acbw.excerpt_beat(beat, 44100 * 10, 44100 * 20)
+        self.assertAlmostEqual(moved["firstBeat"], 0.3)
+        moved = acbw.excerpt_beat(beat, int(44100 * 10.1), 44100 * 20)
+        self.assertAlmostEqual(moved["firstBeat"], 0.2, places=4)
+        self.assertIsNone(acbw.excerpt_beat(None, 0, 10))
+        segments = {"segments": [{"bpm": 100.0, "startSample": 1000}, {"bpm": 150.0, "startSample": 500000}]}
+        moved = acbw.excerpt_beat(segments, 441000, 882000)
+        self.assertEqual(moved["segments"][0]["bpm"], 100.0)
+        self.assertGreaterEqual(moved["segments"][0]["startSample"], 0)
+        self.assertEqual(moved["segments"][1], {"bpm": 150.0, "startSample": 500000 - 441000})
+        self.assertEqual(acbw.excerpt_beat(segments, 441000, 1000)["segments"][0]["bpm"], 100.0)
+        with self.assertRaises(enc.AudioEncodeError):
+            acbw.excerpt_beat(beat, -1, 10)
+
+
+@unittest.skipUnless(os.environ.get("SIFAS_TEST_ACB") and os.environ.get("SIFAS_TEST_AWB"),
+                     "Set private local music ACB/AWB paths for the stock rebuild check")
+class PrivateStockRebuildTests(unittest.TestCase):
+    def test_stock_cue_sheet_round_trips_and_rebuilds_around_its_own_audio(self):
         acb = Path(os.environ["SIFAS_TEST_ACB"]).read_bytes()
+        awb = Path(os.environ["SIFAS_TEST_AWB"]).read_bytes()
         size = struct.unpack_from(">I", acb, 4)[0] + 8
         self.assertEqual(acbw.write_utf(acbw.read_utf(acb)), acb[:size])
+        sheet = cri.inspect_cues(acb)["sheet"]
+        with patch.dict(os.environ, {"ELICHIKA_HCA_LIBRARY": Clhca.get()}), tempfile.TemporaryDirectory() as directory:
+            cri.decode_cue(acb, awb, sheet, Path(directory) / "stock.wav")
+            pcm = enc.read_wav((Path(directory) / "stock.wav").read_bytes())
+            beat = cri.inspect_beat_sync(acb, sheet)
+            spec = ({"segments": [{"bpm": s["bpm"], "startSample": s["startSample"]} for s in beat["segments"]]}
+                    if "segments" in beat else {"bpm": beat["bpm"], "firstBeat": beat["startSample"] / RATE})
+            new_acb, new_awb = acbw.build_cue(acb, awb, enc.encode_hca(pcm), sheet=sheet, beat=spec,
+                                              guid=acbw.read_utf(acb).value(0, "AcbGuid"))
+            result = acbw.verify_cue(new_acb, new_awb, pcm)
+        self.assertEqual(result["frames"], len(pcm))
+        old, new = acbw.read_utf(acb), acbw.read_utf(new_acb)
+        differing = {c.name for c in old.columns if old.value(0, c.name) != new.value(0, c.name)}
+        self.assertLessEqual(differing, {"AwbFile", "StreamAwbHash", "StreamAwbAfs2Header", "BeatSyncInfoTable"})
 
 
 if __name__ == "__main__":
