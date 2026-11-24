@@ -43,6 +43,28 @@ assert.deepEqual(run(panel, grid(.1, 47.328)).at(-1), [3, 4], "every weighted in
 assert.deepEqual(run(panel, [46.587, 47.328]).at(-1), [3, 4]);
 // ProcessWithoutSeek (mode 1) and V2 agree here.
 assert.deepEqual(run(panel, coarse, 1), processed);
+// They differ when nextPlayingIndexInMaybeSkipped is pending at a maybe-skipped frame. A skip
+// sets maybeSkipped and playingIndexInMaybeSkipped = -1 in both (0x2b39ef0 stores -1 at 0x34);
+// V2 stores the 64-bit 0x7fffffffffffffff at 0x34 (0x2b3a350/0x2b3a358), which also sets
+// nextPlayingIndexInMaybeSkipped (0x38) to INT_MAX. Mode 1 keeps it, so when the finished input
+// completes in the skipped frame, completedIndex jumps to next - 1 (0x2b39ff0) past an input that
+// is still blending in, and the next frame's walk starts after that input.
+const pending = [clip(0, 2.5), clip(2, 4, { blendIn: 2 }), clip(2, 4), clip(20, .5)];
+const pendingTimes = [1, 1.5, 2, 3, 3.5];
+// 1 s: a maybe-skipped frame plays input 0; 2 s: input 1 starts at weight 0 and input 2 is the
+// next playing input; 3 s: a 1 s step (> the 0.5 s shortest clip) after input 0 has ended.
+assert.deepEqual(run(pending, pendingTimes.slice(0, 3)), [[0], [0], [0, 2]]);
+assert(clipWeight(pending[1], 3.5) > .8, "precondition: input 1 has most of its weight at 3.5 s");
+assert.deepEqual(run(pending, pendingTimes, 2), [[0], [0], [0, 2], [1, 2], [1, 2]], "V2 keeps walking from input 1");
+assert.deepEqual(run(pending, pendingTimes, 1), [[0], [0], [0, 2], [1, 2], [2]],
+  "ProcessWithoutSeek completes input 1 in the skipped frame and leaves it out afterwards");
+for (const [mode, skipped] of [[1, true], [2, false]]) {
+  const track = { nativeClass: "LiveColoringTrack", label: "StageEffect/Expert/Coloring/x", binding: "b", events: pending };
+  const mixer = controller((event, time) => clipWeight(event, time));
+  mixer.update({ tracks: [track], mixerBaseMode: mode }, 3.5, { advancing: false, history: pendingTimes.slice(0, -1) });
+  assert.equal(mixer.skipped(pending[1], 3.5), skipped, `live_mixer_base_mode ${mode} at 3.5 s`);
+  assert.equal(mixer.skipped(pending[2], 3.5), false);
+}
 // The playable time Timeline gives an active clip (clipIn, timeScale, extrapolation).
 assert.equal(playableTime(clip(1, 2, { clipIn: .5, timeScale: 2 }), 1.5), 1.5);
 assert.equal(playableTime(clip(1, 2), 3), null);
