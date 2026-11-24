@@ -100,6 +100,28 @@ def _bundle(variable):
     return Path(raw) if raw and Path(raw).is_file() else None
 
 
+class ColoringSortCenterTests(unittest.TestCase):
+    """Unity sorts queue-3000 renderers by their bounds' center: the coloring descriptor carries
+    the mesh's m_LocalAABB center (glTF X reflected) for MVStudioTransparentSort."""
+
+    @staticmethod
+    def mesh(x, y, z):
+        return SimpleNamespace(m_LocalAABB=SimpleNamespace(m_Center=SimpleNamespace(x=x, y=y, z=z)))
+
+    def test_mesh_bounds_center(self):
+        descriptor = coloring.with_sort_center({"target": "t"}, {"m_SortingOrder": 0}, self.mesh(1.5, .25, -6.75))
+        self.assertEqual(descriptor, {"target": "t", "sortCenter": [-1.5, .25, -6.75]})
+
+    def test_builtin_mesh_is_centered(self):
+        self.assertEqual(coloring.with_sort_center({}, {}, None, builtin_mesh=True), {"sortCenter": [0., 0., 0.]})
+
+    def test_sorting_overrides_and_missing_bounds_keep_the_descriptor(self):
+        for tree in ({"m_SortingOrder": 1}, {"m_SortingLayerID": 5}, {"m_RendererPriority": 2}):
+            self.assertEqual(coloring.with_sort_center({"target": "t"}, tree, self.mesh(0, 0, 0)), {"target": "t"})
+        self.assertEqual(coloring.with_sort_center({"target": "t"}, {}, SimpleNamespace()), {"target": "t"})
+        self.assertEqual(coloring.with_sort_center({"target": "t"}, {}, self.mesh(float("nan"), 0, 0)), {"target": "t"})
+
+
 class ActualStageColoringTests(unittest.TestCase):
     """Set SIFAS_TEST_STAGE_EFFECT_12035 / _12025 to the original Android stage_effect bundles."""
 

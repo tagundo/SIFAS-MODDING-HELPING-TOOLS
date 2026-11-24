@@ -103,6 +103,17 @@ def binding(scene, component, tree):
     }, tuple(shafts))
 
 
+def with_sort_center(descriptor, renderer_tree, mesh, *, builtin_mesh=False):
+    """Adds the renderer's sort center. Unity draws the renderers of one transparent queue back
+    to front by the distance from the camera to their bounds' center, the mesh's m_LocalAABB
+    center under the renderer's transform; a renderer with its own sorting layer, order or
+    priority keeps the descriptor without one (as the stage overlay does)."""
+    from . import mv_studio_stage_overlay as overlay
+
+    bounds = overlay._sort_bounds(renderer_tree, None if builtin_mesh else mesh, builtin_mesh=builtin_mesh)
+    return {**descriptor, **bounds} if bounds else descriptor
+
+
 def renderer_binding(scene, game, candidates):
     if not candidates:
         return None

@@ -62,13 +62,22 @@ async function controller() {
     return node;
   };
   const root = new T.Group();
-  const shafted = mesh({ main: 7, shaftTextures: [8, 9] });
+  const shafted = mesh({ main: 7, shaftTextures: [8, 9], sortCenter: [-1, 2, 3] });
   const plain = mesh({ target: effect.replace("litA", "litB"), main: 7, shaftTextures: [] });
   root.add(shafted, plain);
   const decoded = new Map([7, 8, 9].map(index => [index, Object.assign(new T.Texture(), { name: "tex" + index })]));
   const parser = { getDependency: (type, index) => Promise.resolve(
     type === "bufferView" ? new Uint8Array(256 * 4).buffer : decoded.get(index)) };
   const coloring = await MVStudioStageColoring.apply(T, root, parser);
+  // Unity draws queue-3000 renderers back to front by their bounds' center: a mesh with the
+  // exported m_LocalAABB center joins the native transparent sort, one without keeps Three's order.
+  const entries = coloring.sortEntries();
+  assert.equal(coloring.sortEntries(), entries);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].node, shafted);
+  assert.equal(entries[0].anchor, shafted);
+  assert.deepEqual(entries[0].center.toArray(), [-1, 2, 3]);
+  assert.equal(entries[0].queue, 3000);
   const main = (node) => node.material.uniforms.uMain.value.name;
   const clip = (start, duration, textureIndex) => ({ start, duration, values: {
     playableClass: "LiveColoringClip", tintColor: [1, 1, 1, 1], shift: 0, speed: 0, textureIndex } });

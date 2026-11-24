@@ -55,9 +55,10 @@
 
     function prepare(source, camera, records) {
       if (!camera.isPerspectiveCamera && !camera.isOrthographicCamera) return false;
-      for (const {stageSoftBillboards, stageOverlay} of records) {
+      for (const {stageSoftBillboards, stageOverlay, stageColoring} of records) {
         if (stageSoftBillboards) entries.push(...stageSoftBillboards.sortEntries());
         if (stageOverlay) entries.push(...stageOverlay.sortEntries());
+        if (stageColoring?.sortEntries) entries.push(...stageColoring.sortEntries());
       }
       if (entries.length < 2) return false;
       camera.updateWorldMatrix(true, false);

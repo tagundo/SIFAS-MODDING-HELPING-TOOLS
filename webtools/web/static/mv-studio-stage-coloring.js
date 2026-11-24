@@ -171,7 +171,15 @@
       throw error;
     }
     let lastProject, lastColors;
+    // Unity draws queue-3000 renderers back to front by the distance from the camera to the
+    // renderer's bounds center; MVStudioTransparentSort orders these meshes with the other
+    // native transparent stage meshes. sortCenter is the mesh's m_LocalAABB center.
+    const sortEntries = meshes.filter(({ fields }) => Array.isArray(fields.sortCenter) && fields.sortCenter.length === 3 &&
+      fields.sortCenter.every(Number.isFinite)).map(({ node, fields }) => ({
+      node, anchor: node, center: new T.Vector3().fromArray(fields.sortCenter), queue: fields.queue,
+    }));
     return {
+      sortEntries() { return sortEntries; },
       invalidate() { lastProject = null; },
       update(seconds, project) {
         if (project !== lastProject) {
