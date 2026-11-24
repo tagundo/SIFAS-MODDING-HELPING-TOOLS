@@ -588,6 +588,11 @@ opens that face texture.
   only one of the five levels below. The 3D view previews the choice at once;
   **Show before** toggles it off; **Apply blush** is one undo step (the history
   buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
+  **Cancel preview** drops the previewed choice entirely: the next change starts
+  from the applied bake (or the defaults). Apply / Show before / Remove stay
+  pinned to the bottom of the settings column, above one line that says how Save
+  writes this face (exact pixels and how much larger the texture data gets, or
+  the ASTC compression kept).
 - Each level shows the texture's own cheek-centre colour. Strength k is a
   permanent blush of intensity k (k = 1 is the strongest stock clip):
   Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3.

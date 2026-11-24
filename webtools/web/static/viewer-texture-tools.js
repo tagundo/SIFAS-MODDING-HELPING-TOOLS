@@ -197,7 +197,12 @@
     "Keep the game's compression (ASTC)": ["게임 압축 형식(ASTC) 유지", "ゲームの圧縮形式（ASTC）を保つ"],
     "Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.": ["파일·메모리가 작지만, 홍조가 닿는 6×6 블록은 다시 압축되어 주변 픽셀도 조금 달라집니다.", "ファイルとメモリは小さくなりますが、頬紅がかかる6×6ブロックは再圧縮されるため、周りのピクセルも少し変わります。"],
     "This texture is not ASTC-compressed, so it is always saved as exact pixels.": ["이 텍스쳐는 ASTC 압축이 아니므로 항상 정확한 픽셀로 저장합니다.", "このテクスチャはASTC圧縮ではないため、常に正確なピクセルで保存します。"],
-    "ASTC kept": ["ASTC 압축 유지", "ASTC圧縮を保持"],
+    "Save mode": ["저장 방식", "保存方法"], "Keep ASTC when saving": ["저장 시 ASTC 유지", "保存時にASTCを保持"],
+    // The always-visible save line ({n}: how many times larger the texture data gets).
+    "Save: exact pixels (texture data about {n}× larger) · keeping ASTC is under Advanced": ["저장: 정확한 픽셀(텍스쳐 데이터 약 {n}배) · ASTC 유지는 고급 설정에서", "保存: 正確なピクセル（テクスチャデータ約{n}倍）・ASTCの保持は詳細設定で"],
+    "Save: keeps the game's ASTC compression · only the blush blocks are compressed again": ["저장: 게임 압축 형식(ASTC) 유지 · 홍조 블록만 다시 압축", "保存: ゲームの圧縮形式（ASTC）を保持・頬紅のブロックだけ再圧縮"],
+    "Save: exact pixels, because this texture is also painted": ["저장: 정확한 픽셀(그림판 편집도 있어 ASTC를 유지하지 않음)", "保存: 正確なピクセル（ペイントもあるためASTCは保持しません）"],
+    "Save: exact pixels": ["저장: 정확한 픽셀", "保存: 正確なピクセル"], "Save: exact pixels (the texture data gets larger)": ["저장: 정확한 픽셀(텍스쳐 데이터가 커짐)", "保存: 正確なピクセル（テクスチャデータが大きくなります）"],
     "Choose how to save the baked blush: exact pixels or the game's ASTC compression.": ["홍조 저장 방식을 정확한 픽셀 또는 게임 압축 형식(ASTC) 유지 중에서 고르세요.", "頬紅の保存方法を、正確なピクセルかゲームの圧縮形式（ASTC）を保つかから選んでください。"],
     "Changes only the cheek pixels, the same way the game draws its blush.": ["게임이 홍조를 그리는 방식 그대로 뺨 픽셀만 바꿉니다.", "ゲームが頬紅を描くのと同じ方法で、頬のピクセルだけを変えます。"],
     "Pick a strength, check the 3D preview, then apply.": ["세기를 고르고 3D 미리보기를 확인한 뒤 적용하세요.", "強さを選んで3Dプレビューを確認し、適用してください。"],
@@ -369,8 +374,9 @@
     node("p", layerPanel, "Opening a project replaces this texture's layers and can be undone.", "viewer-texture-hint");
     // Baked cheek blush: one panel, defaults that work, named levels with the
     // resulting cheek-centre colour, a live 3D preview and one Apply. The
-    // status and the notes that change what to bake sit above the choices so
-    // they stay visible in the settings column without scrolling.
+    // status and the notes that change what to bake sit above the choices,
+    // and the actions with the save mode stay pinned to the bottom of the
+    // settings column, so both are visible without scrolling.
     var B = global.TextureBlush, blushInfo = null, cheek = null, cheekPromise = null, cheekError = "";
     var blushChoice = { layer: B ? B.DEFAULT_LAYER : 0, k: B ? B.levelK(B.DEFAULT_LEVEL) : 1, level: B ? B.DEFAULT_LEVEL : "medium", encoding: B ? B.DEFAULT_ENCODING : "exact" }, blushPending = false, blushBefore = false, blushSwatches = null;
     var blushPanel = node("div", content, null, "viewer-texture-panel viewer-texture-blush"); blushPanel.id = "viewer-texture-blush-panel"; blushPanel.hidden = true;
@@ -401,15 +407,20 @@
     node("p", blushAdvanced, "1 = the strongest blush the game uses in songs.", "viewer-texture-hint");
     // Save mode: exact pixels (the default, CLAUDE.md: only the blush texels
     // change) or, opted in, the game's ASTC compression with re-encoded blocks.
+    var blushSaveTitle = node("span", blushAdvanced, "Save mode", "viewer-texture-blush-heading"); blushSaveTitle.id = "viewer-texture-blush-save-title";
     node("p", blushAdvanced, "Saved as exact pixels by default (lossless RGBA32): only the blush pixels change, but a compressed face texture gets larger.", "viewer-texture-hint");
     var blushKeep = check(blushAdvanced, "Keep the game's compression (ASTC)", false, "viewer-texture-blush-astc-keep");
     // Filled in refreshBlush: names the texture's own ASTC block size.
     var blushKeepHint = node("p", blushAdvanced, null, "viewer-texture-hint"); blushKeepHint.id = "viewer-texture-blush-astc-keep-hint";
-    var blushActions = node("div", blushPanel, null, "viewer-texture-actions viewer-texture-blush-actions");
+    var blushNotes = node("ul", blushPanel, null, "viewer-texture-blush-notes"); blushNotes.id = "viewer-texture-blush-notes";
+    // Pinned to the bottom of the settings scroller (CSS position: sticky).
+    var blushFooter = node("div", blushPanel, null, "viewer-texture-blush-footer"); blushFooter.id = "viewer-texture-blush-footer";
+    var blushActions = node("div", blushFooter, null, "viewer-texture-actions viewer-texture-blush-actions");
     var applyBlushButton = button(blushActions, "Apply blush", function () { applyBlush(); }, "viewer-texture-blush-apply"); applyBlushButton.classList.add("viewer-texture-primary");
     var blushBeforeButton = button(blushActions, "Show before", function () { setBlushBefore(!blushBefore); }, "viewer-texture-blush-before"); blushBeforeButton.setAttribute("aria-pressed", "false");
     var removeBlushButton = button(blushActions, "Remove blush", function () { removeBlush(); }, "viewer-texture-blush-remove");
-    var blushNotes = node("ul", blushPanel, null, "viewer-texture-blush-notes"); blushNotes.id = "viewer-texture-blush-notes";
+    // How Save writes this face: always visible, filled in refreshBlush.
+    var blushSaveMode = node("output", blushFooter, null, "viewer-texture-hint viewer-texture-blush-save-mode"); blushSaveMode.id = "viewer-texture-blush-save-mode";
     // End of the blush panel strings.
     var adjustmentActions = node("div", content, null, "viewer-texture-actions");
     var applyButton = button(adjustmentActions, "Apply color", applyPreview, "viewer-texture-apply"), cancelButton = button(adjustmentActions, "Cancel preview", cancelPreview, "viewer-texture-cancel");
@@ -1300,8 +1311,17 @@
       var level = B.LEVELS.filter(function (row) { return row.id === choice.level; })[0];
       return t(level ? level.label : "Custom") + " (k " + Math.round(choice.k * 1000) / 1000 + ")";
     }
-    // The save mode is named only when it is not the default exact pixels.
-    function blushSummary(choice) { return levelName(choice) + " · " + t(B.LAYERS[choice.layer].label) + (choice.encoding === "astc-keep" ? " · " + t("ASTC kept") : ""); }
+    // The save mode is named only when it is not the default exact pixels,
+    // as a request: Save may still write exact pixels (and says why).
+    function blushSummary(choice) { return levelName(choice) + " · " + t(B.LAYERS[choice.layer].label) + (choice.encoding === "astc-keep" ? " · " + t("Keep ASTC when saving") : ""); }
+    // The always-visible save line: what Save writes for this face.
+    function blushSaveText(entry, choice) {
+      var block = astcBlock(entry), format = entry && entry.record && entry.record.format || "";
+      if (choice.encoding === "astc-keep" && block) return t(entry.pixelModified ? "Save: exact pixels, because this texture is also painted" : "Save: keeps the game's ASTC compression · only the blush blocks are compressed again");
+      // RGBA32 is 32 bits a texel, an ASTC block 128 bits for block² texels.
+      if (block) return t("Save: exact pixels (texture data about {n}× larger) · keeping ASTC is under Advanced").replace("{n}", String(Math.round(block * block / 4)));
+      return t(format === "RGBA32" ? "Save: exact pixels" : "Save: exact pixels (the texture data gets larger)");
+    }
     function blushNote(list, key) { var item = document.createElement("li"); item.dataset.note = key; item.textContent = t(key); list.push(item); }
     function fillNotes(list, notes) {
       var signature = notes.map(function (item) { return item.dataset.note; }).join("|") + ":" + (document.documentElement.lang || "");
@@ -1334,6 +1354,7 @@
       var block = astcBlock(entry);
       blushKField.disabled = !editable; blushKeep.disabled = !editable || !block; if (document.activeElement !== blushKField) blushKField.value = String(base.k);
       blushKeep.checked = base.encoding === "astc-keep";
+      blushSaveMode.hidden = !rule; blushSaveMode.textContent = rule ? blushSaveText(entry, base) : "";
       blushKeepHint.textContent = !rule || block ? t("Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.").replace(/6×6/g, (block || 6) + "×" + (block || 6))
         : t("This texture is not ASTC-compressed, so it is always saved as exact pixels.");
       applyBlushButton.disabled = !editable || !blushPending || sameBlush(entry.blush, selectedBlush());

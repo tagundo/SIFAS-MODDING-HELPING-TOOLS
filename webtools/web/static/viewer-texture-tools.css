@@ -178,3 +178,10 @@
 .viewer-texture-tools button.viewer-texture-blush-layer { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; flex: 1 1 120px; min-height: 36px; text-align: left; }
 .viewer-texture-blush-shape { font-size: 10px; line-height: 1.25; color: var(--muted); font-weight: normal; }
 .viewer-texture-blush-advanced .viewer-texture-check { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; font-size: 11px; }
+/* Apply / Show before / Remove and the save line stay pinned to the bottom of
+   the settings scroller while any of the blush panel is in view. */
+.viewer-texture-blush-footer { position: sticky; bottom: -4px; z-index: 2; display: grid; gap: 4px; margin: 0 -4px; padding: 6px 4px; background: var(--panel); border-top: 1px solid var(--line); }
+.viewer-texture-blush-footer > .viewer-texture-actions { margin: 0; }
+.viewer-texture-blush-save-mode { display: block; }
+.viewer-texture-properties:has(> .viewer-texture-blush:not([hidden])) { scroll-padding-bottom: 96px; }
+.viewer-texture-blush-advanced > .viewer-texture-blush-heading { display: block; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }

@@ -61,6 +61,15 @@ async function startServer() {
   for (let i = 0; i < 300; i++) { if (child.exitCode !== null) throw new Error('Product server exited'); try { if ((await fetch(url + '/api/tools')).ok) return { url, child, log }; } catch (_) {} await wait(100); }
   child.kill(); throw new Error('Server did not become ready');
 }
+// Where the status line and the Apply button sit against the settings scroller.
+async function blushLayout(page, scroll) {
+  return page.evaluate(scroll => {
+    // The page itself scrolls the settings box into the window, as a user would.
+    const box = document.querySelector('.viewer-texture-properties'); box.scrollTop = scroll === 'bottom' ? box.scrollHeight : 0; box.scrollIntoView({ block: 'nearest' });
+    const view = box.getBoundingClientRect(), place = id => { const r = document.getElementById(id).getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), inside: r.height > 0 && r.top >= Math.max(0, view.top) - 1 && r.bottom <= Math.min(innerHeight, view.bottom) + 1 }; };
+    return { scroller: { top: Math.round(view.top), bottom: Math.round(view.bottom), scrollTop: box.scrollTop, scrollHeight: box.scrollHeight }, status: place('viewer-texture-blush-status'), apply: place('viewer-texture-blush-apply'), before: place('viewer-texture-blush-before'), save: place('viewer-texture-blush-save-mode') };
+  }, scroll);
+}
 async function frames(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function state(page) { return page.evaluate(() => ModelViewer.getTextureTools().getState()); }
 async function click(page, selector) { const target = page.locator(selector); await target.evaluate(e => { for (let p = e.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true; }); await target.scrollIntoViewIfNeeded(); await target.click(); await frames(page); }
@@ -108,12 +117,32 @@ async function main() {
     });
     assert.ok(layout.status && layout.alerts, JSON.stringify(layout));
     assert.deepStrictEqual(layout.order.slice(1, 4), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alerts']);
+    assert.equal(layout.order[layout.order.length - 1], 'viewer-texture-blush-footer');
+    // The status and the actions are both in view without scrolling, also on a
+    // 1366x900 screen and with Advanced open and scrolled to its end.
+    const layouts = [];
+    for (const [width, height] of [[1480, 1100], [1366, 900]]) {
+      await page.setViewportSize({ width, height }); await frames(page);
+      for (const advanced of [false, true]) {
+        await page.evaluate(open => { document.querySelector('.viewer-texture-blush-advanced').open = open; }, advanced); await frames(page);
+        for (const scroll of advanced ? ['top', 'bottom'] : ['top']) {
+          const where = await blushLayout(page, scroll); layouts.push({ width, height, advanced, scroll, where });
+          assert.ok(where.apply.inside && where.before.inside && where.save.inside, 'actions and save line in view: ' + JSON.stringify(layouts[layouts.length - 1]));
+          if (scroll === 'top') assert.ok(where.status.inside, 'status in view: ' + JSON.stringify(layouts[layouts.length - 1]));
+        }
+      }
+    }
+    await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = false; document.querySelector('.viewer-texture-properties').scrollTop = 0; });
+    await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
+    // How Save writes this RGBA32 face is always in view.
+    assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels');
     assert.match(await page.locator('#viewer-texture-blush-layer-1 .viewer-texture-blush-shape').textContent(), /^Band across the nose and both cheeks$/);
     const swatches = await page.evaluate(() => Array.from(document.querySelectorAll('#viewer-texture-blush-levels .viewer-texture-blush-level')).map(b => ({ id: b.dataset.blushLevel, colour: b.dataset.colour, text: b.textContent })));
     assert.deepStrictEqual(swatches.map(r => r.text), ['Very light', 'Light', 'Medium', 'Strong', 'Very strong']);
     assert.equal(new Set(swatches.map(r => r.colour)).size, 5, 'each level shows its own cheek-centre colour');
     for (let i = 1; i < 5; i++) { const a = s.blush.swatches.colours[i - 1], b = s.blush.swatches.colours[i]; assert(b[1] < a[1] && b[2] < a[2], 'neighbouring levels get darker'); }
     report.cases.push({ name: 'blush tab, defaults, swatches and caveats', choice: s.blush.choice, swatches });
+    report.cases.push({ name: 'status, actions and save line in view at 1480x1100 and 1366x900', layouts });
 
     // Live 3D preview before saving, exact against the Python rule; Save waits for Apply.
     assert(same(await live(page), expected(0, 1.65)), 'the 3D texture shows the exact bake preview');
@@ -314,6 +343,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isChecked(), false, 'exact pixels are the default');
       assert.equal(await page.locator('#viewer-texture-blush-astc-keep-hint').textContent(), 'Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.');
       s = await state(page); assert.equal(s.blush.choice.encoding, 'exact'); assert.match(s.blush.status, /· Cheeks \(Ppo\)$/, 'the default save mode is not named');
+      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: exact pixels (texture data about 9× larger) · keeping ASTC is under Advanced');
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
       let saved = await saveNow();
       assert.deepStrictEqual(saved.notes, [fixture.savedExact]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [4, 7], 'exact pixels: lossless RGBA32');
@@ -324,8 +354,9 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       // Opt in: the choice is part of the operation, previewed like any other change and named in the status.
       await click(page, '#viewer-texture-blush-astc-keep'); s = await state(page);
       assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'astc-keep' }); assert(s.blush.previewing);
-      assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · ASTC kept$/);
+      assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · Keep ASTC when saving$/);
       assert.deepStrictEqual(s.blush.displayed, { layer: 0, k: 1.65, encoding: 'astc-keep' }, 'the previewed strength is unchanged');
+      assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), "Save: keeps the game's ASTC compression · only the blush blocks are compressed again");
       await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.encoding === 'astc-keep' && !s.pending; });
       edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 0, k: 1.65, encoding: 'astc-keep' });
       saved = await saveNow();

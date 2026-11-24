@@ -146,5 +146,7 @@ print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "k
   assert.deepStrictEqual(B.LAYERS.map(layer => [layer.hint].concat(words[layer.hint])), [
     ['Round patches on both cheeks', '양 볼의 동그란 홍조', '両頬の丸い頬紅'], ['Band across the nose and both cheeks', '코와 양 볼을 가로지르는 띠', '鼻と両頬をまたぐ帯']]);
   B.LAYERS.forEach(layer => [layer.label].concat(words[layer.label]).forEach(text => assert.ok(!/strong|deep|dark|light|진한|진하|짙|연한|약한|濃|薄|強|弱/i.test(text), text)));
+  // The visible save line carries the size factor of the ASTC texture it describes.
+  assert.ok(words['Save: exact pixels (texture data about {n}× larger) · keeping ASTC is under Advanced'].every(text => text.includes('{n}')));
 });
 console.log(JSON.stringify({ status: 'PASS', cases: cases.length, names: cases }));
