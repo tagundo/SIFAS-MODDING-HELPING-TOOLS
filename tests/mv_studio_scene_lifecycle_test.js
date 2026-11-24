@@ -788,6 +788,18 @@ async function checkAssetDumpStageBillboardDrawn() {
     add('hidden', 40, [0.4, 2, 0.4]);
     add('bare', 50, null, false);
     add('edge', 60, [6, 2, 0.01]);
+    // A 12035 cone: the AxisBillboard node is a group whose renderer is a child mesh node of the same name.
+    add('group', 70, null, false);
+    const part = new THREE.Mesh(new THREE.BoxGeometry(.4, 2, .4), new THREE.MeshBasicMaterial());
+    part.name = 'cone_1';
+    part.userData.name = cones.group.at(-1).userData.name = 'cone';
+    cones.group.at(-1).add(part);
+    // A differently named child is another GameObject's renderer, not the billboard's.
+    add('other', 80, null, false);
+    const other = new THREE.Mesh(new THREE.BoxGeometry(.4, 2, .4), new THREE.MeshBasicMaterial());
+    other.userData.name = 'lens';
+    cones.other.at(-1).userData.name = 'cone';
+    cones.other.at(-1).add(other);
     const child = new THREE.Object3D();
     child.userData.mvStageNode = { binding, path: 22 };
     cones.front.at(-1).add(child);
@@ -810,6 +822,8 @@ async function checkAssetDumpStageBillboardDrawn() {
   at('behind', 0, 10);
   at('hidden', 0, -10);
   at('bare', 0, -10);
+  at('group', 0, -10);
+  at('other', 0, -10);
   // A 6 m wide, flat cone turned toward the camera from twice the half width: its own bounds stay outside the
   // right plane, the widened (6 x 2 x 6) bounds reach into the view.
   at('edge', 2 * halfWidth, -10);
@@ -827,6 +841,8 @@ async function checkAssetDumpStageBillboardDrawn() {
   assert.equal(drawn(41), undefined, 'a hidden cone is not turned (MVStudioAxisBillboard skips it), so it reports nothing');
   assert.equal(drawn(51), false, 'a billboard without a renderer is never drawn');
   assert.equal(drawn(61), true, 'AxisBillboard.Start widens x/z to max(sx, sz)');
+  assert.equal(drawn(71), true, 'the renderer on a child mesh node of the same name');
+  assert.equal(drawn(81), false, "another GameObject's renderer below the billboard");
   assert.equal(nodes.get(20).axisBillboard, undefined, 'the parent is not a billboard');
   assert.equal(drawn(20), undefined);
   f.app.dispose();

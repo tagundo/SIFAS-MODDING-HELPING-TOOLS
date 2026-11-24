@@ -2356,7 +2356,10 @@
         const tagged = records.some((record) => record.axisBillboard?.nodes?.includes(node));
         if (tagged && activeSplitGazeCameras === null) {
           drawn = false;
-          const meshes = rendererEntries().filter((entry) => entry.owner === node).flatMap((entry) => entry.meshes);
+          // The GameObject's own renderer: the node itself, or the child mesh node the exporter gives it (same name).
+          const name = D.nodeName(node);
+          const meshes = rendererEntries().filter((entry) => entry.owner === node ||
+            (entry.owner.parent === node && D.nodeName(entry.owner) === name)).flatMap((entry) => entry.meshes);
           if (D.effectiveVisible(node) && meshes.length) {
             const box = new T.Box3(), part = new T.Box3(), local = new T.Matrix4(), inverse = new T.Matrix4().copy(node.matrixWorld).invert();
             for (const mesh of meshes) {
