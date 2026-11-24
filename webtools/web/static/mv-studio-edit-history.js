@@ -46,7 +46,7 @@
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 200;
     // compareView(track, event) → the object compared for "edited"; defaults to editedView(event).
     const compareView = typeof options.compareView === "function" ? options.compareView : (_track, event) => editedView(event);
-    let undoStack = [], redoStack = [], version = 0, depth = 0, gesture = null;
+    let undoStack = [], redoStack = [], version = 0, depth = 0, gesture = null, gestures = 0;
     let editedCache = null, editedKey = null;
 
     function project() {
@@ -281,12 +281,16 @@
       return true;
     }
 
+    // begin() returns the open gesture's token (nested begins share it). end(token)
+    // ignores a token whose gesture is already closed (by undo/redo/clear or by the
+    // host closing a gesture left open), so a late end() cannot close a newer one.
     function begin(label) {
-      if (depth++ === 0) gesture = { label: typeof label === "string" ? label : "", entry: null };
+      if (depth++ === 0) gesture = { label: typeof label === "string" ? label : "", entry: null, token: ++gestures };
+      return gesture.token;
     }
 
-    function end() {
-      if (depth === 0) return;
+    function end(token) {
+      if (depth === 0 || (token !== undefined && token !== gesture.token)) return;
       if (--depth === 0) gesture = null;
     }
 

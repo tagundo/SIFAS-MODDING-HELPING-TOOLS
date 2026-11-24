@@ -119,6 +119,7 @@ async function pluginContract(browser, url) {
         if (info.key === 'paramName') return null;
         if (info.key !== 'weight') return undefined;
         window.probeInfo = { key: info.key, path: info.path, value: info.value, writable: info.writable, original: info.original };
+        window.probeGesture = info.gesture;
         const input = ctx.make('input', null, { type: 'number', step: 'any', 'data-mv-field': 'weight', id: 'probe-weight' });
         input.value = info.value;
         input.addEventListener('change', () => info.set(Number(input.value)));
@@ -228,6 +229,40 @@ async function pluginContract(browser, url) {
   assert.equal(Number(await page.locator('#mv-tab-edit .mv-tab-count').textContent()), 3);
   await page.locator('.mv-clip[data-event=lip-1]').click();
   assert.equal(await page.evaluate(() => window.probeInfo.original), .5, 'info.original is the value before the first edit');
+
+  // A gesture a control leaves open (no end() on pointerup) is closed by the host after
+  // the release and at the next press, so later edits get their own undo steps.
+  const steps = () => page.evaluate(() => ({ undo: window.probeCtx.history.size().undo,
+    label: window.probeCtx.history.peekUndo()?.label, open: window.probeCtx.history.gestureActive }));
+  const before = (await steps()).undo;
+  await page.evaluate(() => document.getElementById('probe-weight').addEventListener('pointerdown', () => {
+    window.probeGesture.begin();
+    window.probeBegan = window.probeCtx.history.gestureActive;
+  }, { once: true }));
+  await page.locator('#probe-weight').click();
+  assert.equal(await page.evaluate(() => window.probeBegan), true);
+  await page.waitForFunction(() => !window.probeCtx.history.gestureActive, null, { timeout: 2000 });
+  await page.evaluate(() => window.probeGesture.begin());   // opened without a pointer, never ended
+  await page.locator('#probe-weight').fill('.6');
+  await page.locator('#probe-weight').press('Tab');
+  assert.deepEqual(await steps(), { undo: before + 1, label: 'Edit value', open: true });
+  await page.locator('#mv-timeline-label').click();
+  assert.equal((await steps()).open, false, 'the next press closes it');
+  await page.locator('#mv-event-fields [data-mv-field=label]').fill('B');
+  await page.locator('#mv-event-fields [data-mv-field=label]').press('Tab');
+  assert.deepEqual(await steps(), { undo: before + 2, label: 'Rename clip', open: false }, 'the rename is a step of its own');
+  assert.equal(await page.evaluate(() => {
+    const token = window.probeCtx.history.begin('Other');
+    window.probeGesture.end();   // late: its gesture was closed by the host
+    const open = window.probeCtx.history.gestureActive;
+    window.probeCtx.history.end(token);
+    return open && !window.probeCtx.history.gestureActive;
+  }), true, 'a late info.gesture.end() leaves a newer gesture open');
+  await page.locator('#mv-timeline-label').click();
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Control+z');
+  assert.equal((await steps()).undo, before);
+  assert.equal((await page.evaluate(() => MVStudio.getState().project.tracks[1].events[0].values.weight)), .75);
 
   // Plugin shortcut after the built-in ones; plain keys in a text field are not shortcuts.
   await page.locator('#mv-timeline-label').click();

@@ -668,8 +668,7 @@
       const writable = writableValue(track, event, key);
       const info = { track, event, key, path: key, value: values[key], writable,
         original: original && original.values ? original.values[key] : undefined,
-        set: (next) => setEventValue(track, event, [key], next),
-        gesture: { begin: () => history.begin("Edit value"), end: () => history.end() } };
+        set: (next) => setEventValue(track, event, [key], next), gesture: valueGesture() };
       const control = valueControl(info);
       if (control === null) continue;
       box.append(control !== undefined ? control : eventField(values, key, key, writable, 0, [key], (segments, next) => setEventValue(track, event, segments, next)));
@@ -692,6 +691,28 @@
     if (!name || !box.querySelector) return;
     const control = [...box.querySelectorAll("[data-mv-field]")].find((item) => item.dataset.mvField === name);
     if (control && document.activeElement !== control) control.focus({ preventScroll: true });
+  }
+
+  // info.gesture of one value control. Its token keeps a late end() (after the host
+  // closed a gesture the control left open) from closing someone else's newer gesture.
+  function valueGesture() {
+    let token;
+    return { begin: () => { token = history.begin("Edit value"); }, end: () => { if (token !== undefined) history.end(token); } };
+  }
+
+  // A gesture lasts one pointer press at most: end() belongs on pointerup and
+  // pointercancel. One that a control left open is closed once the release's own
+  // handlers (pointerup, click, change) have run, and at the next press, so later
+  // edits get their own undo steps instead of merging into it.
+  function closeGestures() {
+    while (history.gestureActive) history.end();
+  }
+
+  function watchGestures() {
+    document.addEventListener("pointerdown", (event) => { if (event.isPrimary) closeGestures(); }, true);
+    for (const type of ["pointerup", "pointercancel"]) {
+      document.addEventListener(type, (event) => { if (event.isPrimary && history.gestureActive) setTimeout(closeGestures, 0); }, true);
+    }
   }
 
   function valueControl(info) {
@@ -1326,7 +1347,10 @@
   //   revertEvent(ctx, track, event) → true when handled    editedCount(ctx) → number
   //   keydown(ctx, KeyboardEvent) → true when handled        beforeSave / beforeExport(ctx) → Promise; throw to refuse
   // Writes go through ctx.history (MVStudioEditHistory); a write made outside it (a
-  // derived bake) is followed by ctx.refreshLane(trackId).
+  // derived bake) is followed by ctx.refreshLane(trackId). A gesture (history.begin()
+  // or info.gesture.begin() on pointerdown) ends on pointerup and pointercancel, not on
+  // change: the host closes one still open after the release and at the next press.
+  // history.begin() returns a token; history.end(token) ignores a gesture already closed.
 
   function callPlugins(hook, ...args) {
     const results = [];
@@ -2102,6 +2126,7 @@
         }
         return view;
       } });
+    watchGestures();
     ctx = createContext();
     mountPlugins();
     const timelineScroll = byId("mv-timeline-scroll");

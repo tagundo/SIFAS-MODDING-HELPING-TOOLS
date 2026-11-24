@@ -105,6 +105,28 @@ function gestures() {
   assert.deepEqual(history.size(), { undo: 4, redo: 0 });
   history.undo(); history.undo(); history.undo();
   assert.equal(project.tracks[0].events[0].values.fov, .3);
+
+  // Tokens: nested begins share one; a stale token's end() leaves a newer gesture open.
+  const first = history.begin('Leaked');
+  assert.equal(history.begin(), first, 'a nested begin returns the open gesture\'s token');
+  history.apply(setValue('shot-1', 'fov', 7));
+  while (history.gestureActive) history.end();   // the host closes a gesture left open
+  const second = history.begin('Next');
+  assert.notEqual(second, first);
+  history.end(first);
+  assert.equal(history.gestureActive, true, 'a late end() of the closed gesture is ignored');
+  history.apply(setValue('shot-1', 'fov', 8));
+  history.end(second);
+  assert.equal(history.gestureActive, false);
+  history.apply(setValue('shot-2', 'fov', 9));
+  assert.deepEqual([history.size().undo, history.peekUndo().label], [4, 'Edit value'], 'Leaked, Next, then a command of its own');
+  history.undo();
+  assert.equal(history.peekUndo().label, 'Next');
+  const stale = history.begin('Dropped by undo');
+  history.undo();
+  assert.equal(history.gestureActive, false, 'undo closes an open gesture');
+  history.end(stale);
+  assert.equal(history.gestureActive, false);
 }
 
 function limit() {
