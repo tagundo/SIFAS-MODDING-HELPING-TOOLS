@@ -192,9 +192,13 @@
     "Apply blush": ["홍조 적용", "頬紅を適用"], "Remove blush": ["홍조 제거", "頬紅を外す"], "Show before": ["적용 전 보기", "適用前を表示"],
     "Advanced": ["고급 설정", "詳細設定"], "Strength value": ["세기 값", "強さの値"],
     "1 = the strongest blush the game uses in songs.": ["1은 게임 곡에서 쓰는 가장 진한 홍조와 같습니다.", "1 はゲームの楽曲で使われる最も濃い頬紅と同じです。"],
-    "Save exact pixels (lossless RGBA32, larger file)": ["정확한 픽셀로 저장 (무손실 RGBA32, 파일 커짐)", "正確なピクセルで保存（可逆RGBA32・ファイルが大きくなります）"],
-    "Otherwise an ASTC face keeps its compression: only the blocks around the cheeks are re-encoded, so baked pixels can differ from the preview by a few levels.": ["끄면 ASTC 얼굴은 압축을 유지하고 볼 주변 블록만 다시 인코딩하므로, 구운 픽셀이 미리보기와 몇 단계 다를 수 있습니다.", "オフのときASTCの顔は圧縮を保ち、頬の周りのブロックだけを再エンコードするため、焼き込んだピクセルがプレビューと数段階ずれることがあります。"],
-    "exact pixels": ["정확한 픽셀", "正確なピクセル"],
+    // Saving: exact pixels by default; keeping the ASTC compression is the opt-in choice.
+    "Saved as exact pixels by default (lossless RGBA32): only the blush pixels change, but a compressed face texture gets larger.": ["기본 저장은 정확한 픽셀(무손실 RGBA32)입니다. 홍조 픽셀만 바뀌지만, 압축된 얼굴 텍스쳐는 용량이 커집니다.", "既定では正確なピクセル（可逆RGBA32）で保存します。頬紅のピクセルだけが変わりますが、圧縮された顔テクスチャは容量が大きくなります。"],
+    "Keep the game's compression (ASTC)": ["게임 압축 형식(ASTC) 유지", "ゲームの圧縮形式（ASTC）を保つ"],
+    "Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.": ["파일·메모리가 작지만, 홍조가 닿는 6×6 블록은 다시 압축되어 주변 픽셀도 조금 달라집니다.", "ファイルとメモリは小さくなりますが、頬紅がかかる6×6ブロックは再圧縮されるため、周りのピクセルも少し変わります。"],
+    "This texture is not ASTC-compressed, so it is always saved as exact pixels.": ["이 텍스쳐는 ASTC 압축이 아니므로 항상 정확한 픽셀로 저장합니다.", "このテクスチャはASTC圧縮ではないため、常に正確なピクセルで保存します。"],
+    "ASTC kept": ["ASTC 압축 유지", "ASTC圧縮を保持"],
+    "Choose how to save the baked blush: exact pixels or the game's ASTC compression.": ["홍조 저장 방식을 정확한 픽셀 또는 게임 압축 형식(ASTC) 유지 중에서 고르세요.", "頬紅の保存方法を、正確なピクセルかゲームの圧縮形式（ASTC）を保つかから選んでください。"],
     "Changes only the cheek pixels, the same way the game draws its blush.": ["게임이 홍조를 그리는 방식 그대로 뺨 픽셀만 바꿉니다.", "ゲームが頬紅を描くのと同じ方法で、頬のピクセルだけを変えます。"],
     "Pick a strength, check the 3D preview, then apply.": ["세기를 고르고 3D 미리보기를 확인한 뒤 적용하세요.", "強さを選んで3Dプレビューを確認し、適用してください。"],
     "Pick a strength, check the 2D canvas, then apply.": ["세기를 고르고 2D 캔버스를 확인한 뒤 적용하세요.", "強さを選んで2Dキャンバスを確認し、適用してください。"],
@@ -219,7 +223,7 @@
     "Baked blush is available only for a head material's main texture or its recolour texture.": ["홍조 굽기는 머리 재질의 메인 텍스쳐나 그 리컬러 텍스쳐에만 쓸 수 있습니다.", "頬紅の焼き込みは頭マテリアルのメインテクスチャかそのカラー違いテクスチャにのみ使えます。"],
     "Choose a blush strength between 0 and 4.": ["홍조 세기는 0보다 크고 4 이하로 정하세요.", "頬紅の強さは0より大きく4以下にしてください。"],
     "Choose the Ppo or Akarame blush type.": ["홍조 종류를 Ppo 또는 Akarame 중에서 고르세요.", "頬紅の種類を Ppo か Akarame から選んでください。"],
-    "The blush bake needs exactly a blush type and a strength.": ["홍조 굽기에는 홍조 종류와 세기만 있어야 합니다.", "頬紅の焼き込みには種類と強さだけが必要です。"],
+    "The blush bake takes only a blush type, a strength and a save mode.": ["홍조 굽기에는 홍조 종류, 세기, 저장 방식만 들어갈 수 있습니다.", "頬紅の焼き込みに指定できるのは種類、強さ、保存方法だけです。"],
     "This model has no head texture that can take a baked blush.": ["이 모델에는 홍조를 구울 수 있는 머리 텍스쳐가 없습니다.", "このモデルには頬紅を焼き込める頭テクスチャがありません。"]
   };
   var LOCAL_FIRST = { "Light": true };
@@ -368,7 +372,7 @@
     // status and the notes that change what to bake sit above the choices so
     // they stay visible in the settings column without scrolling.
     var B = global.TextureBlush, blushInfo = null, cheek = null, cheekPromise = null, cheekError = "";
-    var blushChoice = { layer: B ? B.DEFAULT_LAYER : 0, k: B ? B.levelK(B.DEFAULT_LEVEL) : 1, level: B ? B.DEFAULT_LEVEL : "medium", exact: false }, blushPending = false, blushBefore = false, blushSwatches = null;
+    var blushChoice = { layer: B ? B.DEFAULT_LAYER : 0, k: B ? B.levelK(B.DEFAULT_LEVEL) : 1, level: B ? B.DEFAULT_LEVEL : "medium", encoding: B ? B.DEFAULT_ENCODING : "exact" }, blushPending = false, blushBefore = false, blushSwatches = null;
     var blushPanel = node("div", content, null, "viewer-texture-panel viewer-texture-blush"); blushPanel.id = "viewer-texture-blush-panel"; blushPanel.hidden = true;
     node("p", blushPanel, "Changes only the cheek pixels, the same way the game draws its blush.", "viewer-texture-hint");
     var blushTarget = node("output", blushPanel, null, "viewer-texture-blush-target"); blushTarget.id = "viewer-texture-blush-target";
@@ -395,8 +399,12 @@
     var blushKField = number(blushAdvanced, "Strength value", blushChoice.k, 0.05, B ? B.MAX_K : 4, 0.05, "viewer-texture-blush-k");
     var blushCustomSwatch = node("span", blushKField.parentNode, null, "viewer-texture-blush-swatch"); blushCustomSwatch.setAttribute("aria-hidden", "true");
     node("p", blushAdvanced, "1 = the strongest blush the game uses in songs.", "viewer-texture-hint");
-    var blushExact = check(blushAdvanced, "Save exact pixels (lossless RGBA32, larger file)", false, "viewer-texture-blush-exact");
-    node("p", blushAdvanced, "Otherwise an ASTC face keeps its compression: only the blocks around the cheeks are re-encoded, so baked pixels can differ from the preview by a few levels.", "viewer-texture-hint");
+    // Save mode: exact pixels (the default, CLAUDE.md: only the blush texels
+    // change) or, opted in, the game's ASTC compression with re-encoded blocks.
+    node("p", blushAdvanced, "Saved as exact pixels by default (lossless RGBA32): only the blush pixels change, but a compressed face texture gets larger.", "viewer-texture-hint");
+    var blushKeep = check(blushAdvanced, "Keep the game's compression (ASTC)", false, "viewer-texture-blush-astc-keep");
+    // Filled in refreshBlush: names the texture's own ASTC block size.
+    var blushKeepHint = node("p", blushAdvanced, null, "viewer-texture-hint"); blushKeepHint.id = "viewer-texture-blush-astc-keep-hint";
     var blushActions = node("div", blushPanel, null, "viewer-texture-actions viewer-texture-blush-actions");
     var applyBlushButton = button(blushActions, "Apply blush", function () { applyBlush(); }, "viewer-texture-blush-apply"); applyBlushButton.classList.add("viewer-texture-primary");
     var blushBeforeButton = button(blushActions, "Show before", function () { setBlushBefore(!blushBefore); }, "viewer-texture-blush-before"); blushBeforeButton.setAttribute("aria-pressed", "false");
@@ -1168,7 +1176,9 @@
     function cheekReason() { return blushInfo && blushInfo.cheek && blushInfo.cheek.reason || "This model has no head texture that can take a baked blush."; }
     function sameBlush(a, b) { return B ? B.sameOperation(a, b) : !a && !b; }
     function copyBlush(value) { return B ? B.copyOperation(value) : null; }
-    function selectedBlush() { return copyBlush({ layer: blushChoice.layer, k: blushChoice.k, exact: blushChoice.exact }); }
+    function selectedBlush() { return copyBlush({ layer: blushChoice.layer, k: blushChoice.k, encoding: blushChoice.encoding }); }
+    // ASTC block edge of the texture (from its catalogue format), or 0.
+    function astcBlock(entry) { var match = /^ASTC_(?:RGB|RGBA)_(4|5|6|8|10|12)x\1$/.exec(entry && entry.record && entry.record.format || ""); return match ? Number(match[1]) : 0; }
     function validBlush(value) { if (!B) return false; try { B.checkedOperation(value); return true; } catch (_) { return false; } }
     function blushEditable(entry) { return !!(B && blushRule(entry) && entry.engine && canEdit(entry) && cheekAvailable() && !loading && !pendingRestore && !floating(entry)); }
     // What the 3D view and the canvas show: the unapplied choice while it is
@@ -1223,14 +1233,20 @@
     function initBlushChoice(entry) {
       if (!B) return;
       var committed = entry && entry.blush;
-      if (committed) { blushChoice = { layer: committed.layer, k: committed.k, level: B.levelFor(committed.k) || "custom", exact: !!committed.exact }; blushPending = false; }
-      else { blushChoice = { layer: B.DEFAULT_LAYER, k: B.levelK(B.DEFAULT_LEVEL), level: B.DEFAULT_LEVEL, exact: false }; blushPending = !!blushRule(entry); }
-      blushBefore = false; blushSwatches = null; blushKField.value = String(blushChoice.k); blushExact.checked = blushChoice.exact;
+      if (committed) { blushChoice = { layer: committed.layer, k: committed.k, level: B.levelFor(committed.k) || "custom", encoding: committed.encoding }; blushPending = false; }
+      else { blushChoice = { layer: B.DEFAULT_LAYER, k: B.levelK(B.DEFAULT_LEVEL), level: B.DEFAULT_LEVEL, encoding: B.DEFAULT_ENCODING }; blushPending = !!blushRule(entry); }
+      blushBefore = false; blushSwatches = null; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep";
     }
-    function blushChoiceChanged() { blushPending = true; blushBefore = false; blushKField.value = String(blushChoice.k); blushExact.checked = blushChoice.exact; if (active) upload(active); refreshButtons(); }
+    function blushChoiceChanged() { blushPending = true; blushBefore = false; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; if (active) upload(active); refreshButtons(); }
     function chooseBlushLevel(id) { if (!blushEditable(active)) return false; blushChoice.k = B.levelK(id); blushChoice.level = id; blushChoiceChanged(); return true; }
     function chooseBlushType(layer) { if (!blushEditable(active)) return false; blushChoice.layer = B.checkedLayer(layer); blushChoiceChanged(); return true; }
-    function setBlushExact(value) { if (!blushEditable(active)) { blushExact.checked = blushChoice.exact; return false; } blushChoice.exact = !!value; blushChoiceChanged(); return true; }
+    // "exact" (default) or "astc-keep"; keeping ASTC needs an ASTC texture.
+    function setBlushEncoding(value) {
+      var keep = blushChoice.encoding === "astc-keep";
+      if (!blushEditable(active) || value === "astc-keep" && !astcBlock(active)) { blushKeep.checked = keep; return false; }
+      try { blushChoice.encoding = B.checkedEncoding(value); } catch (err) { blushKeep.checked = keep; say("", err.message); return false; }
+      blushChoiceChanged(); return true;
+    }
     function setBlushStrength(value) {
       if (!blushEditable(active)) return false;
       var k = typeof value === "number" ? value : Number(String(value).trim());
@@ -1240,7 +1256,7 @@
     function setBlushBefore(value) { blushBefore = !!value && !!blushRule(active); if (active) upload(active); refreshButtons(); return blushBefore; }
     function setEntryBlush(entry, value) {
       entry.blush = copyBlush(value);
-      if (entry === active) { if (value) blushChoice = { layer: value.layer, k: value.k, level: B.levelFor(value.k) || "custom", exact: !!value.exact }; blushPending = false; blushBefore = false; blushKField.value = String(blushChoice.k); blushExact.checked = blushChoice.exact; }
+      if (entry === active) { if (value) blushChoice = { layer: value.layer, k: value.k, level: B.levelFor(value.k) || "custom", encoding: B.copyOperation(value).encoding }; blushPending = false; blushBefore = false; blushKField.value = String(blushChoice.k); blushKeep.checked = blushChoice.encoding === "astc-keep"; }
       entry.modified = !!entry.pixelModified || !!entry.blush;
       if (!entry.modified) { entry.encodeGeneration = (entry.encodeGeneration || 0) + 1; entry.encoding = false; entry.encodeError = null; entry.png = null; }
       else if (!entry.png && !entry.encoding && entry.engine) encodeEntry(entry);
@@ -1274,7 +1290,8 @@
       var level = B.LEVELS.filter(function (row) { return row.id === choice.level; })[0];
       return t(level ? level.label : "Custom") + " (k " + Math.round(choice.k * 1000) / 1000 + ")";
     }
-    function blushSummary(choice) { return levelName(choice) + " · " + t(B.LAYERS[choice.layer].label) + (choice.exact ? " · " + t("exact pixels") : ""); }
+    // The save mode is named only when it is not the default exact pixels.
+    function blushSummary(choice) { return levelName(choice) + " · " + t(B.LAYERS[choice.layer].label) + (choice.encoding === "astc-keep" ? " · " + t("ASTC kept") : ""); }
     function blushNote(list, key) { var item = document.createElement("li"); item.dataset.note = key; item.textContent = t(key); list.push(item); }
     function fillNotes(list, notes) {
       var signature = notes.map(function (item) { return item.dataset.note; }).join("|") + ":" + (document.documentElement.lang || "");
@@ -1286,7 +1303,7 @@
       tabButtons.blush.hidden = !records.length;
       if (proxyState && attachProxyFor(proxyState.entry) !== proxyState.head) clearProxy();
       if (activeTab !== "blush") return;
-      var shown = blushPending ? blushChoice : entry && entry.blush ? { layer: entry.blush.layer, k: entry.blush.k, level: B.levelFor(entry.blush.k) || "custom", exact: !!entry.blush.exact } : null;
+      var shown = blushPending ? blushChoice : entry && entry.blush ? { layer: entry.blush.layer, k: entry.blush.k, level: B.levelFor(entry.blush.k) || "custom", encoding: entry.blush.encoding } : null;
       var layerIndex = shown ? shown.layer : blushChoice.layer;
       blushTarget.textContent = rule ? t(rule.role === "attach" ? "Recolour face texture" : "Face texture") + ": " + entry.record.name : t("Choose a face texture to bake a blush.");
       blushTypeButtons.forEach(function (item) { var on = Number(item.dataset.blushLayer) === layerIndex; item.setAttribute("aria-checked", String(on)); item.disabled = !editable; });
@@ -1303,8 +1320,11 @@
       });
       blushBaseSwatch.style.background = blushSwatches ? rgbText(blushSwatches.value.base) : ""; blushBase.dataset.colour = blushSwatches ? hex(blushSwatches.value.base) : "";
       blushCustomSwatch.style.background = colours ? rgbText(colours[colours.length - 1]) : "";
-      blushKField.disabled = blushExact.disabled = !editable; if (document.activeElement !== blushKField) blushKField.value = String(shown ? shown.k : blushChoice.k);
-      blushExact.checked = shown ? !!shown.exact : blushChoice.exact;
+      var block = astcBlock(entry);
+      blushKField.disabled = !editable; blushKeep.disabled = !editable || !block; if (document.activeElement !== blushKField) blushKField.value = String(shown ? shown.k : blushChoice.k);
+      blushKeep.checked = (shown || blushChoice).encoding === "astc-keep";
+      blushKeepHint.textContent = !rule || block ? t("Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.").replace(/6×6/g, (block || 6) + "×" + (block || 6))
+        : t("This texture is not ASTC-compressed, so it is always saved as exact pixels.");
       applyBlushButton.disabled = !editable || !blushPending || sameBlush(entry.blush, selectedBlush());
       removeBlushButton.disabled = !(entry && entry.blush && entry.engine && canEdit(entry) && !loading && !floating(entry));
       blushBeforeButton.disabled = !(rule && cheek && (blushPending || entry.blush)); blushBeforeButton.setAttribute("aria-pressed", String(blushBefore));
@@ -1314,7 +1334,7 @@
       else if (!cheek) text = cheekError ? t(cheekError) : t("Loading the blush pattern…");
       else if (blushBefore) text = t("Showing before");
       else if (blushPreviewPending()) text = t("Preview, not applied yet") + ": " + blushSummary(blushChoice);
-      else if (entry.blush) text = t("Applied") + ": " + blushSummary({ level: B.levelFor(entry.blush.k) || "custom", k: entry.blush.k, layer: entry.blush.layer, exact: !!entry.blush.exact });
+      else if (entry.blush) text = t("Applied") + ": " + blushSummary({ level: B.levelFor(entry.blush.k) || "custom", k: entry.blush.k, layer: entry.blush.layer, encoding: entry.blush.encoding });
       else text = t("No blush");
       blushStatus.textContent = text; blushStatus.classList.toggle("viewer-texture-error", !!rule && (!cheekAvailable() || !!cheekError));
       // Alerts change what to bake or where to look; they sit under the status.
@@ -1919,7 +1939,7 @@
     listen(layerOpacity, "change", function () { var value = +layerOpacity.value / 100; layerOperation(function () { var state = active.engine.getState(); return active.engine.setLayerOpacity(state.activeLayerId || state.activeLayer, value); }); });
     listen(colorMode, "change", function () { targetLabel.hidden = colorMode.value !== "colorize"; schedulePreview(); }); listen(targetColor, "input", schedulePreview);
     listen(blushKField, "change", function () { if (!setBlushStrength(blushKField.value)) blushKField.value = String(blushChoice.k); });
-    listen(blushExact, "change", function () { setBlushExact(blushExact.checked); });
+    listen(blushKeep, "change", function () { setBlushEncoding(blushKeep.checked ? "astc-keep" : "exact"); });
     listen(blushKField, "input", function () { var value = Number(blushKField.value); if (blushKField.value.trim() && Number.isFinite(value) && value > 0 && value <= (B ? B.MAX_K : 4)) setBlushStrength(value); });
     [sourceTone, targetTone].forEach(function (item) { listen(item, "change", schedulePreview); });
     [connected, sampleGate].forEach(function (item) { listen(item, "change", function () { syncBrush(); if (active && active.seeds.length) growSelection(active); }); });
@@ -1964,7 +1984,7 @@
       openProject: openProject, openProjectPath: openProjectPath, importProject: importProject, saveProject: saveProject, getProject: function (copy) { return active && active.engine && active.engine.getProject ? active.engine.getProject(copy !== false) : null; },
       changeLayer: changeLayer, clipboardAction: clipboardAction,
       openBlush: function () { section.open = true; setTab("blush"); return true; }, chooseBlushLevel: chooseBlushLevel, chooseBlushType: chooseBlushType, setBlushStrength: setBlushStrength,
-      setBlushBefore: setBlushBefore, setBlushExact: setBlushExact, applyBlush: applyBlush, removeBlush: removeBlush,
+      setBlushBefore: setBlushBefore, setBlushEncoding: setBlushEncoding, applyBlush: applyBlush, removeBlush: removeBlush,
       updateLanguage: function () { labels.forEach(function (pair) { pair[0].textContent = t(pair[1]); }); units.forEach(function (pair) { pair[0].textContent += pair[1]; }); expandButton.textContent = t(expanded ? "Collapse editor" : "Expand editor"); toolButtons.forEach(function (item) { item.node.title = t(item.name); item.node.setAttribute("aria-label", t(item.name)); }); section.querySelectorAll(".viewer-texture-icon-button:not(.viewer-texture-svg-button)").forEach(function (item) { item.title = item.textContent; }); workspace.settingsButton.setAttribute("aria-label", t("Color and layers")); showSelection.parentNode.title = t("Color adjustments hide selection tint without clearing the selection."); workspace.resizer.setAttribute("aria-label", t("Resize texture canvas")); workspace.dockResizer.setAttribute("aria-label", t("Resize tool settings")); if (uvControl) uvControl.updateLanguage(); updateInformation(); updateTone(); refreshButtons(); if (statusText || error) say(statusText, error); },
       dispose: function () { if (disposed) return; reset(false, true); disposed = true; listeners.forEach(function (remove) { remove(); }); finishPickerStack(); if (expanded) setExpanded(false); if (uvControl) uvControl.dispose(); if (processor) processor.dispose(); modelCursor.remove(); section.remove(); }
     };

@@ -21,19 +21,27 @@ function py(code, args = []) { return JSON.parse(execFileSync(python, ['-B', '-c
 const fixture = py(`
 import base64, hashlib, json, sys
 from pathlib import Path
+import astc_standin
 from test_viewer_texture_blush import head_fixture, recolour_images, synthetic_payload
 from webtools.core import texture_blush as tb, viewer_texture_tools as textures
 raw, images = head_fixture()
+astcenc = ""
+if astc_standin.available():
+    astcenc = astc_standin.write(sys.argv[5])
+    Path(sys.argv[4]).write_bytes(head_fixture(astc=True)[0])
 payload = synthetic_payload()
 tb.CHEEK_SHA256 = hashlib.sha256(payload).hexdigest()
 Path(sys.argv[1]).write_bytes(raw)
 Path(sys.argv[2]).write_bytes(raw)
 Path(sys.argv[3]).write_bytes(head_fixture(attach=True)[0])
 cache = textures._cheek_cache_file(); cache.parent.mkdir(parents=True, exist_ok=True); cache.write_bytes(payload)
-print(json.dumps({"sha": tb.CHEEK_SHA256, "cache": str(cache), "width": images[0].width, "height": images[0].height,
+print(json.dumps({"sha": tb.CHEEK_SHA256, "cache": str(cache), "width": images[0].width, "height": images[0].height, "astcenc": astcenc,
+                  "savedExact": textures.SAVED_EXACT, "savedAstc": textures.SAVED_ASTC, "notAstc": textures.KEEP_NOT_ASTC,
                   "rgba": base64.b64encode(images[0].tobytes()).decode(), "recolour": base64.b64encode(recolour_images()[0].tobytes()).decode()}))
-`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity'), path.join(models, 'ch0001_co0002.unity')]);
-const source = path.join(models, 'ch0001_co0001.unity'), second = path.join(models, 'ch0001_co0001_copy.unity'), recolourModel = path.join(models, 'ch0001_co0002.unity');
+`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity'), path.join(models, 'ch0001_co0002.unity'), path.join(models, 'ch0001_co0003.unity'), library]);
+const source = path.join(models, 'ch0001_co0001.unity'), second = path.join(models, 'ch0001_co0001_copy.unity'), recolourModel = path.join(models, 'ch0001_co0002.unity'), astcModel = path.join(models, 'ch0001_co0003.unity');
+// The ASTC head decodes and (opt-in) re-encodes with the test astcenc (tests/astc_standin.py).
+if (fixture.astcenc) env.ASTCENC_BIN = fixture.astcenc;
 const original = Buffer.from(fixture.rgba, 'base64'), recolour = Buffer.from(fixture.recolour, 'base64');
 function expected(layer, k, image = fixture.rgba) {
   return Buffer.from(py(`
@@ -85,7 +93,7 @@ async function main() {
     await tab.click();
     await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.cheek.loaded && b.swatches && b.previewing; });
     let s = await state(page);
-    assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', exact: false }); assert.equal(s.blush.cheek.source, 'cache');
+    assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'exact' }); assert.equal(s.blush.cheek.source, 'cache');
     assert.equal(await page.locator('#viewer-texture-blush-level-medium').getAttribute('aria-checked'), 'true');
     assert.equal(await page.locator('#viewer-texture-blush-layer-0').getAttribute('aria-checked'), 'true');
     assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\)$/);
@@ -123,9 +131,9 @@ async function main() {
     const undoBefore = s.selection.undoCount;
     await click(page, '#viewer-texture-blush-apply');
     await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
-    s = await state(page); assert.deepStrictEqual(s.blush.committed, { layer: 1, k: 3 }); assert.equal(s.selection.undoCount, undoBefore + 1);
+    s = await state(page); assert.deepStrictEqual(s.blush.committed, { layer: 1, k: 3, encoding: 'exact' }); assert.equal(s.selection.undoCount, undoBefore + 1);
     let edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits());
-    assert.equal(edits.length, 1); assert.deepStrictEqual(edits[0].blush, { layer: 1, k: 3 }); assert.equal(edits[0].kind, 'blush');
+    assert.equal(edits.length, 1); assert.deepStrictEqual(edits[0].blush, { layer: 1, k: 3, encoding: 'exact' }); assert.equal(edits[0].kind, 'blush');
     assert(pngPixels(edits[0].png).equals(original), 'the recipe PNG holds the original, unbaked pixels');
     assert(same(await live(page), expected(1, 3))); assert(!(await page.locator('#viewer-save').isDisabled()));
     assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Applied: Very strong \(k 3\) · Cheeks and nose \(Akarame\)$/);
@@ -133,46 +141,49 @@ async function main() {
     await click(page, '#viewer-texture-undo'); s = await state(page); assert.equal(s.blush.committed, null);
     assert.equal((await page.evaluate(() => ModelViewer.getTextureTools().getEdits())).length, 0); const undone = await live(page); assert(!undone || same(undone, original));
     await click(page, '#viewer-texture-redo'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 3 });
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 3, encoding: 'exact' });
     // Re-bake replaces the operation; undo returns to the previous one.
     await click(page, '#viewer-texture-blush-level-light'); await click(page, '#viewer-texture-blush-apply');
     await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 1.05 && !s.pending; });
-    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 1, k: 1.05 }); assert(pngPixels(edits[0].png).equals(original));
+    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 1, k: 1.05, encoding: 'exact' }); assert(pngPixels(edits[0].png).equals(original));
     assert(same(await live(page), expected(1, 1.05)), 'a re-bake starts from the original pixels');
-    await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 3 });
-    await click(page, '#viewer-texture-redo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05 });
+    await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 3, encoding: 'exact' });
+    await click(page, '#viewer-texture-redo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05, encoding: 'exact' });
     // Advanced numeric strength.
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = true; });
     const field = page.locator('#viewer-texture-blush-k'); await field.fill('2.0'); await field.press('Tab'); await frames(page);
-    s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', exact: false }); assert(same(await live(page), expected(1, 2)));
+    s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', encoding: 'exact' }); assert(same(await live(page), expected(1, 2)));
     await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 2 && !s.pending; });
     report.cases.push({ name: 'apply, undo/redo, re-bake without compounding and advanced strength' });
 
     // Keyboard undo/redo from the panel: a click on its text leaves focus on the page body.
     await page.locator('#viewer-texture-blush-status').click(); await page.keyboard.press('Control+z'); await frames(page);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05 }, 'Ctrl+Z after a click in the panel');
-    await page.keyboard.press('Control+y'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05, encoding: 'exact' }, 'Ctrl+Z after a click in the panel');
+    await page.keyboard.press('Control+y'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2, encoding: 'exact' });
     await page.focus('#viewer-texture-blush-before'); await page.keyboard.press('Control+z'); await frames(page);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05 }, 'Ctrl+Z on a panel button');
-    await page.keyboard.press('Control+Shift+z'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 1.05, encoding: 'exact' }, 'Ctrl+Z on a panel button');
+    await page.keyboard.press('Control+Shift+z'); await frames(page); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2, encoding: 'exact' });
     await page.locator('#viewer-stage').click({ position: { x: 5, y: 5 } }).catch(() => {}); await page.keyboard.press('Control+z'); await frames(page);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 }, 'a shortcut outside the tools is not taken');
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2, encoding: 'exact' }, 'a shortcut outside the tools is not taken');
     report.cases.push({ name: 'Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z from the blush panel' });
 
-    // Exact pixels is part of the operation: preview unchanged, Apply records it.
+    // Exact pixels are the default save mode. Keeping the ASTC compression is the
+    // opt-in choice under Advanced; this RGBA32 head cannot take it.
     await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = true; });
-    await click(page, '#viewer-texture-blush-exact'); s = await state(page);
-    assert.deepStrictEqual(s.blush.choice, { layer: 1, k: 2, level: 'custom', exact: true }); assert(s.blush.previewing); assert(same(await live(page), expected(1, 2)));
-    assert.match(s.blush.status, /exact pixels$/);
-    await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.exact && !s.pending; });
-    assert.deepStrictEqual((await page.evaluate(() => ModelViewer.getTextureTools().getEdits()))[0].blush, { layer: 1, k: 2, exact: true });
-    await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 });
-    report.cases.push({ name: 'exact pixels option' });
+    assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isDisabled(), true);
+    assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isChecked(), false);
+    assert.equal(await page.locator('#viewer-texture-blush-astc-keep-hint').textContent(), 'This texture is not ASTC-compressed, so it is always saved as exact pixels.');
+    assert.equal(await page.evaluate(() => ModelViewer.getTextureTools().setBlushEncoding('astc-keep')), false);
+    assert.equal((await state(page)).blush.choice.encoding, 'exact');
+    report.cases.push({ name: 'exact pixels by default; ASTC keep unavailable for a non-ASTC texture' });
 
     // Save through the product and check every authored mip of the written texture.
     await click(page, '#viewer-save');
     await page.waitForFunction(() => { const p = ModelViewer.getState().persistence; return !p.busy && (p.error || p.recipePath); });
     const persistence = await page.evaluate(() => ModelViewer.getState().persistence); assert(!persistence.error, persistence.error);
+    // The save summary names the encoding used for the baked blush.
+    assert.deepStrictEqual(persistence.notes, [fixture.savedExact]);
+    assert.ok((await page.locator('#viewer-save-status').textContent()).endsWith(' ' + fixture.savedExact));
     const written = py(`
 import base64, json, sys, time
 import UnityPy
@@ -198,16 +209,16 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.k === 0.5 && !s.loading; });
     assert(same(await live(page), expected(0, 0.5)));
     await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2 }, 'undoing a recipe restore brings back the previous bake');
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 1, k: 2, encoding: 'exact' }, 'undoing a recipe restore brings back the previous bake');
     assert(same(await live(page), expected(1, 2)));
     await click(page, '#viewer-texture-redo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 });
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5, encoding: 'exact' });
     // Restoring a recipe without this texture removes the bake, also undoably.
     await page.evaluate(() => ModelViewer.restoreAuthoringState({ version: 1, savedSettingsEnabled: true, edits: [], unsupported: [], textures: [] }));
     // (In the blush tab a face without a bake starts the default preview again.)
     await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return !s.blush.committed && !s.loading && !s.editedTextures.length; });
     await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 });
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5, encoding: 'exact' });
     report.cases.push({ name: 'recipe restore, with undo and redo of the bake' });
 
     // Export PNG includes the bake; importing that PNG must not bake it twice.
@@ -225,7 +236,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.equal(edits.length, 1); assert.equal(edits[0].blush, undefined); assert.equal(edits[0].kind, 'paint');
     assert(pngPixels(edits[0].png).equals(exportedPixels));
     await click(page, '#viewer-texture-undo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
-    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5 }, 'undoing the import brings the bake back'); assert(same(await live(page), expected(0, 0.5)));
+    assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 0.5, encoding: 'exact' }, 'undoing the import brings the bake back'); assert(same(await live(page), expected(0, 0.5)));
     await click(page, '#viewer-texture-redo'); await page.waitForFunction(() => !ModelViewer.getTextureTools().getState().pending);
     assert.equal((await state(page)).blush.committed, null); assert(same(await live(page), exportedPixels));
     fs.rmSync(savedPath, { force: true });
@@ -267,8 +278,42 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     assert(!head || same(head, original), 'leaving the tab puts the costume face back');
     await page.evaluate(() => ModelViewer.getTextureTools().setTab('blush'));
     await page.waitForFunction(() => !!ModelViewer.getTextureTools().getState().blush.proxy); assert(same(await live(page), expected(0, 1.65, fixture.recolour)));
-    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits.map(row => [row.texture.id, row.blush]), [[attach.texture.id, { layer: 0, k: 1.65 }]]);
+    edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits.map(row => [row.texture.id, row.blush]), [[attach.texture.id, { layer: 0, k: 1.65, encoding: 'exact' }]]);
     report.cases.push({ name: 'recolour texture previewed on its head in 3D' });
+
+    // An ASTC head: exact pixels by default; Advanced keeps the game's ASTC compression only on request.
+    if (fixture.astcenc) {
+      const saveNow = async () => {
+        const previous = (await page.evaluate(() => ModelViewer.getState().persistence)).recipePath;
+        await click(page, '#viewer-save');
+        await page.waitForFunction(old => { const p = ModelViewer.getState().persistence; return !p.busy && (p.error || p.status === 'done' && p.recipePath && p.recipePath !== old); }, previous);
+        const result = await page.evaluate(() => ModelViewer.getState().persistence); assert(!result.error, result.error); return result;
+      };
+      const writtenFormat = file => py("import json,sys,UnityPy;t=next(o.read() for o in UnityPy.load(open(sys.argv[1],'rb').read()).objects if o.type.name=='Texture2D');print(json.dumps([t.m_TextureFormat,t.m_MipCount]))", [file]);
+      await page.evaluate(file => openModelViewer([file]), astcModel);
+      await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return ModelViewer.getState().loaded && !ModelViewer.getState().loading && s.textureCount > 0 && s.blush.cheek && !s.loading; });
+      await page.evaluate(() => ModelViewer.getTextureTools().openBlush());
+      await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.cheek.loaded && b.previewing; });
+      await page.evaluate(() => { document.querySelector('.viewer-texture-blush-advanced').open = true; });
+      assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isDisabled(), false);
+      assert.equal(await page.locator('#viewer-texture-blush-astc-keep').isChecked(), false, 'exact pixels are the default');
+      assert.equal(await page.locator('#viewer-texture-blush-astc-keep-hint').textContent(), 'Smaller file and memory, but the 6×6 blocks the blush touches are compressed again, so nearby pixels change slightly too.');
+      s = await state(page); assert.equal(s.blush.choice.encoding, 'exact'); assert.match(s.blush.status, /· Cheeks \(Ppo\)$/, 'the default save mode is not named');
+      await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && !s.pending; });
+      let saved = await saveNow();
+      assert.deepStrictEqual(saved.notes, [fixture.savedExact]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [4, 7], 'exact pixels: lossless RGBA32');
+      // Opt in: the choice is part of the operation, previewed like any other change and named in the status.
+      await click(page, '#viewer-texture-blush-astc-keep'); s = await state(page);
+      assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'astc-keep' }); assert(s.blush.previewing);
+      assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · ASTC kept$/);
+      await click(page, '#viewer-texture-blush-apply'); await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return s.blush.committed && s.blush.committed.encoding === 'astc-keep' && !s.pending; });
+      edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits[0].blush, { layer: 0, k: 1.65, encoding: 'astc-keep' });
+      saved = await saveNow();
+      assert.deepStrictEqual(saved.notes, [fixture.savedAstc]); assert.deepStrictEqual(writtenFormat(saved.previewPaths[0]), [56, 7], 'ASTC 6x6 kept');
+      assert.ok((await page.locator('#viewer-save-status').textContent()).endsWith(' ' + fixture.savedAstc));
+      await click(page, '#viewer-texture-undo'); assert.deepStrictEqual((await state(page)).blush.committed, { layer: 0, k: 1.65, encoding: 'exact' });
+      report.cases.push({ name: 'ASTC head: exact pixels by default, ASTC kept on request, save summary names the mode' });
+    }
 
     // Without a verified array the entry explains why and refuses to apply.
     fs.unlinkSync(fixture.cache);

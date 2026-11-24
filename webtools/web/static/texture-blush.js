@@ -35,16 +35,22 @@
     return value;
   }
   function checkedLayer(value) { if (value !== 0 && value !== 1) throw new Error("Choose the Ppo or Akarame blush type."); return value; }
-  // A recipe operation {layer, k[, exact: true]} (texture_blush / viewer_texture_tools.checked_blush):
-  // exact saves lossless RGBA32 instead of re-encoding only the touched ASTC blocks.
+  // How the baked texture is saved (texture_blush.ENCODINGS): "exact" (default)
+  // is lossless RGBA32, every untouched texel keeps its value; "astc-keep"
+  // keeps an ASTC texture's compression and re-encodes the touched blocks.
+  var ENCODINGS = ["exact", "astc-keep"], DEFAULT_ENCODING = "exact";
+  function checkedEncoding(value) { if (ENCODINGS.indexOf(value) < 0) throw new Error("Choose how to save the baked blush: exact pixels or the game's ASTC compression."); return value; }
+  // A recipe operation {layer, k, encoding} (viewer_texture_tools.checked_blush):
+  // the canonical form always names the encoding; a row without one is "exact".
   function checkedOperation(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The blush bake needs exactly a blush type and a strength.");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The blush bake takes only a blush type, a strength and a save mode.");
     var keys = Object.keys(value).sort().join(",");
-    if (keys !== "k,layer" && keys !== "exact,k,layer" || keys !== "k,layer" && typeof value.exact !== "boolean") throw new Error("The blush bake needs exactly a blush type and a strength.");
-    var out = { layer: checkedLayer(value.layer), k: checkedK(value.k) }; if (value.exact) out.exact = true; return out;
+    if (keys !== "k,layer" && keys !== "encoding,k,layer") throw new Error("The blush bake takes only a blush type, a strength and a save mode.");
+    return { layer: checkedLayer(value.layer), k: checkedK(value.k), encoding: checkedEncoding(value.encoding === undefined ? DEFAULT_ENCODING : value.encoding) };
   }
-  function sameOperation(a, b) { return !a && !b || !!a && !!b && a.layer === b.layer && a.k === b.k && !!a.exact === !!b.exact; }
-  function copyOperation(value) { if (!value) return null; var out = { layer: value.layer, k: value.k }; if (value.exact) out.exact = true; return out; }
+  function encodingOf(value) { return value && value.encoding === "astc-keep" ? "astc-keep" : DEFAULT_ENCODING; }
+  function sameOperation(a, b) { return !a && !b || !!a && !!b && a.layer === b.layer && a.k === b.k && encodingOf(a) === encodingOf(b); }
+  function copyOperation(value) { return value ? { layer: value.layer, k: value.k, encoding: encodingOf(value) } : null; }
   function levelK(id) { for (var i = 0; i < LEVELS.length; i++) if (LEVELS[i].id === id) return LEVELS[i].k; throw new Error("Choose a supported blush level."); }
   function levelFor(k) { for (var i = 0; i < LEVELS.length; i++) if (LEVELS[i].k === k) return LEVELS[i].id; return null; }
   function layerBounds(layer) {
@@ -127,7 +133,8 @@
     return payload.subarray(index * LAYER_BYTES, (index + 1) * LAYER_BYTES);
   }
   return { SIZE: SIZE, LAYER_BYTES: LAYER_BYTES, UV_SCALE: UV_SCALE, UV_OFFSET_V: UV_OFFSET_V, LEVELS: LEVELS, LAYERS: LAYERS, DEFAULT_LEVEL: "medium", DEFAULT_LAYER: 0, MAX_K: MAX_K,
+    ENCODINGS: ENCODINGS.slice(), DEFAULT_ENCODING: DEFAULT_ENCODING,
     CHEEK_SHA256: "26de3c60f632112a8a9617cbaac04d390936a8da3849ddfd9e28fdc5b7a34b09",
-    checkedK: checkedK, checkedLayer: checkedLayer, checkedOperation: checkedOperation, sameOperation: sameOperation, copyOperation: copyOperation, levelK: levelK, levelFor: levelFor, layerBounds: layerBounds, sample: sample, factor: factor, bakeValue: bakeValue,
+    checkedK: checkedK, checkedLayer: checkedLayer, checkedEncoding: checkedEncoding, checkedOperation: checkedOperation, sameOperation: sameOperation, copyOperation: copyOperation, levelK: levelK, levelFor: levelFor, layerBounds: layerBounds, sample: sample, factor: factor, bakeValue: bakeValue,
     texelUv: texelUv, region: region, bakeRGBA: bakeRGBA, bakeImage: bakeImage, centre: centre, swatches: swatches, layerView: layerView };
 });

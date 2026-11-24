@@ -188,6 +188,56 @@ def levels_of(raw, name="ch0001_co0001_head"):
     return texture, out
 
 
+def check_astc_keep(self, raw, output, summary, cheek, k, name="ch0001_co0001_head", mips=LEVELS):
+    """astc-keep: format kept, untouched blocks byte-identical, texels outside
+    re-encoded blocks and alpha unchanged; returns per-level error figures."""
+    texture, before = levels_of(raw, name)
+    original = bytes(texture.get_image_data())
+    written, after = levels_of(output, name)
+    self.assertEqual((written.m_TextureFormat, written.m_MipCount, len(after)), (ASTC_6X6, mips, mips))
+    data = bytes(written.get_image_data())
+    self.assertEqual(len(data), len(original), "the texture keeps its compressed size")
+    self.assertEqual((summary["resultFormat"], summary["encodingChanged"], summary["blush"]["encoding"], summary["blush"]["requested"]),
+                     ("ASTC_RGBA_6x6", False, "astc-keep", "astc-keep"))
+    self.assertEqual(summary["blush"]["note"], textures.SAVED_ASTC)
+    self.assertNotIn("fallback", summary["blush"])
+    offset, touched_total, collateral, figures = 0, 0, 0, []
+    for level, (authored, level_after) in enumerate(zip(before, after)):
+        w, h = authored.size
+        columns, rows = -(-w // 6), -(-h // 6)
+        baked, changed, _ = tb.bake_rgba(authored.tobytes(), w, h, cheek, k)
+        source, result_pixels = authored.tobytes(), level_after.tobytes()
+        touched = {(x // 6, (h - 1 - y) // 6) for y in range(h) for x in range(w)
+                   if source[(y * w + x) * 4:(y * w + x) * 4 + 3] != baked[(y * w + x) * 4:(y * w + x) * 4 + 3]}
+        self.assertEqual(summary["blush"]["changedTexels"][level], changed)
+        self.assertEqual(summary["blush"]["reencodedBlocks"][level], len(touched))
+        touched_total += len(touched)
+        for by in range(rows):
+            for bx in range(columns):
+                at = offset + (by * columns + bx) * 16
+                if (bx, by) not in touched:
+                    self.assertEqual(data[at:at + 16], original[at:at + 16], (level, bx, by))
+        for y in range(h):
+            for x in range(w):
+                o = (y * w + x) * 4
+                self.assertEqual(result_pixels[o + 3], source[o + 3], "alpha is never changed")
+                if (x // 6, (h - 1 - y) // 6) not in touched:
+                    self.assertEqual(result_pixels[o:o + 4], source[o:o + 4], "texels outside re-encoded blocks keep their value")
+                else:
+                    self.assertLessEqual(max(abs(result_pixels[o + c] - baked[o + c]) for c in range(3)), 64)
+                    collateral += source[o:o + 3] == baked[o:o + 3] and result_pixels[o:o + 3] != source[o:o + 3]
+        figures.append({"blocks": len(touched), "bytesChanged": sum(data[at:at + 16] != original[at:at + 16]
+                                                            for at in range(offset, offset + columns * rows * 16, 16))})
+        offset += columns * rows * 16
+    self.assertGreater(touched_total, 0)
+    self.assertGreater(summary["blush"]["changedTexels"][0], 0)
+    self.assertEqual(summary["blush"]["untouchedTexelsChanged"], collateral)
+    self.assertEqual(summary["unchangedPixelsPreserved"], collateral == 0)
+    # A darker cheek on average: the re-encoded blocks follow the bake.
+    self.assertLess(sum(after[0].tobytes()[1::4]), sum(before[0].tobytes()[1::4]))
+    return figures
+
+
 class BlushSessionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -291,8 +341,11 @@ class BlushSessionTests(unittest.TestCase):
             self.assertGreater(counts[1], 0, "an authored mip is baked at its own texel centres")
             self.assertEqual(counts[-1], 0)
             summary = result["summary"][0]["textureEdits"][0]
-            self.assertEqual(summary["blush"], {"layer": layer, "k": 1.65, "changedTexels": counts, "encoding": "lossless"})
+            self.assertEqual(summary["blush"], {"layer": layer, "k": 1.65, "changedTexels": counts, "requested": "exact",
+                                                "encoding": "exact", "note": textures.SAVED_EXACT})
             self.assertEqual((summary["kind"], summary["resultFormat"]), ("blush", "RGBA32"))
+            self.assertTrue(summary["unchangedPixelsPreserved"])
+            self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": layer, "k": 1.65, "encoding": "exact"})
 
     def astc_encoder(self, *, decode_only=False):
         folder = tempfile.TemporaryDirectory()
@@ -302,78 +355,85 @@ class BlushSessionTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     @unittest.skipUnless(astc_standin.available(), "needs astc-encoder-py for the test astcenc")
-    def test_astc_bake_reencodes_only_the_blocks_with_changed_texels(self):
+    def test_astc_keep_reencodes_only_the_blocks_with_changed_texels(self):
         self.astc_encoder()
         raw, _ = head_fixture(astc=True)
         self.cache(self.payload)
         token, _ = self.open(raw)
         _, row = self.head(token)
         self.assertEqual(row["format"], "ASTC_RGBA_6x6")
-        texture, before = levels_of(raw)
-        original = bytes(texture.get_image_data())
-        cheek = tb.layer_bytes(self.payload, 0)
-        result, output = self.export(token, self.operation(row, before[0], {"layer": 0, "k": 3.0}))
-        written, after = levels_of(output)
-        self.assertEqual((written.m_TextureFormat, written.m_MipCount, len(after)), (ASTC_6X6, LEVELS, LEVELS))
-        data = bytes(written.get_image_data())
-        self.assertEqual(len(data), len(original), "the texture keeps its compressed size")
-        summary = result["summary"][0]["textureEdits"][0]
-        self.assertEqual((summary["resultFormat"], summary["encodingChanged"], summary["blush"]["encoding"]),
-                         ("ASTC_RGBA_6x6", False, "blocks"))
-        offset, touched_total = 0, 0
-        for level, (authored, level_after) in enumerate(zip(before, after)):
-            w, h = authored.size
-            columns, rows = -(-w // 6), -(-h // 6)
-            baked, changed, _ = tb.bake_rgba(authored.tobytes(), w, h, cheek, 3.0)
-            source, result_pixels = authored.tobytes(), level_after.tobytes()
-            touched = {(x // 6, (h - 1 - y) // 6) for y in range(h) for x in range(w)
-                       if source[(y * w + x) * 4:(y * w + x) * 4 + 3] != baked[(y * w + x) * 4:(y * w + x) * 4 + 3]}
-            self.assertEqual(summary["blush"]["changedTexels"][level], changed)
-            self.assertEqual(summary["blush"]["reencodedBlocks"][level], len(touched))
-            touched_total += len(touched)
-            for by in range(rows):
-                for bx in range(columns):
-                    at = offset + (by * columns + bx) * 16
-                    if (bx, by) not in touched:
-                        self.assertEqual(data[at:at + 16], original[at:at + 16], (level, bx, by))
-            for y in range(h):
-                for x in range(w):
-                    o = (y * w + x) * 4
-                    self.assertEqual(result_pixels[o + 3], source[o + 3], "alpha is never changed")
-                    if (x // 6, (h - 1 - y) // 6) not in touched:
-                        self.assertEqual(result_pixels[o:o + 4], source[o:o + 4], "texels outside re-encoded blocks keep their value")
-                    else:
-                        self.assertLessEqual(max(abs(result_pixels[o + c] - baked[o + c]) for c in range(3)), 64)
-            offset += columns * rows * 16
-        self.assertGreater(touched_total, 0)
-        self.assertGreater(summary["blush"]["changedTexels"][0], 0)
-        # A darker cheek on average: the re-encoded blocks follow the bake.
-        self.assertLess(sum(after[0].tobytes()[1::4]), sum(before[0].tobytes()[1::4]))
+        _, before = levels_of(raw)
+        result, output = self.export(token, self.operation(row, before[0], {"layer": 0, "k": 3.0, "encoding": "astc-keep"}))
+        check_astc_keep(self, raw, output, result["summary"][0]["textureEdits"][0], tb.layer_bytes(self.payload, 0), 3.0)
+        self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 0, "k": 3.0, "encoding": "astc-keep"})
 
     @unittest.skipUnless(astc_standin.available(), "needs astc-encoder-py for the test astcenc")
-    def test_exact_pixels_or_a_decoder_only_astcenc_save_lossless_rgba32(self):
+    def test_exact_pixels_are_the_default_and_every_astc_keep_fallback_says_why(self):
+        """CLAUDE.md: by default only the blush texels change. A row without an
+        encoding (saved before the field existed) is exact as well."""
         raw, _ = head_fixture(astc=True)
         self.cache(self.payload)
-        for decode_only, blush in ((False, {"layer": 1, "k": 2.3, "exact": True}), (True, {"layer": 1, "k": 2.3})):
-            with self.subTest(decode_only=decode_only):
+        cheek = tb.layer_bytes(self.payload, 1)
+        cases = (("default", False, {"layer": 1, "k": 2.3}, "exact", ""),
+                 ("exact", False, {"layer": 1, "k": 2.3, "encoding": "exact"}, "exact", ""),
+                 ("no encoder", True, {"layer": 1, "k": 2.3, "encoding": "astc-keep"}, "astc-keep",
+                  "The ASTC encoder could not re-encode the baked blocks."))
+        for name, decode_only, blush, requested, fallback in cases:
+            with self.subTest(name):
                 self.astc_encoder(decode_only=decode_only)
-                token, _ = self.open(raw, "exact.unity" if not decode_only else "fallback.unity")
+                token, _ = self.open(raw, name.replace(" ", "-") + ".unity")
                 _, row = self.head(token)
                 texture, before = levels_of(raw)
                 result, output = self.export(token, self.operation(row, before[0], blush))
                 written, after = levels_of(output)
                 self.assertEqual((written.m_TextureFormat, written.m_MipCount), (4, LEVELS))
-                cheek = tb.layer_bytes(self.payload, 1)
                 for authored, level in zip(before, after):
+                    # Every texel the rule leaves alone keeps its decoded value; baked texels are the shader result.
                     self.assertEqual(level.tobytes(), tb.bake_rgba(authored.tobytes(), authored.width, authored.height, cheek, 2.3)[0])
                 summary = result["summary"][0]["textureEdits"][0]
-                self.assertEqual(summary["blush"]["encoding"], "lossless")
-                if decode_only:
-                    self.assertIn("encoder", summary["blush"]["fallback"])
-                    self.assertNotIn("exact", summary["blush"])
-                else:
-                    self.assertTrue(summary["blush"]["exact"])
-                    self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 1, "k": 2.3, "exact": True})
+                self.assertEqual((summary["blush"]["encoding"], summary["blush"]["requested"], summary["blush"]["note"]),
+                                 ("exact", requested, textures.SAVED_EXACT))
+                self.assertEqual(summary["blush"].get("fallback", ""), fallback)
+                self.assertEqual(summary["encodingReason"], (fallback + " " if fallback else "") + textures.SAVED_EXACT)
+                self.assertEqual(result["recipe"]["state"]["textures"][0]["blush"], {"layer": 1, "k": 2.3, "encoding": requested})
+
+    def test_astc_keep_on_paint_or_a_non_astc_texture_saves_exact_pixels_and_says_why(self):
+        cheek = tb.layer_bytes(self.payload, 0)
+        self.cache(self.payload)
+        raw, images = head_fixture()  # RGBA32
+        token, _ = self.open(raw)
+        _, row = self.head(token)
+        result, output = self.export(token, self.operation(row, images[0], {"layer": 0, "k": 1.65, "encoding": "astc-keep"}))
+        summary = result["summary"][0]["textureEdits"][0]
+        self.assertEqual((summary["blush"]["encoding"], summary["blush"]["fallback"]), ("exact", textures.KEEP_NOT_ASTC))
+        _, levels = levels_of(output)
+        self.assertEqual(levels[0].tobytes(), tb.bake_rgba(images[0].tobytes(), SIZE, SIZE, cheek, 1.65)[0])
+        if not astc_standin.available():
+            return
+        self.astc_encoder()
+        raw, _ = head_fixture(astc=True)
+        token, _ = self.open(raw, "painted.unity")
+        _, row = self.head(token)
+        _, before = levels_of(raw)
+        painted = before[0].copy()
+        painted.putpixel((60, 2), (1, 2, 3, 255))
+        result, _ = self.export(token, self.operation(row, painted, {"layer": 0, "k": 1.65, "encoding": "astc-keep"}, kind="paint"))
+        summary = result["summary"][0]["textureEdits"][0]
+        self.assertEqual((summary["resultFormat"], summary["blush"]["encoding"], summary["blush"]["fallback"]),
+                         ("RGBA32", "exact", textures.KEEP_PAINTED))
+
+    def test_every_save_summary_sentence_is_translated(self):
+        import re
+        from webtools import i18n
+        from webtools.core import texture_block_splice
+        sentences = {textures.SAVED_EXACT, textures.SAVED_ASTC, textures.KEEP_PAINTED, textures.KEEP_NOT_ASTC,
+                     "Choose how to save the baked blush: exact pixels or the game's ASTC compression."}
+        for module in (texture_block_splice, textures):
+            sentences.update(re.findall(r'SpliceUnavailable\("([^"]+)"\)', Path(module.__file__).read_text(encoding="utf-8")))
+        self.assertGreaterEqual(len(sentences), 14)
+        for lang in ("ko", "ja"):
+            missing = [text for text in sorted(sentences) if i18n.tr(text, lang) == text]
+            self.assertEqual(missing, [], lang)
 
     def test_recolour_texture_is_offered_and_baked_with_its_head(self):
         raw, _ = head_fixture(attach=True)
@@ -408,11 +468,11 @@ class BlushSessionTests(unittest.TestCase):
         _, row = self.head(token)
         first, _ = self.export(token, self.operation(row, images[0], {"layer": 0, "k": 1.65}))
         recipe = first["recipe"]["state"]["textures"][0]
-        self.assertEqual(recipe["blush"], {"layer": 0, "k": 1.65})
+        self.assertEqual(recipe["blush"], {"layer": 0, "k": 1.65, "encoding": "exact"})
         self.assertEqual(recipe["kind"], "blush")
         with Image.open(io.BytesIO(base64.b64decode(recipe["png"].split(",", 1)[1]))) as stored:
             self.assertEqual(stored.convert("RGBA").tobytes(), images[0].tobytes(), "the recipe keeps unbaked pixels")
-        rebake = dict(recipe, blush={"layer": 0, "k": 3.0})
+        rebake = dict(recipe, blush={"layer": 0, "k": 3.0, "encoding": "exact"})
         _, output = self.export(token, rebake)
         _, levels = levels_of(output)
         cheek = tb.layer_bytes(self.payload, 0)
@@ -446,7 +506,8 @@ class BlushSessionTests(unittest.TestCase):
         base = self.operation(row, images[0], {"layer": 0, "k": 1.0})
         for change in ({"blush": {"layer": 2, "k": 1.0}}, {"blush": {"layer": 0, "k": 0}}, {"blush": {"layer": 0, "k": 4.5}},
                        {"blush": {"layer": 0, "k": True}}, {"blush": {"layer": 0, "k": 1.0, "level": "medium"}},
-                       {"blush": {"layer": 0, "k": 1.0, "exact": 1}}, {"blush": {"layer": 0, "k": 1.0, "exact": "yes"}},
+                       {"blush": {"layer": 0, "k": 1.0, "encoding": "fast"}}, {"blush": {"layer": 0, "k": 1.0, "encoding": True}},
+                       {"blush": {"layer": 0, "k": 1.0, "encoding": None}}, {"blush": {"layer": 0, "k": 1.0, "exact": True}},
                        {"blush": {"layer": 0}}, {"blush": None}, {"extra": 1}):
             with self.subTest(change=change):
                 operation = dict(base, **change)
@@ -454,8 +515,11 @@ class BlushSessionTests(unittest.TestCase):
                     model_edits.export(token, {"version": 1, "savedSettingsEnabled": True, "edits": [], "textures": [operation]},
                                        self.root / "rejected")
                 self.assertFalse((self.root / "rejected").exists())
-        self.assertEqual(textures.checked_blush({"layer": 0, "k": 1.0, "exact": False}), {"layer": 0, "k": 1.0})
-        self.assertEqual(textures.checked_blush({"layer": 1, "k": 2.0, "exact": True}), {"layer": 1, "k": 2.0, "exact": True})
+        # Canonical: the encoding is always named; a row without one is exact.
+        self.assertEqual(textures.checked_blush({"layer": 0, "k": 1.0}), {"layer": 0, "k": 1.0, "encoding": "exact"})
+        self.assertEqual(textures.checked_blush({"layer": 0, "k": 1.0, "encoding": "exact"}), {"layer": 0, "k": 1.0, "encoding": "exact"})
+        self.assertEqual(textures.checked_blush({"layer": 1, "k": 2.0, "encoding": "astc-keep"}),
+                         {"layer": 1, "k": 2.0, "encoding": "astc-keep"})
         no_blush = {key: value for key, value in base.items() if key != "blush"}
         with self.assertRaises(ValueError):
             model_edits.validate_state(token, {"version": 1, "savedSettingsEnabled": True, "edits": [], "textures": [no_blush]})
@@ -565,42 +629,44 @@ class RealBundleTests(unittest.TestCase):
         token = self.open(self.samples / "12029-costume.unity")
         self.assertEqual(textures.inspect(token)["blush"]["cheek"]["source"], "cache")
 
-    @unittest.skipUnless(astc_standin.available(), "the ASTC head texture needs astc-encoder-py for the test astcenc")
-    def test_astc_head_keeps_its_blocks_or_saves_exact_pixels(self):
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"ASTCENC_BIN": astc_standin.write(folder)}):
+    def export_both(self, encoder):
+        """The real ASTC 12035 head saved with the default (exact) and with astc-keep."""
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"ASTCENC_BIN": encoder(folder)}):
             path = self.samples / "12035-costume.unity"
             token = self.open(path)
             row = next(row for row in textures.inspect(token)["textures"] if "blush" in row)
             self.assertEqual(row["format"], "ASTC_RGBA_6x6")
             image = textures.data(token, row["texture"])["image"]
             cheek = tb.layer_bytes(textures._read_cached_cheek(), 0)
-            original, before = levels_of(path.read_bytes(), row["name"])
             outputs = {}
-            for name, blush in (("blocks", {"layer": 0, "k": 1.65}), ("exact", {"layer": 0, "k": 1.65, "exact": True})):
+            for name, blush in (("exact", {"layer": 0, "k": 1.65}), ("astc-keep", {"layer": 0, "k": 1.65, "encoding": "astc-keep"})):
                 state = {"version": 1, "savedSettingsEnabled": True, "edits": [], "textures": [
                     {"texture": row["texture"], "sourceSha256": row["sourceSha256"], "png": image, "kind": "blush", "blush": blush}]}
                 result = model_edits.export(token, state, self.root / name)
-                outputs[name] = (result["summary"][0]["textureEdits"][0],) + levels_of(Path(result["preview_paths"][0]).read_bytes(), row["name"])
-        # Exact pixels: the lossless contract, every level equals the rule.
-        summary, texture, after = outputs["exact"]
-        self.assertEqual((texture.m_TextureFormat, texture.m_MipCount, len(after)), (4, 11, 11))
-        counts = []
-        for authored, written in zip(before, after):
-            expected, changed, _ = tb.bake_rgba(authored.tobytes(), authored.width, authored.height, cheek, 1.65)
-            self.assertEqual(written.tobytes(), expected)
-            counts.append(changed)
-        self.assertGreater(counts[0], 10000)
-        self.assertTrue(all(count > 0 for count in counts[:7]) and counts[-1] == 0, counts)
-        # Default: ASTC 6x6 kept, only the touched blocks differ, alpha and every other texel unchanged.
-        summary, texture, after = outputs["blocks"]
-        self.assertEqual((texture.m_TextureFormat, texture.m_MipCount, summary["blush"]["changedTexels"]), (56, 11, counts))
-        old, new = bytes(original.get_image_data()), bytes(texture.get_image_data())
-        self.assertEqual(len(old), len(new))
-        differing = sum(old[i:i + 16] != new[i:i + 16] for i in range(0, len(old), 16))
-        self.assertLessEqual(differing, sum(summary["blush"]["reencodedBlocks"]))
-        self.assertLess(sum(summary["blush"]["reencodedBlocks"]), 800)
-        for authored, written in zip(before, after):
-            self.assertEqual(written.tobytes()[3::4], authored.tobytes()[3::4])
+                outputs[name] = (result["summary"][0]["textureEdits"][0], Path(result["preview_paths"][0]).read_bytes())
+            raw = path.read_bytes()
+            # Default: exact pixels, every level equals the rule (lossless RGBA32).
+            summary, output = outputs["exact"]
+            self.assertEqual((summary["blush"]["encoding"], summary["blush"]["requested"]), ("exact", "exact"))
+            _, before = levels_of(raw, row["name"])
+            texture, after = levels_of(output, row["name"])
+            self.assertEqual((texture.m_TextureFormat, texture.m_MipCount, len(after)), (4, 11, 11))
+            counts = []
+            for authored, written in zip(before, after):
+                expected, changed, _ = tb.bake_rgba(authored.tobytes(), authored.width, authored.height, cheek, 1.65)
+                self.assertEqual(written.tobytes(), expected)
+                counts.append(changed)
+            self.assertEqual(counts, [16433, 4088, 1031, 258, 66, 16, 4, 2, 0, 0, 0])
+            # Opt-in: ASTC 6x6 kept; only the touched blocks differ; alpha and every other texel unchanged.
+            summary, output = outputs["astc-keep"]
+            self.assertEqual(summary["blush"]["changedTexels"], counts)
+            figures = check_astc_keep(self, raw, output, summary, cheek, 1.65, row["name"], mips=11)
+            self.assertLess(sum(row["blocks"] for row in figures), 800)
+            return summary, figures
+
+    @unittest.skipUnless(astc_standin.available(), "the ASTC head texture needs astc-encoder-py for the test astcenc")
+    def test_astc_head_saves_exact_pixels_by_default_or_keeps_its_blocks(self):
+        self.export_both(lambda folder: astc_standin.write(folder))
 
 
 @unittest.skipUnless(os.environ.get("REAL_SUIT_BUNDLES"), "set REAL_SUIT_BUNDLES to the suit bundle folder")

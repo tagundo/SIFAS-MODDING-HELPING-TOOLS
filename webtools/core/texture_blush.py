@@ -117,6 +117,24 @@ def checked_layer(value):
     return value
 
 
+# How a baked texture is saved (recipe field blush.encoding):
+# * "exact" (default, and for rows saved without the field): lossless RGBA32.
+#   Every texel the rule leaves alone keeps its decoded value and every baked
+#   texel is exactly the shader result; the texture data grows (an ASTC 6x6
+#   face about nine times).
+# * "astc-keep" (opt-in): an ASTC texture keeps its format and every block
+#   without a baked texel keeps its bytes, but each touched block is
+#   compressed again, so its other texels can change slightly as well.
+ENCODINGS = ("exact", "astc-keep")
+DEFAULT_ENCODING = "exact"
+
+
+def checked_encoding(value):
+    if type(value) is not str or value not in ENCODINGS:
+        raise BlushError("Choose how to save the baked blush: exact pixels or the game's ASTC compression.")
+    return value
+
+
 def verify_payload(payload):
     """True for the exact stock cheek_array RGBA32 payload."""
     return (isinstance(payload, (bytes, bytearray)) and len(payload) == CHEEK_PAYLOAD_BYTES

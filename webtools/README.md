@@ -598,19 +598,28 @@ opens that face texture.
   bilinearly with Clamp at `uv·2.22 + (0, −1.221)` (Unity v up), alpha
   untouched. Only texels whose rounded colour changes are written. Every authored
   mip is baked in place at its own texel centres; mips are never regenerated.
-- Saving: an ASTC face keeps its format, size and mip count. In every level,
-  each compressed block without a changed texel keeps its original bytes; only
-  the blocks that contain one are encoded again from the exact bake (the app's
-  `astcenc`, LDR, exhaustive). ASTC is lossy, so texels inside those blocks
-  approximate the bake (on a real 1024² ASTC 6×6 face: 509 of 29 241 blocks at
-  full size, mean error 0.14 and at most 4 levels per channel). Each spliced
-  level is decoded again; the save is refused unless every texel outside the
-  re-encoded blocks and every alpha value is unchanged. **Advanced → Save exact
-  pixels** instead uses lossless RGBA32 like the other texture tools (every
-  texel exact, about nine times the texture data). Paint plus a bake, non-ASTC
-  formats and an `astcenc` without an encoder also use RGBA32; the save summary
-  says which encoding was used and why.
-- The recipe stores the bake as an operation on the original pixels, so applying
+- Saving, by default **exact pixels**: the face is written as lossless RGBA32
+  at its authored mip count, so every texel the bake does not change keeps its
+  decoded value and every baked texel is exactly the shader result (an ASTC
+  6×6 face's texture data grows about nine times, as with the other texture
+  tools). **Advanced → Keep the game's compression (ASTC)** /
+  게임 압축 형식(ASTC) 유지 is the opt-in alternative: the face keeps its ASTC
+  format, size and mip count; in every level each compressed block without a
+  changed texel keeps its original bytes, and only the blocks that contain one
+  are encoded again from the exact bake (the app's `astcenc` 4.8, LDR,
+  `-exhaustive -decode_unorm8`). ASTC is lossy, so every texel inside those
+  blocks, including ones the bake does not change, approximates the bake (real
+  1024² ASTC 6×6 face with astcenc 4.8.0: 509 of 29 241 blocks re-encoded at full
+  size, mean error 0.14 and at most 4 levels per channel there, up to 25 in the
+  16×16 mip; 532 texels the rule leaves alone change over all levels). Each
+  spliced level is decoded again; the save falls back to exact pixels unless
+  every texel outside the re-encoded blocks and every alpha value is unchanged.
+  Paint on the same texture, a non-ASTC texture and an `astcenc` without an
+  encoder also save exact pixels. After saving, the save status says which mode
+  each baked face used and, for a fallback, why.
+- The recipe stores the bake as `blush: {layer, k, encoding}` with encoding
+  `exact` (default; a row without the field loads as exact) or `astc-keep`.
+  It is an operation on the original pixels, so applying
   another strength replaces the bake instead of adding to it. **Export PNG**
   writes the texture as the game shows it (bake included); **Import PNG** treats
   the file as the final pixels and removes the bake operation in the same undo

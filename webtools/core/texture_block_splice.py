@@ -1,16 +1,18 @@
 """Re-encode only the ASTC blocks that hold changed texels.
 
 A baked blush changes a few thousand texels around the cheeks of a face
-texture. Saving the whole texture as RGBA32 keeps every texel exact but makes
-an ASTC 6x6 face about nine times larger. This module keeps the original ASTC
-format instead: in every level, each block whose texels the bake leaves alone
-keeps its original 16 bytes, and only the blocks that contain a changed texel
-are compressed again from the exact baked pixels (astcenc, LDR, exhaustive).
+texture. The default save (blush encoding "exact") writes the whole texture as
+RGBA32: every texel exact, but an ASTC 6x6 face about nine times larger. The
+opt-in "astc-keep" encoding uses this module to keep the original ASTC format
+instead: in every level, each block whose texels the bake leaves alone keeps
+its original 16 bytes, and only the blocks that contain a changed texel are
+compressed again from the exact baked pixels (astcenc 4.8, LDR, exhaustive).
 
-ASTC is lossy, so a re-encoded block approximates the bake (the decoded texels
-of such a block can differ from the exact bake by a few levels). The caller
-decodes every spliced level again and refuses the result unless the texels
-outside the re-encoded blocks are unchanged and alpha is unchanged everywhere.
+ASTC is lossy, so a re-encoded block approximates the bake: its decoded texels,
+including ones the rule does not change, can differ from the exact bake by a
+few levels. The caller decodes every spliced level again and refuses the
+result unless the texels outside the re-encoded blocks are unchanged and alpha
+is unchanged everywhere.
 
 Layout: Unity stores rows bottom-up, so block row 0 of a level is the bottom of
 the image (v = 0). The images passed here are in top-left (PNG) row order.
@@ -156,7 +158,7 @@ def check_level(before, baked, after, width, height, block, blocks):
     ``before`` is the decoded original level, ``baked`` the exact bake and
     ``after`` the decoded spliced level (all top-left RGBA bytes).
     """
-    off, worst, total, samples = 0, 0, 0, 0
+    off, collateral, worst, total, samples = 0, 0, 0, 0, 0
     block_rows = {y for _, y in blocks}
     stride = width * 4
     for y in range(height):
@@ -179,9 +181,13 @@ def check_level(before, baked, after, width, height, block, blocks):
                     errors = [abs(after[offset + c] - baked[offset + c]) for c in range(3)]
                     total += sum(errors)
                     worst = max(worst, *errors)
+                    if baked[offset:offset + 3] == before[offset:offset + 3]:
+                        # A texel the rule leaves alone, changed by the re-encode.
+                        collateral += 1
             elif after[offset:offset + 4] != before[offset:offset + 4]:
                 raise SpliceUnavailable("Re-encoded blocks changed texels outside the baked area.")
     mean = total / samples if samples else 0.0
     if worst > MAX_CHANNEL_ERROR or mean > MAX_MEAN_CHANNEL_ERROR:
         raise SpliceUnavailable("The re-encoded blocks are not close enough to the bake.")
-    return {"texelsOffBake": off, "maxChannelError": worst, "meanChannelError": round(mean, 3)}
+    return {"texelsOffBake": off, "untouchedTexelsChanged": collateral, "maxChannelError": worst,
+            "meanChannelError": round(mean, 3)}

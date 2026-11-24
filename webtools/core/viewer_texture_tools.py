@@ -2,9 +2,9 @@
 
 Pixel images use top-left PNG coordinates. Writing restores Unity's vertical
 orientation and keeps object/material/UV identities and authored mip counts.
-A baked blush alone on an ASTC texture is the one exception to lossless RGBA32:
-it keeps the ASTC data and re-encodes only the blocks it changes
-(texture_block_splice), unless exact pixels are requested.
+A baked blush saved with the opt-in "astc-keep" encoding, alone on an ASTC
+texture, is the one exception to lossless RGBA32: it keeps the ASTC data and
+re-encodes only the blocks it changes (texture_block_splice).
 """
 import base64
 import binascii
@@ -89,6 +89,14 @@ def catalogue_sources(inspected_sources, sources, automatic=()):
 # that texture as the head mainTexture at runtime), can take a baked blush.
 _MEMBERS = "LLAS.Components.Members"
 _PLATFORMS = {13: "android", 9: "ios"}
+# Save-summary sentences (translated in webtools/i18n.py): the blush encoding
+# used, and why an "astc-keep" request saved exact pixels instead.
+SAVED_EXACT = ("The baked blush was saved as exact pixels (lossless RGBA32): every texel it does not change keeps "
+               "its value.")
+SAVED_ASTC = ("The baked blush kept the game's ASTC compression: only the blocks it touches were compressed again, "
+              "and every other block keeps its original bytes.")
+KEEP_PAINTED = "This texture is also painted, and painted pixels are always saved exactly, so its ASTC compression was not kept."
+KEEP_NOT_ASTC = "This texture is not ASTC-compressed, so there was no ASTC compression to keep."
 CHEEK_UNAVAILABLE = ("No verified stock blush pattern (cheek_array) is available. Open another costume that "
                      "contains it once (most costume bundles do) so it is kept automatically, then reopen this model.")
 
@@ -338,21 +346,20 @@ def cheek_payload(session):
 
 
 def checked_blush(value):
-    """Canonical recipe operation: {"layer": 0 | 1, "k": strength[, "exact": true]}.
+    """Canonical recipe operation: {"layer": 0 | 1, "k": strength, "encoding": "exact" | "astc-keep"}.
 
-    ``exact`` saves the baked texture as lossless RGBA32 instead of
-    re-encoding only the touched blocks of an ASTC texture.
+    A row without ``encoding`` (written before the field existed) is "exact":
+    lossless RGBA32, the default. "astc-keep" keeps an ASTC texture's
+    compression and re-encodes only the blocks the bake touches
+    (texture_blush.ENCODINGS). Same rule as texture-blush.js checkedOperation.
     """
-    if (not isinstance(value, dict) or not {"layer", "k"} <= set(value) or not set(value) <= {"layer", "k", "exact"}
-            or "exact" in value and type(value["exact"]) is not bool):
-        _fail("The blush bake needs exactly a blush type and a strength.")
+    if not isinstance(value, dict) or not {"layer", "k"} <= set(value) or not set(value) <= {"layer", "k", "encoding"}:
+        _fail("The blush bake takes only a blush type, a strength and a save mode.")
     try:
-        out = {"layer": texture_blush.checked_layer(value["layer"]), "k": texture_blush.checked_k(value["k"])}
+        return {"layer": texture_blush.checked_layer(value["layer"]), "k": texture_blush.checked_k(value["k"]),
+                "encoding": texture_blush.checked_encoding(value.get("encoding", texture_blush.DEFAULT_ENCODING))}
     except texture_blush.BlushError as error:
         raise TextureToolError(str(error)) from error
-    if value.get("exact"):
-        out["exact"] = True
-    return out
 
 
 def cheek(token):
@@ -582,12 +589,14 @@ def _change_mask(before, after):
 
 
 def _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline):
-    """Bake every authored ASTC level and re-encode only the touched blocks.
+    """The opt-in "astc-keep" save: bake every authored ASTC level and
+    re-encode only the touched blocks.
 
     The texture keeps its format, size and mip count. Each level's blocks
     without a changed texel keep their original bytes; the others are encoded
-    again from the exact bake. Every spliced level is decoded again and must
-    keep every texel outside those blocks and every alpha value.
+    again from the exact bake, so their texels (also those the rule leaves
+    alone) approximate it. Every spliced level is decoded again and must keep
+    every texel outside those blocks and every alpha value.
     """
     from types import SimpleNamespace
     from PIL import Image
@@ -598,7 +607,7 @@ def _splice_blush(obj, original, levels, before, layer, bounds, blush, block, de
     if len(data) < layout[-1][2] + layout[-1][3]:
         raise splice.SpliceUnavailable("The original ASTC data is shorter than its mip chain.")
     out = bytearray(data)
-    changed_counts, block_counts, off_bake, worst, means, base = [], [], 0, [], [], None
+    changed_counts, block_counts, off_bake, collateral, worst, means, base = [], [], 0, 0, [], [], None
     for level, (source, (w, h, offset, size)) in enumerate(zip(levels, layout)):
         authored = before if level == 0 else decode._android_image(source, deadline).convert("RGBA")
         try:
@@ -625,6 +634,7 @@ def _splice_blush(obj, original, levels, before, layer, bounds, blush, block, de
                 after = rgba.tobytes()
             stats = splice.check_level(pixels, baked, after, w, h, block, blocks)
             off_bake += stats["texelsOffBake"]
+            collateral += stats["untouchedTexelsChanged"]
             worst.append(stats["maxChannelError"])
             means.append(stats["meanChannelError"])
             out[offset:offset + size] = spliced
@@ -645,11 +655,13 @@ def _splice_blush(obj, original, levels, before, layer, bounds, blush, block, de
     name = _format(int(tree["m_TextureFormat"]))
     return {"name": str(tree.get("m_Name") or "Texture"), "width": width, "height": height,
             "mipCount": len(levels), "sourceFormat": name, "resultFormat": name, "encodingChanged": False,
-            "encodingReason": ("Only the compressed blocks that hold baked cheek texels were re-encoded; "
-                               "every other block keeps its original bytes."),
-            "unchangedPixelsPreserved": True, "alphaChanged": False,
-            "blush": {"layer": blush["layer"], "k": blush["k"], "changedTexels": changed_counts, "encoding": "blocks",
-                      "reencodedBlocks": block_counts, "texelsOffBake": off_bake,
+            "encodingReason": SAVED_ASTC,
+            # Texels inside the re-encoded blocks approximate the bake, so some
+            # the rule leaves alone change as well (untouchedTexelsChanged).
+            "unchangedPixelsPreserved": collateral == 0, "alphaChanged": False,
+            "blush": {"layer": blush["layer"], "k": blush["k"], "changedTexels": changed_counts,
+                      "requested": blush["encoding"], "encoding": "astc-keep", "note": SAVED_ASTC,
+                      "reencodedBlocks": block_counts, "texelsOffBake": off_bake, "untouchedTexelsChanged": collateral,
                       "maxChannelError": worst, "meanChannelError": means},
             "payloadSha256": hashlib.sha256(payload).hexdigest(), "baseSha256": hashlib.sha256(base).hexdigest()}
 
@@ -663,10 +675,13 @@ def _write(obj, edited, blush=None, cheek=None):
     texel's own UV centre, after the paint, so mips are never regenerated and
     only texels whose rounded RGB changes are touched (alpha never).
 
-    Paint and every non-ASTC source are saved as lossless RGBA32. A bake alone
-    on an ASTC texture keeps the ASTC format: only the blocks holding changed
-    texels are re-encoded (_splice_blush), unless the bake asks for exact
-    pixels or the encoder is unavailable, which falls back to RGBA32.
+    Everything is saved as lossless RGBA32 by default, so every texel the
+    edit leaves alone keeps its decoded value and every baked texel is
+    exactly the shader result (blush encoding "exact"). Only a bake that asks
+    for "astc-keep", alone on an ASTC texture, keeps the ASTC format and
+    re-encodes the blocks holding changed texels (_splice_blush); paint on the
+    same texture, a non-ASTC source or an encoder failure saves exact pixels
+    instead, and the summary says why.
     """
     from PIL import Image
     from . import decode, texture_block_splice
@@ -689,12 +704,17 @@ def _write(obj, edited, blush=None, cheek=None):
     fallback = ""
     block = texture_block_splice.astc_block(_format(int(getattr(original, "m_TextureFormat", 0))))
     try:
-        if blush is not None and not painted and not blush.get("exact") and block:
-            try:
-                return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline)
-            except texture_block_splice.SpliceUnavailable as error:
-                fallback = str(error)
-                deadline = time.monotonic() + 60
+        if blush is not None and blush.get("encoding") == "astc-keep":
+            if painted:
+                fallback = KEEP_PAINTED
+            elif not block:
+                fallback = KEEP_NOT_ASTC
+            else:
+                try:
+                    return _splice_blush(obj, original, levels, before, layer, bounds, blush, block, deadline)
+                except texture_block_splice.SpliceUnavailable as error:
+                    fallback = str(error)
+                    deadline = time.monotonic() + 60
     finally:
         before.close()
     width, height = edited.size
@@ -754,14 +774,14 @@ def _write(obj, edited, blush=None, cheek=None):
               "unchangedPixelsPreserved": True, "alphaChanged": alpha_changed,
               "payloadSha256": hashlib.sha256(payload).hexdigest()}
     if blush is not None:
-        result["blush"] = {"layer": blush["layer"], "k": blush["k"], "changedTexels": baked, "encoding": "lossless"}
-        if blush.get("exact"):
-            result["blush"]["exact"] = True
-            if source_format != 4:
-                result["encodingReason"] = "Exact baked pixels were requested, so the texture uses lossless RGBA32."
+        result["blush"] = {"layer": blush["layer"], "k": blush["k"], "changedTexels": baked,
+                           "requested": blush.get("encoding", texture_blush.DEFAULT_ENCODING), "encoding": "exact",
+                           "note": SAVED_EXACT}
+        if source_format != 4:
+            result["encodingReason"] = SAVED_EXACT
         if fallback:
             result["blush"]["fallback"] = fallback
-            result["encodingReason"] = fallback + " " + result["encodingReason"]
+            result["encodingReason"] = fallback + " " + SAVED_EXACT
     return result
 
 

@@ -27,7 +27,7 @@ for width, height, k, layer in ((97, 61, 1.65, 0), (64, 64, 0.5, 1), (128, 32, 3
                  "out": base64.b64encode(out).decode(), "changed": changed, "box": list(box) if box else None})
 print(json.dumps({"layers": [base64.b64encode(value).decode() for value in layers], "rows": rows,
                   "levels": [{"id": name, "k": k} for name, k in tb.LEVELS], "maxK": tb.MAX_K, "defaultLevel": tb.DEFAULT_LEVEL,
-                  "defaultLayer": tb.DEFAULT_LAYER, "scale": tb.UV_SCALE, "offset": tb.UV_OFFSET_V, "sha": tb.CHEEK_SHA256,
+                  "defaultLayer": tb.DEFAULT_LAYER, "encodings": list(tb.ENCODINGS), "defaultEncoding": tb.DEFAULT_ENCODING, "scale": tb.UV_SCALE, "offset": tb.UV_OFFSET_V, "sha": tb.CHEEK_SHA256,
                   "samples": [tb.sample(layers[0], cu, cv) for cu, cv in ((0.43, 0.53), (0.7, 0.51), (-1.0, 0.5), (0.5, 1.4))]}))
 `], { cwd: product, env: { ...process.env, PYTHONPATH: [product, path.join(product, 'tests')].join(path.delimiter) }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
 const layers = reference.layers.map(value => new Uint8Array(Buffer.from(value, 'base64')));
@@ -68,14 +68,30 @@ check('invalid strengths, types and arrays are refused', () => {
   assert.throws(() => B.layerView(new Uint8Array(B.LAYER_BYTES), 0));
   assert.strictEqual(B.levelFor(1.65), 'medium'); assert.strictEqual(B.levelFor(1.7), null); assert.strictEqual(B.levelK('veryStrong'), 3);
 });
-check('recipe operations: exact is optional, canonical and compared', () => {
-  assert.deepStrictEqual(B.checkedOperation({ layer: 1, k: 2 }), { layer: 1, k: 2 });
-  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, exact: true }), { layer: 0, k: 1.65, exact: true });
-  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, exact: false }), { layer: 0, k: 1.65 });
-  [{ layer: 0 }, { layer: 0, k: 1, level: 'medium' }, { layer: 0, k: 1, exact: 1 }, { layer: 2, k: 1 }, { layer: 0, k: 0 }, null, [], 'x'].forEach(value => assert.throws(() => B.checkedOperation(value), JSON.stringify(value)));
-  assert.ok(B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: false })); assert.ok(!B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: true }));
+check('recipe operations: the encoding is canonical, exact by default, and the same rule as Python', () => {
+  assert.deepStrictEqual([B.ENCODINGS, B.DEFAULT_ENCODING], [reference.encodings, reference.defaultEncoding]);
+  assert.deepStrictEqual(B.checkedOperation({ layer: 1, k: 2 }), { layer: 1, k: 2, encoding: 'exact' }, 'a row without an encoding is exact');
+  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, encoding: 'exact' }), { layer: 0, k: 1.65, encoding: 'exact' });
+  assert.deepStrictEqual(B.checkedOperation({ layer: 0, k: 1.65, encoding: 'astc-keep' }), { layer: 0, k: 1.65, encoding: 'astc-keep' });
+  const invalid = [{ layer: 0 }, { layer: 0, k: 1, level: 'medium' }, { layer: 0, k: 1, exact: true }, { layer: 0, k: 1, encoding: 'fast' }, { layer: 0, k: 1, encoding: true },
+    { layer: 0, k: 1, encoding: null }, { layer: 2, k: 1 }, { layer: 0, k: 0 }, null, [], 'x'];
+  invalid.forEach(value => assert.throws(() => B.checkedOperation(value), JSON.stringify(value)));
+  // Python checked_blush accepts and refuses exactly the same rows, with the same canonical form.
+  const fromPython = JSON.parse(execFileSync(python, ['-B', '-c', `
+import json, sys
+from webtools.core import viewer_texture_tools as t
+out = []
+for value in json.loads(sys.argv[1]):
+    try:
+        out.append(t.checked_blush(value))
+    except ValueError:
+        out.append("refused")
+print(json.dumps(out))`, JSON.stringify([{ layer: 1, k: 2 }, { layer: 0, k: 1.65, encoding: 'astc-keep' }].concat(invalid))], { cwd: product, env: { ...process.env, PYTHONPATH: product }, encoding: 'utf8' }));
+  assert.deepStrictEqual(fromPython, [{ layer: 1, k: 2, encoding: 'exact' }, { layer: 0, k: 1.65, encoding: 'astc-keep' }].concat(invalid.map(() => 'refused')));
+  assert.ok(B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, encoding: 'exact' })); assert.ok(!B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, encoding: 'astc-keep' }));
   assert.ok(B.sameOperation(null, null)); assert.ok(!B.sameOperation(null, { layer: 0, k: 1 }));
-  assert.deepStrictEqual(B.copyOperation({ layer: 1, k: 3, exact: true, extra: 1 }), { layer: 1, k: 3, exact: true }); assert.strictEqual(B.copyOperation(null), null);
+  assert.deepStrictEqual(B.copyOperation({ layer: 1, k: 3, encoding: 'astc-keep', extra: 1 }), { layer: 1, k: 3, encoding: 'astc-keep' });
+  assert.deepStrictEqual(B.copyOperation({ layer: 1, k: 3 }), { layer: 1, k: 3, encoding: 'exact' }); assert.strictEqual(B.copyOperation(null), null);
 });
 check('engine recordState is a pixel-free undo step and replaceImageData carries its custom state', () => {
   const engine = Engine.create({}), calls = [];
@@ -103,7 +119,7 @@ check('every blush panel string has Korean and Japanese wording', () => {
     for (const match of source.slice(start, end).matchAll(/"((?:[^"\\]|\\.)*)"/g)) if (/^[A-Z0-9]/.test(match[1]) && /[a-z]/.test(match[1]) && !/^(AbortError)$/.test(match[1])) texts.add(match[1]);
   });
   const server = JSON.parse(execFileSync(python, ['-B', '-c', 'import json; from webtools.core import viewer_texture_tools as t; from webtools import i18n; print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "ko"), "ja": i18n.tr("Baked blush", "ja")}))'], { cwd: product, env: { ...process.env, PYTHONPATH: product }, encoding: 'utf8' }));
-  texts.add(server.reason); ['Choose a blush strength between 0 and 4.', 'Choose the Ppo or Akarame blush type.', 'The blush bake needs exactly a blush type and a strength.', 'Baked blush is available only for a head material\'s main texture or its recolour texture.'].forEach(text => texts.add(text));
+  texts.add(server.reason); ['Choose a blush strength between 0 and 4.', 'Choose the Ppo or Akarame blush type.', 'The blush bake takes only a blush type, a strength and a save mode.', 'Baked blush is available only for a head material\'s main texture or its recolour texture.'].forEach(text => texts.add(text));
   const missing = Array.from(texts).filter(text => !Array.isArray(words[text]) || words[text].length !== 2 || words[text].some(value => !value || value === text));
   assert.deepStrictEqual(missing, [], 'untranslated blush strings');
   assert.ok(texts.size >= 45, 'the scan found the panel strings: ' + texts.size);
