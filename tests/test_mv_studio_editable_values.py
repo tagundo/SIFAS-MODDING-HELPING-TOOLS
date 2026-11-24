@@ -367,6 +367,59 @@ class ActualTimelineTests(unittest.TestCase):
                 studio._rewrite_timeline(self.raw, self.fresh, {**self.fresh, "tracks": tracks})
 
 
+class ServerGuardMessageTests(unittest.TestCase):
+    """The export guards reach the page in its language: the server translates them for ?lang=."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        import threading
+        from webtools.server import Handler
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(3)
+
+    def post(self, language, refusal):
+        import http.client
+        with patch.object(mv_studio, "export_timeline", side_effect=refusal) as export:
+            connection = http.client.HTTPConnection(*self.server.server_address, timeout=10)
+            self.addCleanup(connection.close)
+            connection.request("POST", "/api/mv-studio/export-timeline?lang=" + language,
+                               json.dumps({"project": {"name": "Guarded"}}), {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            body = json.load(response)
+        export.assert_called_once_with({"name": "Guarded"})
+        return response.status, body
+
+    def test_guard_messages_are_translated_for_the_requested_language(self):
+        original = timeline(("coloring", [
+            event("coloring:0", "LiveColoringClip", {"textureIndex": 0}, ["textureIndex"]),
+            event("coloring:1", "LiveColoringClip", {"textureIndex": 5}, ["textureIndex"])]))
+        revised = deepcopy(original)
+        revised["tracks"][0]["events"][0]["values"]["textureIndex"] = 3
+
+        def refuse(_project):
+            studio._check_values(original, revised)  # The real guard and its exact message.
+            raise AssertionError("the guard accepted an unobserved textureIndex")
+
+        message = "Choose a value this MV already uses for 'textureIndex'."
+        for language, wanted in (("ko", "이 MV에서 이미 쓰는 'textureIndex' 값 중에서 고르세요."),
+                                 ("ja", "このMVですでに使われている'textureIndex'の値から選んでください。"),
+                                 ("en", message), ("xx", message)):
+            with self.subTest(language=language):
+                self.assertEqual(self.post(language, refuse), (400, {"error": wanted}))
+        slot = "Member focus needs the clip's member position to be 1 to 12."
+        self.assertEqual(self.post("ko", ValueError(slot)), (400, {"error": "멤버에 초점을 맞추려면 클립의 멤버 위치가 1~12여야 합니다."}))
+        # A message without a translation is sent as it is.
+        self.assertEqual(self.post("ko", ValueError("Some other refusal.")), (400, {"error": "Some other refusal."}))
+
+
 def sample_timelines():
     """Every original timeline bundle in ELICHIKA_STUDIO_TIMELINE_DIR (choreography bundles excluded)."""
     if not SAMPLES.is_dir():

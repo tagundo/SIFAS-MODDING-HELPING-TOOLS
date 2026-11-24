@@ -10,7 +10,9 @@
    - with the original 1203503 timeline (ELICHIKA_STUDIO_TIMELINE_DIR, optional): a
      project saved with the editableValues lists from before this change opens, shows
      its inspectors and exports the original bytes; an observed textureIndex edit
-     exports and parses back; after undo the export is the original bytes again.
+     exports and parses back; an unobserved index forced past the offered options is
+     refused with the server's guard message in Korean; after undo the export is the
+     original bytes again.
    Screenshots go to EVIDENCE_DIR. */
 'use strict';
 const assert = require('node:assert/strict');
@@ -391,6 +393,23 @@ async function original12035(browser, url) {
   assert.notEqual(Buffer.compare(fs.readFileSync(edited), raw), 0);
   assert.equal(parsedValue(edited, saved.coloring, 'textureIndex'), 5, 'the observed index exports and parses back');
 
+  // An index the track does not use, forced past the offered options: the export is
+  // refused and the guard message arrives in the page's language.
+  await field(page, 'textureIndex').evaluate((select) => {
+    select.add(new Option('3', '3'));
+    select.value = '3';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  assert.equal((await state(page)).history.undo, 2);
+  await page.locator('#mv-export-timeline').click();
+  await page.waitForFunction(() => {
+    const status = document.querySelector('#mv-status');
+    return status && !status.hidden && status.classList.contains('mv-error') && !document.querySelector('#mv-export-timeline').disabled;
+  }, null, { timeout: 120000 });
+  const refusal = await page.locator('#mv-status').textContent();
+  assert(refusal.includes("이 MV에서 이미 쓰는 'textureIndex' 값 중에서 고르세요."), refusal);
+  assert.equal(await page.locator('#mv-save-result a').getAttribute('title'), edited, 'a refused export writes no file');
+  await page.locator('#mv-undo').click();
   await page.locator('#mv-undo').click();
   const undone = await exportTimeline(page, edited);
   assert.equal(Buffer.compare(fs.readFileSync(undone), raw), 0, 'after undo the export is the original bytes again');
