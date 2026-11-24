@@ -169,7 +169,8 @@ function testPrewarmActivationBuildUp() {
 // particle's lived offset is (carry + j) * spacing while carry + j is below the batch's rate count, else 0
 // (j counting the batch's kept particles, carry + j summed one at a time as the client does); its start
 // speed is drawn again from salted(word, 0x96aa4de3) at batch time * (1 / duration), and it moves along its
-// box direction by that offset and then by every step after its batch's step.
+// box direction by that offset and then by every step after its batch's step; gravity acts in closed form
+// over the particle's whole time (0x1d8284-0x1d8334).
 
 // A MinMaxCurve as Unity evaluates it (states 0-3), on the native curve emulation.
 function curveOf(curve) {
@@ -237,6 +238,7 @@ function regenerated(row, seed, batches, {steps, ends}) {
       entry.offset = entry.unspaced ? 0 : f32(order * batch.spacing);
       entry.speed = speed(at, native.nativeUnit(native.nativeRandom((entry.word + 0x96aa4de3) >>> 0)()));
       entry.later = steps.slice(batch.step + 1);
+      entry.batchAge = batch.age;
       order = f32(order + 1);
     }
   }
@@ -247,11 +249,17 @@ function regenerated(row, seed, batches, {steps, ends}) {
       if (!entry) return;
       entry.position = box;
       // A box emits along +Z: the particle moves by its lived offset, then by each later step.
-      entry.velocity = [0, 0, 1].map(axis => f32(axis * entry.speed));
+      const start = [0, 0, 1].map(axis => f32(axis * entry.speed));
       entry.at = box.slice();
       for (const dt of [entry.offset, ...entry.later]) {
-        entry.at = entry.at.map((value, axis) => f32(value + f32(entry.velocity[axis] * dt)));
+        entry.at = entry.at.map((value, axis) => f32(value + f32(start[axis] * dt)));
       }
+      // Gravity in closed form over its whole time t = batch age + offset (0x1d8284-0x1d8334):
+      // x += G t * (t * .5), v += G t, G = 9.81 * modifier along the down axis (0, -1, 0).
+      const time = f32(entry.batchAge + entry.offset), pull = f32(f32(9.81) * f32(row.main.gravity.scalar));
+      const gained = [0, -1, 0].map(axis => f32(f32(pull * axis) * time));
+      entry.at = entry.at.map((value, axis) => f32(value + f32(gained[axis] * f32(time * .5))));
+      entry.velocity = start.map((value, axis) => f32(value + gained[axis]));
     });
   }
   return {kept, skipped, phantoms};
@@ -261,18 +269,20 @@ function testProceduralPrewarmRegeneration() {
   const procedural = {pauses: true, bounds: [-1, -1, -1, 1, 1, 1], uniform: true, procedural: true};
   // Start speeds between two curves rising over the loop: where a batch samples them matters.
   const rising = {mode: 2, scalar: 1, min: 1, minKeys: [[0, 1, 1, 1], [1, 2, 1, 1]], maxKeys: [[0, 2, 2, 2], [1, 4, 2, 2]]};
-  const kira = (rate, max) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10), maxParticles: max,
-    speed: rate === 15 ? between(1, 2) : rising}, emission: {enabled: true, rate: constant(rate), bursts: []},
-  culling: procedural});
+  const kira = (rate, max, gravity = 0) => system({main: {prewarm: true, duration: 50, lifetime: between(1, 10),
+    maxParticles: max, speed: rate === 15 ? between(1, 2) : rising, gravity: constant(gravity)},
+  emission: {enabled: true, rate: constant(rate), bursts: []}, culling: procedural});
   // A lifetime growing over the loop, 1 s and .2 s steps, and a burst: kept particles past the batch's rate
   // count move from their batch's step end without a spacing offset.
-  const burst = system({main: {prewarm: true, duration: 50, maxParticles: 1000, speed: rising,
-    lifetime: {mode: 2, scalar: 1, min: 1, minKeys: [[0, 4, 4, 4], [1, 8, 4, 4]], maxKeys: [[0, 6, 6, 6], [1, 12, 6, 6]]}},
-  emission: {enabled: true, rate: constant(10), bursts: [{time: 41.5, count: constant(6), cycles: 1, interval: 1,
-    probability: 1}]}, culling: procedural});
-  let skippedAny = 0, phantomAny = 0, unspacedAny = 0, moved = 0;
+  const burst = (gravity = 0) => system({main: {prewarm: true, duration: 50, maxParticles: 1000, speed: rising,
+    lifetime: {mode: 2, scalar: 1, min: 1, minKeys: [[0, 4, 4, 4], [1, 8, 4, 4]], maxKeys: [[0, 6, 6, 6], [1, 12, 6, 6]]},
+    gravity: constant(gravity)}, emission: {enabled: true, rate: constant(10), bursts: [{time: 41.5, count: constant(6),
+    cycles: 1, interval: 1, probability: 1}]}, culling: procedural});
+  let skippedAny = 0, phantomAny = 0, unspacedAny = 0, moved = 0, fell = 0;
+  // The last two fall with a gravity modifier of .5 and .02.
   const cases = [[kira(15, 40), 10, 3127128034], [kira(30, 60), 10, 3127128034], [kira(30, 60), 10, 77],
-    [kira(30, 60), 10, 2], [kira(15, 40), 10, 5], [burst, 12, 3127128034], [burst, 12, 9]];
+    [kira(30, 60), 10, 2], [kira(15, 40), 10, 5], [burst(), 12, 3127128034], [burst(), 12, 9],
+    [burst(.5), 12, 5], [kira(30, 60, .02), 10, 77]];
   for (const [row, horizon, seed] of cases) {
     const label = `rate ${row.emission.rate.scalar}, seed ${seed}`;
     const stream = P.create(row, seed), clock = prewarmClock(row, horizon);
@@ -304,11 +314,12 @@ function testProceduralPrewarmRegeneration() {
       assert.deepEqual([atom.vx, atom.vy, atom.vz], expected.velocity, `velocity (${label})`);
       assert.deepEqual([atom.x, atom.y, atom.z], expected.at, `position after the lived offset and later steps (${label})`);
       if (atom.z !== atom.source.position[2]) moved++;
+      if (atom.vy < 0) fell++;
     }
   }
   assert.ok(skippedAny > 0 && phantomAny > 0, `cases cover skipped groups (${skippedAny}) and phantom lanes (${phantomAny})`);
   assert.ok(unspacedAny > 0, `cases cover live particles past the rate count (${unspacedAny})`);
-  assert.ok(moved > 100, `prewarmed particles moved (${moved})`);
+  assert.ok(moved > 100 && fell > 50, `prewarmed particles moved (${moved}) and fell (${fell})`);
   // A non-procedural prewarm keeps no batches.
   assert.equal(P.create(system({main: {prewarm: true}}), 5).batches, null);
 }

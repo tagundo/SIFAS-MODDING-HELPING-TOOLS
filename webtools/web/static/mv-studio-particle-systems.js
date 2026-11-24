@@ -611,9 +611,11 @@
       };
     }
 
-    function advance(atom, dt) {
+    // One step of a particle's motion; `falling` false leaves gravity out
+    // (the procedural rebuild adds it in closed form, fall()).
+    function advance(atom, dt, falling = true) {
       const {source} = atom, phase = f32(atom.age * ageScale);
-      if (source.gravity) {
+      if (falling && source.gravity) {
         const force = f32(f32(gravityMagnitude * dt) * source.gravity);
         atom.vx = f32(atom.vx + f32(force * g[0]));
         atom.vy = f32(atom.vy + f32(force * g[1]));
@@ -838,6 +840,20 @@
       }
     }
 
+    // Gravity over `time` seconds in closed form, as the procedural rebuild
+    // moves its particles (0x1d8284-0x1d8334): x += G t * (t * .5) and
+    // v += G t, G the gravity times the particle's gravity modifier in the
+    // simulation space.
+    function fall(atom, time) {
+      const pull = f32(gravityMagnitude * atom.source.gravity), half = f32(time * .5);
+      ["x", "y", "z"].forEach((axis, index) => {
+        const gained = f32(f32(pull * g[index]) * time);
+        atom[axis] = f32(atom[axis] + f32(gained * half));
+        atom[`v${axis}`] = f32(atom[`v${axis}`] + gained);
+        atom[`m${axis}`] = f32(atom[`m${axis}`] + gained);
+      });
+    }
+
     // 0x1d7a94: the particles of a procedural prewarm's batches, built once
     // its steps are done (libunity.so GL 3.12.0, Unity 2018.4.23f1).
     //  * Per batch in order, the InitialModule's four lanes (0x60fe08) start
@@ -856,8 +872,14 @@
     //  * Positions advance by the kept particle's own offset age (0x1d7ed8:
     //    batch age + (carry + j) * spacing while carry + j is below the rate
     //    count, j counting the batch's kept particles), here by the step
-    //    partition the batch lived through, and the kill pass (0x1d8370)
-    //    removes particles older than 100 as cull() does.
+    //    partition the batch lived through (the client integrates velocity
+    //    and rotation curves in closed form, 0x5d9aec / 0x659264), and the
+    //    kill pass (0x1d8370) removes particles older than 100 as cull() does.
+    //  * Gravity is integrated in closed form over the particle's whole time
+    //    t = batch age + offset (0x1d8284-0x1d8334): with G the gravity
+    //    times the (constant) gravity modifier in the simulation space
+    //    (0x60bc94 times InitialModule +0x15c, 0x1d7b14-0x1d7b9c),
+    //    x += G t * (t * .5) and v += G t, beside v t.
     // Emulating 0x60fe08 under unicorn on crafted batches reproduced the
     // RNG state, kept count and words of this rule, skipped groups included.
     function regenerate(state, steps) {
@@ -905,8 +927,9 @@
         const atom = {source, x: source.position[0], y: source.position[1], z: source.position[2],
           vx: source.velocity[0], vy: source.velocity[1], vz: source.velocity[2], mx: 0, my: 0, mz: 0,
           age: 0, roll: source.roll};
-        advance(atom, lived);
-        for (let index = batch.step + 1; index < steps.length; index++) advance(atom, steps[index]);
+        advance(atom, lived, false);
+        for (let index = batch.step + 1; index < steps.length; index++) advance(atom, steps[index], false);
+        if (atom.source.gravity) fall(atom, f32(batch.age + lived));
         atom.age = age;
         return atom;
       });
