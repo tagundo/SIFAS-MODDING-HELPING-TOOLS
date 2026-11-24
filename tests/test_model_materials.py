@@ -1,3 +1,4 @@
+import hashlib
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +95,40 @@ class MemberMetadataTests(unittest.TestCase):
         self.assertTrue(all("mipmaps" not in layer for layer in cheek["layers"]))
         self.assertEqual(array.image_data, b"".join(slices))
         self.assertEqual(metadata["limitations"], [])
+
+    def test_cheek_array_identity_against_the_shared_resources_array(self):
+        # MemberCheekBase.SetCheekTexture binds Resources cheek_array, never the
+        # head's own; only its recorded identity can say the copy is exact.
+        shared = materials.SHARED_CHEEK_ARRAY
+        self.assertEqual(shared["resource"], "Live/Characters/facialAssets/cheek_array")
+        self.assertEqual(shared["width"] * shared["height"] * shared["depth"] * 4, shared["bytes"])
+
+        def metadata_for(pixels, **settings):
+            obj, array = fake_texture(width=4, height=4, count=1, depth=2, pixels=pixels, wrap=1, name="cheek_array")
+            for key, value in settings.items():
+                setattr(array, key, value)
+            tree = self.tree()
+            tree["m_SavedProperties"]["m_TexEnvs"] = [("_CheekTex", {"m_Texture": {"m_PathID": 7}})]
+            with patch("webtools.core.model_viewer._ref", return_value=obj):
+                return materials.attach_member_metadata(None, object(), tree, {}, lambda image: 0)
+
+        pixels = bytes(range(128))
+        modded = metadata_for(pixels)["textures"]["_CheekTex"]["sharedArray"]
+        self.assertEqual(modded, {"resource": shared["resource"], "matches": False})
+        identity = materials._array_identity(fake_texture(width=4, height=4, count=1, depth=2, pixels=pixels, wrap=1)[1])
+        self.assertEqual((identity["bytes"], identity["sha256"]), (128, hashlib.sha256(pixels).hexdigest()))
+        self.assertEqual({key: identity[key] for key in ("width", "height", "depth", "format", "mips", "filter", "wrapU", "wrapV",
+                                                         "colorSpace")}, {"width": 4, "height": 4, "depth": 2, "format": 4,
+                                                                          "mips": 1, "filter": 1, "wrapU": 1, "wrapV": 1,
+                                                                          "colorSpace": 1})
+        # Same layout, sampler and bytes as the shared array: the head's copy is exact.
+        with patch.object(materials, "_array_identity", return_value={key: value for key, value in shared.items()
+                                                                       if key != "resource"}):
+            exact = metadata_for(pixels)["textures"]["_CheekTex"]["sharedArray"]
+        self.assertTrue(exact["matches"])
+        with patch.object(materials, "_array_identity", return_value=None):
+            unknown = metadata_for(pixels)["textures"]["_CheekTex"]["sharedArray"]
+        self.assertIsNone(unknown["matches"])
 
     def test_cheek_slot_without_array_keeps_authored_feature(self):
         none = materials.attach_member_metadata(None, object(), self.tree(), {}, lambda _: self.fail("No image expected"))

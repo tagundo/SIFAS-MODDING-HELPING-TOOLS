@@ -137,6 +137,7 @@
     const parameters = { color: new T.Vector4(), scale: new T.Vector3() };
     const colorCache = new T.Vector4(), lastPosition = new T.Vector3(), moveVelocity = new T.Vector3();
     const position = new T.Vector3(), target = new T.Vector3(), change = new T.Vector3(), impulse = new T.Vector3();
+    const look = new T.Vector3();
     const up = new T.Vector3(), worldUp = new T.Vector3(0, 1, 0);
     const work = axis.scratch(T), rotation = new T.Quaternion();
     const parentRotation = new T.Quaternion(), cacheDifference = new T.Vector4();
@@ -198,14 +199,24 @@
       shaft.scale.copy(scale);
       if (!selected.mesh.visible) return false;
 
+      // LiveCoreMemberSpotLightShaft.UpdateSpotlightShaft (0x2f6d380): the
+      // shaft root LookAt()s (0x2f6d4f4) the camera, level with itself, from
+      // the position the previous frame moved it to, and only then moves
+      // toward (Move.x, root.y, Move.z), by SmoothDamp or a snap. The
+      // AxisBillboard child then turns at draw time from the moved position,
+      // so in a playing frame the two turns agree to within one frame of
+      // motion. A reset (a seek) has no previous frame: the snap below takes
+      // the shaft as settled on its anchor, so the look-at starts there too,
+      // not from the restored prefab position.
       shaft.getWorldPosition(position);
-      if (mainCamera) {
-        mainCamera.getWorldPosition(target).sub(position);
-        target.y = 0;
-        point(shaft, target, worldUp);
-      }
       moveNode.getWorldPosition(target);
       target.y = position.y;
+      if (resetClock) position.copy(target);
+      if (mainCamera) {
+        mainCamera.getWorldPosition(look).sub(position);
+        look.y = 0;
+        point(shaft, look, worldUp);
+      }
       if (force || lastPosition.distanceToSquared(target) >= 1) {
         position.copy(target);
         force = false;

@@ -42,6 +42,11 @@ function worldDirection(mesh, direction) {
   return direction.normalize();
 }
 
+// The level direction LookAt() gives toward an eye: Unity's LookAt(new Vector3(eye.x, from.y, eye.z), Vector3.up).
+function level(eye, from) {
+  return eye.clone().sub(from).setY(0).normalize();
+}
+
 async function run() {
   const source = new T.Scene();
   source.userData.mvShaftTemplates = [template(0), template(1)];
@@ -99,6 +104,9 @@ async function run() {
   pointNear(root.scale.toArray(), [6, 8, 2]);
   pointNear(root.getWorldPosition(new T.Vector3()).toArray(), [4, 17, -3]);
   pointNear(tint(mesh), [.6, .8, .4, 1]);
+  // UpdateSpotlightShaft LookAt()s before it moves: the first frame a shaft shows
+  // turns from where the prefab was instantiated (the performer's origin), then snaps.
+  pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), level(camera.position, new T.Vector3(0, 17, 0)).toArray());
 
   // The runtime value dump names the renderer's GameObject below the performer.
   assert.equal(mesh.userData.mvGameObjectPath, "variant 0/native renderer");
@@ -158,6 +166,23 @@ async function run() {
   assert.equal(mesh.visible, false);
   controller.frame(clips, 0, 0, camera, {}, true);
   near(root.position.x, move.position.x);
+  // A reset (a seek) has no previous frame: the shaft is settled on its anchor, so
+  // it looks at the camera from there and the drawn billboard adds no turn under
+  // the root's nonuniform scale (the game's lossyScale stays the clip scale).
+  const settled = root.getWorldPosition(new T.Vector3());
+  pointNear(settled.toArray(), [move.position.x, 17, -3]);
+  pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), level(camera.position, settled).toArray());
+  controller.billboard(camera);
+  near(Math.abs(mesh.quaternion.w), 1);
+  stage.updateMatrixWorld(true);
+  const columns = [new T.Vector3(), new T.Vector3(), new T.Vector3()];
+  mesh.matrixWorld.extractBasis(...columns);
+  pointNear(columns.map(column => column.length()), [6, 16, 2]);
+  // A playing frame looks from where the previous frame left the shaft, then damps.
+  move.position.x += .3;
+  controller.frame(clips, .1, .1, camera, {});
+  pointNear(worldDirection(root, new T.Vector3(0, 0, 1)).toArray(), level(camera.position, settled).toArray());
+  assert.ok(root.position.x > settled.x && root.position.x < move.position.x);
 
   let materialDisposals = 0, geometryDisposals = 0;
   mesh.material.addEventListener("dispose", () => materialDisposals++);
@@ -170,7 +195,7 @@ async function run() {
   another.dispose();
   prepared.dispose();
   assert.equal(geometryDisposals, 1);
-  console.log("Native spotlight shafts: template ownership, shape mixing, GPU state, move anchor, damping and per-camera billboard.");
+  console.log("Native spotlight shafts: template ownership, shape mixing, GPU state, move anchor, damping, look-at origin (first show, seek, playing) and per-camera billboard.");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

@@ -49,7 +49,9 @@ assert.deepEqual(at(masked, 4.5), [0, 0, 1], 'per-index sums (.3 + .3) qualify, 
 assert.deepEqual(at(masked, 6.5), [0, 0, 0], 'a .5 input never activates a masked index');
 
 const blended = build(false);
-assert.deepEqual(at(blended, 1.25), [.75, .25, 0], 'a Rina-track head keeps the default blend in an MV');
+// The events carry no mix curves: Timeline's default EaseInOut gives
+// 1 - smoothstep(.25) = .84375 and smoothstep(.25) = .15625.
+assert.deepEqual(at(blended, 1.25), [.84375, .15625, 0], 'a Rina-track head keeps the default blend in an MV');
 assert.deepEqual(at(blended, 4.5), [0, 0, .6]);
 assert.deepEqual(at(blended, 6.5), [.5, 0, 0]);
 console.log('PASS: masked-head facial winner-take-all (0.51), default blend without the mask');

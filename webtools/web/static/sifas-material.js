@@ -604,6 +604,7 @@
         // exported slice can show a blush; the white placeholder never tints.
         var cheekSlot = textures._CheekTex;
         if (features.cheek && cheekSlot && !cheekSlot.default) {
+          pair.cheekShared = cheekSlot.sharedArray && typeof cheekSlot.sharedArray === "object" ? cheekSlot.sharedArray.matches : null;
           var layers = Array.isArray(cheekSlot.layers) ? cheekSlot.layers : [cheekSlot];
           // sampler2DArray clamps the rounded layer into the array; only a
           // complete export (every slice, in order) can be clamped here.
@@ -808,18 +809,22 @@
       // (_CHEEK_ON off, _CheekTexArrayIndex 0, _CheekIntensity 0); each active
       // MemberCheekClip input -> ApplyEnable(true) + ApplyCheek(type, value);
       // no active input -> ApplyEnable(false), keeping the last floats
-      // (state.enabled false carries those floats; null keeps the reset).
+      // (state.enabled false carries those floats). null is the state before
+      // any clip: CommonCoreMember.ResetComponentsState (0x27c1b48, reached
+      // from Initialize and LiveCoreMemberManager.ResetAll when the live is
+      // reset) calls ResetAll (0x27c287c) again, so a seek back before the
+      // first clip or a restart clears the floats a later clip left.
       setCheek: function (name, state) {
         if (disposed || memberProp) return;
         var changed = false;
         materialCache.forEach(function (pair) {
           if (pair.sourceName !== name) return;
           var uniforms = pair.uniforms;
-          if (!pair.cheek) {
-            pair.cheek = { enabled: false };
+          if (!pair.cheek || !state) {
+            if (!pair.cheek || uniforms.uCheekTexArrayIndex.value !== 0 || uniforms.uCheekIntensity.value !== 0) changed = true;
+            pair.cheek = pair.cheek || { enabled: false };
             uniforms.uCheekTexArrayIndex.value = 0;
             uniforms.uCheekIntensity.value = 0;
-            changed = true;
           }
           if (state) {
             var index = Math.max(0, Math.floor(finite(state.index, 0))), intensity = finite(state.intensity, 0);
@@ -836,6 +841,15 @@
           if (enabled && !layer) {
             limitations.add(pair.cheekLayers.length ? "A selected cheek array slice is unavailable in this preview."
               : "This head carries no cheek array; the game binds its shared Live/Characters/facialAssets/cheek_array.");
+          }
+          // The game never samples the head's own array (MemberCheekBase.
+          // SetCheekTexture binds the client's Resources cheek_array), which
+          // the preview cannot load. It shows the head's copy, exact only when
+          // its bytes and sampler match the shared array's recorded identity.
+          if (shown && pair.cheekShared === false) {
+            limitations.add("This head's cheek_array differs from the game's shared Live/Characters/facialAssets/cheek_array, which the game shows instead; the preview shows the head's own copy.");
+          } else if (shown && pair.cheekShared !== true) {
+            limitations.add("The preview shows this head's own cheek_array; the game binds its shared Live/Characters/facialAssets/cheek_array, identical on stock costumes.");
           }
           pair.cheek.enabled = enabled;
           if (!!pair.main.defines.SIFAS_CHEEK !== shown) {

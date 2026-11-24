@@ -27,14 +27,24 @@
       preMode: read("preMode", "m_PreExtrapolationMode", 0), postMode: read("postMode", "m_PostExtrapolationMode", 0),
       preTime: read("preTime", "m_PreExtrapolationTime", 0), postTime: read("postTime", "m_PostExtrapolationTime", 0) };
   }
+  // TimelineClip.get_mixInCurve / get_mixOutCurve (GL 3.12.0 0x35ce834 /
+  // 0x35ce970) replace a serialized curve with fewer than two keys by
+  // AnimationCurve.EaseInOut(0, 0, 1, 1) / EaseInOut(0, 1, 1, 0): flat
+  // tangents, so the Hermite segment is the smoothstep 3t^2 - 2t^3.
+  // EvaluateMixIn/EvaluateMixOut (0x35c75a8 / 0x35c7720) clamp it to [0, 1].
+  function mixCurve(keys, t, rising) {
+    if (keys && keys.length >= 2) return clamp(curve(keys, t, 0), 0, 1);
+    var x = clamp(t, 0, 1), smooth = x * x * (3 - 2 * x);
+    return rising ? smooth : 1 - smooth;
+  }
   function weightWithTiming(segment, time, spec, sourceWeight) {
     var local = time - segment.start, span = segment.duration, value = number(sourceWeight, number(segment.weight, 1));
     if (local < 0) return spec.preMode && local >= -spec.preTime ? value : 0;
     if (local > span) return spec.postMode && local <= span + spec.postTime ? value : 0;
     var incoming = spec.blendIn >= 0 ? spec.blendIn : spec.easeIn;
     var outgoing = spec.blendOut >= 0 ? spec.blendOut : spec.easeOut;
-    if (incoming > 0 && local < incoming) value *= curve(spec.mixIn, local / incoming, local / incoming);
-    if (outgoing > 0 && local > span - outgoing) value *= curve(spec.mixOut, (local - span + outgoing) / outgoing, (span - local) / outgoing);
+    if (incoming > 0 && local < incoming) value *= mixCurve(spec.mixIn, local / incoming, true);
+    if (outgoing > 0 && local > span - outgoing) value *= mixCurve(spec.mixOut, (local - span + outgoing) / outgoing, false);
     return clamp(value, 0, 1);
   }
   function weight(segment, time) { return weightWithTiming(segment, time, timing(segment.timing)); }
@@ -111,6 +121,35 @@
     else if (!eyeCandidates.length && faceCandidates.length === 1) face = faceCandidates[0];
     else if (!eyeCandidates.length && !faceCandidates.length && headCandidates.length === 1) face = headCandidates[0];
     (animations || []).forEach(function (clip) { byName[clip.name] = clip; });
+    // The six LiveMemberEyeContact clips play whole in the head graph's gaze
+    // mixer, the top override layer of LiveCoreMemberHead.animationLayerMixer
+    // (lip-sync, eye, gaze inputs at weight 1, InitializeDefault 0x2f67e18).
+    // Besides the iris bones they bind the eyelid shape they share with
+    // eye_003 (EyeBlendShape.eye_facial_003_006_011). A glTF weights channel
+    // repeats every target of its mesh, so only the indices the source clip
+    // binds (clip metadata morphTargets) take part; older exports without
+    // that list keep the iris-only gaze.
+    function gazeMorphRecords(entry, clip, track, binding, mesh) {
+      if (!mesh || !mesh.morphTargetInfluences || !Array.isArray(entry.morphTargets) || binding.propertyIndex !== undefined) return [];
+      var owner = mesh, id;
+      while (owner && (!owner.userData || owner.userData.elichika_node === undefined)) owner = owner.parent;
+      id = owner && owner.userData.elichika_node;
+      var bound = entry.morphTargets.filter(function (row) { return row && row.node === id && Array.isArray(row.indices); })[0];
+      var size = mesh.morphTargetInfluences.length;
+      if (!bound || track.getValueSize() !== size) return [];
+      var value = track.createInterpolant().evaluate(clip.duration), result = [];
+      bound.indices.forEach(function (index) {
+        if (!Number.isInteger(index) || index < 0 || index >= size || typeof value[index] !== "number" || !isFinite(value[index]) ||
+            typeof mesh.morphTargetInfluences[index] !== "number" || !isFinite(mesh.morphTargetInfluences[index])) return;
+        result.push({ key: mesh.uuid + ":morph:" + index, node: mesh, property: "morph", index: index, value: [value[index]] });
+      });
+      return result;
+    }
+    function readGroup(group) { return group.property === "morph" ? [group.node.morphTargetInfluences[group.index]] : group.node[group.property].toArray(); }
+    function writeGroup(group, value) {
+      if (group.property === "morph") group.node.morphTargetInfluences[group.index] = value[0];
+      else group.node[group.property].fromArray(value);
+    }
     var aliases = options.aliases || (info.expressionCatalog && info.expressionCatalog.gaze && info.expressionCatalog.gaze.clips) || [];
     for (var direction = 6; direction <= 11; direction += 1) {
       var candidates = (info.clips || []).filter(function (entry) {
@@ -127,6 +166,10 @@
         clip.tracks.forEach(function (track) {
           var binding = T.PropertyBinding.create(root, track.name); binding.bind();
           var node = binding.targetObject || binding.node, property = binding.parsedPath && binding.parsedPath.propertyName;
+          if (options.morphs && property === "morphTargetInfluences") {
+            gazeMorphRecords(entry, clip, track, binding, node).forEach(function (record) { records.push(record); });
+            return;
+          }
           if (!node || !node.isBone || node.userData && node.userData.viewerHelper || !/^(?:Left|Right)Eye(?:[12]|_Root)$/.test(name(node)) ||
               ["position", "quaternion", "scale"].indexOf(property) < 0) return;
           var value = Array.prototype.slice.call(track.createInterpolant().evaluate(clip.duration));
@@ -143,7 +186,7 @@
       }
       poses[direction] = prepared[0];
       prepared[0].forEach(function (record) {
-        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, base: record.node[record.property].toArray() };
+        if (!groups[record.key]) groups[record.key] = { node: record.node, property: record.property, index: record.index, base: readGroup(record) };
       });
     }
     var rotationPath = [], worldQuaternion = new T.Quaternion(), direction = new T.Vector3(), facePosition = new T.Vector3();
@@ -175,6 +218,14 @@
       var vertical = Math.abs(direction.y) <= .001 ? 0 : Math.atan2(direction.y, Math.hypot(direction.x, direction.z)) * 180 / Math.PI / 30;
       return gazeAxes(horizontal, vertical);
     }
+    // LiveMemberEyeContact.LateUpdate (0x29985b0): every input starts at 0
+    // and each active clip adds its direction weights (CalcWeight 0x29987c4).
+    function weights(requests, context) {
+      missingTargets = []; var combined = {};
+      (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
+        Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
+      return combined;
+    }
     function apply(weights, neutral) {
       lastWeights = Object.assign({}, weights); var contributions = {}, requested = false;
       Object.keys(weights).forEach(function (id) {
@@ -194,7 +245,7 @@
           group.node.quaternion.copy(q.normalize());
         } else {
           for (var i = 0; i < result.length; i += 1) { result[i] = group.base[i] * remainder; entries.forEach(function (entry) { result[i] += entry.value[i] * entry.weight; }); result[i] /= Math.max(1, total); }
-          group.node[group.property].fromArray(result);
+          writeGroup(group, result);
         }
       });
       return requested && Object.keys(contributions).length > 0 || neutral && Object.keys(groups).length > 0;
@@ -203,18 +254,14 @@
       eyePosition: function (result) { return nativeEye && nativeEye.getWorldPosition(result); },
       restorePose: function () {
         if (!gazeWrites) return;
-        gazeWrites.forEach(function (group) { group.node[group.property].fromArray(group.base); });
+        gazeWrites.forEach(function (group) { writeGroup(group, group.base); });
         gazeWrites.length = 0;
       },
-      evaluate: function (requests, context) {
-        missingTargets = []; var combined = {};
-        (requests || []).forEach(function (request) { var values = targetWeights(request.target, context); if (!values) return;
-          Object.keys(values).forEach(function (id) { combined[id] = (combined[id] || 0) + values[id] * clamp(number(request.weight, 1), 0, 1); }); });
-        return apply(combined, false);
-      },
-      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.node.userData && group.node.userData.elichika_node;
+      weights: weights,
+      evaluate: function (requests, context) { return apply(weights(requests, context), false); },
+      properties: function () { var result = {}; Object.keys(groups).forEach(function (key) { var group = groups[key], id = group.property === "morph" ? undefined : group.node.userData && group.node.userData.elichika_node;
         if (id !== undefined) { if (!result[String(id)]) result[String(id)] = {}; result[String(id)][group.property] = true; } }); return result; },
-      operations: function () { return Object.keys(groups).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
+      operations: function () { return Object.keys(groups).filter(function (key) { return groups[key].property !== "morph"; }).map(function (key) { var group = groups[key], node = group.node.userData && group.node.userData.elichika_node;
         return { node: node, kind: group.property, value: group.node[group.property].toArray(), source: "expression" }; }).filter(function (operation) { return Number.isInteger(operation.node); }); },
       getState: function () { return { available: Object.keys(poses).length > 0, directions: Object.keys(poses).map(Number), weights: Object.assign({}, lastWeights), missingTargets: missingTargets.slice(), warnings: warnings.slice() }; }
     };
@@ -468,7 +515,8 @@
     // retained motion belongs to another character, use this face's verified
     // endpoints instead of writing the old character's absolute iris positions.
     var gaze = createGaze(root, animations, info, {
-      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace
+      aliases: retargetedGaze ? modelGaze.clips : (descriptor.facialClips || []).concat(faceTables.eyes || []), restorePose: restoreFace,
+      morphs: true
     });
     // Live heads create playables only for MemberEyeClip / MemberLipSyncClip
     // AnimationIndex values (Initialize walks Enum.GetValues of that enum).
@@ -717,7 +765,15 @@
       evaluateGroups(faceGroups, time, faceWrites);
       applyShapes(time);
     }
-    function evaluateGaze(time, context) {
+    // LiveCoreMemberHead.Initialize sets its PlayableGraph to game time and
+    // plays it (SetTimeUpdateMode(1) 0x2f65fb0, Play 0x2f660dc), so Unity
+    // evaluates the head in PreLateUpdate, before LiveMemberEyeContact.LateUpdate
+    // recomputes the gaze inputs from that frame's pose and sets them with
+    // ApplyAll (0x2998950). An evaluated frame shows the gaze weights of the
+    // frame before it. A continuing playback frame keeps that lag; a seek
+    // cannot know its previous frame and applies the weights of its own pose.
+    var laggedGaze = null;
+    function evaluateGaze(time, context, frame) {
       context = context || (options.getGazeContext ? options.getGazeContext() : {});
       var requests = [];
       timedRecords(gazeEvents, time).forEach(function (event) {
@@ -725,7 +781,9 @@
         var amount = alternate ? weightWithTiming(event, time, getTiming(event), event.splitWeight) : sampleWeight(event, time);
         if (amount > 0) requests.push({ target: alternate ? event.splitTarget : event.target, weight: amount });
       });
-      gaze.evaluate(requests, context);
+      var computed = gaze.weights(requests, context);
+      gaze.apply(frame && frame.continuing === true && laggedGaze ? laggedGaze : computed, false);
+      laggedGaze = computed;
       gaze.warnings.forEach(warn);
       if (gaze.getState().missingTargets.length) warn(restoreFace ? "The original gaze target is unavailable in this preview." :
         "An original gaze target is unavailable in this single-model preview.");
