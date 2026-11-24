@@ -88,7 +88,7 @@ async function main() {
     assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', exact: false }); assert.equal(s.blush.cheek.source, 'cache');
     assert.equal(await page.locator('#viewer-texture-blush-level-medium').getAttribute('aria-checked'), 'true');
     assert.equal(await page.locator('#viewer-texture-blush-layer-0').getAttribute('aria-checked'), 'true');
-    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied yet: Medium \(k 1\.65\) · Standard \(Ppo\)$/);
+    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\)$/);
     assert.deepStrictEqual(s.blush.alerts, ["Android and iOS bundles are separate: bake each platform's file.", 'This file is the Android bundle.']);
     assert.deepStrictEqual(s.blush.notes, ["The game's own song blush still appears on top during blush scenes.", 'Using the verified blush pattern saved from a costume you opened before.']);
     assert.match(s.status, /^Pick a strength, check the 3D preview, then apply\.$/);
@@ -128,7 +128,7 @@ async function main() {
     assert.equal(edits.length, 1); assert.deepStrictEqual(edits[0].blush, { layer: 1, k: 3 }); assert.equal(edits[0].kind, 'blush');
     assert(pngPixels(edits[0].png).equals(original), 'the recipe PNG holds the original, unbaked pixels');
     assert(same(await live(page), expected(1, 3))); assert(!(await page.locator('#viewer-save').isDisabled()));
-    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Applied: Very strong \(k 3\) · Deep \(Akarame\)$/);
+    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Applied: Very strong \(k 3\) · Cheeks and nose \(Akarame\)$/);
     // Undo/redo through the existing history buttons.
     await click(page, '#viewer-texture-undo'); s = await state(page); assert.equal(s.blush.committed, null);
     assert.equal((await page.evaluate(() => ModelViewer.getTextureTools().getEdits())).length, 0); const undone = await live(page); assert(!undone || same(undone, original));
@@ -232,11 +232,14 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     report.cases.push({ name: 'Export PNG then Import PNG never bakes twice' });
 
     // Korean and Japanese labels.
-    for (const [lang, tabText, medium, apply] of [['ko', '홍조 굽기', '보통', '홍조 적용'], ['ja', '頬紅の焼き込み', '普通', '頬紅を適用']]) {
+    for (const [lang, tabText, medium, apply, types] of [['ko', '홍조 굽기', '보통', '홍조 적용', ['볼 홍조(Ppo)', '볼·콧등 홍조(Akarame)']], ['ja', '頬紅の焼き込み', '普通', '頬紅を適用', ['頬の赤み(Ppo)', '頬・鼻すじの赤み(Akarame)']]]) {
       await page.selectOption('#lang-select', lang);
       await page.waitForFunction(text => document.getElementById('viewer-texture-tab-blush').textContent === text, tabText, { timeout: 20000 });
-      const labels = await page.evaluate(() => ({ tab: document.getElementById('viewer-texture-tab-blush').textContent, medium: document.querySelector('#viewer-texture-blush-level-medium .viewer-texture-blush-name').textContent, apply: document.getElementById('viewer-texture-blush-apply').textContent }));
-      assert.deepStrictEqual(labels, { tab: tabText, medium, apply }, lang);
+      const labels = await page.evaluate(() => ({ tab: document.getElementById('viewer-texture-tab-blush').textContent, medium: document.querySelector('#viewer-texture-blush-level-medium .viewer-texture-blush-name').textContent, apply: document.getElementById('viewer-texture-blush-apply').textContent,
+        types: Array.from(document.querySelectorAll('#viewer-texture-blush-types .viewer-texture-blush-layer .viewer-texture-blush-name')).map(e => e.textContent) }));
+      assert.deepStrictEqual(labels, { tab: tabText, medium, apply, types }, lang);
+      // The blush types name a shape, never a strength.
+      assert.ok(labels.types.every(text => !/진한|진하|濃/.test(text)), JSON.stringify(labels.types));
     }
     report.cases.push({ name: 'ko and ja labels' });
 

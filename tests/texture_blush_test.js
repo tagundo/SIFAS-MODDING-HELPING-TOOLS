@@ -76,7 +76,6 @@ check('recipe operations: exact is optional, canonical and compared', () => {
   assert.ok(B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: false })); assert.ok(!B.sameOperation({ layer: 0, k: 1 }, { layer: 0, k: 1, exact: true }));
   assert.ok(B.sameOperation(null, null)); assert.ok(!B.sameOperation(null, { layer: 0, k: 1 }));
   assert.deepStrictEqual(B.copyOperation({ layer: 1, k: 3, exact: true, extra: 1 }), { layer: 1, k: 3, exact: true }); assert.strictEqual(B.copyOperation(null), null);
-  assert.deepStrictEqual(B.LAYERS.map(layer => layer.hint), ['Round patches on both cheeks', 'Band across the nose and both cheeks']);
 });
 check('engine recordState is a pixel-free undo step and replaceImageData carries its custom state', () => {
   const engine = Engine.create({}), calls = [];
@@ -112,5 +111,12 @@ check('every blush panel string has Korean and Japanese wording', () => {
   Array.from(texts).forEach(text => { assert.ok(!/강도/.test(words[text][0]) && !/強度/.test(words[text][1]), text); assert.ok(!/ 볼 픽셀/.test(words[text][0]), text); });
   assert.deepStrictEqual([server.ko, server.ja], ['홍조 굽기', '頬紅の焼き込み']);
   assert.deepStrictEqual(Array.from(words['Bake blush']), ['홍조 굽기', '頬紅の焼き込み']);
+  // The two types differ in shape, not strength: their labels name the shape and
+  // never carry a strength word (those belong to the five levels only).
+  assert.deepStrictEqual(B.LAYERS.map(layer => [layer.label].concat(words[layer.label])), [
+    ['Cheeks (Ppo)', '볼 홍조(Ppo)', '頬の赤み(Ppo)'], ['Cheeks and nose (Akarame)', '볼·콧등 홍조(Akarame)', '頬・鼻すじの赤み(Akarame)']]);
+  assert.deepStrictEqual(B.LAYERS.map(layer => [layer.hint].concat(words[layer.hint])), [
+    ['Round patches on both cheeks', '양 볼의 동그란 홍조', '両頬の丸い頬紅'], ['Band across the nose and both cheeks', '코와 양 볼을 가로지르는 띠', '鼻と両頬をまたぐ帯']]);
+  B.LAYERS.forEach(layer => [layer.label].concat(words[layer.label]).forEach(text => assert.ok(!/strong|deep|dark|light|진한|진하|짙|연한|약한|濃|薄|強|弱/i.test(text), text)));
 });
 console.log(JSON.stringify({ status: 'PASS', cases: cases.length, names: cases }));

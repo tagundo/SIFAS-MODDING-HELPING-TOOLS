@@ -581,9 +581,11 @@ tools → Bake blush** appears when the model has a head material
 (`BodyPartManager.headMaterial`) or a recolour-suit texture bound to it, and
 opens that face texture.
 
-- Pick **Standard (Ppo)** (the stock default, round patches on both cheeks; 3105
-  of 3141 MV clips) or **Deep (Akarame)** (a band across the nose and both
-  cheeks), then one of five strengths. The 3D view previews the choice at once;
+- Pick the blush type by its shape: **Cheeks (Ppo)** / 볼 홍조(Ppo) (the stock
+  default, two round patches on the cheeks; 3105 of 3141 MV clips) or **Cheeks
+  and nose (Akarame)** / 볼·콧등 홍조(Akarame) (one band across both cheeks and the
+  bridge of the nose). The types differ in shape, not strength: strength is
+  only one of the five levels below. The 3D view previews the choice at once;
   **Show before** toggles it off; **Apply blush** is one undo step (the history
   buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
 - Each level shows the texture's own cheek-centre colour. Strength k is a

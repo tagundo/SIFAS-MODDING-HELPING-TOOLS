@@ -25,9 +25,10 @@
     { id: "strong", k: 2.3, label: "Strong" },
     { id: "veryStrong", k: 3.0, label: "Very strong" }
   ];
-  // Akarame is a different shape, not only a darker Ppo: the hint says so.
-  var LAYERS = [{ id: 0, label: "Standard (Ppo)", hint: "Round patches on both cheeks" },
-    { id: 1, label: "Deep (Akarame)", hint: "Band across the nose and both cheeks" }];
+  // The two layers differ in SHAPE, not strength (strength is only the level
+  // or k): the labels name the shape and never use a strength word.
+  var LAYERS = [{ id: 0, label: "Cheeks (Ppo)", hint: "Round patches on both cheeks" },
+    { id: 1, label: "Cheeks and nose (Akarame)", hint: "Band across the nose and both cheeks" }];
   var MAX_K = 4;
   function checkedK(value) {
     if (typeof value !== "number" || !Number.isFinite(value) || !(value > 0) || value > MAX_K) throw new Error("Choose a blush strength between 0 and " + MAX_K + ".");

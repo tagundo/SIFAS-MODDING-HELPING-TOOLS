@@ -22,8 +22,9 @@ ambient lerp, tint lerp and rim, where
 
 Baking ``f`` with strength ``k`` into _MainTex RGB (alpha untouched) is the
 same as a permanent blush of intensity ``k``; k = 1 equals the strongest stock
-timeline clip. Layer 0 ("Ppo") is used by 3105 of 3141 MV clips, layer 1
-("Akarame") by 36.
+timeline clip. Layer 0 ("Ppo", round patches on both cheeks) is used by 3105
+of 3141 MV clips, layer 1 ("Akarame", a band across both cheeks and the nose)
+by 36. The layers differ in shape only; strength is k.
 
 Every rule here is shared bit-for-bit with web/static/texture-blush.js: both
 use IEEE doubles and the same operation order, and round with floor(x + .5).
@@ -52,7 +53,10 @@ CHEEK_PAYLOAD_BYTES = CHEEK_LAYER_BYTES * CHEEK_LAYERS
 UV_SCALE = struct.unpack("<f", struct.pack("<f", 2.22))[0]
 UV_OFFSET_V = struct.unpack("<f", struct.pack("<f", -1.22100008))[0]
 
-LAYERS = (0, 1)  # 0 = Ppo (stock default), 1 = Akarame (stronger band)
+# The layers differ in shape, not strength (strength is k): 0 = Ppo (stock
+# default), two round patches on the cheeks; 1 = Akarame, one band across both
+# cheeks and the bridge of the nose.
+LAYERS = (0, 1)
 DEFAULT_LAYER = 0
 
 # Five named levels. k is a permanent cheek intensity (stock clips: median

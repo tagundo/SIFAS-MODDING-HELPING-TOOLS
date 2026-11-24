@@ -183,7 +183,8 @@
     // Baked cheek blush (texture-blush.js). Every string is shown in the blush panel or its status.
     // Korean uses 세기 (never 강도) and 뺨/볼 for the cheek, Japanese 強さ, for one control.
     "Bake blush": ["홍조 굽기", "頬紅の焼き込み"], "Blush type": ["홍조 종류", "頬紅の種類"], "Blush strength": ["홍조 세기", "頬紅の強さ"],
-    "Standard (Ppo)": ["기본(Ppo)", "標準（Ppo）"], "Deep (Akarame)": ["진한(Akarame)", "濃いめ（Akarame）"],
+    // Blush types name the pattern's shape; strength words belong only to the levels.
+    "Cheeks (Ppo)": ["볼 홍조(Ppo)", "頬の赤み(Ppo)"], "Cheeks and nose (Akarame)": ["볼·콧등 홍조(Akarame)", "頬・鼻すじの赤み(Akarame)"],
     "Round patches on both cheeks": ["양 볼의 동그란 홍조", "両頬の丸い頬紅"], "Band across the nose and both cheeks": ["코와 양 볼을 가로지르는 띠", "鼻と両頬をまたぐ帯"],
     "Very light": ["아주 약하게", "ごく薄く"], "Light": ["약하게", "薄く"], "Medium": ["보통", "普通"], "Strong": ["진하게", "濃く"], "Very strong": ["아주 진하게", "とても濃く"],
     "Custom": ["직접 입력", "カスタム"], "No blush": ["홍조 없음", "頬紅なし"],
