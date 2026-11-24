@@ -157,7 +157,8 @@
   @media (max-width: 759px) { .viewer-texture-expanded { height: var(--texture-editor-height, calc(100dvh - 12px)) !important; } }
 }
 /* Baked cheek blush: named levels, each with its cheek-centre colour. */
-.viewer-texture-blush-target { display: block; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+/* One line: the texture name is also in the texture list and in the tooltip. */
+.viewer-texture-blush-target { display: block; font-size: 11px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .viewer-texture-blush-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
 .viewer-texture-blush-heading { flex: 1 0 100%; font-size: 11px; color: var(--muted); }
 /* Types side by side; levels in a grid whose first cell is the "No blush" swatch. */
@@ -177,8 +178,13 @@
 :lang(ko) .viewer-texture-blush { word-break: keep-all; }
 .viewer-texture-blush-notes { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .viewer-texture-blush-notes:empty { display: none; }
-/* Notes that change what to bake: right under the status, never below the fold. */
+/* Notes that ask for more than this choice (another file to bake): right under
+   the save line, in full; one line above the types counts them and brings them
+   into view, so no number of notes can push Apply out of the settings box. */
 .viewer-texture-blush-alerts { color: inherit; border-left: 2px solid var(--accent); padding-left: 18px; }
+.viewer-texture-blush-alerts:focus { outline: none; }
+.viewer-texture-blush-alerts:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.viewer-texture-tools button.viewer-texture-blush-alert-link { justify-self: start; max-width: 100%; min-height: 0; padding: 0 0 0 8px; border: 0; border-left: 2px solid var(--accent); border-radius: 0; background: none; color: inherit; font-size: 11px; line-height: 1.4; text-align: left; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Both type buttons share a grid row, so they are the same height. */
 .viewer-texture-tools button.viewer-texture-blush-layer { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 1px; min-width: 0; min-height: 36px; text-align: left; }
 .viewer-texture-blush-shape { font-size: 10px; line-height: 1.25; color: var(--muted); font-weight: normal; }

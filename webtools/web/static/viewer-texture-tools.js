@@ -218,7 +218,7 @@
     "Pick a strength, check the 3D preview, then apply.": ["세기를 고르고 3D 미리보기를 확인한 뒤 적용하세요.", "強さを選んで3Dプレビューを確認し、適用してください。"],
     "Pick a strength, check the 2D canvas, then apply.": ["세기를 고르고 2D 캔버스를 확인한 뒤 적용하세요.", "強さを選んで2Dキャンバスを確認し、適用してください。"],
     "Face texture": ["얼굴 텍스쳐", "顔テクスチャ"], "Recolour face texture": ["리컬러 얼굴 텍스쳐", "カラー違いの顔テクスチャ"],
-    "Preview, not applied yet": ["미리보기 · 아직 적용 안 됨", "プレビュー・未適用"], "Applied": ["적용됨", "適用済み"], "Showing before": ["적용 전 표시 중", "適用前を表示中"],
+    "Preview, not applied": ["미리보기 · 미적용", "プレビュー・未適用"], "Applied": ["적용됨", "適用済み"], "Showing before": ["적용 전 표시 중", "適用前を表示中"],
     "Loading the blush pattern…": ["홍조 무늬를 불러오는 중…", "頬紅パターンを読み込み中…"],
     "Choose a face texture to bake a blush.": ["홍조를 구울 얼굴 텍스쳐를 선택하세요.", "頬紅を焼き込む顔テクスチャを選択してください。"],
     "Blush applied. Save model edits or a Mod ZIP to export.": ["홍조를 적용했습니다. 모델 편집 저장 또는 모드 ZIP으로 내보내세요.", "頬紅を適用しました。モデル編集やMod ZIPで保存してください。"],
@@ -229,6 +229,9 @@
     "The game's own song blush still appears on top during blush scenes.": ["곡의 홍조 장면에서는 게임 자체 홍조가 그 위에 더해집니다.", "楽曲の頬紅シーンでは、ゲーム本来の頬紅がさらに重なります。"],
     "Android and iOS bundles are separate: bake each platform's file.": ["Android와 iOS 번들은 따로입니다. 플랫폼별 파일에 각각 적용하세요.", "AndroidとiOSのバンドルは別です。それぞれのファイルに適用してください。"],
     "This file is the Android bundle.": ["이 파일은 Android 번들입니다.", "このファイルはAndroid用バンドルです。"], "This file is the iOS bundle.": ["이 파일은 iOS 번들입니다.", "このファイルはiOS用バンドルです。"],
+    // One line above the types when the notes below the save line ask for
+    // more than this choice ({n}: how many there are).
+    "1 note — see below": ["알림 1개 — 아래 참고", "お知らせ1件 — 下を参照"], "{n} notes — see below": ["알림 {n}개 — 아래 참고", "お知らせ{n}件 — 下を参照"],
     "Recolour suits of this costume replace this texture in the game: bake their recolour texture too.": ["이 의상의 리컬러 의상은 게임에서 이 텍스쳐를 바꿔 씁니다. 리컬러 텍스쳐에도 적용하세요.", "この衣装のカラー違いはゲーム内でこのテクスチャを差し替えます。カラー違いのテクスチャにも適用してください。"],
     "This recolour texture replaces the face texture of its recolour suit, so bake it as well as the costume's own face texture.": ["이 리컬러 텍스쳐는 리컬러 의상의 얼굴 텍스쳐를 대신하므로, 의상 본래 얼굴 텍스쳐와 함께 적용하세요.", "このテクスチャはカラー違い衣装の顔テクスチャを置き換えるため、元の顔テクスチャと一緒に適用してください。"],
     "This face uses a matcap, so it can look slightly different in the game.": ["이 얼굴은 매트캡을 써서 게임에서는 조금 다르게 보일 수 있습니다.", "この顔はマットキャップを使うため、ゲームでは少し違って見えることがあります。"],
@@ -383,17 +386,22 @@
     var projectOpenButton = button(projectActions, "Open layer project", chooseProject, "viewer-texture-project-open"), projectSaveButton = button(projectActions, "Save layer project", saveProject, "viewer-texture-project-save");
     node("p", layerPanel, "Opening a project replaces this texture's layers and can be undone.", "viewer-texture-hint");
     // Baked cheek blush: one panel, defaults that work, named levels with the
-    // resulting cheek-centre colour, a live 3D preview and one Apply. The
-    // status and the notes that change what to bake sit above the choices;
-    // Apply and the one-line save sentence follow the levels in normal flow,
-    // so the status, all five levels and Apply fit the settings column
-    // together (440 px at 1366x900). Explanations come after them.
+    // resulting cheek-centre colour, a live 3D preview and one Apply. Above
+    // Apply sits only what changes the current choice: the status, the types,
+    // the strength heading with its hint and the levels; Apply and the
+    // one-line save sentence follow them in normal flow, so they fit the
+    // settings column together (440 px at 1366x900) however many notes a face
+    // has. The notes that ask for more than this choice (other platform,
+    // recolour suits) follow the save line, counted by one line above the
+    // types; explanations come after them.
     var B = global.TextureBlush, blushInfo = null, cheek = null, cheekPromise = null, cheekError = "";
     var blushChoice = { layer: B ? B.DEFAULT_LAYER : 0, k: B ? B.levelK(B.DEFAULT_LEVEL) : 1, level: B ? B.DEFAULT_LEVEL : "medium", encoding: B ? B.DEFAULT_ENCODING : "exact" }, blushPending = false, blushBefore = false, blushSwatches = null;
     var blushPanel = node("div", content, null, "viewer-texture-panel viewer-texture-blush"); blushPanel.id = "viewer-texture-blush-panel"; blushPanel.hidden = true;
     var blushTarget = node("output", blushPanel, null, "viewer-texture-blush-target"); blushTarget.id = "viewer-texture-blush-target";
     var blushStatus = node("output", blushPanel, null, "viewer-texture-blush-status"); blushStatus.id = "viewer-texture-blush-status"; blushStatus.setAttribute("aria-live", "polite");
-    var blushAlerts = node("ul", blushPanel, null, "viewer-texture-blush-notes viewer-texture-blush-alerts"); blushAlerts.id = "viewer-texture-blush-alerts";
+    // One line, never wrapped: how many notes follow the save line; a click
+    // brings them into view. Filled in refreshBlush, hidden without notes.
+    var blushAlertLink = button(blushPanel, "", function () { showBlushAlerts(); }, "viewer-texture-blush-alert-link"); blushAlertLink.className = "viewer-texture-blush-alert-link"; blushAlertLink.hidden = true;
     // The two types side by side, each with its shape in one short line.
     var blushTypes = node("div", blushPanel, null, "viewer-texture-blush-group viewer-texture-blush-types"); blushTypes.setAttribute("role", "radiogroup"); blushTypes.id = "viewer-texture-blush-types";
     var blushTypeTitle = node("span", blushTypes, "Blush type", "viewer-texture-blush-heading"); blushTypeTitle.id = "viewer-texture-blush-type-title"; blushTypes.setAttribute("aria-labelledby", blushTypeTitle.id);
@@ -422,6 +430,9 @@
     var removeBlushButton = button(blushActions, "Remove", function () { removeBlush(); }, "viewer-texture-blush-remove");
     // How Save writes this face, in one line: always visible, filled in refreshBlush.
     var blushSaveMode = node("output", blushCommit, null, "viewer-texture-hint viewer-texture-blush-save-mode"); blushSaveMode.id = "viewer-texture-blush-save-mode";
+    // The notes about other files to bake, right under the save line.
+    var blushAlerts = node("ul", blushPanel, null, "viewer-texture-blush-notes viewer-texture-blush-alerts"); blushAlerts.id = "viewer-texture-blush-alerts"; blushAlerts.tabIndex = -1;
+    blushAlertLink.setAttribute("aria-controls", blushAlerts.id);
     node("p", blushPanel, "Swatches show this face at the centre of the chosen type's pattern.", "viewer-texture-hint");
     node("p", blushPanel, "Changes only the cheek pixels, the same way the game draws its blush.", "viewer-texture-hint");
     // The summary names what is inside (filled in refreshBlush: keeping ASTC
@@ -1359,7 +1370,8 @@
       // Levels light up only for a shown blush; the type, the strength value
       // and the save mode show what the next change starts from.
       var shown = shownBlush(entry), base = baseBlush(entry), layerIndex = base.layer;
-      blushTarget.textContent = rule ? t(rule.role === "attach" ? "Recolour face texture" : "Face texture") + ": " + entry.record.name : t("Choose a face texture to bake a blush.");
+      // One line: a long name is cut with an ellipsis and shown whole on hover.
+      blushTarget.textContent = blushTarget.title = rule ? t(rule.role === "attach" ? "Recolour face texture" : "Face texture") + ": " + entry.record.name : t("Choose a face texture to bake a blush.");
       blushTypeButtons.forEach(function (item) { var on = Number(item.dataset.blushLayer) === layerIndex; item.setAttribute("aria-checked", String(on)); item.disabled = !editable; });
       if (rule && cheek && entry.engine) {
         var stamp = layerStamp(entry) + ":" + layerIndex + ":" + base.k;
@@ -1389,11 +1401,12 @@
       else if (!cheekAvailable()) text = t(cheekReason());
       else if (!cheek) text = cheekError ? t(cheekError) : t("Loading the blush pattern…");
       else if (blushBefore) text = t("Showing before");
-      else if (blushPreviewPending()) text = t("Preview, not applied yet") + ": " + blushSummary(blushChoice);
+      else if (blushPreviewPending()) text = t("Preview, not applied") + ": " + blushSummary(blushChoice);
       else if (entry.blush) text = t("Applied") + ": " + blushSummary({ level: B.levelFor(entry.blush.k) || "custom", k: entry.blush.k, layer: entry.blush.layer, encoding: entry.blush.encoding });
       else text = t("No blush");
       blushStatus.textContent = text; blushStatus.classList.toggle("viewer-texture-error", !!rule && (!cheekAvailable() || !!cheekError));
-      // Alerts change what to bake or where to look; they sit under the status.
+      // Alerts ask for more than this choice (another file to bake, where to
+      // look); they follow the save line and the line above the types counts them.
       var alerts = [], notes = [];
       if (rule) {
         if (rule.role === "attach") {
@@ -1409,6 +1422,12 @@
         if (blushInfo && blushInfo.cheek && blushInfo.cheek.source === "cache") blushNote(notes, "Using the verified blush pattern saved from a costume you opened before.");
       }
       fillNotes(blushAlerts, alerts); fillNotes(blushNotes, notes);
+      var count = alerts.length === 1 ? t("1 note — see below") : t("{n} notes — see below").replace("{n}", String(alerts.length));
+      blushAlertLink.hidden = !alerts.length; if (blushAlertLink.textContent !== count) blushAlertLink.textContent = count;
+    }
+    function showBlushAlerts() {
+      if (blushAlerts.scrollIntoView) blushAlerts.scrollIntoView({ block: "nearest" });
+      blushAlerts.focus({ preventScroll: true });
     }
     function blushState() {
       var entry = active, rule = blushRule(entry);

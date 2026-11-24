@@ -594,8 +594,14 @@ opens that face texture.
   Remove in one row right under them, followed by one line that says what Save
   will write for this face (exact pixels and how much larger the texture data
   gets, or that keeping ASTC is requested; Save itself reports what it wrote).
-  At 1366×900 the status, all five levels and Apply are in view together when
-  the tab opens, in English, Korean and Japanese.
+  Above Apply sits only what changes the choice. The notes that ask for more
+  than this choice (bake the other platform's bundle, or the recolour suits'
+  texture) follow the save line in full, and one line above the types counts
+  them and brings them into view (“3 notes — see below” / 알림 3개 — 아래 참고),
+  so no number of notes can push Apply down. At 1366×900 the status, all five
+  levels, Apply and the save line are in view together when the tab opens and
+  with the longest status (Akarame, Very strong and Keep ASTC, or a custom k),
+  in English, Korean and Japanese, also on a costume with recolour suits.
 - Each level shows the texture's own cheek-centre colour. Strength k is a
   permanent blush of intensity k (k = 1 is the strongest stock clip):
   Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3

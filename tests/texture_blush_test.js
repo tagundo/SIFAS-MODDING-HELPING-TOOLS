@@ -153,6 +153,11 @@ print(json.dumps({"reason": t.CHEEK_UNAVAILABLE, "ko": i18n.tr("Baked blush", "k
   // Before Save, keeping ASTC is only a request (Save may fall back to exact pixels).
   assert.deepStrictEqual(['Save: keeping ASTC is requested'].concat(words['Save: keeping ASTC is requested']),
     ['Save: keeping ASTC is requested', '저장 시 ASTC 유지 요청', '保存: ASTCの保持を要求']);
+  // One line above the types counts the notes that follow the save line; the
+  // status names an unapplied choice in a few words.
+  assert.deepStrictEqual(['{n} notes — see below'].concat(words['{n} notes — see below']), ['{n} notes — see below', '알림 {n}개 — 아래 참고', 'お知らせ{n}件 — 下を参照']);
+  assert.deepStrictEqual(Array.from(words['1 note — see below']), ['알림 1개 — 아래 참고', 'お知らせ1件 — 下を参照']);
+  assert.deepStrictEqual(Array.from(words['Preview, not applied']), ['미리보기 · 미적용', 'プレビュー・未適用']);
   // The Remove button keeps the panel's own wording (the viewer's generic "Remove" is 삭제/削除).
   assert.deepStrictEqual(Array.from(words.Remove), Array.from(words['Remove blush']));
   // The hint about the game's own blush names the level exactly as its button does.

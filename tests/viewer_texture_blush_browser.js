@@ -29,6 +29,7 @@ astcenc = ""
 if astc_standin.available():
     astcenc = astc_standin.write(sys.argv[5])
     Path(sys.argv[4]).write_bytes(head_fixture(astc=True)[0])
+    Path(sys.argv[6]).write_bytes(head_fixture(astc=True, attach=True)[0])
 payload = synthetic_payload()
 tb.CHEEK_SHA256 = hashlib.sha256(payload).hexdigest()
 Path(sys.argv[1]).write_bytes(raw)
@@ -38,8 +39,10 @@ cache = textures._cheek_cache_file(); cache.parent.mkdir(parents=True, exist_ok=
 print(json.dumps({"sha": tb.CHEEK_SHA256, "cache": str(cache), "width": images[0].width, "height": images[0].height, "astcenc": astcenc,
                   "savedExact": textures.SAVED_EXACT, "savedAstc": textures.SAVED_ASTC, "notAstc": textures.KEEP_NOT_ASTC,
                   "rgba": base64.b64encode(images[0].tobytes()).decode(), "recolour": base64.b64encode(recolour_images()[0].tobytes()).decode()}))
-`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity'), path.join(models, 'ch0001_co0002.unity'), path.join(models, 'ch0001_co0003.unity'), library]);
+`, [path.join(models, 'ch0001_co0001.unity'), path.join(models, 'ch0001_co0001_copy.unity'), path.join(models, 'ch0001_co0002.unity'), path.join(models, 'ch0001_co0003.unity'), library, path.join(models, 'ch0001_co0004.unity')]);
 const source = path.join(models, 'ch0001_co0001.unity'), second = path.join(models, 'ch0001_co0001_copy.unity'), recolourModel = path.join(models, 'ch0001_co0002.unity'), astcModel = path.join(models, 'ch0001_co0003.unity');
+// The recolour costume again, its head ASTC-compressed (written only with the test astcenc).
+const astcRecolourModel = path.join(models, 'ch0001_co0004.unity');
 // The ASTC head decodes and (opt-in) re-encodes with the test astcenc (tests/astc_standin.py).
 if (fixture.astcenc) env.ASTCENC_BIN = fixture.astcenc;
 const original = Buffer.from(fixture.rgba, 'base64'), recolour = Buffer.from(fixture.recolour, 'base64');
@@ -69,22 +72,37 @@ async function blushLayout(page, scroll) {
   return page.evaluate(scroll => {
     const box = document.querySelector('.viewer-texture-properties');
     if (scroll) { box.scrollTop = 0; box.scrollIntoView({ block: 'nearest' }); }
-    // Inside the box and the window, and not covered by anything (a pinned row, say).
-    const view = box.getBoundingClientRect(), uncovered = (e, r) => [r.top + 2, (r.top + r.bottom) / 2, r.bottom - 2].every(y => { const at = document.elementFromPoint((r.left + r.right) / 2, y); return !!at && e.contains(at); });
-    const place = e => { const r = e.getBoundingClientRect(), inside = r.height > 0 && r.top >= Math.max(0, view.top) - 1 && r.bottom <= Math.min(innerHeight, view.bottom) + 1; return { top: Math.round(r.top), bottom: Math.round(r.bottom), inside: inside && uncovered(e, r) }; };
+    // Inside the box and the window, and not covered by anything (a pinned row,
+    // say), checked at the left, the middle and the right of the top, the middle
+    // and the bottom.
+    const view = box.getBoundingClientRect(), uncovered = (e, r) => [r.left + 3, (r.left + r.right) / 2, r.right - 3].every(x => [r.top + 2, (r.top + r.bottom) / 2, r.bottom - 2].every(y => { const at = document.elementFromPoint(x, y); return !!at && e.contains(at); }));
+    const place = e => {
+      if (!e || !e.getClientRects().length) return null;
+      const r = e.getBoundingClientRect(), lines = r.height / parseFloat(getComputedStyle(e).lineHeight);
+      const inside = r.height > 0 && r.top >= Math.max(0, view.top) - 1 && r.bottom <= Math.min(innerHeight, view.bottom) + 1 && r.left >= view.left - 1 && r.right <= view.right + 1;
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), lines: Math.round(lines * 10) / 10, cut: e.scrollWidth > e.clientWidth + 1, inside: inside && uncovered(e, r) };
+    };
     const id = name => place(document.getElementById(name)), all = selector => Array.from(document.querySelectorAll(selector)).map(place);
-    return { scroller: { top: Math.round(view.top), bottom: Math.round(view.bottom), scrollTop: box.scrollTop, scrollHeight: box.scrollHeight }, status: id('viewer-texture-blush-status'), hint: id('viewer-texture-blush-game-level'),
-      levels: all('#viewer-texture-blush-levels .viewer-texture-blush-level'), types: all('#viewer-texture-blush-types .viewer-texture-blush-layer'),
-      apply: id('viewer-texture-blush-apply'), before: id('viewer-texture-blush-before'), save: id('viewer-texture-blush-save-mode') };
+    return { scroller: { top: Math.round(view.top), bottom: Math.round(view.bottom), scrollTop: box.scrollTop, scrollHeight: box.scrollHeight }, target: id('viewer-texture-blush-target'), status: id('viewer-texture-blush-status'),
+      statusText: document.getElementById('viewer-texture-blush-status').textContent, alertLink: id('viewer-texture-blush-alert-link'), alertLinkText: document.getElementById('viewer-texture-blush-alert-link').textContent,
+      hint: id('viewer-texture-blush-game-level'), levels: all('#viewer-texture-blush-levels .viewer-texture-blush-level'), types: all('#viewer-texture-blush-types .viewer-texture-blush-layer'),
+      apply: id('viewer-texture-blush-apply'), before: id('viewer-texture-blush-before'), save: id('viewer-texture-blush-save-mode'), alerts: id('viewer-texture-blush-alerts') };
   }, scroll || null);
 }
 // The status, the hint beside the strength heading, all five levels, Apply,
 // Show before and the save line are in view together; the two types share a row.
+// The notes about other files follow the save line, counted by one uncut line
+// above the types that is in view as well.
 function assertBlushInView(where, label) {
   const text = label + ' ' + JSON.stringify(where);
   assert.equal(where.levels.length, 5, text);
-  assert.ok(['status', 'hint', 'apply', 'before', 'save'].every(key => where[key].inside) && where.levels.every(row => row.inside), text);
+  assert.ok(['target', 'status', 'hint', 'apply', 'before', 'save'].every(key => where[key].inside) && where.levels.every(row => row.inside), text);
   assert.ok(where.types.length === 2 && where.types[0].top === where.types[1].top && where.types[0].bottom === where.types[1].bottom, 'type buttons side by side, same height: ' + text);
+  assert.ok(where.target.lines <= 1.1, 'the face texture name takes one line: ' + text);
+  if (where.alerts) {
+    assert.ok(where.alerts.top >= where.save.bottom, 'the notes follow the save line: ' + text);
+    assert.ok(where.alertLink && where.alertLink.inside && where.alertLink.lines <= 1.1 && !where.alertLink.cut && where.alertLink.bottom <= where.types[0].top, 'one uncut line above the types counts the notes: ' + text);
+  } else assert.equal(where.alertLink, null, text);
 }
 // Leave the blush tab and open it again with a click, as a user does.
 async function reopenBlush(page) {
@@ -131,21 +149,20 @@ async function main() {
     assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'exact' }); assert.equal(s.blush.cheek.source, 'cache');
     assert.equal(await page.locator('#viewer-texture-blush-level-medium').getAttribute('aria-checked'), 'true');
     assert.equal(await page.locator('#viewer-texture-blush-layer-0').getAttribute('aria-checked'), 'true');
-    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\)$/);
+    assert.match(await page.locator('#viewer-texture-blush-status').textContent(), /^Preview, not applied: Medium \(k 1\.65\) · Cheeks \(Ppo\)$/);
     assert.deepStrictEqual(s.blush.alerts, ["Android and iOS bundles are separate: bake each platform's file.", 'This file is the Android bundle.']);
     assert.deepStrictEqual(s.blush.notes, ["The game's own song blush still appears on top during blush scenes.", 'Using the verified blush pattern saved from a costume you opened before.']);
     assert.match(s.status, /^Pick a strength, check the 3D preview, then apply\.$/);
-    // The status and the platform alert sit inside the visible part of the settings scroller.
     const layout = await page.evaluate(() => {
-      const box = document.querySelector('.viewer-texture-properties'), panel = document.getElementById('viewer-texture-blush-panel'), view = box.getBoundingClientRect();
-      const inside = id => { const r = document.getElementById(id).getBoundingClientRect(); return r.top >= view.top - 1 && r.bottom <= view.bottom + 1 && r.height > 0; };
-      return { status: inside('viewer-texture-blush-status'), alerts: inside('viewer-texture-blush-alerts'), order: Array.from(panel.children).map(e => e.id || e.className),
-        levelGroup: Array.from(document.getElementById('viewer-texture-blush-levels').children).slice(0, 3).map(e => e.id) };
+      const panel = document.getElementById('viewer-texture-blush-panel');
+      return { order: Array.from(panel.children).map(e => e.id || e.className), levelGroup: Array.from(document.getElementById('viewer-texture-blush-levels').children).slice(0, 3).map(e => e.id) };
     });
-    assert.ok(layout.status && layout.alerts, JSON.stringify(layout));
-    // Status and alerts, the choices, then Apply with its save line in normal
-    // flow; the explanations and Advanced come after them.
-    assert.deepStrictEqual(layout.order.slice(0, 6), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alerts', 'viewer-texture-blush-types', 'viewer-texture-blush-levels', 'viewer-texture-blush-commit']);
+    // Above Apply only what changes the choice: the status, one line counting
+    // the notes, the types and the levels; then Apply with its save line in
+    // normal flow, the notes about other files, the explanations and Advanced.
+    assert.deepStrictEqual(layout.order.slice(0, 7), ['viewer-texture-blush-target', 'viewer-texture-blush-status', 'viewer-texture-blush-alert-link', 'viewer-texture-blush-types', 'viewer-texture-blush-levels', 'viewer-texture-blush-commit', 'viewer-texture-blush-alerts']);
+    assert.equal(await page.locator('#viewer-texture-blush-alert-link').textContent(), '2 notes — see below');
+    assert.equal(await page.locator('#viewer-texture-blush-alert-link').getAttribute('aria-controls'), 'viewer-texture-blush-alerts');
     // Where the game's own blush is, right under the strength heading.
     assert.deepStrictEqual(layout.levelGroup, ['viewer-texture-blush-level-title', 'viewer-texture-blush-game-level', 'viewer-texture-blush-base']);
     assert.equal(await page.locator('#viewer-texture-blush-game-level').textContent(), "Light ≈ the game's strongest song blush");
@@ -174,6 +191,11 @@ async function main() {
     }
     assert.deepStrictEqual(focused.map(row => row.id), ['viewer-texture-blush-layer-1', 'viewer-texture-blush-level-veryLight', 'viewer-texture-blush-level-light', 'viewer-texture-blush-level-medium', 'viewer-texture-blush-level-strong', 'viewer-texture-blush-level-veryStrong', 'viewer-texture-blush-apply', 'viewer-texture-blush-before']);
     assert.ok(focused.every(row => row.inside), JSON.stringify(focused));
+    // The line above the types brings the notes into view, and to the keyboard.
+    await page.locator('#viewer-texture-blush-alert-link').click(); await frames(page);
+    const shownNotes = await blushLayout(page); layouts.push({ width: 1366, height: 900, notesShown: true, where: shownNotes });
+    assert.ok(shownNotes.alerts.inside, JSON.stringify(shownNotes));
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewer-texture-blush-alerts');
     await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
     s = await state(page); assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'exact' }); assert(s.blush.previewing);
     // How Save writes this RGBA32 face is always in view; the selection display does not apply here.
@@ -241,7 +263,7 @@ async function main() {
     assert.equal(await page.locator('#viewer-texture-blush-k').inputValue(), '2');
     await click(page, '#viewer-texture-blush-layer-0'); s = await state(page);
     assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 2, level: 'custom', encoding: 'exact' }, 'a type click keeps the applied strength, not the cancelled one');
-    assert.equal(s.blush.status, 'Preview, not applied yet: Custom (k 2) · Cheeks (Ppo)'); assert(same(await live(page), expected(0, 2)));
+    assert.equal(s.blush.status, 'Preview, not applied: Custom (k 2) · Cheeks (Ppo)'); assert(same(await live(page), expected(0, 2)));
     await click(page, '#viewer-texture-cancel'); s = await state(page);
     assert.deepStrictEqual([s.blush.choice, s.blush.pending], [{ layer: 1, k: 2, level: 'custom', encoding: 'exact' }, false]);
     report.cases.push({ name: 'Cancel preview restores the applied choice; the next type click starts from it' });
@@ -392,6 +414,76 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
     edits = await page.evaluate(() => ModelViewer.getTextureTools().getEdits()); assert.deepStrictEqual(edits.map(row => [row.texture.id, row.blush]), [[attach.texture.id, { layer: 0, k: 1.65, encoding: 'exact' }]]);
     report.cases.push({ name: 'recolour texture previewed on its head in 3D' });
 
+    // A costume with recolour suits: its head has three notes and its recolour
+    // texture four. They follow the save line, so on a 1366x900 screen the
+    // status, the levels, Apply and the save line stay in view together in
+    // every language, as the tab opens and with the longest status (Akarame,
+    // Very strong, a custom k; with Keep ASTC on the same costume with an ASTC
+    // head). Choices are clicked in the page, which never scrolls the box.
+    const WORDING = {
+      en: { tab: 'Bake blush', notes: n => n + ' notes — see below', preview: 'Preview, not applied', veryStrong: 'Very strong', custom: 'Custom', akarame: 'Cheeks and nose (Akarame)', astc: 'Keep ASTC when saving' },
+      ko: { tab: '홍조 굽기', notes: n => '알림 ' + n + '개 — 아래 참고', preview: '미리보기 · 미적용', veryStrong: '아주 진하게', custom: '직접 입력', akarame: '볼·콧등 홍조(Akarame)', astc: '저장 시 ASTC 유지' },
+      ja: { tab: '頬紅の焼き込み', notes: n => 'お知らせ' + n + '件 — 下を参照', preview: 'プレビュー・未適用', veryStrong: 'とても濃く', custom: 'カスタム', akarame: '頬・鼻すじ(Akarame)', astc: '保存時にASTCを保持' } };
+    const longStatus = (w, level, astc) => w.preview + ': ' + level + ' · ' + w.akarame + (astc ? ' · ' + w.astc : '');
+    const inPage = (selector, value) => page.evaluate(([selector, value]) => {
+      const e = document.querySelector(selector);
+      if (value === undefined) e.click(); else { e.value = value; e.dispatchEvent(new Event('change', { bubbles: true })); }
+    }, [selector, value]).then(() => frames(page));
+    const setLanguage = async lang => { await page.selectOption('#lang-select', lang); await page.waitForFunction(text => document.getElementById('viewer-texture-tab-blush').textContent === text, WORDING[lang].tab, { timeout: 20000 }); };
+    const chooseFace = async (texture, role) => {
+      await page.evaluate(texture => ModelViewer.getTextureTools().selectTexture(texture), texture);
+      await page.waitForFunction(role => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.rule.role === role && b.cheek.loaded && b.swatches; }, role);
+    };
+    // As the tab opens after the settings box and the window were scrolled away.
+    const openedInView = async label => {
+      await page.evaluate(() => { document.querySelector('.viewer-texture-properties').scrollTop = 300; window.scrollTo(0, 0); });
+      await reopenBlush(page); const where = await blushLayout(page); recolourLayouts.push({ label, where }); assertBlushInView(where, label); return where;
+    };
+    const choiceInView = async (label, status) => {
+      const where = await blushLayout(page); recolourLayouts.push({ label, where });
+      assert.equal(where.statusText, status, label); assertBlushInView(where, label); return where;
+    };
+    const recolourLayouts = [], recolourFaces = (await state(page)).blush.eligible;
+    const recolourHead = recolourFaces.find(row => row.role === 'head').texture, recolourAttach = recolourFaces.find(row => row.role === 'attach').texture;
+    await page.setViewportSize({ width: 1366, height: 900 }); await frames(page);
+    for (const lang of ['en', 'ko', 'ja']) {
+      const w = WORDING[lang]; await setLanguage(lang);
+      await chooseFace(recolourHead, 'head');
+      let where = await openedInView(lang + ' recolour costume head as the tab opens');
+      assert.equal(where.alertLinkText, w.notes(3)); assert.equal((await state(page)).blush.alerts.length, 3);
+      await panelShot(page, path.join(evidence, 'recolour-panel-1366x900-' + lang + '.png'));
+      await inPage('#viewer-texture-blush-layer-1'); await inPage('#viewer-texture-blush-level-veryStrong');
+      await choiceInView(lang + ' recolour head, Akarame and Very strong', longStatus(w, w.veryStrong + ' (k 3)'));
+      await inPage('#viewer-texture-blush-k', '3.755');
+      await choiceInView(lang + ' recolour head, custom k', longStatus(w, w.custom + ' (k 3.755)'));
+      await inPage('#viewer-texture-cancel'); assert.equal((await state(page)).blush.pending, false);
+      // Its recolour texture: four notes and the applied bake.
+      await chooseFace(recolourAttach, 'attach');
+      where = await openedInView(lang + ' recolour texture as the tab opens'); assert.equal(where.alertLinkText, w.notes(4));
+      await inPage('#viewer-texture-blush-layer-1'); await inPage('#viewer-texture-blush-level-veryStrong');
+      await choiceInView(lang + ' recolour texture, Akarame and Very strong', longStatus(w, w.veryStrong + ' (k 3)'));
+      await inPage('#viewer-texture-cancel'); assert.equal((await state(page)).blush.pending, false);
+    }
+    if (fixture.astcenc) {
+      await page.evaluate(file => openModelViewer([file]), astcRecolourModel);
+      await page.waitForFunction(() => { const s = ModelViewer.getTextureTools().getState(); return ModelViewer.getState().loaded && !ModelViewer.getState().loading && s.textureCount > 1 && s.blush.cheek && !s.loading; });
+      await page.evaluate(() => ModelViewer.getTextureTools().openBlush());
+      await page.waitForFunction(() => { const b = ModelViewer.getTextureTools().getState().blush; return b.rule && b.rule.role === 'head' && b.cheek.loaded && b.previewing; });
+      for (const lang of ['en', 'ko', 'ja']) {
+        const w = WORDING[lang]; await setLanguage(lang);
+        const where = await openedInView(lang + ' recolour costume with an ASTC head as the tab opens'); assert.equal(where.alertLinkText, w.notes(3));
+        await inPage('#viewer-texture-blush-layer-1'); await inPage('#viewer-texture-blush-astc-keep'); await inPage('#viewer-texture-blush-level-veryStrong');
+        await choiceInView(lang + ' Akarame, Very strong and Keep ASTC', longStatus(w, w.veryStrong + ' (k 3)', true));
+        await panelShot(page, path.join(evidence, 'recolour-longest-1366x900-' + lang + '.png'));
+        await inPage('#viewer-texture-blush-k', '3.755');
+        const custom = await choiceInView(lang + ' custom k and Keep ASTC', longStatus(w, w.custom + ' (k 3.755)', true));
+        assert.ok(custom.status.lines >= 2, 'the longest status wraps: ' + JSON.stringify(custom.status));
+        await inPage('#viewer-texture-cancel'); assert.deepStrictEqual((await state(page)).blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'exact' });
+      }
+    }
+    await setLanguage('en'); await page.setViewportSize({ width: 1480, height: 1100 }); await frames(page);
+    report.cases.push({ name: 'recolour costume at 1366x900 in en, ko and ja: notes after the save line; status, levels, Apply and the save line in view as the tab opens and with the longest status', layouts: recolourLayouts });
+
     // An ASTC head: exact pixels by default; Advanced keeps the game's ASTC compression only on request.
     if (fixture.astcenc) {
       const saveNow = async () => {
@@ -422,7 +514,7 @@ print(json.dumps({'format': texture.m_TextureFormat, 'mips': texture.m_MipCount,
       // Opt in: the choice is part of the operation, previewed like any other change and named in the status.
       await click(page, '#viewer-texture-blush-astc-keep'); s = await state(page);
       assert.deepStrictEqual(s.blush.choice, { layer: 0, k: 1.65, level: 'medium', encoding: 'astc-keep' }); assert(s.blush.previewing);
-      assert.match(s.blush.status, /^Preview, not applied yet: Medium \(k 1\.65\) · Cheeks \(Ppo\) · Keep ASTC when saving$/);
+      assert.match(s.blush.status, /^Preview, not applied: Medium \(k 1\.65\) · Cheeks \(Ppo\) · Keep ASTC when saving$/);
       assert.deepStrictEqual(s.blush.displayed, { layer: 0, k: 1.65, encoding: 'astc-keep' }, 'the previewed strength is unchanged');
       // Only a request until Save reports what it wrote.
       assert.equal(await page.locator('#viewer-texture-blush-save-mode').textContent(), 'Save: keeping ASTC is requested');
