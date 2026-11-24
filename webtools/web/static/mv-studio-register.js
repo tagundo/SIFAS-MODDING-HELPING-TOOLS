@@ -553,7 +553,9 @@
     const label = plan.base ? `${plan.base.title}${plan.base.stage ? " · " + plan.base.stage : ""} (${plan.base.liveId})` : t("Not chosen");
     const row = make("div", null, { class: "mv-controls" });
     row.append(make("span", label, { id: "mv-register-base" }));
-    if (!plan.base || !plan.base.fixed) {
+    // Game imports keep their own base; a registered song whose base is unknown can only be removed.
+    const choosable = plan.base ? !plan.base.fixed : !plan.song;
+    if (choosable) {
       row.append(button(plan.base ? "Change" : "Choose base MV", () => {
         state.picker = state.picker || { region: plan.region || "gl", search: "", songs: [], regions: [], song: null, variant: null, error: "" };
         loadCatalog();
@@ -562,7 +564,7 @@
     }
     section.append(ctx.field("Base MV", row),
       make("p", t("Stage, choreography, props and members come from the base MV."), { class: "mv-field-note" }));
-    if (state.picker && (!plan.base || !plan.base.fixed)) section.append(pickerBox(state.picker));
+    if (state.picker && choosable) section.append(pickerBox(state.picker));
     return section;
   }
 
