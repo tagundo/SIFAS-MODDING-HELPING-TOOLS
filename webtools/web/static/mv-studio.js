@@ -1010,6 +1010,9 @@
         delete clip.dataset.dragTime;
         if (phase === "cancel") { place({ start: found.event.start, end: found.event.start + found.event.duration }); return; }
         const { track, event } = found;
+        // The commit can redraw the lane or the whole timeline (an Edit-tab track moves
+        // to the edited section): a focused clip keeps the focus for the next nudge.
+        const hadFocus = clip === document.activeElement;
         // A move keeps the stored duration exactly (end − start would add float noise).
         const next = mode === "move" ? { start: range.start, duration: event.duration } : { start: event.start, duration: range.end - event.start };
         const command = timingCommand(track, event, next, mode === "move" ? "Move clip" : "Resize clip");
@@ -1021,9 +1024,15 @@
         if (mode === "move") seek(current.event.start);
         else seek(time, false);
         const again = timelineLanes.get(trackId)?.querySelector?.(`.mv-clip[data-event="${CSS.escape(eventId)}"]`);
-        if (again && clip !== again && clip === document.activeElement) again.focus({ preventScroll: true });
+        if (hadFocus && again && document.activeElement !== again) focusClip(again);
       },
     });
+  }
+
+  // Focus without a jump; scrolls only when the clip moved out of view (to another row).
+  function focusClip(clip) {
+    clip.focus({ preventScroll: true });
+    clip.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
 
   function renderTimelineLane(track) {
@@ -1193,6 +1202,10 @@
 
   function renderTimeline() {
     const grid = byId("mv-timeline-grid"), scroll = byId("mv-timeline-scroll");
+    // A rebuild keeps keyboard focus on the same clip, wherever its lane lands.
+    const active = document.activeElement;
+    const focused = active && active !== grid && grid.contains(active) && active.classList.contains("mv-clip")
+      ? { track: active.dataset.track, event: active.dataset.event } : null;
     grid.replaceChildren();
     timelineLanes.clear();
     timelineLabels.clear();
@@ -1260,6 +1273,8 @@
     scroll.setAttribute("aria-labelledby", "mv-tab-" + activeTab);
     syncTrackControls();
     syncPosition();
+    const clip = focused && grid.querySelector(`.mv-clip[data-track="${CSS.escape(focused.track)}"][data-event="${CSS.escape(focused.event)}"]`);
+    if (clip) focusClip(clip);
   }
 
   function renderPreviewStatus() {

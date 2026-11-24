@@ -493,6 +493,27 @@ async function run() {
     assert.equal((await state(page)).history.undo, undoBase);
     assert.equal(await gated(), true);
 
+    // Edit tab: the first nudge moves the track into the edited section (a full redraw);
+    // the clip keeps the focus, so the second Alt+→ nudges again.
+    await page.locator('#mv-tab-edit').click();
+    const cheek = original.tracks.find((track) => track.label === 'Member1/Cheek').events[0];
+    const cheekClip = page.locator(`.mv-clip[data-event="${cheek.id}"]`);
+    const focusedEvent = () => page.evaluate(() => document.activeElement?.dataset?.event || document.activeElement?.tagName);
+    assert.equal(await page.locator('#mv-timeline-grid .mv-lane-separator ~ .mv-lane[data-track] .mv-clip[data-event="' + cheek.id + '"]').count(), 1,
+      'the unedited cheek track is listed below the separator');
+    await cheekClip.focus();
+    await page.keyboard.press('Alt+ArrowRight');
+    assert.equal(await focusedEvent(), cheek.id, 'focus stays on the clip after the Edit tab redraw');
+    assert.equal(await page.locator('#mv-timeline-grid .mv-lane-separator ~ .mv-lane[data-track] .mv-clip[data-event="' + cheek.id + '"]').count(), 0,
+      'the nudged track moved to the edited section');
+    await page.keyboard.press('Alt+ArrowRight');
+    assert(Math.abs(findEvent((await state(page)).project, cheek.id).start - (cheek.start + 2 / 60)) < 1e-9, 'two nudges, two frames');
+    assert.equal((await state(page)).history.undo, undoBase + 2, 'one step per key');
+    await page.keyboard.press('Control+z');
+    await page.keyboard.press('Control+z');
+    assert.equal(findEvent((await state(page)).project, cheek.id).start, cheek.start);
+    assert.equal(await focusedEvent(), cheek.id, 'an undo that moves the track back keeps the focus too');
+    await page.locator('#mv-tab-camera').click();
     const edited = (await state(page)).project;
 
     // ---- Costume re-import keeps the edits; the tablist is inert while it runs -----------------
