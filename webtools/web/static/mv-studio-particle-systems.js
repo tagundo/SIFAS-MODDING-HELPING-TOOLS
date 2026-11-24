@@ -833,6 +833,11 @@
       // 0x1d1e54 seeds the carry with 1 - (the scan's carry) + 1e-4 whatever the
       // rate: an enabled module emits that one extra particle in the first
       // step even at rate 0 (0x65b770 adds the carry after its rate branch).
+      // The particles' random draws (start colour, size, roll, shape position) follow emission order here, so
+      // every particle the prewarm emits shifts the draws of the later ones. Unity's own RNG consumption (per-step
+      // groups under the game's frame steps, 0x60fe08 batch regeneration) is not modelled: counts and ages match
+      // the game while random placement and colour do not. 12035 dump4 shots 6, 13 and 17 (the gradient_01 glow:
+      // same ages, a shifted colour/position sequence) belong to this class with the line_up and kira dots.
       warm = {...warm, clock: f32(start % cycle), carry: emitting ? f32(f32(1 - carry) + clockBias) : 0};
       // A procedural system prewarms in one procedural update (Simulate
       // 0x1cbf64 -> 0x1ce4b0 with flag 2): 0x1d7490 appends emission batches

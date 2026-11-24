@@ -149,6 +149,28 @@ function testPrewarmActivationBuildUp() {
   assert.equal(alive(P.create(unflagged, 3), 1), 0, "an old descriptor's empty module counts as disabled");
 }
 
+// A prewarm whose step plan leaves a remainder, at simulationSpeed .5: 0x1d1e54 divides the prewarm time by
+// simulationSpeed, so the leftover is raw time remainder / speed, and the first display frame's update scales
+// 1/fps plus that leftover by the speed (0x1ce1f4). Every prewarmed particle ages speed / fps + remainder system
+// seconds in the activation frame.
+function testPrewarmRemainderAtSimulationSpeed() {
+  const lifetime = 1.01, speed = .5, fps = 30;
+  const {steps, remainder} = P.prewarmSteps(f32(lifetime), 10);
+  assert.ok(steps.length === 50 && remainder > .005 && remainder < f32(.02), `prewarm remainder ${remainder}`);
+  const stream = P.create(system({main: {prewarm: true, duration: 10, lifetime: constant(lifetime), maxParticles: 100,
+    simulationSpeed: speed}, emission: {enabled: true, rate: constant(20), bursts: []}}), 7);
+  const warm = new Map(stream.sample(0, fps).map(atom => [atom.source, atom.age]));
+  assert.ok(warm.size > 10, `prewarmed particles ${warm.size}`);
+  const kept = stream.sample(1, fps).filter(atom => warm.has(atom.source));
+  assert.ok(kept.length > 5, `prewarmed particles alive after the first frame ${kept.length}`);
+  // atom.age is percent of the particle's lifetime (source.life holds 1 / lifetime).
+  for (const atom of kept) {
+    const advanced = (atom.age - warm.get(atom.source)) / (100 * atom.source.life);
+    assert.ok(Math.abs(advanced - (speed / fps + remainder)) < 1e-5,
+      `first frame system time ${advanced}, expected ${speed / fps + remainder} (not ${speed / fps + speed * remainder})`);
+  }
+}
+
 function testBurstsCyclesAndExpiry() {
   const row = system({main: {looping: false, duration: 3, lifetime: constant(1.5)},
     emission: {rate: constant(0), bursts: [{time: 0, count: constant(5), cycles: 3, interval: .5, probability: 1}]}});
@@ -573,6 +595,7 @@ async function testCullingFreezesTheClockOffScreen() {
   testSeekMatchesPlayback();
   testPrewarmedSteadyState();
   testPrewarmActivationBuildUp();
+  testPrewarmRemainderAtSimulationSpeed();
   testBurstsCyclesAndExpiry();
   testCurvesAndColorsOverLifetime();
   testOrbitalRadialAndBurstSpread();

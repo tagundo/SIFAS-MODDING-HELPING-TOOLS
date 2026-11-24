@@ -832,6 +832,62 @@ async function checkAssetDumpStageBillboardDrawn() {
   f.app.dispose();
 }
 
+// The particle culling view (Automatic / Pause culling) counts every camera that
+// draws the frame: inside a LiveSplitScreenClip the enabled sub cameras, plus the
+// main camera when the clip keeps it on. Its key follows the split data and the
+// split_screen quality, so the visibility pass restarts when either changes.
+async function checkParticleCullingSplitCameras() {
+  const updates = [];
+  const f = fixture(true);
+  f.window.MVStudioParticleSystems = { async apply() {
+    return { update(time, _project, view) { updates.push({ time, view }); }, dispose() {} };
+  } };
+  const effect = '/EntryPoint/Live/Cameras/SplitScreenEffect';
+  const pointer = { m_FileID: 0, m_PathID: '-42' };
+  const mask = { positions: [1,-1,.01, -1,-1,.01, -1,1,.01, 1,1,.01], indices: [0,1,2,0,2,3], uv: [1,0,0,0,0,1,1,1], bounds: [2,1] };
+  const clip = { id: 'split:0', start: 4, duration: 2, values: { playableClass: 'LiveSplitScreenClip', mainCamera: 0, subCamera1: 1,
+    mask1: pointer } };
+  const value = project(81);
+  value.duration = 12;
+  value.stage = { glb: address(82) };
+  value.quality = { values: { split_screen: true } };
+  value.splitScreen = { masks: { mask }, events: { 'split:0': [{ key: 'mask', pointer }, null, null, null] } };
+  value.tracks = [{ id: 'cam', label: 'Camera/MainCamera', kind: 'camera', nativeClass: 'AnimationTrack',
+    binding: '/EntryPoint/Live/Cameras/MainCamera', events: [{ id: 'cam:0', start: 0, duration: 10, values: { keyframes: [
+      { time: 0, position: [1, 2, 10], rotation: [0, 0, 0, 1], fov: 30 }] } }] },
+  { id: 'split', kind: 'other', nativeClass: 'LiveSplitScreenTrack', binding: effect, events: [clip] },
+  { id: 'sub1', label: 'SubCamera1', kind: 'camera', nativeClass: 'AnimationTrack', binding: `${effect}/Cameras/SubCamera1`,
+    events: [{ id: 'sub1:0', start: 0, duration: 10, values: { keyframes: [{ time: 0, position: [7, 1, -3], rotation: [0, 0, 0, 1], fov: 40 }] } }] }];
+  await f.app.load(value);
+  const viewAt = (time, next = value) => {
+    f.app.seek(time, next, true);
+    const { view } = updates.at(-1);
+    assert.equal(updates.at(-1).time, time);
+    return view;
+  };
+  const outside = viewAt(2);
+  const main = outside.camerasAt(2);
+  assert.equal(main.length, 1, 'outside the split clip only the main camera draws');
+  const inside = viewAt(5);
+  assert.equal(inside.key, outside.key, 'the same project keeps the visibility pass');
+  const subs = inside.camerasAt(5);
+  assert.equal(subs.length, 1, 'mainCamera 0: only the sub camera draws');
+  assert.notEqual(subs[0], main[0]);
+  assert.equal(subs[0].aspect, 2, 'the sub camera takes its mask aspect');
+  assert.deepEqual([subs[0].near, subs[0].far], [.1, 1000]);
+  clip.values.mainCamera = 1;
+  assert.equal(inside.camerasAt(5).length, 2, 'mainCamera 1: the sub camera and the main camera');
+  clip.values.mainCamera = 0;
+  // New split data or the split_screen quality restart the pass (a new key).
+  const moved = viewAt(5, { ...value, splitScreen: { ...value.splitScreen } });
+  assert.notEqual(moved.key, inside.key, 'new split data gives a new key');
+  const off = viewAt(5, { ...value, splitScreen: moved.split, quality: { values: { split_screen: false } } });
+  assert.notEqual(off.key, moved.key, 'the split_screen quality gives a new key');
+  assert.equal(off.camerasAt(5).length, 1, 'split screen off: the main camera only');
+  assert.notEqual(off.camerasAt(5)[0], subs[0]);
+  f.app.dispose();
+}
+
 // The member culler hides the actor root in the editor; the dump reports it as
 // "culled" with node visibility unchanged, and reading it changes nothing.
 async function checkAssetDumpCuller() {
@@ -924,6 +980,7 @@ function checkAssetDumpHelpers() {
   await checkAssetDump();
   await checkAssetDumpStageBillboard();
   await checkAssetDumpStageBillboardDrawn();
+  await checkParticleCullingSplitCameras();
   await checkAssetDumpCuller();
   checkAssetDumpHelpers();
   await checkNativeCamera();
