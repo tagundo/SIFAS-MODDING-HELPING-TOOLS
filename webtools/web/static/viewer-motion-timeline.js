@@ -803,22 +803,26 @@
     }
     // The floats a seek to `time` finds when no cheek input is active there:
     // those of the last rendered frame (history, ascending director times
-    // before `time`) in which a clip was processed, with _CHEEK_ON off. A clip
-    // that starts before the first listed frame uses its end instead.
+    // before `time`) in which a clip was processed, with _CHEEK_ON off. That
+    // frame is known when the history covers the clip from its start, or when
+    // a listed frame follows the last listed frame inside it. Otherwise (the
+    // history starts inside the clip and ends there too, or starts after it)
+    // the clip's end is used: an unevidenced choice, as for a seek without
+    // frames, since the game never seeks an MV.
     function replayedCheek(time, history) {
       var frames = history.filter(function (value) { return Number.isFinite(value) && value < time - 1e-9; });
       var first = frames.length ? frames[0] : Infinity, latest = -Infinity, state = null;
       cheekEvents.forEach(function (event) {
         var end = event.start + event.duration;
         if (!(event.start < time)) return;
-        if (first <= event.start) {
-          for (var index = lastFrameBelow(frames, Math.min(time - 1e-9, end + 1e-9)); index >= 0 && frames[index] >= event.start; index -= 1) {
-            if (!(cheekWeight(event, frames[index]) > 0)) continue;
-            if (frames[index] > latest) {
-              latest = frames[index];
-              state = cheekOff(cheekAt(latest, function (other) { return cheekWeight(other, latest); }));
-            }
-            return;
+        var index = lastFrameBelow(frames, Math.min(time - 1e-9, end + 1e-9));
+        while (index >= 0 && frames[index] >= event.start && !(cheekWeight(event, frames[index]) > 0)) index -= 1;
+        var inside = index >= 0 && frames[index] >= event.start;
+        if (first <= event.start || (inside && index < frames.length - 1)) {
+          if (inside && frames[index] > latest) {
+            var frame = frames[index];
+            latest = frame;
+            state = cheekOff(cheekAt(frame, function (other) { return cheekWeight(other, frame); }));
           }
           return;
         }

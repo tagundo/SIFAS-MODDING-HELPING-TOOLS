@@ -70,8 +70,15 @@ const make = (list = clip) => timeline.create(new THREE.Group(), [], { clips: []
   // Without rendered frames a seek uses the clip's end (0 after an eased-out clip).
   assert.deepEqual(player.cheek(38.785, { advancing: false, history: [] }), { index: 0, intensity: 0, enabled: false });
   assert.deepEqual(player.cheek(38.785), { index: 0, intensity: 0, enabled: false }, 'no clock is a seek without frames');
-  // A clip the history does not cover (it starts before the first listed frame) uses its end.
-  assert.deepEqual(player.cheek(38.785, { advancing: false, history: [16, 20] }), { index: 0, intensity: 0, enabled: false });
+  // A history that starts inside the clip still names its last processed frame when a listed frame follows it.
+  const opening = player.cheek(38.785, { advancing: false, history: [16.977, 17.189, 17.394, 20] });
+  near(opening.intensity, faded(17.189), 'the last listed frame inside the clip, with later frames listed');
+  assert.equal(opening.enabled, false);
+  near(player.cheek(38.785, { advancing: false, history: [16, 20] }).intensity, player.cheek(16).intensity,
+    'one listed frame inside the clip, then a later one');
+  // Otherwise the clip's end is used (unevidenced): a history that ends inside the clip, or starts after it.
+  assert.deepEqual(player.cheek(38.785, { advancing: false, history: [16.977, 17.189] }), { index: 0, intensity: 0, enabled: false });
+  assert.deepEqual(player.cheek(38.785, { advancing: false, history: [18, 20] }), { index: 0, intensity: 0, enabled: false });
   // Rendered frames that skip the whole clip never processed it: ResetAll's state stays.
   assert.equal(player.cheek(38.785, { advancing: false, history: [15, 17.5, 20] }), null);
   // Before the first clip ResetAll's 0/0.
