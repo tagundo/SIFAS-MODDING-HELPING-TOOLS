@@ -294,9 +294,13 @@
     const record = shot.record;
     const active = affecting(ctx, shot);
     if ((!record || !record.keys.length) && !active.length) return { restore: true };
+    // Layers get copies (they may write into the arrays); a rotation still equal to its
+    // untouched source sample is kept as stored, bit for bit.
+    const untouched = [];
     const frames = shot.source.map((sample, index) => {
       const pose = basePose(shot, record, index);
-      return { t: shot.event.start + sample.time, position: pose.position, rotation: pose.rotation, fov: pose.fov };
+      untouched.push(pose.rotation === sample.rotation);
+      return { t: shot.event.start + sample.time, position: pose.position.slice(0, 3), rotation: pose.rotation.slice(0, 4), fov: pose.fov };
     });
     for (const layer of active) {
       try { layer.apply(ctx, shot, frames); } catch (error) { console.error(`MV Studio camera layer ${layer.id}`, error); }
@@ -307,7 +311,8 @@
       const sample = shot.source[index];
       const position = vector(frame.position, 3) ? frame.position.slice(0, 3) : sample.position.slice(0, 3);
       let rotation = vector(frame.rotation, 4) ? frame.rotation : sample.rotation;
-      rotation = rotation === sample.rotation ? rotation.slice(0, 4) : M.normalize(rotation);
+      const kept = untouched[index] && rotation.slice(0, 4).every((value, axis) => value === sample.rotation[axis]);
+      rotation = kept ? sample.rotation.slice(0, 4) : M.normalize(rotation);
       // Same hemisphere as the previous sample: the writer's Euler and the game's lerp stay continuous.
       if (previous && M.dot(previous, rotation) < 0) rotation = rotation.map((value) => -value);
       previous = rotation;

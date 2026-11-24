@@ -294,7 +294,8 @@ function layers() {
   const remove = K.registerLayer({ id: 'probe', order: 30, affects: (context, item) => item.event.id === 'cam:0',
     apply(context, item, frames) {
       seen = { first: frames[0].position.slice(), t: frames[10].t, count: frames.length };
-      for (const frame of frames) frame.position = [frame.position[0], frame.position[1] + .5, frame.position[2]];
+      // In-place writes are allowed: a layer gets copies of the samples.
+      for (const frame of frames) frame.position[1] += .5;
     } });
   try {
     K.requestBake(ctx, { reason: 'test' });
@@ -309,6 +310,7 @@ function layers() {
     near(seen.t, shot.start + before[10].time, 0, 'absolute sample times');
     assert.equal(seen.count, before.length);
   } finally { remove(); }
+  assert.deepEqual(project.editor.originals['cam:0'].values.keyframes, before, 'the layer never wrote into the originals');
   // Without the layer the keys alone remain after the next bake.
   K.requestBake(ctx, {});
   near(shot.values.keyframes[0].position[1], before[0].position[1] + M.rotateVector(M.normalize(before[0].rotation), [0, 0, -2])[1], 1e-12, 'layer gone');
