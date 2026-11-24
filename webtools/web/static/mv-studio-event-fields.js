@@ -458,15 +458,15 @@
   function colorControl(ctx, info, spec) {
     if (!isColor(info.value)) return undefined;
     const label = ctx.t(labelOf(info.key, spec));
-    let state = { ...info.value }, pickIntensity = 1;
+    let state = { ...info.value }, pickIntensity = null;
     const swatch = ctx.make("input", null, { type: "color", class: "mv-color-swatch", "data-mv-field": info.path, "aria-label": label });
     const intensity = numberBox(ctx, 1, { min: 0, max: 1000, class: "mv-color-intensity", "data-mv-field": info.path + ".intensity",
       "aria-label": ctx.format("{label}: intensity", { label }), title: ctx.t("Intensity (×): HDR multiplier of the swatch colour") },
-    (next) => write(scaleColor(state, next)));
+    (next) => { pickIntensity = null; write(scaleColor(state, next)); });
     const boxes = {};
     for (const channel of CHANNELS) {
       boxes[channel] = numberBox(ctx, state[channel], { min: 0, max: 1000, "data-mv-field": `${info.path}.${channel}`,
-        "aria-label": `${label} ${channel.toUpperCase()}` }, (next) => write({ ...state, [channel]: next }));
+        "aria-label": `${label} ${channel.toUpperCase()}` }, (next) => { pickIntensity = null; write({ ...state, [channel]: next }); });
     }
     function show() {
       const parts = colorParts(state);
@@ -482,13 +482,17 @@
       show();
     }
     // Picking keeps the intensity the swatch had when the picker opened.
-    const begin = () => { info.gesture.begin(); pickIntensity = colorParts(state).k; };
-    swatch.addEventListener("pointerdown", (event) => { if (event.isPrimary !== false) begin(); });
-    swatch.addEventListener("click", begin);
-    swatch.addEventListener("input", () => write(pickColor(state, swatch.value, pickIntensity)));
+    const intensityOfPick = () => pickIntensity ?? (pickIntensity = colorParts(state).k);
+    // A press starts a picker session; the click that follows it (or alone, from the
+    // keyboard) belongs to the same session.
+    const begin = (fresh) => { info.gesture.begin(); if (fresh) pickIntensity = null; intensityOfPick(); };
+    swatch.addEventListener("pointerdown", (event) => { if (event.isPrimary !== false) begin(true); });
+    swatch.addEventListener("click", () => begin(false));
+    swatch.addEventListener("input", () => write(pickColor(state, swatch.value, intensityOfPick())));
     swatch.addEventListener("change", () => {
-      const next = pickColor(state, swatch.value, pickIntensity);
+      const next = pickColor(state, swatch.value, intensityOfPick());
       if (next && JSON.stringify(next) !== JSON.stringify(state)) write(next);
+      pickIntensity = null;
       info.gesture.end();
     });
     const main = ctx.make("span", null, { class: "mv-color-main" });

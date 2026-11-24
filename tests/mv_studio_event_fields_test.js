@@ -128,6 +128,12 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       intensity.value = '4';
       intensity.dispatchEvent(new Event('change', { bubbles: true }));
       out.brighter = { value: find('coloring:0').event.values.tintColor, undo: history.size().undo, swatch: swatch.value };
+      // The next picker session picks at the new intensity.
+      swatch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      swatch.value = '#00ff00';
+      swatch.dispatchEvent(new Event('input', { bubbles: true }));
+      swatch.dispatchEvent(new Event('change', { bubbles: true }));
+      out.repicked = { value: find('coloring:0').event.values.tintColor, undo: history.size().undo };
       history.undo();
       out.undone = find('coloring:0').event.values.tintColor;
 
@@ -230,7 +236,8 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.deepEqual([result.picked.r, result.picked.b], ['0', '2']);
     assert.deepEqual(result.keyboardPick, { value: { r: 2, g: 0, b: 0, a: 1 }, undo: 2, open: false });
     assert.deepEqual(result.brighter, { value: { r: 4, g: 0, b: 0, a: 1 }, undo: 3, swatch: '#ff0000' }, 'the intensity box scales the hue');
-    assert.deepEqual(result.undone, { r: 2, g: 0, b: 0, a: 1 });
+    assert.deepEqual(result.repicked, { value: { r: 0, g: 4, b: 0, a: 1 }, undo: 4 }, 'a later pick keeps the edited intensity');
+    assert.deepEqual(result.undone, { r: 4, g: 0, b: 0, a: 1 });
 
     assert.deepEqual(result.texture.options, [['0', '조명 텍스처 0'], ['2', '조명 텍스처 2']], 'observed on this track only');
     assert.deepEqual(result.texture.fields, ['textureIndex']);

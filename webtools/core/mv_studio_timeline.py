@@ -1,5 +1,4 @@
 """Read native Unity MV tracks and their existing scene events."""
-import json
 import math
 import re
 import time
@@ -785,6 +784,8 @@ def _set_playable_value(tree, native, field, value):
 
 
 def _value_key(value):
+    import json
+
     return json.dumps(value, sort_keys=True)
 
 
