@@ -33,6 +33,15 @@
   //    unscaled larger side with the limit over s.x (libunity.so 0xc35c4,
   //    0xd2844; core/mv_studio_particle_systems.py _scaled_billboard).
   //
+  //  * Unity culling (core/mv_studio_particle_systems.py culling()): a system
+  //    whose clock culling freezes off screen (looping procedural Automatic,
+  //    or Pause) and whose culling box the importer reproduced advances only
+  //    in display frames whose previous frame showed its box to the main
+  //    camera (the activation frame always advances). The box is the local
+  //    procedural box through the local-to-world matrix; View alignment takes
+  //    the largest scale on every axis (libunity.so 0xc0e3c). Particles keep
+  //    their state while culled; PauseAndCatchup systems keep simulating.
+  //
   // Not reproduced, so the importer reports these systems and this runtime
   // refuses them as well: X/Y start rotation on View or World billboards (the
   // handedness of the camera and world frames for that turn is not evidenced)
@@ -40,8 +49,8 @@
   // ShapeModule.alignToDirection except where a horizontal billboard cannot
   // show it, any other transform scale the scaling mode would apply to
   // particles (Hierarchy, Shape, world-space forces), and either billboard case
-  // above on a system Unity culling may pause off screen (looping Automatic or
-  // Pause culling: its clock depends on the cameras' visibility history).
+  // above on a system culling pauses off screen when its culling box is not
+  // reproduced (its clock depends on the cameras' visibility history).
 
   const f32 = Math.fround;
   const gravityMagnitude = f32(9.81), ageScale = f32(.01);
@@ -206,11 +215,15 @@
       !velocity?.worldSpace && !clamp?.worldSpace && pose.local.every(value => value > 1e-6) && !pausedOffScreen(system);
   }
 
-  // Unity culling may pause a looping Automatic (0) system and pauses any Pause
-  // (2) system while its renderer is invisible, and resumes it without catching
-  // up (libunity.so renderer callbacks 0xc2618 / 0xc2648 -> uncull 0x1cbd10 /
-  // cull 0x1cc5d8); core/mv_studio_particle_systems.py _paused_off_screen.
-  const pausedOffScreen = ({main}) => (main.cullingMode ?? 0) === 2 || ((main.cullingMode ?? 0) === 0 && !!main.looping);
+  // Unity culling freezes a looping procedural Automatic (0) system and any
+  // Pause (2) system while its renderer is invisible, and resumes it without
+  // catching up (libunity.so renderer callbacks 0xc2618 / 0xc2648 -> uncull
+  // 0x1cbd10 / cull 0x1cc5d8); core/mv_studio_particle_systems.py culling().
+  // The runtime reproduces that from the importer's culling box; without one
+  // (or from a descriptor older than it) the clock-dependent cases are refused.
+  const cullingBox = ({culling}) => culling?.pauses && culling.bounds ? culling.bounds : null;
+  const pausedOffScreen = system => system.culling ? !!system.culling.pauses && !system.culling.bounds :
+    (system.main.cullingMode ?? 0) === 2 || ((system.main.cullingMode ?? 0) === 0 && !!system.main.looping);
 
   // The scaling-mode scale a billboard's quad axes and size cap carry, or null
   // when it is the identity. libunity.so: the ParticleSystem state keeps it at
@@ -292,12 +305,18 @@
       finite(renderer.minParticleSize) && vector(renderer.pivot, 3) && vector(renderer.flip, 3);
   }
 
-  // X/Y start rotation: drawn on Local billboards culling cannot pause only (validSimulation).
+  // X/Y start rotation: drawn on Local billboards, on a system culling cannot pause or whose
+  // culling the runtime reproduces (validSimulation).
   const tilted = ({main}) => main.rotation3D && !(zeroCurve(main.rotationX) && zeroCurve(main.rotationY));
+
+  function validCulling(value) {
+    return value === undefined || (!!value && typeof value.pauses === "boolean" && typeof value.uniform === "boolean" &&
+      (value.bounds === null || (vector(value.bounds, 6) && [0, 1, 2].every(axis => value.bounds[axis] <= value.bounds[axis + 3]))));
+  }
 
   function validSystem(system, textures) {
     const material = system?.material;
-    return validSimulation(system) && !!material && vector(material.tint, 4) && vector(material.st, 4) && vector(material.blend, 2) && vector(material.stencil, 4) &&
+    return validSimulation(system) && validCulling(system.culling) && !!material && vector(material.tint, 4) && vector(material.st, 4) && vector(material.blend, 2) && vector(material.stencil, 4) &&
       (material.texture === null || (Number.isInteger(material.texture) && !!textures[material.texture])) &&
       Number.isInteger(system.node) && Number.isInteger(system.layer);
   }
@@ -836,13 +855,66 @@
   // time scale do not change when OnBehaviourPlay activates the clone.
   const timelineTick = time => Math.trunc(time / 1e-12 + .5);
 
+  // Display frame index of the clip's activation frame (frame 1 below).
+  function activationFrame(event, fps) {
+    const start = timelineTick(event.start), first = Math.ceil(event.start * fps);
+    return timelineTick((first - 1) / fps) === start ? first - 1 : first;
+  }
+
   function activeFrames(event, time, fps) {
     if (!event || !finite(event.start) || !finite(event.duration) || event.duration <= 0) return 0;
     const start = timelineTick(event.start), current = timelineTick(time);
     if (current < start || current >= timelineTick(event.start + event.duration)) return 0;
-    const first = Math.ceil(event.start * fps);
-    const activated = timelineTick((first - 1) / fps) === start ? first - 1 : first;
-    return Math.max(0, Math.floor(time * fps + 1e-9) - activated + 1);
+    return Math.max(0, Math.floor(time * fps + 1e-9) - activationFrame(event, fps) + 1);
+  }
+
+  // ---------------------------------------------------------------- culling
+  // World box (three.js space: Unity X mirrored) of a local culling box under a
+  // node pose: the scaling-mode scale (Hierarchy the lossy scale, Local the
+  // node's own, Shape 1) after the world rotation; View alignment widens each
+  // scaled column to the largest scale (libunity.so 0xc0e78: max(s) / s_i when
+  // s_i > 1e-9).
+  function worldBox(bounds, system, pose) {
+    const mode = system.main.scalingMode;
+    let scale = mode === 0 ? pose.scale : mode === 1 ? pose.local : [1, 1, 1];
+    if (system.culling.uniform) {
+      const largest = Math.max(...scale);
+      scale = scale.map(value => value > 1e-9 ? largest : value);
+    }
+    const center = [0, 1, 2].map(axis => (bounds[axis] + bounds[axis + 3]) / 2);
+    const extent = [0, 1, 2].map(axis => (bounds[axis + 3] - bounds[axis]) / 2);
+    const columns = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis, i) => quatRotate(pose.rotation, axis).map(value => value * scale[i]));
+    const middle = [0, 1, 2].map(row => pose.position[row] + columns[0][row] * center[0] + columns[1][row] * center[1] +
+      columns[2][row] * center[2]);
+    const reach = [0, 1, 2].map(row => Math.abs(columns[0][row]) * extent[0] + Math.abs(columns[1][row]) * extent[1] +
+      Math.abs(columns[2][row]) * extent[2]);
+    return [-middle[0] - reach[0], middle[1] - reach[1], middle[2] - reach[2],
+      -middle[0] + reach[0], middle[1] + reach[1], middle[2] + reach[2]];
+  }
+
+  // The six clip-space planes (a, b, c, d) of projection * view, as Unity's
+  // camera culling planes.
+  function cameraPlanes(camera) {
+    const view = camera.matrixWorldInverse?.elements, projection = camera.projectionMatrix?.elements;
+    if (!vector(view ? Array.from(view) : null, 16) || !vector(projection ? Array.from(projection) : null, 16)) return null;
+    const m = new Float64Array(16);
+    for (let column = 0; column < 4; column++) for (let row = 0; row < 4; row++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += projection[k * 4 + row] * view[column * 4 + k];
+      m[column * 4 + row] = sum;
+    }
+    const row = index => [m[index], m[4 + index], m[8 + index], m[12 + index]];
+    const [x, y, z, w] = [row(0), row(1), row(2), row(3)];
+    return [0, 1, 2].flatMap(axis => [w.map((value, i) => value + [x, y, z][axis][i]),
+      w.map((value, i) => value - [x, y, z][axis][i])]);
+  }
+
+  function boxVisible(box, planes) {
+    for (const [a, b, c, d] of planes) {
+      const px = a > 0 ? box[3] : box[0], py = b > 0 ? box[4] : box[1], pz = c > 0 ? box[5] : box[2];
+      if (a * px + b * py + c * pz + d < 0) return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------- rendering
@@ -1116,7 +1188,8 @@
         // Drawn by the main camera only on its culling-mask layers; layer 20
         // belongs to the overlay camera, which this module does not drive.
         const drawn = ((mainCameraMask >>> system.layer) & 1) === 1 && system.layer < 32 && reproducible(system, pose);
-        return {system, systemIndex, pose, drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
+        return {system, systemIndex, pose, restPose: pose, box: cullingBox(system), history: null, updates: 0,
+          drawn, packet: null, stream: null, frame: -1, fps: 0, count: 0,
           seed: system.main.autoRandomSeed ?
             // The game draws a fresh auto seed per activation; keep a stable stand-in per clip.
             (Math.imul((cue.clipSeed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) + Math.imul(systemIndex + 1, 0xc2b2ae35) + cueIndex) >>> 0 :
@@ -1126,6 +1199,57 @@
     });
     const local = new T.Vector3(), center = new T.Vector3();
     let tracks, disposed = false;
+    // Main-camera culling planes per display frame index, for the visibility pass.
+    const frusta = new Map();
+    let cullKey = null, cullFps = 0;
+
+    function frustumAt(index, fps, view) {
+      if (frusta.has(index)) return frusta.get(index);
+      const camera = view.cameraAt(index / fps);
+      const planes = camera ? cameraPlanes(camera) : null;
+      frusta.set(index, planes);
+      return planes;
+    }
+
+    // Node poses at a clone frame when the prefab Animator moves nodes, else null.
+    function posesAt(entry, frames, fps) {
+      const animation = entry.template.animation;
+      if (!animation?.channels.some(row => row.kind === "translation")) return null;
+      if (entry.poseCache?.fps !== fps) entry.poseCache = {fps, frames: new Map()};
+      let poses = entry.poseCache.frames.get(frames);
+      if (!poses) {
+        const evaluate = global.MVStudioStageMotion.evaluate;
+        const times = animation.clips.map(clip => animatorTime(clip, frames, fps));
+        const moved = entry.template.nodes.map(node => ({...node}));
+        for (const row of animation.channels) {
+          if (row.kind === "translation") moved[row.node].position = row.curves.map(curve => evaluate(curve, times[row.clip]));
+        }
+        poses = nodePoses(moved, entry.cue.offset);
+        entry.poseCache.frames.set(frames, poses);
+      }
+      return poses;
+    }
+
+    // Display frames whose update the system ran by clone frame `frames`: the
+    // activation frame always runs (Play adds the system to the update list),
+    // and a later frame runs only when the previous frame's culling showed the
+    // system's box to the main camera; otherwise cull 0x1cc5d8 had taken it
+    // off the list (the becameInvisible callback, or the update end 0x1cde54
+    // finding the renderer not visible), and becameVisible's uncull put it back.
+    function advanced(item, entry, event, frames, fps, view) {
+      const activated = activationFrame(event, fps);
+      let history = item.history;
+      if (!history || history.activated !== activated) history = item.history = {activated, count: [0], visible: [false]};
+      for (let index = history.count.length; index < frames; index++) {
+        const planes = frustumAt(activated + index - 1, fps, view);
+        const poses = planes && posesAt(entry, index, fps);
+        const pose = poses ? poses[item.system.node] : item.restPose;
+        const seen = !!planes && boxVisible(worldBox(item.box, item.system, pose), planes);
+        history.visible.push(seen);
+        history.count.push(history.count[index - 1] + (seen ? 1 : 0));
+      }
+      return 1 + history.count[frames - 1];
+    }
 
     function simulationOf(entry) {
       if (entry.stream === undefined || entry.stream) return entry.stream;
@@ -1256,7 +1380,10 @@
     }
 
     return {
-      update(time, project) {
+      // view: {cameraAt(time) -> posed main camera or null, key}; a new key
+      // (camera tracks or viewport aspect changed) restarts the visibility pass.
+      // Without a view, culled systems simulate as if always visible.
+      update(time, project, view = null) {
         if (disposed) return;
         if (tracks !== project?.tracks) {
           tracks = project?.tracks;
@@ -1265,6 +1392,16 @@
         }
         const quality = project?.quality?.values;
         const fps = quality?.frame_rate_60fps === true ? 60 : 30;
+        const camera = typeof view?.cameraAt === "function" ? view : null;
+        if ((camera?.key ?? null) !== cullKey || fps !== cullFps) {
+          cullKey = camera?.key ?? null;
+          cullFps = fps;
+          frusta.clear();
+          for (const entry of cues) {
+            entry.poseCache = null;
+            for (const item of entry.systems) item.history = null;
+          }
+        }
         for (const entry of cues) {
           const {cue, track, systems} = entry;
           const event = track && !track.muted && quality?.[cue.quality] !== false &&
@@ -1277,10 +1414,12 @@
               hide(item);
               continue;
             }
-            if (item.frame === frames && item.fps === fps) continue;
+            const updates = item.box && camera ? advanced(item, entry, event, frames, fps, camera) : frames;
+            if (item.frame === frames && item.fps === fps && item.updates === updates) continue;
             item.frame = frames;
             item.fps = fps;
-            write(item, entry, frames, fps);
+            item.updates = updates;
+            write(item, entry, updates, fps);
           }
         }
       },
@@ -1288,8 +1427,12 @@
         const result = [];
         for (const entry of cues) for (const item of entry.systems) {
           if (item.frame <= 0) continue;
+          const {main} = item.system, elapsed = item.updates / item.fps * main.simulationSpeed;
           result.push({cue: entry.cue.eventId, track: entry.cue.trackId, template: entry.template.name,
             path: item.system.path, layer: item.system.layer, seed: item.seed, frames: item.frame,
+            // Frames the system updated (fewer than frames while culling froze it) and its clock.
+            updates: item.updates, time: main.looping ? elapsed % main.duration : Math.min(elapsed, main.duration),
+            culled: !!item.box && !!item.history && item.frame > 1 && !item.history.visible[item.frame - 1],
             alive: item.stream ? (item.rows?.length ?? 0) : 0, drawn: item.count,
             positions: (item.rows || []).slice(0, limit).map(row => row.world.map(value => Math.round(value * 1e4) / 1e4))});
         }
@@ -1312,5 +1455,6 @@
   global.MVStudioParticleSystems = {
     apply, create, activeFrames, animatorTime, validDescriptor, validSystem, validSimulation, compileCurve, gradientAt,
     nodePoses, eulerQuaternion, blendFactor, depthFunction, renderState, loadTexture, mainCameraMask, salts,
+    activationFrame, worldBox, cameraPlanes, boxVisible,
   };
 })(typeof window !== "undefined" ? window : globalThis);

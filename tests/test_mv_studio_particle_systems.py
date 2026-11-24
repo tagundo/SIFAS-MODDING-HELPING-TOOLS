@@ -249,17 +249,25 @@ class NormalizationTests(unittest.TestCase):
                     with self.assertRaisesRegex(systems._Unsupported, r"^3D start rotation \(X/Y axes\)$"):
                         systems.system({}, None, Reader(tumbling), Reader({**RENDERER, "m_RenderMode": mode}),
                                        systems._Textures(0))
-            # Culling that may pause the system off screen (looping Automatic, Pause) keeps it
-            # reported: its clock depends on the cameras' visibility history.
-            for culling, looping, reason in ((0, True, "Automatic culling may pause"), (2, False, "Pause culling pauses"),
-                                             (0, False, None), (1, True, None), (3, True, None)):
-                tumbling = particle_system(cullingMode=culling, looping=looping,
-                                           InitialModule={**initial, "rotation3D": True, "startRotationY": constant(.1)})
+            # Culling that pauses the system off screen (looping procedural Automatic, Pause) is
+            # replayed by the runtime from the culling box; without the box the system stays
+            # reported, since its clock depends on the cameras' visibility history.
+            heavy = {**initial, "rotation3D": True, "startRotationY": constant(.1), "gravityModifier": constant(.5)}
+            for culling, looping, extra, reason in (
+                    (0, True, {}, None), (2, False, {}, None), (0, False, {}, None), (1, True, {}, None),
+                    (3, True, {}, None),
+                    (0, True, {"InitialModule": heavy},
+                     "Automatic culling pauses it off screen, and its culling bounds with gravity are not reproduced"),
+                    (2, False, {"stopAction": 1}, "Pause culling pauses it off screen, and Pause culling of a "
+                                                  "non-procedural system")):
+                fields = {"InitialModule": {**initial, "rotation3D": True, "startRotationY": constant(.1)}, **extra}
+                tumbling = particle_system(cullingMode=culling, looping=looping, **fields)
                 if reason:
-                    with self.assertRaisesRegex(systems._Unsupported, f"^{reason} it off screen \\(not reproduced\\)$"):
+                    with self.assertRaisesRegex(systems._Unsupported, "^" + reason.replace("(", "\\(").replace(")", "\\)")):
                         systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
                 else:
-                    self.assertTrue(systems.system({}, None, Reader(tumbling), local, systems._Textures(0)))
+                    row = systems.system({}, None, Reader(tumbling), local, systems._Textures(0))
+                    self.assertEqual(row["culling"]["pauses"], culling == 2 or (culling == 0 and looping))
             # A Z-only 3D rotation is no new case: culling does not keep it reported.
             self.assertTrue(systems.system({}, None, Reader(particle_system(InitialModule={**initial, "rotation3D": True})),
                                            local, systems._Textures(0)))
@@ -271,6 +279,88 @@ class NormalizationTests(unittest.TestCase):
         with self.assertRaisesRegex(systems._Unsupported, "RotationModule X/Y"):
             systems._rotation({**spin, "x": constant(1.0)})
         self.assertEqual(systems._rotation({**spin, "separateAxes": False, "x": constant(1.0)})["curve"]["scalar"], 2.0)
+
+    def test_procedural_flag_follows_the_client(self):
+        # libunity.so 0x1d1910 (the flag Play stores at state +0x21), mapped to serialized fields.
+        self.assertTrue(systems.procedural(particle_system()))
+        initial, shape = particle_system()["InitialModule"], particle_system()["ShapeModule"]
+        rotation = particle_system()["RotationModule"]
+        many = {**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(index / 9, 0) for index in range(10)],
+                                                                 "m_PreInfinity": 2, "m_PostInfinity": 2}}
+        looped = {**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(.2, 0), key(1, 1)],
+                                                                   "m_PreInfinity": 1, "m_PostInfinity": 2}}
+        clamped = {**looped, "maxCurve": {**looped["maxCurve"], "m_PreInfinity": 2}}
+        velocity = {"enabled": True, "x": constant(1.0), "y": constant(0.0), "z": constant(0.0), "orbitalX": constant(0.0),
+                    "orbitalY": constant(0.0), "orbitalZ": constant(0.0), "radial": constant(0.0)}
+        cases = [
+            ({"moveWithTransform": 1}, False), ({"stopAction": 1}, False),
+            ({"EmissionModule": {**particle_system()["EmissionModule"], "rateOverDistance": constant(2.0)}}, False),
+            *[({name: {"enabled": True}}, False) for name in systems._PROCEDURAL_OFF],
+            ({"InitialModule": {**initial, "gravityModifier": {**constant(0.0), "minMaxState": 3}}}, False),
+            ({"InitialModule": {**initial, "startLifetime": constant(math.inf)}}, False),
+            # Arc modes other than Random rule out cones, circles and donuts; a box has none.
+            ({"ShapeModule": {**shape, "type": 10, "arc": {"value": 360.0, "mode": 3}}}, False),
+            ({"ShapeModule": {**shape, "type": 5, "arc": {"value": 360.0, "mode": 3}}}, True),
+            ({"ShapeModule": {**shape, "type": 12, "radius": {"value": 1.0, "mode": 1}}}, False),
+            # Curves must fit the 8-segment polynomial curve without Loop/PingPong wraps (0x1da114).
+            ({"RotationModule": {**rotation, "enabled": True, "curve": many}}, False),
+            ({"RotationModule": {**rotation, "enabled": True, "curve": looped}}, False),
+            ({"RotationModule": {**rotation, "enabled": True, "curve": clamped}}, True),
+            ({"RotationModule": {**rotation, "enabled": False, "curve": many}}, True),
+            ({"VelocityModule": velocity}, True), ({"VelocityModule": {**velocity, "radial": constant(1.0)}}, False),
+            ({"VelocityModule": {**velocity, "x": many}}, False),
+            ({"ForceModule": {"enabled": True, "x": constant(1.0), "y": constant(0.0), "z": constant(0.0),
+                              "randomizePerFrame": True}}, False),
+        ]
+        for fields, expected in cases:
+            self.assertEqual(systems.procedural(particle_system(**fields)), expected, fields)
+        # Automatic culling pauses only a looping procedural system; Pause culling any system.
+        for culling, fields, pauses, bounded in ((0, {}, True, True), (0, {"looping": False}, False, False),
+                                                 (0, {"stopAction": 1}, False, False), (1, {}, False, False),
+                                                 (3, {}, False, False), (2, {}, True, True),
+                                                 (2, {"stopAction": 1}, True, False)):
+            row = systems.culling(particle_system(cullingMode=culling, **fields), RENDERER)
+            self.assertEqual((row["pauses"], row["bounds"] is not None), (pauses, bounded), (culling, fields))
+
+    def test_procedural_culling_bounds(self):
+        # 0x1db800: the value range of a curve includes its overshoot between keys.
+        bump = {"m_Curve": [key(0, 0, 0, 4), key(1, 0, -4, 0)]}
+        self.assertEqual([round(value, 6) for value in systems._curve_range(bump)], [0, 1])
+        self.assertEqual(systems.value_range(constant(2.0)), (0.0, 2.0))
+        self.assertEqual(systems.value_range(constant(-2.0)), (-2.0, 0.0))
+        self.assertEqual(systems.value_range({**constant(3.0), "minMaxState": 3, "minScalar": 1.0}), (1.0, 3.0))
+        self.assertEqual(systems.value_range({**constant(2.0), "minMaxState": 1, "maxCurve": bump})[1], 2.0)
+        # 0x1dbaec: the integral range over [0, 1]: 1 - 2t integrates to t - t^2, at most 1/4.
+        falling = {**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 1, -2, -2), key(1, -1, -2, -2)]}}
+        self.assertEqual([round(value, 6) for value in systems.integral_range(falling)], [0, .25])
+        # Constant past the last key: 1 until 0.5, then 0.
+        early = {**constant(1.0), "minMaxState": 1, "maxCurve": {"m_Curve": [key(0, 1), key(.5, 1)]}}
+        self.assertEqual([round(value, 6) for value in systems.integral_range(early)], [0, 1])
+        # The fixture: a 12x12x10 Box emitting at rest, sizes up to 1 (start 1 times the size curve's 1).
+        self.assertEqual([round(value, 4) for value in systems.procedural_bounds(particle_system(), RENDERER)],
+                         [-6.71, -6.71, -5.71, 6.71, 6.71, 5.71])
+        # Speed 2 for 2 s carries the box 4 units along the shape's +Z (Box directions are (0, 0, 0)..(0, 0, 1)).
+        initial = particle_system()["InitialModule"]
+        moving = particle_system(InitialModule={**initial, "startSpeed": constant(2.0)})
+        self.assertEqual([round(value, 4) for value in systems.procedural_bounds(moving, RENDERER)],
+                         [-6.71, -6.71, -5.71, 6.71, 6.71, 9.71])
+        # Without a shape the displacement runs along +Z from the origin; a pivot of 0.5 widens by
+        # half the size first.
+        bare = particle_system(InitialModule={**initial, "startSpeed": constant(2.0)},
+                               ShapeModule={**particle_system()["ShapeModule"], "enabled": False})
+        pivoted = {**RENDERER, "m_Pivot": {"x": 0, "y": .5, "z": 0}}
+        self.assertEqual([round(value, 4) for value in systems.procedural_bounds(bare, pivoted)],
+                         [-1.21, -1.21, -1.21, 1.21, 1.21, 5.21])
+        # Stretch adds the peak speed times m_VelocityScale plus m_LengthScale times the peak start size.
+        stretched = {**RENDERER, "m_RenderMode": 1, "m_VelocityScale": .5, "m_LengthScale": 3.0}
+        self.assertEqual([round(value, 4) for value in systems.procedural_bounds(bare, stretched)],
+                         [-4.71, -4.71, -4.71, 4.71, 4.71, 8.71])
+        # Pieces whose rule is not mapped are reported, not guessed.
+        for fields, reason in (({"InitialModule": {**initial, "gravityModifier": constant(.5)}}, "gravity"),
+                               ({"ShapeModule": {**particle_system()["ShapeModule"], "type": 8}}, "shape type 8"),
+                               ({"scalingMode": 2}, "Shape scaling mode")):
+            with self.assertRaisesRegex(systems._Unsupported, reason):
+                systems.procedural_bounds(particle_system(**fields), RENDERER)
 
     def test_align_to_direction_only_where_it_cannot_change_a_horizontal_billboard(self):
         shape = particle_system()["ShapeModule"]
@@ -317,11 +407,9 @@ class NormalizationTests(unittest.TestCase):
                     row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
                 self.assertEqual([item["reason"] for item in unsupported], [reason] if reason else [])
                 self.assertEqual(len(row["systems"]), 0 if reason else 1)
-            # The same scaled billboard under culling that pauses it off screen stays reported;
-            # an unscaled one keeps its always-simulating preview.
-            for culling, own, reasons in ((0, (5, 3, 1), ["Automatic culling may pause it off screen (not reproduced)"]),
-                                          (2, (5, 3, 1), ["Pause culling pauses it off screen (not reproduced)"]),
-                                          (1, (5, 3, 1), []), (0, (1, 1, 1), [])):
+            # The same scaled billboard under culling that pauses it off screen is drawn: the
+            # runtime replays its culling box (the fixture's Box shape is reproduced).
+            for culling, own, reasons in ((0, (5, 3, 1), []), (2, (5, 3, 1), []), (1, (5, 3, 1), []), (0, (1, 1, 1), [])):
                 with mock.patch.object(systems, "_walk", return_value=walked(1, (1, 1, 1), own, culling)):
                     row, unsupported, _ = systems.template({}, None, systems._Textures(0), 0)
                 self.assertEqual([item["reason"] for item in unsupported], reasons)
@@ -560,22 +648,32 @@ class OriginalTimelineTests(unittest.TestCase):
 
         parsed = mv_studio_timeline.parse_timeline(_TIMELINE_12035.read_bytes(), "12035", preview_particle_systems=True)
         source = parsed["stageParticleSystems"]
-        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the
-        # main display clouds (View billboards on 5x3 and 6x3 nodes) are looping Automatic
-        # systems: culling may pause them off screen, so they stay reported. The side display
-        # clouds are also View billboards tilted on Y, whose frame handedness is unevidenced.
+        # The light beams (Local billboards tilted on Y, one on a 1.1x1.1 node) and the main
+        # display clouds (View billboards on 5x3 and 6x3 nodes) are looping procedural Automatic
+        # systems: the runtime replays their culling from the main camera with their culling
+        # box. The side display clouds are View billboards tilted on Y, whose frame handedness
+        # is unevidenced.
         reasons = {(row["template"], row["path"].rsplit("/root/", 1)[1]): row["reason"] for row in source["unsupported"]}
-        paused = "Automatic culling may pause it off screen (not reproduced)"
         view_tilt = "3D start rotation (X/Y axes) on a View or World billboard"
-        self.assertEqual(reasons, {
-            ("fx_par_so2035_04", "light_01"): paused, ("fx_par_so2035_04", "light_02"): paused,
-            ("fx_dis_par_so2035_02", "main_dis/cloud_L"): paused, ("fx_dis_par_so2035_02", "main_dis/cloud_R"): paused,
-            **{("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): view_tilt for side in "LR" for cloud in "LR"}})
-        self.assertEqual(len(source["cues"]), 12)
+        self.assertEqual(reasons, {("fx_dis_par_so2035_02", f"sub_dis_{side}/cloud_{cloud}"): view_tilt
+                                   for side in "LR" for cloud in "LR"})
+        self.assertEqual(len(source["cues"]), 14)
         names = {template["name"]: template for template in source["templates"]}
-        self.assertEqual(len(names), 8)
-        self.assertNotIn("fx_dis_par_so2035_02", names)
-        self.assertNotIn("fx_par_so2035_04", names)
+        self.assertEqual(len(names), 10)
+        rows = {row["path"].split("/root/", 1)[1]: row for name in ("fx_dis_par_so2035_02", "fx_par_so2035_04")
+                for row in names[name]["systems"]}
+        self.assertEqual(sorted(rows), ["light_01", "light_02", "main_dis/cloud_L", "main_dis/cloud_R"])
+        for path, row in rows.items():
+            self.assertTrue(row["culling"]["pauses"], path)
+            self.assertEqual(row["culling"]["uniform"], path.startswith(("main_dis", "sub_dis")), path)
+        # Size 17 billboards, no motion: 17 * 0.71 on every side.
+        self.assertEqual([round(value, 4) for value in rows["light_01"]["culling"]["bounds"]], [-12.07] * 3 + [12.07] * 3)
+        # A 1-unit cloud drifting along +X by the integral of its velocity curve (0.0239 to 0 over 10 s).
+        self.assertEqual([round(value, 4) for value in rows["main_dis/cloud_L"]["culling"]["bounds"]],
+                         [-.71, -.71, -.71, .8296, .71, .71])
+        # 63 of the 89 drawn systems are looping procedural Automatic systems; all have a culling box.
+        culled = [row for template in names.values() for row in template["systems"] if row["culling"]["pauses"]]
+        self.assertEqual((len(culled), sum(1 for row in culled if row["culling"]["bounds"])), (63, 63))
         # fx_flo_so2035_03 holds 35 systems, but 20 sit under inactive GameObjects that no clip
         # or Animator activates, so the clone never plays them.
         self.assertEqual({name: len(row["systems"]) for name, row in names.items() if name.startswith("fx_flo")},
@@ -621,19 +719,18 @@ class OriginalTimelineTests(unittest.TestCase):
         self.assertEqual(len(reasons["animated by the prefab Animator (activation)"]), 4)
         self.assertNotIn("animated by the prefab Animator (Transform)", reasons)
         # The dragon's Animator moves its local-space emitter: it is drawn with that curve.
-        # The clouds beside it are Local billboards on scaled nodes; they loop under Automatic
-        # culling, which may pause them off screen, so they stay reported.
-        self.assertEqual(drawn["fx_dis_par_so2036_05"], ["ryuu_01"])
-        self.assertEqual(sorted(path for path in reasons["Automatic culling may pause it off screen (not reproduced)"]
-                                if "so2036_05" in path),
-                         [f"fx_dis_par_so2036_05/root/kumo_0{index}" for index in range(1, 5)])
+        # The clouds beside it are Local billboards on scaled nodes under looping Automatic
+        # culling; the runtime replays it from their culling box, so they are drawn too.
+        self.assertEqual(sorted(drawn["fx_dis_par_so2036_05"]), ["kumo_01", "kumo_02", "kumo_03", "kumo_04", "ryuu_01"])
+        self.assertFalse(any("culling" in reason for reason in reasons))
         dragon = next(template for template in source["templates"] if template["name"] == "fx_dis_par_so2036_05")
         self.assertEqual(dragon["animation"]["clips"],
                          [{"name": "clip_dis_so2036_02", "start": 0.0, "duration": 4.0, "loop": True}])
-        moved, = dragon["animation"]["channels"]
-        self.assertEqual((dragon["nodes"][moved["node"]]["path"].rsplit("/", 1)[1], moved["kind"], moved["clip"]),
-                         ("ryuu_01", "translation", 0))
-        self.assertEqual([curve[0] for curve in moved["curves"]], ["cubic"] * 3)
+        # The same clip moves the dragon and the four clouds (their culling boxes follow per frame).
+        channels = dragon["animation"]["channels"]
+        self.assertEqual([(dragon["nodes"][row["node"]]["path"].rsplit("/", 1)[1], row["kind"], row["clip"]) for row in channels],
+                         [(name, "translation", 0) for name in ("kumo_01", "kumo_02", "kumo_03", "kumo_04", "ryuu_01")])
+        self.assertTrue(all([curve[0] for curve in row["curves"]] == ["cubic"] * 3 for row in channels))
 
 
 if __name__ == "__main__":

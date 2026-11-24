@@ -341,6 +341,9 @@
     const scene = new T.Scene();
     const editorCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const liveCamera = new T.PerspectiveCamera(42, 1, 0.02, 1000);
+    // The game main camera's culling frustum at past frames (particle culling).
+    const cullingCamera = new T.PerspectiveCamera(30, 1, 0.1, 1000);
+    let cullingView = null;
     const stageCamera = new T.PerspectiveCamera(48, 1, 0.02, 1000);
     const controls = new T.OrbitControls(editorCamera, renderer.domElement);
     const stage = new T.Group(), actors = new T.Group(), effects = new T.Group(), memberShadows = new T.Group();
@@ -1524,6 +1527,50 @@
       return true;
     }
 
+    // The shot frameTracks gives the live camera at `time`, posed on a scratch
+    // camera with the game's clip planes (near 0.1, far 1000) and the live
+    // camera's aspect and lens correction (liveFov); null with no shot.
+    function mainCameraAt(time) {
+      let shot = null, ended = null;
+      const hold = project?.source?.kind === "game";
+      for (const track of renderTracks) {
+        if (track.kind !== "camera") continue;
+        const event = activeCameraEvent(track, time);
+        if (event) {
+          shot = { event, track, at: time };
+          continue;
+        }
+        const last = hold ? endedCameraEvent(track, time) : null;
+        if (last && (!ended || last.start + last.duration > ended.event.start + ended.event.duration)) ended = { event: last, track };
+      }
+      if (!shot && ended) shot = { event: ended.event, track: ended.track, at: ended.event.start + ended.event.duration };
+      if (!shot || !poseCamera(shot.event, shot.at, shot.track, cullingCamera)) return null;
+      const native = shot.track.nativeClass === "AnimationTrack" && /(?:^|\/)MainCamera$/i.test(shot.track.binding || "");
+      const correction = native ? global.MVStudioSplit?.aspectCorrection(liveCamera.aspect) ?? 1 : 1;
+      cullingCamera.fov = Math.min(170, cullingCamera.fov / correction);
+      cullingCamera.aspect = liveCamera.aspect;
+      cullingCamera.near = 0.1;
+      cullingCamera.far = 1000;
+      cullingCamera.updateProjectionMatrix();
+      applyCameraOffsets(cullingCamera, shot.track.binding, time);
+      cullingCamera.updateMatrixWorld(true);
+      return cullingCamera;
+    }
+
+    // Recreated when the camera tracks or the aspect change, so the particle
+    // visibility pass starts over.
+    function particleCullingView() {
+      // applyProject rebuilds renderTracks on every seek; its source array changes only with an edit.
+      const cameras = renderTracks.filter((track) => track.kind === "camera").map((track) => track.id).join("|");
+      if (!cullingView || cullingView.tracks !== trackSource || cullingView.cameras !== cameras ||
+          cullingView.aspect !== liveCamera.aspect || cullingView.hold !== (project?.source?.kind === "game")) {
+        cullingView = { tracks: trackSource, cameras, aspect: liveCamera.aspect, hold: project?.source?.kind === "game",
+          cameraAt: mainCameraAt };
+        cullingView.key = cullingView;
+      }
+      return cullingView;
+    }
+
     function lightValue(event, keys) {
       const values = event.values || {};
       for (const key of keys) if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
@@ -1819,7 +1866,7 @@
       stageSparksA?.update(currentTime, project);
       stageSparksB?.update(currentTime, project);
       stageSparksRoop?.update(currentTime, project);
-      stageParticleSystems?.update(currentTime, project);
+      stageParticleSystems?.update(currentTime, project, particleCullingView());
       stageControlPrefabs?.update(currentTime, project);
       for (const record of records) record.stageFlash?.update(currentTime, project);
       for (const record of records) record.stageMotion?.update(currentTime, project);
