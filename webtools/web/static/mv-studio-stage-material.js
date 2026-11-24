@@ -459,11 +459,22 @@
 
     const singleBindings = new Set(records.map(({meta}) => meta.singleAmbientBinding).filter(Boolean));
     const hasEmissiveBinding = records.some(({meta}) => meta.emissive?.binding === stageModel);
-    const singleTracks = new Map(), samples = new Map();
+    const singleTracks = new Map();
     let sourceTracks, ambientTrack, emissiveTrack, propProject;
-    // LiveCoreStageAmbient of MainStage: one last-written color per property.
-    const stageHolds = propertyNames.map(() => ({})), stageSamples = new Map();
+    // LiveCoreStageAmbient components: the last color each wrote per property.
+    // Apply{Ambient,Tint,Blend}Color (0x2f703f8, 0x2f70788, 0x2f70ab4) and the
+    // ApplyDefault* writers (ApplyDefaultAmbientColor 0x2f70594 ...) share one
+    // cached color per property and skip Material.SetColor while
+    // UtilColor.CheckSame holds. LiveStageAmbientMixer and
+    // LiveStageSingleAmbientMixer.PostProcess (0x20f75bc) both write through
+    // them. Materials whose writes are the same (one component, or components
+    // fed the same colors and defaults) share a hold.
+    const componentHolds = new Map(), stageSamples = new Map();
     const held = global.MVStudioLighting?.heldColor;
+    function componentHold(key) {
+      if (!componentHolds.has(key)) componentHolds.set(key, {});
+      return componentHolds.get(key);
+    }
     return {
       // frames: the scene's frame clock (MVStudioLighting.heldColor).
       update(seconds, project, lighting, frames) {
@@ -491,20 +502,23 @@
           if (channel) record.material.uniforms.mainUVTransform.value.set(
             channel.x, channel.y, channel.z, 1 - channel.y - channel.w);
         }
-        let active = stageAmbient(project, seconds, ambientTrack);
-        // The base light also writes these components every frame (exact colors).
-        const holding = held && !lighting?.baseTrack;
-        if (holding && active) {
-          stageSamples.clear();
-          const activeAt = (time) => {
-            if (time === seconds) return active;
-            if (!stageSamples.has(time)) stageSamples.set(time, stageAmbient(project, time, ambientTrack));
-            return stageSamples.get(time);
-          };
-          active = stageHolds.map((hold, index) => held(hold, (time) => activeAt(time)?.[index] ?? null, seconds, frames));
-        } else for (const hold of stageHolds) hold.color = null;
+        const active = stageAmbient(project, seconds, ambientTrack);
+        // Holds are not applied while a base light track exists: LiveBaseLightReciever
+        // also writes these components (through the same CheckSame-gated
+        // ApplyBase*Color), and the write order of the base light mixer and the
+        // ambient mixers within a frame is not established (unevidenced), so the
+        // colors stay exact there.
+        const holding = held && !lighting?.baseTrack && !isColor(lighting?.baseAmbient);
+        if (!holding) componentHolds.clear();
+        stageSamples.clear();
+        // A track's colors at an earlier rendered frame of the frame clock.
+        const trackColorsAt = (track, time) => {
+          const key = track === ambientTrack && time === seconds ? null : `${track?.binding}@${time}`;
+          if (key === null) return active;
+          if (!stageSamples.has(key)) stageSamples.set(key, stageAmbient(project, time, track));
+          return stageSamples.get(key);
+        };
         const emissive = stageEmissive(project, seconds, emissiveTrack);
-        samples.clear();
         const baseAmbient = isColor(lighting?.baseAmbient) && lighting.baseAmbient[3] >= 0 ? lighting.baseAmbient : null;
         for (const {node, original, meta, material, reflectionCube, prop} of records) {
           if (meta.reflectionToggle) {
@@ -540,12 +554,17 @@
           }
           if (!meta.ambientDefaults) continue;
           const singleTrack = singleTracks.get(meta.singleAmbientBinding);
-          if (singleTrack && !samples.has(singleTrack)) samples.set(singleTrack, stageAmbient(project, seconds, singleTrack));
-          const single = samples.get(singleTrack);
+          const single = singleTrack ? trackColorsAt(singleTrack, seconds) : null;
           for (let index = 0; index < ambientUniforms.length; index++) {
             const uniform = material.uniforms[ambientUniforms[index]];
             if (!uniform) continue;
             if (singleTrack) {
+              if (holding) {
+                // The clip colors, or LiveCoreStageAmbient's own defaults without one.
+                const writtenAt = (time) => trackColorsAt(singleTrack, time)?.[index] || singleDefaults[index];
+                uniform.value.fromArray(held(componentHold(`single|${singleTrack.binding}|${index}`), writtenAt, seconds, frames));
+                continue;
+              }
               const base = index === 0 ? baseAmbient : index === 1 ? lighting?.baseTint : null;
               const paint = single ? single[index] : (index === 0 && baseAmbient) || singleDefaults[index];
               uniform.value.fromArray(single && isColor(base) ? paint.map((value, channel) => value * base[channel]) : paint);
@@ -553,6 +572,12 @@
             }
             const name = propertyNames[index];
             const fallback = meta.ambientDefaults[name] || meta.colors[name];
+            if (holding) {
+              if (!isColor(fallback)) continue;
+              const writtenAt = (time) => trackColorsAt(ambientTrack, time)?.[index] || fallback;
+              uniform.value.fromArray(held(componentHold(`main|${index}|${fallback.join(",")}`), writtenAt, seconds, frames));
+              continue;
+            }
             const base = index === 0 ? lighting?.baseAmbient : index === 1 && lighting?.baseAmbient ? lighting.baseTint : null;
             let color = active?.[index] || fallback;
             if (isColor(base) && (index < 2)) color = active ? color.map((c, n) => c * base[n]) :

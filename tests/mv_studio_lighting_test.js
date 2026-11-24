@@ -94,6 +94,58 @@ async function testStageAmbientHold() {
   console.log("Ambient component write threshold (UtilColor.CheckSame) holds on rendered frames passed");
 }
 
+// LiveStageSingleAmbientMixer.PostProcess (0x20f75bc) writes through the same CheckSame-gated
+// LiveCoreStageAmbient methods as the MainStage mixer, and the ApplyDefault* writers share their
+// cached color: a default within the threshold of the last clip write keeps that write.
+async function testStageAmbientComponentHolds() {
+  const stage = "/EntryPoint/Live/Stages/MainStage", binding = stage + "/Model/Ambient/Ambient2";
+  const root = new T.Group(), texture = new T.Texture();
+  const colors = {_AmbientColor: [0, 0, 0, 0], _TintColor: [1, 1, 1, 1], _BlendColor: [0, 0, 0, 0]};
+  const addSurface = (details) => {
+    const node = new T.Mesh(new T.PlaneGeometry(), new T.MeshBasicMaterial({map: texture}));
+    node.geometry.userData.mvStageMaterial = {shader: "general", colors, ambientDefaults: colors, uvTransform: [1, 1, 0, 0], ...details};
+    root.add(node);
+    return node;
+  };
+  const single = addSurface({singleAmbientBinding: binding}), twin = addSurface({singleAmbientBinding: binding});
+  const main = addSurface({});
+  const controller = await MVStudioStageMaterial.apply(T, root, {getDependency: async () => texture});
+  const clip = (playableClass, start, duration, color, fade) => ({start, duration, values: {playableClass,
+    colorSpecifiedType: 0, color, tintColor: [1, 1, 1, 1], blendColor: [1, 1, 1, 0], ...fade}});
+  const singleTrack = track("LiveStageSingleAmbientTrack", binding, [
+    clip("LiveStageSingleAmbientClip", 0, 2, [0, .5, 1, .2], {blendOut: 1}),
+    clip("LiveStageSingleAmbientClip", 1, 2, [0, .5, 1, .21], {blendIn: 1}),
+    clip("LiveStageSingleAmbientClip", 4, 1, [1, 1, 1, .002])]);
+  const mainTrack = track("LiveStageAmbientTrack", stage, [clip("LiveStageAmbientClip", 4, 1, [0, 0, 0, .002])]);
+  const stageProject = {tracks: [singleTrack, mainTrack], quality: {values: {}}};
+  const alpha = (node) => node.material.uniforms.ambient.value.w;
+  const history = [.5, 1.2, 1.6];
+  controller.update(1.8, stageProject, {});
+  assert(Math.abs(alpha(single) - (.2 + .01 * .896)) < 1e-7, "exact without frame history");
+  controller.update(1.8, stageProject, {}, {advancing: false, history});
+  assert(Math.abs(alpha(single) - (.2 + .01 * .648)) < 1e-7, "the single ambient component keeps the 1.6 s write");
+  assert.equal(alpha(twin), alpha(single), "materials of one component share its write");
+  // An advancing frame continues the held color; a move past the threshold is written.
+  controller.update(1.85, stageProject, {}, {advancing: true, history: []});
+  assert(Math.abs(alpha(single) - (.2 + .01 * .648)) < 1e-7, "0.85 of the threshold: still held");
+  controller.update(1.9, stageProject, {}, {advancing: true, history: []});
+  assert(Math.abs(alpha(single) - (.2 + .01 * .972)) < 1e-7, "1.05 of the threshold: written");
+  controller.update(3.5, stageProject, {}, {advancing: true, history: []});
+  assert.deepEqual(single.material.uniforms.ambient.value.toArray(), [1, 1, 1, 0], "LiveCoreStageAmbient's default ambient");
+  controller.update(1.8, stageProject, {baseTrack: true}, {advancing: false, history});
+  assert(Math.abs(alpha(single) - (.2 + .01 * .896)) < 1e-7, "a base light track also writes the component: exact");
+
+  // After the clip the defaults are written through the same cache: within the threshold the clip write stays.
+  controller.update(5.5, stageProject, {}, {advancing: false, history: [4.2, 4.8, 5.2]});
+  almost(single.material.uniforms.ambient.value.toArray(), [1, 1, 1, .002]);
+  almost(main.material.uniforms.ambient.value.toArray(), [0, 0, 0, .002]);
+  controller.update(5.5, stageProject, {});
+  almost(single.material.uniforms.ambient.value.toArray(), [1, 1, 1, 0]);
+  almost(main.material.uniforms.ambient.value.toArray(), [0, 0, 0, 0]);
+  controller.dispose();
+  console.log("Single and MainStage ambient components hold their clip and default writes passed");
+}
+
 async function testSingleStageAmbient() {
   const stage = "/EntryPoint/Live/Stages/MainStage";
   const plantBinding = stage + "/Model/Ambient/Ambient2", effectBinding = stage + "/Effect";
@@ -569,7 +621,7 @@ async function testWeightedStageMaterial() {
   console.log("Weighted native stage material selects Three skinning, opaque state and authored texture sampling.");
 }
 
-testStageAmbientHold().then(testSingleStageAmbient).then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
+testStageAmbientHold().then(testStageAmbientComponentHolds).then(testSingleStageAmbient).then(testStageEmissive).then(testStageMainSampler).then(testStageAuxiliarySamplers)
   .then(testStageCubemapQuality).then(testWeightedStageMaterial).catch(error => {
     console.error(error);
     process.exitCode = 1;
