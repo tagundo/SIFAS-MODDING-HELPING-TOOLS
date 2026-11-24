@@ -27,6 +27,11 @@
  * unique retained image owners are undoable. Pixel history defaults to 64 MiB;
  * structural changes and combined pixel/mask moves can use up to 128 MiB.
  *
+ * recordState(label, change) adds a pixel-free undo step for host state kept
+ * beside the layers (the head-texture blush bake): change(true) redoes it and
+ * change(false) undoes it. replaceImageData/restoreProject accept the same
+ * config.custom function, run with that layer step in one undo entry.
+ *
  * copySelection/cutSelection use a bounded in-app clipboard shared by engines.
  * pasteClipboard/startMoveSelection create pending floating pixels: getImage
  * remains committed, getDisplayImage previews movement. Enter commits one undo
@@ -257,7 +262,7 @@
       preview = null; displayOverride = null;
       if (config && config.history === false) { history = []; future = []; }
       else {
-        future = []; history.push({ label: label, project: before, image: [], mask: [], bytes: 0, dirty: dimensions() });
+        future = []; history.push({ label: label, project: before, image: [], mask: [], bytes: 0, dirty: dimensions(), custom: config && typeof config.custom === "function" ? config.custom : null });
         // A single operation must remain undoable; never silently discard it.
         if (retainedBytes() > Math.min(128 * 1024 * 1024, maxBytes * 2) && before.layers.reduce(function (sum, layer) { return sum + (layers.some(function (next) { return next.image.data === layer.image.data; }) ? 0 : layer.image.data.byteLength); }, 0) > Math.min(128 * 1024 * 1024, maxBytes * 2)) {
           assignProject(before); history = oldHistory; future = oldFuture; historyBytes = retainedBytes(); throw new Error("This layer operation exceeds the texture undo memory limit.");
@@ -425,8 +430,9 @@
       if (floating) { cancelFloating(); return true; }
       if (transaction) rollback(); if (!from.length) return false;
       var record = from.pop(); // moving between undo and redo does not free its retained tiles
+      if (record.stateOnly) { record.custom(useAfter); to.push(record); trimHistory(); if (options.onHistoryChange) options.onHistoryChange(getState()); return true; }
       if (record.project) {
-        var oppositeProject = snapshot(false); assignProject(record.project); record.project = oppositeProject; to.push(record); trimHistory(); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return true;
+        var oppositeProject = snapshot(false); assignProject(record.project); record.project = oppositeProject; to.push(record); trimHistory(); if (record.custom) record.custom(useAfter); layerChanged(); redraw(dimensions(), dimensions()); notify(true, false, dimensions()); return true;
       }
       var currentDoc = doc, sourceLayer = findLayer(record.layerId); doc = sourceLayer.image;
       var activeTarget = useAfter ? record.activeAfter : record.activeBefore;
@@ -483,6 +489,12 @@
     function replaceImageData(value, config) {
       requireImage(); var pixels = image(value, doc), id = nextLayerId();
       return changeLayers(config && config.label || "Replace texture", function () { layers = [{ id: id, name: "Background", visible: true, opacity: 1, image: pixels }]; activeLayerId = id; doc = pixels; }, config);
+    }
+    function recordState(label, change) {
+      requireImage(); if (typeof change !== "function") throw new Error("A state change needs an undo function.");
+      if (floating) throw new Error("Apply or cancel the floating selection first."); if (transaction) rollback();
+      future = []; history.push({ label: label || "State", custom: change, stateOnly: true, image: [], mask: [], bytes: 0, dirty: null }); trimHistory();
+      if (options.onHistoryChange) options.onHistoryChange(getState()); return true;
     }
     function selectionBounds() {
       if (!doc) return null;
@@ -681,7 +693,7 @@
       redraw();
     }
     return {
-      setImage: setImage, getImage: function (copy) { var value = compositeImage(false); return value ? copy === false ? value : image(value) : null; }, getActiveImage: function (copy) { return doc ? copy === false ? doc : image(doc) : null; }, getDisplayImage: function () { return compositeImage(true); }, applyImageData: applyImageData, replaceImageData: replaceImageData, setPreviewImage: setPreviewImage,
+      setImage: setImage, getImage: function (copy) { var value = compositeImage(false); return value ? copy === false ? value : image(value) : null; }, getActiveImage: function (copy) { return doc ? copy === false ? doc : image(doc) : null; }, getDisplayImage: function () { return compositeImage(true); }, applyImageData: applyImageData, replaceImageData: replaceImageData, recordState: recordState, setPreviewImage: setPreviewImage,
       setDisplayOverride: function (value) { displayOverride = value === null ? null : image(value, doc); displayComposite = null; previewCanvasDirty = dimensions(); redraw(); },
       getLayers: layerRows, selectLayer: selectLayer, addLayer: addLayer, duplicateLayer: duplicateLayer, renameLayer: renameLayer, removeLayer: removeLayer, moveLayer: moveLayer, setLayerVisible: setLayerVisible, setLayerOpacity: setLayerOpacity, mergeLayerDown: mergeLayerDown,
       getProject: function (copy) { requireImage(); return snapshot(copy !== false); }, restoreProject: restoreProject,

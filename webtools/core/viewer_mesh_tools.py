@@ -81,7 +81,16 @@ def _load(raw):
             if is_dependency:
                 return None
             return super().load_file(file, parent=parent, name=name, is_dependency=is_dependency)
-    env = ExplicitEnvironment()
+
+        # A dependency is never loaded (above), so never look for one outside
+        # the given bytes: UnityPy would otherwise list the whole working
+        # directory for an external shader (model_edits.EditingEnvironment).
+        def find_file(self, name, is_dependency=True):
+            found = self.get_cab(name)
+            if found is None:
+                raise FileNotFoundError("A linked asset was not included in the selected model.")
+            return found
+    env = ExplicitEnvironment(path="")
     env.file = env.load_file(raw)
     return env
 

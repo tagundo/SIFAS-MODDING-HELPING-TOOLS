@@ -571,6 +571,91 @@ textures are reported above the model. Supported raw and ASTC texture images
 retain their original dimensions and pixels. Android includes the ASTC decoder;
 desktop users can point `ASTCENC_BIN` at an executable `astcenc`/`astcdec` CLI.
 
+### Bake blush (홍조 굽기)
+
+In Live and Navi the game ignores a costume's own blush settings: it binds the
+APK's shared `cheek_array` and only the song's cheek clips drive the blush
+(median intensity 0.255, maximum 1.0). The per-costume way to get a stronger
+blush is to bake it into that costume's head texture. **Texture and color
+tools → Bake blush** appears when the model has a head material
+(`BodyPartManager.headMaterial`) or a recolour-suit texture bound to it, and
+opens that face texture.
+
+- Pick the blush type by its shape: **Cheeks (Ppo)** / 볼 홍조(Ppo) (the stock
+  default, two round patches on the cheeks; 3105 of 3141 MV clips) or **Cheeks
+  and nose (Akarame)** / 볼·콧등 홍조(Akarame) (one band across both cheeks and the
+  bridge of the nose). The types differ in shape, not strength: strength is
+  only one of the five levels below. The 3D view previews the choice at once;
+  **Show before** toggles it off; **Apply blush** is one undo step (the history
+  buttons, Ctrl+Z / Ctrl+Y and Ctrl+Shift+Z anywhere in the texture tools).
+  **Cancel preview** drops the previewed choice entirely: the next change starts
+  from the applied bake (or the defaults). The two types sit side by side, the
+  five levels in a grid after the "No blush" swatch, and Apply / Show before /
+  Remove in one row right under them, followed by one line that says what Save
+  will write for this face (exact pixels and how much larger the texture data
+  gets, or that keeping ASTC is requested; Save itself reports what it wrote).
+  Above Apply sits only what changes the choice. The notes that ask for more
+  than this choice (bake the other platform's bundle, or the recolour suits'
+  texture) follow the save line in full, and one line above the types counts
+  them and brings them into view (“3 notes — see below” / 알림 3개 — 아래 참고),
+  so no number of notes can push Apply down. At 1366×900 the status, all five
+  levels, Apply and the save line are in view together when the tab opens and
+  with the longest status (Akarame, Very strong and Keep ASTC, or a custom k),
+  in English, Korean and Japanese, also on a costume with recolour suits.
+- Each level shows the texture's own cheek-centre colour. Strength k is a
+  permanent blush of intensity k (k = 1 is the strongest stock clip):
+  Very light 0.5, Light 1.05, Medium 1.65 (default), Strong 2.3, Very strong 3
+  (so Light is the closest to the game's own strongest song blush, which the
+  panel says right under the strength heading).
+  Neighbouring levels differ by CIEDE2000 4.6–5.0 at the darkest stock texel on
+  a typical cheek (4.2 or more on every head sampled); the strongest keeps
+  every channel far from 0. **Advanced** accepts any k up to 4.
+- The bake is the shader's own rule: RGB × (1 + k·(cheek − 1)), cheek sampled
+  bilinearly with Clamp at `uv·2.22 + (0, −1.221)` (Unity v up), alpha
+  untouched. Only texels whose rounded colour changes are written. Every authored
+  mip is baked in place at its own texel centres; mips are never regenerated.
+- Saving, by default **exact pixels**: the face is written as lossless RGBA32
+  at its authored mip count, so every texel the bake does not change keeps its
+  decoded value and every baked texel is exactly the shader result (an ASTC
+  6×6 face's texture data grows about nine times, as with the other texture
+  tools). **Advanced → Keep the game's compression (ASTC)** /
+  게임 압축 형식(ASTC) 유지 is the opt-in alternative: the face keeps its ASTC
+  format, size and mip count; in every level each compressed block without a
+  changed texel keeps its original bytes, and only the blocks that contain one
+  are encoded again from the exact bake (the app's `astcenc` 4.8, LDR,
+  `-exhaustive -decode_unorm8`). ASTC is lossy, so every texel inside those
+  blocks, including ones the bake does not change, approximates the bake (real
+  1024² ASTC 6×6 face with astcenc 4.8.0: 509 of 29 241 blocks re-encoded at full
+  size, mean error 0.14 and at most 4 levels per channel there, up to 25 in the
+  16×16 mip; 532 texels the rule leaves alone change over all levels). Each
+  spliced level is decoded again; the save falls back to exact pixels unless
+  every texel outside the re-encoded blocks and every alpha value is unchanged.
+  Paint on the same texture, a non-ASTC texture, an `astcenc` without an
+  encoder and any other failure of the re-encode (its own 60 s budget, or the
+  decoder failing on a re-encoded level: `astcenc` exiting with an error or
+  timing out, or output it cannot read) also save exact pixels; the save itself
+  never fails because of the ASTC option. After saving, the save status says which mode
+  each baked face used and, for a fallback, why. The tests use a stand-in
+  encoder; `REAL_ASTCENC_BIN=/path/to/astcenc` (4.8.0) runs the astc-keep save
+  with the real CLI as well (with `REAL_MV_SAMPLES`, on a real head too).
+- The recipe stores the bake as `blush: {layer, k, encoding}` with encoding
+  `exact` (default; a row without the field loads as exact) or `astc-keep`.
+  It is an operation on the original pixels, so applying
+  another strength replaces the bake instead of adding to it. **Export PNG**
+  writes the texture as the game shows it (bake included); **Import PNG** treats
+  the file as the final pixels and removes the bake operation in the same undo
+  step, so a retouched export is never baked twice.
+- The blush pattern is read from the costume bundle (or a verified copy cached
+  from a costume you opened before, under `cache/viewer/cheek-array`) and checked
+  against the stock array's SHA-256. No game texture data ships with the tools.
+- Recolour suits (`m_suit_attach`, key `c1`) replace the head texture at runtime:
+  open the attach bundle with the costume and bake its texture too. While the
+  blush tab edits a recolour texture, the 3D view shows it on the head material
+  it replaces; leaving the tab or choosing another texture restores the face. Matcap faces
+  can look slightly different in game; the song blush still appears on top in
+  blush scenes; masked heads never get the song blush. Android and iOS bundles
+  are separate files.
+
 Three.js r128 and its matching controls/loader are bundled under `static/vendor`
 with their MIT license, so rendering scripts work offline. The local server converts
 selected Unity data to a self-contained GLB in a bounded, temporary memory cache.

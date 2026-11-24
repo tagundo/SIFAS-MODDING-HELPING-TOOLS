@@ -15,6 +15,8 @@
     var suggestedNameKey = "", suggestedName = "";
     var installedFingerprint = "", alreadyAdded = false, installedComparisonKey = "", installedComparisonValue = "";
     var resultBodyState = null, resultMeshState = null;
+    // English sentences shown after the save status (the baked-blush save mode); translated on display.
+    var statusNotes = [];
     var meshContext = null, meshRevision = null, meshOwner = null, meshSnapshot = null;
     var progress = element("viewer-save-progress"), cancel = element("viewer-save-cancel");
     function context() { return options.context() || {}; }
@@ -28,7 +30,7 @@
     function state() {
       return { available: !!((context().editing || {}).available), busy: busy, installing: installing, alreadyAdded: alreadyAdded, status: status, error: error,
         outputs: outputPaths.slice(), outputPaths: outputPaths.slice(), previewPaths: previewPaths.slice(), originalPaths: originalPaths.slice(),
-        recipePath: recipePath, resultModelId: resultModelId, reviewingSaved: reviewingSaved, jobId: jobId,
+        recipePath: recipePath, resultModelId: resultModelId, reviewingSaved: reviewingSaved, jobId: jobId, notes: statusNotes.slice(),
         modName: element("viewer-mod-name").value, modNameManual: manualModName, thumbnailMode: thumbnailMode(), thumbnailFitFull: thumbnailFitFull(),
         modPackage: lastPackage ? { packagePath: lastPackage.package_path, characterId: lastPackage.character_id,
           variants: lastPackage.variants || [], thumbnail: lastPackage.thumbnail || null } : null };
@@ -37,10 +39,23 @@
       var target = element(id); if (!target) return;
       target.addEventListener(name, fn); events.push(function () { target.removeEventListener(name, fn); });
     }
-    function say(key, next, detail) {
-      statusKey = key; status = next || status; error = next === "error" ? detail || key : "";
+    // Sentences are joined with a space, except after a full-width stop (ja).
+    function joinSentences(parts) { return parts.reduce(function (text, part) { return !part ? text : !text ? part : text + (/[。！？]$/.test(text) ? "" : " ") + part; }, ""); }
+    function statusText(key, detail) { return joinSentences([translate(key), detail && detail !== key ? translate(detail) : ""].concat(statusNotes.map(function (note) { return translate(note); }))); }
+    // The save summary of each baked blush: the encoding it was saved with and,
+    // when keeping ASTC was requested but not possible, why (server sentences).
+    function textureSaveNotes(data) {
+      var notes = [];
+      (data && Array.isArray(data.texture_edits) ? data.texture_edits : []).forEach(function (row) {
+        var blush = row && row.blush; if (!blush) return;
+        [blush.fallback, blush.note].forEach(function (text) { if (typeof text === "string" && text && notes.indexOf(text) < 0) notes.push(text); });
+      });
+      return notes;
+    }
+    function say(key, next, detail, notes) {
+      statusKey = key; status = next || status; error = next === "error" ? detail || key : ""; statusNotes = notes || [];
       var target = element("viewer-save-status");
-      target.textContent = translate(key) + (detail && detail !== key ? " " + translate(detail) : "");
+      target.textContent = statusText(key, detail);
       target.classList.toggle("viewer-save-error", !!error); refresh();
     }
     function setBusy(value) {
@@ -81,7 +96,7 @@
       var authored = editingState(), lightweight = Object.assign({}, authored);
       // Pixel payloads are immutable cached strings. A revision is enough for
       // frequent UI updates; serialize PNGs only for a concrete save operation.
-      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256 }; });
+      if (lightweight.textures) lightweight.textures = lightweight.textures.map(function (row) { return { texture: row.texture, kind: row.kind, sourceSha256: row.sourceSha256, blush: row.blush || null }; });
       var fingerprint = JSON.stringify([lightweight, mesh, c.textureTools && c.textureTools.getRevision ? c.textureTools.getRevision() : 0]);
       var accessories = c.accessories || {}, accessoryBlocked = !!authored.accessoryUnclip && (accessories.pending || accessories.error);
       if (lastAuthoringFingerprint && lastAuthoringFingerprint !== fingerprint) { lastPackage = null; clearThumbnail(); }
@@ -128,7 +143,7 @@
       element("viewer-edit-evaluation-status").textContent = evaluationText;
       if (!busy && !error && ["idle", "ready", "reviewing"].indexOf(status) >= 0) {
         var key = reviewingSaved ? "Reviewing the saved copy. Re-edit from original to continue." : unresolvedTexture ? "Apply or cancel the texture preview before saving." : unresolvedMesh ? "Apply selected face deletions before saving." : !ready ? (c.current ? "Model saving is unavailable for this model." : "Open a model to save model edits.") : authored.unsupported && authored.unsupported.length ? authored.unsupported[0] : accessoryBlocked ? accessories.errorText || accessories.error || "Wait for the accessory check before saving." : "Model changes";
-        statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle";
+        statusKey = key; status = reviewingSaved ? "reviewing" : ready ? "ready" : "idle"; statusNotes = [];
         element("viewer-save-status").textContent = translate(key) + (key === "Model changes" ? ": " + (editCount(authored) + (mesh ? mesh.meshes.length : 0) + (c.transplantEdits || []).length) + (authored.accessoryUnclip ? " · " + translate("Accessory Un-clip") : "") : "");
       }
       element("viewer-save-status").classList.toggle("viewer-save-error", !!error);
@@ -200,6 +215,7 @@
         if (authored.textures.some(function (row) { return row.kind === "costume"; })) kinds.push(translate("Costume colour"));
         if (authored.textures.some(function (row) { return row.kind === "skin"; })) kinds.push(translate("Skin tone"));
         if (authored.textures.some(function (row) { return row.kind === "paint"; })) kinds.push(translate("Texture painting"));
+        if (authored.textures.some(function (row) { return !!row.blush; })) kinds.push(translate("Baked blush"));
       }
       if (authored.outlines && authored.outlines.length) kinds.push(translate("Outlines"));
       if (authored.physics && authored.physics.length) kinds.push(translate("Physics"));
@@ -352,8 +368,10 @@
       }).sort(function (a, b) { return a.id.localeCompare(b.id); });
       if (input.accessoryUnclip) canonical.accessoryUnclip = { strength: numeric(input.accessoryUnclip.strength), overlap: numeric(input.accessoryUnclip.overlap), closeGaps: input.accessoryUnclip.closeGaps };
       if (input.textures && input.textures.length) canonical.textures = input.textures.map(function (row) {
-        return { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
+        var value = { texture: { source: row.texture.source, file: row.texture.file, id: row.texture.id },
           sourceSha256: row.sourceSha256, png: row.png, kind: row.kind };
+        if (row.blush) value.blush = { layer: row.blush.layer, k: row.blush.k, encoding: row.blush.encoding === undefined ? "exact" : row.blush.encoding };
+        return value;
       }).sort(function (a, b) {
         var order = a.texture.source - b.texture.source || a.texture.file - b.texture.file;
         if (order) return order;
@@ -427,7 +445,7 @@
         if (snapshot.meshState) request.mesh_state = snapshot.meshState;
         var data = await runJob("/api/viewer/edit/export", request, signal);
         rememberResult(data, snapshot); lastPackage = null;
-        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done");
+        say(context().modelId === snapshot.modelId ? "Saved. Open the saved result to verify it." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
       } catch (failure) {
         if (!disposed) say(failure && failure.name === "AbortError" ? "Saving cancelled." : failure.message || "The body edits could not be saved.", "error");
       } finally { requestController = null; if (!disposed) setBusy(false); }
@@ -470,7 +488,7 @@
         rememberResult(data, snapshot);
         if (stillCurrent(snapshot)) lastPackage = packaged;
         if (!install) {
-          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done");
+          say(stillCurrent(snapshot) ? "Mod ZIP saved. You can install it with the mod installer." : "Saved the previous model. The current preview was not changed.", "done", "", textureSaveNotes(data));
           return;
         }
         // Model switching remains possible while a background job finishes.
@@ -625,7 +643,7 @@
     });
     refresh();
     return { refresh: refresh, getState: state, restoreRecipe: restoreRecipe,
-      updateLanguage: function () { renderOutputs(); element("viewer-save-status").textContent = translate(statusKey); refresh(); },
+      updateLanguage: function () { renderOutputs(); element("viewer-save-status").textContent = statusText(statusKey); refresh(); },
       dispose: function () {
         disposed = true;
         if (!installing) { if (requestController) requestController.abort(); if (eventSource) eventSource.close(); }
