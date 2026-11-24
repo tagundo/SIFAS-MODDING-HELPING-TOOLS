@@ -1379,6 +1379,22 @@ class EndpointTests(Case):
             status, data = self.call("GET", "/api/mv-studio/songs?region=gl")
         self.assertEqual((status, data["error"]), (501, register.NO_ELICHIKA))
 
+    def test_register_job_language_is_read_with_the_request(self):
+        from webtools.jobs import MANAGER
+        seen = []
+        with mock.patch.object(register, "run_register", side_effect=lambda job, root, request, *, language:
+                               seen.append(language) or "ok"):
+            status, data = self.call("POST", "/api/mv-studio/register-job?lang=ko",
+                                     {"mode": "new", "project": self.project(), "title": "x", "jacket": {"kind": "base"},
+                                      "audio": {"kind": "base"}, "platforms": ["android", "ios"]})
+            self.assertEqual(status, 200)
+            job = MANAGER.get(data["job_id"])
+            for _ in range(200):
+                if job.is_done:
+                    break
+                threading.Event().wait(0.05)
+        self.assertEqual(seen, ["ko"])
+
     def test_register_job_runs_and_reports_the_song(self):
         from webtools.jobs import MANAGER
         body = {"mode": "new", "project": self.edited(self.project()), "title": "내 MV", "jacket": {"kind": "base"},
