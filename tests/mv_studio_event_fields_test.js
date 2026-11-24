@@ -69,6 +69,10 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
             { id: 'fx:0', start: 0, duration: 2, label: 'F', editableValues: ['offset', 'weight'],
               values: { asset: 'cab:8', playableClass: 'CustomControlClip', prefabGameObject: { m_FileID: 0, m_PathID: '5' },
                 particleRandomSeed: 7, overwriteRandomSeed: 0, weight: 1, offset: { x: 0, y: 0, z: 0 } } }] },
+          { id: 'prop', kind: 'lighting', events: [
+            { id: 'prop:0', start: 0, duration: 2, label: 'P', editableValues: ['color'],
+              values: { asset: 'cab:9', playableClass: 'LivePropAmbientClip', color: { r: 2, g: 1, b: .5, a: 1 },
+                tintColor: { r: 1, g: 1, b: 1, a: 1 }, colorSpecifiedType: 0, memberPosition: 1 } }] },
         ] };
       const history = MVStudioEditHistory.create({ getProject: () => project });
       const ctx = {
@@ -136,6 +140,23 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
       out.repicked = { value: find('coloring:0').event.values.tintColor, undo: history.size().undo };
       history.undo();
       out.undone = find('coloring:0').event.values.tintColor;
+
+      // The intensity is k = max(1, r, g, b): an entry below 1 clamps to 1 once and never compounds.
+      const prop = control('prop:0', 'color');
+      const propIntensity = prop.querySelector('.mv-color-intensity');
+      const propBefore = history.size().undo;
+      out.propIntensity = { min: propIntensity.min, shown: propIntensity.value, entries: [] };
+      for (const entry of ['0.5', '0.5', '1', '0']) {
+        propIntensity.value = entry;
+        propIntensity.dispatchEvent(new Event('change', { bubbles: true }));
+        out.propIntensity.entries.push({ value: { ...find('prop:0').event.values.color }, shown: propIntensity.value,
+          steps: history.size().undo - propBefore, swatch: prop.querySelector('input[type=color]').value });
+      }
+      // Below 1 is still reachable through the exact values.
+      const red = prop.querySelector('[data-mv-field="color.r"]');
+      red.value = '0.25';
+      red.dispatchEvent(new Event('change', { bubbles: true }));
+      out.propExact = { value: { ...find('prop:0').event.values.color }, shown: propIntensity.value, steps: history.size().undo - propBefore };
 
       // Observed options: this track's values only, labelled; not writable → read only.
       const texture = control('coloring:0', 'textureIndex');
@@ -238,6 +259,15 @@ const statics = path.resolve(__dirname, '../webtools/web/static');
     assert.deepEqual(result.brighter, { value: { r: 4, g: 0, b: 0, a: 1 }, undo: 3, swatch: '#ff0000' }, 'the intensity box scales the hue');
     assert.deepEqual(result.repicked, { value: { r: 0, g: 4, b: 0, a: 1 }, undo: 4 }, 'a later pick keeps the edited intensity');
     assert.deepEqual(result.undone, { r: 4, g: 0, b: 0, a: 1 });
+    assert.deepEqual([result.propIntensity.min, result.propIntensity.shown], ['1', '2']);
+    assert.deepEqual(result.propIntensity.entries, [
+      { value: { r: 1, g: .5, b: .25, a: 1 }, shown: '1', steps: 1, swatch: '#ff8040' },
+      { value: { r: 1, g: .5, b: .25, a: 1 }, shown: '1', steps: 1, swatch: '#ff8040' },
+      { value: { r: 1, g: .5, b: .25, a: 1 }, shown: '1', steps: 1, swatch: '#ff8040' },
+      { value: { r: 1, g: .5, b: .25, a: 1 }, shown: '1', steps: 1, swatch: '#ff8040' },
+    ], 'an intensity below 1 clamps to 1 once: no compounding, and the box shows the stored intensity');
+    assert.deepEqual(result.propExact, { value: { r: .25, g: .5, b: .25, a: 1 }, shown: '1', steps: 2 },
+      'channels below 1 stay editable in the exact values');
 
     assert.deepEqual(result.texture.options, [['0', '조명 텍스처 0'], ['2', '조명 텍스처 2']], 'observed on this track only');
     assert.deepEqual(result.texture.fields, ['textureIndex']);

@@ -460,9 +460,16 @@
     const label = ctx.t(labelOf(info.key, spec));
     let state = { ...info.value }, pickIntensity = null;
     const swatch = ctx.make("input", null, { type: "color", class: "mv-color-swatch", "data-mv-field": info.path, "aria-label": label });
-    const intensity = numberBox(ctx, 1, { min: 0, max: 1000, class: "mv-color-intensity", "data-mv-field": info.path + ".intensity",
-      "aria-label": ctx.format("{label}: intensity", { label }), title: ctx.t("Intensity (×): HDR multiplier of the swatch colour") },
-    (next) => { pickIntensity = null; write(scaleColor(state, next)); });
+    // k = max(1, r, g, b) is never below 1, so the box is not either (an entry below 1
+    // clamps to 1); a darker colour is picked on the swatch or typed in the exact values.
+    const intensity = numberBox(ctx, 1, { min: 1, max: 1000, class: "mv-color-intensity", "data-mv-field": info.path + ".intensity",
+      "aria-label": ctx.format("{label}: intensity", { label }),
+      title: ctx.t("Intensity (×): HDR multiplier of the swatch colour, 1 or more. Pick a darker colour on the swatch.") },
+    (next) => {
+      pickIntensity = null;
+      if (next === colorParts(state).k) show();
+      else write(scaleColor(state, next));
+    });
     const boxes = {};
     for (const channel of CHANNELS) {
       boxes[channel] = numberBox(ctx, state[channel], { min: 0, max: 1000, "data-mv-field": `${info.path}.${channel}`,

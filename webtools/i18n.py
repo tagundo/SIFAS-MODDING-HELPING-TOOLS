@@ -2934,7 +2934,9 @@ _MV_EDITOR_B_TRANSLATIONS = {
         "この値はゲームに書き出されますが、3Dプレビューには表示されません。"),
     "Exact values": ("정확한 값", "正確な値"),
     "{label}: intensity": ("{label}: 강도", "{label}: 強さ"),
-    "Intensity (×): HDR multiplier of the swatch colour": ("강도 (×): 견본 색에 곱하는 HDR 배율", "強さ (×): 見本の色に掛けるHDR倍率"),
+    "Intensity (×): HDR multiplier of the swatch colour, 1 or more. Pick a darker colour on the swatch.": (
+        "강도 (×): 견본 색에 곱하는 HDR 배율로, 1 이상입니다. 더 어두운 색은 견본에서 고르세요.",
+        "強さ (×): 見本の色に掛けるHDR倍率で、1以上です。より暗い色は見本で選んでください。"),
     "Native data (read only)": ("원본 데이터 (읽기 전용)", "元データ (読み取り専用)"),
     "Playable asset": ("플레이어블 에셋", "Playableアセット"),
     "Playable class": ("플레이어블 클래스", "Playableクラス"),
