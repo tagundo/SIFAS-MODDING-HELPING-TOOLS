@@ -3,7 +3,7 @@
    node tests/mv_runtime_capture.js --dump GAME.json.gz|job.log --manifest M.json --out DIR
         [--library DIR] [--server-root DIR] [--url URL] [--phases -1,0,1] [--preroll 3]
         [--software true] [--chromium PATH] [--keys FILE] [--batch 100] [--physics-order game|same-frame]
-        [--physics-grid clock|rule] [--suits dump|POSITION:SUIT,...]
+        [--physics-grid game|clock|rule] [--suits dump|POSITION:SUIT,...]
 
    The game dump (schema sifas-mv-runtime-dump/1, side "game") is read as a gzip
    or plain JSON document, or extracted from a GitHub job log (@@RTDUMP blobs;
@@ -19,10 +19,11 @@
    editor dresses every pinned slot so. Every game record is then evaluated at
    t = clock.directorTime + phase * clock.deltaTime for each phase: a plain
    deferred seek for pure parts, a fixed-step physics preroll ending exactly at
-   t for members and springs. The preroll grid is the frame rate the game
-   achieved (frames per director second, capped by the requested rate), since
-   the game steps its springs once per rendered frame (--physics-grid rule
-   uses the requested rate instead, for A/B checks). The read-only
+   t for members and springs. The game steps its springs once per rendered
+   frame, so the preroll steps on the game's own frame times (gameFrameTimes:
+   record frameCount, directorTime and deltaTime); --physics-grid clock uses
+   the frame rate the game achieved (frames per director second, capped by the
+   requested rate) and rule the requested rate, for A/B checks. The read-only
    MVStudioScene.assetDump() supplies
    the values; DIR/editor-dump.json.gz is written in the same schema with
    side "editor". Values stay in editor space: tests/mv_runtime_compare.py
@@ -234,10 +235,21 @@ function stageNodeKey(node) {
 // key, scope, GameObject path and mesh name (schema 1.5 renderer join).
 // A renderer outside /EntryPoint belongs to the additively loaded stage scene (e.g. /Model/ground
 // of bg0006_01_s1): its editor counterpart is in scope "stage" (mv_runtime_compare.Conventions.game_scope).
+// Member renderers the game creates at runtime keep the editor's source mesh names
+// (mv_runtime_compare.Conventions.member_mesh_alias): LiveCoreMemberHead merges the face
+// meshes into CombineFace, and hair/body are split per bone budget into <suit>_head_BoneN /
+// <suit>_body_BoneN below the Hair/Body GameObjects.
+const MEMBER_RUNTIME_MESHES = [[/\/mesh_face\/CombineFace$/, 'Face'], [/\/mesh_hair\/Hair\/[^/]+_Bone\d+$/, 'Hair'],
+  [/\/mesh_body\/Body\/[^/]+_Bone\d+$/, 'Body']];
+function memberMeshAlias(renderer) {
+  if (!/^member\d+$/.test(renderer.scope || '') || typeof renderer.path !== 'string') return null;
+  return MEMBER_RUNTIME_MESHES.find(([pattern]) => pattern.test(renderer.path))?.[1] ?? null;
+}
+
 function rendererSelector(renderer) {
   const outside = renderer.scope === 'other' && typeof renderer.path === 'string' && renderer.path.startsWith('/') &&
     !renderer.path.startsWith('/EntryPoint/') && renderer.path.split('/').length >= 3;
-  return { key: renderer.key, scope: outside ? 'stage' : renderer.scope, mesh: renderer.mesh ?? null,
+  return { key: renderer.key, scope: outside ? 'stage' : renderer.scope, mesh: memberMeshAlias(renderer) ?? renderer.mesh ?? null,
     path: outside ? renderer.path.split('/').slice(2).join('/') : renderer.path ?? null };
 }
 
@@ -336,28 +348,81 @@ async function evaluatePure(page, batch, keys) {
   }, { batch: batch.map(({ id, t, sections, filter }) => ({ id, t, sections, filter })), keys });
 }
 
-// Same fixed-step grid as mv_frame_capture.js renderFrame(), ending exactly at
-// t, but the last step is deferred too: nothing is drawn or read back.
-async function evaluatePhysics(page, request, preroll, rate, keys) {
-  return page.evaluate(({ request, preroll, rate, keys }) => {
+// Unity Time.maximumDeltaTime (default 1/3 s): a clamped deltaTime does not
+// give the previous frame's director time.
+const MAX_DELTA_TIME = 1 / 3;
+
+// The game's own rendered-frame times (director seconds) from every record
+// that carries clock.frameCount. A record is a rendered frame; the frame
+// before it is at directorTime - deltaTime unless deltaTime was clamped to
+// maximumDeltaTime; the other frames between two records are spread evenly
+// over the director time between them. While the director does not advance
+// (pinned at the song end) every frame between two records shows that time;
+// a director that goes back leaves its frames out. Springs step once per
+// rendered frame (SwingBoneGroupJob has no time step), so this grid is what
+// the game's springs saw, including its frame-time jitter on a slow device.
+// The same rule as mv_frame_compare.py game_frame_times.
+function gameFrameTimes(doc) {
+  const anchors = new Map();
+  for (const record of doc.records || []) {
+    const clock = record.clock;
+    if (!Number.isInteger(clock?.frameCount) || !Number.isFinite(clock?.directorTime) || !(clock.directorTime > 0)) continue;
+    if (!anchors.has(clock.frameCount)) anchors.set(clock.frameCount, { frame: clock.frameCount, t: clock.directorTime, dt: clock.deltaTime });
+  }
+  const sorted = [...anchors.values()].sort((a, b) => a.frame - b.frame);
+  const times = sorted.length ? [sorted[0].t] : [];
+  for (let index = 1; index < sorted.length; index++) {
+    const a = sorted[index - 1], b = sorted[index], frames = b.frame - a.frame;
+    if (Math.abs(b.t - a.t) <= 1e-9) {
+      for (let k = 1; k <= frames; k++) times.push(a.t);
+      continue;
+    }
+    if (!(b.t > a.t)) continue;
+    const before = Number.isFinite(b.dt) && b.dt > 0 && b.dt < MAX_DELTA_TIME - 1e-6 && b.t - b.dt > a.t + 1e-9 && frames >= 2 ? b.t - b.dt : null;
+    const end = before ?? b.t, spread = before === null ? frames : frames - 1;
+    for (let k = 1; k < spread; k++) times.push(a.t + k * (end - a.t) / spread);
+    if (before !== null) times.push(before);
+    times.push(b.t);
+  }
+  return times;
+}
+
+// Preroll frame times before t: the game grid inside [t - preroll, t) when it
+// covers the window, else the fixed-step grid at `rate` ending exactly at t.
+function prerollTimes(time, preroll, rate, grid = null) {
+  const from = preroll === 'full' ? -Infinity : time - preroll;
+  if (grid?.length && grid[0] <= Math.max(from, 0) + 1e-9 && grid.at(-1) >= time - 1e-9) {
+    return { source: 'game-frames', times: grid.filter((value) => value >= from - 1e-9 && value < time - 1e-9) };
+  }
+  const available = Math.floor(time * rate + 1e-6);
+  const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
+  return { source: 'fixed-rate', times: Array.from({ length: steps }, (_, step) => time - (steps - step) / rate) };
+}
+
+// A spring preroll ending exactly at t (game frame grid or the same fixed-step
+// grid as mv_frame_capture.js renderFrame()); the last step is deferred too:
+// nothing is drawn or read back. Each call is one physics clock interval
+// (1000 / stampRate ms), so every preroll frame steps the springs once.
+async function evaluatePhysics(page, request, preroll, rate, keys, grid = null, stampRate = rate) {
+  const plan = prerollTimes(request.t, preroll, rate, grid);
+  const result = await page.evaluate(({ request, times, stampRate, keys }) => {
     const scene = mvFrameProbe.scene;
     const begin = performance.now(), time = request.t;
-    const available = Math.floor(time * rate + 1e-6);
-    const steps = preroll === 'full' ? available : Math.min(available, Math.floor(preroll * rate + 1e-6));
-    const start = time - steps / rate;
-    if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / rate, undefined, true);
+    const start = times.length ? times[0] : time;
+    if (Math.abs(scene.inspect().time - start) <= 1e-9) scene.seek(start + 1 / stampRate, undefined, true);
     scene.seek(start, undefined, true);
     scene.setPlaying(true);
     try {
-      for (let step = 0; step < steps; step++) scene.playbackFrame(start + step / rate, step * 1000 / rate, true);
-      scene.playbackFrame(time, steps * 1000 / rate, true);
+      times.forEach((value, step) => scene.playbackFrame(value, step * 1000 / stampRate, true));
+      scene.playbackFrame(time, times.length * 1000 / stampRate, true);
       const seeked = performance.now();
       const values = scene.assetDump({ sections: request.sections, filter: request.filter || undefined, keys: keys || undefined });
-      return { id: request.id, values, seekMs: seeked - begin, dumpMs: performance.now() - seeked, steps, prerollStart: start };
+      return { id: request.id, values, seekMs: seeked - begin, dumpMs: performance.now() - seeked, steps: times.length, prerollStart: start };
     } finally {
       scene.setPlaying(false);
     }
-  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter }, preroll, rate, keys });
+  }, { request: { id: request.id, t: request.t, sections: request.sections, filter: request.filter }, times: plan.times, stampRate, keys });
+  return { ...result, prerollSource: plan.source };
 }
 
 // --------------------------------------------------------------- editor dump
@@ -508,7 +573,8 @@ function editorRecord(request, result, rate) {
   }
   delete values.clock;
   record.cost = { elapsedMs: result.seekMs + result.dumpMs, seekMs: result.seekMs, dumpMs: result.dumpMs,
-    assetDumpMs: values.cost?.elapsedMs ?? null, ...(result.steps !== undefined ? { prerollSteps: result.steps, prerollStart: result.prerollStart } : {}) };
+    assetDumpMs: values.cost?.elapsedMs ?? null, ...(result.steps !== undefined ? { prerollSteps: result.steps, prerollStart: result.prerollStart,
+      prerollSource: result.prerollSource ?? null } : {}) };
   delete values.cost;
   record.nonFinite = values.nonFinite || [];
   delete values.nonFinite;
@@ -546,7 +612,7 @@ async function prepareLiveView(page, viewport) {
 }
 
 // Evaluates every game record at every phase; pure records in batches.
-async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null }) {
+async function capturePage(page, game, { phases, preroll, rate, batchSize = 100, keys = null, grid = null, stampRate = rate }) {
   const requests = planRequests(game, phases);
   const results = new Map();
   const pureStart = Date.now();
@@ -556,7 +622,7 @@ async function capturePage(page, game, { phases, preroll, rate, batchSize = 100,
   }
   const pureSeconds = (Date.now() - pureStart) / 1000;
   const physicsStart = Date.now();
-  for (const request of physics) results.set(request.id, await evaluatePhysics(page, request, preroll, rate, keys));
+  for (const request of physics) results.set(request.id, await evaluatePhysics(page, request, preroll, rate, keys, grid, stampRate));
   const physicsSeconds = (Date.now() - physicsStart) / 1000;
   const records = requests.map((request) => editorRecord(request, results.get(request.id), rate));
   const costs = (select) => records.filter(select).map((record) => record.cost.elapsedMs);
@@ -599,8 +665,8 @@ async function run() {
   assert(preroll === 'full' || (Number.isFinite(preroll) && preroll >= 0), '--preroll is seconds or "full"');
   const order = options['physics-order'] ?? 'game';
   assert(SPRINGS.ORDERS.includes(order), '--physics-order is game or same-frame');
-  const gridMode = options['physics-grid'] ?? 'clock';
-  assert(['clock', 'rule'].includes(gridMode), '--physics-grid is clock or rule');
+  const gridMode = options['physics-grid'] ?? 'game';
+  assert(['game', 'clock', 'rule'].includes(gridMode), '--physics-grid is game, clock or rule');
   const batchSize = Number(options.batch ?? 100);
   assert(Number.isInteger(batchSize) && batchSize > 0, '--batch is a positive integer');
   const manifest = capture.readManifest(options.manifest);
@@ -643,13 +709,18 @@ async function run() {
     await capture.applyPhysicsReference(page, { rate: clock.target, order,
       timing: { order, exportFps: null, device: manifest.device || {} } });
     const rate = gridMode === 'rule' ? clock.target : clock.rate;
-    const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : clock.source, order };
+    const grid = gridMode === 'game' ? gameFrameTimes(game) : null;
+    const physics = { ...clock, rate, reference: gridMode === 'rule' ? 'game-rule' : gridMode === 'game' && grid.length ? 'game-frames' : clock.source,
+      order, gridFrames: grid ? grid.length : null };
+    // The player's anti-aliasing option sets the 3D render height (off by default, as on the
+    // reference devices: QualitySettings.antiAliasing 0 and no camera allowMSAA in the dumps).
+    const antiAliasing = await capture.applyAntiAliasing(page, manifest.device?.antiAliasing);
     const pinned = await prepareLiveView(page, viewport);
     const project = await page.evaluate(() => {
       const value = MVStudio.getState().project;
       return { name: value.name, source: value.source, duration: value.duration, warnings: value.warnings || [] };
     });
-    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys });
+    const { records, timing } = await capturePage(page, game, { phases, preroll, rate, batchSize, keys: requestKeys, grid, stampRate: clock.target });
     timing.importSeconds = importSeconds;
     const webgl = await capture.rendererInfo(page);
     const producer = { name: 'mv_runtime_capture.js', modtools: { commit: capture.gitHead(MODTOOLS), dirty: capture.gitDirty(MODTOOLS) },
@@ -662,7 +733,7 @@ async function run() {
     fs.writeFileSync(path.join(out, 'editor-dump.json.gz'), body);
     const environment = { schema: 1, kind: 'elichika-mv-runtime-capture', createdAt: editor.header.createdAt, manifest, project,
       physicsRate: rate, physics,
-      gameDump: editor.header.gameDump, render: { ...viewport, pinned }, quality: editor.header.quality, performers,
+      gameDump: editor.header.gameDump, render: { ...viewport, pinned, antiAliasing }, quality: editor.header.quality, performers,
       environment: { ...producer, platform: process.platform }, timing, elapsedSeconds: editor.trailer.elapsedSeconds, pageErrors: errors,
       output: { file: 'editor-dump.json.gz', bytes: body.length, records: records.length } };
     fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify(environment, null, 2) + '\n');
@@ -681,4 +752,5 @@ if (require.main === module) run().catch((error) => { console.error(error.stack 
 module.exports = { readDump, extractFromLog, mergeDumps, isDumpDocument, planRequests, filterFor, stageNodeKey, editorRecord, rendererSelector,
   gameSuits, suitPlan, pinCostumes, checkCostumes,
   qualityDifferences, qualityPlan, applyGameQuality, snakeCase, QUALITY_NAMES, viewportFor, parsePhases, evaluatePure, evaluatePhysics,
+  gameFrameTimes, prerollTimes, memberMeshAlias,
   prepareLiveView, capturePage, editorDocument, gameClockRate, FRAME_SECTIONS, SCHEMA };

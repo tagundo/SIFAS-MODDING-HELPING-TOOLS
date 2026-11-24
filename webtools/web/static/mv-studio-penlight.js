@@ -228,12 +228,16 @@
       uGrowthShape: value(new T.Vector3()), uBasicX: value(new T.Vector3()), uSimpleXZ: value(new T.Vector2()),
     };
     const mode = meta.material?.floats?._CullMode;
-    return new T.ShaderMaterial({
+    const material = new T.ShaderMaterial({
       name: original.name, vertexShader, fragmentShader, uniforms, transparent: true, toneMapped: false,
       depthTest: true, depthWrite: false, depthFunc: T.LessEqualDepth,
       side: mode === 2 ? T.FrontSide : mode === 1 ? T.BackSide : T.DoubleSide,
       blending: T.CustomBlending, blendEquation: T.AddEquation, blendSrc: T.SrcAlphaFactor, blendDst: T.OneFactor,
     });
+    // Hidden while no LivePenlightClip has weight: the uniforms keep the last mixed clip's values
+    // (read by the runtime value dump, MVStudioScene.assetDump).
+    material.userData.mvHiddenUniforms = "stale";
+    return material;
   }
 
   function apply(T, root) {

@@ -277,7 +277,14 @@
       }
     }
 
-    return { update, accepts: event => acceptedEvents.has(event) };
+    // The material values an AnimationTrack curve drives (a MaterialPropertyBlock in the game), read-only.
+    function curveTargets() {
+      const result = new Set();
+      for (const group of groups.values()) for (const channel of group.channels.values()) if (channel.material) result.add(channel.value);
+      return result;
+    }
+
+    return { update, curveTargets, accepts: event => acceptedEvents.has(event) };
   }
 
   global.MVStudioStageMotion = { apply, clipTime, evaluate, nativeActive, sampleTime, validCurve, weightedEvent };
