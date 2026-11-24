@@ -438,7 +438,9 @@ class VerifyTests(unittest.TestCase):
             acbw.verify_cue(self.acb, acbw.write_afs2([(0, wrong_key)]), self.pcm)
 
     def test_requires_the_bundled_decoder(self):
+        self.assertTrue(acbw.encoder_available())
         with patch.object(cri, "_native_library", return_value=None):
+            self.assertFalse(acbw.encoder_available())
             with self.assertRaisesRegex(enc.AudioEncodeError, "decoder is missing"):
                 acbw.verify_cue(self.acb, self.awb, self.pcm)
 

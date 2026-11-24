@@ -28,7 +28,7 @@ from .cri_hca_encode import (AudioEncodeError, SAMPLE_RATE, SNR_FLOOR_DB, encode
 __all__ = [
     "AudioEncodeError", "UtfColumn", "UtfTable", "read_utf", "write_utf", "read_afs2", "write_afs2",
     "afs2_header_size", "build_cue", "excerpt_beat", "verify_cue", "template_info", "make_cue", "make_preview",
-    "PREFETCH_BLOCKS",
+    "encoder_available", "PREFETCH_BLOCKS",
 ]
 
 ZERO, CONSTANT, PER_ROW = 0x10, 0x30, 0x50
@@ -667,6 +667,12 @@ def template_info(template_acb, template_awb=None):
         if isinstance(error, AudioEncodeError):
             raise
         raise AudioEncodeError("The template cue sheet does not have the stock music layout.") from error
+
+
+def encoder_available():
+    """True when project audio can be registered: encoding needs numpy (imported
+    here) and every encode is checked with the bundled clHCA decoder."""
+    return cri_audio_decode._native_library() is not None
 
 
 def make_cue(pcm, template_acb, template_awb, *, sheet, beat, guid=None, progress=None, verify=True,
